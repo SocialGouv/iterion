@@ -128,3 +128,71 @@ func TestDispatchWiresTheResumingRetry(t *testing.T) {
 			be.tasks[1].SessionID, be.tasks[1].SessionOptional)
 	}
 }
+
+// poisonedSessionBackend fails TRANSIENTLY every time it is handed a
+// session — the shape that matters, because `transient (network)` is
+// exactly what the measured failure classified as, and exactly the
+// category the executor's degrade path excludes by construction.
+type poisonedSessionBackend struct {
+	name  string
+	tasks []delegate.Task
+}
+
+func (b *poisonedSessionBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+	b.tasks = append(b.tasks, task)
+	res := delegate.Result{BackendName: b.name, SessionID: "s-poison", Tokens: 10,
+		Output: map[string]any{"served_by": b.name}}
+	if task.SessionID != "" {
+		return res, &delegate.ErrTransient{Reason: "claude session ended without result message: connection reset by peer"}
+	}
+	if len(b.tasks) == 1 {
+		return res, &delegate.ErrTransient{Reason: "stream closed: connection reset by peer"}
+	}
+	return delegate.Result{BackendName: b.name, Tokens: 10, Output: map[string]any{"served_by": b.name}}, nil
+}
+
+// A CARRIED session is opportunistic: its status quo ante is a fresh start,
+// so it gets ONE chance. If the attempt that resumed it dies too, the
+// session is a suspect and the remaining budget goes to a clean attempt.
+//
+// The executor's degrade path cannot do this job — it is gated on
+// UNCLASSIFIED, and the failure this whole change was measured on
+// classifies as `transient (network)`. Without the one-chance rule a
+// poisoned carried session is re-loaded on EVERY attempt, silently,
+// burning the retry budget with the only guard that would drop it switched
+// off for its category.
+func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing.T) {
+	be := &poisonedSessionBackend{name: delegate.BackendClaudeCode}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, be)
+	e := newFallbackExecutor(reg, EventHooks{})
+	// Three attempts, so the budget outlives the one chance the carried
+	// session gets — with two, the carry consumes the LAST attempt and the
+	// rule this test exists for is never reached.
+	e.retry.MaxAttempts = 3
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	_, err := e.dispatchChain(context.Background(), "review",
+		[]chainElement{{Label: "primary"}}, "claude-opus-5", build)
+	if err != nil {
+		t.Fatalf("the clean third attempt must succeed: %v (attempts=%d)", err, len(be.tasks))
+	}
+	if len(be.tasks) < 3 {
+		t.Fatalf("want at least three attempts, got %d", len(be.tasks))
+	}
+	if be.tasks[0].SessionID != "" {
+		t.Fatalf("attempt 1 opens its own session: %q", be.tasks[0].SessionID)
+	}
+	if be.tasks[1].SessionID != "s-poison" {
+		t.Fatalf("attempt 2 must take the one chance: %q", be.tasks[1].SessionID)
+	}
+	if be.tasks[2].SessionID != "" {
+		t.Fatalf("attempt 3 re-loaded a session that had just killed attempt 2: %q — the budget burns on it and session_degraded never fires for this category", be.tasks[2].SessionID)
+	}
+	if be.tasks[2].SessionOptional {
+		t.Error("the optional flag outlived the id it qualifies")
+	}
+}
