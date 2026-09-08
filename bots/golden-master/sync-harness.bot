@@ -4614,6 +4614,33 @@ tool sync_harness:
                    v_sub.get("provenance"), v_rw2.get("provenance")],
                   ["legacy", "strict", "strict", "strict"])
 
+            # L'AUTO-ACTE EN UN SEUL COMMIT, isole. Le scenario de contrebande
+            # ci-dessous depose la demande et l'acte dans DEUX commits, donc c'est
+            # la regle des commits du subbot qui le refuse — la regle du commit
+            # unique n'y est jamais seule a decider, et un mutant qui la supprime
+            # y survivait (mesure : M3 survivant). Ici le commit qui depose est le
+            # commit du subbot lui-meme, donc tous les autres controles passent :
+            # l'acte est dans acted_commits, l'id est acte, le blob correspond.
+            # Seule la separation des pouvoirs ferme la porte, et elle doit rester
+            # TERMINALE : aucune passe ne defait deux enregistrements deja dans
+            # l'historique.
+            xreset()
+            xledger(("request", req2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("le filet se demande et s'acte tout seul\n")
+            xcommit(email="extend@golden-master.iterion")     # UN commit : demande + acte
+            sha_self = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_self = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                            xroot, timeout=60)[1].strip()
+            v_self = extension_verdict(
+                xroot, ".golden-master", xbase, acted_commits={sha_self},
+                acted_blobs={".golden-master/refs/2.txt": blob_self}, acted_ids={"E-1"})
+            check("demande et acte dans le MEME commit : refuse, forge, rien d'exempte "
+                  "(l'acte est pourtant dans les commits du subbot et son blob correspond)",
+                  [v_self["acted"][0]["ok"], v_self["acted"][0].get("forged"),
+                   v_self["ok_paths"]],
+                  [False, True, []])
+
             # LE SCENARIO DE CONTREBANDE, rejoue en entier : le lot depose DEUX
             # demandes, le subbot en acte une et REFUSE l'autre, puis le lot
             # s'acte la refusee en enregistrant le chemin que le subbot a
