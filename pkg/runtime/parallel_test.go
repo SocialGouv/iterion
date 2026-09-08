@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -195,6 +196,12 @@ func TestFanOutWaitAllAllDoneStillRunsDeclaredCollector(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutPingPongSingleSlot(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutPingPongSingleSlot)
+}
+
+func testFanOutPingPongSingleSlot(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "pingpong_one_slot",
 		Entry: "entry",
@@ -1308,6 +1315,12 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 // functional assertions are minimal; its value is running exactly this
 // interleaving under the CI -race job.
 func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutAbandonedBranchDoesNotRaceRunState)
+}
+
+func testFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
 	oldGrace := branchCancelGracePeriod
 	branchCancelGracePeriod = 100 * time.Millisecond
 	defer func() { branchCancelGracePeriod = oldGrace }()

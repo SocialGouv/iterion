@@ -1,0 +1,64 @@
+# Waiting for engine state in tests
+
+Issue #930 separates the condition a test asserts from how quickly its host can
+run git, a shell, or a filesystem operation. A fixed 1.5–120 second timeout
+around that work was also measuring unrelated host load.
+
+## In-process workflows
+
+The runtime fan-out/resume-barrier regressions and the runner's parked human
+gate run inside `testing/synctest.Test`. Go's virtual clock advances when the
+bubble's goroutines are durably blocked; CPU scheduling and filesystem work do
+not spend the test's virtual deadline. Existing cancellation-grace and lost
+barrier bounds still detect a workflow that cannot progress.
+
+The runner human-gate test explicitly waits for quiescence, checks that the
+child persisted `paused_waiting_human` and the parent has not returned, then
+cancels the parent and joins the result. It no longer needs to spend 1.5 real
+seconds proving that a human has not answered.
+
+## Real-process service fixtures
+
+Service launch, resume, subbot control, reconciliation and restart tests keep a
+real clock. `waitForSubbotStatus` observes the persisted state and reports a
+terminal child or parent immediately. `awaitRunCompletion` joins the service's
+Done channel. Neither predicts how long creating a worktree or running a shell
+should take.
+
+`runWaitContext` uses the Go test harness deadline, reserving up to five seconds
+for failure diagnostics and cleanup. Thus the suite still has its configured
+wall-clock ceiling; `go test -timeout=0` explicitly disables that ceiling.
+Polling every 50 ms is an observation cadence, not an execution budget.
+
+Do not wrap these real-process service fixtures in synctest: external process
+I/O and their polling/background workers do not provide the same durable-block
+contract as the in-process fixtures.
+
+## Nearby wait audit
+
+The service test sweep included `time.After`, `context.WithTimeout` and
+`time.Now().Add`; not every duration is an estimate of engine speed.
+
+| Test family | Disposition |
+|---|---|
+| `subbot_human_gate`, `subbot_reconcile`, `subbot_child_control`, `subbot_restart` | Persisted child-state and joined-run waits use the harness deadline. The explicit ten reconciliation passes remain the reconciliation oracle. |
+| `service_launch_{budget,dispatch_fields,loop_budget,pause}` | Completion waits use the harness deadline. |
+| `service_resume_{budget,hash,snapshot}` | Completion waits use the harness deadline. |
+| `broker`, `service_hook_observers` | Retain bounds on event delivery; no git/engine setup in the wait. |
+| `file_event_source`, `file_log_source`, `service_eventsource`, `service_stream` | Retain file-tail/event delivery bounds and deliberate no-event observations. |
+| `manager`, `service_drain`, `reconcile_shutdown`, `service_stop_background` | Retain shutdown, cancellation and background-worker lifecycle contracts. |
+| `periodic_reconcile`, `reattach` | Retain bounded observations of reconciliation/timer behaviour in their separate fixtures. |
+| `merge_claim`, `service_runs_skip_log`, `service_test` | Backdated timestamps construct old records; they are not wait deadlines. |
+| `subbot_restart` shutdown cleanup | Retain the separate 30-second shutdown budget; it bounds service teardown, not child workflow progress. |
+
+## Falsification performed
+
+With a temporary two-second real subprocess delay immediately before the runner
+starts its child engine, the old human-gate test failed after 2.06 seconds; the
+new test passed after 2.07 seconds. The delay was removed afterward.
+
+Changing the park to use the already-cancelled child context made the new test
+fail with `park returned before the parent was cancelled`. Removing the resume
+barrier release made both each/all error-path regressions fail with `resume
+hung`. Those production mutations were also removed: this change contains only
+tests and this wait audit.

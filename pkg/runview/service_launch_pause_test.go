@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -67,7 +66,7 @@ func TestLaunch_PersistsRunBeforeReturn_AndPauseKeepsSubscribers(t *testing.T) {
 
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 
@@ -125,7 +124,7 @@ func TestLaunch_PersistsParentRunIDBeforeReturn(t *testing.T) {
 
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 }

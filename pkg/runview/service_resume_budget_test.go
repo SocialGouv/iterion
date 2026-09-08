@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -83,7 +82,7 @@ func TestResume_AskLessLocalResumeKeepsTheLaunchCap(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("launch did not terminate")
 	}
 	r, err := svc.store.LoadRun(ctx, res.RunID)
@@ -108,7 +107,7 @@ func TestResume_AskLessLocalResumeKeepsTheLaunchCap(t *testing.T) {
 	}
 	select {
 	case <-res2.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("resume did not terminate")
 	}
 	got, err := svc.store.LoadRun(ctx, res.RunID)
@@ -154,7 +153,7 @@ func TestResume_AppliesBudgetOverridesInProcess(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("in-process resume did not terminate")
 	}
 	r, err := svc.store.LoadRun(context.Background(), runID)

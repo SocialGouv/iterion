@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -85,7 +84,7 @@ func launchLoopBudgetRun(t *testing.T, guard string) (store.RunStatus, bool) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(60 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit")
 	}
 

@@ -3,7 +3,6 @@ package runview
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -121,7 +120,7 @@ func TestResume_InProcessBudgetWriteDoesNotResurrectAFinishedRun(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("resume did not settle")
 	}
 
