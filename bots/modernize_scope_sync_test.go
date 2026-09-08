@@ -39,7 +39,7 @@ func readScopeFile(t *testing.T, rel string) string {
 	return string(b)
 }
 
-func between(t *testing.T, text, start, end, what string) string {
+func scopeSection(t *testing.T, text, start, end, what string) string {
 	t.Helper()
 	i := strings.Index(text, start)
 	if i < 0 {
@@ -53,7 +53,7 @@ func between(t *testing.T, text, start, end, what string) string {
 	return strings.Trim(rest[:j], "\n")
 }
 
-func dedent(body string) string {
+func scopeDedent(body string) string {
 	lines := strings.Split(body, "\n")
 	for i, l := range lines {
 		lines[i] = strings.TrimPrefix(l, "    ")
@@ -65,7 +65,7 @@ func dedent(body string) string {
 // them all is the whole point: checking only the first would let a second node
 // carry a stale body under a green test — the drift this file exists to stop,
 // one node further along.
-func inlinedBodies(t *testing.T, bot string) []string {
+func scopeInlinedBodies(t *testing.T, bot string) []string {
 	t.Helper()
 	var out []string
 	rest := bot
@@ -79,15 +79,15 @@ func inlinedBodies(t *testing.T, bot string) []string {
 		if j < 0 {
 			t.Fatalf("main.bot: an opening inline marker at copy %d has no closing marker", len(out)+1)
 		}
-		out = append(out, dedent(strings.Trim(rest[:j], "\n")))
+		out = append(out, scopeDedent(strings.Trim(rest[:j], "\n")))
 		rest = rest[j+len(inlineAbove):]
 	}
 }
 
 func TestScopeCopiesStayInSync(t *testing.T) {
-	standalone := between(t, readScopeFile(t, "modernize-scope/scope.py"),
+	standalone := scopeSection(t, readScopeFile(t, "modernize-scope/scope.py"),
 		scopeBodyBegin, scopeBodyEnd, "scope.py")
-	inlined := inlinedBodies(t, readScopeFile(t, "modernize-scope/main.bot"))
+	inlined := scopeInlinedBodies(t, readScopeFile(t, "modernize-scope/main.bot"))
 
 	// A bot with no inlined copy would pass every comparison below by having
 	// nothing to compare — the shape of green that proves nothing.
