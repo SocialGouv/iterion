@@ -315,6 +315,12 @@ func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	// summed onto a running total it already contains.
 	next.CostIsSessionTotal = (pc == 0 || prev.CostIsSessionTotal) &&
 		(nc == 0 || next.CostIsSessionTotal)
+	// Attempts run one after the other, so the time they took adds up —
+	// the same reason chainSpend sums it across routes. It is purely
+	// observational (the delegate_finished event's duration_ms and the
+	// log line; the budget clocks its own elapsed), but a node that spent
+	// five minutes before a 30s retry reported the 30s.
+	next.Duration += prev.Duration
 	if tokens == nt && usd == nc {
 		return next
 	}

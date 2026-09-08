@@ -160,6 +160,11 @@ func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 	if tok, _ := got.Output["_tokens"].(int); tok != 9000 {
 		t.Fatalf("the map the caps read was not updated: %v", got.Output["_tokens"])
 	}
+	// The time is part of the same accounting: the event would otherwise
+	// report the failed spawn's zero for a node that spent a whole second.
+	if got.Duration != time.Second {
+		t.Fatalf("the discarded attempt's duration was lost: %v", got.Duration)
+	}
 }
 
 // The other direction, and the ONE case that folds at a MAX: two attempts
