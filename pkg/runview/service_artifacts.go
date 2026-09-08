@@ -167,6 +167,19 @@ func (s *Service) ListAllArtifactsCtx(ctx context.Context, runID string) ([]RunA
 // listing — on the cloud pod this fallback exists for, a transient outage
 // must not read as "this run published nothing".
 //
+// The same reasoning one level down: an index entry is only ever written
+// AFTER the body was successfully persisted, so a body that will not load
+// is an outage or a lifecycle deletion, never a node that published
+// nothing. Dropping it would serve a partial listing as an authoritative
+// one — worse than the empty listing this fallback replaced, because it
+// looks complete. The entry is emitted DEGRADED instead (node id + the
+// indexed version, no labels or title) and logged: the studio already
+// falls back to the node id for a missing title, so the card renders and
+// still opens on the per-node endpoint, which reads the body itself.
+// Returning the error is not an option here — the mongo store answers an
+// untyped error for a body that is genuinely gone, so one lifecycle-
+// deleted blob would take down the whole Artifacts view for that run.
+//
 // ctx is the caller's, so the mongo tenant filter scopes the LoadRun.
 func (s *Service) listAllArtifactsFromIndex(ctx context.Context, runID string) ([]RunArtifactSummary, error) {
 	run, err := s.store.LoadRun(ctx, runID)
@@ -178,17 +191,18 @@ func (s *Service) listAllArtifactsFromIndex(ctx context.Context, runID string) (
 	}
 	out := make([]RunArtifactSummary, 0, len(run.ArtifactIndex))
 	for nodeID, version := range run.ArtifactIndex {
+		entry := RunArtifactSummary{NodeID: nodeID, Version: version}
 		art, lerr := s.store.LoadArtifact(ctx, runID, nodeID, version)
 		if lerr != nil || art == nil {
+			s.logger.Warn("runview: run %s node %s v%d is in the artifact index but its body did not load, listing it degraded: %v",
+				runID, nodeID, version, lerr)
+			out = append(out, entry)
 			continue
 		}
-		out = append(out, RunArtifactSummary{
-			NodeID:    nodeID,
-			Version:   version,
-			Labels:    art.Labels,
-			Title:     artifactTitle(art.Data),
-			WrittenAt: art.WrittenAt,
-		})
+		entry.Labels = art.Labels
+		entry.Title = artifactTitle(art.Data)
+		entry.WrittenAt = art.WrittenAt
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out, nil

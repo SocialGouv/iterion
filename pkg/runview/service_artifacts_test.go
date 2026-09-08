@@ -219,6 +219,56 @@ func (failingRunStore) LoadRun(context.Context, string) (*store.Run, error) {
 	return nil, errors.New("mongo: connection reset")
 }
 
+// unreadableBodyStore is a real store whose artifact BODIES will not load,
+// while the run document (and so its artifact_index) still does — a
+// transient blob outage, or a body a lifecycle rule deleted out from under
+// a live index entry.
+type unreadableBodyStore struct{ store.RunStore }
+
+func (unreadableBodyStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
+	return nil, errors.New("s3: connection reset")
+}
+
+// TestListAllArtifacts_FromIndexDegradesUnreadableBody: an index entry is
+// only ever written after its body was persisted, so a body that will not
+// load is an outage — never "this node published nothing". Dropping the
+// node would serve a PARTIAL listing as an authoritative one, which is
+// worse than the empty listing this fallback replaced because it looks
+// complete. The node must still be listed, at its indexed version.
+func TestListAllArtifacts_FromIndexDegradesUnreadableBody(t *testing.T) {
+	logger := iterlog.Nop()
+	seed, err := store.New(t.TempDir(), store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := seed.CreateRun(ctx, "run5", "wf", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	for _, n := range []string{"planner", "reviewer"} {
+		if err := seed.WriteArtifact(ctx, &store.Artifact{RunID: "run5", NodeID: n, Version: 2, Data: map[string]any{"title": n}}); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	svc, err := NewService(t.TempDir(), WithLogger(logger), WithStore(unreadableBodyStore{RunStore: seed}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.ListAllArtifacts("run5")
+	if err != nil {
+		t.Fatalf("ListAllArtifacts: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want both nodes listed degraded: %+v", len(got), got)
+	}
+	if got[0].NodeID != "planner" || got[0].Version != 2 || got[1].NodeID != "reviewer" || got[1].Version != 2 {
+		t.Errorf("degraded entries = %+v, want planner v2 and reviewer v2 from the index", got)
+	}
+	if got[0].Title != "" || len(got[0].Labels) != 0 {
+		t.Errorf("degraded entry invented body-derived fields: %+v", got[0])
+	}
+}
+
 // tenantGuardedRunStore reproduces the mongo store's fail-closed tenant
 // guard (withTenantFilter, pkg/store/mongo/tenant.go): a LoadRun whose ctx
 // carries neither a tenant nor the explicit bypass marker PANICS. That is
