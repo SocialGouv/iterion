@@ -489,22 +489,39 @@ tool oracle_run:
 
 
     def file_part_bytes(value):
-        """The part's payload. `text` is UTF-8 (a corpus stays readable and
-        replayable by hand); `b64` carries what text cannot."""
+        """The part's payload, from EXACTLY ONE of `text` or `b64`. `text` is
+        UTF-8 (a corpus stays readable and replayable by hand); `b64` carries what
+        text cannot. Every way of getting the pair wrong is refused BY NAME —
+        a corpus value that reaches the wire unexamined is a reference describing
+        a request its author did not write."""
+        declared = [k for k in ("text", "b64") if k in value]
+        if not declared:
+            raise SystemExit("file field %r declares neither `text` nor `b64` — "
+                             "an upload with no payload records the refusal of an "
+                             "empty file as if it were the behaviour"
+                             % (value.get("filename"),))
+        if len(declared) == 2:
+            raise SystemExit("file field %r declares BOTH `text` and `b64` — they "
+                             "are alternatives, and silently preferring one puts "
+                             "on the wire bytes the corpus author did not believe "
+                             "they had declared"
+                             % (value.get("filename"),))
         if "b64" in value:
+            b64 = value["b64"]
+            # A number, a list or an object here reached `b64decode` and left as a
+            # bare TypeError: the judge died on a traceback instead of answering
+            # with its verdict. Same refusal as a non-str `text`, one line up.
+            if not isinstance(b64, str):
+                raise SystemExit("file field %r: `b64` must be a string, got %s"
+                                 % (value.get("filename"), type(b64).__name__))
             try:
-                return base64.b64decode(value["b64"], validate=True)
+                return base64.b64decode(b64, validate=True)
             except (ValueError, binascii.Error) as e:
                 raise SystemExit("file field %r: `b64` is not valid base64 (%s) — "
                                  "a payload the harness cannot decode would be "
                                  "sent as its own error text"
                                  % (value.get("filename"), e))
-        text = value.get("text")
-        if text is None:
-            raise SystemExit("file field %r declares neither `text` nor `b64` — "
-                             "an upload with no payload records the refusal of an "
-                             "empty file as if it were the behaviour"
-                             % (value.get("filename"),))
+        text = value["text"]
         if not isinstance(text, str):
             raise SystemExit("file field %r: `text` must be a string, got %s"
                              % (value.get("filename"), type(text).__name__))
@@ -3681,6 +3698,7 @@ tool oracle_run:
                       ["application/x-www-form-urlencoded", b"titre=r"])
             finally:
                 srv.shutdown()
+                srv.server_close()
 
             def refuses(name, fn):
                 try:
@@ -3692,6 +3710,18 @@ tool oracle_run:
                     lambda: encode_multipart({"d": {"filename": "a.txt"}}))
             refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
                     lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
+            # `b64` non-textuel : partait en TypeError nu depuis base64, donc en
+            # trace d'appel au lieu du verdict. Le pendant non-textuel de `text`
+            # etait deja refuse par son nom.
+            for bad in (7, [1, 2], {"k": "v"}, True):
+                refuses("b64 non textuel (%s) -> refus nomme" % type(bad).__name__,
+                        lambda bad=bad: encode_multipart({"d": {"filename": "a",
+                                                                "b64": bad}}))
+            # Declarer les DEUX : `b64` gagnait en silence, et le corpus decrivait
+            # alors des octets que son auteur n'avait pas declares.
+            refuses("text ET b64 declares -> refus nomme, aucun gagnant silencieux",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "FROM-TEXT",
+                                                    "b64": "RlJPTS1CNjQ="}}))
 
             # Les EN-TETES de partie : le second moyen d'envoyer une requete que
             # le corpus n'a pas declaree. Le vecteur decisif d'abord — un nom de
