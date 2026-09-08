@@ -1243,7 +1243,8 @@ tool sync_harness:
             if not isinstance(obj, dict) or \
                     not (isinstance(obj.get("id"), str) and obj.get("id")):
                 obj = {"id": "UNPARSEABLE", "raw": body[:120]}
-            elif obj["id"].splitlines() != [obj["id"]] or not obj["id"].strip():
+            elif obj["id"].splitlines() != [obj["id"]] or not obj["id"].strip() \
+                    or any(ord(c) < 0x20 or ord(c) == 0x7f for c in obj["id"]):
                 # An id reaches the gate through a LINE-ORIENTED transport
                 # (`GM_ACTED_IDS`, one id per line). One carrying a line separator
                 # arrives as two fragments and seeds the covered set with an id no
@@ -1253,6 +1254,15 @@ tool sync_harness:
                 # two distinct ids into one, and the collapse re-opens the
                 # smuggling this file exists to close. An INTERIOR space stays
                 # legal: it round-trips whole, and a lot-authored id may carry one.
+                #
+                # The test is stated TWICE on purpose, and neither half covers the
+                # other. `splitlines()` is the transport's own reader, so asking it
+                # to round-trip catches every separator it honours — including
+                # U+0085, U+2028 and U+2029, which are NOT control characters and
+                # which a `ord(c) < 0x20` rule lets straight through. The control
+                # rule in turn refuses TAB, NUL and DEL, which round-trip fine here
+                # but have no business in a lot-authored identifier that a human
+                # reads in a ledger and a machine compares byte for byte.
                 obj = {"id": "UNPARSEABLE", "raw": body[:120]}
             else:
                 # The list-shaped fields are iterated by every judgement below. A
@@ -1474,7 +1484,17 @@ tool sync_harness:
 
         all_blocks = (_extension_blocks(head_txt, "request") +
                       _extension_blocks(head_txt, "act"))
-        if any(b.get("id") == "UNPARSEABLE" for b in all_blocks):
+        # An unreadable block is not merely REPORTED: it makes this judge unable to
+        # read the ledger it certifies from, so nothing that ledger holds is
+        # certified while the block stands — the same shape as
+        # `ledger_append_only`, for the same reason. Reported only, the readable
+        # blocks beside it went on exempting their paths, so a ledger that
+        # escalates handed out exemptions all the same, and a caller reading
+        # `ok_paths` without also reading `problems` never saw the escalation. An
+        # ESCALATION, never a forgery: the requester fixes the block, no history
+        # was rewritten.
+        ledger_readable = not any(b.get("id") == "UNPARSEABLE" for b in all_blocks)
+        if not ledger_readable:
             verdict["problems"].append(
                 "a ledger block does not parse as JSON, or carries an id that "
                 "cannot survive the one-id-per-line certificate — escalate, do "
@@ -1754,6 +1774,10 @@ tool sync_harness:
                             "%s was rewritten after the act: HEAD carries blob %s, "
                             "the subbot certified %s — the certificate covers the "
                             "content it certified, not the path" % (p, (blob_id("HEAD", p) or "?")[:12], certified[:12]))
+            if not ledger_readable:
+                row["problems"].append(
+                    "the ledger carries a block this judge cannot read — nothing "
+                    "it holds is certified until that block is fixed")
             row["ok"] = (req is not None and not row["problems"]
                          and verdict["ledger_append_only"])
             if row["ok"]:

@@ -986,6 +986,47 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 			t.Fatalf("an id that cannot survive the line transport was accepted: %+v", v.Problems)
 		}
 	})
+	// Containment: refusing the poisoned block is only half the defence. While
+	// it was merely REPORTED, the readable blocks beside it went on exempting
+	// their paths — so a ledger that escalates still handed out the exemption,
+	// and any caller reading ok_paths without also reading problems never saw
+	// the escalation at all.
+	t.Run("an unreadable block stops the ledger certifying anything beside it", func(t *testing.T) {
+		poison := "<!-- iterion:extension-act\n" +
+			`{"id": "E\n9", "lot": "L", "recorded_paths": [".golden-master/refs/2.txt"]}` +
+			"\n-->\n"
+		ws, base, blob := extensionLedgerRepo(t, "E-2", poison)
+		cmd := exec.Command("python3", harness)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
+			"GM_DIR=.golden-master", "GM_BASE="+base, "GM_ACTED_COMMITS=",
+			// The subbot really did act E-2 and certify its blob: without the
+			// poisoned block beside it, this act would be covered.
+			"GM_ACTED_IDS=E-2",
+			"GM_ACTED_BLOBS=.golden-master/refs/2.txt="+blob)
+		out, _ := cmd.Output()
+		var v struct {
+			OKPaths  []string `json:"ok_paths"`
+			Problems []string `json:"problems"`
+			Acted    []struct {
+				OK bool `json:"ok"`
+			} `json:"acted"`
+		}
+		if uerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &v); uerr != nil {
+			t.Fatalf("no verdict: %v (%q)", uerr, out)
+		}
+		if len(v.Problems) == 0 {
+			t.Fatalf("the unreadable block was not escalated at all: %+v", v)
+		}
+		if len(v.OKPaths) != 0 {
+			t.Fatalf("a ledger the judge cannot read still exempted paths: %+v", v.OKPaths)
+		}
+		for _, a := range v.Acted {
+			if a.OK {
+				t.Fatalf("an act was certified from a ledger carrying an unreadable block: %+v", v.Acted)
+			}
+		}
+	})
 	t.Run("an entry the judge cannot read is refused, not dropped", func(t *testing.T) {
 		v, exit := run(t, "GM_ACTED_COMMITS=", "GM_ACTED_BLOBS=no-equals-sign-here")
 		if exit == 0 {
@@ -1005,7 +1046,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 // the blob of the recorded reference. The id is marshalled, never interpolated:
 // a test whose id carries a line break must produce a LEGAL JSON block, or it
 // would prove the escape rather than the guard.
-func extensionLedgerRepo(t *testing.T, id string) (ws, base, blob string) {
+func extensionLedgerRepo(t *testing.T, id string, extraBlocks ...string) (ws, base, blob string) {
 	t.Helper()
 	ws = t.TempDir()
 	gm := filepath.Join(ws, ".golden-master")
@@ -1044,6 +1085,10 @@ func extensionLedgerRepo(t *testing.T, id string) (ws, base, blob string) {
 	req := "<!-- iterion:extension-request\n" +
 		`{"id": ` + string(jid) + `, "lot": "L", "type": "add-file", "paths": [".golden-master/refs/2.txt"]}` +
 		"\n-->\n"
+	// Extra blocks are appended to EVERY revision of the ledger, so a block
+	// that cannot be read stands beside the readable ones from the first
+	// commit — an append-only trail, exactly as the judge requires.
+	req += strings.Join(extraBlocks, "")
 	ledger(req)
 	g("add", "-A")
 	g("commit", "-qm", "the lot files it")
