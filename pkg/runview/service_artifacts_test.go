@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -119,4 +120,29 @@ func TestListAllArtifacts_FromIndexWhenNoDirectory(t *testing.T) {
 	if err != nil || len(empty) != 0 {
 		t.Errorf("unknown run: got %v, %v; want empty, nil", empty, err)
 	}
+}
+
+// A store failure that is not "unknown run" must surface as an error: an
+// empty listing would read as "nothing published" on exactly the host the
+// index fallback exists for.
+func TestListAllArtifacts_FromIndexStoreFailureIsAnError(t *testing.T) {
+	real, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc, err := NewService(t.TempDir(), WithLogger(iterlog.Nop()), WithStore(failingRunStore{RunStore: real}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.ListAllArtifacts("run-any"); err == nil {
+		t.Fatal("a store outage must not be reported as an empty listing")
+	}
+}
+
+// failingRunStore is a real store whose LoadRun fails with a non-not-found
+// error (an outage), the shape the index fallback must not swallow.
+type failingRunStore struct{ store.RunStore }
+
+func (failingRunStore) LoadRun(context.Context, string) (*store.Run, error) {
+	return nil, errors.New("mongo: connection reset")
 }

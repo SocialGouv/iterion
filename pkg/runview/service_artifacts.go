@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -114,13 +115,18 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 
 // listAllArtifactsFromIndex serves the listing from run.ArtifactIndex
 // (node id → latest version), which every store maintains on WriteArtifact.
-// Reached when no artifact directory exists on this host; an unknown run
-// is an empty list, like the directory walk.
+// Reached when no artifact directory exists on this host. An unknown run is
+// an empty list, like the directory walk; any other store failure is an
+// error, not an empty listing — on the cloud pod this fallback exists for,
+// a transient outage must not read as "this run published nothing".
 func (s *Service) listAllArtifactsFromIndex(runID string) ([]RunArtifactSummary, error) {
 	ctx := context.Background()
 	run, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
-		return nil, nil
+		if errors.Is(err, store.ErrRunNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("runview: list artifacts: load run: %w", err)
 	}
 	out := make([]RunArtifactSummary, 0, len(run.ArtifactIndex))
 	for nodeID, version := range run.ArtifactIndex {
