@@ -3251,64 +3251,60 @@ def stability(config, corpus, canon, ws):
 _GIT_MAINTENANCE_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
 
 
-def _git_command_lines(argv):
-    """The git command lines an argv spawns.
+def _spawned_program(argv, shell):
+    """The program a Popen actually launches.
 
-    Two forms, because both occur here: the argv IS git, or it is a shell
-    running a script in which `git` stands in command position. Split on the
-    separators a shell uses, so `cd x && git commit` is seen as a git command
-    and `rm -rf .git` is not.
+    shell=True runs the string through /bin/sh, so the program is the shell —
+    not the first word of the string, which is what a reader assumes and what
+    an audit keyed on argv[0] would record.
     """
+    if shell:
+        return "sh"
     if isinstance(argv, (list, tuple)):
-        parts = [str(a) for a in argv]
-    elif isinstance(argv, str):
-        parts = ["sh", "-c", argv]
-    else:
-        return []
-    if not parts:
-        return []
-    found = []
-    if os.path.basename(parts[0]) == "git":
-        found.append(parts)
-    if len(parts) > 2 and os.path.basename(parts[0]) in ("sh", "bash", "dash", "zsh") \
-            and parts[1] == "-c":
-        for segment in re.split(r"&&|\|\||[;|\n]", parts[2]):
-            tokens = segment.strip().lstrip("(").strip().split()
-            if tokens and os.path.basename(tokens[0]) == "git":
-                found.append(tokens)
-    return found
+        if not argv:
+            return ""
+        return os.path.basename(str(argv[0]))
+    return os.path.basename(str(argv).split()[0]) if str(argv).strip() else ""
 
 
-def _git_refuses_auto_maintenance(tokens, env):
-    """Whether a git command line turns BOTH switches off — by `-c` in its own
-    argv, or by git's environment form of the same thing.
+def _env_refuses_auto_maintenance(env):
+    """Whether an environment turns BOTH switches off through git's own
+    GIT_CONFIG_* form — the environment every descendant inherits, whatever
+    path it takes to reach git.
 
     Both switches, not one: `maintenance.auto` is Git >= 2.48 and `gc.auto` is
     the older one AND the fallback a recent Git consults when the first is
     absent, so a single switch holds on one version and not the other.
 
-    Both idioms, not one: the argv is what a call site writes, the environment
-    is what a chokepoint sets for every call site at once. Accepting only the
-    idiom in use here would refuse the other the day someone moves the guard.
-
     env is None when the child inherits the parent's — that inherited
-    environment is the one that will decide, so it is what gets read.
+    environment is the one git will actually read, so that is what gets read
+    here. Reading `env or {}` instead would call a correct inherited call
+    faulty.
     """
-    flags = [tokens[i + 1] for i, a in enumerate(tokens[:-1]) if a == "-c"]
     environ = os.environ if env is None else env
     try:
         count = int(environ.get("GIT_CONFIG_COUNT", "0") or "0")
-    except ValueError:
+    except (TypeError, ValueError):
         count = 0
-    from_env = {}
+    declared = {}
     for i in range(count):
         key = environ.get("GIT_CONFIG_KEY_%d" % i)
         if key:
-            from_env[key] = environ.get("GIT_CONFIG_VALUE_%d" % i)
-    for key, value in _GIT_MAINTENANCE_OFF:
-        if "%s=%s" % (key, value) not in flags and from_env.get(key) != value:
-            return False
-    return True
+            declared[key] = environ.get("GIT_CONFIG_VALUE_%d" % i)
+    return all(declared.get(key) == value for key, value in _GIT_MAINTENANCE_OFF)
+
+
+def _argv_refuses_auto_maintenance(argv):
+    """Whether a git argv turns both switches off with its own `-c` flags.
+
+    The other accepted idiom: the argv is what a call site writes, the
+    environment is what a chokepoint sets for every call site at once.
+    Accepting only the one in use here would refuse the other the day someone
+    moves the guard.
+    """
+    tokens = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+    flags = [tokens[i + 1] for i, a in enumerate(tokens[:-1]) if a == "-c"]
+    return all("%s=%s" % (key, value) in flags for key, value in _GIT_MAINTENANCE_OFF)
 
 
 def _selftest():
@@ -3338,23 +3334,40 @@ def _selftest():
     # what failed. Two sweeps read this file and both missed a helper defined
     # four hundred lines below fixture_git, inside a block.
     #
-    # And the audit below does not read the source either — it WATCHES what the
-    # selftest spawns. Popen is the hook because run, call, check_call and
-    # check_output all reach the kernel through it; hooking run alone would
-    # leave the other four unseen. os.system reaches neither and is refused
-    # outright rather than watched, so the door nobody guards fails closed.
-    _git_audit = {"direct": 0, "shell": 0, "offenders": []}
+    # And this does not read the source either — it WATCHES what the selftest
+    # spawns. Popen is the hook because run, call, check_call and check_output
+    # all reach the kernel through it; hooking run alone would leave four forms
+    # unseen. os.system reaches neither and is refused outright rather than
+    # watched, so the door nobody guards fails closed.
+    #
+    # What is judged is not "the git command lines we recognise" — recognising
+    # git by the program name is the same enumeration one level up, and it lets
+    # `env git`, `xargs git` or a git called through a shell variable walk past.
+    # Instead: a WHITELIST of what may be launched at all (git and the shell,
+    # the two the selftest uses — measured: 426 and 236), and the environment
+    # judged on EVERY launch, because that environment is what git reads
+    # whatever path reaches it. A future helper that spawns anything else is
+    # named, not missed.
+    #
+    # Deliberate hostility (`env -i`, unsetting GIT_CONFIG_COUNT inside a
+    # script) is out of scope and stated as such: the adversary here is an
+    # ordinary helper written without knowing the rule, not someone evading it.
+    _git_audit = {"git": 0, "sh": 0, "offenders": []}
     _real_popen = subprocess.Popen
     _real_system = os.system
 
     class _AuditedPopen(_real_popen):
         def __init__(self, args, *rest, **kw):
-            program = args[0] if isinstance(args, (list, tuple)) and args else args
-            spawns_git = os.path.basename(str(program)) == "git"
-            for tokens in _git_command_lines(args):
-                _git_audit["direct" if spawns_git else "shell"] += 1
-                if not _git_refuses_auto_maintenance(tokens, kw.get("env")):
-                    _git_audit["offenders"].append(" ".join(tokens)[:120])
+            program = _spawned_program(args, kw.get("shell"))
+            env = kw.get("env")
+            if program not in _git_audit:
+                _git_audit["offenders"].append(
+                    "programme hors liste blanche : %s (%s)" % (program, str(args)[:80]))
+            else:
+                _git_audit[program] += 1
+                if not _env_refuses_auto_maintenance(env) and not (
+                        program == "git" and _argv_refuses_auto_maintenance(args)):
+                    _git_audit["offenders"].append(str(args)[:120])
             super().__init__(args, *rest, **kw)
 
     def _refuse_system(command):
@@ -5159,18 +5172,14 @@ def _selftest():
     # Judged on what ran, not on what the source says. A future helper that
     # spawns git its own way is caught by having RUN, which is the only thing
     # that found the one this replaces.
-    check("aucune commande git du selftest ne laisse la maintenance automatique detachee"
-          " (%d invocations vues : %d en argv, %d via sh -c)"
-          % (_git_audit["direct"] + _git_audit["shell"], _git_audit["direct"], _git_audit["shell"]),
+    check("aucun lancement du selftest ne laisse la maintenance automatique detachee"
+          " (%d git, %d sh)" % (_git_audit["git"], _git_audit["sh"]),
           _git_audit["offenders"], [])
-    # Les DEUX detecteurs, pas leur somme : le selftest lance les deux formes
-    # (mesure : 426 en argv, 173 via sh -c), donc une branche cassee laisse
-    # l'autre porter le total et un audit a moitie aveugle passe pour un arbre
-    # propre. C'est le plancher d'un banc, pas une mesure de couverture.
-    check("l'audit voit les commandes git lancees en argv direct",
-          _git_audit["direct"] > 0, True)
-    check("l'audit voit les commandes git lancees a travers un shell",
-          _git_audit["shell"] > 0, True)
+    # Les DEUX compteurs, pas leur somme : le selftest lance les deux
+    # programmes, et un compteur mort laisse l'autre porter le total — un audit
+    # a moitie aveugle passerait pour un arbre propre.
+    check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
+    check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
 
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
