@@ -206,11 +206,18 @@ func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // closure re-invokes with. It is the ONE fact that decides how two
 // attempts' accounting folds together — see richerSpend. Empty means
 // every attempt opens a session of its own.
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sessionID string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	// The closure re-invokes with an UNCHANGED task, so this answer holds
-	// for every attempt: a session resumed once is resumed each time, and
-	// a task with none opens a fresh one each time.
-	sameSession := sessionID != ""
+// carryForward, when non-nil, is handed the attempt that just failed before
+// the next one is issued — the seam through which a caller lets the retry
+// CONTINUE what the dead attempt opened instead of starting over. Nil means
+// every attempt is independent, which is what every caller but the main
+// dispatch wants.
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sessionID string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
+	// sessionID is what the TASK asked for. It is the answer when nothing
+	// better exists — but a delegation now names the session it actually
+	// opened, even when it failed, so the fold reads that when it can (see
+	// foldSameSession). The two differ exactly when an attempt opened a
+	// session the task did not ask for, which is the case a resuming retry
+	// creates.
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -239,14 +246,39 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 			// Cancelled between attempts: no output survives, but what the
 			// attempts already burned is not undone by it — the caps and
 			// the ledgers read the map, not the struct.
-			return richerSpend(result, delegate.Result{}, sameSession), ctx.Err()
+			return richerSpend(result, delegate.Result{}, sessionID != ""), ctx.Err()
 		}
 
 		prev := result
+		for _, carry := range carryForward {
+			if carry != nil {
+				carry(prev)
+			}
+		}
 		result, err = fn()
-		result = richerSpend(prev, result, sameSession)
+		result = richerSpend(prev, result, foldSameSession(prev, result, sessionID))
 	}
 	return result, err
+}
+
+// foldSameSession answers the one question richerSpend needs: did these two
+// attempts run in the SAME session, so that the later report already
+// contains the earlier's spend?
+//
+// The results answer it directly when they can — a delegation names the
+// session it opened even when it failed — and that reading is the true one:
+// it observes where the work ran, not where the task asked it to run. The
+// two part company exactly when a retry RESUMES a session the task did not
+// carry, which is the case an in-process resuming retry creates, and where
+// reading the task alone would sum a cumulative report and bill it twice.
+//
+// The task's own id remains the answer when neither result names a session
+// (a spawn that never opened one, a backend that reports none).
+func foldSameSession(prev, next delegate.Result, taskSessionID string) bool {
+	if prev.SessionID != "" && next.SessionID != "" {
+		return prev.SessionID == next.SessionID
+	}
+	return taskSessionID != ""
 }
 
 // richerSpend folds two attempts' ACCOUNTING onto the later attempt's
@@ -958,6 +990,26 @@ func (e *ClawExecutor) dispatchChain(
 		lastBackend = backendName
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, task.SessionID, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
+		}, func(prev delegate.Result) {
+			// An in-process retry stays in the SAME sandbox — the engine
+			// starts one per run, never per node (runtime: startSandbox is
+			// called from engine_run and resume only) — so the CLI session
+			// files the dead attempt wrote are still on the pod's disk.
+			// Measured 2026-09-08 on a live run: 2 node_started, 1
+			// sandbox_started, one node_recovery between them; the node
+			// began again from zero and threw away 46 minutes of context
+			// that were sitting right there.
+			//
+			// Marked OPTIONAL, not required: if the session cannot be
+			// served after all, the executor's existing degrade path
+			// retries once with it dropped and SAYS so on three channels
+			// (log, session_degraded event, _session_degraded output stamp
+			// a deterministic gate can fail closed on). One degradation
+			// path, not a second one beside it.
+			if task.SessionID == "" && prev.SessionID != "" {
+				task.SessionID = prev.SessionID
+				task.SessionOptional = true
+			}
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
 		// upstream session id resolved, but its backing state can be gone —
