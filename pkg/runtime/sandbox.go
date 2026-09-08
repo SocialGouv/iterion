@@ -485,6 +485,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
 	}
+	// The forfait config dirs are seeded AFTER the container starts (below),
+	// but their paths are constants: advertise them on the container env now
+	// so every exec — a tool node, a devbox script, a scanner that shells out
+	// to `claude` or `codex` — authenticates as the run, not only the
+	// claude_code/claw delegate spawns that set the variables themselves.
+	//
+	// One window follows from that order and is stated rather than hidden:
+	// a devcontainer `postCreateCommand` runs inside driver.Start, i.e.
+	// BEFORE the seeding, so a post_create that itself shells out to
+	// `claude`/`codex` sees the variable pointing at a dir that is not
+	// populated yet. No bot in the catalogue does (the only post_create
+	// enables corepack and makes cache dirs); a TARGET repo's devcontainer
+	// could. Closing it means delivering the config at container CREATION,
+	// not after start — a change to the secret-file path, not to this line.
+	exportForfaitConfigDirs(spec, p.Logger, claudeOAuthMounted, codexOAuthMounted)
 
 	// Optionally start the network proxy. When the workflow has no
 	// explicit network policy, default to the iterion-default

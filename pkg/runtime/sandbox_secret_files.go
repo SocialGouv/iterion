@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -185,6 +186,68 @@ umask 077
 mkdir -p "$1"
 cp "$2" "$1/$3"
 chmod 600 "$1/$3"`
+
+// exportForfaitConfigDirs advertises the seeded forfait config dirs on the
+// container env. seedClaudeConfigDir / seedCodexConfigDir populate those
+// dirs once the sandbox is up, and the claude_code and claw delegates point
+// their own spawns at them — but any OTHER process in the sandbox (a tool
+// node running `claude -p`, a scanner driving the claude-agent-sdk) inherits
+// only the container env, and without these variables it runs
+// unauthenticated ("Not logged in") while the credentials sit next to it.
+// A value the operator declared on the spec wins.
+//
+// A config DIR is the weakest of the CLI's credential channels: the claude
+// CLI prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over it, and codex
+// prefers OPENAI_API_KEY over CODEX_HOME. So when the container env
+// already carries one of those — a workflow file secret declared with
+// `env:`, a bot's `sandbox.env:`, a devcontainer `${localEnv:…}`
+// expansion — a generic process authenticates with THAT, not with the
+// run's forfait, and this export changes nothing for it. That is the
+// operator's declaration winning, which is the intended precedence; it is
+// said out loud because a forfait that silently does not authenticate the
+// work is the failure this whole path exists to end. The delegate spawns
+// are unaffected either way: claudeForfaitEnv actively clears those
+// variables for its own subprocess.
+func exportForfaitConfigDirs(spec *sandbox.Spec, logger *iterlog.Logger, claudeMounted, codexMounted bool) {
+	if !claudeMounted && !codexMounted {
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if claudeMounted {
+		if _, set := spec.Env["CLAUDE_CONFIG_DIR"]; !set {
+			spec.Env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		}
+		warnCredentialOutranksForfait(logger, spec.Env, "claude", "CLAUDE_CONFIG_DIR",
+			"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+	}
+	if codexMounted {
+		if _, set := spec.Env["CODEX_HOME"]; !set {
+			spec.Env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
+		}
+		warnCredentialOutranksForfait(logger, spec.Env, "codex", "CODEX_HOME",
+			"OPENAI_API_KEY")
+	}
+}
+
+// warnCredentialOutranksForfait says, once per CLI, that a credential
+// declared on the container env is what a generic process will use — the
+// run resolved a forfait and the config dir is exported, but the CLI reads
+// the key first, so the work is not billed or attributed to the run.
+func warnCredentialOutranksForfait(logger *iterlog.Logger, env map[string]string, cli, dirVar string, keyVars ...string) {
+	if logger == nil {
+		return
+	}
+	for _, k := range keyVars {
+		if env[k] == "" {
+			continue
+		}
+		logger.Warn("runtime: sandbox: %s is set on the container env and the %s CLI reads it before %s — "+
+			"processes in the sandbox authenticate with that credential, NOT with the run's forfait", k, cli, dirVar)
+		return
+	}
+}
 
 // seedClaudeConfigDir runs [seedClaudeConfigScript] inside the freshly
 // started sandbox. Hard error on failure: the run resolved a forfait
