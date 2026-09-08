@@ -3155,6 +3155,17 @@
         ],
         "type": "object"
       },
+      "pipelineBoardResetRequest": {
+        "properties": {
+          "fresh": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fresh"
+        ],
+        "type": "object"
+      },
       "pipelineBoardTaskRequest": {
         "properties": {
           "blockers": {
@@ -10914,9 +10925,26 @@
       ],
       "post": {
         "operationId": "postV1PipelineBoardTasksByIdReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks/{id}/reset",

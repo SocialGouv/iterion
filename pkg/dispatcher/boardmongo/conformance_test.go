@@ -845,6 +845,39 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if got, _ := store.Get(created.ID); len(got.Runs) != 2 || got.Runs[0].Workdir != "/tmp/wd-moved" {
 		t.Errorf("run history dedup-update failed: %+v", got.Runs)
 	}
+	// The CLEAR (empty run id) is the operator's way back to a fresh launch —
+	// the pipeline board's "Retry from zero" and `iterion issue update
+	// --clear-last-run` both call exactly this. It must drop the pointer,
+	// KEEP the history (those runs happened), and append no blank RunRef, on
+	// BOTH twins: a board reset from a cloud studio writes through the Mongo
+	// one, so a native-only guarantee would be a cloud hole.
+	if err := store.SetLastRun(created.ID, "", ""); err != nil {
+		t.Errorf("SetLastRun clear: %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.LastRunID != "" || got.LastWorkdir != "" {
+		t.Errorf("SetLastRun clear did not drop the pointer: %+v", got)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 {
+		t.Errorf("SetLastRun clear changed the run history: %+v", got.Runs)
+	} else {
+		for _, ref := range got.Runs {
+			if ref.RunID == "" {
+				t.Errorf("SetLastRun clear appended a blank run ref: %+v", got.Runs)
+			}
+		}
+	}
+	// Clearing an already-clear pointer is a no-op, not a second write.
+	if err := store.SetLastRun(created.ID, "", ""); err != nil {
+		t.Errorf("SetLastRun clear (idempotent): %v", err)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 {
+		t.Errorf("SetLastRun repeat-clear grew the run history: %+v", got.Runs)
+	}
+	// Restore the pointer: the sections below (and the tracker suite) read a
+	// stamped card, and this suite shares one store per run.
+	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd-moved"); err != nil {
+		t.Errorf("SetLastRun re-stamp after clear: %v", err)
+	}
 
 	// SetAwaitingInput denormalizes the pause hint onto the card; set true,
 	// clear false, with parity to the native store (idempotent, tagged).

@@ -5,6 +5,7 @@ import {
   getPipelineBoard,
   markPipelineTaskReady,
   normalizePipelineBoard,
+  resetPipelineTask,
   updatePipelineTask,
 } from "./pipelineBoards";
 
@@ -374,6 +375,36 @@ describe("markPipelineTaskReady", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ ready: false });
+  });
+});
+
+describe("resetPipelineTask", () => {
+  it("sends fresh:false by default — a plain reset keeps the last-run pointer", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resetPipelineTask("iss 1/a");
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/pipeline-board/tasks/iss%201%2Fa/reset");
+    expect(init.method).toBe("POST");
+    // Explicit false, never an omitted key: the server reads a missing body
+    // as a plain reset, and being explicit keeps the wire self-describing.
+    expect(JSON.parse(String(init.body))).toEqual({ fresh: false });
+  });
+
+  it("sends fresh:true when the caller asks for a from-zero retry", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resetPipelineTask("iss-9", { fresh: true });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ fresh: true });
   });
 });
 

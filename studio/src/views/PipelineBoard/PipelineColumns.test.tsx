@@ -1047,6 +1047,95 @@ describe("botEditorPath", () => {
   });
 });
 
+// #496: on a needs-attention card, Retry only restages the ticket and lets
+// whoever claims it decide what that meant — the studio's admission loop
+// mints a fresh run, a live `iterion dispatch` resumes the dead one. "Retry
+// from zero" is the deterministic form: the server drops the last-run
+// pointer, so neither authority can resume.
+describe("Retry from zero menu entry", () => {
+  const kinds = (card: PipelineBoardCard) =>
+    resolveMenuItems(card, resolvePrimaryAction(card).kind).map((i) => i.kind);
+  const needsAttention = makeCard({
+    id: "na",
+    column_id: "needs_attention",
+    kind: "run",
+    issue_id: "iss-1",
+    run_id: "run-1",
+    status: "failed_resumable",
+    failed: true,
+    title: "Gave up",
+  });
+
+  it("sits beside Resume from checkpoint, so both deliberate exits are named", () => {
+    const items = resolveMenuItems(
+      needsAttention,
+      resolvePrimaryAction(needsAttention).kind,
+    );
+    expect(items.find((i) => i.kind === "retry_fresh")?.label).toBe(
+      "Retry from zero",
+    );
+    expect(items.find((i) => i.kind === "resume")?.label).toBe(
+      "Resume from checkpoint",
+    );
+  });
+
+  it("is marked destructive — it discards the ticket's run pointer", () => {
+    const items = resolveMenuItems(
+      needsAttention,
+      resolvePrimaryAction(needsAttention).kind,
+    );
+    expect(items.find((i) => i.kind === "retry_fresh")?.danger).toBe(true);
+  });
+
+  it("is offered on a failed Closed card too, where Retry is", () => {
+    expect(
+      kinds(
+        makeCard({
+          ...needsAttention,
+          column_id: "closed",
+          status: "cancelled",
+        }),
+      ),
+    ).toContain("retry_fresh");
+  });
+
+  // The server refuses `fresh` while anything in the ticket's tree is still
+  // non-terminal (it would reopen the window Reset's pin closes), so the
+  // menu must not offer it there.
+  it("is withheld while the run is still live", () => {
+    for (const status of ["running", "queued", "paused_operator", "paused_waiting_human"]) {
+      expect(
+        kinds(makeCard({ ...needsAttention, status })),
+      ).not.toContain("retry_fresh");
+    }
+  });
+
+  it("is withheld on a card with no ticket or no run to discard", () => {
+    expect(
+      kinds(makeCard({ ...needsAttention, issue_id: undefined })),
+    ).not.toContain("retry_fresh");
+    expect(
+      kinds(makeCard({ ...needsAttention, run_id: undefined })),
+    ).not.toContain("retry_fresh");
+  });
+
+  it("is withheld on lanes where Retry itself is not offered", () => {
+    expect(
+      kinds(
+        makeCard({
+          ...needsAttention,
+          column_id: "in_progress",
+          failed: false,
+          status: "running",
+        }),
+      ),
+    ).not.toContain("retry_fresh");
+    expect(
+      kinds(makeCard({ ...needsAttention, column_id: "opened", kind: "task" })),
+    ).not.toContain("retry_fresh");
+  });
+});
+
 describe("Edit bot menu entry", () => {
   const withBot = makeCard({
     id: "d",
