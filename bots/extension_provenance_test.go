@@ -554,6 +554,98 @@ func TestGoldenMasterExtendBaseRepairsALeakedIdentity(t *testing.T) {
 	}
 }
 
+// TestGoldenMasterExtendBaseRefusesAnUnreadableIdentityMarker pins the one
+// unknown of this feature that failed OPEN. The marker is the DURABLE record
+// of the identity a previous extension displaced, and a run that reads it
+// unreadable is exactly the run whose local config already holds the NET's
+// name. Reading that config as "the previous identity" recorded the LEAK as
+// the thing to restore — extend_restore then put it back, the operator's
+// checkout committed under the net's name for good, and the one record that
+// could have repaired it had just been deleted on the way past.
+func TestGoldenMasterExtendBaseRefusesAnUnreadableIdentityMarker(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	const pending = `{"pending": [{"id": "E-L29-1", "lot": "L29"}]}`
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"a truncated marker", `{"name": "t", "ema`},
+		{"a marker that is not an identity object", `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws, _ := extendVerifyRepo(t, verdict, pending)
+			// The state the repair exists for: the net's name on the
+			// workspace, and a marker that cannot say what it displaced.
+			gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+			marker := filepath.Join(gitInNet(t, ws, "rev-parse", "--absolute-git-dir"),
+				"iterion-extend-prev-identity")
+			if err := os.WriteFile(marker, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res := runExtendBase(t, ws)
+			if res.Clean || len(res.Pending) != 0 {
+				t.Fatalf("an unreadable marker read as a startable net: %+v", res)
+			}
+			if !strings.HasPrefix(res.Notice, "REFUSED") || !strings.Contains(res.Notice, marker) {
+				t.Fatalf("the refusal must name the record it could not read: %q", res.Notice)
+			}
+			// The two halves that made the leak permanent, neither taken:
+			// the record survives, and the identity is not mutated on top
+			// of it. (`user.name` is the oracle: the fixture leaked only
+			// the email, so the net's name appearing here can only have
+			// come from this node writing it.)
+			b, err := os.ReadFile(marker)
+			if err != nil || string(b) != tc.body {
+				t.Fatalf("the only record of the operator's identity was destroyed: %s (%v)", b, err)
+			}
+			if got := gitInNet(t, ws, "config", "--get", "user.name"); got != "t" {
+				t.Fatalf("a refused start must not touch the identity, got %q", got)
+			}
+		})
+	}
+}
+
+// TestGoldenMasterExtendBaseRefusesAnIdentityRepairGitDidNotTake pins the same
+// rule one branch over: the marker parses, so the repair runs — and `git
+// config` fails. Its exit code was dropped, so the workspace kept the net's
+// name, the `prev_email` read just below recorded THAT as the operator's
+// identity, and the marker that could have repaired it was deleted on the way
+// past. The unreadable-marker case refuses for exactly this outcome; a repair
+// that silently did not happen must reach the same door.
+func TestGoldenMasterExtendBaseRefusesAnIdentityRepairGitDidNotTake(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, _ := extendVerifyRepo(t, verdict, `{"pending": [{"id": "E-L29-1", "lot": "L29"}]}`)
+	gitInNet(t, ws, "config", "user.name", "golden-master extend")
+	gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+	gitDir := gitInNet(t, ws, "rev-parse", "--absolute-git-dir")
+	marker := filepath.Join(gitDir, "iterion-extend-prev-identity")
+	const body = `{"name": "t", "email": "t@example.com"}`
+	if err := os.WriteFile(marker, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The failure, taken from git's own vocabulary rather than simulated: a
+	// stale lock is what a killed `git config` leaves behind, and it refuses
+	// every write to the config while it stands — whoever the test runs as.
+	if err := os.WriteFile(filepath.Join(gitDir, "config.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExtendBase(t, ws)
+	if res.Clean || len(res.Pending) != 0 {
+		t.Fatalf("a workspace this run could not repair read as a startable net: %+v", res)
+	}
+	if !strings.HasPrefix(res.Notice, "REFUSED") || !strings.Contains(res.Notice, marker) {
+		t.Fatalf("the refusal must name the record it could not apply: %q", res.Notice)
+	}
+	// The half that made the leak permanent, not taken: the marker still
+	// holds the operator's identity, where a run that had gone on would have
+	// overwritten it with the net's own name — the record and the repair, both
+	// gone in one pass. (What the refused report SAYS about `prev_*` is inert:
+	// no node reads those fields, the marker is what the next run repairs
+	// from.)
+	if b, err := os.ReadFile(marker); err != nil || string(b) != body {
+		t.Fatalf("the only record of the operator's identity was destroyed: %s (%v)", b, err)
+	}
+}
+
 // runExtendRestore runs the subbot's terminal restore node against ws.
 func runExtendRestore(t *testing.T, ws string) map[string]any {
 	t.Helper()
@@ -648,6 +740,63 @@ func TestGoldenMasterExtendRestoreReturnsTheIdentityOnce(t *testing.T) {
 	again := runExtendRestore(t, ws)
 	if again["restored"] != false || !strings.Contains(again["notice"].(string), "no identity marker") {
 		t.Fatalf("a second restore must be a stated no-op: %+v", again)
+	}
+}
+
+// TestGoldenMasterExtendRestoreKeepsAnUnreadableMarker pins the other end of
+// the same rule: the marker is removed only once the identity it held is
+// BACK. A marker this node could not read is the last remaining record of
+// what the operator's identity was, on a workspace still wearing the net's —
+// deleting it there ends the repair for good, where keeping it makes the next
+// extend_base refuse and say so.
+func TestGoldenMasterExtendRestoreKeepsAnUnreadableMarker(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, _ := extendVerifyRepo(t, verdict, `{"pending": []}`)
+	gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+	marker := filepath.Join(gitInNet(t, ws, "rev-parse", "--absolute-git-dir"), "iterion-extend-prev-identity")
+	const corrupt = `{"name": "t", "ema`
+	if err := os.WriteFile(marker, []byte(corrupt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExtendRestore(t, ws)
+	if res["restored"] != false || !strings.Contains(res["notice"].(string), "unreadable") {
+		t.Fatalf("an unreadable marker must be said, never reported restored: %+v", res)
+	}
+	b, err := os.ReadFile(marker)
+	if err != nil || string(b) != corrupt {
+		t.Fatalf("the record the next run repairs from was deleted: %s (%v)", b, err)
+	}
+}
+
+// TestGoldenMasterExtendRestoreKeepsAMarkerGitDidNotHonour pins the third case
+// of that same rule: the marker READS, so the restore runs — and `git config`
+// fails. Its exit code was dropped, so the node reported `restored: true` and
+// deleted the last record of the operator's identity on a workspace still
+// wearing the net's. "Back" is what git says, not what this node asked for.
+func TestGoldenMasterExtendRestoreKeepsAMarkerGitDidNotHonour(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, _ := extendVerifyRepo(t, verdict, `{"pending": []}`)
+	gitInNet(t, ws, "config", "user.name", "golden-master extend")
+	gitInNet(t, ws, "config", "user.email", "extend@golden-master.iterion")
+	gitDir := gitInNet(t, ws, "rev-parse", "--absolute-git-dir")
+	marker := filepath.Join(gitDir, "iterion-extend-prev-identity")
+	const body = `{"name": "t", "email": "t@example.com"}`
+	if err := os.WriteFile(marker, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExtendRestore(t, ws)
+	if res["restored"] != false {
+		t.Fatalf("a restore git did not honour was reported done: %+v", res)
+	}
+	if n, _ := res["notice"].(string); !strings.Contains(n, "could NOT be put back") ||
+		!strings.Contains(n, marker) {
+		t.Fatalf("the notice must name the record and the failure: %q", res["notice"])
+	}
+	if b, err := os.ReadFile(marker); err != nil || string(b) != body {
+		t.Fatalf("the record the next run repairs from was deleted: %s (%v)", b, err)
 	}
 }
 
