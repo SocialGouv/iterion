@@ -492,8 +492,15 @@ tool oracle_run:
         """The part's payload. `text` is UTF-8 (a corpus stays readable and
         replayable by hand); `b64` carries what text cannot."""
         if "b64" in value:
+            b64 = value["b64"]
+            # Typed BEFORE decoding, as `text` is: `b64decode` answers a non-string
+            # with a raw TypeError, and a traceback names the harness where a
+            # refusal must name the corpus line that has to change.
+            if not isinstance(b64, str):
+                raise SystemExit("file field %r: `b64` must be a string, got %s"
+                                 % (value.get("filename"), type(b64).__name__))
             try:
-                return base64.b64decode(value["b64"], validate=True)
+                return base64.b64decode(b64, validate=True)
             except (ValueError, binascii.Error) as e:
                 raise SystemExit("file field %r: `b64` is not valid base64 (%s) — "
                                  "a payload the harness cannot decode would be "
@@ -3692,6 +3699,10 @@ tool oracle_run:
                     lambda: encode_multipart({"d": {"filename": "a.txt"}}))
             refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
                     lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
+            # Un `b64` non-chaine : `b64decode` repond par un TypeError, pas par
+            # un refus — un corpus mal tape doit lire la ligne a corriger.
+            refuses("b64 non-chaine -> refus nomme, pas une trace d'execution",
+                    lambda: encode_multipart({"d": {"filename": "a", "b64": 5}}))
 
             # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
             routes = [{"method": "GET", "pattern": "/list"},
