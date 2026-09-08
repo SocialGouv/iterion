@@ -307,7 +307,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	// "gl|issue|" keeps the key space disjoint from the mr|/note|/cmd| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
-	route := s.boardRouteForLabel(botID)
+	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
@@ -426,7 +426,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	// Classifying "is this a Revi thread" needs the bot's own identity, so it
 	// runs inside the gate (which resolves the forge token).
 	converseBot := s.roleBots().ReviConverse
-	if !s.canRouteToConverseBot(cfg, converseBot) {
+	if !s.canRouteToConverseBot(ctx, cfg, converseBot) {
 		filtered("no /revi trigger")
 		return
 	}
@@ -530,7 +530,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 		s.recordNoteDelivery(ctx, cfg, webhooks.StatusFiltered, payloadHash, srcIP, p, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 	}
-	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscovery())
+	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscoveryFor(ctx, cfg.TenantID))
 	if !ok {
 		filtered("no command route for /" + cmd)
 		return
@@ -906,12 +906,14 @@ func (s *Server) realWebhookReviewRequestGate(ctx context.Context, cfg webhooks.
 
 // canRouteToConverseBot reports whether the given conversational bot id
 // (the caller's roleBots snapshot — passed in so the gate and the launch
-// agree on ONE bot) is allowed by this webhook config and resolvable on
-// this deployment. The existence probe is metadata-only (cached platform
-// entries + a baked-path stat) — it must never materialize a bundle just
-// to answer a boolean on the note hot path.
-func (s *Server) canRouteToConverseBot(cfg webhooks.Config, converseBot string) bool {
-	return cfg.AllowsBot(converseBot) && s.botExists(converseBot)
+// agree on ONE bot) is allowed by this webhook config and resolvable for the
+// tenant this delivery launches for. It probes the same three tiers the
+// launch resolves, so the gate cannot refuse a bot the launch would serve —
+// a team-authored converse bot exists on no other tier. Metadata-only (one
+// indexed row read + cached platform entries + a baked-path stat): it must
+// never materialize a bundle just to answer a boolean on the note hot path.
+func (s *Server) canRouteToConverseBot(ctx context.Context, cfg webhooks.Config, converseBot string) bool {
+	return cfg.AllowsBot(converseBot) && s.botExistsForTeam(ctx, cfg.TenantID, converseBot)
 }
 
 // gitlabForkRefusal words the MR lane's fork refusal for the delivery row,

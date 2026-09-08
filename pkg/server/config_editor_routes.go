@@ -150,7 +150,9 @@ func (s *Server) handleConfigEditorList(w http.ResponseWriter, r *http.Request) 
 		v := editorShareView(sh)
 		m, ok := manifestCache[sh.BotID]
 		if !ok {
-			m = s.botManifest(sh.BotID)
+			// The share belongs to this team, so its bot's persona and
+			// editor branding come from the tier that team runs.
+			m = s.botManifestFor(r.Context(), teamID, sh.BotID)
 			manifestCache[sh.BotID] = m
 		}
 		if m != nil {

@@ -53,9 +53,10 @@ func (s *Server) githubAppConfig() forgegithub.AppConfig {
 
 // ---- factories (provider dispatch) ----
 
-// forgeBotForge resolves a bot's manifest forge: block for the orchestrator.
-func (s *Server) forgeBotForge(botID string) (*bundle.ForgeRequirements, error) {
-	entry, ok, err := s.findBot(botID)
+// forgeBotForge resolves a bot's manifest forge: block for the orchestrator,
+// on the tier the provisioned webhook's launches will resolve.
+func (s *Server) forgeBotForge(ctx context.Context, teamID, botID string) (*bundle.ForgeRequirements, error) {
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,9 +68,10 @@ func (s *Server) forgeBotForge(botID string) (*bundle.ForgeRequirements, error) 
 
 // forgeBotInvocations resolves a bot's manifest invocations for the
 // orchestrator's command-map build (already the EffectiveInvocations set —
-// explicit block, else synthetic from a legacy forge: block).
-func (s *Server) forgeBotInvocations(botID string) ([]bundle.Invocation, error) {
-	entry, ok, err := s.findBot(botID)
+// explicit block, else synthetic from a legacy forge: block), on the tier the
+// provisioned webhook's launches will resolve.
+func (s *Server) forgeBotInvocations(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error) {
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}

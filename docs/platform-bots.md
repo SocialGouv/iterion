@@ -59,16 +59,43 @@ is CLI-first.
   because a board card, an agent's `set_bot` and a hand-written
   subscription all carry operator-typed names. A slug may legitimately be
   stored with `_` too, so the team tier compares both sides normalized.
-- **A metadata read must match the tier that will SERVE the launch**, or
-  the two disagree in silence — a fork that renames a `consumes:` var
-  gets an empty seed, not an error. Wired: the webhook hand-off seeds,
-  the gate-var defaults and the retry-policy manifest all read the team
-  row first (`effectiveFindByNameForTeam` / `botManifestFor`, both over
-  the same row resolution the launch uses). Still tenant-free, and
-  therefore still able to describe a bundle it will not run: the /bots
-  listing, the command-routing discovery, the config-share surface, and
-  the hand-off PRODUCER set (a deployment-wide question a per-team read
-  cannot answer). Tracked as **#946**.
+- **A metadata read matches the tier that will SERVE the launch**, or the
+  two disagree in silence — a fork that renames a `consumes:` var gets an
+  empty seed, a fork that renames its `/command` stamps the operator's
+  text under a var the running bundle never declared, and neither is an
+  error. Which tenant a lane passes depends on what it describes:
+  - **a delivery about to launch** reads the launching team's tier —
+    the webhook hand-off seeds, the gate-var defaults, the retry policy,
+    the command-routing discovery and the labeled-issue route, the
+    converse-bot existence probe, the config-share surface, the bot
+    home's "enable this trigger", and the forge auto-provisioning
+    lookups (which build the webhook's `CommandMap` and its event
+    subscription). The forms are `effectiveEntriesForTeam` /
+    `effectiveFindByNameForTeam` / `botManifestFor` / `botExistsForTeam`
+    / `entryOriginFor`, all over the same row resolution the launch uses,
+    so an operator-typed spelling reaches both;
+  - **a run that already launched** reads *that run's own*
+    `bot_source_tenant` — the pause-notice role and the hand-off PRODUCER
+    set (`teamBotManifest`). The ambient tenant is the wrong question
+    there: a team's own run may still have been served by the platform or
+    baked tier, and the run records which.
+
+  The two FS-catalog write paths (`PUT /api/v1/bots/{name}` and its
+  `/overlay`) refuse a stored bot with `409` instead of editing the
+  bundle every tenant shares. Deliberately tenant-free: the native
+  board's comment dispatcher (one local store, no tenancy) and the
+  platform + baked floor each team-aware form falls through to. A static
+  sweep (`bot_resolver_sweep_test.go`) fails a new tenant-free metadata
+  read that is not declared with its reason.
+- **Known gap — the pipelines control center.** Its "launch now" action
+  and its ticket-admission check resolve the bot on the platform + baked
+  tiers and launch by *filesystem path* (`entry.MainFile()`) rather than
+  through the tiered resolver, so a stored bundle has no path to launch
+  from: a team's fork of a catalog slug runs its ORIGIN there, and a bot
+  only the team authored cannot be carded at all. Both halves move
+  together — making the check tenant-aware alone would create cards that
+  can never launch — so it belongs with the launch-surface work of #871,
+  not the metadata pass. Tracked as **#970**.
 - **Launch**: the server resolves the override ONCE, materializes it to a
   temp dir, and compiles against it (prompts/ participate in IR and the
   workflow hash). The queue message (schema v9) carries a

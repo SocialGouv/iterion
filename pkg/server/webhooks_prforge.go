@@ -61,7 +61,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		s.handlePRForgeReviewApprove(ctx, w, cfg, provider, p, reason, payloadHash, srcIP)
 		return
 	}
-	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscovery())
+	route, ok := webhooks.ResolveCommandRoute(cfg, cmd, cmdArgs, s.cmdDiscoveryFor(ctx, cfg.TenantID))
 	if !ok {
 		filtered("no command route for /" + cmd)
 		return
@@ -520,7 +520,7 @@ func (s *Server) handlePRForgeReviewThreadReply(ctx context.Context, w http.Resp
 	// ONE role snapshot: the enable-gate and the launch below must name the
 	// same converse bot.
 	converseBot := s.roleBots().ReviConverse
-	if !s.canRouteToConverseBot(cfg, converseBot) {
+	if !s.canRouteToConverseBot(ctx, cfg, converseBot) {
 		filtered("converse bot not enabled on this webhook")
 		return
 	}

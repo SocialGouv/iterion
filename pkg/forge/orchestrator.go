@@ -22,15 +22,22 @@ import (
 // BotForgeLookup returns a bot's declared forge requirements (its manifest
 // forge: block). A nil result with a nil error means the bot exists but
 // declares no forge: block — it cannot be auto-provisioned. A non-nil error
-// means the bot could not be resolved. The server wires this to
-// botregistry; tests pass a closure.
-type BotForgeLookup func(botID string) (*bundle.ForgeRequirements, error)
+// means the bot could not be resolved. The server wires this to its bot
+// resolver; tests pass a closure.
+//
+// teamID is the tenant being provisioned FOR: the deliveries this webhook
+// triggers launch on that team's tier, so the requirements are read there
+// too. A team's own bot resolves on no other tier, and a fork's events and
+// scopes are the ones its runs actually need.
+type BotForgeLookup func(ctx context.Context, teamID, botID string) (*bundle.ForgeRequirements, error)
 
 // BotInvocationsLookup returns a bot's manifest invocations (the typed
 // routing contract — bundle.EffectiveInvocations). Used by Provision to build
 // the webhook CommandMap. An empty slice (or a nil lookup) leaves the command
-// index empty. The server wires this to botregistry; tests pass a closure.
-type BotInvocationsLookup func(botID string) ([]bundle.Invocation, error)
+// index empty. Same tenant contract as BotForgeLookup: the provisioned
+// CommandMap must name the commands the launched bundle declares, or a
+// `/command` routes to a bot that does not answer to it.
+type BotInvocationsLookup func(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error)
 
 // Orchestrator turns "enable bot(s) X on repo Y of connection C" into the
 // concrete trio — an iterion webhooks.Config, a forge-side hook, and a
@@ -307,13 +314,13 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	frByBot := make(map[string]*bundle.ForgeRequirements, len(desiredBots))
 	invByBot := make(map[string][]bundle.Invocation, len(desiredBots))
 	for _, b := range desiredBots {
-		fr, err := o.Bots(b)
+		fr, err := o.Bots(ctx, req.TenantID, b)
 		if err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: resolve bot %q: %w", b, err)
 		}
 		var invs []bundle.Invocation
 		if o.Invocations != nil {
-			if invs, err = o.Invocations(b); err != nil {
+			if invs, err = o.Invocations(ctx, req.TenantID, b); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: resolve invocations for %q: %w", b, err)
 			}
 		}
@@ -482,7 +489,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	// Build the command→bot route index from the co-enabled bots' command
 	// invocations. Rejects an un-disambiguated cross-bot command collision.
-	commandMap, err := o.buildCommandMap(desiredBots)
+	commandMap, err := o.buildCommandMap(ctx, req.TenantID, desiredBots)
 	if err != nil {
 		return ProvisionResult{}, err
 	}
@@ -1452,13 +1459,13 @@ func sortedKeys(set map[string]bool) []string {
 // states (the review-pr vs revi-converse pattern); any other collision is a
 // provision error. Returns nil when no bot declares a command invocation (or
 // the Invocations lookup isn't wired), leaving Config.CommandMap unset.
-func (o *Orchestrator) buildCommandMap(bots []string) (map[string][]webhooks.CommandRoute, error) {
+func (o *Orchestrator) buildCommandMap(ctx context.Context, teamID string, bots []string) (map[string][]webhooks.CommandRoute, error) {
 	if o.Invocations == nil {
 		return nil, nil
 	}
 	out := map[string][]webhooks.CommandRoute{}
 	for _, b := range bots {
-		invs, err := o.Invocations(b)
+		invs, err := o.Invocations(ctx, teamID, b)
 		if err != nil {
 			return nil, fmt.Errorf("forge: resolve invocations for %q: %w", b, err)
 		}
