@@ -421,6 +421,45 @@ func TestFailedReInvocationBooksTheWholeSession(t *testing.T) {
 	}
 }
 
+// The llm half of llm_or_human degrades to a human pause rather than killing
+// the run — but it can fail AFTER spending (a stream that dies mid-answer),
+// and the human who answers next reports no tokens. Nothing downstream will
+// ever re-report that call, so the pause's own checkpoint is the last place
+// the figure can land.
+func TestFailedHumanLLMHalfBooksItsSpendBeforeThePause(t *testing.T) {
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
+	wf.Budget = &ir.Budget{MaxTokens: 1_000_000}
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "complex change"}, nil
+	})
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_tokens": 6_000, "_cost_usd": 1.80}, errors.New("stream closed mid-answer")
+	})
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-human-llm-spend", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected the human half to take over, got %v", err)
+	}
+	r, err := st.LoadRun(context.Background(), "run-human-llm-spend")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("the booking disturbed the fallback: status %v", r.Status)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 6_000 {
+		t.Fatalf("the failed llm half's spend never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 1.80 {
+		t.Fatalf("the failed llm half's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
 // ctxRefusingSpendStore is the shape a real remote ledger has: a write on a
 // done context is refused, the way a Mongo write is. The filesystem store
 // ignores ctx entirely, which is exactly what hides this class of bug

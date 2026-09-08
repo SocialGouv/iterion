@@ -1201,6 +1201,13 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		// human half — the same pause the LLM produces when it declines to
 		// answer. Cancellation still propagates: a run being stopped is not
 		// a helper failure.
+		//
+		// Either way the attempt is over and its spend is final — the human
+		// half answers next, and a human reports no tokens — so book before
+		// BOTH exits below write (failRunWithCheckpoint, persistPause):
+		// after either, the checkpoint a resume reads its carry from is
+		// already on disk without this pass.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		if ctx.Err() != nil {
 			return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
 		}
