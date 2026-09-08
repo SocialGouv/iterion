@@ -36,9 +36,10 @@ edit — see the *Adding a language* section at the bottom of this README.
 
 ```bash
 # 0. Make sure the scanners are on PATH
-#    (devbox.json already pulls gitleaks, trivy, semgrep, gosec,
-#    bandit for the dev shell; if you run this bot outside devbox,
-#    `iterion sandbox doctor` flags missing tools.)
+#    (devbox.json pulls gitleaks, trivy, semgrep, gosec and ripgrep for
+#    the dev shell — bandit is NOT among them; it ships only in the
+#    pinned iterion-sandbox-sec image. If you run this bot outside
+#    devbox, `iterion sandbox doctor` flags missing tools.)
 
 # 1. Run on the current repo. Only detect_tech defaults to
 #    claw + openai/gpt-5.5 (cheap tech survey); triage, the three
@@ -49,7 +50,7 @@ devbox run -- iterion run bots/sec-audit-source/main.bot \
   --var severity_threshold=medium
 
 # 2. Watch the live console:
-#    open http://localhost:7777 → click the run → live findings on the board.
+#    open http://localhost:4891 → click the run → live findings on the board.
 
 # 3. Findings land on the iterion kanban as issues:
 #    - state:        ready

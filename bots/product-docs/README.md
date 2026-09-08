@@ -58,7 +58,7 @@ The editorial line does **not** live in this bundle.
    the docs repo did not specify.
 
 What stays non-overridable is integrity, not taste: sourced facts or
-`[à confirmer]`, preserved human prose, declared holes, and the four
+`[à confirmer]`, preserved human prose, declared holes, and the five
 `page_lint` rules. A docs repo may restyle every page; it may not
 authorise the bot to invent. See
 [ADR-092](../../docs/adr/092-product-docs-editorial-sovereignty-and-git-native-source-deltas.md).
@@ -68,7 +68,9 @@ authorise the bot to invent. See
 ```
 catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint ─▶ gate
 gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
-                                          ─▶ surface_pr_link ─▶ done
+                                          ─▶ surface_pr_link ─▶ publish_gate
+publish_gate ──(publish)──▶ publish ─▶ verify_publish ─▶ surface_site_link ─▶ done
+publish_gate ──(no)───────────────────────────────────────────────────────▶ done
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
 ```
 
@@ -93,7 +95,10 @@ gate ─────────────────▶ scan_hints          
   the docs repo's editorial skills, not another product's directory.
 - **`page_lint`** (deterministic truth gate) — a published page carries
   no working notes: no HTML comments, no "Sources" box or section, no
-  "Points à clarifier" section, no "Correspondance technique" annex. A
+  "Points à clarifier" section, no "Correspondance technique" annex, and
+  no credential material (private-key block, recognised token prefix,
+  assigned opaque password) — the last deterministic gate between a
+  source clone and a published page. A
   violation is **not converged** and the located failures feed the next
   pass.
 - **`gate`** — `converged = scope_ok ∧ lint_ok ∧ docs_aligned`. Nothing
@@ -162,7 +167,7 @@ computed is **never** reported as an empty one.
 | `editorial_dir` | `.product-docs` | Where the docs repo publishes its own AUTHORITATIVE editorial skills. Empty disables the override |
 | `clone_depth` | `1` | Shallow-clone depth for the source repos; `0` = full clone (raise it when a deep incremental base is needed) |
 | `secret_globs` | credential-carrier globs | Files deleted from every source clone before the agent may read them |
-| `lint_rules` | all four | Editorial rules `page_lint` enforces — drop a name to disable that rule |
+| `lint_rules` | all five | Editorial rules `page_lint` enforces — drop a name to disable that rule |
 | `extra_forbidden_headings` | `""` | Extra heading titles a published page must never carry |
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
@@ -238,6 +243,7 @@ out-of-band incremental pass.
 
 Skills shipped: `product-docs` (the operating playbook, English) plus the
 French editorial defaults `modele-documentaire`, `blocs-gitbook`,
-`glossaire-produit` and `ton-et-style`, and `forge-mr-create` for the
-opt-in PR tail — 6 skills total. See [main.bot](main.bot) for the full
+`glossaire-produit` and `ton-et-style`, `forge-mr-create` for the
+opt-in PR tail, and `publish-static-site` for the opt-in publication
+tail — 7 skills total. See [main.bot](main.bot) for the full
 DSL.
