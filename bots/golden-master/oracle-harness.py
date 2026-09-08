@@ -3389,14 +3389,26 @@ def _selftest():
             "where to append the auto-maintenance switches" % raw_count)
     if base_count < 0:
         raise SystemExit("selftest: GIT_CONFIG_COUNT=%r is negative" % raw_count)
+    # A canary takes the slot a pre-existing declaration would occupy, because
+    # overwriting one is SILENT here: the selftest's own fixtures do not need
+    # safe.directory, so destroying the engine's entry changes nothing it
+    # measures — it only bites in the sandbox, where the workspace is owned by
+    # someone else. What is checked below is that git still resolves the canary
+    # once the switches are in place, which is the same question asked of a
+    # declaration that was there first.
+    canary_key = "iterion.selftestcanary"
+    canary_value = "alive-%d" % os.getpid()
     saved_git_env = {"GIT_CONFIG_COUNT": os.environ.get("GIT_CONFIG_COUNT")}
-    for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
+    for i, (key, value) in enumerate(((canary_key, canary_value),) + _GIT_MAINTENANCE_OFF):
         slot = base_count + i
         for name, declared in (("GIT_CONFIG_KEY_%d" % slot, key),
                                ("GIT_CONFIG_VALUE_%d" % slot, value)):
             saved_git_env[name] = os.environ.get(name)
             os.environ[name] = declared
-    os.environ["GIT_CONFIG_COUNT"] = str(base_count + len(_GIT_MAINTENANCE_OFF))
+    os.environ["GIT_CONFIG_COUNT"] = str(base_count + 1 + len(_GIT_MAINTENANCE_OFF))
+    canary_seen = subprocess.run(
+        ["git", "config", "--get-all", canary_key],
+        capture_output=True, text=True).stdout.split()
     subprocess.Popen = _AuditedPopen
     os.system = _refuse_system
 
@@ -5194,6 +5206,10 @@ def _selftest():
     # Les DEUX compteurs, pas leur somme : le selftest lance les deux
     # programmes, et un compteur mort laisse l'autre porter le total — un audit
     # a moitie aveugle passerait pour un arbre propre.
+    # Ce que git RESOUT, pas ce que le dict dit avoir posé : une declaration
+    # anterieure survit a la pose des boutons.
+    check("une declaration git anterieure survit a la pose des boutons",
+          canary_value in canary_seen, True)
     check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
     check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
 
