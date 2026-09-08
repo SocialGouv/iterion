@@ -264,6 +264,8 @@ tool oracle_run:
     # derivent donc le meme chemin de la meme regle, dans le harnais.
     os.environ['GM_MODE'] = 'gate'  # force: un GM_MODE herite ferait passer la porte en selfcheck
     import hashlib
+    import base64
+    import binascii
     import http.cookiejar
     import importlib.util
     import json
@@ -420,8 +422,14 @@ tool oracle_run:
             data = None
             headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
             if fields:
-                data = urllib.parse.urlencode(fields).encode()
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                # Before EITHER encoding: both flatten a non-scalar through repr.
+                check_form_fields(fields)
+                if any(is_file_part(v) for v in fields.values()):
+                    data, ctype = encode_multipart(fields)
+                    headers["Content-Type"] = ctype
+                else:
+                    data = urllib.parse.urlencode(fields).encode()
+                    headers["Content-Type"] = "application/x-www-form-urlencoded"
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             opener = self.opener if follow else self.no_redirect_opener
             try:
@@ -449,6 +457,220 @@ tool oracle_run:
                     fields[token_field] = tok
             status, _, _ = self.fetch(spec.get("method", "POST"), path, fields=fields)
             return status
+
+
+    # ─── Uploads: multipart, and a boundary that does not move ─────────────────
+    #
+    # A corpus that declares a file field had it flattened by urlencode, which
+    # serialises a structured value through its repr: the application received a
+    # form field whose value was the TEXT of a Python object, the request was
+    # refused for the wrong reason, and the reference recorded that refusal as
+    # the behaviour. An observation point that cannot express its own request
+    # does not observe anything.
+    #
+    # The boundary is DERIVED, never random. A random boundary is the textbook
+    # way to write a multipart body and the wrong one here: two replays of one
+    # request would differ byte for byte, and anything the application echoes
+    # back — a validation message quoting the raw part, a stored name — moves
+    # with it. The usual repair is a canonicalisation rule that erases the
+    # boundary from the capture, which buys stability by making the net blind to
+    # a region of every upload response. A request that is byte-identical on
+    # every replay needs no rule at all.
+
+    FILE_PART_BOUNDARY = "iterion-golden-master-boundary"
+
+
+    def is_file_part(value):
+        """A field declared as a FILE: an object naming the file it stands for.
+
+        `{"filename": ..., "text": ...}` or `{"filename": ..., "b64": ...}`, with
+        an optional `content_type`. A SCALAR is an ordinary form field, so a
+        corpus that declares no upload is encoded exactly as before; an object or
+        a list that fails this test is neither, and `check_form_fields` refuses it
+        rather than let it reach an encoding that would repr it.
+        """
+        return isinstance(value, dict) and isinstance(value.get("filename"), str)
+
+
+    FILE_PART_KEYS = ("filename", "text", "b64", "content_type")
+
+
+    def check_file_part(name, value):
+        """The INSIDE of a file part: the keys it declares, and the one of them
+        the payload guards do not cover.
+
+        A key the harness does not read is not a harmless annotation, it is a
+        declaration the corpus believes it made. `content-type` with a hyphen —
+        the way the HTTP header itself is spelled — is the one that bites: the
+        part goes out as `application/octet-stream` while the corpus reads as
+        though it had asked for `text/csv`, and the reference records the
+        application answering the type nobody chose.
+        """
+        extra = sorted(k for k in value if k not in FILE_PART_KEYS)
+        if extra:
+            raise SystemExit(
+                "file field %r declares %s, which the harness does not read — a "
+                "key it ignores is a declaration you believe you made. Did you "
+                "mean `content_type` (underscore, not the header's hyphen)? "
+                "Accepted: %s"
+                % (name, ", ".join(repr(k) for k in extra), ", ".join(FILE_PART_KEYS)))
+        ctype = value.get("content_type")
+        if ctype is not None and not isinstance(ctype, str):
+            raise SystemExit("file field %r: `content_type` must be a string, got "
+                             "%s — anything else reaches the wire as a malformed "
+                             "header" % (name, type(ctype).__name__))
+
+
+    def check_form_fields(fields):
+        """Every field that is not a file part must be a PRESENT SCALAR — a form
+        encoding carries nothing else, and it must carry the same thing whichever
+        encoding the rest of the form selects.
+
+        An object or a list here is either a file part that misses its `filename`
+        (a typo away from working: `file_name`, `fileName`, a filename that is a
+        number) or a shape no form can carry. Both encodings answer such a value
+        the same way — they serialise it through its repr — and that is the exact
+        defect the file-part declaration exists to end, surviving one typo to its
+        left: the application receives the TEXT of a Python object, refuses the
+        request for the wrong reason, and the reference records THAT refusal as
+        the behaviour. Refused by name instead, so the corpus line gets fixed.
+        """
+        for name, value in fields.items():
+            if value is None:
+                # The two encodings disagree on null, so the SAME corpus line
+                # would leave differently depending on whether a sibling field
+                # happens to be a file. `""` is exact and identical in both, so
+                # refusing null costs no capability — only its ambiguous spelling.
+                raise SystemExit(
+                    'form field %r is null, and the two encodings disagree on '
+                    'what that means: urlencoded sends the text "None", '
+                    'multipart sends nothing. The same line would then go out '
+                    'differently depending on whether a SIBLING field is a file. '
+                    'Declare "" for an empty field — exact, and identical in '
+                    'both.' % name)
+            if isinstance(value, (dict, list)) and not is_file_part(value):
+                raise SystemExit(
+                    'form field %r is a %s, not a scalar. A file part is '
+                    '{"filename": <string>, "text" | "b64": ...} — check that '
+                    '`filename` is present and is a string. Anything else is '
+                    'sent as the TEXT of a Python object, and the reference then '
+                    'records the application refusing THAT'
+                    % (name, type(value).__name__))
+
+
+    def file_part_bytes(value):
+        """The part's payload. `text` is UTF-8 (a corpus stays readable and
+        replayable by hand); `b64` carries what text cannot."""
+        if "b64" in value and "text" in value:
+            # Two payloads declared, one silently dropped: the reference would then
+            # record how the application answers a file NOBODY chose to send. Every
+            # other ambiguity here refuses; this one is the same kind.
+            raise SystemExit("file field %r declares both `text` and `b64` — "
+                             "declare exactly one, or the reference records the "
+                             "behaviour of the payload that happened to win"
+                             % (value.get("filename"),))
+        if "b64" in value:
+            b64 = value["b64"]
+            # Typed BEFORE decoding, as `text` is: `b64decode` answers a non-string
+            # with a raw TypeError, and a traceback names the harness where a
+            # refusal must name the corpus line that has to change.
+            if not isinstance(b64, str):
+                raise SystemExit("file field %r: `b64` must be a string, got %s"
+                                 % (value.get("filename"), type(b64).__name__))
+            try:
+                return base64.b64decode(b64, validate=True)
+            except (ValueError, binascii.Error) as e:
+                raise SystemExit("file field %r: `b64` is not valid base64 (%s) — "
+                                 "a payload the harness cannot decode would be "
+                                 "sent as its own error text"
+                                 % (value.get("filename"), e))
+        text = value.get("text")
+        if text is None:
+            raise SystemExit("file field %r declares neither `text` nor `b64` — "
+                             "an upload with no payload records the refusal of an "
+                             "empty file as if it were the behaviour"
+                             % (value.get("filename"),))
+        if not isinstance(text, str):
+            raise SystemExit("file field %r: `text` must be a string, got %s"
+                             % (value.get("filename"), type(text).__name__))
+        return text.encode("utf-8")
+
+
+    def header_value(s):
+        """A name or filename as it may appear in a QUOTED-STRING parameter.
+
+        RFC 7578 §5.1 — the rule browsers actually emit: %-escape the three bytes
+        that can end a header parameter early or open a line the corpus never
+        asked for. A bare `"` otherwise truncates the parameter, and the
+        application is then observed answering about a filename the corpus did
+        NOT declare; a CRLF is worse still, opening a second part out of the
+        first one's header. The declared name must reach the application AS
+        DECLARED, or the reference records the behaviour of another request.
+        """
+        return str(s).replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+
+
+    def header_line_value(s):
+        """A whole header VALUE, escaped for line injection only.
+
+        The quote escape above belongs to quoted-string PARAMETERS. A media type
+        is not one: `"` is legitimate syntax in it (`charset="utf-8"`, and every
+        RFC-quoted parameter), so escaping it emits a charset nobody declared and
+        the reference records the application's answer to a request the corpus
+        did not make — silently, where every other malformed declaration on this
+        path stops the run by name. CR and LF stay escaped: they open a header,
+        or a whole part, out of this one.
+        """
+        return str(s).replace("\r", "%0D").replace("\n", "%0A")
+
+
+    def multipart_boundary(contents):
+        """A boundary that no part contains — derived from the parts, not drawn
+        at random, so the same request encodes to the same bytes forever.
+
+        RFC 7578 requires the delimiter to appear in no part, and a part is its
+        HEADER as much as its payload — so `contents` carries both. Checking the
+        payloads alone would leave the guard blind to the half a corpus writes by
+        hand: a filename is where the delimiter is most likely to be typed. The
+        base name is a constant (readable in a capture, and the same across every
+        net); when a content happens to contain it, a counter is appended until
+        it does not. Deterministic in both branches: the collision is a property
+        of the content, and the same content yields the same boundary.
+        """
+        boundary = FILE_PART_BOUNDARY
+        n = 0
+        while any(boundary.encode("utf-8") in c for c in contents):
+            n += 1
+            boundary = "%s-%d" % (FILE_PART_BOUNDARY, n)
+        return boundary
+
+
+    def encode_multipart(fields):
+        """(body, Content-Type) for a form carrying at least one file part.
+
+        Fields are emitted in the order the corpus declares them — dicts preserve
+        insertion order, and an ordering that follows the declaration is one the
+        reader of a reference can predict.
+        """
+        payloads, heads = [], []
+        for name, value in fields.items():
+            head = 'Content-Disposition: form-data; name="%s"' % header_value(name)
+            if is_file_part(value):
+                check_file_part(name, value)
+                payloads.append(file_part_bytes(value))
+                head += '; filename="%s"' % header_value(value["filename"])
+                head += "\r\nContent-Type: %s" % header_line_value(
+                    value.get("content_type") or "application/octet-stream")
+            else:
+                payloads.append(("" if value is None else str(value)).encode("utf-8"))
+            heads.append(head.encode("utf-8"))
+        # Headers are built BEFORE the boundary, and enter its derivation: they
+        # are part content too, and their escaping is what makes them so.
+        boundary = multipart_boundary(payloads + heads)
+        parts = [b"--" + boundary.encode("utf-8") + b"\r\n" + head + b"\r\n\r\n"
+                 + payload + b"\r\n" for head, payload in zip(heads, payloads)]
+        parts.append(("--%s--\r\n" % boundary).encode("utf-8"))
+        return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
 
 
     def extract_input_value(body, name):
@@ -3462,6 +3684,199 @@ tool oracle_run:
             check("login variante sans difference de casse -> manque",
                   [x["probe"] for x in missing_corpus_probes(full, deg_cfg)],
                   ["auth_case"])
+
+            # 7b. Televersements : un champ FICHIER s'encode en multipart, et la
+            #     frontiere est DERIVEE — deux rejeux de la meme requete rendent
+            #     les memes octets, donc rien de ce que l'application renvoie n'a
+            #     besoin d'etre efface par une regle de canonicalisation.
+            import email.parser
+
+            def parse_multipart(body, ctype):
+                raw = b"Content-Type: " + ctype.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+                msg = email.parser.BytesParser().parsebytes(raw)
+                out = {}
+                for part in msg.get_payload():
+                    out[part.get_param("name", header="content-disposition")] = (
+                        part.get_param("filename", header="content-disposition"),
+                        part.get_content_type(),
+                        part.get_payload(decode=True))
+                return out
+
+            check("un champ ordinaire n'est pas un fichier ; un objet nomme l'est",
+                  [is_file_part("x"), is_file_part({"a": 1}),
+                   is_file_part({"filename": "a.pdf", "text": "x"})],
+                  [False, False, True])
+            up = {"titre": "rapport", "doc": {"filename": "a.pdf",
+                                              "content_type": "application/pdf",
+                                              "text": "PDF-ish"}}
+            body, ctype = encode_multipart(up)
+            parsed = parse_multipart(body, ctype)
+            # Relu par un parseur STANDARD, pas par notre propre opinion des octets.
+            check("relu par un parseur standard : le champ, le fichier, son nom et son type",
+                  [parsed["titre"][2], parsed["doc"][0], parsed["doc"][1], parsed["doc"][2]],
+                  [b"rapport", "a.pdf", "application/pdf", b"PDF-ish"])
+            check("deux encodages de la meme requete rendent les MEMES octets",
+                  encode_multipart(up), (body, ctype))
+            # Le piege de la frontiere : une charge utile qui la contient.
+            clash = {"doc": {"filename": "a.txt", "text": "avant\n--%s\napres"
+                             % FILE_PART_BOUNDARY}}
+            cbody, cctype = encode_multipart(clash)
+            check("charge utile contenant la frontiere -> une AUTRE frontiere, deterministe",
+                  [FILE_PART_BOUNDARY + "-1" in cctype, encode_multipart(clash) == (cbody, cctype)],
+                  [True, True])
+            check("et le corps reste relisible par un parseur standard",
+                  parse_multipart(cbody, cctype)["doc"][2],
+                  ("avant\n--%s\napres" % FILE_PART_BOUNDARY).encode())
+            check("payload base64 decode, ordre des champs = ordre declare",
+                  [parse_multipart(*encode_multipart(
+                      {"doc": {"filename": "a.bin", "b64": "aGVsbG8="}}))["doc"][2],
+                   [p.split(b'name="')[1].split(b'"')[0]
+                    for p in body.split(b"--" + ctype.split("=")[1].encode())[1:-1]]],
+                  [b"hello", [b"titre", b"doc"]])
+            # Le nom DECLARE est le nom qui arrive : un guillemet ne coupe pas le
+            # parametre, un CRLF n'ouvre ni une part ni un en-tete que le corpus
+            # n'a pas declares. Sinon l'application repond a une AUTRE requete que
+            # celle du corpus, et c'est cette reponse-la que la reference grave.
+            # Les trois interpolations, pas seulement celle du nom de fichier : le
+            # NOM DU CHAMP se coupe de la meme facon, et un mutant qui ne relache
+            # que celle-la doit mourir aussi.
+            hostile = {'champ";x="1': "v",
+                       "doc": {"filename": 'a";name="evil.pdf',
+                               "content_type": "text/plain\r\nX-Injecte: 1",
+                               "text": "X"}}
+            hbody, hctype = encode_multipart(hostile)
+            hparsed = parse_multipart(hbody, hctype)
+            check("guillemet dans le nom de champ ET de fichier : parametres entiers",
+                  [list(hparsed), hparsed["doc"][0], hparsed["doc"][2]],
+                  [['champ%22;x=%221', "doc"], 'a%22;name=%22evil.pdf', b"X"])
+            check("CRLF echappe : aucun en-tete que le corpus n'a pas declare",
+                  [b"\r\nX-Injecte:" in hbody, b"%0D%0AX-Injecte:" in hbody],
+                  [False, True])
+            # Un type de media n'est pas un parametre quoted-string : `"` y est
+            # une syntaxe legitime. L'echapper emettait un charset que personne
+            # n'avait declare, et la reference enregistrait la reponse de
+            # l'application a une requete que le corpus n'avait pas faite —
+            # en silence, la ou toute autre declaration malformee arrete le run
+            # en la nommant.
+            quoted = {"doc": {"filename": "a.csv", "text": "x",
+                              "content_type": 'text/csv; charset="utf-8"'}}
+            qbody, qctype = encode_multipart(quoted)
+            check("content_type : guillemets intacts, CRLF toujours echappe",
+                  [b'Content-Type: text/csv; charset="utf-8"' in qbody,
+                   b"%22utf-8%22" in qbody,
+                   parse_multipart(qbody, qctype)["doc"][2]],
+                  [True, False, b"x"])
+            # Une frontiere ecrite dans un NOM DE FICHIER — la ou un corpus
+            # l'ecrit a la main — entre dans la derivation comme une charge utile.
+            hidden = {"doc": {"filename": "%s.txt" % FILE_PART_BOUNDARY, "text": "X"}}
+            hibody, hictype = encode_multipart(hidden)
+            check("frontiere dans le nom de fichier -> frontiere deplacee, deterministe",
+                  [FILE_PART_BOUNDARY + "-1" in hictype,
+                   encode_multipart(hidden) == (hibody, hictype),
+                   parse_multipart(hibody, hictype)["doc"][0]],
+                  [True, True, "%s.txt" % FILE_PART_BOUNDARY])
+            # Et le CHOIX, pas seulement l'encodeur : une session qui parle a un
+            # vrai serveur, parce qu'un encodeur juste que `fetch` n'appelle pas
+            # laisse le defaut exactement ou il etait.
+            import http.server
+            import threading
+
+            received = {}
+
+            class _Echo(http.server.BaseHTTPRequestHandler):
+                def do_POST(self):  # noqa: N802 (stdlib naming)
+                    n_ = int(self.headers.get("Content-Length") or 0)
+                    received["ctype"] = self.headers.get("Content-Type") or ""
+                    received["body"] = self.rfile.read(n_)
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                def log_message(self, *_a):
+                    pass
+
+            srv = http.server.HTTPServer(("127.0.0.1", 0), _Echo)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                sess = Session("http://127.0.0.1:%d" % srv.server_address[1])
+                sess.fetch("POST", "/upload", fields={"titre": "r", "doc": {
+                    "filename": "a.pdf", "content_type": "application/pdf", "text": "P"}})
+                check("une requete portant un fichier part en multipart, frontiere annoncee",
+                      [received["ctype"].startswith("multipart/form-data; boundary="),
+                       FILE_PART_BOUNDARY in received["ctype"],
+                       b'filename="a.pdf"' in received["body"]],
+                      [True, True, True])
+                sess.fetch("POST", "/plain", fields={"titre": "r"})
+                check("une requete sans fichier reste urlencodee (aucun changement)",
+                      [received["ctype"], received["body"]],
+                      ["application/x-www-form-urlencoded", b"titre=r"])
+                # Le QUASI-MANQUE, et sur le chemin de la requete : un objet dont
+                # `filename` est mal orthographie n'est pas une part fichier et
+                # partait par son repr — le defaut meme que la declaration fichier
+                # existe pour clore, a une faute de frappe pres. Le serveur ne doit
+                # RIEN avoir recu : le refus precede l'envoi.
+                received.clear()
+                try:
+                    sess.fetch("POST", "/presque", fields={
+                        "champ": {"file_name": "a.pdf", "text": "X"}})
+                    near = "aucun-refus"
+                except SystemExit:
+                    near = "SystemExit"
+                check("objet qui n'est pas une part fichier -> refus AVANT tout envoi",
+                      [near, received], ["SystemExit", {}])
+                # Et `null` : urlencode en fait le TEXTE "None", multipart n'en
+                # fait rien. La meme ligne de corpus partirait donc autrement selon
+                # qu'un champ VOISIN est un fichier. `""` dit la meme chose aux
+                # deux ; `null` est refuse plutot que devine.
+                received.clear()
+                try:
+                    sess.fetch("POST", "/nul", fields={"note": None})
+                    nul = "aucun-refus"
+                except SystemExit:
+                    nul = "SystemExit"
+                check("champ null -> refus : les deux encodages ne s'accordent pas",
+                      [nul, received], ["SystemExit", {}])
+                # `""` en revanche est exact, et identique des deux cotes.
+                sess.fetch("POST", "/vide", fields={"note": ""})
+                vide_url = received["body"]
+                sess.fetch("POST", "/vide", fields={"note": "", "doc": {
+                    "filename": "a.txt", "text": "P"}})
+                vide_multi = received["body"].split(b"\r\n\r\n")[1].split(b"\r\n--")[0]
+                check('"" dit la meme chose dans les deux encodages',
+                      [vide_url, vide_multi], [b"note=", b""])
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+            def refuses(name, fn):
+                try:
+                    fn()
+                    check(name, "aucun-refus", "SystemExit")
+                except SystemExit:
+                    check(name, "SystemExit", "SystemExit")
+            refuses("fichier sans charge utile -> refus nomme",
+                    lambda: encode_multipart({"d": {"filename": "a.txt"}}))
+            refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
+                    lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
+            # Un `b64` non-chaine : `b64decode` repond par un TypeError, pas par
+            # un refus — un corpus mal tape doit lire la ligne a corriger.
+            refuses("b64 non-chaine -> refus nomme, pas une trace d'execution",
+                    lambda: encode_multipart({"d": {"filename": "a", "b64": 5}}))
+            # Deux charges utiles declarees : l'une partait en silence, et la
+            # reference gravait la reponse a un fichier que personne n'a choisi.
+            refuses("`text` ET `b64` -> refus nomme, jamais un choix silencieux",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                    "b64": "aGVsbG8="}}))
+            # La faute de frappe probable : l'en-tete HTTP s'ecrit avec un trait
+            # d'union. Declaree ainsi, la part partait en octet-stream et le
+            # corpus se lisait comme s'il avait demande text/csv.
+            refuses("cle inconnue dans une part fichier (`content-type`) -> refus",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                    "content-type": "text/csv"}}))
+            refuses("content_type non-chaine -> refus, jamais un en-tete malforme",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                    "content_type": 5}}))
 
             # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
             routes = [{"method": "GET", "pattern": "/list"},
