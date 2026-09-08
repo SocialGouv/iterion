@@ -20,11 +20,20 @@ green.
   is what decides how long a merge takes, far more than how long any test runs.
   Measured 2026-09-08: nine jobs totalling ~31 min of compute took 44 min of
   wall clock, 19 of them waiting for a first slot, while five entries built in
-  parallel.
+  parallel. The queue is tuned against that cap — `max_entries_to_build: 2`
+  (at most two entries under CI at once, instead of five) and
+  `min_entries_to_merge: 3` (merges land in batches of 3-5, so the workflows
+  that fire on every push to `main` — Runner Image, Trivy, Sandbox, Brew Tap —
+  run once per batch). A lone PR still merges after
+  `min_entries_to_merge_wait_minutes` (5).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
-  an admin adds it to ruleset 18857412 (a token with `repo` scope can read the
-  ruleset but gets a 404 on PUT). The `nats-conformance` job runs the JetStream
+  an admin adds it to ruleset 18857412. Editing that ruleset from the API needs
+  `PUT /repos/{owner}/{repo}/rulesets/{id}` with the **complete** representation
+  (`name`, `target`, `enforcement`, `bypass_actors`, `conditions`, `rules`); a
+  `PATCH`, or a `PUT` missing any of those, answers `404` — which reads exactly
+  like a permission ceiling and is not one. Read the ruleset first and send it
+  back with the one field changed. The `nats-conformance` job runs the JetStream
   schema-rollout integration tests (#481); until it is required, a regression
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
