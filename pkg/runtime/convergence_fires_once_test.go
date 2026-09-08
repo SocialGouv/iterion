@@ -294,19 +294,39 @@ func TestSharedTargetFanOut_BranchFailure(t *testing.T) {
 
 // A branch that pauses at a human gate resumes into the SAME fan-out: the
 // completed sibling is not replayed and the collector fires once across the
-// two engine invocations.
+// two engine invocations. A `barrier` agent between the fan-out and the gate
+// makes "a completed before the pause" a workflow precondition — the runtime
+// promises no order between sibling branches, so a schedule that reaches the
+// gate first cancels a and this test's post-resume invariants would never
+// be exercised.
 func TestSharedTargetFanOut_ResumeAfterBranchPauseFiresCollectorOnce(t *testing.T) {
 	wf := sharedTargetFanOut(ir.AwaitBestEffort)
+	wf.Nodes["barrier"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "barrier"}}
 	wf.Nodes["gate"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
 	for _, edge := range wf.Edges {
 		if edge.From == "fan" && edge.To == "b" {
-			edge.To = "gate"
+			edge.To = "barrier"
 		}
 	}
-	wf.Edges = append(wf.Edges, &ir.Edge{From: "gate", To: "b", Condition: "approved"})
+	wf.Edges = append(wf.Edges,
+		&ir.Edge{From: "barrier", To: "gate"},
+		&ir.Edge{From: "gate", To: "b", Condition: "approved"},
+	)
 
 	exec := newCountingExecutor()
 	exec.on("entry", dualEntry(true))
+	// aDone gates the branch that hosts the human gate on the branch that
+	// runs a. Without it the two fan-out goroutines race and the gate can
+	// pause first, cancelling a before it starts (issue #960).
+	aDone := make(chan struct{})
+	exec.on("a", func(map[string]any) (map[string]any, error) {
+		close(aDone)
+		return map[string]any{"from": "a"}, nil
+	})
+	exec.on("barrier", func(map[string]any) (map[string]any, error) {
+		<-aDone
+		return map[string]any{"from": "barrier"}, nil
+	})
 	s := tmpStore(t)
 	runID := "shared-target-resume-pause"
 	if err := New(wf, s, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
