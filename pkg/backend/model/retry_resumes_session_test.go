@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -13,19 +14,19 @@ import (
 // retry now does, and where a cumulative report would be billed twice.
 func TestFoldSameSessionReadsWhereTheWorkRan(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		prev, next  delegate.Result
-		taskSession string
-		want        bool
+		name       string
+		prev, next delegate.Result
+		shared     bool
+		want       bool
 	}{
-		{"both name the same session", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s1"}, "", true},
-		{"both name DIFFERENT sessions", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s2"}, "s1", false},
-		{"neither names one: the task answers", delegate.Result{}, delegate.Result{}, "s1", true},
-		{"neither names one, no task session", delegate.Result{}, delegate.Result{}, "", false},
-		{"only one names one: the task still answers", delegate.Result{SessionID: "s1"}, delegate.Result{}, "", false},
+		{"both name the same session", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s1"}, false, true},
+		{"both name DIFFERENT sessions", delegate.Result{SessionID: "s1"}, delegate.Result{SessionID: "s2"}, true, false},
+		{"neither names one: the task answers", delegate.Result{}, delegate.Result{}, true, true},
+		{"neither names one, and the task shares none", delegate.Result{}, delegate.Result{}, false, false},
+		{"only one names one: the task still answers", delegate.Result{SessionID: "s1"}, delegate.Result{}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := foldSameSession(tc.prev, tc.next, tc.taskSession); got != tc.want {
+			if got := foldSameSession(tc.prev, tc.next, tc.shared); got != tc.want {
 				t.Errorf("foldSameSession = %v, want %v", got, tc.want)
 			}
 		})
@@ -42,19 +43,20 @@ func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
 	task := &delegate.Task{NodeID: "n"}
 	calls := 0
 
-	got, err := e.retryDelegateLoopChain(context.Background(), "n", "claude_code", task.SessionID, nil,
+	got, err := e.retryDelegateLoopChain(context.Background(), "n", "claude_code", sharesSession(task), nil,
 		func() (delegate.Result, error) {
 			calls++
 			seen = append(seen, *task)
 			// Attempt 1 opens a session and dies with it named (the
-			// enabling half); attempt 2 resumes it and reports the
-			// session's RUNNING TOTAL.
+			// enabling half); attempt 2 RESUMES it. Tokens are per turn on
+			// every shipped backend, but the CLI's cost figure is the
+			// session's running total — CostIsSessionTotal says which.
 			if calls == 1 {
-				return delegate.Result{SessionID: "s-live", Tokens: 9000,
-					Output: map[string]any{"_tokens": 9000}}, &delegate.ErrTransient{Reason: "stream closed"}
+				return delegate.Result{SessionID: "s-live", Tokens: 9000, CostIsSessionTotal: true,
+					Output: map[string]any{"_tokens": 9000, "_cost_usd": 0.42}}, &delegate.ErrTransient{Reason: "stream closed"}
 			}
-			return delegate.Result{SessionID: "s-live", Tokens: 10300,
-				Output: map[string]any{"_tokens": 10300}}, nil
+			return delegate.Result{SessionID: "s-live", Tokens: 1300, CostIsSessionTotal: true,
+				Output: map[string]any{"_tokens": 1300, "_cost_usd": 0.55}}, nil
 		},
 		func(prev delegate.Result) {
 			if task.SessionID == "" && prev.SessionID != "" {
@@ -74,11 +76,15 @@ func TestInProcessRetryResumesTheSessionTheDeadAttemptOpened(t *testing.T) {
 	if !seen[1].SessionOptional {
 		t.Error("the resumed session must be OPTIONAL — if it cannot be served, the existing degrade path must take over and say so, not fail the node forever")
 	}
-	// And the coupling that would otherwise bill twice in silence: the two
-	// attempts shared a session, so the later report already contains the
-	// earlier's spend.
+	// And the coupling that would otherwise bill twice in silence. The TASK
+	// carried no session — the carry gave it one — so sharesSession() says
+	// "not shared" and the session-total cost would be SUMMED onto itself.
+	// foldSameSession reads the results instead and sees one session.
 	if got.Tokens != 10300 {
-		t.Fatalf("tokens = %d, want 10300 — a resumed session reports cumulatively, so summing bills the same tokens twice", got.Tokens)
+		t.Fatalf("tokens = %d, want 10300 — per-turn reports add up", got.Tokens)
+	}
+	if usd := cost.USDFromOutput(got.Output); usd != 0.55 {
+		t.Fatalf("cost = %v, want 0.55 — the resumed report is the session's total, not a second bill", usd)
 	}
 }
 
