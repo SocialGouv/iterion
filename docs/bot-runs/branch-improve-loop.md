@@ -28,6 +28,54 @@ real git repositories (`bots/push_back_banked_branch_test.go`).
   revisions (HEAD and `origin/<branch>`), so a claim that contradicts the
   campaign's own commit count is falsifiable instead of merely surprising.
 
+## 2026-09-08 — #961: orphaned campaign recovered from its workspace checkpoint
+
+- Status: **useful commits recovered and validated locally**; the bot did not
+  reach its delivery ledger or final gate. This is not a successful end-to-end
+  Billy run.
+- Method: `/billy` on our PR #961 at 11:26:44Z, after Revi's medium finding
+  `R3d8dcc`. Run `01a080c5-3bf3-7657-a24f-d9a24d854cc4` completed planning,
+  peer review and revision, then entered campaign at 11:52:48Z. The PR was
+  dequeued while the fixer worked; the interactive session did not edit its
+  branch during that time.
+- Result: the runner lost its connection to the Kubernetes API at 12:05:43Z;
+  delegate retries did not restore the campaign. The last persisted checkpoint
+  event was at 12:08:35Z. Run inspection subsequently reported
+  `failed_resumable / PROCESS_ORPHANED`, continuation `final`, with no active
+  execution or scheduled retry. We did not relaunch the campaign.
+- Recovery: `final_branch` and `final_commit` were null, and the commit endpoint
+  said `available=false`, `reason=no_baseline`. Nevertheless, the checkpoint ref
+  `iterion/run-01a080c5-3bf3-7657-a24f-d9a24d854cc4-checkpoint` existed at
+  `4e16f625d802e5a1353bbd7f4b5c7e86e52c7766`. Fetching it recovered three
+  commits on top of the PR head, which were fast-forwarded locally:
+  `bf9f8cac4` caps one operation rather than consuming the package timeout;
+  `e2a91068d` bounds service teardown; `4e16f625d` records the race-oracle
+  falsification under synctest. Local follow-up tightened the helper's edge
+  cases, reports teardown timeout explicitly, and aligns the audit wording.
+- Finding ledger: **R3d8dcc fixed**. A real-process wait now takes the smaller
+  of a three-minute operation ceiling and the remaining harness time minus
+  30 seconds. Explicit `-timeout=0` remains unlimited. Service cleanup has its
+  own 30-second context. The callerless old `waitBudget` helper was removed.
+- Validation after recovery: full Devbox `task check` passed; full runview and
+  runner suites passed under `-race`. Independent Go-overlay canaries both
+  failed as intended: restoring the old package-wide deadline broke the bound
+  tests, and removing the retired-epoch guard produced `DATA RACE` in
+  `TestFanOutAbandonedBranchDoesNotRaceRunState`. These overlays did not alter
+  the checked-out production sources. The bot's additional unsynchronized
+  probe is recorded in the wait audit; it was not independently rerun locally.
+- Value: the campaign supplied two real lifecycle fixes and measured evidence
+  for the retained race oracle. The persisted checkpoint preserved that value
+  despite a failed delivery. PR #961 receives the preserved commit chain and
+  this local validation report; Revi and CI must judge the new head before it
+  can return to the merge queue.
+- Friction: recovery required discovering the checkpoint ref outside the
+  normal final-bank and commits fields. Tracked separately in #972; this
+  session does not change shared runner infrastructure.
+- Coordination lesson: `gh pr merge --disable-auto` did not remove a queued
+  PR here. We used `dequeuePullRequest` with the verified PR ID. Inspect
+  `mergeQueueEntry`: an empty `autoMergeRequest` does not establish that the
+  PR is absent from the queue.
+
 ## 2026-09-06 — 1.6.0 dogfooded live: three runs, the third validates the reserve and finds a real bug in the code it reviewed (runs 01a07804, 01a0782f, 01a07840)
 
 - Status: **validated** (run 3) — after two runs that validated nothing about

@@ -45,10 +45,9 @@ func runWaitTimeout(deadline time.Time, hasDeadline bool, now time.Time) (time.D
 	return min(runWaitCeiling, deadline.Sub(now)-waitDeadlineMargin), true
 }
 
-// runWaitContext bounds real-process integration tests by the test harness,
-// not by an estimate of how fast git, a shell or the filesystem should run.
-// Their oracle is a persisted state or a joined goroutine. Leave part of the
-// harness's remaining time for cancellation, diagnostics and TempDir cleanup.
+// runWaitContext bounds each real-process wait by the operation ceiling and
+// the test harness. Its oracle is a persisted state or a joined goroutine.
+// Part of the harness time remains for cancellation, diagnostics and cleanup.
 // An explicit go test -timeout=0 keeps its meaning: no wall-clock ceiling.
 func runWaitContext(t *testing.T) context.Context {
 	t.Helper()
@@ -84,13 +83,20 @@ func TestRunWaitTimeoutIsBoundedByTheOperationAndNeverOutlivesTheHarness(t *test
 		{
 			name:        "no harness deadline keeps -timeout=0 unlimited",
 			hasDeadline: false,
-			wantBounded: true, // asserted separately below
+			wantBounded: false,
 		},
 		{
 			name:        "a long -timeout is capped by the per-operation ceiling",
 			deadline:    now.Add(30 * time.Minute),
 			hasDeadline: true,
 			want:        runWaitCeiling,
+			wantBounded: true,
+		},
+		{
+			name:        "a nearer harness deadline shortens the operation",
+			deadline:    now.Add(time.Minute),
+			hasDeadline: true,
+			want:        time.Minute - waitDeadlineMargin,
 			wantBounded: true,
 		},
 		{
@@ -111,14 +117,11 @@ func TestRunWaitTimeoutIsBoundedByTheOperationAndNeverOutlivesTheHarness(t *test
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, bounded := runWaitTimeout(tc.deadline, tc.hasDeadline, now)
-			if !tc.hasDeadline {
-				if bounded {
-					t.Fatal("bounded with no harness deadline: -timeout=0 must keep its documented meaning")
-				}
-				return
+			if bounded != tc.wantBounded {
+				t.Fatalf("bounded = %v, want %v", bounded, tc.wantBounded)
 			}
 			if !bounded {
-				t.Fatal("not bounded although the harness has a deadline")
+				return
 			}
 			if got != tc.want {
 				t.Fatalf("timeout = %s, want %s", got, tc.want)
@@ -146,6 +149,9 @@ func stopService(t *testing.T, svc *Service) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitDeadlineMargin)
 	defer cancel()
 	svc.Stop(ctx)
+	if err := ctx.Err(); err != nil {
+		t.Errorf("service teardown exceeded %s: %v", waitDeadlineMargin, err)
+	}
 }
 
 func awaitRunCompletion(t *testing.T, done <-chan struct{}, what string) {

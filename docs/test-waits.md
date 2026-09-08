@@ -59,9 +59,9 @@ The service test sweep included `time.After`, `context.WithTimeout` and
 
 | Test family | Disposition |
 |---|---|
-| `subbot_human_gate`, `subbot_reconcile`, `subbot_child_control`, `subbot_restart` | Persisted child-state and joined-run waits use the harness deadline. The explicit ten reconciliation passes remain the reconciliation oracle. |
-| `service_launch_{budget,dispatch_fields,loop_budget,pause}` | Completion waits use the harness deadline. |
-| `service_resume_{budget,hash,snapshot}` | Completion waits use the harness deadline. |
+| `subbot_human_gate`, `subbot_reconcile`, `subbot_child_control`, `subbot_restart` | Persisted child-state and joined-run waits use the operation ceiling clamped to the harness deadline. The explicit ten reconciliation passes remain the reconciliation oracle. |
+| `service_launch_{budget,dispatch_fields,loop_budget,pause}` | Completion waits use the operation ceiling clamped to the harness deadline. |
+| `service_resume_{budget,hash,snapshot}` | Completion waits use the operation ceiling clamped to the harness deadline. |
 | `broker`, `service_hook_observers` | Retain bounds on event delivery; no git/engine setup in the wait. |
 | `file_event_source`, `file_log_source`, `service_eventsource`, `service_stream` | Retain file-tail/event delivery bounds and deliberate no-event observations. |
 | `manager`, `service_drain`, `reconcile_shutdown`, `service_stop_background` | Retain shutdown, cancellation and background-worker lifecycle contracts. |
