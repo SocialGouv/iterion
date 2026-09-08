@@ -83,7 +83,8 @@ mid-flight upgrade does not strand the operator with an empty range.
 | Gitignored files on a **worktree** run | `git add -A` honours ignore rules |
 | Binary / oversized files | flagged, not rendered (5 MiB blob cap on the per-file diff) |
 | Cloud runs without a surviving store | the runner's clone is recycled and the snapshots die with the pod |
-| A node resumed after failure | its boundary is re-written against the post-failure tree, so the group shows the last attempt |
+| A node resumed after failure (**worktree** run) | its pre-boundary ref is re-written against the post-failure tree, so the group shows the last attempt |
+| A node resumed after failure (**in-place** run) | the `pre:` boundary is preserved — re-pointing it would redefine "what this node started from" as "whatever is on disk now" — so the group spans every attempt, minus the non-executing window between `fail:`/`pause:` and `resume:` |
 
 **Grouping is per-node; the rendered diff is not.** When two nodes touched the
 same file, the later boundary wins the file's *group membership* — that is the

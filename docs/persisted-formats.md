@@ -21,7 +21,16 @@ authoritative schema; readers must tolerate additive fields and event types.
   plans/<sequence>.json
   tools/<tool_use_id>/input
   tools/<tool_use_id>/output
+  turns/<node_id>/<loop_iter>/<turn>.json
+  backend-sessions/<ref>
+  workspace/            # workspacetrack manifests + index.json
+  artifact_files/
 ```
+
+The last four back the resume/fork/rewind flows: `turns/` holds the turn
+checkpoints `iterion fork` anchors on, `backend-sessions/` the session
+packs a checkpoint's `state_ref` points at, and `workspace/` the
+content-addressed manifests an in-place rewind restores from.
 
 Entries are created only when the feature is used. Files and directories are
 private by default (`0600` / `0700`). Large tool inputs and outputs are kept in
@@ -174,6 +183,12 @@ parent's).
   "budget_cost_usd": 1.25,
   "budget_iterations_used": 7,
   "budget_elapsed_ns": 90000000000,
+  "budget_unpriced_tokens": 0,
+  "budget_unpriced_nodes": 0,
+  "loop_budget_marks": { "campaign": { "cost_usd": 12.5 } },
+  "loop_budget_marks_v": 1,
+  "fired_events": { "ping": { "seq": 1 } },
+  "parallel": null,
   "cost_usd_total": 1.25
 }
 ```
@@ -181,6 +196,11 @@ parent's).
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`parallel` carries in-flight fan-out branch state (per-branch outputs,
+cursors and loop counters, plus the branch owning a pending interaction);
+`fired_events` is the run-scoped emit/wait registry, without which a
+resumed `wait` branch would block forever; `loop_budget_marks` are the
+per-loop entry prices the loop budget guard re-reads on re-entry.
 `recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
 for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
 the node still owes its work, so the answer that resumes the run is an

@@ -40,7 +40,8 @@ Runnable demo: [examples/async-questions/main.bot](../examples/async-questions/m
   a pending interaction (`Kind: "async"`, `interactions/<id>.json`),
   emits `human_input_requested{async:true}`, and returns immediately
   ("question posted; keep working"). Never cancels the stream.
-- **`await_answers()`** — all posted questions answered → returns the
+- **`await_answers(note?)`** — `note` is an optional short reason shown
+  to the operator. All posted questions answered → returns the
   collected answers inline. Any pending → the run pauses
   (`paused_waiting_human`, interaction `Kind: "await"` listing the
   pending IDs); answering the last question auto-resumes, and the
