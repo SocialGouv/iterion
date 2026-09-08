@@ -144,6 +144,13 @@ func routeSchemas() map[string]routeOp {
 			request:  pipelineBoardUpdateRequest{},
 			response: native.Issue{},
 		},
+		// The reset body is optional; `fresh` is what makes the restart
+		// deterministic (the last-run pointer is dropped, so no launch
+		// authority can resume the run being discarded).
+		"POST /api/v1/pipeline-board/tasks/{id}/reset": {
+			request:  pipelineBoardResetRequest{},
+			response: native.Issue{},
+		},
 		"GET /api/v1/pipeline-board/tasks/{id}/dependency-graph": {response: DependencyGraphResponse{}},
 		"GET /api/v1/native/issues/{id}/dependency-graph":        {response: DependencyGraphResponse{}},
 		"POST /api/v1/pipeline-board/bulk/ready": {

@@ -6375,6 +6375,9 @@ export interface components {
         pipelineBoardReadyRequest: {
             ready: boolean;
         };
+        pipelineBoardResetRequest: {
+            fresh: boolean;
+        };
         pipelineBoardTaskRequest: {
             blockers?: string[];
             body?: string;
@@ -13260,14 +13263,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardResetRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
             };
         };
     };
