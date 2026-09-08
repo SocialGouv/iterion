@@ -438,8 +438,10 @@ tool sync_harness:
         """A field declared as a FILE: an object naming the file it stands for.
 
         `{"filename": ..., "text": ...}` or `{"filename": ..., "b64": ...}`, with
-        an optional `content_type`. Anything else is an ordinary form field, so a
-        corpus that declares no upload is encoded exactly as before.
+        an optional `content_type`. A STRING is an ordinary form field, so a corpus
+        that declares no upload is encoded exactly as before; an object that fails
+        this predicate is a file declaration its author got wrong, and
+        `encode_multipart` refuses it by name rather than flatten it.
         """
         return isinstance(value, dict) and isinstance(value.get("filename"), str)
 
@@ -507,7 +509,17 @@ tool sync_harness:
     def checked_part_header(label, text, forbidden):
         """The header value the corpus declared, or a named refusal — never a
         request other than the one the corpus wrote."""
-        text = str(text)
+        # The last corpus value that reached a header unexamined: `content_type`
+        # was coerced with `str`, so a list or an object arrived as its repr and
+        # the wire read `Content-Type: ['a']`. The reference would then record the
+        # application's reaction to the text of a Python object as its behaviour —
+        # the same defect as a payload sent as its own error text, one header up.
+        # (`name` and `filename` are strings by construction: JSON keys are, and
+        # `is_file_part` requires one. The rule is stated once for all three.)
+        if not isinstance(text, str):
+            raise SystemExit("%s must be a string, got %s (%r) — coerced it would "
+                             "put the text of a Python object into a part header"
+                             % (label, type(text).__name__, text))
         for c in forbidden:
             if c in text:
                 raise SystemExit("%s %r carries %s — emitted raw into a part "
@@ -3744,6 +3756,19 @@ tool sync_harness:
             refuses("CRLF dans content_type -> refus nomme",
                     lambda: encode_multipart({"d": {"filename": "a", "text": "X",
                                                     "content_type": "text/plain\r\nX-Evil: 1"}}))
+            # `content_type` non textuel : partait en repr dans l'en-tete
+            # (`Content-Type: ['a']`), derniere valeur du corpus atteignant un
+            # en-tete sans etre examinee.
+            for bad_ct in (42, ["a"], {"a": "b"}):
+                refuses("content_type non textuel (%s) -> refus nomme" % type(bad_ct).__name__,
+                        lambda bad_ct=bad_ct: encode_multipart(
+                            {"d": {"filename": "a", "text": "X", "content_type": bad_ct}}))
+            # Et le defaut, qui ne doit pas tomber sous ce refus : absent -> le
+            # type par defaut, pas une erreur.
+            check("content_type absent -> application/octet-stream",
+                  parse_multipart(*encode_multipart(
+                      {"d": {"filename": "a.bin", "text": "X"}}))["d"][1],
+                  "application/octet-stream")
             # Et la borne de l'autre cote : un guillemet est de la SYNTAXE valide
             # dans un type de media, la ou il est une injection dans un
             # quoted-string. Le refuser rejetterait une declaration juste.
