@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.5](https://github.com/SocialGouv/iterion/compare/v3.116.4...v3.116.5) (2026-09-08)
+
+### Bug Fixes
+
+* **dispatcher:** spare a run parked on a paused subbot descendant from the stall watchdog ([#932](https://github.com/SocialGouv/iterion/issues/932)) ([4a953c0](https://github.com/SocialGouv/iterion/commit/4a953c05912ee398696a00ab8c3bd25e7fb7556c)), references [#558](https://github.com/SocialGouv/iterion/issues/558)
+
+    <details><summary>why</summary>
+
+    A dispatcher-owned parent that reaches a `subbot` node whose child parks on a human gate blocks in runview.AwaitSubbotTerminal, polling the child's run record once a second. That poll appends no event, so the entry's watermark — fed only by DispatchSpec.OnEvent — ages past the stall timeout while nothing is wrong. reconcileStalled then interrupts the run, the retry re-enters the same engine, and a review left open over a weekend eventually burns max_attempts. A production deployment was working…
+
+    </details>
+
 ## [3.116.4](https://github.com/SocialGouv/iterion/compare/v3.116.3...v3.116.4) (2026-09-08)
 
 ### Bug Fixes
