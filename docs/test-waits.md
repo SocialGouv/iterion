@@ -25,10 +25,28 @@ terminal child or parent immediately. `awaitRunCompletion` joins the service's
 Done channel. Neither predicts how long creating a worktree or running a shell
 should take.
 
-`runWaitContext` uses the Go test harness deadline, reserving up to five seconds
-for failure diagnostics and cleanup. Thus the suite still has its configured
-wall-clock ceiling; `go test -timeout=0` explicitly disables that ceiling.
-Polling every 50 ms is an observation cadence, not an execution budget.
+`runWaitContext` bounds one wait by the EARLIER of two figures (`runWaitTimeout`
+derives them; its own unit test pins the edge cases). First, a per-operation
+ceiling — `30s * waitSlowdown`, the package's existing scale-up of the figure
+these waits carried. `t.Deadline()` alone would not do: it is one absolute
+instant for the whole test BINARY, so a single wait that never satisfies would
+spend the package's entire remaining `-timeout` (~10 min on the unit job's
+default, ~30 min under the race job's `-timeout 1800s`) and hand every test
+scheduled after it a near-expired deadline. Second, what is left of the harness
+deadline minus `waitDeadlineMargin` (30 s), so the wait fails as its own named
+assertion — with the run goroutine joined and the `t.TempDir` removable — rather
+than as a package-wide harness panic naming whichever test was in flight. A
+deadline already inside that margin yields a non-positive bound, i.e. an
+already-expired context: the caller reports immediately instead of waiting past
+the harness. `go test -timeout=0` has no deadline and keeps its meaning: no
+wall-clock ceiling at all. Polling every 50 ms is an observation cadence, not an
+execution budget.
+
+`runWaitTimeout` is the package's ONE wait policy: the older `waitBudget`
+(scale a caller's hand-picked figure, clamp it to the harness) lost its last
+`pkg/runview` caller here and was removed with it, keeping only its two
+constants. The `e2e` package keeps its own copy — it is a separate package with
+live callers.
 
 Do not wrap these real-process service fixtures in synctest: external process
 I/O and their polling/background workers do not provide the same durable-block
