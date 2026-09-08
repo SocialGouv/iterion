@@ -301,6 +301,48 @@ type Org struct {
 	// admits NOBODY: lending a key is an explicit act, so a team that was
 	// never named funds its runs itself or does not run.
 	CredentialAudience CredentialAudience `bson:"credential_audience,omitempty" json:"credential_audience,omitempty"`
+
+	// ProvisionApprovalScope narrows WHICH requests RequireProvisionApproval
+	// parks. Empty reads as ProvisionApprovalAll — existing orgs keep the
+	// behaviour they have.
+	ProvisionApprovalScope ProvisionApprovalScope `bson:"provision_approval_scope,omitempty" json:"provision_approval_scope,omitempty"`
+}
+
+// ProvisionApprovalScope says what an org's provisioning approval is FOR.
+//
+// The gate started as "review every repo a team connects", which is the
+// right default for an org that has not decided otherwise. But the question
+// an operator usually wants reviewed is narrower and about money: a team
+// spending its OWN credentials answers to nobody for what it runs, while a
+// team drawing on the org's or the deployment's shared keys is spending
+// someone else's budget. `shared_credentials` is that reading.
+type ProvisionApprovalScope string
+
+const (
+	// ProvisionApprovalAll parks every team-admin provisioning request.
+	ProvisionApprovalAll ProvisionApprovalScope = "all"
+	// ProvisionApprovalSharedCredentials parks only the requests of teams
+	// that bring no credential of their own — the ones whose runs would be
+	// funded by the org tier, the pool, or the platform.
+	ProvisionApprovalSharedCredentials ProvisionApprovalScope = "shared_credentials"
+)
+
+// ValidProvisionApprovalScope reports whether s is assignable.
+func ValidProvisionApprovalScope(s ProvisionApprovalScope) bool {
+	switch s {
+	case ProvisionApprovalAll, ProvisionApprovalSharedCredentials:
+		return true
+	}
+	return false
+}
+
+// EffectiveProvisionApprovalScope treats an empty scope (every row written
+// before the field existed) as "all".
+func (o Org) EffectiveProvisionApprovalScope() ProvisionApprovalScope {
+	if o.ProvisionApprovalScope == "" {
+		return ProvisionApprovalAll
+	}
+	return o.ProvisionApprovalScope
 }
 
 // CredentialAudience answers one question — may THIS team of the org draw

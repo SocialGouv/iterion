@@ -110,14 +110,95 @@ var remoteOrgsAudienceCmd = &cobra.Command{
 	}),
 }
 
+// --- governance: settings + the provisioning approval queue ---
+
+var (
+	remoteOrgApprovalRequire string
+	remoteOrgApprovalScope   string
+)
+
+var remoteOrgsSettingsCmd = &cobra.Command{
+	Use:   "settings",
+	Short: "Org governance settings (provisioning approval)",
+	Long: "Show the org's governance settings, or set them.\n\n" +
+		"--require-approval parks a TEAM admin's repo-bot provisioning until an\n" +
+		"org admin approves; nothing is created forge-side meanwhile.\n" +
+		"--approval-scope narrows what it parks: `all` (every request) or\n" +
+		"`shared_credentials` (only teams with no credential of their own —\n" +
+		"a team spending its own BYOK answers to nobody for what it runs).",
+	Args: cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		org, err := c.ResolveOrg(cmd.Context(), remoteOrgFlag)
+		if err != nil {
+			return err
+		}
+		path := "/api/orgs/" + org + "/settings"
+		if !cmd.Flags().Changed("require-approval") && !cmd.Flags().Changed("approval-scope") {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		body := map[string]any{}
+		if cmd.Flags().Changed("require-approval") {
+			switch remoteOrgApprovalRequire {
+			case "true", "on", "yes":
+				body["require_provision_approval"] = true
+			case "false", "off", "no":
+				body["require_provision_approval"] = false
+			default:
+				return fmt.Errorf("--require-approval wants true|false, got %q", remoteOrgApprovalRequire)
+			}
+		}
+		if cmd.Flags().Changed("approval-scope") {
+			body["provision_approval_scope"] = remoteOrgApprovalScope
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", path, string(raw), "settings JSON")
+	}),
+}
+
+var remoteOrgsApprovalsCmd = &cobra.Command{
+	Use:   "approvals [approve|reject <approval-id>]",
+	Short: "The pending repo-bot provisioning requests of the org",
+	Long: "List what team admins asked for and nothing created yet, or decide.\n" +
+		"Approving REPLAYS the exact recorded request through the orchestrator;\n" +
+		"a request whose target moved since is refused (409) so a stale record\n" +
+		"is rejected rather than re-provisioned by surprise.",
+	Args: cobra.RangeArgs(0, 2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		org, err := c.ResolveOrg(cmd.Context(), remoteOrgFlag)
+		if err != nil {
+			return err
+		}
+		base := "/api/orgs/" + org + "/provision-approvals"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+		}
+		if len(args) != 2 {
+			return fmt.Errorf("usage: orgs approvals [approve|reject <approval-id>]")
+		}
+		switch args[0] {
+		case "approve", "reject":
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/"+args[1]+"/"+args[0], nil)
+		default:
+			return fmt.Errorf("unknown action %q (want approve|reject)", args[0])
+		}
+	}),
+}
+
 func init() {
-	for _, c := range []*cobra.Command{remoteOrgsOAuthCmd, remoteOrgsAudienceCmd} {
+	for _, c := range []*cobra.Command{
+		remoteOrgsOAuthCmd, remoteOrgsAudienceCmd, remoteOrgsSettingsCmd, remoteOrgsApprovalsCmd,
+	} {
 		c.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id (default: switched/active org)")
 	}
+	remoteOrgsSettingsCmd.Flags().StringVar(&remoteOrgApprovalRequire, "require-approval", "", "true|false — park a team admin's repo provisioning for an org admin")
+	remoteOrgsSettingsCmd.Flags().StringVar(&remoteOrgApprovalScope, "approval-scope", "", "all|shared_credentials — what the approval gate parks")
 	remoteOrgsOAuthCmd.Flags().StringVar(&remoteSecretFromEnv, "from-env", "", "Read the credentials blob from this environment variable")
 	remoteOrgsOAuthCmd.Flags().StringVar(&remoteSecretFromFile, "from-file", "", "Read the credentials blob from this file")
 	remoteOrgsAudienceCmd.Flags().StringVar(&remoteAudienceTeams, "teams", "", "Comma-separated team ids allowed to spend the org's credentials (empty string revokes all)")
 	remoteOrgsAudienceCmd.Flags().StringVar(&remoteAudienceAllTeams, "all-teams", "", "true|false — admit every team of the org")
 
-	remoteOrgsCmd.AddCommand(remoteOrgsOAuthCmd, remoteOrgsAudienceCmd)
+	remoteOrgsCmd.AddCommand(remoteOrgsOAuthCmd, remoteOrgsAudienceCmd, remoteOrgsSettingsCmd, remoteOrgsApprovalsCmd)
 }
