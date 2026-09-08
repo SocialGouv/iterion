@@ -1,5 +1,60 @@
 # Billy — branch-improvement validation
 
+## 2026-09-08 — #964: quota stop after useful fixes, bank delivered locally
+
+- Status: **banked commits recovered and locally validated**. The campaign
+  did not reach its ledger or delivery gate, so this is not a successful
+  end-to-end Billy run.
+- Method: `/billy` on our PR #964 at 11:26:52Z, after Revi's medium finding
+  `R565a2f`. Run `01a080c5-585f-7574-8394-bb28803d6f24` completed planning,
+  peer review and revision, then entered campaign at 12:06:51Z. The PR was
+  removed from the merge queue while the fixer worked; the interactive owner
+  made no concurrent edits to its branch.
+- Result: the campaign reached the Claude session limit at 12:43:31Z and
+  stopped as `failed_resumable / USAGE_LIMIT_BLOCKED`, with `retry_armed` for
+  the 15:00Z reset. That reset was after its advertised working window. The
+  owner cancelled the parked run to disarm the retry, verified `cancelled`
+  with no running execution or continuation, then recovered its final bank.
+  No campaign was relaunched.
+- Recovery: `iterion/run-01a080c5-585f-7574-8394-bb28803d6f24` at
+  `e9b7e0576c9e7d1c9ab16ef9d3c51301c9666ed6` held nine commits, preserved by
+  fast-forward. `0f9c8c0df` adds settling; `fd59f26d9` bounds the server join;
+  `c4393c6f3` preserves the suite exit code; `f913b4ea8` groups imports;
+  `0d82611d9` records the audit; `5db295eec` narrows the fixture ownership
+  check; `cd143ff62` fixes final forgiveness accounting; `2a9c459fd` signals
+  late descendants at the reclaim deadline; `e9b7e0576` reflows the audit.
+- Finding ledger: **R565a2f fixed**. A child gets a 500 ms settle window before
+  a leak verdict, keyed by PID and process start time. True survivors still
+  fail the suite and are killed through verified owned process handles. The
+  server fixture cancels its process group and applies a ten-second WaitDelay
+  for inherited output pipes. The final timeout sweep remains best effort:
+  it fails the suite rather than claiming that every descendant was joined.
+- Live steering: checkpoint review identified an interleaving the campaign
+  had missed: a child can be seen alive and reaped in the same scan, then
+  disappear through ECHILD before its forgiveness is counted. A `runs send`
+  message at 12:34:29Z was consumed at 12:35:48Z. The campaign confirmed and
+  fixed it. Independent local falsification used Go overlays to delay the
+  per-PID reap by 1.1 seconds: the real settling-child fixture passed, then
+  failed when only the ECHILD accounting call was removed. No checked-out
+  source was modified by those canaries.
+- Validation after recovery: full Devbox `task check` passed. Complete race
+  suites passed for proctest, dispatcher, runview, runner, runtime, CLI and
+  E2E, with only the previously reproduced unrelated ordering test from #960
+  excluded from that race invocation. The non-race full suite retained it.
+  The proctest subprocess cases still cover a genuine surviving orphan,
+  settling exit, clean success and preservation of an existing failure code.
+- Value: real fixes for a false leak verdict and an unbounded inherited-pipe
+  join, plus a useful interaction between checkpoint review and live steering.
+  The bank saved the work when quota prevented delivery; the owner supplied
+  the missing final validation and ledger. Revi and CI still need to judge
+  the published head before merge-queue entry.
+- Frictions and boundaries: the final quota denial followed soft usage events
+  reporting `stopped=false`, including zero-percent readings just before the
+  denial; those events did not establish remaining capacity. The remaining
+  Git-maintenance gap in fixture repository config is tracked separately in
+  #974 after verification against main. No shared infrastructure, historical
+  orphan, other session's branch, or operator Git configuration was changed.
+
 ## The delivery tail's contract (bot 1.7.0)
 
 Three properties `push_back_tool` and `publish_verdict` now hold, in the order

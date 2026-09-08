@@ -39,8 +39,10 @@ package tests are outside its ancestry. Its five-second bound, which starts
 after the settle window, covers reclaiming a reported leak; when that bound
 expires the guard names and kills whatever is still alive before failing, so a
 descendant adopted late — inside the last settle window of the budget, before
-it could earn a verdict of its own — is still reported and reclaimed rather
-than outliving the suite unnamed. Fixture cancellation is portable; the
+it could earn a verdict of its own — is still reported and signalled. This
+deadline path fails the suite and is a final best-effort kill, not proof that
+all descendants were joined: only the normal ECHILD exit establishes that
+none remain. Fixture cancellation is portable; the
 orphan-adoption guard is Linux-only. Like other TestMain postconditions it
 requires m.Run to return; a forced kill of the test binary cannot execute the
 postcondition.
@@ -89,16 +91,25 @@ the forgiveness COUNT, without which it would pass identically to the clean
 case even with the settle logic deleted. Both mutations were checked to fail
 it: latching on first sight, and forgiving without counting.
 
-That count is settled on two paths, and a unit test pins the one no fixture
-can schedule: the guard reaps each child in the same pass that reads its
-state, so a child dying in between is gone from `/proc` before the next pass
+That count is settled on two paths, and a unit test pins an interleaving an
+ordinary fixture cannot reliably schedule: the guard reaps each child in the
+same pass that reads its state, so a child dying in between is gone from
+`/proc` before the next pass
 and never reaches the per-pass accounting. It is forgiven where the scan ends
 instead — on the kernel's ECHILD verdict, with no children left — which is
 why `forgiven` takes the remaining set as an argument and is asserted directly
 on a nil one.
 
-Not covered, and known: the residual `git maintenance` hazard. `pkg/runtime`'s
-tests run 15 production writing-git commands (`commit -F -`, `merge --squash`,
+An independent delivery canary also exercised the call site through the real
+subprocess fixture. A Go overlay delayed each per-PID reap by 1.1 seconds, so
+the one-second helper was observed alive and reaped by that same scan. The
+settling-child test passed under `-race`; removing only the ECHILD accounting
+call made it fail with `settling child not observed then forgiven`. The
+overlays did not modify the committed sources.
+
+Not covered, and tracked separately in #974: the residual `git maintenance`
+hazard. `pkg/runtime`'s tests run 15 production writing-git commands
+(`commit -F -`, `merge --squash`,
 `merge --ff-only`) against `t.TempDir()` fixture repositories, through
 `worktree.go`'s own factory rather than `gittest.Cmd` — so they carry no
 `maintenance.auto=false`, and on CI's git (≥ 2.48, the version behind #821/#828)
