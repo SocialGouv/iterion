@@ -344,11 +344,17 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 }
 
 // RefreshClaimTTL bounds how long one holder may keep a record's refresh
-// claim (OAuthStore.ClaimRefresh). It has to outlast the slowest provider
-// exchange — the HTTP client timeout plus refreshRetrySchedule — so a live
-// refresher is never superseded mid-flight, and stay well under the sweep
-// interval so a replica that died holding a claim costs at most one skipped
-// cycle rather than a stuck credential.
+// claim (OAuthStore.ClaimRefresh). Two ends to size it between:
+//
+//   - It must outlast the slowest exchange, or a live refresher would be
+//     superseded mid-flight — the thing the claim exists to prevent. Worst
+//     case is refreshRetrySchedule's three attempts at the server's 15s
+//     client timeout plus its 0.8s of backoff, ~46s.
+//   - It must stay well under the 10-minute sweep interval, so a replica
+//     that died holding a claim costs at most one skipped cycle instead of
+//     a credential nothing may touch.
+//
+// Two minutes sits between them with room on both sides.
 const RefreshClaimTTL = 2 * time.Minute
 
 // NewRefreshClaimOwner mints the fencing token for ONE refresh attempt —

@@ -804,7 +804,6 @@ func (s *MemoryOAuthStore) ClaimRefresh(_ context.Context, userID string, kind O
 	u := until.UTC()
 	r.RefreshClaimOwner = owner
 	r.RefreshNotBefore = &u
-	r.UpdatedAt = now.UTC()
 	s.m[key] = r
 	return true, nil
 }
@@ -822,7 +821,6 @@ func (s *MemoryOAuthStore) ReleaseRefreshClaim(_ context.Context, userID string,
 	}
 	r.RefreshClaimOwner = ""
 	r.RefreshNotBefore = copyTimePtr(notBefore)
-	r.UpdatedAt = time.Now().UTC()
 	s.m[key] = r
 	return nil
 }
@@ -965,7 +963,6 @@ func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, userID string, kind 
 		bson.M{"$set": bson.M{
 			"refresh_claim_owner": owner,
 			"refresh_not_before":  until.UTC(),
-			"updated_at":          now.UTC(),
 		}},
 	)
 	if err != nil {
@@ -975,10 +972,13 @@ func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, userID string, kind 
 }
 
 func (s *MongoOAuthStore) ReleaseRefreshClaim(ctx context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error {
+	// updated_at is deliberately NOT touched here, nor in ClaimRefresh:
+	// taking or dropping the lock changes no credential, and the field is
+	// rendered to operators as when this connection last changed. A refresh
+	// that actually rotates tokens moves it through UpdateTokens.
 	set := bson.M{
 		"refresh_claim_owner": "",
 		"refresh_not_before":  notBeforeValue(notBefore),
-		"updated_at":          time.Now().UTC(),
 	}
 	res, err := s.coll.UpdateOne(ctx,
 		bson.M{"user_id": userID, "kind": kind, "refresh_claim_owner": owner},

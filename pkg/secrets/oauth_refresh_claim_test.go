@@ -17,8 +17,8 @@ import (
 // fence — and act on the store while it is stuck there.
 type blockingOAuthServer struct {
 	*httptest.Server
-	hits     int32
-	entered  chan struct{}
+	hits    int32
+	entered chan struct{}
 	release chan struct{}
 	relOnce sync.Once
 }
@@ -40,7 +40,7 @@ func newBlockingOAuthServer(t *testing.T, body string) *blockingOAuthServer {
 	// into a ten-minute hang with no message.
 	t.Cleanup(func() {
 		f.Unblock()
-		f.Server.Close()
+		f.Close()
 	})
 	return f
 }
