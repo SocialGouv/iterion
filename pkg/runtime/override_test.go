@@ -402,9 +402,8 @@ func uncoveredOverrunWorkflow(name string, budget *ir.Budget) *ir.Workflow {
 }
 
 // runUncoveredOverrun executes uncoveredOverrunWorkflow with `over` posting
-// `raise` and returning `usage`, and hands back the budget_exceeded event data
-// (nil when none was emitted) plus the run error.
-func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, usage map[string]any) (map[string]any, error) {
+// `raise` and returning `usage`, and hands back the run's events plus its error.
+func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, usage map[string]any) ([]*store.Event, error) {
 	t.Helper()
 
 	ch := make(chan *OverrideMsg, 1)
@@ -441,20 +440,26 @@ func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir
 	if lerr != nil {
 		t.Fatalf("load events: %v", lerr)
 	}
-	var exceeded map[string]any
+	return events, err
+}
+
+// lastEventData returns the data of the last event of the given type, or nil.
+func lastEventData(events []*store.Event, typ store.EventType) map[string]any {
+	var data map[string]any
 	for _, evt := range events {
-		if evt.Type == store.EventBudgetExceeded {
-			exceeded = evt.Data
+		if evt.Type == typ {
+			data = evt.Data
 		}
 	}
-	return exceeded, err
+	return data
 }
 
 // assertStoppedOn fails unless the run died as BUDGET_EXCEEDED on `dimension`
 // with the given live figures — the whole point being that a stop the raise did
 // not cover must still be there, and must name numbers that are true NOW.
-func assertStoppedOn(t *testing.T, err error, exceeded map[string]any, dimension string, used, limit float64) {
+func assertStoppedOn(t *testing.T, err error, events []*store.Event, dimension string, used, limit float64) {
 	t.Helper()
+	exceeded := lastEventData(events, store.EventBudgetExceeded)
 	if err == nil {
 		t.Fatalf("the run finished with %s still over its cap — a raise the operator never asked to cover it dropped the stop", dimension)
 	}
@@ -487,11 +492,11 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// MaxTokens must be a real cap with usage UNDER it: an axis at 0 is
 		// unlimited, RaiseCaps skips it, and the test would pass vacuously
 		// on a raise that never landed.
-		exceeded, err := runUncoveredOverrun(t, "run-raise-wrong-axis",
+		events, err := runUncoveredOverrun(t, "run-raise-wrong-axis",
 			&ir.Budget{MaxCostUSD: 10, MaxTokens: 1000},
 			ir.BudgetOverrides{MaxTokens: 5000},
 			map[string]any{"ok": true, "_tokens": 5, "_cost_usd": 100.0})
-		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 10)
+		assertStoppedOn(t, err, events, "cost_usd", 100, 10)
 	})
 
 	t.Run("right axis, still under water", func(t *testing.T) {
@@ -499,11 +504,39 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// stop stands — and now names the cap as it stands (20), because a
 		// limit the operator has already replaced is not a useful number to
 		// be shown when deciding how much more to grant.
-		exceeded, err := runUncoveredOverrun(t, "run-raise-insufficient",
+		events, err := runUncoveredOverrun(t, "run-raise-insufficient",
 			&ir.Budget{MaxCostUSD: 10},
 			ir.BudgetOverrides{MaxCostUSD: 20},
 			map[string]any{"ok": true, "_cost_usd": 100.0})
-		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 20)
+		assertStoppedOn(t, err, events, "cost_usd", 100, 20)
+	})
+
+	t.Run("a raise that lands inside the exit grace still audits the overspend", func(t *testing.T) {
+		// The other direction, and the reason the stop is RE-DERIVED rather
+		// than merely kept: raising 10 -> 95 against a spend of 100 leaves the
+		// run inside the 10% exit grace (100 < 104.5), so it should walk
+		// forward and finish. What it must not do is finish SILENTLY —
+		// dropping the pending overrun outright skips graceOrFailBudget, and
+		// with it the budget_exit_grace event that is the only record a run
+		// deliberately spent past its declared cap. "Visible in the events,
+		// not discovered on the invoice" is what that event is for.
+		events, err := runUncoveredOverrun(t, "run-raise-into-grace",
+			&ir.Budget{MaxCostUSD: 10},
+			ir.BudgetOverrides{MaxCostUSD: 95},
+			map[string]any{"ok": true, "_cost_usd": 100.0})
+		if err != nil {
+			t.Fatalf("a raise that puts the run inside its grace must let it finish: %v", err)
+		}
+		grace := lastEventData(events, store.EventBudgetExitGrace)
+		if grace == nil {
+			t.Fatal("the run spent past its cap under the grace and recorded it nowhere")
+		}
+		if grace["dimension"] != "cost_usd" {
+			t.Errorf("budget_exit_grace names %v, want cost_usd", grace["dimension"])
+		}
+		if got, _ := grace["limit"].(float64); got != 95 {
+			t.Errorf("limit = %v, want 95 — the cap being overspent is the raised one", grace["limit"])
+		}
 	})
 
 	t.Run("the axis the overrun was not recorded under", func(t *testing.T) {
@@ -513,11 +546,11 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// clear that only asks "does the raise cover the RECORDED axis?"
 		// therefore drops a cost overrun nobody funded — the same silent
 		// over-cap completion, one variant over.
-		exceeded, err := runUncoveredOverrun(t, "run-raise-multi-axis",
+		events, err := runUncoveredOverrun(t, "run-raise-multi-axis",
 			&ir.Budget{MaxTokens: 10, MaxCostUSD: 10},
 			ir.BudgetOverrides{MaxTokens: 1000},
 			map[string]any{"ok": true, "_tokens": 100, "_cost_usd": 100.0})
-		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 10)
+		assertStoppedOn(t, err, events, "cost_usd", 100, 10)
 	})
 }
 
