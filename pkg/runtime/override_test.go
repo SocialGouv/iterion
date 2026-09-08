@@ -627,6 +627,18 @@ func TestRaiseBudget_AModestRaiseAlsoLiftsTheVerdict(t *testing.T) {
 	// 2.16s = 1.08x. Under the old `used >= limit*0.9` test this still parked
 	// the run; the operator's grant bought 160ms of real room and changed
 	// nothing.
+	//
+	// The two numbers are COUPLED, so move them together or not at all. The
+	// ratio must stay under the old cliff at used/0.9 = 1.111x, or the test
+	// stops pinning the proximity guard and passes on the very code it exists
+	// to refuse. Their 160ms difference is also this test's own wall-clock
+	// budget: everything between the deadline firing and RemainingDuration()
+	// — executor return, span.End(), the drain, and applyRaiseBudget's two
+	// store writes — has to fit in it. Measured before trusting it, worst of
+	// 37 samples: 22ms under `-race` with the 8 cores 2x oversubscribed (7.5ms
+	// median), 26ms without `-race`. ~7x headroom at the worst observation,
+	// which is why the pair was left small rather than scaled up at 4s of wall
+	// clock in a required check.
 	msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: "2160ms"}, "")
 	exec := &blockingRaiserExecutor{blockNode: "slow", ch: ch, msg: msg}
 
