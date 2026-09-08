@@ -383,7 +383,11 @@ string** is a file part, and one such field makes the whole form
   payload SMALL: it is committed, and every capture replays it.
 - **`content_type` is optional** and defaults to `application/octet-stream`.
   Declare it when the application branches on it — a rejected type is a
-  behaviour worth a reference of its own.
+  behaviour worth a reference of its own. Spell it with an **underscore**: the
+  HTTP header is `Content-Type`, and `content-type` in a corpus is refused
+  rather than ignored, because a key the harness does not read is a
+  declaration you believe you made. Those four keys — `filename`, `text`,
+  `b64`, `content_type` — are the whole vocabulary; any other is refused.
 - **A form with no file field is urlencoded exactly as before.** Nothing
   changes for the entries you already have.
 - **The boundary is derived, never random**, so two replays of one request are
