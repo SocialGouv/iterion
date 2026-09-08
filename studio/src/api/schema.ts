@@ -3502,6 +3502,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id} */
+        get: operations["getTeamsById"];
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id} */
+        delete: operations["deleteTeamsById"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id} */
+        patch: operations["patchTeamsById"];
+        trace?: never;
+    };
     "/api/teams/{id}/api-keys": {
         parameters: {
             query?: never;
@@ -4219,7 +4240,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /** PUT /api/teams/{id}/members/{user_id} */
+        put: operations["putTeamsByIdMembersByUserId"];
         post?: never;
         /** DELETE /api/teams/{id}/members/{user_id} */
         delete: operations["deleteTeamsByIdMembersByUserId"];
@@ -4468,6 +4490,25 @@ export interface paths {
         head?: never;
         /** PATCH /api/teams/{id}/secrets/{secret_id} */
         patch: operations["patchTeamsByIdSecretsBySecretId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/status */
+        post: operations["postTeamsByIdStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/teams/{id}/webhooks": {
@@ -11276,6 +11317,66 @@ export interface operations {
             };
         };
     };
+    getTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdApiKeys: {
         parameters: {
             query?: never;
@@ -12455,6 +12556,27 @@ export interface operations {
             };
         };
     };
+    putTeamsByIdMembersByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteTeamsByIdMembersByUserId: {
         parameters: {
             query?: never;
@@ -12853,6 +12975,26 @@ export interface operations {
             path: {
                 id: string;
                 secret_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };

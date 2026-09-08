@@ -8456,6 +8456,54 @@
         ]
       }
     },
+    "/api/teams/{id}": {
+      "delete": {
+        "operationId": "deleteTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/api-keys": {
       "get": {
         "operationId": "getTeamsByIdApiKeys",
@@ -9963,6 +10011,18 @@
         "tags": [
           "teams"
         ]
+      },
+      "put": {
+        "operationId": "putTeamsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
       }
     },
     "/api/teams/{id}/oauth/connections": {
@@ -10376,6 +10436,30 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/secrets/{secret_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/status": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdStatus",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/status",
         "tags": [
           "teams"
         ]
