@@ -413,6 +413,60 @@ func (s *Server) ListenAndServe() error {
 	return s.server.Serve(ln)
 }
 
+// oauthRefreshWorker builds the forfait refresh sweep, or nil when this
+// deployment has nothing to sweep with (no store, no sealer, no client id
+// for either kind). One builder for both callers — the periodic loop and
+// the out-of-band kick a connect fires — so neither can drift into
+// sweeping with a different lead or a different logger.
+func (s *Server) oauthRefreshWorker() *secrets.OAuthRefreshWorker {
+	if s.oauthStore == nil || s.sealer == nil || (s.cfg.AnthropicOAuthClientID == "" && s.cfg.CodexOAuthClientID == "") {
+		return nil
+	}
+	return &secrets.OAuthRefreshWorker{
+		Store:             s.oauthStore,
+		Sealer:            s.sealer,
+		HTTP:              s.httpClient,
+		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
+		CodexClientID:     s.cfg.CodexOAuthClientID,
+		Lead:              30 * time.Minute,
+		Logger:            s.logger,
+	}
+}
+
+// kickOAuthRefresh runs ONE sweep out of band, off the request that
+// triggered it. It exists for the connect path: a credential uploaded
+// already expired is accepted on the promise that the worker renews it,
+// and without this that promise is up to a ticker period away — minutes in
+// which every run drawing the credential is handed a token the server
+// knows is dead.
+//
+// Detached from the request context (which dies with the response) and
+// bounded on its own, best-effort throughout: the upload has already
+// succeeded, and a provider that is down must not turn into a failed
+// connect. The claim makes it safe to overlap with the periodic sweep —
+// whichever gets there first does the exchange.
+func (s *Server) kickOAuthRefresh(ownerKey string, kind secrets.OAuthKind) {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
+		return
+	}
+	errtrack.Go("server.oauthRefreshOnConnect", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), oauthConnectRefreshTimeout)
+		defer cancel()
+		if n, err := worker.RunOnce(ctx); err != nil {
+			s.logger.Warn("oauth-forfait refresh on connect (owner=%s kind=%s): %v", ownerKey, kind, err)
+		} else if n > 0 {
+			s.logger.Info("oauth-forfait refresh on connect (owner=%s kind=%s): rotated %d token(s)", ownerKey, kind, n)
+		}
+	})
+}
+
+// oauthConnectRefreshTimeout bounds that kick. Generous enough for the
+// exchange's three attempts at the 15s client timeout, short enough that a
+// hanging provider cannot keep a goroutine (and a refresh claim) alive
+// across the next periodic sweep.
+const oauthConnectRefreshTimeout = time.Minute
+
 // startOAuthForfaitRefresh runs the OAuth-forfait refresh sweep: proactively
 // rotate Claude Code (and Codex) subscription access tokens before they
 // expire so neither an interactive run nor an automated
@@ -424,17 +478,9 @@ func (s *Server) ListenAndServe() error {
 // hazard it closes is invisible in a unit test of RunOnce, which is exactly
 // how it went missing.
 func (s *Server) startOAuthForfaitRefresh() {
-	if s.oauthStore == nil || s.sealer == nil || (s.cfg.AnthropicOAuthClientID == "" && s.cfg.CodexOAuthClientID == "") {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
 		return
-	}
-	worker := &secrets.OAuthRefreshWorker{
-		Store:             s.oauthStore,
-		Sealer:            s.sealer,
-		HTTP:              s.httpClient,
-		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
-		CodexClientID:     s.cfg.CodexOAuthClientID,
-		Lead:              30 * time.Minute,
-		Logger:            s.logger,
 	}
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())

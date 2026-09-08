@@ -573,6 +573,13 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
 	}
+	// An expired credential that CAN be renewed is accepted on the promise
+	// that the refresh worker renews it — so make that promise immediate
+	// rather than up to a ticker period away. Off the request, bounded,
+	// best-effort: the upload has already succeeded either way.
+	if !rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(time.Now()) {
+		s.kickOAuthRefresh(ownerKey, kind)
+	}
 	return rec, nil
 }
 

@@ -265,3 +265,58 @@ func (rt reconnectMidFlightTransport) RoundTrip(req *http.Request) (*http.Respon
 	rt.before()
 	return rewriteHostTransport{target: rt.target}.RoundTrip(req)
 }
+
+// A codex forfait exported from a machine whose token has already lapsed is
+// ACCEPTED — nothing is wrong with it that a refresh cannot fix — on the
+// promise that the worker renews it. Without a kick that promise is up to a
+// ticker period away, and the publisher seals whatever the store holds with
+// no tier consulting the expiry: every run launched in between is handed a
+// token the server itself knows is dead.
+//
+// The oracle is the STORE settling on a renewed record, not the response:
+// the upload succeeds either way, which is exactly why the bug would be
+// invisible from the endpoint.
+func TestCodexConnect_AnExpiredCredentialIsRefreshedWithoutWaitingForTheTicker(t *testing.T) {
+	srv, hs, signer, store := oauthTestServer(t)
+	jo := oauthJWT(t, signer, "jo")
+
+	fresh := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"` + codexJWTAccessToken(t, fresh) + `","refresh_token":"rt.rotated"}`))
+	}))
+	defer provider.Close()
+	srv.httpClient = &http.Client{Transport: rewriteHostTransport{target: provider.URL}}
+	srv.cfg.CodexOAuthClientID = "app_x"
+
+	expired := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	blob := `{"tokens":{"access_token":"` + codexJWTAccessToken(t, expired) +
+		`","refresh_token":"rt.old","account_id":"acct-1"},"auth_mode":"chatgpt"}`
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/credentials", jo, blob)
+	if code != http.StatusOK {
+		t.Fatalf("upload = %d body=%s, want 200 — an expired but refreshable credential is accepted", code, body)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindCodex)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if rec.AccessTokenExpiresAt != nil && rec.AccessTokenExpiresAt.After(time.Now()) {
+			plain, err := secrets.OpenOAuthPayload(srv.sealer, "jo", secrets.OAuthKindCodex, rec.SealedPayload)
+			if err != nil {
+				t.Fatalf("unseal: %v", err)
+			}
+			if !strings.Contains(string(plain), "rt.rotated") {
+				t.Fatalf("stored payload was not re-sealed around the refreshed tokens: %s", plain)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the credential is still expired after the connect: it waits for the periodic sweep, " +
+				"and every run launched until then is handed a token that cannot serve it")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
