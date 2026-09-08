@@ -369,6 +369,58 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 	}
 }
 
+// The call that raised ErrNeedsInteraction is deliberately NOT booked — "its
+// spend is the resumed call's to report". That deferral is only honest if the
+// resumed call books at its own terminal exit: otherwise a re-invocation that
+// dies loses both sessions, the parked one and its own.
+func TestFailedReInvocationBooksTheWholeSession(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+	wf.Budget = &ir.Budget{MaxTokens: 1_000_000}
+	calls := 0
+	exec := newStubExecutor()
+	exec.on("worker", func(map[string]any) (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:    "worker",
+				Questions: map[string]any{delegate.AskUserQuestionKey: "ok?"},
+				SessionID: "sess-ask",
+				Backend:   "claude_code",
+			}
+		}
+		// The resumed call reports the SESSION — the parked call's spend
+		// included — and then dies.
+		return map[string]any{"_tokens": 9_000, "_cost_usd": 2.75}, errors.New("stream closed")
+	})
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-reinvoke-spend", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("want the run parked on the question, got %v", err)
+	}
+	if err := eng.Resume(context.Background(), "run-reinvoke-spend",
+		map[string]any{delegate.AskUserQuestionKey: "yes"}); err == nil {
+		t.Fatal("the re-invocation was supposed to fail")
+	}
+	if calls != 2 {
+		t.Fatalf("expected the parked call and its re-invocation, got %d", calls)
+	}
+
+	r, err := st.LoadRun(context.Background(), "run-reinvoke-spend")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 9_000 {
+		t.Fatalf("the re-invocation's session never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 2.75 {
+		t.Fatalf("the re-invocation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
 // ctxRefusingSpendStore is the shape a real remote ledger has: a write on a
 // done context is refused, the way a Mongo write is. The filesystem store
 // ignores ctx entirely, which is exactly what hides this class of bug

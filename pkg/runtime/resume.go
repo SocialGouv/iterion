@@ -1848,8 +1848,18 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		// exhaustion.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(err, &needsInput) {
+			// Still not booked: the call parks again and the NEXT
+			// re-invocation reports the session, exactly as the first one
+			// deferred to this one.
 			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput, depth+1)
 		}
+		// Terminal, and the end of the chain the main loop's interaction exit
+		// defers to: the call that raised ErrNeedsInteraction was deliberately
+		// not booked because "its spend is the resumed call's to report" —
+		// this IS the resumed call, so dropping the figure here loses both
+		// sessions, not one. Booked before failRunWithCheckpoint, which
+		// writes the checkpoint a resume reads its budget carry from.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
 	}
