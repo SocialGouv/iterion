@@ -107,7 +107,8 @@ suggesting `0 4 * * 1`, and plain board dispatch.
   sandbox and audits the workspace in place. `campaign` is `readonly: true`; the
   only file the bot writes into the target is the report under `report_dir` (a
   neutral repo-root directory the operator can gitignore).
-- **Backend** — `default_backend: claude_code` on both agent nodes, required so
+- **Backend** — `backend: claude_code` pinned on both agent nodes, with
+  `default_backend: claude_code` on the workflow block; required so
   the bundled skills are mirrored into `.claude/skills/` and the board MCP tools
   are reachable.
 - **Skills** — `rgaa-audit` (workflow, C/NC/NA scoring, priority grid, report

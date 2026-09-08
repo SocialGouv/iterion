@@ -71,7 +71,10 @@ plumbing hidden from the form (still settable via `--var`).
 The manifest registers one invocation: a `command` of name `revi`, scope
 `pr`, `mode: direct`, `args_var: converse_question`, `disambiguator:
 when_args_present`, `min_replier_role: developer`. The forge block declares
-the `pull_request_comment` event only — there is no PR-open auto-trigger.
+two events — `pull_request_comment` and `pull_request_review_comment`, the
+second feeding reply-to-a-suggestion (this bot's presence is what makes a
+repo subscribe the GitHub review-thread firehose). There is no PR-open
+auto-trigger.
 Manifest `triggers:` are `revi-converse`, `ask`, `converse`.
 
 Manually:

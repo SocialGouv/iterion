@@ -13,8 +13,11 @@ that capability alone, without the feature-development flow around it.
 
 ## The interchangeable-skill contract
 
-This DSL names **no cluster, no cloud, no CLI**. The platform lives
-entirely in an operator-attached skill named `deploy-target`:
+This DSL names **no cloud and no PaaS**. The platform lives
+in an operator-attached skill named `deploy-target`. One
+Kubernetes-shaped hint survives in the `deploy` agent's own system
+prompt (`kubectl get secret` / `rollout status` / ImagePullBackOff as a
+measurement) — guidance for the common case, not a dependency:
 
 - an org-private **plugin** contributes `skills/deploy-target.md` — the
   platform playbook (authenticate, provision, reference the image, apply
@@ -32,7 +35,12 @@ entirely in an operator-attached skill named `deploy-target`:
 Declared as a file secret named **`deploy_credential`** (the same store
 name the app-dev bot uses, so one installation serves both):
 
-- mounted read-only; `$DEPLOY_CREDENTIAL` holds its **path**;
+- mounted read-only at `{{secrets.deploy_credential}}` — that rendered
+  path is the reliable reference. The secret's `env:` declaration
+  (`DEPLOY_CREDENTIAL`) is injected into **tool** nodes, not into a
+  delegated agent's shell, so `$DEPLOY_CREDENTIAL` may well be unset in
+  the `deploy` agent; export it from the path rather than concluding the
+  credential is missing;
 - the bot and the skill pass it to tools by path/env only — never
   opened, printed, encoded or summarised; its bytes are redacted from
   logs;
@@ -77,7 +85,7 @@ iterion run <path>/bots/review-env --var slug=myapp-mr42
 
 | var | default | meaning |
 |---|---|---|
-| `slug` | derived from repo name | DNS-safe environment name; reuse = in-place redeploy |
-| `image_ref` | read back from the repo's CI | exact published reference to deploy |
+| `slug` | `""` | DNS-safe environment name; reuse = in-place redeploy. Empty derives it from the repo name |
+| `image_ref` | `""` | Exact published reference to deploy. Empty makes the agent read it back from the forge/registry the repo declares |
 | `expected_status` | `200` | what the live URL must answer |
 | `max_deploy_retries` | `2` | redeploy attempts on a not-live verdict |
