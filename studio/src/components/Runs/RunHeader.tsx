@@ -24,6 +24,7 @@ import { useServerInfoStore } from "@/store/serverInfo";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
+import { botSourceTierMeta } from "./runBotSourceMeta";
 import { RunShellPanel } from "./RunShellPanel";
 import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import FallbacksUsedRow from "./runHeader/FallbacksUsedRow";
@@ -169,6 +170,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   const startedRel = formatRelative(run.created_at);
   const finishedRel = run.finished_at ? formatRelative(run.finished_at) : null;
   const fileBase = run.file_path ? basename(run.file_path) : null;
+  const botSourceTier = botSourceTierMeta(run);
 
   const onRename = async (next: string) => {
     const trimmed = next.trim();
@@ -396,6 +398,21 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               `/editor?file=${encodeURIComponent(p)}&from=${encodeURIComponent(run.id)}`,
             )
           } />
+          {/* Which BUNDLE of that bot ran. Only a tier that is not the
+              image's own catalog gets a chip — `baked` is the ordinary
+              case and states itself in "Launched with", and an
+              unrecorded tier renders nothing at all (botSourceTierMeta
+              returns null; an absent tier is not a claim). */}
+          {botSourceTier?.notable && (
+            <Tooltip content={botSourceTier.detail}>
+              <span
+                className="inline-flex items-center gap-1 rounded border border-border-default px-1.5 py-0.5 text-micro text-fg-subtle"
+                data-testid="run-bot-source-tier"
+              >
+                {botSourceTier.label}
+              </span>
+            </Tooltip>
+          )}
           {run.work_dir && !cloud && (
             <Tooltip content={run.work_dir}>
               <span className="inline-flex items-center gap-1 font-mono truncate max-w-[20rem]">

@@ -1829,6 +1829,12 @@
             },
             "type": "array"
           },
+          "bot_source_tenant": {
+            "type": "string"
+          },
+          "bot_source_tier": {
+            "type": "string"
+          },
           "budget": {
             "$ref": "#/components/schemas/RunBudget"
           },

@@ -5971,6 +5971,8 @@ export interface components {
             active_duration_ms: number;
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
+            bot_source_tenant?: string;
+            bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
             bundle_display_name?: string;
             bundle_name?: string;

@@ -45,7 +45,12 @@ is CLI-first.
   it launches for (the card's, the subscription's, the schedule's, the
   webhook token's). A team that forks a bot runs its fork on its own
   automation, and every launch records which tier served it
-  (`bot_source_tier`), so a fork is never a silent substitution. Enforced
+  (`bot_source_tier`) **and shows it** — the run API returns it on the run
+  header, the studio badges a `team bot` / `platform override` run beside
+  its bot chip, and *Launched with* names the tier in full. A run that
+  recorded no tier shows nothing rather than defaulting to `baked`: an
+  unresolved tier reading as a working one is the failure mode this whole
+  section exists for. Enforced
   by the central resolver in `pkg/server/bot_resolver.go` and its static
   sweep tests — one of which fails a launch site that hardcodes an empty
   team.

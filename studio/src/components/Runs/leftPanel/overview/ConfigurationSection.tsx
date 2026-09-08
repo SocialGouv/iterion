@@ -3,6 +3,7 @@ import { type ReactNode } from "react";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
 import type { RunHeader, RunModelOverride } from "@/api/runs";
 
+import { botSourceTierMeta } from "../../runBotSourceMeta";
 import { Row, Section } from "../InfoPrimitives";
 
 interface ConfigurationSectionProps {
@@ -45,6 +46,17 @@ function collectLaunchedWith(run: RunHeader): LaunchedWithField[] {
           {run.bundle_display_name || run.bundle_name}
         </span>
       ),
+    });
+  }
+
+  // Which tier served the bundle. Absent when the run recorded no tier
+  // (a local run, or one launched before the stamp existed) — no row
+  // rather than a default, so a missing answer never reads as `baked`.
+  const tier = botSourceTierMeta(run);
+  if (tier) {
+    fields.push({
+      label: "Bundle",
+      render: <span title={tier.detail}>{tier.label}</span>,
     });
   }
 
