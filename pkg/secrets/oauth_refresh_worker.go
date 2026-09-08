@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // OAuthRefreshWorker proactively rotates OAuth-forfait access tokens
@@ -27,6 +29,13 @@ type OAuthRefreshWorker struct {
 	// Lead is how far ahead of expiry a record is refreshed (a record
 	// expiring within Lead is rotated now). Defaults to 30m.
 	Lead time.Duration
+	// Logger is optional. It exists for ONE event the returned counters
+	// cannot express: a refresh that succeeded at the provider and was then
+	// discarded because its claim had been superseded. Nothing is broken —
+	// but a refresh token WAS rotated at the provider and thrown away, and
+	// an operator chasing "why did that credential change" has no other
+	// trace of it.
+	Logger *iterlog.Logger
 }
 
 // RunOnce refreshes every record expiring within Lead. It is best-effort:
@@ -148,6 +157,11 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// refreshed from the session it replaced.
 		if err := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
 			if errors.Is(err, ErrRefreshClaimLost) {
+				if w.Logger != nil {
+					w.Logger.Warn("oauth-forfait refresh: %s/%s exchanged then DISCARDED — the record was "+
+						"re-connected or the claim expired mid-flight; the tokens obtained belong to the "+
+						"session that was replaced", rec.UserID, rec.Kind)
+				}
 				continue
 			}
 			failures++

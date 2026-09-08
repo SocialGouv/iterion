@@ -2,10 +2,13 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,4 +162,106 @@ func TestCodexConnect_DeadOnArrivalCredentialSaysSo(t *testing.T) {
 	if l := logs.String(); !strings.Contains(l, "NO refresh") || !strings.Contains(l, expired.Format(time.RFC3339)) {
 		t.Fatalf("want a Warn naming the expiry and the missing refresh token; got:\n%s", l)
 	}
+}
+
+// The manual refresh endpoint is the second holder of a shared credential,
+// beside the background sweep — a refresh is read → provider round trip →
+// persist, and OpenAI retires the refresh token it is handed, so two of
+// them overlapping leave one holding a credential the provider has already
+// invalidated. It therefore takes the same per-record claim the sweep does.
+//
+// Both answers the docs promise are asserted on the real HTTP path:
+//   - claim held elsewhere  → 409, and NO exchange is attempted;
+//   - claim lost in flight  → 409, and the tokens are discarded rather than
+//     written over the record that superseded them.
+func TestOAuthRefresh_ManualRefreshIsFencedByTheSameClaim(t *testing.T) {
+	srv, hs, signer, store := oauthTestServer(t)
+	jo := oauthJWT(t, signer, "jo")
+
+	var hits atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"sk-ant-refreshed1234567890abcd","refresh_token":"rf-new","expires_in":3600}`))
+	}))
+	defer provider.Close()
+	srv.httpClient = &http.Client{Transport: rewriteHostTransport{target: provider.URL}}
+	srv.cfg.AnthropicOAuthClientID = "client-xyz"
+
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-stored1234567890abcdef","refreshToken":"rf-old","expiresAt":0}}`)
+	sealed, err := secrets.SealOAuthPayload(srv.sealer, "jo", secrets.OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	exp := time.Now().Add(time.Hour).UTC()
+	if err := store.Upsert(t.Context(), secrets.OAuthRecord{
+		UserID: "jo", Kind: secrets.OAuthKindClaudeCode, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// Somebody else (a sweep, another operator) holds the claim.
+	now := time.Now().UTC()
+	ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindClaudeCode, "someone-else", now, now.Add(secrets.RefreshClaimTTL))
+	if err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/refresh", jo, "")
+	if code != http.StatusConflict {
+		t.Fatalf("refresh behind a live claim = %d body=%s, want 409", code, body)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("provider called %d times behind a live claim, want 0 — the exchange retires the "+
+			"refresh token the other holder is about to store", n)
+	}
+
+	// Claim released, but the credential is REPLACED while this refresh is
+	// in flight: the record it is about to write no longer exists. The
+	// re-connect (Upsert) clears the claim, which is what makes the commit
+	// fail closed.
+	if err := store.ReleaseRefreshClaim(t.Context(), "jo", secrets.OAuthKindClaudeCode, "someone-else", nil); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	reconnected, err := secrets.SealOAuthPayload(srv.sealer, "jo", secrets.OAuthKindClaudeCode,
+		[]byte(`{"claudeAiOauth":{"accessToken":"sk-ant-reconnected123456789ab","refreshToken":"rf-brand-new","expiresAt":0}}`))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	srv.httpClient = &http.Client{Transport: reconnectMidFlightTransport{
+		target: provider.URL,
+		before: func() {
+			_ = store.Upsert(context.Background(), secrets.OAuthRecord{
+				UserID: "jo", Kind: secrets.OAuthKindClaudeCode, SealedPayload: reconnected, AccessTokenExpiresAt: &exp,
+			})
+		},
+	}}
+	code, body = oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/refresh", jo, "")
+	if code != http.StatusConflict {
+		t.Fatalf("refresh superseded mid-flight = %d body=%s, want 409", code, body)
+	}
+	rec, err := store.Get(t.Context(), "jo", secrets.OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	plain, err := secrets.OpenOAuthPayload(srv.sealer, "jo", secrets.OAuthKindClaudeCode, rec.SealedPayload)
+	if err != nil {
+		t.Fatalf("unseal: %v", err)
+	}
+	if !strings.Contains(string(plain), "rf-brand-new") {
+		t.Fatalf("stored credential = %s, want the one the operator just connected: a refresh of the "+
+			"session it replaced must not overwrite it", plain)
+	}
+}
+
+// reconnectMidFlightTransport runs `before` while the refresh request is on
+// the wire — the only place a re-connect can race a refresh that has
+// already taken its claim.
+type reconnectMidFlightTransport struct {
+	target string
+	before func()
+}
+
+func (rt reconnectMidFlightTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.before()
+	return rewriteHostTransport{target: rt.target}.RoundTrip(req)
 }

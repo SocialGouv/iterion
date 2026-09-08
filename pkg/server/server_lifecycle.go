@@ -439,6 +439,7 @@ func (s *Server) startOAuthForfaitRefresh() {
 		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
 		CodexClientID:     s.cfg.CodexOAuthClientID,
 		Lead:              30 * time.Minute,
+		Logger:            s.logger,
 	}
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
