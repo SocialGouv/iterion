@@ -723,7 +723,7 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 	// is most certainly final: the FS store ignores ctx, but on Mongo the
 	// day's spend would silently miss a cancelled run's last node. Same shape
 	// handleContextDoneWithCheckpoint uses for its own last writes.
-	ctx, cancel := detachedBookingCtx(rs)
+	ctx, cancel := detachedBookingCtx(rs.ctx)
 	defer cancel()
 	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true); err != nil {
 		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
@@ -731,12 +731,11 @@ func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[s
 }
 
 // detachedBookingCtx builds the bounded, cancellation-free context a spend
-// booking persists through. rs.ctx keeps its values (a store handle, a trace
-// span) and loses only its cancellation; a nil one — runStates built directly
-// in tests have no context — degrades to Background rather than panicking
-// inside the accounting path.
-func detachedBookingCtx(rs *runState) (context.Context, context.CancelFunc) {
-	parent := rs.ctx
+// booking persists through. The parent keeps its values (a store handle, a
+// trace span) and loses only its cancellation; a nil one — runStates built
+// directly in tests carry no context — degrades to Background rather than
+// panicking inside the accounting path.
+func detachedBookingCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}

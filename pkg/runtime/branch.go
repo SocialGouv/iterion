@@ -239,7 +239,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			}
 		} else {
 			e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)
-			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
+			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
 		}
 		if done {
 			// A deferred gate never emitted node_started. A real pause keeps its
@@ -638,7 +638,7 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 // flag: done=true (with result.err set) when execution or validation failed.
 // On an execution error it emits node_finished with the error so the event
 // log stays paired.
-func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, iter int, result *branchResult, slot *branchSlot) (map[string]any, bool) {
+func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, iter int, result *branchResult, slot *branchSlot) (map[string]any, bool) {
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
 	branchScope := resolveScope{
@@ -699,6 +699,13 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
+		// The delegate stamps what the attempt burned on the result it
+		// returns beside the error, and this is the last frame that can see
+		// it: the branch ends here (nothing retries it in place) and the
+		// trunk aggregates the failure without the output. Booked under the
+		// SAME ledger key the branch's successes use, so a fan-out's spend
+		// stays one monotonic entry.
+		e.recordFailedBranchSpend(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, &result.costUSD, result)
 		if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]any{
 			"error": err.Error(),
 		}); emitErr != nil {
@@ -733,28 +740,8 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // across iterations; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
 func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) bool {
-	tokens, costUSD := extractUsage(output)
-
-	if e.dailyCap != nil && costUSD > 0 {
-		*branchCostUSD += costUSD
-		if _, err := e.dailyCap.Record(ctx, ledgerKey, *branchCostUSD); err != nil {
-			e.logger.Warn("branch %s: daily spend cap record failed: %v", branchID, err)
-		}
-	}
-
-	if rs.budget == nil {
-		return false
-	}
-	checks := rs.budget.RecordUsage(tokens, costUSD)
-
-	for _, w := range findWarnings(checks) {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
-			e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
-			result.eventErrors++
-		}
-	}
-
-	if exc := findExceeded(checks); exc != nil {
+	exc := e.recordBranchSpend(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, branchCostUSD, result)
+	if exc != nil {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,
@@ -767,6 +754,61 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 		return true
 	}
 	return false
+}
+
+// recordBranchSpend is the RECORDING half of recordBranchUsage — the ledger
+// entry under the branch key, the shared run budget, the warnings — returning
+// the exceeded axis (nil when none) instead of acting on it. Split out so a
+// booking that must not speak for the run can reuse every line of it:
+// recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
+// alone.
+func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
+	tokens, costUSD := extractUsage(output)
+
+	if e.dailyCap != nil && costUSD > 0 {
+		*branchCostUSD += costUSD
+		if _, err := e.dailyCap.Record(ctx, ledgerKey, *branchCostUSD); err != nil {
+			e.logger.Warn("branch %s: daily spend cap record failed: %v", branchID, err)
+		}
+	}
+
+	if rs.budget == nil {
+		return nil
+	}
+	checks := rs.budget.RecordUsage(tokens, costUSD)
+
+	for _, w := range findWarnings(checks) {
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
+			e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
+			result.eventErrors++
+		}
+	}
+	return findExceeded(checks)
+}
+
+// recordFailedBranchSpend books what a branch node burned before it failed —
+// the trunk's recordFailedNodeSpend, in branch coordinates (the branch's own
+// daily-cap ledger key and event stream).
+//
+// A fan-out branch never reaches execLoopRunNode, so the trunk's booking
+// cannot cover it, and a failing branch node is terminal for its branch: no
+// retry continues its session, and the trunk's aggregation fails the run
+// without ever seeing the output. Whatever it burned is therefore final here
+// or lost — and a fan-out branch is where the most expensive agent work in a
+// run tends to happen.
+//
+// Accounting only, never a verdict: the exceeded axis is DISCARDED rather
+// than turned into result.err, because the branch already has its own cause
+// and a budget error would replace it with a generic one. On a context
+// detached from the branch's, so a teardown mid-branch cannot refuse the
+// ledger write it is the last chance to make.
+func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
+	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+		return
+	}
+	bookCtx, cancel := detachedBookingCtx(ctx)
+	defer cancel()
+	_ = e.recordBranchSpend(bookCtx, rs, runID, branchID, ledgerKey, currentNodeID, output, branchCostUSD, result)
 }
 
 // publishBranchArtifact persists the node's output as a versioned artifact
