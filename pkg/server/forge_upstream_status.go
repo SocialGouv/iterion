@@ -158,6 +158,16 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 // the call to its first byte on the wire before concluding a site is
 // clean; three arms on this branch were cleared on the shorter reading
 // and were wrong (see the residuals named at each).
+//
+// Finally: the 502 default is a per-route CHOICE, not the package's
+// rule, and this marker exists for the routes that make it. A handler
+// that can enumerate the forge's refusals and treat everything left as
+// its own defaults to 500 instead and needs no marker —
+// writeForgeOAuthAppError is that shape. A handler that cannot must
+// keep 502 (an unclassified upstream error must not be blamed on
+// iterion), and the marker is then the ONLY way it can ever answer 500.
+// The two are not one doctrine: pick the default the route's error
+// surface actually supports.
 type iterionFault struct{ err error }
 
 // newIterionFault wraps err so a handler whose default arm is 502 can
