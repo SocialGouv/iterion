@@ -546,6 +546,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				NodeID:    f.id,
 				Questions: questions,
 				SessionID: result.SessionID,
+				// The fingerprint belongs with the id: a fork whose
+				// parent provider is unknown is dropped by the backend,
+				// so an id checkpointed without it names a session the
+				// resume is then forbidden to use.
+				SessionFingerprint: result.SessionFingerprint,
 				// The conversation on this pause belongs to whichever
 				// element served, so the checkpoint must name THAT
 				// backend — resuming against the requested one would

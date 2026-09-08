@@ -168,6 +168,16 @@ type ErrNeedsInteraction struct {
 	SessionID string         // delegate session ID for re-invocation
 	Backend   string         // delegate backend name (empty for claw direct)
 
+	// SessionFingerprint is the provider fingerprint that produced
+	// SessionID — the same value a successful output carries as
+	// `_session_fingerprint`. It travels beside the id because the id
+	// alone is not enough to USE the session: shouldDropSessionFork
+	// drops a fork whose parent fingerprint is unknown (conservatively,
+	// against cross-provider thinking-block 400s), so a `session: fork`
+	// node resumed from a pause without it starts fresh — discarding the
+	// very session the pause recorded.
+	SessionFingerprint string
+
 	// Conversation is the persisted backend-specific conversation history
 	// captured at the pause point (claw: marshalled []api.Message). The
 	// runtime relays this opaque blob into the checkpoint so that resume
