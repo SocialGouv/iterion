@@ -80,3 +80,25 @@ fail with `park returned before the parent was cancelled`. Removing the resume
 barrier release made both each/all error-path regressions fail with `resume
 hung`. Those production mutations were also removed: this change contains only
 tests and this wait audit.
+
+`TestFanOutAbandonedBranchDoesNotRaceRunState` states its value as "running
+exactly this interleaving under the CI `-race` job", and virtual time elapses
+its 100 ms `branchCancelGracePeriod` the instant the bubble blocks durably — so
+the conversion was falsified on the oracle itself, twice, under
+`go test -race -count=3`:
+
+- Removing the retired-epoch guard (`parallelExecutionState.updateBranch`'s
+  `if p.retired { return false }`, the ADR-095 write the final assertion
+  covers) failed the converted test with six `DATA RACE` reports.
+- A deliberately unsynchronized probe — written by the main loop in `finalize`
+  right after it releases the wedged branch, read by that branch as it wakes —
+  was reported as a race, naming the abandoned branch's goroutine through
+  `launchBranches` → `execBranch` → `executeNodeForBranch`. The overlap the
+  test exists for is therefore still real inside a bubble: synctest virtualizes
+  the clock, not goroutine scheduling.
+
+Both mutations were removed. Two earlier candidates did NOT discriminate
+(sharing the trunk's loop-counter map into `enclosingLoopCounters`; the main
+loop writing `rs.vars` on the loop-edge traversal) — they are simply not on the
+abandoned branch's read path, in either the synctest or the pre-conversion
+shape, so they say nothing about the conversion.
