@@ -153,7 +153,17 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   a codex entry whose `access_token_expires_at` is absent is one of these.
   A credential whose token states no readable deadline logs a Warn at
   connect (`stored WITHOUT an access-token expiry`) and needs a manual
-  re-connect whenever it expires.
+  re-connect whenever it expires. One whose token is expired AND carries
+  no refresh token logs a louder one (`NO refresh token`): it is stored,
+  but nothing can renew it and every run drawing it dies on its first LLM
+  call — re-run `codex login` and upload again.
+  You do **not** have to wait a sweep for a credential you connected
+  already expired: the connect fires one refresh immediately (best-effort,
+  off the request), and the server also sweeps once at boot rather than
+  only on its next tick — a restart used to re-phase that ticker, leaving
+  a token the previous replica was about to rotate dying for a full
+  period. Both show in the log as `oauth-forfait refresh …: rotated N
+  token(s)`.
 - **A run with no credential at all is QUEUED, not refused, by default.**
   The publisher logs one Warn (`no credential resolved for run=… tiers
   consulted: byok, oauth-forfait, pool, platform`) and the runner falls
