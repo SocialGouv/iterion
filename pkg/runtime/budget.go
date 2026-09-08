@@ -691,6 +691,14 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // max_cost_usd, the org monthly cap and a lending donor's ledger read the
 // same totals, and a failed agent node can be the most expensive thing a
 // run did.
+// A booking also counts an iteration, as every recordBudget does — so a
+// failed node that spent consumes a max_iterations slot and one that spent
+// nothing does not. That asymmetry is deliberate: the guard below is what
+// keeps a spendless tool failure from writing a phantom zero row, and an
+// attempt that burned a session did do the work the iterations axis counts.
+// It cannot end a run on its own — the deferring variant only NOTES an
+// overrun, and the note is taken at a success boundary no failure exit
+// reaches.
 func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[string]any) {
 	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
 		return
