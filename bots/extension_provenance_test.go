@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // The provenance of an extension act: the net's subbot reports the commits it
@@ -280,7 +281,7 @@ func runExtendBase(t *testing.T, ws string) extendBaseOut {
 func gitInNet(t *testing.T, ws string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-C", ws}, args...)
-	cmd := exec.Command("git", full...)
+	cmd := exec.Command("git", gitlib.NoAutoMaintenance(full...)...)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -472,7 +473,7 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 	// certifiable. Reported, not refused.
 	t.Run("an ambient git identity is said, and certifies all the same", func(t *testing.T) {
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
-		cmd := exec.Command("git", "-C", ws, "add", "-A")
+		cmd := exec.Command("git", gitlib.NoAutoMaintenance("-C", ws, "add", "-A")...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -489,8 +490,9 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 			t.Fatalf("git add: %v (%s)", aerr, out)
 		}
 		// The environment wins over `-c user.email`, which is the whole point.
-		commit := exec.Command("git", "-C", ws, "-c", "user.email=extend@golden-master.iterion",
-			"-c", "user.name=x", "commit", "-qm", "act")
+		commit := exec.Command("git", gitlib.NoAutoMaintenance("-C", ws,
+			"-c", "user.email=extend@golden-master.iterion",
+			"-c", "user.name=x", "commit", "-qm", "act")...)
 		commit.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 			"GIT_AUTHOR_EMAIL=ambient@host", "GIT_COMMITTER_EMAIL=ambient@host",
 			"GIT_AUTHOR_NAME=ambient", "GIT_COMMITTER_NAME=ambient")
@@ -1003,7 +1005,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		}
 		g := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+			cmd := exec.Command("git", gitlib.NoAutoMaintenance(append([]string{"-C", ws}, args...)...)...)
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 			if out, gerr := cmd.CombinedOutput(); gerr != nil {
 				t.Fatalf("git %v: %v (%s)", args, gerr, out)
@@ -1059,7 +1061,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		}
 		g := func(args ...string) string {
 			t.Helper()
-			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+			cmd := exec.Command("git", gitlib.NoAutoMaintenance(append([]string{"-C", ws}, args...)...)...)
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 			out, gerr := cmd.CombinedOutput()
 			if gerr != nil {
@@ -1239,7 +1241,7 @@ func extensionLedgerRepo(t *testing.T, id string, extraBlocks ...string) (ws, ba
 	}
 	g := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
+		cmd := exec.Command("git", gitlib.NoAutoMaintenance(append([]string{"-C", ws}, args...)...)...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		out, gerr := cmd.CombinedOutput()
 		if gerr != nil {
