@@ -1517,6 +1517,27 @@ tool oracle_run:
             if not isinstance(obj, dict) or \
                     not (isinstance(obj.get("id"), str) and obj.get("id")):
                 obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+            elif obj["id"].splitlines() != [obj["id"]] or not obj["id"].strip() \
+                    or any(ord(c) < 0x20 or ord(c) == 0x7f for c in obj["id"]):
+                # An id reaches the gate through a LINE-ORIENTED transport
+                # (`GM_ACTED_IDS`, one id per line). One carrying a line separator
+                # arrives as two fragments and seeds the covered set with an id no
+                # subbot ever acted; one made only of whitespace cannot be told
+                # from a blank line. Refused at this single parse point rather
+                # than repaired downstream — a repair is precisely what collapses
+                # two distinct ids into one, and the collapse re-opens the
+                # smuggling this file exists to close. An INTERIOR space stays
+                # legal: it round-trips whole, and a lot-authored id may carry one.
+                #
+                # The test is stated TWICE on purpose, and neither half covers the
+                # other. `splitlines()` is the transport's own reader, so asking it
+                # to round-trip catches every separator it honours — including
+                # U+0085, U+2028 and U+2029, which are NOT control characters and
+                # which a `ord(c) < 0x20` rule lets straight through. The control
+                # rule in turn refuses TAB, NUL and DEL, which round-trip fine here
+                # but have no business in a lot-authored identifier that a human
+                # reads in a ledger and a machine compares byte for byte.
+                obj = {"id": "UNPARSEABLE", "raw": body[:120]}
             else:
                 # The list-shaped fields are iterated by every judgement below. A
                 # scalar here raised TypeError inside the verdict, and a verdict
@@ -1578,7 +1599,9 @@ tool oracle_run:
         acts = _extension_blocks(text, "act")
         if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
             return [{"id": "UNPARSEABLE",
-                     "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+                     "why": "a ledger block does not parse as JSON, or carries an "
+                            "id that cannot survive the one-id-per-line "
+                            "certificate — escalate, do not guess"}]
         # Only a WELL-FORMED act closes a request: an act with no recorded path
         # acted nothing, and letting it close the term would let the constrained
         # party silence the conjunction with four lines of JSON — the
@@ -1611,9 +1634,36 @@ tool oracle_run:
                           sort_keys=True, ensure_ascii=False)
 
 
-    def extension_verdict(ws, gm_rel, base):
+    def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
+                          acted_ids=None):
         """Judge every ACTED extension against `base`, in git — never against the
         acting party's word.
+
+        `acted_commits` (None, or a set of 40-hex shas) is what the NET's own
+        subbot reports having committed in this segment — read by main() from
+        GM_ACTED_COMMITS, which the parent bot defines even when empty. None
+        means the caller predates provenance (today's rule only: request and
+        act in one commit refuse); a set means STRICT: an act introduced in
+        base..HEAD by a commit outside it was written by the constrained party,
+        whatever author it carries, and is refused — unless every path it
+        records carries at HEAD the exact blob the subbot certified
+        (`acted_blobs`, path → blob id): a history rewritten after the subbot
+        ran keeps its certified content and loses its shas. Measured on a live
+        campaign: a lot filed a request in one commit and acted it in the next,
+        the same-commit rule saw nothing, and the lot's own file became a
+        reference of the net that judges it.
+
+        `acted_blobs` also bounds the exemption, on the path SET as much as on
+        the content: a certified path whose blob at HEAD moved since the act was
+        rewritten by someone after the subbot, and a recorded path the subbot
+        certified no blob for was never acted at all — the act's own block is
+        above the run's base, so append-only leaves it mutable and first-wins
+        provenance keeps naming the subbot's commit however it is edited.
+        `acted_ids` bounds WHICH act the certificate covers: the ones the subbot
+        reports having acted, and no other. Without it the content rule exempts
+        any act naming a certified path, which a lot reaches by filing two
+        requests, getting the second REFUSED, and appending its own act for it
+        recording the first one's path (review finding, executed).
 
         Per acted request, every recorded path must be a pure addition:
           - under refs/: absent at base, present at HEAD. A path that existed at
@@ -1642,6 +1692,11 @@ tool oracle_run:
             code, out, _ = git("ls-tree", ref, "--", path)
             return out.split()[0] if code == 0 and out.strip() else ""
 
+        def blob_id(ref, path):
+            code, out, _ = git("ls-tree", ref, "--", path)
+            parts = out.split() if code == 0 else []
+            return parts[2] if len(parts) >= 3 else ""
+
         ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
         corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
         refs_prefix = gm_rel.rstrip("/") + "/refs/"
@@ -1656,11 +1711,15 @@ tool oracle_run:
             subbot never ran — production cannot produce that shape, because the
             parent commits its lot before the subbot starts (adversarial finding,
             executed)."""
-            code, out, _ = git("log", "--format=%H", "--reverse", "--", ledger_rel)
+            code, out, _ = git("log", "--format=%H%x00%ae", "--reverse", "--", ledger_rel)
             if code != 0:
                 return None
             first = {}
-            for sha in out.split():
+            for line in out.splitlines():
+                sha, _, email = line.partition("\0")
+                sha = sha.strip()
+                if not sha:
+                    continue
                 text = at(sha, ledger_rel)
                 if text is None:
                     continue
@@ -1669,6 +1728,7 @@ tool oracle_run:
                         bid = b.get("id")
                         if isinstance(bid, str) and bid:
                             first.setdefault((kind, bid), sha)
+                            first.setdefault(("author", kind, bid), email.strip())
             return first
 
         # An unresolvable base and an honest "absent at base" both read as None
@@ -1681,8 +1741,15 @@ tool oracle_run:
                              "judging additions against nothing would pass by "
                              "construction" % (base, err.strip() or "unknown ref")}
 
+        # `provenance` is the verdict SAYING which rule it applied. A net whose
+        # harness predates this feature answers `extend-verify` and passes a
+        # caller's capability probe all the same, while judging by the
+        # same-commit rule alone — the bypassable one — and nothing in its answer
+        # said so: the gate reverted to the hole in silence (review finding,
+        # executed). A caller that hands provenance asserts this echo.
         verdict = {"acted": [], "ok_paths": [], "ledger_append_only": True,
-                   "requests_added": 0, "problems": []}
+                   "requests_added": 0, "problems": [],
+                   "provenance": "strict" if acted_commits is not None else "legacy"}
 
         head_txt = at("HEAD", ledger_rel) or ""
         base_txt = at(base, ledger_rel) or ""
@@ -1694,9 +1761,21 @@ tool oracle_run:
 
         all_blocks = (_extension_blocks(head_txt, "request") +
                       _extension_blocks(head_txt, "act"))
-        if any(b.get("id") == "UNPARSEABLE" for b in all_blocks):
+        # An unreadable block is not merely REPORTED: it makes this judge unable to
+        # read the ledger it certifies from, so nothing that ledger holds is
+        # certified while the block stands — the same shape as
+        # `ledger_append_only`, for the same reason. Reported only, the readable
+        # blocks beside it went on exempting their paths, so a ledger that
+        # escalates handed out exemptions all the same, and a caller reading
+        # `ok_paths` without also reading `problems` never saw the escalation. An
+        # ESCALATION, never a forgery: the requester fixes the block, no history
+        # was rewritten.
+        ledger_readable = not any(b.get("id") == "UNPARSEABLE" for b in all_blocks)
+        if not ledger_readable:
             verdict["problems"].append(
-                "a ledger block does not parse as JSON — escalate, do not guess")
+                "a ledger block does not parse as JSON, or carries an id that "
+                "cannot survive the one-id-per-line certificate — escalate, do "
+                "not guess")
         requests = {b["id"]: b for b in _extension_blocks(head_txt, "request")
                     if b.get("id") != "UNPARSEABLE"}
         acts = [b for b in _extension_blocks(head_txt, "act")
@@ -1814,8 +1893,28 @@ tool oracle_run:
         base_act_ids = {b.get("id") for b in _extension_blocks(base_txt, "act")
                         if b.get("id") != "UNPARSEABLE"}
         intro = introducing_commits()
+        # An id is acted ONCE. `introducing_commits` keys first-wins, so a SECOND
+        # act block carrying an id the subbot already acted resolves its
+        # provenance on the subbot's commit — the whole provenance branch is
+        # skipped, no certified blob exists for its paths so the rewrite check
+        # skips too, and the lot's own commit writes a reference into the net that
+        # judges it, exempted (review finding, executed: both rows came back ok
+        # and the second act's path landed in ok_paths). The ledger's ids are the
+        # audit trail's keys; a duplicate key is a refusal, like the corpus's.
+        seen_act_ids = set()
         for act in acts:
             row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
+            if act.get("id") in seen_act_ids:
+                row["forged"] = True
+                row["problems"].append(
+                    "a SECOND act block for %r — an id is acted once. Its "
+                    "provenance would resolve on the FIRST act's commit, so any "
+                    "later block rides the subbot's certificate: remove it, and "
+                    "file a new request if something more must be acted"
+                    % act.get("id"))
+                verdict["acted"].append(row)
+                continue
+            seen_act_ids.add(act.get("id"))
             if act.get("id") in base_act_ids:
                 row["ok"] = True
                 row["acted_at_base"] = True
@@ -1835,9 +1934,49 @@ tool oracle_run:
                     "request and the act, so the net's subbot never judged it — "
                     "filing and answering are different powers"
                     % intro[("act", act.get("id"))][:12])
+                row["forged"] = True
             paths = [p for p in (act.get("recorded_paths") or [])
                      if isinstance(p, str) and p]
             row["paths"] = paths
+            act_sha = (intro or {}).get(("act", act.get("id")))
+            if act_sha:
+                row["introduced_by"] = act_sha[:12]
+                row["author"] = (intro or {}).get(("author", "act", act.get("id"))) or ""
+            # Provenance, when the parent states what the net's subbot committed:
+            # an act introduced by any other commit was written by the party the
+            # oracle constrains — whatever author it carries, an author is prose.
+            # The one way back in is the CONTENT: every recorded path carrying at
+            # HEAD the exact blob the subbot certified (a history rewritten after
+            # the subbot ran).
+            if acted_commits is not None and req is not None and act_sha \
+                    and act_sha not in acted_commits:
+                # The way back in is CONTENT, so there must BE content, it must
+                # be the content of an act the subbot ACTUALLY acted, and the
+                # comparison must be over paths whose blob is expected to stand
+                # still. Each clause was a hole: an act recording only the ledger
+                # left the generator empty and `all([])` true; an act naming a
+                # path the subbot certified for ANOTHER request rode that
+                # request's certificate (the lot writes its own request, so the
+                # paths it declares are its own); corpus.json legitimately moves
+                # when a later act adds entries, so comparing its blob would
+                # refuse a rewritten history for the one file expected to change
+                # (review findings, executed).
+                surface = [p for p in paths if p not in (ledger_rel, corpus_rel)]
+                blobs_match = bool(surface) and acted_blobs is not None \
+                    and act.get("id") in (acted_ids or set()) and all(
+                        acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
+                        for p in surface)
+                if not blobs_match:
+                    row["forged"] = True
+                    row["problems"].append(
+                        "the act was introduced by %s (author %s), which is not one "
+                        "of the net subbot's commits%s — an act the constrained party "
+                        "wrote is a refusal, not an extension. If the history was "
+                        "rewritten after the subbot ran, relaunch on a fresh base; "
+                        "otherwise remove the act block and file the request only."
+                        % (act_sha[:12], row.get("author") or "?",
+                           (" (%s)" % ", ".join(sorted(c[:12] for c in acted_commits)))
+                           if acted_commits else " (none reported)"))
             if req is not None and not paths:
                 row["problems"].append(
                     "the act records no path — an extension that touched "
@@ -1897,6 +2036,42 @@ tool oracle_run:
                 row["problems"].append(
                     "the act records no path on the extension surface (refs/ or "
                     "corpus.json) — filing paperwork is not an extension")
+            if acted_blobs is not None and req is not None:
+                # The certificate binds the act's recorded path SET, not only the
+                # content of the paths it happens to name. Both halves are the same
+                # masking vector, reached through the same door:
+                #   - a certified path whose blob moved was rewritten after the
+                #     act, by the lot, in its own later commit;
+                #   - a recorded path with NO certificate was never acted at all.
+                #     `introducing_commits` resolves an act FIRST-WINS on
+                #     (kind, id), so it keeps naming the subbot's commit however
+                #     the block is edited afterwards, and append-only only pins the
+                #     text below the RUN's base — the subbot's own block sits above
+                #     it, in the mutable region. Widening that block with the lot's
+                #     own path made an uncertified file a reference of the net that
+                #     judges it. The strict provenance arm already demands a
+                #     certificate for every surface path; this is that same demand
+                #     on the arm standing in for it.
+                for p in paths:
+                    if p == ledger_rel or p == corpus_rel:
+                        continue
+                    certified = acted_blobs.get(p)
+                    if not certified:
+                        row["forged"] = True
+                        row["problems"].append(
+                            "%s is recorded by the act but the subbot certified no "
+                            "blob for it — a path appended to the record after the "
+                            "act is not part of the act" % p)
+                    elif blob_id("HEAD", p) != certified:
+                        row["forged"] = True
+                        row["problems"].append(
+                            "%s was rewritten after the act: HEAD carries blob %s, "
+                            "the subbot certified %s — the certificate covers the "
+                            "content it certified, not the path" % (p, (blob_id("HEAD", p) or "?")[:12], certified[:12]))
+            if not ledger_readable:
+                row["problems"].append(
+                    "the ledger carries a block this judge cannot read — nothing "
+                    "it holds is certified until that block is fixed")
             row["ok"] = (req is not None and not row["problems"]
                          and verdict["ledger_append_only"])
             if row["ok"]:
@@ -3512,6 +3687,67 @@ tool oracle_run:
 
     # ─── Self-test ──────────────────────────────────────────────────────────────
 
+    # ─── Auto-maintenance audit (selftest) ──────────────────────────────────────
+
+    _GIT_MAINTENANCE_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
+    def _spawned_program(argv, shell):
+        """The program a Popen actually launches.
+
+        shell=True runs the string through /bin/sh, so the program is the shell —
+        not the first word of the string, which is what a reader assumes and what
+        an audit keyed on argv[0] would record.
+        """
+        if shell:
+            return "sh"
+        if isinstance(argv, (list, tuple)):
+            if not argv:
+                return ""
+            return os.path.basename(str(argv[0]))
+        return os.path.basename(str(argv).split()[0]) if str(argv).strip() else ""
+
+
+    def _env_refuses_auto_maintenance(env):
+        """Whether an environment turns BOTH switches off through git's own
+        GIT_CONFIG_* form — the environment every descendant inherits, whatever
+        path it takes to reach git.
+
+        Both switches, not one: `maintenance.auto` is Git >= 2.48 and `gc.auto` is
+        the older one AND the fallback a recent Git consults when the first is
+        absent, so a single switch holds on one version and not the other.
+
+        env is None when the child inherits the parent's — that inherited
+        environment is the one git will actually read, so that is what gets read
+        here. Reading `env or {}` instead would call a correct inherited call
+        faulty.
+        """
+        environ = os.environ if env is None else env
+        try:
+            count = int(environ.get("GIT_CONFIG_COUNT", "0") or "0")
+        except (TypeError, ValueError):
+            count = 0
+        declared = {}
+        for i in range(count):
+            key = environ.get("GIT_CONFIG_KEY_%d" % i)
+            if key:
+                declared[key] = environ.get("GIT_CONFIG_VALUE_%d" % i)
+        return all(declared.get(key) == value for key, value in _GIT_MAINTENANCE_OFF)
+
+
+    def _argv_refuses_auto_maintenance(argv):
+        """Whether a git argv turns both switches off with its own `-c` flags.
+
+        The other accepted idiom: the argv is what a call site writes, the
+        environment is what a chokepoint sets for every call site at once.
+        Accepting only the one in use here would refuse the other the day someone
+        moves the guard.
+        """
+        tokens = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+        flags = [tokens[i + 1] for i, a in enumerate(tokens[:-1]) if a == "-c"]
+        return all("%s=%s" % (key, value) in flags for key, value in _GIT_MAINTENANCE_OFF)
+
+
     def _selftest():
         """GM_MODE=selftest — teste la moitie qui DECIDE, pas celle qui compare.
 
@@ -3529,6 +3765,106 @@ tool oracle_run:
         """
         failures, checked = [], [0]
         skipped_under_root = []
+
+        # A writing git command in a scratch repo detaches `git maintenance run
+        # --auto` (Git >= 2.48), which goes on writing under .git/objects after the
+        # command returned — while the fixture's temp dir is being removed.
+        #
+        # The switches are set HERE, once, in the environment every child git
+        # inherits, rather than at each call site: enumerating the call sites is
+        # what failed. Two sweeps read this file and both missed a helper defined
+        # four hundred lines below fixture_git, inside a block.
+        #
+        # And this does not read the source either — it WATCHES what the selftest
+        # spawns. Popen is the hook because run, call, check_call and check_output
+        # all reach the kernel through it; hooking run alone would leave four forms
+        # unseen. os.system reaches neither and is refused outright rather than
+        # watched, so the door nobody guards fails closed.
+        #
+        # What is judged is not "the git command lines we recognise" — recognising
+        # git by the program name is the same enumeration one level up, and it lets
+        # `env git`, `xargs git` or a git called through a shell variable walk past.
+        # Instead: a WHITELIST of what may be launched at all (git and the shell,
+        # the two the selftest uses — measured: 426 and 236), and the environment
+        # judged on EVERY launch, because that environment is what git reads
+        # whatever path reaches it. A future helper that spawns anything else is
+        # named, not missed.
+        #
+        # Deliberate hostility (`env -i`, unsetting GIT_CONFIG_COUNT inside a
+        # script) is out of scope and stated as such: the adversary here is an
+        # ordinary helper written without knowing the rule, not someone evading it.
+        _git_audit = {"git": 0, "sh": 0, "offenders": []}
+        _real_popen = subprocess.Popen
+        _real_system = os.system
+
+        class _AuditedPopen(_real_popen):
+            def __init__(self, args, *rest, **kw):
+                program = _spawned_program(args, kw.get("shell"))
+                env = kw.get("env")
+                if program not in _git_audit:
+                    _git_audit["offenders"].append(
+                        "programme hors liste blanche : %s (%s)" % (program, str(args)[:80]))
+                else:
+                    _git_audit[program] += 1
+                    if not _env_refuses_auto_maintenance(env) and not (
+                            program == "git" and _argv_refuses_auto_maintenance(args)):
+                        _git_audit["offenders"].append(str(args)[:120])
+                super().__init__(args, *rest, **kw)
+
+        def _refuse_system(command):
+            raise AssertionError(
+                "selftest: os.system(%r) bypasses the git audit — use subprocess" % command)
+
+        # APPENDED after whatever is already declared, never written at index 0:
+        # the engine injects the workspace's safe.directory entry through this same
+        # environment (runtime/sandbox_mounts.go sets GIT_CONFIG_COUNT=1), so
+        # writing slot 0 destroys it and every git of the selftest then refuses the
+        # workspace for dubious ownership. Measured: safe.directory=/tmp/x became
+        # whatever the operator's global config said, or nothing.
+        raw_count = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+        try:
+            base_count = int(raw_count)
+        except ValueError:
+            raise SystemExit(
+                "selftest: GIT_CONFIG_COUNT=%r is not a count — refusing to guess "
+                "where to append the auto-maintenance switches" % raw_count)
+        if base_count < 0:
+            raise SystemExit("selftest: GIT_CONFIG_COUNT=%r is negative" % raw_count)
+        # A canary takes the slot a pre-existing declaration would occupy, because
+        # overwriting one is SILENT here: the selftest's own fixtures do not need
+        # safe.directory, so destroying the engine's entry changes nothing it
+        # measures — it only bites in the sandbox, where the workspace is owned by
+        # someone else. What is checked below is that git still resolves the canary
+        # once the switches are in place, which is the same question asked of a
+        # declaration that was there first.
+        canary_key = "iterion.selftestcanary"
+        canary_value = "alive-%d" % os.getpid()
+        saved_git_env = {"GIT_CONFIG_COUNT": os.environ.get("GIT_CONFIG_COUNT")}
+
+        def _declare(slot, key, value):
+            for name, declared in (("GIT_CONFIG_KEY_%d" % slot, key),
+                                   ("GIT_CONFIG_VALUE_%d" % slot, value)):
+                saved_git_env.setdefault(name, os.environ.get(name))
+                os.environ[name] = declared
+
+        # The canary is declared FIRST and counted, so that what follows faces a
+        # declaration that was already there — which is the situation in a run,
+        # where the engine has declared the workspace's safe.directory. A canary
+        # placed beside the switches instead would survive its own displacement of
+        # the neighbour, and prove nothing: measured, that version stayed green
+        # under a faithful reproduction of the defect.
+        _declare(base_count, canary_key, canary_value)
+        os.environ["GIT_CONFIG_COUNT"] = str(base_count + 1)
+        declared_count = base_count + 1
+
+        for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
+            _declare(declared_count + i, key, value)
+        os.environ["GIT_CONFIG_COUNT"] = str(declared_count + len(_GIT_MAINTENANCE_OFF))
+        canary_seen = subprocess.run(
+            ["git", "config", "--get-all", canary_key],
+            capture_output=True, text=True).stdout.split()
+        subprocess.Popen = _AuditedPopen
+        os.system = _refuse_system
 
         def check(name, got, want):
             checked[0] += 1
@@ -4184,9 +4520,11 @@ tool oracle_run:
                     f.write("\n".join("<!-- iterion:extension-%s\n%s\n-->" % b
                                       for b in blks))
 
-            def xcommit():
+            def xcommit(email="t@t"):
+                # fixture_git already sets a committer; a later -c wins, so the
+                # override rides it instead of bypassing the failure check.
                 fixture_git(xroot, "add", "-A")
-                fixture_git(xroot, "commit", "-qm", "x")
+                fixture_git(xroot, "-c", "user.email=%s" % email, "commit", "-qm", "x")
 
             def xrequest(req):
                 """The lot files its request and commits. A fixture that stages a
@@ -4256,6 +4594,188 @@ tool oracle_run:
             v_touch = xverdict(xbase_acted)
             check("acte a la base + ref reecrite -> le certificat n'exempte rien",
                   [v_touch["acted"][0]["ok"], v_touch["ok_paths"]], [True, []])
+
+            # 8f. Provenance : un acte doit venir des commits du subbot du filet
+            #     (publies par le parent), ou porter EXACTEMENT le contenu certifie
+            #     (historique reecrit apres le subbot). L'auteur est de la prose.
+            xreset()
+            xrequest(req2)                                   # commit A, le lot
+            xledger(("request", req2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("forge par le lot\n")
+            xcommit(email="lot@run")                         # commit B, le lot acte
+            sha_b = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_b = run("git rev-parse HEAD:.golden-master/refs/2.txt", xroot, timeout=60)[1].strip()
+            v_old = extension_verdict(xroot, ".golden-master", xbase)
+            check("sans provenance (appelant d'avant) : l'auto-acte en deux commits passe encore",
+                  v_old["acted"][0]["ok"], True)
+            v_strict = extension_verdict(xroot, ".golden-master", xbase, acted_commits=set())
+            check("provenance stricte, aucun commit du subbot : l'auto-acte est refuse, forge, auteur nomme",
+                  [v_strict["acted"][0]["ok"], v_strict["acted"][0].get("forged"),
+                   v_strict["acted"][0].get("author"), v_strict["ok_paths"]],
+                  [False, True, "lot@run", []])
+            v_sub = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b})
+            check("l'acte introduit par un commit du subbot passe, chemin exempte",
+                  [v_sub["acted"][0]["ok"], v_sub["ok_paths"]], [True, [".golden-master/refs/2.txt"]])
+            v_blob = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_b},
+                                       acted_ids={"E-1"})
+            check("sha inconnu mais contenu certifie identique (historique reecrit) : passe",
+                  v_blob["acted"][0]["ok"], True)
+            # Le certificat couvre l'ACTE que le subbot a acte, pas n'importe quel
+            # acte nommant un chemin certifie : sans l'id, l'echappatoire par
+            # contenu s'ouvre pour un acte que le subbot n'a jamais rendu.
+            v_noid = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("meme contenu, acte NON acte par le subbot : refuse",
+                  [v_noid["acted"][0]["ok"], v_noid["acted"][0].get("forged")],
+                  [False, True])
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("reecrit apres l'acte\n")
+            xcommit(email="lot@run")                         # commit C, le lot reecrit
+            v_rw = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b},
+                                     acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("reference reecrite apres l'acte certifie : refusee, pas exemptee",
+                  [v_rw["acted"][0]["ok"], v_rw["acted"][0].get("forged"), v_rw["ok_paths"]],
+                  [False, True, []])
+            v_rw2 = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                      acted_blobs={".golden-master/refs/2.txt": blob_b})
+            check("sha inconnu ET contenu different : refuse", v_rw2["acted"][0]["ok"], False)
+
+            # Le verdict ANNONCE la regle qu'il a appliquee : sans cet echo, un
+            # filet synchronise avant la provenance repond `extend-verify`, ignore
+            # les deux variables et rend l'ancienne regle — le trou que ce terme
+            # ferme, revenu en silence. L'appelant l'exige (main.bot).
+            check("le verdict annonce la regle appliquee",
+                  [v_old.get("provenance"), v_strict.get("provenance"),
+                   v_sub.get("provenance"), v_rw2.get("provenance")],
+                  ["legacy", "strict", "strict", "strict"])
+
+            # LE SCENARIO DE CONTREBANDE, rejoue en entier : le lot depose DEUX
+            # demandes, le subbot en acte une et REFUSE l'autre, puis le lot
+            # s'acte la refusee en enregistrant le chemin que le subbot a
+            # certifie pour la premiere. Tous les controles de contenu passent —
+            # seul l'id ferme la porte.
+            req_e2 = ('{"id": "E-2", "lot": "L", "type": "add-file",'
+                      ' "paths": [".golden-master/refs/2.txt"]}')
+            act_e2 = ('{"id": "E-2", "lot": "L",'
+                      ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+            xreset()
+            # Les DEUX demandes sont deposees d'abord : l'acte de E-2 arrivera dans
+            # un commit ulterieur, donc la regle du commit unique ne le voit pas —
+            # c'est ce qui rend la contrebande possible.
+            xledger(("request", req2), ("request", req_e2))
+            xcommit()                                        # le lot depose E-1 et E-2
+            xledger(("request", req2), ("request", req_e2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2 certifiee par le subbot\n")
+            xcommit(email="extend@golden-master.iterion")     # le subbot acte E-1, REFUSE E-2
+            sha_sub = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_sub = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                           xroot, timeout=60)[1].strip()
+            xledger(("request", req2), ("request", req_e2),
+                    ("act", act2), ("act", act_e2))
+            xcommit(email="lot@run")                          # le lot s'acte la refusee
+            v_smug = extension_verdict(xroot, ".golden-master", xbase,
+                                       acted_commits={sha_sub},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_sub},
+                                       acted_ids={"E-1"})
+            smug = [r for r in v_smug["acted"] if r["id"] == "E-2"][0]
+            check("acte auto-appose sur un chemin certifie pour UNE AUTRE demande : refuse",
+                  [smug["ok"], smug.get("forged")], [False, True])
+            check("l'acte du subbot, lui, reste certifie",
+                  [r["ok"] for r in v_smug["acted"] if r["id"] == "E-1"], [True])
+
+            # LE DOUBLON D'ACTE, rejoue en entier : la demande du lot declare DEUX
+            # chemins, le subbot en acte UN, puis le lot appose un SECOND bloc
+            # `act` portant le meme id pour le chemin restant. La provenance du
+            # doublon se resout sur le commit du subbot (premier gagnant), donc
+            # sans refus du doublon tout passe et le chemin du lot est exempte.
+            req_two = ('{"id": "E-1", "lot": "L", "type": "add-file",'
+                       ' "paths": [".golden-master/refs/2.txt",'
+                       ' ".golden-master/refs/9.txt"]}')
+            act_one = ('{"id": "E-1", "lot": "L",'
+                       ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+            act_dup = ('{"id": "E-1", "lot": "L",'
+                       ' "recorded_paths": [".golden-master/refs/9.txt"]}')
+            xreset()
+            xledger(("request", req_two))
+            xcommit()                                         # le lot depose
+            xledger(("request", req_two), ("act", act_one))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("acte par le subbot\n")
+            xcommit(email="extend@golden-master.iterion")      # le subbot acte
+            sha_one = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_one = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                           xroot, timeout=60)[1].strip()
+            xledger(("request", req_two), ("act", act_one), ("act", act_dup))
+            with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+                f.write("ecrit par le lot\n")
+            xcommit(email="lot@run")                           # le lot double l'acte
+            v_dup = extension_verdict(xroot, ".golden-master", xbase,
+                                      acted_commits={sha_one},
+                                      acted_blobs={".golden-master/refs/2.txt": blob_one},
+                                      acted_ids={"E-1"})
+            dup = v_dup["acted"][1]
+            check("second bloc `act` de meme id : refuse, forge, et n'exempte rien",
+                  [dup["ok"], dup.get("forged"),
+                   ".golden-master/refs/9.txt" in v_dup["ok_paths"]],
+                  [False, True, False])
+            check("l'acte du subbot reste certifie, lui",
+                  [v_dup["acted"][0]["ok"], v_dup["ok_paths"]],
+                  [True, [".golden-master/refs/2.txt"]])
+
+            # LE MEME TROU PAR L'AUTRE BATTANT : au lieu d'apposer un SECOND bloc,
+            # le lot ELARGIT celui du subbot. La provenance se resout premier-gagnant
+            # sur (kind, id), donc `act_sha` reste le commit du subbot quoi qu'il
+            # arrive au bloc ; l'append-only ne fige que le texte sous la base, et le
+            # bloc du subbot est au-dessus. Le chemin ajoute n'a aucun blob certifie
+            # — et une absence de certificat passait, la garde ne mordant que sur un
+            # certificat present.
+            act_widened = ('{"id": "E-1", "lot": "L",'
+                           ' "recorded_paths": [".golden-master/refs/2.txt",'
+                           ' ".golden-master/refs/9.txt"]}')
+            xreset()
+            xledger(("request", req_two))
+            xcommit()                                          # le lot depose
+            xledger(("request", req_two), ("act", act_one))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("acte par le subbot\n")
+            xcommit(email="extend@golden-master.iterion")      # le subbot acte
+            sha_w = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            blob_w = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                         xroot, timeout=60)[1].strip()
+            xledger(("request", req_two), ("act", act_widened))
+            with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+                f.write("ecrit par le lot\n")
+            xcommit(email="lot@run")                           # le lot elargit l'acte
+            v_wide = extension_verdict(xroot, ".golden-master", xbase,
+                                       acted_commits={sha_w},
+                                       acted_blobs={".golden-master/refs/2.txt": blob_w},
+                                       acted_ids={"E-1"})
+            wide = v_wide["acted"][0]
+            check("bloc `act` du subbot elargi apres coup : refuse, forge, "
+                  "et le chemin ajoute n'est pas exempte",
+                  [wide["ok"], wide.get("forged"),
+                   ".golden-master/refs/9.txt" in v_wide["ok_paths"]],
+                  [False, True, False])
+            check("et le chemin que le subbot a bien certifie n'exempte plus rien "
+                  "non plus : c'est l'acte entier qui est refuse",
+                  v_wide["ok_paths"], [])
+
+            # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
+            # a certifier, donc aucune echappatoire par contenu.
+            xreset()
+            xrequest(req2)
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/EXTENSIONS.md"]}'))
+            xcommit(email="lot@run")
+            v_led = extension_verdict(xroot, ".golden-master", xbase,
+                                      acted_commits=set(), acted_blobs={})
+            check("acte n'enregistrant que le registre, hors commits du subbot : forge",
+                  [v_led["acted"][0]["ok"], v_led["acted"][0].get("forged")],
+                  [False, True])
 
             # Reecriture deguisee : la ref existait a la base.
             xreset()
@@ -4584,6 +5104,16 @@ tool oracle_run:
             os.environ["GM_SCRATCH"] = tempfile.mkdtemp(prefix="gm-scratch-")
             try:
                 def sub(*a):
+                    # Same reason fixture_git carries them: this repo is a temp dir
+                    # deleted on the way out, and a writing command (init, add,
+                    # commit, checkout) detaches `git maintenance run --auto`, which
+                    # goes on writing under .git/objects afterwards. Both buttons:
+                    # maintenance.auto is Git >= 2.48, gc.auto is the older one AND
+                    # what a recent Git falls back to when the first is absent — the
+                    # local Git here is 2.43, so one button alone would hold on one
+                    # version and not the other.
+                    if a and a[0] == "git":
+                        a = ("git", "-c", "gc.auto=0", "-c", "maintenance.auto=false") + tuple(a[1:])
                     return subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
                 sub("git", "init", "-q")
                 sub("git", "config", "user.email", "t@t")
@@ -5306,6 +5836,29 @@ tool oracle_run:
                     os.environ["GM_SCRATCH"] = saved_scratch
         finally:
             g.update(saved)
+            subprocess.Popen = _real_popen
+            os.system = _real_system
+            for key, value in saved_git_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        # Judged on what ran, not on what the source says. A future helper that
+        # spawns git its own way is caught by having RUN, which is the only thing
+        # that found the one this replaces.
+        check("aucun lancement du selftest ne laisse la maintenance automatique detachee"
+              " (%d git, %d sh)" % (_git_audit["git"], _git_audit["sh"]),
+              _git_audit["offenders"], [])
+        # Les DEUX compteurs, pas leur somme : le selftest lance les deux
+        # programmes, et un compteur mort laisse l'autre porter le total — un audit
+        # a moitie aveugle passerait pour un arbre propre.
+        # Ce que git RESOUT, pas ce que le dict dit avoir posé : une declaration
+        # anterieure survit a la pose des boutons.
+        check("une declaration git anterieure survit a la pose des boutons",
+              canary_value in canary_seen, True)
+        check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
+        check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
 
         if failures:
             log("harnais : %d test(s) ECHOUENT" % len(failures))
@@ -5348,7 +5901,19 @@ tool oracle_run:
         # qu'ETRE PLUS STRICTE sur des doubles, jamais adoucir un verdict.
         if mode == "selftest":
             for _ambient in ("GM_CONFIG", "GM_SEAL_COMMITTED", "GM_SEALED_DIR",
-                             "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS"):
+                             "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS",
+                             # Git's identity ENV outranks every config source,
+                             # `-c user.email` included, so a host that exports
+                             # it (devcontainer, CI image, agent sandbox) made
+                             # every fixture commit under the caller's name and
+                             # turned the author checks red — in a step the gate
+                             # wrapper runs BLOCKING, so a campaign's exit gate
+                             # failed for a reason unrelated to the code under
+                             # test (review finding, reproduced). Same class as
+                             # the GM_* above: the doubles are the selftest's,
+                             # and nothing about the caller may reach them.
+                             "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                             "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
                 os.environ.pop(_ambient, None)
             raise SystemExit(_selftest())
 
@@ -5366,8 +5931,60 @@ tool oracle_run:
                                   "additions against nothing would pass by "
                                   "construction"}))
                 raise SystemExit(1)
+            # Provenance from the PARENT: present (even empty) means strict —
+            # the parent bot always defines it, because the only pass that
+            # judges a self-act is the one where no subbot ran at all. Absent
+            # means a caller that predates provenance: today's rule only.
+            acted_commits = acted_blobs = None
+            if "GM_ACTED_COMMITS" in os.environ:
+                acted_commits = set()
+                for tok in os.environ.get("GM_ACTED_COMMITS", "").split():
+                    full = run("git rev-parse --verify --quiet %s^{commit}" % shlex.quote(tok), ws, timeout=60)[1].strip()
+                    acted_commits.add(full if len(full) == 40 else tok)
+            # ONE ENTRY PER LINE, for both certificates. Whitespace-delimited,
+            # a surface path containing a space split into two tokens: the left
+            # had no `=` and was DROPPED, the right registered a bogus key — so
+            # the real path had no certified blob, the post-act rewrite check
+            # skipped it, and the lot could rewrite that reference in a later
+            # commit and keep the exemption (review finding). The same defect sat
+            # on the ids, where a space in an id split it out of the set and the
+            # act silently lost its cover. Both ids and paths are lot-authored
+            # and a space passes their guards, so the encoding is what has to be
+            # unambiguous — and an entry that cannot be read is a REFUSAL, never
+            # a silent drop.
+            if "GM_ACTED_BLOBS" in os.environ:
+                acted_blobs = {}
+                for line in os.environ.get("GM_ACTED_BLOBS", "").splitlines():
+                    if not line.strip():
+                        continue
+                    path, sep, sha = line.rpartition("=")
+                    if not (sep and path and sha):
+                        print(json.dumps({"error":
+                                          "GM_ACTED_BLOBS carries an entry that is "
+                                          "not `path=blob`: %r — a certificate the "
+                                          "judge cannot read is refused, not dropped"
+                                          % line}))
+                        raise SystemExit(1)
+                    acted_blobs[path] = sha
+            # The ids the subbot reports having acted. Absent = no act is
+            # covered by the content rule, which is the safe direction: the
+            # rule only ever EXEMPTS.
+            acted_ids = None
+            if "GM_ACTED_IDS" in os.environ:
+                # The RAW line, exactly as the blob certificate above reads its
+                # own: `.strip()` is an emptiness test here, never a repair.
+                # Normalising the id while `extension_verdict` compares it
+                # verbatim made two ids differing only by surrounding whitespace
+                # collapse into one — the act the subbot REFUSED came back covered
+                # by the id it had acted, which is the smuggling of a refused
+                # extension, reopened by an encoding.
+                acted_ids = {l for l in
+                             os.environ.get("GM_ACTED_IDS", "").splitlines()
+                             if l.strip()}
             print(json.dumps(extension_verdict(
-                ws, os.environ.get("GM_DIR", ".golden-master"), base)))
+                ws, os.environ.get("GM_DIR", ".golden-master"), base,
+                acted_commits=acted_commits, acted_blobs=acted_blobs,
+                acted_ids=acted_ids)))
             raise SystemExit(0)
 
         # The verdict CARRIES the declaration it judged. Without it, a green from

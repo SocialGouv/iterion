@@ -22,6 +22,11 @@ type extendVerifyOut struct {
 	Extended      int      `json:"extended"`
 	LogTail       string   `json:"log_tail"`
 	OutOfScope    []string `json:"out_of_scope"`
+	CleanStart    bool     `json:"clean_start"`
+	IdentityOk    bool     `json:"identity_ok"`
+	ActedCommits  string   `json:"acted_commits"`
+	ActedIds      string   `json:"acted_ids"`
+	ActedBlobs    string   `json:"acted_blobs"`
 }
 
 // extendVerifyRepo is a target tree whose net carries a STUB harness: the
@@ -66,11 +71,25 @@ func extendVerifyRepo(t *testing.T, verdict, pending string) (string, string) {
 
 func runExtendVerify(t *testing.T, ws, head, pendingJSON string) extendVerifyOut {
 	t.Helper()
+	return runExtendVerifyClean(t, ws, head, pendingJSON, true)
+}
+
+// runExtendVerifyClean is runExtendVerify with extend_base's verdict on the
+// net's cleanliness — the term a refused start carries into this node.
+func runExtendVerifyClean(t *testing.T, ws, head, pendingJSON string, clean bool) extendVerifyOut {
+	t.Helper()
 	body := toolScript(t, "golden-master/extend.bot", "extend_verify")
 	body = strings.ReplaceAll(body, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{vars.oracle_dir}}", strconv.Quote(".golden-master"))
 	body = strings.ReplaceAll(body, "{{input.head}}", strconv.Quote(head))
 	body = strings.ReplaceAll(body, "{{input.pending}}", pendingJSON)
+	body = strings.ReplaceAll(body, "{{input.clean}}", map[bool]string{true: "true", false: "false"}[clean])
+	// What an edge renders for an agent that produced no line.
+	body = strings.ReplaceAll(body, "{{input.agent_summary}}", "null")
+	body = strings.ReplaceAll(body, "{{input.prev_name}}", strconv.Quote(""))
+	body = strings.ReplaceAll(body, "{{input.prev_email}}", strconv.Quote(""))
+	body = strings.ReplaceAll(body, "{{vars.actor_name}}", strconv.Quote("golden-master extend"))
+	body = strings.ReplaceAll(body, "{{vars.actor_email}}", strconv.Quote("extend@golden-master.iterion"))
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in extend_verify near %q", body[i:min(i+40, len(body))])
 	}
