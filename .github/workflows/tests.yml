@@ -46,17 +46,30 @@ concurrency:
 # minutes of wall clock for 30 minutes of compute. The self-hosted scale set
 # `arc-runners` (org-scoped, ovh-dev) has no such cap.
 #
-# It serves every ref EXCEPT a pull request from a fork, and that exclusion is
-# the whole security argument, not a detail: a fork PR is arbitrary code from
-# anyone, and running it on a runner inside the cluster would hand that code a
-# pod on our network. A same-repo branch is a different thing — pushing it
-# already requires write access, which is the same trust boundary.
+# Two kinds of pull request stay on GitHub-hosted runners, and this is the
+# security argument rather than a detail — the repository is PUBLIC and the
+# self-hosted runners sit inside the cluster:
 #
-# Three jobs stay GitHub-hosted whatever the ref, because the self-hosted
-# image is upstream's and deliberately minimal — no C compiler, and its user
-# is not in the docker group. Each says so at its own definition. Measured
-# 2026-09-08: the other six pass on self-hosted, nine runner pods starting at
-# once with no queueing at all.
+#   - a FORK PR: arbitrary code from anyone.
+#   - a DEPENDENCY-UPDATE PR: its author has write access, but its CONTENT is
+#     arbitrary upstream code. `pnpm install` and `go test` execute it, on the
+#     very pull request proposing it, before a human has read the diff. Write
+#     access is what the author holds; it says nothing about what npm shipped.
+#
+# The second is matched on the bot's IDENTITY, not on its branch prefix: a
+# prefix is configuration, and a guard that reads configuration stops guarding
+# the day someone changes it, silently.
+#
+# A same-repo branch from a human or from one of this repository's own agents
+# is a different thing: pushing it already requires write access, and its
+# content is first-party.
+#
+# Three jobs stay GitHub-hosted whatever the ref. One of them for a settled
+# reason — the upstream image ships no C compiler, which -race needs — and two
+# because of a startup race and an unexplained kind failure. Each says what is
+# measured at its own definition, and what is not; #981 carries the remedy.
+# Measured 2026-09-08: the other six pass on self-hosted, nine runner pods
+# starting at once with no queueing at all.
 #
 # So the expression below reads: fork pull request -> GitHub-hosted;
 # everything else (same-repo PR, push, merge_group) -> self-hosted. It is
@@ -66,7 +79,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -256,9 +269,12 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    # GitHub-hosted: service containers need the runner to reach the docker
-    # daemon, and the upstream runner image does not put its user in the
-    # docker group (`dial unix /run/docker/docker.sock`).
+    # GitHub-hosted: the runner agent's container-init phase races the dind
+    # sidecar. Measured — runner up 14:34:57, `dial unix
+    # /run/docker/docker.sock` at 14:35:05, eight seconds in — while a sibling
+    # job's `docker run` succeeds 76 s after ITS start. So the daemon does come
+    # up; the agent just asks too early. A dind-readiness gate would move this
+    # job; see #981.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -378,7 +394,7 @@ jobs:
     # in-tree so a developer's plain `go test ./...` skips them; CI
     # provides the URI explicitly so the contract stays enforced.
     # Mirror of the mongo-conformance job above.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -438,8 +454,9 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
-    # GitHub-hosted: same missing docker access as mongo-conformance — kind
-    # comes up but kubectl cannot authenticate to it.
+    # GitHub-hosted: kind comes up, kubectl cannot authenticate to it. The
+    # cause is NOT established — it is not the image's docker access, which a
+    # sibling job uses successfully. See #981.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -629,7 +646,7 @@ jobs:
     # CI runner compiles vs what a fresh clone compiles — the kind of
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -655,7 +672,7 @@ jobs:
     # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -702,7 +719,7 @@ jobs:
     # OFF — it flags French comments as misspelled English (1097 false
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -725,7 +742,7 @@ jobs:
     # noise — we keep both. Advisory-only for now: a zero-day disclosure
     # mid-release shouldn't gate a hotfix; results surface in the GitHub
     # Security tab via SARIF so an operator can still triage.
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
+    runs-on: ${{ (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || 'arc-runners' }}
     permissions:
       security-events: write
       contents: read
