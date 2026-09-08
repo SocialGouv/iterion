@@ -842,10 +842,25 @@ def audited_selftest():
                 and ("gc.auto=0" in flags or keys.get("gc.auto") == "0"))
 
     real_popen, real_system = subprocess.Popen, os.system
+    allowed = {"git", os.path.basename(sys.executable)}
 
     def spy(args, *a, **kw):
         argv = list(args) if isinstance(args, (list, tuple)) else [args]
-        if argv and str(argv[0]).endswith("git"):
+        prog = os.path.basename(str(argv[0])) if argv else ""
+        # An ALLOWLIST, not a list of shells to refuse. `sh -c "git …"` and
+        # `shell=True` both hide the argv from this hook — measured: either one
+        # runs an unguarded git command while the audit reports its usual count,
+        # unchanged and green. Blocking the shells I can name would leave the one
+        # I cannot; permitting only the programs this bench actually launches
+        # leaves nothing to name.
+        if kw.get("shell"):
+            offenders.append("shell=True %r — the hook sees a string, not an argv, and what runs "
+                             "inside it is unobservable here" % str(args)[:60])
+        elif prog not in allowed:
+            offenders.append("%s — under the audit only %s may be launched; a program that can "
+                             "start git is a path around this hook"
+                             % (prog or "(empty argv)", ", ".join(sorted(allowed))))
+        elif prog == "git":
             seen.append(argv)
             if not resolved(argv, kw.get("env")):
                 offenders.append(" ".join(map(str, argv[:6])))
