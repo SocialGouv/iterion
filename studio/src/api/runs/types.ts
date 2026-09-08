@@ -203,6 +203,12 @@ export interface NodeServed {
   declared_model?: string;
   context_window?: number;
   max_output_tokens?: number;
+  // Provider routing label of the session behind this record
+  // ("anthropic-oauth", "facade:<base url>", …). A model id alone cannot
+  // tell that an Anthropic-shaped facade answered a claude id with
+  // whatever it aliases it to. Absent when the backend reports none —
+  // that reads "route unknown", never "not a facade".
+  fingerprint?: string;
 }
 
 // Effective budget cap set captured at launch — the workflow's `budget:`

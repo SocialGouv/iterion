@@ -423,6 +423,18 @@ const (
 	//
 	// Data keys: backend, declared_model, effective_model.
 	EventModelDrift EventType = "model_drift"
+	// EventModelServedViaFacade: the backend served the node through an
+	// Anthropic-shaped facade (session fingerprint "facade:<base url>")
+	// rather than the provider the model id names. The reported model id is
+	// unchanged — the facade aliases it silently — so this is the only
+	// signal that a "claude-*" node was answered by another family. Emitted
+	// once per node and facade, and only for a delegation that FINISHED:
+	// the name is a claim the node was served, so counting these counts
+	// nodes SERVED through a facade, never attempts. A delegation that
+	// failed on a facade route leaves it on run.json's
+	// nodes_served[<node>].fingerprint instead. Data: backend,
+	// declared_model, effective_model, fingerprint.
+	EventModelServedViaFacade EventType = "model_served_via_facade"
 
 	// EventSandboxSkipped is emitted at run start when the workflow or a
 	// node requested an active sandbox mode (auto/inline) but the

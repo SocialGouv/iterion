@@ -432,6 +432,13 @@ Nothing about it is silent:
   also changed the model). `delegate_started` carries `declared_model`;
   `delegate_finished` / `delegate_error` add `effective_model`;
   `run.json` `nodes_served` is the last pair per node;
+- a `model_served_via_facade` event when the session ran through an
+  Anthropic-shaped facade (`ANTHROPIC_BASE_URL`). The facade answers
+  whatever `claude-*` id it is asked for with the model it aliases it
+  to, so the declared and effective ids AGREE and `model_drift` stays
+  silent — the session fingerprint is the only evidence. Raised from the
+  success path only (a delegation that failed was not served); the
+  attempted route still lands on `nodes_served[<node>].fingerprint`;
 - `_backend` / `_model` on the node output name the route that
   **served**, not the one requested;
 - `_fallback_used` and `_served_by` are stamped so a bot's deterministic

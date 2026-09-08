@@ -31,6 +31,11 @@ export const EVENT_BADGE: Record<string, string> = {
   // override, fallback route). Same colour as fallback: the record
   // is honest, the run is degraded.
   model_drift: "bg-warning-soft text-warning-fg",
+  // The node was served through an Anthropic-shaped facade, which
+  // answers a claude id with whatever it aliases it to — so the model
+  // ids agree and model_drift stays silent. Same colour: the record is
+  // honest, what ran is not what the id names.
+  model_served_via_facade: "bg-warning-soft text-warning-fg",
   // A best-effort session that could not be resumed: the node ran, but
   // without the conversation it asked for. Same colour as fallback —
   // the run continues on a degraded input.

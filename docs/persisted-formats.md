@@ -112,6 +112,20 @@ and for workflows that never delegated. The event stream is the full history
 `max_output_tokens`; `model_drift` fires when the two model fields name
 different models).
 
+`fingerprint` on each entry is the backend's provider-routing label for that
+session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or
+`facade:<base url>`. An Anthropic-shaped facade answers a `claude-*` id with
+whatever it aliases it to, so the two model fields agree and `model_drift`
+stays silent; the fingerprint is the only evidence, and
+`model_served_via_facade` is the event half of it. It names the route that
+SERVED on a success and the one ATTEMPTED on a failure that still reported a
+model — the same reading as `model` beside it, and last-write-wins with it.
+Empty means the backend reported none (claw and the CLI-agent backends report
+no fingerprint), i.e. "route unknown", never "not a facade". The base URL is
+stripped of userinfo/query/fragment before it is recorded — it is operator
+input, so it can embed a credential, and this record is readable by anyone
+with run-read access.
+
 ### Run statuses
 
 | Status | Meaning | Resume posture |
@@ -237,7 +251,7 @@ deployments that move independently. The same pair is on the run document as
 that finds them different logs a WARN and keeps going, because skew is normal
 for the length of every rolling deploy.
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift`, `model_served_via_facade` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |
