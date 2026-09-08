@@ -679,7 +679,7 @@ func (e *ClawExecutor) validateAndRetry(
 	// inherits the same transient-error backoff every other delegate call
 	// gets — a direct backend.Execute here skipped the retry budget and
 	// gave up on the first transient SDK hiccup.
-	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, func() (delegate.Result, error) {
+	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, sharesSession(&retryTask), func() (delegate.Result, error) {
 		return backend.Execute(ctx, retryTask)
 	})
 	if retryErr != nil || retryResult.ParseFallback {
@@ -699,11 +699,15 @@ func (e *ClawExecutor) validateAndRetry(
 		}
 		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 	}
-	// Accumulate token/duration from the first attempt so per-node
-	// accounting reflects the full cost paid (dropping it understated
-	// the run's real usage and broke budget enforcement at the margins).
-	retryResult.Tokens += result.Tokens
-	retryResult.Duration += result.Duration
+	// Accumulate the first attempt from here so per-node accounting
+	// reflects the full cost paid (dropping it understated the run's real
+	// usage and broke budget enforcement at the margins). This is a retry
+	// IN PLACE, so it folds exactly like one — through foldSpend, rather
+	// than the hand-rolled `+=` that stood here: that one summed the
+	// struct fields only, and what enforcement reads is the OUTPUT MAP
+	// (runtime.extractUsage), so the first attempt's tokens never reached
+	// max_tokens and its cost was dropped outright.
+	retryResult = foldSpend(result, retryResult, sharesSession(&retryTask))
 	// Re-attach metadata and re-validate.
 	stampDelegateOutputMeta(retryResult.Output, retryResult, backendName)
 	if retryValErr := ValidateOutput(retryResult.Output, schema); retryValErr != nil {

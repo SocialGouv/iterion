@@ -90,3 +90,67 @@ func TestValidateAndRetry_InjectsSchemaFeedback(t *testing.T) {
 		t.Errorf("retry feedback should name the validation error, got: %q", backend.tasks[1].UserPrompt)
 	}
 }
+
+// The schema-validation retry is a retry IN PLACE, and its accounting has
+// to survive like one: the first attempt produced unusable output but was
+// billed for a whole agentic turn.
+//
+// The assertion is on the OUTPUT MAP on purpose — that is what enforcement
+// reads (runtime.extractUsage takes `_tokens` / `_cost_usd` from it, never
+// the Result struct). The hand-rolled accumulation this replaced summed
+// the struct fields only, so the first attempt's tokens never reached
+// max_tokens and its cost reached nothing at all, while the comment above
+// it claimed the opposite.
+func TestValidateAndRetry_KeepsTheFirstAttemptsSpend(t *testing.T) {
+	backend := &capturingBackend{
+		results: []delegate.Result{
+			// A full turn, billed, then rejected for a missing field.
+			{
+				Output:      map[string]any{"other": "x", "_tokens": 9000, "_cost_usd": 0.90},
+				Tokens:      9000,
+				BackendName: "test_backend",
+			},
+			// The correction is cheap — and taking only its figure is how
+			// a 9300-token node reported 300.
+			{
+				Output:      map[string]any{"answer": "blue", "_tokens": 300, "_cost_usd": 0.03},
+				Tokens:      300,
+				BackendName: "test_backend",
+			},
+		},
+	}
+
+	reg := delegate.NewRegistry()
+	reg.Register("test_backend", backend)
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"out_schema": {
+				Name:   "out_schema",
+				Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}},
+			},
+		},
+	}
+	exec := NewClawExecutor(NewRegistry(), wf,
+		WithBackendRegistry(reg),
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
+	)
+	node := &ir.AgentNode{
+		BaseNode:     ir.BaseNode{ID: "answerer"},
+		LLMFields:    ir.LLMFields{Backend: "test_backend"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "out_schema"},
+	}
+
+	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, _ := output["_tokens"].(int); got != 9300 {
+		t.Errorf("_tokens = %v, want 9300 — the rejected attempt's 9000 was billed too", output["_tokens"])
+	}
+	// Two calls, two disjoint sessions: the node carries no session id, so
+	// neither report contains the other and the costs add.
+	if got, _ := output["_cost_usd"].(float64); got < 0.92 {
+		t.Errorf("_cost_usd = %v, want ~0.93 — the rejected attempt's $0.90 was dropped", output["_cost_usd"])
+	}
+}

@@ -782,6 +782,12 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 			cliCost = *rm.TotalCostUSD
 		}
 	}
+	// The same session-cumulative property the MAX above rests on, carried
+	// out of the backend: a caller folding two CALLS of one session must
+	// MAX this figure too, and must not do that to the token estimate the
+	// forfait falls back to. AnnotateWithUSD degrades to Annotate when
+	// cliCost is zero, so the flag tracks the value it describes.
+	result.CostIsSessionTotal = cliCost > 0
 	cost.AnnotateWithUSD(result.Output, model, totalIn, totalOut, cliCost)
 }
 

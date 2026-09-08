@@ -23,7 +23,7 @@ func loopExecutor() *ClawExecutor {
 func TestRetryDelegateLoop_NetworkUsesTransientBudget(t *testing.T) {
 	e := loopExecutor()
 	calls := 0
-	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
 		calls++
 		return delegate.Result{}, errors.New("fetch failed")
 	})
@@ -38,7 +38,7 @@ func TestRetryDelegateLoop_NetworkUsesTransientBudget(t *testing.T) {
 func TestRetryDelegateLoop_SignalUsesStandardBudget(t *testing.T) {
 	e := loopExecutor()
 	calls := 0
-	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
 		calls++
 		return delegate.Result{}, errors.New("signal: killed") // retryable, not network
 	})
@@ -53,7 +53,7 @@ func TestRetryDelegateLoop_SignalUsesStandardBudget(t *testing.T) {
 func TestRetryDelegateLoop_PermanentNoRetry(t *testing.T) {
 	e := loopExecutor()
 	calls := 0
-	_, _ = e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, func() (delegate.Result, error) {
+	_, _ = e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
 		calls++
 		return delegate.Result{}, errors.New("exit status 1") // application error
 	})
@@ -65,7 +65,7 @@ func TestRetryDelegateLoop_PermanentNoRetry(t *testing.T) {
 func TestRetryDelegateLoop_RecoversMidBudget(t *testing.T) {
 	e := loopExecutor()
 	calls := 0
-	res, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, func() (delegate.Result, error) {
+	res, err := e.retryDelegateLoop(context.Background(), "n", delegate.BackendClaudeCode, false, func() (delegate.Result, error) {
 		calls++
 		if calls < 3 {
 			return delegate.Result{}, errors.New("ECONNRESET") // network blip

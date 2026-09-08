@@ -1603,7 +1603,23 @@ type Result struct {
 	Output map[string]any
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
+	// It counts THIS call only: every shipped backend accumulates its own
+	// per-turn usage (claude_code and codex add the resumed formatting
+	// pass's Usage onto pass 1's; pi keeps the collector's per-turn numbers
+	// on a resumed session), so two calls that share a session report
+	// disjoint token counts and their totals SUM.
 	Tokens int
+
+	// CostIsSessionTotal reports that the `_cost_usd` on Output came from a
+	// provider figure covering the WHOLE session, not this call alone —
+	// claude_code's ResultMessage.TotalCostUSD being the one shipped case
+	// (annotateCost, which MAXes it across a session's result messages for
+	// exactly this reason). It is the discriminator Tokens does not need:
+	// a token-derived estimate is per-call and must be summed, while two
+	// calls resuming one session each report the same running total and
+	// must be folded at their MAX. False is the correct default — every
+	// other cost path is cost.Annotate's estimate over per-call tokens.
+	CostIsSessionTotal bool
 
 	// Duration is the wall-clock time of the subprocess execution.
 	Duration time.Duration
