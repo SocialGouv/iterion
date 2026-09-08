@@ -81,6 +81,13 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/bots/{slug}":    {},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
 
+		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
+		// payload, including the shadow fields docs/platform-bots.md promises
+		// on this endpoint. Left untyped, that promise had no spec behind it:
+		// documented-but-unverifiable is the exact shape this family exists
+		// to end.
+		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
+
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
 			response: struct {
