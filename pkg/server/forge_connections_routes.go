@@ -490,7 +490,7 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 				// that is not parseable PEM — before it opens a socket.
 				// Both answer 502 today: the #969 inversion, still open
 				// here. Ending it belongs in the mint chain, which alone
-				// knows which step failed; a blanket NewIterionFault over
+				// knows which step failed; a blanket newIterionFault over
 				// mint() would stamp a genuine GitHub 5xx as iterion's —
 				// the same lie reversed. Residual on #969.
 				httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)

@@ -127,7 +127,7 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		// of it carries a forge sentinel or a *url.Error, so it would fall
 		// through the handler's 502 default and blame the forge for
 		// iterion's own seal — the #969 inversion, one step earlier.
-		return conn, "", NewIterionFault(err)
+		return conn, "", newIterionFault(err)
 	}
 	setter, ok := admin.(forge.AvatarSetter)
 	if !ok {
@@ -250,7 +250,7 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 		// really is iterion's) instead of the 502 its default arm serves
 		// for a forge that broke. Body still names the connection and the
 		// underlying cause so the operator can act on it.
-		return conn, avatarURL, NewIterionFault(fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err))
+		return conn, avatarURL, newIterionFault(fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err))
 	}
 	return recorded, avatarURL, nil
 }

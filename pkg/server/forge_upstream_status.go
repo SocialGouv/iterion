@@ -150,10 +150,19 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 // not yet know about, and defaulting to 502 is the safe assumption.
 type iterionFault struct{ err error }
 
-// NewIterionFault wraps err so a handler whose default arm is 502 can
+// newIterionFault wraps err so a handler whose default arm is 502 can
 // tell iterion's own faults apart (answer 500) from a forge that
 // answered or fell silent (keep 502 / the taxonomy code).
-func NewIterionFault(err error) error {
+//
+// The mark is INERT on its own, and reading it as sufficient is the
+// mistake to avoid: forgeUpstreamStatus has no iterionFault case and
+// writeForgeUpstreamError only consults that, so a marked error still
+// falls through to whatever the caller's own default arm is — 502 on
+// every route but the avatar one, the only handler that carries the
+// isIterionFault check. Marking a new site therefore takes TWO edits,
+// and the SECOND is the one that changes an answer. A mark alone is a
+// comment.
+func newIterionFault(err error) error {
 	if err == nil {
 		return nil
 	}
