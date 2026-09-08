@@ -316,18 +316,24 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			return Result{}, err
 		}
 	}
+	// cliTurnCompleted records that the CLI carried this call to its own
+	// ResultMessage. It is the discriminator turnFinished needs and the
+	// defer below cannot read: `rm` is declared further down, so the
+	// closure registered here cannot close over it.
+	var cliTurnCompleted bool
 	// Fire OnTurnFinished once on the way out, when the runtime wired
 	// the hook and the delegate produced a SessionID. Wrapped in a
-	// defer so every successful return path (Pass 1, recovery, two-
-	// pass, ask_user escalation) flows through the same notification —
-	// avoiding the maintenance trap of remembering to call it before
-	// every `return result, ...`. Skipped on hard errors with no
-	// captured session (rm.SessionID empty).
+	// defer so every return path that HAS a turn (Pass 1, recovery,
+	// two-pass, ask_user escalation, and a result the guards below then
+	// type as a failure) flows through the same notification — avoiding
+	// the maintenance trap of remembering to call it before every
+	// `return result, ...`. Skipped when no session was ever opened, and
+	// when the stream died before the CLI produced a result.
 	defer func() {
 		if task.Hooks.OnTurnFinished == nil {
 			return
 		}
-		if result.SessionID == "" {
+		if !turnFinished(err, cliTurnCompleted, result) {
 			return
 		}
 		text := ""
@@ -497,15 +503,24 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	if streamErr != nil {
 		return b.buildStreamErrorResult(rm, sessMeta, streamErr, readStderr(), duration, task)
 	}
+	// The CLI carried the call to its own ResultMessage: the turn ran to
+	// its end. Everything below judges that result's CONTENT — a rendered
+	// API error, an error subtype, a recovery pass that could not extract
+	// structured output — and typing the content a failure does not unmake
+	// the turn, or the session an operator may want to fork from.
+	cliTurnCompleted = true
 
 	result = Result{
 		Duration:           duration,
 		ExitCode:           0,
 		Stderr:             readStderr(),
 		BackendName:        BackendClaudeCode,
-		SessionID:          rm.SessionID,
 		SessionFingerprint: currentFingerprint,
 	}
+	// The id is the helper's to decide, here as on the pause and failure
+	// paths: rm's when there is one — which on this path there always is
+	// — and the streamed one otherwise. Naming rm.SessionID here too
+	// would spell that precedence a second time.
 	applyClaudeCodeSessionMeta(&result, rm, sessMeta)
 
 	var totalIn, totalOut int
@@ -690,6 +705,27 @@ func errorBodyObject(obj map[string]any) bool {
 	return len(obj) == 1 || obj["type"] == "error"
 }
 
+// turnFinished reports whether OnTurnFinished has a finished turn to
+// announce.
+//
+// It used to be spelled inline as "the result carries a session id", which
+// was a PROXY for "the CLI got far enough to have a turn": true only while
+// a failure could not carry one. A stream that DIES now names the session
+// it opened — that is the point of capturing it — so the proxy no longer
+// holds and the condition has to say what it meant.
+//
+// What it meant is not "the delegation succeeded". The hook's one consumer
+// writes the store.TurnCheckpoint that anchors a FORK (`claude --resume
+// <id> --fork-session`), and forking the session of a node that ended on a
+// rendered API error is exactly the recovery an operator reaches for — it
+// ran a whole session before the failure. So a turn the CLI carried to its
+// own ResultMessage is announced whatever verdict iterion then puts on its
+// content; only a delegation that died before producing one has no turn to
+// announce.
+func turnFinished(err error, cliTurnCompleted bool, result Result) bool {
+	return result.SessionID != "" && (err == nil || cliTurnCompleted)
+}
+
 // typedFailure returns err with the delegation's spend stamped on the result
 // first: a typed failure still spent Pass 1 and whatever passes ran, and the
 // caps, the fallback chain's carried spend and a donor's ledger read the
@@ -753,19 +789,21 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 // ask_user MCP hook fired mid-session: it short-circuits the stream and
 // surfaces the captured question to the runtime via the
 // `_needs_interaction` / `_interaction_questions` envelope so the engine
-// can pause the run and elicit the operator. Extracted from Execute for
-// readability; the per-field semantics (Duration, ExitCode=0, Stderr,
-// SessionID-from-rm, SessionFingerprint) are identical to the original
-// inline path.
+// can pause the run and elicit the operator.
+//
+// `rm` is nil here as the RULE, not as an edge case: in Execute the
+// pendingQuestion branch returns ahead of the `streamErr != nil` test
+// precisely because the hook firing is what cancels the stream, so no
+// ResultMessage ever arrives. The session id therefore comes from the
+// STREAM — without it this path published an anonymous session, and it is
+// the one path that persists a session across a pause (ADR-089:
+// ErrNeedsInteraction.SessionID → the checkpoint's BackendSessionID, and
+// packLiveSession, which is gated on a non-empty id and so never ran).
 func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUser, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
 	if marker != nil {
 		b.Logger.Info("[%s#%d/claude-code] 🔐 tool-permission approval escalated to the runtime", task.NodeID, task.Iteration)
 	} else {
 		b.Logger.Info("[%s#%d/claude-code] 🛑 ask_user escalated via native MCP tool", task.NodeID, task.Iteration)
-	}
-	sessID := ""
-	if rm != nil {
-		sessID = rm.SessionID
 	}
 	questions := map[string]any{AskUserQuestionKey: p.Question}
 	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
@@ -780,13 +818,21 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
-		Duration:           duration,
-		ExitCode:           0,
-		Stderr:             stderr,
-		BackendName:        BackendClaudeCode,
-		SessionID:          sessID,
+		Duration:    duration,
+		ExitCode:    0,
+		Stderr:      stderr,
+		BackendName: BackendClaudeCode,
+		// SessionFingerprint is NOT redundant with the line below the way
+		// a hand-set SessionID would be: nothing else supplies it, and the
+		// checkpoint needs it to be allowed to reuse the session this
+		// pause records (shouldDropSessionFork drops a fork of unknown
+		// provenance).
 		SessionFingerprint: currentFingerprint,
 	}
+	// One rule for the id, not two: rm's when there is one, the streamed
+	// one otherwise. Setting it from rm here as well would spell the same
+	// precedence a second time, in a function whose whole premise is that
+	// rm is nil.
 	applyClaudeCodeSessionMeta(&askResult, rm, sessMeta)
 	return askResult
 }

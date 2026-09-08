@@ -155,6 +155,7 @@ parent's).
   "vars": { "scope": "pkg/runtime" },
   "interaction_questions": { "approved": "Ship?" },
   "backend_session_id": "session-id",
+  "backend_session_fingerprint": "anthropic-oauth",
   "backend_name": "claude_code",
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
@@ -181,6 +182,12 @@ parent's).
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+`backend_session_fingerprint` is the provider fingerprint of
+`backend_session_id`, checkpointed beside it because the id alone is not
+usable: a `session: fork` resume drops a session whose parent provider it
+cannot identify (cross-provider thinking blocks 400). Absent on checkpoints
+written before the field existed, which reads as "unknown" — the same
+conservative outcome as before.
 `recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
 for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
 the node still owes its work, so the answer that resumes the run is an

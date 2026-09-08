@@ -1256,6 +1256,13 @@ type Checkpoint struct {
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty" bson:"backend_session_id,omitempty"`
+	// BackendSessionFingerprint is the provider fingerprint that produced
+	// BackendSessionID. Checkpointed beside the id because the id alone
+	// is not usable on a `session: fork` resume: the backend drops a fork
+	// whose parent provider it cannot identify, to avoid cross-provider
+	// thinking-block 400s. Empty on checkpoints written before this field
+	// existed — absent stays "unknown", the conservative reading.
+	BackendSessionFingerprint string `json:"backend_session_fingerprint,omitempty" bson:"backend_session_fingerprint,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty" bson:"backend_name,omitempty"`
 	// BackendConversation is the opaque, backend-specific persisted

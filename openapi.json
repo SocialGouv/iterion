@@ -357,6 +357,9 @@
           "backend_pending_tool_use_id": {
             "type": "string"
           },
+          "backend_session_fingerprint": {
+            "type": "string"
+          },
           "backend_session_id": {
             "type": "string"
           },
