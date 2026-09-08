@@ -492,6 +492,35 @@ tool oracle_run:
         return isinstance(value, dict) and isinstance(value.get("filename"), str)
 
 
+    FILE_PART_KEYS = ("filename", "text", "b64", "content_type")
+
+
+    def check_file_part(name, value):
+        """The INSIDE of a file part: the keys it declares, and the one of them
+        the payload guards do not cover.
+
+        A key the harness does not read is not a harmless annotation, it is a
+        declaration the corpus believes it made. `content-type` with a hyphen —
+        the way the HTTP header itself is spelled — is the one that bites: the
+        part goes out as `application/octet-stream` while the corpus reads as
+        though it had asked for `text/csv`, and the reference records the
+        application answering the type nobody chose.
+        """
+        extra = sorted(k for k in value if k not in FILE_PART_KEYS)
+        if extra:
+            raise SystemExit(
+                "file field %r declares %s, which the harness does not read — a "
+                "key it ignores is a declaration you believe you made. Did you "
+                "mean `content_type` (underscore, not the header's hyphen)? "
+                "Accepted: %s"
+                % (name, ", ".join(repr(k) for k in extra), ", ".join(FILE_PART_KEYS)))
+        ctype = value.get("content_type")
+        if ctype is not None and not isinstance(ctype, str):
+            raise SystemExit("file field %r: `content_type` must be a string, got "
+                             "%s — anything else reaches the wire as a malformed "
+                             "header" % (name, type(ctype).__name__))
+
+
     def check_form_fields(fields):
         """Every field that is not a file part must be a PRESENT SCALAR — a form
         encoding carries nothing else, and it must carry the same thing whichever
@@ -613,6 +642,7 @@ tool oracle_run:
         for name, value in fields.items():
             head = 'Content-Disposition: form-data; name="%s"' % header_value(name)
             if is_file_part(value):
+                check_file_part(name, value)
                 payloads.append(file_part_bytes(value))
                 head += '; filename="%s"' % header_value(value["filename"])
                 head += "\r\nContent-Type: %s" % header_value(
@@ -3810,6 +3840,15 @@ tool oracle_run:
             refuses("`text` ET `b64` -> refus nomme, jamais un choix silencieux",
                     lambda: encode_multipart({"d": {"filename": "a", "text": "x",
                                                     "b64": "aGVsbG8="}}))
+            # La faute de frappe probable : l'en-tete HTTP s'ecrit avec un trait
+            # d'union. Declaree ainsi, la part partait en octet-stream et le
+            # corpus se lisait comme s'il avait demande text/csv.
+            refuses("cle inconnue dans une part fichier (`content-type`) -> refus",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                    "content-type": "text/csv"}}))
+            refuses("content_type non-chaine -> refus, jamais un en-tete malforme",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                    "content_type": 5}}))
 
             # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
             routes = [{"method": "GET", "pattern": "/list"},
