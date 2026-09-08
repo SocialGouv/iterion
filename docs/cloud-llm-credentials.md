@@ -236,32 +236,44 @@ iterion remote api POST /api/teams/<team-id>/oauth/codex/credentials \
 iterion remote api GET /api/teams/<team-id>/oauth/connections
 ```
 
-### A `claude setup-token` is not a `credentials.json`
+### Paste a `claude setup-token` directly
 
 The codex examples above paste a file that is already the right shape.
-Anthropic's is not: `claude setup-token` prints a **bare token**
-(`sk-ant-oat…`, ~108 characters, no JSON), and that is what most hosts keep
-around. `POST .../oauth/claude_code/credentials` parses strict JSON and refuses
-it — then refuses again if the JSON omits `expiresAt` or `scopes`, because a
-record without them is what the CLI reads as *"Not logged in"*: the credential
-would exist server-side and never serve a run.
+Anthropic's usually is not: `claude setup-token` prints a **bare token**
+(`sk-ant-oat…`, no JSON), and for a team or the platform tier that is normally
+all an operator has — nobody logs a shared account into a local CLI just to
+export its `credentials.json`.
 
-Wrap it:
+Send it as-is; the server wraps it:
 
-```json
-{"claudeAiOauth":{"accessToken":"sk-ant-oat…","expiresAt":<epoch ms>,"scopes":["user:inference"]}}
+```sh
+iterion remote api POST \
+  "/api/teams/<team-id>/oauth/claude_code/credentials?account_label=<account email>" \
+  --data "@$HOME/.secrets/claude-setup-token"     # the bare sk-ant-oat… token
 ```
 
-- **`expiresAt`** — a setup token is valid ~1 year and carries no expiry of its
-  own, so `now + 365 days` in **milliseconds** is the convention (it is what the
-  already-connected records show).
-- **No `refreshToken`** — correct for a setup token; the record comes back
+What the wrap assumes, and why it is not silent:
+
+- **`expiresAt` = now + 1 year** (`secrets.SetupTokenAssumedLifetime`). The
+  token carries no expiry of its own, and the choice is asymmetric: no expiry
+  at all is what the CLI reads as *"Not logged in"* — stored happily, serves
+  nothing — while too short retires a live credential in silence and too long
+  only means the provider refuses loudly at the call. So it errs long. The
+  server logs the assumption at ingestion, and the connection listing shows the
+  resulting `access_token_expires_at`.
+- **Scope `user:inference`**, since an empty scope list is the other half of
+  what reads as "Not logged in".
+- **No `refreshToken`**, which is correct: the record comes back
   `refreshable: false` and the refresh worker leaves it alone.
-- Build the wrapper **with a script that reads the token file and writes the
-  JSON** (mode `0600`, deleted after upload). Never echo the token into a shell
-  argument or a log: `ValidateTokenShape` exists because a token that picked up
-  a newline from a copy-paste kills every downstream call with an opaque
-  "Header has invalid value".
+- The **fingerprint is taken over the token**, not over the wrapper — so
+  re-uploading the same token keeps one usage meter and keeps its
+  `account_label`. This makes a setup token a *better* identity than a
+  `credentials.json`, two exports of which differ byte for byte (see below).
+
+A blob that is neither JSON nor a well-formed `sk-ant-oat…` token still earns
+the same typed refusal as before, and a token that picked up a newline or a
+space from a copy-paste is refused at ingestion rather than killing every
+downstream call with an opaque "Header has invalid value".
 
 ### The API response does not prove a run will use it
 

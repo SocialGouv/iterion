@@ -194,9 +194,10 @@ the hours this one spent.
   `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, which refuses at publish (HTTP
   `422`, a board give-back) a run no tier can fund instead of queueing one
   that dies at its first call. Read it also when **connecting** a Claude
-  forfait (a `claude setup-token` is a bare token, not the `credentials.json`
-  the endpoint parses — the wrapper, and why a record without
-  `expiresAt`/`scopes` is stored yet never serves), when asking **which key
+  forfait (a bare `claude setup-token` is accepted directly — the server wraps
+  it as `credentials.json`, assuming a one-year validity the token does not
+  carry, and fingerprints the TOKEN so a re-upload keeps one meter and its
+  name), when asking **which key
   paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
   place the credential, the window and the reopening are named — a run's own
   error names none of the three), and before trusting a **fallback**: a Claude
