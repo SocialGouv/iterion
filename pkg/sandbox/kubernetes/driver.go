@@ -944,7 +944,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 	// `<shell> -s` reads EOF, runs nothing, and exits 0. A size failure
 	// would then present as a SUCCESSFUL empty run instead of a loud,
 	// retryable E2BIG.
-	streamPayload := resolveStreamPayload(cmd, wrapped, customWorkDir, opts)
+	streamPayload, streamShell := resolveStreamPayload(cmd, wrapped, customWorkDir, opts, opts.WorkDir, opts.Env)
 
 	args := []string{"--namespace", r.namespace, "exec"}
 	if opts.Stdin != nil || opts.KeepStdinOpen || streamPayload != "" {
@@ -959,18 +959,21 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		// semantics and exit codes).
 		args = appendEnvPrefix(args, opts.Env)
 		if streamPayload != "" {
-			// `<shell> -s` reads the script from stdin. cmd[0] is "sh"
-			// or "bash" (guaranteed by the predicate), so a bash recipe
-			// keeps bash semantics. The env prefix still precedes it and
-			// applies to the shell that reads the script.
-			args = append(args, cmd[0], "-s")
+			// `<shell> -s` reads the script from stdin. streamShell is
+			// the recipe's own shell, so a bash recipe keeps bash
+			// semantics. The env prefix still precedes it and applies to
+			// the shell that reads the script.
+			args = append(args, streamShell, "-s")
 		} else {
 			args = append(args, cmd...)
 		}
 	case streamPayload != "":
-		// The wrapper is the whole script; `sh -s` reads it from stdin
-		// and it still exec's cmd[0] itself, so a bash recipe keeps bash.
-		args = append(args, "sh", "-s")
+		// The payload is the whole script; `<shell> -s` reads it from
+		// stdin. streamShell is the recipe's own shell when the payload
+		// IS the recipe (chdir + exports + script inline, nothing left on
+		// argv), and plain `sh` when it is a wrapper that still exec's
+		// cmd[0] itself — either way the recipe keeps its shell.
+		args = append(args, streamShell, "-s")
 	default:
 		args = append(args, "sh", "-c", wrapped)
 	}
@@ -998,20 +1001,42 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 //     one ending in `exec <prog>` runs identically under `sh -s` and
 //     `sh -c`.
 //
+// A custom workdir over an oversized `<shell> -c <script>` is the two
+// crossings AT ONCE, and streaming the wrapper alone would not fix it:
+// the wrapper ends in `exec <shell> -c '<script>'`, so the in-pod shell
+// re-issues the very execve the host just avoided, and MAX_ARG_STRLEN
+// applies there too — E2BIG relocated into the pod, for precisely the
+// shape this streaming exists to serve. That case therefore gets a
+// payload built by [buildShellChdirScript], which cds and then lets the
+// shell READ the script instead of passing it as an argument.
+//
+// The returned shell is the one to invoke as `<shell> -s`: the recipe's
+// own (so a bash recipe keeps bash semantics) when the payload is a
+// script, plain `sh` when it is a wrapper ending in `exec`.
+//
 // Both crossings refuse to touch a caller that owns stdin: an attached
 // reader (opts.Stdin) is never clobbered, and a caller that asked to
 // KEEP stdin open — pi_rpc, claw_backend and claude_code session mode
 // all wire cmd.StdinPipe() afterwards — must not have it commandeered,
 // which would fail their pipe with "exec: Stdin already set". Those
 // keep the argv path and its loud, retryable E2BIG.
-func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts sandbox.ExecOpts) string {
+func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts sandbox.ExecOpts, workDir string, env map[string]string) (string, string) {
 	if !customWorkDir {
-		return sandbox.ShouldStreamScriptViaStdin(cmd, opts)
+		if script := sandbox.ShouldStreamScriptViaStdin(cmd, opts); script != "" {
+			return script, cmd[0]
+		}
+		return "", ""
 	}
-	if opts.Stdin != nil || opts.KeepStdinOpen || len(wrapped) <= sandbox.MaxInlineArgBytes {
-		return ""
+	if opts.Stdin != nil || opts.KeepStdinOpen {
+		return "", ""
 	}
-	return wrapped
+	if script := sandbox.ShouldStreamScriptViaStdin(cmd, opts); script != "" {
+		return buildShellChdirScript(workDir, env, script), cmd[0]
+	}
+	if len(wrapped) <= sandbox.MaxInlineArgBytes {
+		return "", ""
+	}
+	return wrapped, "sh"
 }
 
 // cmdContext finalises the *exec.Cmd: ctx, args, stdin pipe, pgid.

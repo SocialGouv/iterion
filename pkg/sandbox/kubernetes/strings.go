@@ -89,6 +89,30 @@ func appendEnvPrefix(args []string, env map[string]string) []string {
 // Each argv element is single-quoted with embedded ' escaped per
 // POSIX rules. We don't use Go's strconv because shell quoting
 // follows different rules.
+// buildShellChdirScript renders a chdir + env + INLINE script payload for
+// a shell reading it on stdin (`<shell> -s`). Unlike
+// [buildShellChdirExec] it never puts the script back on an argv
+// element, so nothing in the payload is subject to the kernel's
+// per-argument cap — the point of streaming it in the first place.
+//
+// Env arrives as `export` lines rather than an `env K=V ...` prefix
+// because there is no command to prefix: the script runs in the shell
+// that read it. `cd` failing aborts instead of running the script in the
+// wrong directory.
+func buildShellChdirScript(dir string, env map[string]string, script string) string {
+	var b strings.Builder
+	b.WriteString("cd ")
+	b.WriteString(shellquote.Quote(dir))
+	b.WriteString(" || exit 1\n")
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		b.WriteString("export ")
+		b.WriteString(shellquote.Quote(k + "=" + env[k]))
+		b.WriteByte('\n')
+	}
+	b.WriteString(script)
+	return b.String()
+}
+
 func buildShellChdirExec(dir string, argv []string, env map[string]string) string {
 	var b strings.Builder
 	b.WriteString("cd ")
