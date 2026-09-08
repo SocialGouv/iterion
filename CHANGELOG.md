@@ -3,6 +3,19 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.1](https://github.com/SocialGouv/iterion/compare/v3.121.0...v3.121.1) (2026-09-08)
+
+### Bug Fixes
+
+* distinguish human waits from stalled runs ([#965](https://github.com/SocialGouv/iterion/issues/965)) ([2bea34b](https://github.com/SocialGouv/iterion/commit/2bea34b56a7dfbd53736a166fc066f318f0ff352))
+* **model:** an in-process retry resumes the session the dead attempt opened ([#958](https://github.com/SocialGouv/iterion/issues/958)) ([f713312](https://github.com/SocialGouv/iterion/commit/f713312888a9af206507e4d4a65c52ea1ed21d68)), references [#952](https://github.com/SocialGouv/iterion/issues/952) [#912](https://github.com/SocialGouv/iterion/issues/912)
+
+    <details><summary>why</summary>
+
+    When the LAST in-place attempt is the cheap one, the node reported the cost of nothing: attempt 1 spends an agentic session and hits a transient wall, attempt 2 cannot even spawn and returns an empty Result, and `result, err = fn()` overwrote the figure with zero. The caps, the org monthly cap and a lending donor's ledger all read that figure.
+
+    </details>
+
 ## [3.121.0](https://github.com/SocialGouv/iterion/compare/v3.120.2...v3.121.0) (2026-09-08)
 
 ### Features
