@@ -159,16 +159,39 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 	}
 	if raised {
 		b.everRaised = true
-		// A pending overrun was measured against a cap that no longer
-		// exists. Acting on it after the operator has raised that very cap
-		// would kill the run with the grant already applied — the exact case
-		// raise_budget exists for, since a raise reaches a run busy inside a
-		// long node only at the boundary where that node's own overrun is
-		// taken. Dropped, never suppressed: the stop is re-derived from LIVE
-		// usage by the pre-exec check on the next node, so a run still past
-		// the NEW cap stops there, one node later and against the right
-		// number.
-		b.exceeded = nil
+		// A pending overrun was measured against caps that no longer exist,
+		// so it is RE-DERIVED here rather than trusted. Dropped when the
+		// raise actually covers it — the case raise_budget exists for, since
+		// a raise reaches a run busy inside a long node only at the boundary
+		// where that node's own overrun is taken — and KEPT, with refreshed
+		// figures, when it does not. Dropping it unconditionally would forgive
+		// two overruns the operator never lifted: a raise too small on the
+		// same axis (cap 10, node spent 100, raised to 20), and a raise on a
+		// DIFFERENT axis (tokens blew, max_cost_usd raised). Either would let
+		// the run walk into a terminal or special-dispatch successor — which
+		// runs no pre-exec check at all, see recordAndCheckBudget — and be
+		// recorded as a success with the cap still blown.
+		if exc := b.exceeded; exc != nil {
+			used, limit, known := b.liveAxisLocked(exc.dimension)
+			switch {
+			case !known:
+				// Fail CLOSED: a dimension liveAxisLocked does not know is
+				// one this cannot prove was covered, so the overrun stands.
+			case limit <= 0:
+				// That axis is now unlimited — there is nothing left to be
+				// over, exactly as checkLocked skips a limit <= 0 axis.
+				b.exceeded = nil
+			case used < limit:
+				b.exceeded = nil
+			default:
+				// Still over. Refresh the pair so the budget_exceeded event,
+				// the error and the operator's hint quote the cap now in
+				// force instead of the one they just replaced.
+				refreshed := *exc
+				refreshed.used, refreshed.limit = used, limit
+				b.exceeded = &refreshed
+			}
+		}
 	}
 	return b.capsLocked(), raised
 }
@@ -452,6 +475,33 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 	add("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 
 	return axes
+}
+
+// liveAxisLocked reports the LIVE used/limit pair for one enforced
+// dimension, and whether the dimension is one this budget tracks at all
+// (false for anything outside budgetDimensions — `cost_usd_unpriced`, or a
+// name a future check invents). Caller holds b.mu.
+//
+// Deliberately side-effect free, which is why it exists rather than a
+// checkLocked call: checkLocked SETS warningsEmitted[dimension] on its 80%
+// branch, and RaiseCaps has just DELETED those keys to re-arm the fresh
+// warning it promises against the new ceiling. Re-deriving through
+// checkLocked would consume that tick on the spot and the operator would
+// never see it.
+func (b *SharedBudget) liveAxisLocked(dimension string) (used, limit float64, known bool) {
+	switch dimension {
+	case "iterations":
+		return float64(b.iterationsUsed), float64(b.maxIterations), true
+	case "tokens":
+		return float64(b.tokensUsed), float64(b.maxTokens), true
+	case "cost_usd":
+		return b.costUsed, b.maxCostUSD, true
+	case "duration":
+		// Nanoseconds as float64, the unit checkLocked measured the pending
+		// result in.
+		return float64(time.Since(b.startedAt)), float64(b.maxDuration), true
+	}
+	return 0, 0, false
 }
 
 // exitGraceRoom reports whether every enforced dimension is still under

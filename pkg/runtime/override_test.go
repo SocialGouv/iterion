@@ -372,3 +372,105 @@ func TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave(t *testing.T) {
 		t.Fatalf("await = (%+v, %v) — the grant must report itself applied", res, err)
 	}
 }
+
+// raiseBudgetOverrunWorkflow builds the `a -> b -> done` fixture the two
+// tests below share: `b` is the node that blows the cap and posts the raise
+// from inside itself, and its successor is a TERMINAL — the shape that runs
+// no pre-exec check, so a pending overrun dropped at the raise is never
+// re-derived anywhere and the run finishes as a success with the cap blown.
+func raiseBudgetOverrunWorkflow(name string, budget *ir.Budget) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  name,
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "b"},
+			{From: "b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  budget,
+	}
+}
+
+// runRaiseBudgetOverrun executes the shared fixture: node `b` posts `raise`
+// from inside itself, then returns `spend` as its usage. Returns the stored
+// run so the caller can assert the terminal status.
+func runRaiseBudgetOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, spend map[string]any) *store.Run {
+	t.Helper()
+
+	wf := raiseBudgetOverrunWorkflow(runID, budget)
+	ch := make(chan *OverrideMsg, 1)
+	msg := NewRaiseBudgetOverride(raise, "")
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		ch <- msg
+		out := map[string]any{"ok": true}
+		for k, v := range spend {
+			out[k] = v
+		}
+		return out, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithOverrideChannel(ch))
+	err := eng.Run(context.Background(), runID, nil)
+	if err == nil {
+		t.Fatal("run: want a budget error — the raise does not cover the overrun")
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("run: err = %v, want ErrBudgetExceeded", err)
+	}
+
+	r, loadErr := s.LoadRun(context.Background(), runID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	return r
+}
+
+// TestRaiseBudget_InsufficientRaiseStillStopsTheRun pins the first half of
+// the re-derivation: the operator raises the very axis that blew, but not far
+// enough. Cap 10, node spent 100, raise to 20 — still 5x over, and past the
+// 10% exit grace. Dropping the pending overrun just because SOMETHING was
+// raised would let the run walk into `done` and be recorded as a success with
+// the cap blown, converting a hard budget failure into a silent one.
+func TestRaiseBudget_InsufficientRaiseStillStopsTheRun(t *testing.T) {
+	r := runRaiseBudgetOverrun(t, "run-raise-insufficient",
+		&ir.Budget{MaxCostUSD: 10},
+		ir.BudgetOverrides{MaxCostUSD: 20},
+		map[string]any{"_cost_usd": 100.0},
+	)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable — 100 is still past the raised cap of 20", r.Status)
+	}
+	if r.BudgetRaises == nil || r.BudgetRaises.MaxCostUSD != 20 {
+		t.Fatalf("persisted BudgetRaises = %+v, want MaxCostUSD 20 — the grant itself still applies", r.BudgetRaises)
+	}
+}
+
+// TestRaiseBudget_OtherAxisRaiseStillStopsTheRun pins the second half: the
+// raise lands on an axis that is not the one that blew (tokens overran, the
+// operator raised max_cost_usd). The tokens overrun is untouched by that
+// grant and must still end the run.
+func TestRaiseBudget_OtherAxisRaiseStillStopsTheRun(t *testing.T) {
+	r := runRaiseBudgetOverrun(t, "run-raise-other-axis",
+		&ir.Budget{MaxTokens: 10, MaxCostUSD: 5},
+		ir.BudgetOverrides{MaxCostUSD: 50},
+		map[string]any{"_tokens": 100},
+	)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable — the tokens axis is still 10x over", r.Status)
+	}
+}
