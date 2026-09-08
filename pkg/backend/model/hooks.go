@@ -1009,6 +1009,37 @@ func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
 	})
 }
 
+// facadeFingerprintPrefix marks a session the delegate routed through an
+// Anthropic-shaped facade (claude_code_creds.go providerFingerprint).
+const facadeFingerprintPrefix = "facade:"
+
+// emitFacadeRouting surfaces a node served through a facade. The facade
+// answers whatever model id it is asked for with the model it aliases it
+// to, so declared and effective ids agree and emitModelDrift stays silent;
+// the fingerprint is the only evidence. Once per node and facade.
+func (h *storeHooks) emitFacadeRouting(nodeID string, info DelegateInfo) {
+	if !strings.HasPrefix(info.Fingerprint, facadeFingerprintPrefix) {
+		return
+	}
+	key := nodeID + "\x00facade\x00" + info.Fingerprint
+	h.driftMu.Lock()
+	if h.driftSeen == nil {
+		h.driftSeen = make(map[string]struct{})
+	}
+	if _, seen := h.driftSeen[key]; seen {
+		h.driftMu.Unlock()
+		return
+	}
+	h.driftSeen[key] = struct{}{}
+	h.driftMu.Unlock()
+	h.emit(nodeID, store.EventModelServedViaFacade, map[string]any{
+		"backend":         info.BackendName,
+		"declared_model":  info.DeclaredModel,
+		"effective_model": info.EffectiveModel,
+		"fingerprint":     info.Fingerprint,
+	})
+}
+
 func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
 	if h.servedSink == nil || nodeID == "" || info.BackendName == "" {
 		return
@@ -1019,6 +1050,7 @@ func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
 		DeclaredModel:   info.DeclaredModel,
 		ContextWindow:   info.ContextWindow,
 		MaxOutputTokens: info.MaxOutputTokens,
+		Fingerprint:     info.Fingerprint,
 	}
 	if err := h.servedSink.RecordNodeServed(h.ctx, h.runID, nodeID, served); err != nil {
 		h.logger.Warn("Could not persist served model [%s]: %v", nodeID, err)
@@ -1079,6 +1111,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		return
 	}
 	h.emitModelDrift(nodeID, info)
+	h.emitFacadeRouting(nodeID, info)
 	h.recordServed(nodeID, info)
 
 	h.logger.Logf(iterlog.LevelInfo, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
@@ -1111,6 +1144,7 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
 	h.emitModelDrift(nodeID, info)
+	h.emitFacadeRouting(nodeID, info)
 	// A failed attempt typically has no EffectiveModel. Last-write-wins
 	// would blank a model recorded by an earlier success — the fact a
 	// failed run.json must still keep (#474). Only persist when the

@@ -294,3 +294,69 @@ func findEvent(t *testing.T, evts []*store.Event, typ store.EventType) *store.Ev
 	t.Fatalf("no %s event in %d events", typ, len(evts))
 	return nil
 }
+
+// A claude_code node whose tenant holds a z.ai key is routed through the
+// Anthropic-shaped facade by default; the facade answers the requested
+// claude id with the model it aliases it to, so declared and effective ids
+// agree and no drift fires. The session fingerprint is the only evidence:
+// it must reach the run record and raise one event per node and facade.
+func TestDelegateFacadeRoutingReachesStore(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const runID = "run-facade"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	var logBuf bytes.Buffer
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+
+	facade := DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "claude-opus-5",
+		EffectiveModel: "claude-opus-5",
+		Fingerprint:    "facade:https://api.z.ai/api/anthropic",
+	}
+	hooks.OnDelegateFinished("triage", facade)
+	hooks.OnDelegateFinished("triage", facade) // a retry on the same route: no second event
+	hooks.OnDelegateFinished("report", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "claude-opus-5",
+		EffectiveModel: "claude-opus-5",
+		Fingerprint:    "anthropic-oauth",
+	})
+
+	evts, err := st.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	var facadeEvents []*store.Event
+	for _, e := range evts {
+		if e.Type == store.EventModelServedViaFacade {
+			facadeEvents = append(facadeEvents, e)
+		}
+		if e.Type == store.EventModelDrift {
+			t.Errorf("model_drift must stay silent when the ids agree: %v", e.Data)
+		}
+	}
+	if len(facadeEvents) != 1 {
+		t.Fatalf("got %d model_served_via_facade events, want exactly 1 (per node and facade): %+v", len(facadeEvents), facadeEvents)
+	}
+	ev := facadeEvents[0]
+	if ev.NodeID != "triage" || ev.Data["fingerprint"] != "facade:https://api.z.ai/api/anthropic" || ev.Data["declared_model"] != "claude-opus-5" || ev.Data["backend"] != "claude_code" {
+		t.Errorf("model_served_via_facade = node %q data %v", ev.NodeID, ev.Data)
+	}
+
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := run.NodesServed["triage"].Fingerprint; got != "facade:https://api.z.ai/api/anthropic" {
+		t.Errorf("NodesServed[triage].Fingerprint = %q — the facade route was captured then dropped", got)
+	}
+	if got := run.NodesServed["report"].Fingerprint; got != "anthropic-oauth" {
+		t.Errorf("NodesServed[report].Fingerprint = %q", got)
+	}
+}

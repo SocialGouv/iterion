@@ -69,6 +69,11 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
+	// Fingerprint is the provider fingerprint of the session that served
+	// the delegation ("anthropic-oauth", "facade:<base url>", …), as the
+	// backend reported it. Persisted on NodesServed and the source of the
+	// model_served_via_facade event.
+	Fingerprint string
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —
@@ -91,6 +96,7 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		ContextWindow:      result.ContextWindow,
 		MaxOutputTokens:    result.MaxOutputTokens,
 		PeakInputTokens:    result.PeakInputTokens,
+		Fingerprint:        result.SessionFingerprint,
 	}
 }
 

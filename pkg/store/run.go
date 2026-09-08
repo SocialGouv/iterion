@@ -311,6 +311,12 @@ type NodeServed struct {
 	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
+	// Fingerprint is the provider fingerprint the backend reported for the
+	// session that served the node ("anthropic-oauth", "facade:<base url>",
+	// …). A model id alone cannot tell that an Anthropic-shaped facade
+	// answered a claude id with whatever it aliases it to; the fingerprint
+	// can. Empty when the backend reports none.
+	Fingerprint string `json:"fingerprint,omitempty" bson:"fingerprint,omitempty"`
 }
 
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the
