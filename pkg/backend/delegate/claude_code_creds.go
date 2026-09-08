@@ -306,26 +306,31 @@ func facadeLabel(base string) string {
 	if err != nil {
 		// Unparseable: keep none of it. The digest alone is still
 		// stable and still tells two different values apart.
-		return "invalid#" + shortDigest(base)
+		return redactedLabel("unparseable-url", base)
 	}
 	if u.User == nil && u.RawQuery == "" && u.Fragment == "" {
 		return base
 	}
-	digest := shortDigest(base)
 	u.User = nil
 	u.RawQuery = ""
 	u.ForceQuery = false
 	u.Fragment = ""
 	u.RawFragment = ""
-	return u.String() + "#" + digest
+	return redactedLabel(u.String(), base)
 }
 
-// shortDigest is the collision guard for a value we must not reproduce:
-// enough bits that two facade URLs do not share one, one-way so the
-// original is not recoverable from a run record.
-func shortDigest(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:6])
+// redactedLabel joins what survived redaction to the collision guard for
+// what did not: enough bits that two facade URLs never share one, one-way
+// so the original is not recoverable from a run record.
+//
+// Deliberately NOT url-shaped. An operator reading a run record has to be
+// able to tell what they typed from what iterion removed, and a bare
+// "#<hex>" suffix would read as a fragment they wrote themselves — on a
+// value that exists precisely to answer "what actually served this node"
+// without ambiguity.
+func redactedLabel(kept, original string) string {
+	sum := sha256.Sum256([]byte(original))
+	return kept + " [redacted:" + hex.EncodeToString(sum[:6]) + "]"
 }
 
 // stampUsageSource wraps an OnUsageWindow hook so every reading leaving a
