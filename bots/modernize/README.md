@@ -82,11 +82,17 @@ iterion run bots/modernize/main.bot --var only_lot=L1
 ```
 
 An explicit `only_lot` is answered explicitly: a lot the contract carries as
-`done` or `blocked`, does not declare, holds behind an unmet dependency, or
-declares no `exit_gate` is a **typed verdict** (`lot_not_actionable` with its
-`lot_status`) that `work_gate` routes to `fail` — run failed, never a green
-no-op, never a tool error the engine would retry. The unfiltered mode keeps
-its legitimate no-op on an exhausted programme.
+`done` or `blocked`, does not declare, or holds behind an unmet dependency is a
+**typed verdict** (`lot_not_actionable` with its `lot_status`) that `work_gate`
+routes to `fail` — run failed, never a green no-op, never a tool error the
+engine would retry.
+
+A ready lot that declares **no `exit_gate`** is refused the same way in
+**both** modes: an unverifiable lot is indistinguishable from one that was
+never done, and the unfiltered scan would re-pick it at every relaunch — so
+that run also fails `LOT_NOT_ACTIONABLE` rather than parking the programme in
+finished-at-zero-minutes runs. The unfiltered mode keeps its legitimate no-op
+only on an exhausted programme.
 
 Prerequisite: a behavioural net in the target repo. Build it with the
 `golden-master` bot first.

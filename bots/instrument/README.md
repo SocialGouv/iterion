@@ -39,7 +39,10 @@ DSL edit.
 ## Shape (v2 — one agent, minimal framing)
 
 ```
-campaign → verify_probe → verify_build → verify_run → review → gate
+campaign → verify_probe ─(fresh)─────────────▶ verify_run → review → gate
+                        └(stale)→ verify_build ┘
+           (pass 1 always regenerates; passes 2+ reuse a clean scratch verify.sh
+            and skip the verify_build LLM node entirely)
 gate → mr_gate           when converged (green AND instrumentation_complete AND review.clean)
 gate → campaign          as continuation_loop(max_passes), carrying the failure log
 mr_gate → forge_auth_probe → finalize_mr → surface_pr_link → done   (opt-in PR tail)

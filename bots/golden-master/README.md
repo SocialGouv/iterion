@@ -24,9 +24,10 @@ Both are the same failure: **a green that was never at risk of being red**.
 ## Surfaces
 
 Goldy works outward from the application's observable boundary rather than its
-source code. The campaign can cover five lanes: HTTP responses; binary exports
+source code. The campaign can cover seven lanes: HTTP responses; binary exports
 (PDF, spreadsheets, CSV); deterministic screenshots; hashes of assets served by
-the build; and pinned-ruleset accessibility snapshots. A lane is opened only
+the build; pinned-ruleset accessibility snapshots; canvas renders; and write
+journeys — the lane no read-only capture can reach. A lane is opened only
 when the application exposes it. Binary references require non-empty extracted
 text plus canonical-text and raster assertions when rendering is available;
 `content_empty` and `value_change` mutants make a broken extractor or renderer
@@ -144,8 +145,12 @@ iterion run bots/golden-master/sync-harness.bot --var gate_cmd="bash ci/oracle-g
 
 ## `reanchor.bot` — repairing a mutant a modernisation lot invalidated
 
-A second, much smaller workflow in this bundle, meant to be run as a **subbot** from inside a
-modernisation lot's run (`modernize` wires it as `reanchor`).
+One of two smaller workflows in this bundle meant to be run as a **subbot** from inside a
+modernisation lot's run (`modernize` wires it as `reanchor`). Its peer is
+[`extend.bot`](extend.bot), wired on the `needs_extend` edge
+(`lot_gate -> extend`): where `reanchor` repairs a mutant a lot
+invalidated, `extend` grants a lot's pending extension requests by pure
+addition.
 
 A lot is entitled to rename a method or restructure a template. When it does, a mutant that patched
 the old form stops patching anything: the harness calls it INVALID — correctly — and the surface it

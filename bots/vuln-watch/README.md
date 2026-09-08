@@ -29,8 +29,13 @@ One linear deterministic pass, eight tool nodes:
 
 ```
 plan → poll_dependabot → poll_advisories → poll_exploit → match_policy
-     → confirm_versions → notify → commit_state
+     → confirm_versions → notify ─(consume)──▶ commit_state
+                                 └(nothing)──▶ done
 ```
+
+Linear through `notify`, which then branches: state is committed only on a
+run that actually consumes something. A run with nothing to consume —
+including every `dry_run` run — goes straight to `done`.
 
 Three detection lanes feed one policy decision:
 
