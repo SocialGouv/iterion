@@ -453,10 +453,14 @@ func (s *Server) kickOAuthRefresh(ownerKey string, kind secrets.OAuthKind) {
 	errtrack.Go("server.oauthRefreshOnConnect", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), oauthConnectRefreshTimeout)
 		defer cancel()
+		// The count is the SWEEP's, not this owner's: RunOnce is a full pass
+		// over every due record, and reading "owner=X … rotated 3" as three
+		// rotations of X's credential would be wrong on any deployment with
+		// more than one. The owner/kind name what TRIGGERED the pass.
 		if n, err := worker.RunOnce(ctx); err != nil {
-			s.logger.Warn("oauth-forfait refresh on connect (owner=%s kind=%s): %v", ownerKey, kind, err)
+			s.logger.Warn("oauth-forfait refresh, swept on connect of owner=%s kind=%s: %v", ownerKey, kind, err)
 		} else if n > 0 {
-			s.logger.Info("oauth-forfait refresh on connect (owner=%s kind=%s): rotated %d token(s)", ownerKey, kind, n)
+			s.logger.Info("oauth-forfait refresh, swept on connect of owner=%s kind=%s: rotated %d token(s) across all due records", ownerKey, kind, n)
 		}
 	})
 }
