@@ -189,6 +189,15 @@ except **C230**; warnings are surfaced but do not fail validation.
 | **C232** | warning | skill has no `description:` | A `skills/*.md` file has no `description:` frontmatter, so the router (Nexie) has no signal for when to select it | Add a `description:` saying what the skill is for and when it applies |
 | **C233** | warning | skill `description:` too terse | A skill `description:` is present but too short to route on (e.g. "Security stuff") | Describe what the skill does and the situation it applies to. Routability only — no phrasing template is imposed |
 | **C234** | warning | duplicate skill name | Two `skills/*.md` files declare the same `name:`, so one silently clobbers the other when mirrored | Give each skill a unique `name:` |
+| **C250** | error | engine requirement unmet | The manifest declares `requires: { iterion: ">= X.Y.Z" }` and this build is below it — the bundle uses something the running engine does not have | Upgrade iterion, or lower `requires.iterion` to a build that carries what the bot uses. The same predicate refuses the bundle at `iterion remote admin bots push` (409, `--force` overrides) and at launch on a runner (`BOT_REQUIRES_NEWER_ENGINE`, terminal) |
+| **C251** | warning | engine requirement unchecked | A `requires.iterion` is declared but this build carries no orderable version (a `dev` build, a fork's naming scheme), so the comparison could not run | Validate with a released build, or one built through `task build` (which injects the version). Reported rather than passed in silence — an unchecked contract that reads as satisfied is what the declaration exists to prevent |
+
+The engine-contract checks (**C250–C251**) hold a bundle's declared
+`requires.iterion` against the build reading it. The grammar is deliberately
+total: `>= X.Y.Z` or a bare version, dotted numeric, optional leading `v`;
+every other shape is a manifest parse error, and an unknown key under
+`requires:` is refused by the strict manifest decoder. A requirement iterion
+cannot read is never a requirement iterion ignores.
 
 The skill-authoring checks (**C231–C234**) guard *routability* — that a skill
 can be discovered and chosen by the router — not prose style. They impose no

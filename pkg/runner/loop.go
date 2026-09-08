@@ -782,6 +782,20 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, appinfo.Version, execErr},
 		}
 	}
+	// The bundle names an engine floor this build is below: a comparison
+	// between two constants, so every redelivery reaches the same verdict.
+	// Ack — the run is already terminal (failBotRequiresNewerEngine) and the
+	// cure is a deploy or a bot edit followed by a fresh launch.
+	if errors.Is(execErr, ErrBotRequiresNewerEngine) {
+		return execOutcome{
+			finalStatus: "bot_requires_newer_engine",
+			op:          "ack-bot-requires-newer-engine",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s: the bot declares an engine this runner (%s) is below — failed, NOT redelivered: bump the runner image or relax the bot's requires.iterion, then re-launch (%v)",
+			logArgs:     []any{runID, appinfo.Version, execErr},
+		}
+	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
 	if errors.Is(execErr, runtime.ErrRunCancelled) {
 		return execOutcome{
@@ -2309,6 +2323,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// children beside it (see subbotRunnerFor).
 	parentBundleDir := ""
 	snapshotRoot := ""
+	// runBundle is whichever bundle this run executes with, hoisted out of the
+	// two resolution branches so the engine-requirement guard below is ONE
+	// point both traverse rather than a check copied into each.
+	var runBundle *bundle.Bundle
 	if msg.BotBundle != nil {
 		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
 		if berr != nil {
@@ -2319,6 +2337,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if msg.BotBundle.SnapshotDigest != "" {
 			snapshotRoot = filepath.Dir(b.Dir)
 		}
+		runBundle = b
 		engineOpts = append(engineOpts, runtime.WithBundle(b))
 	} else if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		// Best-effort: an unresolvable bot id or a loose .bot just skips the
@@ -2327,6 +2346,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			parentBundleDir = filepath.Dir(mainFile)
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
+				runBundle = b
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
 				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, berr)
@@ -2334,6 +2354,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		} else {
 			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, r.cfg.BotsPaths)
 		}
+	}
+	// The bundle and the image that executes it move independently — a push
+	// lands in a second, a runner digest bump is a deploy. A bundle that names
+	// an engine this build is below is refused HERE, before the first node.
+	if err := r.guardEngineRequirement(ctx, msg, runBundle); err != nil {
+		return err
 	}
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's
 	// iterion home is ephemeral and empty, so local resolution would silently

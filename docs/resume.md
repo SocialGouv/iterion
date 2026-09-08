@@ -102,7 +102,9 @@ Being one of the engine's own codes does not make a verdict re-decidable.
 `EXPRESSION_FAILED` (a `compute` node: no LLM, no shell, inputs from a
 checkpoint that does not move), `CONTEXT_LENGTH_EXCEEDED` (the in-node
 recipe already compacted twice and gave up; a resume rehydrates the same
-conversation), `IR_UNLOADABLE`, `WORKSPACE_SAFETY`,
+conversation), `IR_UNLOADABLE`, `BOT_REQUIRES_NEWER_ENGINE` (a comparison
+between two constants — the bundle's `requires.iterion` and the build's own
+version), `WORKSPACE_SAFETY`,
 `TOOL_FAILED_PERMANENT` and their peers reach the same verdict on every
 attempt. Which codes those are is **one table**,
 [`pkg/retrypolicy`'s classification](../pkg/retrypolicy/classify.go), read

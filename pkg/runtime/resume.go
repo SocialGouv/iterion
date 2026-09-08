@@ -94,6 +94,14 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
 		return rerr
 	}
+	// The bundle may declare an engine this build is below. Refused BEFORE
+	// the claim, like the two guards above: the run keeps the resumable
+	// status it had, so an operator who then aligns the build can resume it —
+	// nothing is lost by asking, and re-executing on this build could only
+	// reach the same verdict at the first node.
+	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
+		return rerr
+	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers)
