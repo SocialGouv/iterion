@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.4](https://github.com/SocialGouv/iterion/compare/v3.116.3...v3.116.4) (2026-09-08)
+
+### Bug Fixes
+
+* **platform-bots:** a stored override that shadows a newer baked bundle is no longer silent ([#851](https://github.com/SocialGouv/iterion/issues/851)) ([8ce6262](https://github.com/SocialGouv/iterion/commit/8ce6262cb59d4c07e4300608bf9cc899beaa684c)), references [#742](https://github.com/SocialGouv/iterion/issues/742) [780/#785](https://github.com/SocialGouv/iterion/issues/785)
+
+    <details><summary>why</summary>
+
+    A platform or team bot override outranks the baked catalog at every launch surface — that is the tier's purpose. The cost, unmeasured until now, is that a bundle pushed once keeps serving after a later release bakes a newer one for the same slug: the image moves, the bot does not, and nothing says so.
+
+    </details>
+
 ## [3.116.3](https://github.com/SocialGouv/iterion/compare/v3.116.2...v3.116.3) (2026-09-08)
 
 ### Bug Fixes
