@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -192,6 +194,102 @@ func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
 			t.Errorf("_cost_usd = %v, want 2.40 (first attempt + abandoned retry)", got)
 		}
 	})
+}
+
+// TestValidateAndRetry_BooksTheClawRecoveryCall: the last-resort structured
+// -output recovery is a THIRD billed generation — a claw call to a provider
+// of its own, on top of the delegation and its retry — and its usage exists
+// nowhere but on the value it returns. Both of its outcomes were dropping it:
+// the answer it produced was priced at the delegation alone, and the exit
+// where it gave up AFTER the model answered reported nothing at all, which is
+// exactly the figure GenerateObjectDirect's partial return was added to keep.
+//
+// Asserted on `_tokens`, deterministic whatever the host's price table says
+// (`_cost_usd` for the recovery model is not).
+func TestValidateAndRetry_BooksTheClawRecoveryCall(t *testing.T) {
+	// The detector picks the recovery's provider off the environment, and
+	// the claw registry serves that spec from a scripted client.
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	schema := &ir.Schema{
+		Name:   "out_schema",
+		Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}},
+	}
+	schemaJSON, err := SchemaToJSON(schema)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		recovery  []api.StreamEvent
+		wantError bool
+	}{{
+		// The recovery ANSWERS: the node is rescued, and owes all three.
+		name:     "a recovery that answered",
+		recovery: toolUseEvents("tu_1", "structured_output", `{"answer":"blue"}`, 200, 50),
+	}, {
+		// The recovery is billed and still fails — the model narrated
+		// instead of calling the synthetic tool. The node fails, owing the
+		// same three.
+		name:      "a recovery billed for an answer it could not use",
+		recovery:  textEvents("I would rather narrate.", 200, 50),
+		wantError: true,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clawReg := NewRegistry()
+			clawReg.Register("anthropic", func(string) (api.APIClient, error) {
+				return newMockClient(tc.recovery), nil
+			})
+			// The retry comes back parse-fallback with text, which is what
+			// sends the executor into the claw recovery.
+			delegateReg := delegate.NewRegistry()
+			delegateReg.Register("test_backend", &capturingBackend{results: []delegate.Result{{
+				Output:        map[string]any{"text": "the answer is blue", "_cost_usd": 0.50},
+				Tokens:        500,
+				ParseFallback: true,
+				BackendName:   "test_backend",
+			}}})
+			exec := NewClawExecutor(clawReg,
+				&ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{"out_schema": schema}},
+				WithBackendRegistry(delegateReg),
+				WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
+			)
+			backend, err := delegateReg.Resolve("test_backend")
+			if err != nil {
+				t.Fatalf("backend: %v", err)
+			}
+
+			// OutputSchema is what lets the recovery run at all.
+			task := &delegate.Task{OutputSchema: schemaJSON}
+			first := delegate.Result{
+				Output:        map[string]any{"text": "the answer is blue", "_cost_usd": 1.00},
+				Tokens:        1_000,
+				ParseFallback: true,
+				BackendName:   "test_backend",
+			}
+
+			out, err := exec.validateAndRetry(context.Background(),
+				backendFields{id: "answerer", outputSchema: "out_schema"},
+				"test_backend", backend, task, first, schema)
+			if tc.wantError != (err != nil) {
+				t.Fatalf("precondition: wantError=%v, got err=%v", tc.wantError, err)
+			}
+			// 1000 + 500 + the recovery's own 250: no session anywhere here,
+			// so every figure is disjoint and they all add.
+			if got := out.Output["_tokens"]; got != 1_750 {
+				t.Errorf("_tokens = %v, want 1750 (delegation + retry + the recovery call)", got)
+			}
+			// The two delegations alone; the recovery adds whatever its
+			// model is priced at, and may add nothing on an unpriced one.
+			if got, _ := out.Output["_cost_usd"].(float64); got < 1.50 {
+				t.Errorf("_cost_usd = %v, want >= 1.50 (both delegations)", out.Output["_cost_usd"])
+			}
+		})
+	}
 }
 
 // TestValidateAndRetry_AbandonedRetryFoldsASharedSession pins the arithmetic
