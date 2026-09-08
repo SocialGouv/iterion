@@ -285,6 +285,14 @@ func (s *Server) resolveBotSource(ctx context.Context, teamID, botID string) (*l
 type platformBotSet struct {
 	entries   []botregistry.EntryWithSchema
 	manifests map[string]*bundle.Manifest
+	// slugs is EVERY platform row, versioned or not — a row still WINS
+	// resolution when it carries no manifest (storedLaunchBot asks only for a
+	// non-empty main.bot), so "does a platform row serve this slug" cannot be
+	// answered from manifests. Nor from entries: materializeBotEntries drops a
+	// row whose Materialize failed and returns nil on a ListWithSchema error,
+	// so absence there is not absence in the store. The list read is the
+	// authority, and this is its projection.
+	slugs map[string]struct{}
 }
 
 // platformBotSetCached returns the resolver-cached set (30s TTL,
@@ -324,8 +332,10 @@ func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[platformBotSet]
 		set := platformBotSet{
 			entries:   s.materializeBotEntries(list),
 			manifests: make(map[string]*bundle.Manifest, len(list)),
+			slugs:     make(map[string]struct{}, len(list)),
 		}
 		for i := range list {
+			set.slugs[list[i].Slug] = struct{}{}
 			if m := list[i].Manifest(); m != nil {
 				set.manifests[list[i].Slug] = m
 			}
