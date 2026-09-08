@@ -808,3 +808,56 @@ func TestBranchSpendWriteKeepsASiblingsPausePointer(t *testing.T) {
 		t.Fatal("the last checkpoint no longer names the pending interaction: the parked branch is unreachable on resume")
 	}
 }
+
+// refusingCheckpointStore fails every SaveCheckpoint, which is what a branch
+// boundary hits when the store is momentarily unreachable.
+type refusingCheckpointStore struct {
+	store.RunStore
+}
+
+func (s *refusingCheckpointStore) SaveCheckpoint(context.Context, string, *store.Checkpoint) error {
+	return errors.New("store refused the checkpoint")
+}
+
+// spendUncheckpointed is the flag that sends a branch's booking to
+// persistBranchSpend on the way out. Only a checkpoint that actually became
+// durable may clear it: clearing it on a write that FAILED suppresses the
+// retry precisely when it is the thing that saves the figure.
+//
+// The regression this pins is a condition, not a typo: the save error and the
+// logger were folded into one `err != nil && e.logger != nil`, so on the
+// DEFAULT engine — neither New nor NewFromRecipe wires a logger — a failed
+// write fell through to the else arm and cleared the flag. Every engine these
+// tests build takes that arm, so the buggy path was the one under test.
+func TestBranchSpendSurvivesARefusedCheckpoint(t *testing.T) {
+	wf := budgetFanOutWorkflow(&ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2})
+	eng := New(wf, &refusingCheckpointStore{RunStore: tmpStore(t)}, newStubExecutor())
+	if eng.logger != nil {
+		t.Fatal("this test rests on the default engine having no logger")
+	}
+
+	parent := &runState{
+		ctx:             context.Background(),
+		runID:           "run-refused-checkpoint",
+		budget:          newSharedBudget(wf.Budget, eng.logger),
+		loopBudgetMarks: make(map[string]loopBudgetMark),
+	}
+	branchRS := &runState{
+		ctx:             parent.ctx,
+		runID:           parent.runID,
+		budget:          parent.budget,
+		loopBudgetMarks: make(map[string]loopBudgetMark),
+	}
+	parallel := newParallelInvocation("router", "router@root", map[string]string{"branch_router_0": "a"}, nil)
+	result := &branchResult{
+		branchID:            "branch_router_0",
+		startNodeID:         "a",
+		spendUncheckpointed: true,
+	}
+
+	eng.checkpointBranchState(parent, branchRS, result, "a", true, parallel, false)
+
+	if !result.spendUncheckpointed {
+		t.Fatal("a REFUSED checkpoint cleared the durability flag: the booking is now neither durable nor scheduled for persistBranchSpend, and the resume is handed back an allowance the run already burned")
+	}
+}

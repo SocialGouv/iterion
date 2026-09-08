@@ -455,8 +455,16 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		cp.InteractionID = ps.PendingInteractionID
 		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
 	}
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+	// The save's own error decides, and the logger only reports it. Folding
+	// the two into one condition (`err != nil && e.logger != nil`) sent a
+	// FAILED write down the else arm whenever no logger was wired — which is
+	// the default, since neither New nor NewFromRecipe assigns one — clearing
+	// the flag for a checkpoint that never became durable and suppressing the
+	// persistBranchSpend retry precisely when it was needed. The nil check was
+	// never load-bearing either: pkg/log's methods are nil-receiver-safe.
+	saveErr := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp)
+	if saveErr != nil {
+		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, saveErr)
 	} else {
 		// This snapshot carries the run budget, so any spend booked before it
 		// is now durable and persistBranchSpend has nothing left to write.
