@@ -69,10 +69,14 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
-	// Fingerprint is the provider fingerprint of the session that served
-	// the delegation ("anthropic-oauth", "facade:<base url>", …), as the
-	// backend reported it. Persisted on NodesServed and the source of the
-	// model_served_via_facade event.
+	// Fingerprint is the provider fingerprint of the session behind this
+	// delegation ("anthropic-oauth", "facade:<base url>", …), as the
+	// backend reported it. It is the ROUTING DECISION, taken before the
+	// call — not proof the call was answered: claude_code stamps it on
+	// the results it returns WITH an error too. Persisted on NodesServed
+	// either way (served on a success, attempted on a failure); the
+	// source of the model_served_via_facade event on the FINISHED path
+	// only, which is what keeps that event's name true.
 	Fingerprint string
 }
 
