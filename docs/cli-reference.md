@@ -55,7 +55,7 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C244, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction, parallel-branch and typed-`fail` band C240–C248, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 ### `iterion diagram`
 
@@ -261,6 +261,21 @@ and warning when it cannot — see [worktree-pool.md](worktree-pool.md). It
 is a floor, not a replacement: everything dirty, resumable or unlanded is
 left for this command, which is where the reclaimable space usually is.
 
+**The out-of-tree half — `${PROJECT_SCRATCH_DIR}`.** The same sweep also
+reclaims the per-workspace scratch directory bots use for working files
+they must not leave in the target repo — the other place nothing ever
+came back for (`runs prune` only touches `runs/`, the worktree sweep only
+`worktrees/`). Here the test is **age alone**, and it has to be: scratch
+is deliberately shared between a run and its subbots — a child writes
+into its parent's scratch, which is how fan-in reads what the children
+produced — so no entry can be attributed to one run. The whole subtree is
+consulted (writing into a subdirectory does not touch its ancestors),
+dot-prefixed entries are spared, and `--older-than` is the cutoff. Runs
+sweep it themselves on their way out on the same rule — that is
+`ITERION_SCRATCH_RETENTION`, and `off` turns it off. `--json` reports it
+apart from the worktrees, under `scratch`, `scratch_scanned`,
+`scratch_bytes_reclaimed` and `scratch_errors`.
+
 What decides safety is not age and not run status alone, but what git can
 **prove** about the commits:
 
@@ -352,8 +367,9 @@ The command is a dry run until `--apply`, and reports what it spared and
 why, so "nothing was eligible" is never confused with "everything was
 guarded". Each spared entry carries a `skip_reason`: `run-active`,
 `unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`,
-`paused-run` (a dormant run waiting on operator input), or
-`needs-higher-level`, or `resumable`. `run-active` also covers a run whose
+`needs-higher-level`, or `resumable`. A run paused on operator input is
+reported as `run-active`; `paused-run` is the automatic pool bound's own
+reason and never appears here. `run-active` also covers a run whose
 lock another iterion process holds; the reason is printed beside the entry.
 
 `iterion resume` restarts a `failed_resumable` or `cancelled` run **in its
@@ -409,8 +425,10 @@ Inspect and answer the **non-blocking** questions an agent posts with the
 still-unanswered questions of a run; `runs answer` records one answer and
 queues it for delivery to the asking node's inbox — the running agent picks
 it up at its next turn boundary and the run never has to pause. Both take
-`--store-dir` (default `.iterion`). For a run **paused** on a blocking
-question, use `iterion resume --answer` instead.
+`--store-dir`, resolved exactly as for `iterion run`: without it, reuse a
+managed project `.iterion` or the deterministic project slot under
+`$ITERION_HOME/projects/` (normally `~/.iterion/projects/`). For a run
+**paused** on a blocking question, use `iterion resume --answer` instead.
 
 ## Bot creation, discovery, and extension distribution
 
@@ -463,7 +481,7 @@ iterion plugin run repo-falcon index
 iterion plugin install <directory|git-url>
 ```
 
-Built-ins are `rtk` (enabled by default), `graphify`, `repo-falcon`, `codeindex`, and `firecrawl` (disabled by default). Third-party installs are disabled until enabled. A bare public skill library can be installed through the same path. See [plugins](plugins.md).
+Built-ins are `rtk` (enabled by default), `graphify`, `repo-falcon`, `codeindex`, and `firecrawl` (disabled by default). A third-party install is disabled unless its manifest opts in with `default_enabled: true`; a bare public skill library, installable through the same path, is always disabled on install because iterion synthesizes its manifest. See [plugins](plugins.md).
 
 ### `iterion skill`
 
@@ -592,10 +610,10 @@ See [secrets](secrets.md).
 
 ### `iterion memory`
 
-Subcommands are `du`, `export`, and `import`. A space is selected by visibility (`bot`, `project`, `cross_project`, `user`, `org`, `global`), name, and the applicable project/user/tenant selector.
+Subcommands are `du`, `export`, and `import`. A space is selected by visibility (`bot` — the default — `project`, `cross_project`, `user`, `org`, `global`), `--name`, and the applicable selector: `--bot` (**mandatory** for `bot` spaces), `--project` (defaults to the current directory; used by `bot` and `project` spaces), and `--user` / `--tenant` for the shared trees.
 
 ```bash
-iterion memory du --visibility bot --name campaign
+iterion memory du --visibility bot --bot docs-refresh --name campaign
 iterion memory export --visibility project --name shared --out shared.tar.gz
 ```
 
