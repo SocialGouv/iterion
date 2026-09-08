@@ -791,10 +791,10 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 // `_needs_interaction` / `_interaction_questions` envelope so the engine
 // can pause the run and elicit the operator.
 //
-// `rm` is nil here as the RULE, not as an edge case: the ask_user branch
-// returns before the stream-error test (claude_code.go:491-497) precisely
-// because the hook firing cancels the stream, so no ResultMessage ever
-// arrives. The session id therefore comes from the STREAM — without it
+// `rm` is nil here as the RULE, not as an edge case: in Execute the
+// pendingQuestion branch returns ahead of the `streamErr != nil` test
+// precisely because the hook firing is what cancels the stream, so no
+// ResultMessage ever arrives. The session id therefore comes from the STREAM — without it
 // this path published an anonymous session, and it is the one path that
 // persists a session across a pause (ADR-089: ErrNeedsInteraction.SessionID
 // → the checkpoint's BackendSessionID, and packLiveSession, which is gated
