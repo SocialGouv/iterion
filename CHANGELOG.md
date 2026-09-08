@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.122.0](https://github.com/SocialGouv/iterion/compare/v3.121.5...v3.122.0) (2026-09-08)
+
+### Features
+
+* **runs:** expose persisted workspace checkpoint recovery ([#988](https://github.com/SocialGouv/iterion/issues/988)) ([e4a7f60](https://github.com/SocialGouv/iterion/commit/e4a7f60f8a92502db5146654c3552958393ce710)), closes [#972](https://github.com/SocialGouv/iterion/issues/972)
+
+    <details><summary>why</summary>
+
+    Surface the latest successful checkpoint event in inspection and unavailable commit listings, with provenance and a quoted fetch hint. Preserve no_baseline, final-bank fields and merge eligibility; report read failures and require validation of recovered work. Closes #972.
+
+    </details>
+
 ## [3.121.5](https://github.com/SocialGouv/iterion/compare/v3.121.4...v3.121.5) (2026-09-08)
 
 ### Bug Fixes
