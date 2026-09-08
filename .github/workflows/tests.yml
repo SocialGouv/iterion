@@ -93,11 +93,19 @@ concurrency:
 # Measured 2026-09-08: the other six pass on self-hosted, nine runner pods
 # starting at once with no queueing at all.
 #
-# So the expression below reads: fork pull request -> GitHub-hosted;
-# everything else (same-repo PR, push, merge_group) -> self-hosted. It is
-# repeated per job because `runs-on` cannot read workflow-level `env`, and
-# routing it through a `needs:` job would put every job behind one
-# GitHub-hosted slot — reintroducing the queue this exists to escape.
+# So the expression below reads, in three clauses:
+#
+#   CI_SELF_HOSTED == 'off'        -> GitHub-hosted   (the operator's lever)
+#   fork pull request              -> GitHub-hosted   (arbitrary code, anyone)
+#   dependency-bot pull request    -> GitHub-hosted   (arbitrary upstream code)
+#   everything else                -> arc-runners
+#
+# It is repeated per job because `runs-on` cannot read workflow-level `env`,
+# and routing it through a `needs:` job would put every job behind one
+# GitHub-hosted slot — reintroducing the queue this exists to escape. That
+# repetition is a drift risk on a SECURITY decision, so the six copies are
+# pinned against each other by TestSelfHostedRoutingExpressionsAgree in
+# internal/ciguard: one copy edited alone turns it red.
 
 jobs:
   test:
