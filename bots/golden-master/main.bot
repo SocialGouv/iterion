@@ -3618,13 +3618,26 @@ tool oracle_run:
         canary_key = "iterion.selftestcanary"
         canary_value = "alive-%d" % os.getpid()
         saved_git_env = {"GIT_CONFIG_COUNT": os.environ.get("GIT_CONFIG_COUNT")}
-        for i, (key, value) in enumerate(((canary_key, canary_value),) + _GIT_MAINTENANCE_OFF):
-            slot = base_count + i
+
+        def _declare(slot, key, value):
             for name, declared in (("GIT_CONFIG_KEY_%d" % slot, key),
                                    ("GIT_CONFIG_VALUE_%d" % slot, value)):
-                saved_git_env[name] = os.environ.get(name)
+                saved_git_env.setdefault(name, os.environ.get(name))
                 os.environ[name] = declared
-        os.environ["GIT_CONFIG_COUNT"] = str(base_count + 1 + len(_GIT_MAINTENANCE_OFF))
+
+        # The canary is declared FIRST and counted, so that what follows faces a
+        # declaration that was already there — which is the situation in a run,
+        # where the engine has declared the workspace's safe.directory. A canary
+        # placed beside the switches instead would survive its own displacement of
+        # the neighbour, and prove nothing: measured, that version stayed green
+        # under a faithful reproduction of the defect.
+        _declare(base_count, canary_key, canary_value)
+        os.environ["GIT_CONFIG_COUNT"] = str(base_count + 1)
+        declared_count = base_count + 1
+
+        for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
+            _declare(declared_count + i, key, value)
+        os.environ["GIT_CONFIG_COUNT"] = str(declared_count + len(_GIT_MAINTENANCE_OFF))
         canary_seen = subprocess.run(
             ["git", "config", "--get-all", canary_key],
             capture_output=True, text=True).stdout.split()
