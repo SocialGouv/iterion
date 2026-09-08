@@ -24,7 +24,7 @@ func TestUsageWindowRetryAt_ArmsOnTheEarliestReopeningCredential(t *testing.T) {
 	teamKeyReopens := time.Date(2026, 9, 4, 16, 40, 0, 0, time.UTC)
 	pol := noJitter(retrypolicy.Policy{})
 
-	at, source, ok := usageWindowRetryAt(weeklyWindowErr(monday), pol, now, teamKeyReopens)
+	at, source, ok := usageWindowRetryAt(weeklyWindowErr(monday), pol, now, teamKeyReopens, 0)
 	if !ok {
 		t.Fatal("no retry armed")
 	}
@@ -38,20 +38,20 @@ func TestUsageWindowRetryAt_ArmsOnTheEarliestReopeningCredential(t *testing.T) {
 	// The failed credential's own reset still wins when it is the earlier
 	// of the two, and keeps its own source.
 	soon := now.Add(2 * time.Hour)
-	at, source, _ = usageWindowRetryAt(weeklyWindowErr(soon), pol, now, teamKeyReopens)
+	at, source, _ = usageWindowRetryAt(weeklyWindowErr(soon), pol, now, teamKeyReopens, 0)
 	if !at.Equal(soon.Add(time.Minute)) || source != "typed_error" {
 		t.Fatalf("armed for %s via %s, want the failed credential's own reset %s via typed_error", at, source, soon.Add(time.Minute))
 	}
 
 	// A skipped credential that has ALREADY reopened means "re-resolve
 	// now": the floor applies, not the failed credential's distant reset.
-	at, source, _ = usageWindowRetryAt(weeklyWindowErr(monday), pol, now, now.Add(-30*time.Minute))
+	at, source, _ = usageWindowRetryAt(weeklyWindowErr(monday), pol, now, now.Add(-30*time.Minute), 0)
 	if !at.Equal(now.Add(usageWindowFloor)) || source != "skipped_credential" {
 		t.Fatalf("armed for %s via %s, want the floor %s via skipped_credential", at, source, now.Add(usageWindowFloor))
 	}
 
 	// Nothing skipped: unchanged behaviour.
-	at, source, _ = usageWindowRetryAt(weeklyWindowErr(monday), pol, now, time.Time{})
+	at, source, _ = usageWindowRetryAt(weeklyWindowErr(monday), pol, now, time.Time{}, 0)
 	if !at.Equal(monday.Add(time.Minute)) || source != "typed_error" {
 		t.Fatalf("with nothing skipped: armed for %s via %s", at, source)
 	}
