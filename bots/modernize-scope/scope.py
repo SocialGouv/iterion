@@ -766,6 +766,11 @@ def selftest():
 
 # ---- shared body above ----
 
+# The bench launches 83 git invocations today. This is a FLOOR against a blinded
+# detector, not a target: shrink the selftest freely, but a collapse to a handful
+# means the hook stopped seeing, and that must not read as success.
+MIN_GIT_INVOCATIONS = 40
+
 # Read ONCE, at load. A check that re-reads its own source at the moment of
 # concluding certifies whatever the name points at by then: a selftest that
 # reloaded its file after running reported 43/43 guards falsified against a
@@ -825,9 +830,14 @@ def audited_selftest():
     seen, offenders = [], []
 
     def resolved(argv, env):
+        # `env=None` is not an empty environment: it means the child INHERITS the
+        # parent's, and the inherited one is what git will actually read. Judging
+        # it against {} calls a compliant inherited call an offender — the audit
+        # must answer about the environment that runs, like everything else here.
+        environ = os.environ if env is None else env
         flags = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"]
-        keys = {(env or {}).get("GIT_CONFIG_KEY_%d" % i): (env or {}).get("GIT_CONFIG_VALUE_%d" % i)
-                for i in range(int((env or {}).get("GIT_CONFIG_COUNT", 0) or 0))}
+        keys = {environ.get("GIT_CONFIG_KEY_%d" % i): environ.get("GIT_CONFIG_VALUE_%d" % i)
+                for i in range(int(environ.get("GIT_CONFIG_COUNT", 0) or 0))}
         return (("maintenance.auto=false" in flags or keys.get("maintenance.auto") == "false")
                 and ("gc.auto=0" in flags or keys.get("gc.auto") == "0"))
 
@@ -857,6 +867,16 @@ def audited_selftest():
               % (len(offenders), len(seen)), file=sys.stderr)
         for o in sorted(set(offenders))[:6]:
             print("  " + o, file=sys.stderr)
+        return 1
+    # Two conditions, not one. "No offender" is also what a blinded hook says: an
+    # edit that stops Popen from being wrapped, or a selftest that stops running
+    # git, both read as a clean tree. The floor is a floor and not a coverage
+    # measure — it exists so that the detector losing its grip is louder than the
+    # thing it detects.
+    if len(seen) < MIN_GIT_INVOCATIONS:
+        print("git subprocess audit has lost its grip: %d invocations observed, floor is %d. "
+              "An empty offender list from a hook that never fired is indistinguishable from a "
+              "clean one." % (len(seen), MIN_GIT_INVOCATIONS), file=sys.stderr)
         return 1
     print("git subprocess audit: %d invocations, all refusing auto-maintenance — observed at "
           "Popen, not read from the source" % len(seen))
