@@ -76,6 +76,43 @@ func TestGoldenMasterHarnessCopiesStayInSync(t *testing.T) {
 	}
 }
 
+// The body every inlined copy carries starts at `import hashlib`: that is
+// where standaloneHarnessBody cuts, where sync-harness.py's BODY_START cuts,
+// and where sync-harness.bot's own extraction guard cuts. An import placed
+// ABOVE that line is therefore dropped from every copy that RUNS, and the
+// byte-identity check above cannot see it — both sides cut at the same marker,
+// so both are missing it equally and remain equal. The materialised judge dies
+// on a NameError at the first call that needs the module.
+//
+// The harness carries that warning as a comment. A comment is a sentence, not
+// a check — the very objection this file opens with — and this one sits above
+// `import hashlib`, so it is itself outside every copy it is addressed to.
+// Verified by mutation: inserting `import statistics` above the marker leaves
+// main.bot without it while the sync test stays green.
+func TestGoldenMasterHarnessImportsStayInsideTheInlinedBody(t *testing.T) {
+	lines := strings.Split(readHarnessFile(t, "golden-master/oracle-harness.py"), "\n")
+	cut := -1
+	for i, l := range lines {
+		if l == "import hashlib" {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		t.Fatal("oracle-harness.py: `import hashlib` not found — the body marker moved; fix this test, standaloneHarnessBody and sync-harness.py together")
+	}
+
+	importLine := regexp.MustCompile(`^\s*(import|from)\s+[A-Za-z_]`)
+	for i, l := range lines[:cut] {
+		if importLine.MatchString(l) {
+			t.Errorf("oracle-harness.py:%d: %q sits ABOVE `import hashlib`, the first line of the body every inlined copy carries. "+
+				"main.bot and sync-harness.bot are cut at that marker, so they never receive it and the materialised judge dies on a "+
+				"NameError at the first call that needs it — while the byte-identity check stays green. Move it below `import hashlib`.",
+				i+1, strings.TrimSpace(l))
+		}
+	}
+}
+
 func lineAt(lines []string, i int) string {
 	if i < len(lines) {
 		return lines[i]
