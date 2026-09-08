@@ -58,6 +58,11 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 
 	runTarget := func(t *testing.T, ws, scratch, target string) verifyResult {
 		t.Helper()
+		// Commit whatever the test set up before verify_run runs. The
+		// net_dirty gate (issue #799) refuses a dirty tree; the campaign
+		// contract already commits its work before the deterministic gate,
+		// so the test represents the SAME state a real pass would present.
+		commitFixture(t, ws)
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		cmd = strings.ReplaceAll(cmd, "{{vars.matrix_path}}", matrixRel)
