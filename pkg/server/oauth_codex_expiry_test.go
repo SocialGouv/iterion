@@ -253,6 +253,83 @@ func TestOAuthRefresh_ManualRefreshIsFencedByTheSameClaim(t *testing.T) {
 	}
 }
 
+// A refused claim has two causes, and the endpoint must not report the
+// wrong one: a live lease is seconds away, while the cool-down a refresh
+// that could not date its token leaves behind lasts an HOUR. Telling an
+// operator in the second state to "retry in a moment" sends them back to a
+// button that answers 409 for the rest of the hour, with the real remedy —
+// a re-connect, which clears the field — never mentioned. The two states
+// share one field on the record (a cool-down IS the lease instant with no
+// owner), so nothing but the stored record distinguishes them.
+func TestOAuthRefresh_ACoolDownIsNotReportedAsARefreshInFlight(t *testing.T) {
+	srv, hs, signer, store := oauthTestServer(t)
+	jo := oauthJWT(t, signer, "jo")
+
+	var hits atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"` + codexJWTAccessToken(t, time.Now().Add(time.Hour)) + `"}`))
+	}))
+	defer provider.Close()
+	srv.httpClient = &http.Client{Transport: rewriteHostTransport{target: provider.URL}}
+	srv.cfg.CodexOAuthClientID = "app_x"
+
+	sealed, err := secrets.SealOAuthPayload(srv.sealer, "jo", secrets.OAuthKindCodex,
+		[]byte(`{"tokens":{"access_token":"`+codexJWTAccessToken(t, time.Now().Add(-time.Hour))+
+			`","refresh_token":"rt.old","account_id":"acct-1"},"auth_mode":"chatgpt"}`))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	expired := time.Now().Add(-time.Hour).UTC()
+	if err := store.Upsert(t.Context(), secrets.OAuthRecord{
+		UserID: "jo", Kind: secrets.OAuthKindCodex, SealedPayload: sealed, AccessTokenExpiresAt: &expired,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// The state an undatable refresh leaves: no owner, a cool-down an hour out.
+	now := time.Now().UTC()
+	if ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindCodex, "previous-sweep", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	cool := now.Add(time.Hour).Truncate(time.Second)
+	if err := store.ReleaseRefreshClaim(t.Context(), "jo", secrets.OAuthKindCodex, "previous-sweep", &cool); err != nil {
+		t.Fatalf("seed cool-down: %v", err)
+	}
+
+	code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/refresh", jo, "")
+	if code != http.StatusConflict {
+		t.Fatalf("refresh during a cool-down = %d body=%s, want 409", code, body)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("provider called %d times during a cool-down, want 0", n)
+	}
+	if strings.Contains(body, "already in flight") {
+		t.Fatalf("409 body = %s — no refresh is in flight; a cool-down reported as one tells the operator "+
+			"to retry in a moment for an hour", body)
+	}
+	if !strings.Contains(body, "cool-down") || !strings.Contains(body, cool.UTC().Format(time.RFC3339)) {
+		t.Fatalf("409 body = %s, want the cool-down named with its end instant %s",
+			body, cool.UTC().Format(time.RFC3339))
+	}
+
+	// A live lease still reads as one: the branch above must not swallow the
+	// answer the docs promise for a genuinely concurrent refresh.
+	if err := store.Upsert(t.Context(), secrets.OAuthRecord{
+		UserID: "jo", Kind: secrets.OAuthKindCodex, SealedPayload: sealed, AccessTokenExpiresAt: &expired,
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if ok, err := store.ClaimRefresh(t.Context(), "jo", secrets.OAuthKindCodex, "someone-else", now, now.Add(secrets.RefreshClaimTTL)); err != nil || !ok {
+		t.Fatalf("seed live claim: ok=%v err=%v", ok, err)
+	}
+	code, body = oauthCall(t, hs, http.MethodPost, "/api/me/oauth/codex/refresh", jo, "")
+	if code != http.StatusConflict || !strings.Contains(body, "already in flight") {
+		t.Fatalf("refresh behind a live claim = %d body=%s, want 409 naming the refresh in flight", code, body)
+	}
+}
+
 // reconnectMidFlightTransport runs `before` while the refresh request is on
 // the wire — the only place a re-connect can race a refresh that has
 // already taken its claim.

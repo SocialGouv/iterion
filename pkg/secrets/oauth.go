@@ -171,7 +171,11 @@ type OAuthStore interface {
 	// connect paths, which legitimately replace the record.
 	//
 	// When upd.ClaimOwner is set the write is CONDITIONAL on still holding
-	// that claim: ErrRefreshClaimLost and no write otherwise.
+	// that claim: ErrRefreshClaimLost and no write otherwise — and that
+	// sentinel then covers a record that VANISHED under the holder too,
+	// since a claim is all a fenced write can ask about (the Mongo twin
+	// reads one MatchedCount for both). ErrOAuthNotFound stays the answer
+	// for an unclaimed write, which is the shape the self-heal uses.
 	UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error
 	// ClaimRefresh elects the ONE holder allowed to exchange this record's
 	// refresh token, by compare-and-swap: it succeeds only while nobody

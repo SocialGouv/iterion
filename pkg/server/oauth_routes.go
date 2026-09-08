@@ -615,7 +615,7 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	if !claimed {
-		httpError(w, http.StatusConflict, "a refresh of this connection is already in flight — retry in a moment")
+		httpError(w, http.StatusConflict, "%s", s.refreshClaimRefusal(r.Context(), ownerKey, kind))
 		return
 	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
@@ -663,6 +663,36 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	writeJSON(w, toOAuthView(fresh))
+}
+
+// refreshClaimRefusal explains a refused claim to the operator who clicked
+// Refresh. Two states refuse it and they are NOT the same news:
+//
+//   - another refresh holds the lease — seconds away, "retry in a moment"
+//     is exactly right;
+//   - a cool-down left by a refresh that succeeded without a readable
+//     deadline — up to an hour, during which "retry in a moment" sends the
+//     operator back to a button that answers 409 every time.
+//
+// The two share one field on the record (the cool-down IS the lease
+// instant, with no owner), so only the stored record can tell them apart.
+// Best-effort: a read that fails falls back to the generic answer rather
+// than turning a 409 into a 500.
+func (s *Server) refreshClaimRefusal(ctx context.Context, ownerKey string, kind secrets.OAuthKind) string {
+	const inFlight = "a refresh of this connection is already in flight — retry in a moment"
+	cur, err := s.oauthStore.Get(ctx, ownerKey, kind)
+	if err != nil || cur.RefreshClaimOwner != "" || cur.RefreshNotBefore == nil {
+		return inFlight
+	}
+	if !cur.RefreshNotBefore.After(time.Now()) {
+		// The cool-down lapsed between the CAS and this read: whatever holds
+		// the record now took it in that gap.
+		return inFlight
+	}
+	return fmt.Sprintf("this connection is in a refresh cool-down until %s — its last refresh succeeded but the "+
+		"token it returned states no readable deadline, so the sweep backs off instead of re-running the exchange "+
+		"every tick; re-connect the credential to refresh it now",
+		cur.RefreshNotBefore.UTC().Format(time.RFC3339))
 }
 
 // renameOAuthForOwner sets (or clears) the account label on an existing

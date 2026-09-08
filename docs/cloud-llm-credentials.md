@@ -137,6 +137,12 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   flight") instead of overwriting the credential you just uploaded; and a
   replica that dies mid-refresh costs one sweep, not a stuck credential —
   the lease simply expires.
+  A third 409 says **cool-down**, and names the instant it ends: the last
+  refresh succeeded but the token it returned states no readable deadline,
+  so the sweep backs off an hour rather than re-running the exchange (and
+  rotating the refresh token) every tick. Nothing is in flight and
+  retrying does not help — re-connect the credential, which clears the
+  cool-down, or wait for the instant in the message.
   That worker only ever sees records `ExpiringBefore` returns, which
   requires `access_token_expires_at` to exist. It is now stamped from the
   access token's own `exp` claim at connect and after each refresh — but
