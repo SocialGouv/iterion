@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -126,18 +127,49 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// podEnv builds the environment for EVERY git command below — the probe,
+	// the two script runs and the read-back. They vouch for one another, and a
+	// command that resolves git's configuration differently vouches for
+	// something else.
+	//
+	// The global and system config are cut off on purpose: `safe.directory` is
+	// read ONLY from those two files, and its ABSENCE is the pod condition
+	// being reproduced. Leaving them ambient made the outcome a property of
+	// the HOST — on a CI image carrying a covering `safe.directory` the
+	// hermetic probe refused while the ambient subject succeeded, and the test
+	// failed claiming the fixup should have died (git 2.55, PR #927).
+	//
+	// This is also why these commands do not go through internal/gittest:
+	// that helper makes the same cut as hygiene, and here it is the SUBJECT.
+	// The auto-maintenance config it also carries is orthogonal, so it is
+	// applied directly.
+	podEnv := func(extra ...string) []string {
+		env := append(os.Environ(),
+			"GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull,
+			"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
+		)
+		return append(env, extra...)
+	}
+	safeDirEnv := []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=" + dir,
+	}
+
 	// Sanity: the knob must actually break repository discovery on this
 	// host's git (≥2.35.2). If it doesn't (ancient git), the regression
 	// can't be exercised here.
-	probe := gittest.Cmd(dir, "rev-parse", "--git-dir")
-	probe.Env = append(probe.Env, "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	probe := exec.Command("git", gitlib.NoAutoMaintenance("rev-parse", "--git-dir")...)
+	probe.Dir = dir
+	probe.Env = podEnv()
 	if err := probe.Run(); err == nil {
 		t.Skip("this git does not honour GIT_TEST_ASSUME_DIFFERENT_OWNER; cannot simulate the root-owned pod workspace")
 	}
 
 	// WITHOUT the pod env: the exact live failure — exit 128.
 	cmd := exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", dir)
-	cmd.Env = append(os.Environ(), "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+	cmd.Env = podEnv()
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected the fixup to fail under dubious ownership (the live 128), got success:\n%s", out)
@@ -150,22 +182,13 @@ func TestFixupWorkspaceGitScript_DubiousOwnership(t *testing.T) {
 	// workspace, protected command scope): the same script succeeds and
 	// re-points the credential helper.
 	cmd = exec.Command("sh", "-c", fixupWorkspaceGitScript, "sh", dir)
-	cmd.Env = append(os.Environ(),
-		"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=safe.directory",
-		"GIT_CONFIG_VALUE_0="+dir,
-	)
+	cmd.Env = podEnv(safeDirEnv...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("fixup with safe.directory env: %v\n%s", err, out)
 	}
-	read := gittest.Cmd(dir, "config", "credential.helper")
-	read.Env = append(read.Env,
-		"GIT_TEST_ASSUME_DIFFERENT_OWNER=1",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=safe.directory",
-		"GIT_CONFIG_VALUE_0="+dir,
-	)
+	read := exec.Command("git", gitlib.NoAutoMaintenance("config", "credential.helper")...)
+	read.Dir = dir
+	read.Env = podEnv(safeDirEnv...)
 	got, err := read.Output()
 	if err != nil {
 		t.Fatalf("read credential.helper: %v", err)
