@@ -171,6 +171,12 @@ func TestFailedNodeSpendDoesNotSpeakForTheRun(t *testing.T) {
 		if r.Checkpoint == nil || r.Checkpoint.InteractionID == "" {
 			t.Fatal("the operator's pending recovery question was lost")
 		}
+		// …and the spend rode the checkpoint the resume reads its carry
+		// from. Booked on the way OUT of handleNodeFailure it would be
+		// zero here: pauseForRecovery has already written by then.
+		if r.Checkpoint.BudgetTokensUsed != 50_000 {
+			t.Fatalf("the parked attempt's spend never reached the checkpoint: %d", r.Checkpoint.BudgetTokensUsed)
+		}
 	})
 
 	t.Run("a terminal failure keeps its own cause", func(t *testing.T) {
