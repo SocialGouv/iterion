@@ -33,34 +33,26 @@ audit; signals that require tarball inspection are skipped).
 or `h1:` go.sum hash). When unavailable, the bot computes it from
 the installed artifact.
 
-## Phase 2 — `load_package_cache` (compute)
+## Phase 2 — `normalize_deps` (tool)
 
-Reads the package cache at `{{vars.cache_path}}` (see
-`[[package-cache]]` for the default + the host-wide override) line by
-line and builds an in-memory index keyed by
-`ecosystem:name:version:checksum`.
+Deterministic. Coerces `enumerate_deps`' output into the canonical
+`[{ecosystem, name, version, checksum}]` list plus the open
+`ecosystems[]` list. Every downstream node reads
+`outputs.normalize_deps`, never `outputs.enumerate_deps`.
 
-Outputs: `{ cache: {<key>: <cached_entry>, ...}, cache_path: "..." }`.
+## Phase 3 — `run_eco_heuristics` → `run_generic_heuristics` → `heuristic_join`
 
-If the file doesn't exist, the index is empty and the cache_path
-is recorded so phase 5 can create it.
+Heuristics run **before** the cache is consulted, not after.
 
-## Phase 3 — `filter_cached` (compute)
+`run_eco_heuristics` (tool) dispatches per detected ecosystem by reading
+each `skills/lang-<id>.md`'s `iterion:heuristics` block — there is no
+router and no per-ecosystem node. `run_generic_heuristics` (tool) is the
+always-on CVE floor: `trivy fs --scanners vuln` over the workspace,
+matching every pinned version in the lockfiles against OSV/GHSA/NVD from
+a bare checkout. `heuristic_join` (compute) merges both into one signal
+set.
 
-Splits `deps[]` from phase 1 into:
-- `already_scanned[]`: cached entry exists AND `cached.scanner_version >= current` AND `now - cached.scanned_at < ttl` (default 30 days).
-- `pending[]`: everything else (cache miss, stale, or newer scanner).
-
-The TTL prevents permanent staleness on packages that were "low risk"
-two years ago and have since been compromised.
-
-## Phase 4 — `heuristic_scan` (fan_out_all → tool nodes per ecosystem)
-
-Each ecosystem-specific tool node:
-1. Takes `pending[]` filtered to its ecosystem.
-2. Runs static heuristics + scanner-specific vuln DB (npm audit /
-   pip-audit / govulncheck).
-3. Emits structured signals per package:
+Each scanner emits structured signals per package:
 
 ```json
 {
@@ -85,6 +77,21 @@ The catalogue of signal ids is in `[[malware-signals]]`. Ecosystem
 skills (`[[lang-js]]`, `[[lang-py]]`, `[[lang-go]]`,
 `[[lang-generic]]`) document which scanners + how to interpret
 their output.
+
+## Phase 4 — `load_cache` (tool) → `filter_cached` (tool)
+
+`load_cache` reads the package cache at `{{vars.cache_path}}` (see
+`[[package-cache]]` for the default + the host-wide override) line by
+line and builds an index keyed by
+`ecosystem:name:version:checksum`. If the file doesn't exist the index
+is empty and the path is recorded so phase 6 can create it.
+
+`filter_cached` then splits the normalized `deps[]` into:
+- `already_scanned[]`: cached entry exists AND `cached.scanner_version >= current` AND `now - cached.scanned_at < ttl` (default 30 days).
+- `pending[]`: everything else (cache miss, stale, or newer scanner).
+
+The TTL prevents permanent staleness on packages that were "low risk"
+two years ago and have since been compromised.
 
 ## Phase 5 — `llm_review` (claude_code, readonly, board.create + board.label)
 
@@ -122,21 +129,18 @@ convention:
 
 Title: `<ecosystem> · <name>@<version> — <one-line risk summary>`.
 
-## Phase 6 — `score_merge` (compute) + `update_package_cache` (tool) + `export_report`
+## Phase 6 — `update_cache` (tool)
 
-`score_merge`:
-- For each package: `risk_score = max(heuristic_score, llm.risk_score)`.
-- Bucket: `<= 20 → LOW`, `<= 50 → MEDIUM`, `> 50 → HIGH`.
+Scoring is folded into `llm_review`, not a separate node: for each
+package `risk_score = max(heuristic_score, llm.risk_score)`, bucketed
+`<= 20 → LOW`, `<= 50 → MEDIUM`, `> 50 → HIGH`. The markdown summary is
+written by the same node to `{{vars.report_path}}`.
 
-`update_package_cache`:
+`update_cache` is the terminal node:
 - Appends one JSONL line per analysed package to the package cache
   at `{{vars.cache_path}}`. Atomic via temp file
   + rename (POSIX guarantees).
 - Format: see `[[package-cache]]` for the exact schema.
-
-`export_report`:
-- Markdown summary at
-  `{{workspace_dir}}/.sec-audit/deps-findings.md`.
 
 ## Discipline that keeps the FP rate low
 
