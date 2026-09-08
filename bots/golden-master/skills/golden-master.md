@@ -397,6 +397,12 @@ string** is a file part, and one such field makes the whole form
   `b64` — each stops the run with the field named. That is deliberate: a broken payload
   sent as its own error text would record the application refusing *the
   harness*, and a reference of that refusal can never fail again.
+- **A near miss is refused too, and that is the one to expect.** An object or
+  a list that is NOT a file part — `file_name`, `fileName`, a `filename` that
+  is a number — has no form encoding, so both encodings would fall back to the
+  *repr* of a Python object and the reference would record the application
+  refusing that text. Get `filename` right, or you get a named refusal; you
+  never get a silently mangled request.
 - **What you declare is what is sent**, with one visible transformation: a `"`
   or a CRLF inside a name, a filename or a content type is %-escaped
   (`%22`, `%0D%0A`) exactly as a browser escapes it (RFC 7578 §5.1). So a
