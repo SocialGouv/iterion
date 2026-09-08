@@ -171,9 +171,18 @@ func (s *Server) versionsBelow(tenantID string) (map[string]string, bool) {
 	}
 	// Copy: the cached catalog map is shared, and the platform overlay is
 	// per-tenant-tier.
-	out := make(map[string]string, len(baked)+len(set.manifests))
+	out := make(map[string]string, len(baked)+len(set.slugs))
 	for k, v := range baked {
 		out[k] = v
+	}
+	// A platform row SERVES for its slug whatever version it carries — so the
+	// baked version is never what a team row holds back once one exists. Drop
+	// it first, then put back only the versions actually known: a platform row
+	// with no manifest (a fork of a loose <name>.bot copies none) or an empty
+	// version leaves the slug UNORDERED, which reports nothing — rather than
+	// naming the bake, a bundle removing this team row would not serve.
+	for slug := range set.slugs {
+		delete(out, slug)
 	}
 	for slug, m := range set.manifests {
 		if m == nil {
