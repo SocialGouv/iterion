@@ -180,6 +180,7 @@ These collections are valuable evidence, but they do not override current code o
 - [adr/](adr/) — immutable architecture decision records; later ADRs may supersede earlier ones.
 - [bot-runs/](bot-runs/) — dated dogfood bilans and lessons for each bot.
 - [c082-board-emit-fix-plan.md](c082-board-emit-fix-plan.md) — retained implementation plan.
+- [changelog/](changelog/) — per-major changelog archives (`v0.md`, `v1.md`, `v2.md`); the current major stays in the repo-root `CHANGELOG.md`, rebuilt with `task changelog:gen`.
 - [cli-permission-seam-spike.md](cli-permission-seam-spike.md) — completed spike preserving the `grok`/`kimi` permission-seam wire evidence.
 - [reviews/](reviews/) — dated codebase reviews.
 - [security/](security/) — dated security audits.
