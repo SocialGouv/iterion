@@ -58,9 +58,13 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		if rec.Kind == OAuthKindClaudeCode && w.AnthropicClientID == "" {
 			continue
 		}
-		if rec.Kind == OAuthKindCodex && w.CodexClientID == "" {
-			continue
-		}
+		// Codex is NOT skipped for a missing configured id: the
+		// credential names its own client, so RefreshRecord derives one.
+		// Skipping here used to be silent, and its cost was measured — a
+		// forfait went unrefreshed for ten days on a deployment that had
+		// simply never set the id, and the only symptom was a run
+		// failing its first LLM call with "authentication token is
+		// expired", far from the cause.
 		// A payload without a refresh token can never be refreshed; only
 		// a re-connect renews it. Not a failure — skipping keeps the sweep
 		// quiet instead of erroring on the same record every cycle.

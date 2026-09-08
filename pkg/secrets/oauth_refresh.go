@@ -218,9 +218,15 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		if strings.TrimSpace(view.Tokens.RefreshToken) == "" {
 			return fmt.Errorf("codex: %w", ErrNotRefreshable)
 		}
+		// The credential names its own client, so a deployment that
+		// configured nothing still refreshes. An explicit setting stays
+		// the operator's override and wins.
 		clientID := strings.TrimSpace(codexClientID)
 		if clientID == "" {
-			return fmt.Errorf("secrets: codex oauth client id not configured")
+			clientID = view.OAuthClientID()
+		}
+		if clientID == "" {
+			return fmt.Errorf("secrets: codex oauth client id neither configured nor present in the credential")
 		}
 		res, rerr := RefreshCodex(ctx, hc, clientID, view.Tokens.RefreshToken)
 		if rerr != nil {

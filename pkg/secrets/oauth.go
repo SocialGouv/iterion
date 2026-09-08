@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,6 +238,87 @@ type CodexCredentialsView struct {
 		AccountID    string `json:"account_id,omitempty"`
 	} `json:"tokens"`
 	LastRefresh string `json:"last_refresh,omitempty"`
+}
+
+// OAuthClientID returns the OAuth client the credential was minted for,
+// read from the credential itself rather than configured.
+//
+// Codex tokens name their own client: the access token carries a
+// `client_id` claim and the id token an `aud` matching it. That makes the
+// blob self-describing, which matters because the value is NOT one
+// well-known constant — a credential minted by the CLI and one minted by
+// another first-party client carry different ids, so a hardcoded default
+// would refresh some operators' forfaits and silently fail others'.
+//
+// The claims are read WITHOUT verifying the signature, which is correct
+// here and would be wrong elsewhere: the token is not being trusted as
+// proof of anything. It is our own stored credential, and the only thing
+// taken from it is the address to send its refresh to — a request that
+// simply fails if the value is wrong.
+//
+// Returns "" when neither token carries the claim; callers then fall back
+// to an explicitly configured id.
+func (v CodexCredentialsView) OAuthClientID() string {
+	if id := jwtStringClaim(v.Tokens.AccessToken, "client_id"); id != "" {
+		return id
+	}
+	return jwtFirstAudience(v.Tokens.IDToken)
+}
+
+// AccessTokenExpiry returns when the credential's access token stops being
+// accepted, read from the token's own `exp` claim.
+//
+// The blob has no absolute expiry field of its own: `expires_in` is
+// relative to a refresh that may have happened days ago, and `last_refresh`
+// dates the write, not the token. The claim is the only self-contained
+// answer. Returns the zero time when the token is absent or carries no
+// numeric `exp`.
+func (v CodexCredentialsView) AccessTokenExpiry() time.Time {
+	exp, ok := jwtClaims(v.Tokens.AccessToken)["exp"].(float64)
+	if !ok || exp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(exp), 0).UTC()
+}
+
+// jwtClaims decodes a JWT payload segment without verifying the signature.
+// Returns nil for anything that is not a three-segment token with a JSON
+// payload.
+func jwtClaims(token string) map[string]any {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]any
+	if json.Unmarshal(raw, &claims) != nil {
+		return nil
+	}
+	return claims
+}
+
+func jwtStringClaim(token, name string) string {
+	s, _ := jwtClaims(token)[name].(string)
+	return strings.TrimSpace(s)
+}
+
+// jwtFirstAudience reads `aud`, which OIDC allows to be either a string or
+// an array of strings.
+func jwtFirstAudience(token string) string {
+	switch aud := jwtClaims(token)["aud"].(type) {
+	case string:
+		return strings.TrimSpace(aud)
+	case []any:
+		for _, a := range aud {
+			if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
 }
 
 // IsChatGPTMode reports whether the auth blob authorises ChatGPT-Codex
