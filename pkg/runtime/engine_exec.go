@@ -647,6 +647,15 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// redelivered onto the same spent budget. With no successor the run
 	// has nowhere to go, so it stops where it stands.
 	if rs.budget != nil {
+		// Steering is drained HERE too, not only at the top of the loop: a
+		// raise_budget posted while the run is busy inside a long node lands
+		// in the channel during that node, and the node's own overrun is
+		// consumed a few lines below — before the loop ever returns to the
+		// top. Draining only there made the operator's grant arrive one edge
+		// too late for the single case it exists to serve, while the API had
+		// already answered "queued … it is not lost". Same goroutine as the
+		// top-of-loop drain, so it needs no more locking than that one does.
+		e.drainOverrides(rs)
 		if exc := rs.budget.takeExceeded(); exc != nil {
 			anchor := nextNodeID
 			if edgeErr != nil || anchor == "" {

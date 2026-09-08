@@ -159,6 +159,16 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 	}
 	if raised {
 		b.everRaised = true
+		// A pending overrun was measured against a cap that no longer
+		// exists. Acting on it after the operator has raised that very cap
+		// would kill the run with the grant already applied — the exact case
+		// raise_budget exists for, since a raise reaches a run busy inside a
+		// long node only at the boundary where that node's own overrun is
+		// taken. Dropped, never suppressed: the stop is re-derived from LIVE
+		// usage by the pre-exec check on the next node, so a run still past
+		// the NEW cap stops there, one node later and against the right
+		// number.
+		b.exceeded = nil
 	}
 	return b.capsLocked(), raised
 }

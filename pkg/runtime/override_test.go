@@ -306,3 +306,69 @@ func TestOverrideAwait_Timeout(t *testing.T) {
 		t.Fatal("want timeout error when nothing acks")
 	}
 }
+
+// TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave pins the case the API
+// already answers "queued … it is not lost": the operator raises the cap while
+// the run is busy INSIDE the long node whose completion trips it. That node's
+// overrun is consumed at the same boundary the grant lands on, so a drain done
+// only at the top of the loop arrives one edge too late — and the run dies with
+// the grant sitting unapplied in the channel.
+func TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "steer_budget_late_test",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "b"},
+			{From: "b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 10},
+	}
+
+	ch := make(chan *OverrideMsg, 1)
+	msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxCostUSD: 1000}, "")
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		// Posted from INSIDE the node, which is what "the run is busy in a
+		// long node" means. The spend is 10x the cap and past the 10% exit
+		// grace, so nothing but the raise itself can carry the run forward.
+		ch <- msg
+		return map[string]any{"ok": true, "_cost_usd": 100.0}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithOverrideChannel(ch))
+	if err := eng.Run(context.Background(), "run-raise-late", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-raise-late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want finished — the raise was drained after the "+
+			"overrun it was posted to lift, so the grant could not act on the "+
+			"only case it exists for", r.Status)
+	}
+	if r.BudgetRaises == nil || r.BudgetRaises.MaxCostUSD != 1000 {
+		t.Fatalf("persisted BudgetRaises = %+v, want MaxCostUSD 1000", r.BudgetRaises)
+	}
+	res, err := msg.Await(context.Background(), time.Second)
+	if err != nil || res.Err != nil || res.Noop {
+		t.Fatalf("await = (%+v, %v) — the grant must report itself applied", res, err)
+	}
+}
