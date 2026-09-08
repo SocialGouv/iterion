@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.4](https://github.com/SocialGouv/iterion/compare/v3.121.3...v3.121.4) (2026-09-08)
+
+### Bug Fixes
+
+* **sandbox:** a custom workdir over an oversized recipe streams the script, not a wrapper that re-embeds it ([#967](https://github.com/SocialGouv/iterion/issues/967)) ([ac7b8d2](https://github.com/SocialGouv/iterion/commit/ac7b8d2d83a3bf000cd6cd28b48bdac90ad508c7))
+
+    <details><summary>why</summary>
+
+    Addresses R6a7f93. The custom-workdir path streamed `cd '<dir>' && exec bash -c '<script>'` through `sh -s`. That keeps the script off the HOST argv, but the in-pod shell then re-issues execve("bash", ["bash", "-c", "<script>"]) — and MAX_ARG_STRLEN applies to that exec too. E2BIG was relocated into the pod, not removed, for precisely the shape this streaming exists to serve: an oversized `<shell> -c <script>` combined with a non-default WorkDir.
+
+    </details>
+
 ## [3.121.3](https://github.com/SocialGouv/iterion/compare/v3.121.2...v3.121.3) (2026-09-08)
 
 ### Bug Fixes
