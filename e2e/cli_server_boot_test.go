@@ -238,6 +238,33 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	// Detach into its own process group so a SIGINT to the parent test
 	// process (Ctrl-C) doesn't cascade and eat our own SIGTERM assertion.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Cancellation kills the whole GROUP, mirroring proc.TerminateGroupOnCancel
+	// (which e2e, outside pkg/, cannot import). cmd.Stdout/cmd.Stderr are not
+	// *os.File, so os/exec wires pipes plus copy goroutines that cmd.Wait
+	// joins: a descendant of the server holding an inherited write end would
+	// block Wait — and therefore the cleanup's join below — forever, hanging
+	// the whole e2e binary until the go-test timeout. Setpgid with no Pgid
+	// makes the child its own group leader, so the negative PID addresses
+	// exactly the subtree this test created, and os/exec only calls Cancel
+	// before Wait reaps, so it can never be a recycled PID.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone // already gone: nothing to interrupt
+			}
+			return err
+		}
+		return nil
+	}
+	// Residual bound for a descendant that escapes the group with its own
+	// setsid, where no signal can reach it: the join then fails loudly with
+	// exec.ErrWaitDelay instead of hanging. The clock starts at process exit
+	// or cancel, so the lame-duck and 75s SIGTERM assertions are untouched,
+	// and the clean path still returns nil (its pipes close at once).
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = workDir // avoid the repo-root .env walk-up
 	cmd.Env = append(cleanEnvForSubprocess(),
 		"HOME="+homeDir,
@@ -263,10 +290,9 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	}()
 	// Failsafe: if the test panics or times out mid-way, kill the
 	// subprocess so it doesn't leak an open port and a running server.
+	// cancel() runs the group kill wired above; joining Wait afterwards is
+	// what makes the process actually reaped before the suite guard looks.
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGKILL)
-		}
 		cancel()
 		<-waitDone
 	})

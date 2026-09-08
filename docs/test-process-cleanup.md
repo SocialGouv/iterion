@@ -64,7 +64,7 @@ shell family and the relevant process-owning fixtures have these dispositions:
 | `e2e/sec_audit_cap_findings_test.go`, `sec_audit_scan_health_test.go`, `sec_audit_deps_heuristics_test.go` | Synchronous local fixture post-processing, joined before assertions. |
 | `e2e/feed_watch_test.go` shell plan and Python tools | Synchronous script execution, joined before parsing output/cleanup; no detached sentinel helper. |
 | `e2e/mcp_server_test.go` | Explicit stdin-close and cmd.Wait stop; CLI runner lifecycles remain the subject of those E2E tests. |
-| `e2e/cli_server_boot_test.go` server/runner processes | Join the server Wait goroutine during cleanup too, including early failure. Other runner commands are synchronously joined; E2E suite guarded. |
+| `e2e/cli_server_boot_test.go` server/runner processes | Join the server Wait goroutine during cleanup too, including early failure — bounded, since that join is only safe once cancellation kills the process GROUP (`cmd.Cancel`, mirroring `proc.TerminateGroupOnCancel`, which `e2e/` cannot import) and `cmd.WaitDelay` bounds a descendant that escapes it via `setsid`. Both are load-bearing: with a leader-only kill and no delay, a grandchild holding the inherited stdout/stderr pipes blocks `cmd.Wait` forever and the join hangs the whole E2E binary (measured on a standalone probe). Other runner commands are synchronously joined; E2E suite guarded. |
 | `e2e/claw_tool_coverage_live_test.go` Xvfb | Live-only fixture explicitly kills and waits for the started process. |
 | Other `true`, git/build and inspection commands | Finite synchronous helpers or no-op command factories; no sentinel/background lifetime. Git ownership is covered by gittest and #828/#870. |
 
