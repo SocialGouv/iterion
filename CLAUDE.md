@@ -1187,18 +1187,24 @@ refresh for upgrade cases) is documented in
 
 Current bundles and their skills:
 - [bots/whats-next/skills/](bots/whats-next/skills/) —
-  10 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  11 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
   `iterion-dsl-quickref`, `iterion-board` (reference for the
   capability-gated board MCP tools on claude_code, claw, and pi RPC),
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `priority-elicitation`, `session-continuity` (iterion workspace
+  `session-continuity` (iterion workspace
   memory — `memory_read` / `memory_write` / `memory_list` for the
   cross-run knowledge tree under
-  `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
+  `~/.iterion/projects/<key>/memory/<scope>/`), `dogfood-cycle`
   (the operator's measured ritual for validating a bot by a real
   run — launch visible, monitor actively, fix both bot and engine,
   land + bilan; from the session-mining work behind
-  [docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md)).
+  [docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md)),
+  `factory-ops` (what breaks around a live dispatcher — store locking,
+  serialization, cost caps, paused runs, base drift, stale binaries —
+  and the evidence-based bilan format) and `operator-arbitrage`
+  (grouped decision blocks with sharp options and a named
+  recommendation at turn end; single-question `ask_user` only for a
+  mid-turn blocker).
   Six of the original eight were produced by a dogfood run of claw +
   `openai/gpt-5.5` against this repo; `iterion-board` was added by
   the board-capabilities work and `session-continuity` by the
