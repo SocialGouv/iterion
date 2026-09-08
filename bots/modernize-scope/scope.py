@@ -803,9 +803,69 @@ def falsify():
     return 1 if survivors else 0
 
 
+def audited_selftest():
+    """Run the bench with every git subprocess it launches recorded, and demand
+    each one resolve the auto-maintenance knobs.
+
+    Enforced by EXECUTION, not by reading: the site that escaped two careful
+    readings of a sibling bundle was a helper defined inside a block, four
+    hundred lines from the guarded one. A reading enumerates; it does not
+    converge.
+
+    Two deliberate choices, each closing a spelling:
+
+    - the hook is `Popen`, not `run` — `run`, `check_output`, `call` and
+      `check_call` all funnel through it, so a future call written with any of
+      them is seen. (`os.system` would not be; nothing here uses it, and this
+      refuses if that changes.)
+    - EVERY git invocation is checked, not only those under a temporary
+      directory. Scoping by directory would mean matching its name, and a
+      helper that spells its temp dir differently walks straight past — the
+      same failure, one level up."""
+    seen, offenders = [], []
+
+    def resolved(argv, env):
+        flags = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"]
+        keys = {(env or {}).get("GIT_CONFIG_KEY_%d" % i): (env or {}).get("GIT_CONFIG_VALUE_%d" % i)
+                for i in range(int((env or {}).get("GIT_CONFIG_COUNT", 0) or 0))}
+        return (("maintenance.auto=false" in flags or keys.get("maintenance.auto") == "false")
+                and ("gc.auto=0" in flags or keys.get("gc.auto") == "0"))
+
+    real_popen, real_system = subprocess.Popen, os.system
+
+    def spy(args, *a, **kw):
+        argv = list(args) if isinstance(args, (list, tuple)) else [args]
+        if argv and str(argv[0]).endswith("git"):
+            seen.append(argv)
+            if not resolved(argv, kw.get("env")):
+                offenders.append(" ".join(map(str, argv[:6])))
+        return real_popen(args, *a, **kw)
+
+    def refuse_system(cmd):
+        offenders.append("os.system(%r) — outside every subprocess hook" % cmd[:60])
+        return real_system(cmd)
+
+    subprocess.Popen, os.system = spy, refuse_system
+    try:
+        rc = selftest()
+    finally:
+        subprocess.Popen, os.system = real_popen, real_system
+    if rc:
+        return rc
+    if offenders:
+        print("git subprocess audit FAILED — %d of %d invocations do not refuse auto-maintenance:"
+              % (len(offenders), len(seen)), file=sys.stderr)
+        for o in sorted(set(offenders))[:6]:
+            print("  " + o, file=sys.stderr)
+        return 1
+    print("git subprocess audit: %d invocations, all refusing auto-maintenance — observed at "
+          "Popen, not read from the source" % len(seen))
+    return 0
+
+
 def main(argv):
     if "--selftest" in argv:
-        return selftest()
+        return audited_selftest()
     if "--falsify" in argv:
         return selftest() or falsify()
     args = {}
