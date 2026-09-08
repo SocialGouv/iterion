@@ -17,6 +17,23 @@ child persisted `paused_waiting_human` and the parent has not returned, then
 cancels the parent and joins the result. It no longer needs to spend 1.5 real
 seconds proving that a human has not answered.
 
+### Reporting a failure from inside a bubble
+
+`t.Fatal` exits the bubble's ROOT goroutine. Measured on go1.26.2: if any other
+bubble goroutine is BLOCKED at that instant, the named failure is printed and
+then the process dies with `panic: deadlock: main bubble goroutine has exited
+but blocked goroutines remain`, taking the package's remaining tests with it.
+So before reporting, a bubbled test must leave nothing blocked behind: release
+what it wedged (`cancel()`, `close(release)`) *and*, where the goroutine has an
+unwind of its own to run, join it — which is why `resumeWithinDeadline` and the
+panic-barrier test receive from `done` before their `t.Fatal`.
+
+This is NOT the `t.TempDir` race: `synctest.Test` does not return until its
+bubble is empty, so a bubbled test's cleanup cannot overlap a live goroutine.
+The join buys a readable failure, and costs one thing — a callee that ignored
+cancellation outright deadlocks the bubble at the join instead of printing the
+string, which synctest reports with the blocked stacks.
+
 ## Real-process service fixtures
 
 Service launch, resume, subbot control, reconciliation and restart tests keep a

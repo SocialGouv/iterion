@@ -463,9 +463,10 @@ func testFanOutEachPendingBranchPanicReleasesResumeBarrier(t *testing.T) {
 			t.Fatal("resume unexpectedly succeeded after branch panic")
 		}
 	case <-ctx.Done():
-		// The deadline cancelled Resume; join it before TempDir removes the
-		// store it may still be checkpointing during cancellation — the join
-		// resumeWithinDeadline carries, which this inline copy predates.
+		// Join before reporting, for the reason resumeWithinDeadline spells
+		// out: inside a bubble, a t.Fatal with a goroutine still blocked is a
+		// binary-killing synctest panic, not this test's failure. This inline
+		// copy predates that helper and did not carry its join.
 		<-done
 		t.Fatal("resume hung: panic did not release sibling resume barrier")
 	}
@@ -928,8 +929,19 @@ func resumeWithinDeadline(t *testing.T, wf *ir.Workflow, runStore store.RunStore
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		// The deadline cancelled Resume; join it before TempDir removes the
-		// store it may still be checkpointing during cancellation.
+		// The deadline cancelled Resume; join it before reporting. Every
+		// caller runs inside a synctest bubble, and there t.Fatal exits the
+		// bubble's root: a goroutine still BLOCKED at that instant turns the
+		// named failure into `panic: deadlock: main bubble goroutine has
+		// exited but blocked goroutines remain`, which kills the whole test
+		// binary and the package's remaining tests with it (go1.26.2). It is
+		// NOT the t.TempDir race — synctest.Test does not return until the
+		// bubble is empty, so cleanup cannot overlap a live goroutine.
+		//
+		// The join costs one thing, deliberately: a Resume that ignored
+		// cancellation outright deadlocks the bubble here instead of printing
+		// this string. synctest reports that with the blocked stacks, which
+		// name Resume at least as usefully.
 		<-done
 		t.Fatal("resume hung: answered branch exit did not release the sibling resume barrier")
 		return nil
