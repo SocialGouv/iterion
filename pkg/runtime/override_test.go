@@ -459,3 +459,56 @@ func TestRaiseBudget_DeadlineExpiryIsJudgedOnTheRaisedCap(t *testing.T) {
 		t.Fatalf("the grant did not land before the verdict: %+v", r.BudgetRaises)
 	}
 }
+
+// TestRaiseBudget_AModestRaiseAlsoLifisTheVerdict pins the half a proximity
+// test got wrong. The old guard asked "is the run within 10% of its cap?", so
+// the verdict only flipped once the new cap exceeded used/0.9 — measured on a
+// real run (used 36001s, cap 36000s) that meant every raise below 11.112h kept
+// parking it. The obvious operator gesture, "it needs a bit more, give it
+// another hour", did nothing; a raise to 12h worked. Nothing in the reply, the
+// event or the log said which side of that line a grant had landed on.
+//
+// Here the raise is 1.08x the cap — real room, comfortably inside the old
+// cliff — and it must lift the verdict.
+func TestRaiseBudget_AModestRaiseAlsoLiftsTheVerdict(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "raise_modest_test",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "slow"},
+			{From: "slow", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxDuration: "2s"},
+	}
+
+	ch := make(chan *OverrideMsg, 2)
+	// 2.16s = 1.08x. Under the old `used >= limit*0.9` test this still parked
+	// the run; the operator's grant bought 160ms of real room and changed
+	// nothing.
+	msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: "2160ms"}, "")
+	exec := &blockingRaiserExecutor{blockNode: "slow", ch: ch, msg: msg}
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithOverrideChannel(ch))
+	err := eng.Run(context.Background(), "run-raise-modest", nil)
+
+	if err != nil && strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("a raise that bought real room still parked the run: %v", err)
+	}
+	events, lerr := s.LoadEvents(context.Background(), "run-raise-modest")
+	if lerr != nil {
+		t.Fatalf("load events: %v", lerr)
+	}
+	if hasEventType(events, store.EventBudgetExceeded) {
+		t.Error("budget_exceeded emitted although the raised cap left time on the clock")
+	}
+}

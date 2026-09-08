@@ -399,6 +399,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// a resumable BUDGET_EXCEEDED(duration) failure. Recompute after resource
 	// acquisition so time spent waiting for a busy slot cannot exhaust the
 	// run's max_duration and then start execution with no deadline.
+	var budgetDeadline time.Time
 	if rem, bounded := rs.budget.RemainingDuration(); bounded {
 		if rem <= 0 {
 			// Inside the duration grace (the gate above let this node
@@ -418,7 +419,12 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			}
 		}
 		var cancel context.CancelFunc
-		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
+		// Remembered so the expiry below is attributed by FACT — this is the
+		// instant we cut the node at — instead of being inferred from how
+		// close the run sits to its cap. Proximity answers a different
+		// question the moment an operator raises that cap.
+		budgetDeadline = time.Now().Add(rem)
+		spanCtx, cancel = context.WithDeadline(spanCtx, budgetDeadline)
 		defer cancel()
 	}
 
@@ -466,11 +472,21 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// the wall-clock deadline derived from max_duration, surface it as a
 		// resumable BUDGET_EXCEEDED(duration) failure rather than routing
 		// through retry/recovery — retrying a node that already exhausted the
-		// run's duration budget would just hang or burn the budget again. The
-		// budgetHardThreshold guard ensures an unrelated DeadlineExceeded that
-		// originated inside the node (some shorter internal timeout) is NOT
-		// misclassified as a budget stop.
-		if errors.Is(execErr, context.DeadlineExceeded) {
+		// run's duration budget would just hang or burn the budget again.
+		//
+		// Attribution is a FACT, not a proximity guess: `budgetDeadline` is the
+		// instant WE cut this node at, so an unrelated DeadlineExceeded raised
+		// by some shorter timeout inside the node arrives before it and is left
+		// to ordinary recovery. The previous test — "is the run within 10% of
+		// its cap?" — answered a different question, and answered it wrongly in
+		// both directions: it claimed an internal timeout at 95% of budget as a
+		// budget stop, and (measured on a real run: used 36001s, cap 36000s) it
+		// kept parking the run for every raise below 11.112h, so the obvious
+		// operator gesture — "give it another hour" — silently did nothing
+		// while a raise to 12h worked. A grant whose effect turns on an
+		// undisclosed 11% line is not a grant.
+		if errors.Is(execErr, context.DeadlineExceeded) &&
+			!budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
 			// Steering is drained BEFORE this verdict, because this return
 			// never reaches the node boundary where the other drain sits. A
 			// raise posted while THIS node was running is still in the
@@ -481,12 +497,14 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			//
 			// The node's death is NOT repairable here: its deadline was
 			// frozen into the ctx when the node started, so no later grant
-			// moves it. The VERDICT is. With the cap raised the guard below
-			// reads false, and the expiry falls through to ordinary recovery
-			// dispatch — what an unrelated DeadlineExceeded already gets —
+			// moves it. The VERDICT is. The question asked after the drain is
+			// the only one that matters — is the run STILL out of time under
+			// the cap as it now stands? — so any raise that buys real room
+			// lets the expiry fall through to ordinary recovery dispatch,
 			// instead of a budget stop naming a limit that no longer exists.
 			e.drainOverrides(rs)
-			if used, limit, bounded := rs.budget.DurationStatus(); bounded && limit > 0 && used >= limit*budgetHardThreshold {
+			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+				used, limit, _ := rs.budget.DurationStatus()
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
 					exceeded: true, dimension: "duration", used: used, limit: limit,
 				})
