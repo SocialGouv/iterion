@@ -316,16 +316,41 @@ tool extend_base:
     git_dir = git_out("rev-parse", "--absolute-git-dir")
     marker = os.path.join(git_dir, "iterion-extend-prev-identity") if git_dir else ""
     if marker and os.path.isfile(marker):
-        leaked = None
+        leaked, why = None, ""
         try:
             with open(marker, encoding="utf-8") as f:
                 leaked = json.load(f)
+            if not isinstance(leaked, dict):
+                why = "it holds %s, not an identity object" % type(leaked).__name__
         except (OSError, ValueError) as e:
-            notice = ((notice + " | ") if notice else "") + (
-                "the identity marker %s is unreadable (%s): this workspace may "
-                "still be committing under the net's name — check `git config "
-                "user.email` before trusting any attribution here" % (marker, e))
-        if isinstance(leaked, dict):
+            why = str(e)
+        if why:
+            # REFUSED, not guessed. This marker is the DURABLE record of the
+            # identity a previous extension displaced, and the run that reads
+            # it unreadable is exactly the run on whose path the local config
+            # already holds the NET's name. Reading the config as "the
+            # previous identity" would record the leak as the thing to
+            # restore, extend_restore would put it back, and the operator's
+            # checkout would commit under the net's name FOR GOOD — with the
+            # one record that could have repaired it deleted on the way past.
+            # So: the identity is not touched, the marker is not removed, no
+            # request is handed to the agent, and the unknown is said. Same
+            # rule as the status above ("an unknown is refused, not assumed")
+            # and as the certifier's ("a certificate the judge cannot read is
+            # refused, not dropped"); this was the one unknown of the feature
+            # that failed OPEN.
+            clean = False
+            pending = []
+            notice = ("REFUSED at start: the identity marker %s cannot be read "
+                      "(%s), so the identity this workspace must be restored TO "
+                      "is UNKNOWN — and guessing it from `git config` would "
+                      "record the net's own name as the operator's and make the "
+                      "leak permanent. The marker is kept, nothing is acted, the "
+                      "identity is untouched. Check `git config user.email`, put "
+                      "the operator's identity back by hand, delete %s, then "
+                      "relaunch." % (marker, why, marker)) + \
+                     ((" | " + notice) if notice else "")
+        else:
             for key, val in (("user.name", leaked.get("name") or ""),
                              ("user.email", leaked.get("email") or "")):
                 if val:
@@ -336,20 +361,31 @@ tool extend_base:
                 "a previous extension did not restore the workspace identity; "
                 "the pre-run identity it recorded was re-applied before this "
                 "run read its own.")
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+
+    # No git dir, no marker, and no marker means no durable record of the
+    # identity this run would displace — so setting one would be a leak by
+    # construction, repairable by nothing. Refused for the same reason.
+    if clean and not marker:
+        clean = False
+        pending = []
+        notice = ("REFUSED at start: `git rev-parse --absolute-git-dir` gave "
+                  "nothing on %s, so this run has nowhere to record the identity "
+                  "it would displace — an identity set with no durable record to "
+                  "restore it from is a leak by construction" % ws) + \
+                 ((" | " + notice) if notice else "")
 
     prev_name = git_out("config", "--local", "--get", "user.name")
     prev_email = git_out("config", "--local", "--get", "user.email")
     if clean:
         # The identity the parent's gate attributes this run's acts to —
-        # set by the engine, restored by extend_verify, never by prose. The
+        # set by the engine, restored by extend_restore, never by prose. The
         # marker restores it when this run never reaches that node.
-        if marker:
-            with open(marker, "w", encoding="utf-8") as f:
-                json.dump({"name": prev_name, "email": prev_email}, f)
+        with open(marker, "w", encoding="utf-8") as f:
+            json.dump({"name": prev_name, "email": prev_email}, f)
         subprocess.run(["git", "-C", ws, "config", "user.name", {{vars.actor_name}}])
         subprocess.run(["git", "-C", ws, "config", "user.email", {{vars.actor_email}}])
 
@@ -702,10 +738,15 @@ tool extend_restore:
             report["notice"] = ("the workspace identity is back to %r: the lot's "
                                 "later commits must not wear the net's name"
                                 % (prev.get("email") or "unset"))
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
+            # Removed only once the identity it held is BACK. A marker this
+            # node could not read is the only remaining record of what the
+            # operator's identity was, on a workspace still wearing the net's
+            # — deleting it there ends the repair for good, where keeping it
+            # makes the next extend_base refuse and say so.
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
 
     print(json.dumps(report))
 
