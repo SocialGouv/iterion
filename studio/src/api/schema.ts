@@ -1785,7 +1785,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /** PUT /api/orgs/{id}/members/{user_id} */
+        put: operations["putOrgsByIdMembersByUserId"];
         post?: never;
         /** DELETE /api/orgs/{id}/members/{user_id} */
         delete: operations["deleteOrgsByIdMembersByUserId"];
@@ -9179,6 +9180,27 @@ export interface operations {
             header?: never;
             path: {
                 id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putOrgsByIdMembersByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                user_id: string;
             };
             cookie?: never;
         };

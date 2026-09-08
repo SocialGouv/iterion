@@ -194,3 +194,41 @@ func TestTeamLifecycle_putMemberRefusesADisabledUser(t *testing.T) {
 		t.Fatalf("place a disabled user: code=%d body=%s, want 422", w.Code, w.Body.String())
 	}
 }
+
+// The org-level twin. Without it handlePutTeamMember cannot serve the case
+// it exists for: a user with NO org at all is still reachable only by
+// email, so the round trip is merely moved one level up.
+func TestTeamLifecycle_putOrgMemberPlacesAnOrphanAccount(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	ctx := context.Background()
+	if _, err := s.authStore().CreateUser(ctx, identity.User{
+		ID: "orphan", Email: "orphan@example.com", Status: identity.UserStatusActive, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A team admin is not an org admin: the org roster is not theirs.
+	w := httptest.NewRecorder()
+	s.handlePutOrgMember(w, teamReq(teamAdminCtx(), "PUT", "/api/orgs/o1/members/orphan", `{"role":"member"}`, "o1", "orphan"))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("place as team admin: code=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handlePutOrgMember(w, teamReq(orgAdminCtx(), "PUT", "/api/orgs/o1/members/orphan", `{"role":"member"}`, "o1", "orphan"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("place as org admin: code=%d body=%s", w.Code, w.Body.String())
+	}
+	om, err := s.authStore().GetOrgMembership(ctx, "orphan", "o1")
+	if err != nil || om.Role != identity.OrgRoleMember {
+		t.Fatalf("org membership = %+v (%v), want role member", om, err)
+	}
+
+	// And now the team placement — the pair is what makes onboarding an
+	// existing account a two-call operation instead of an email.
+	w = httptest.NewRecorder()
+	s.handlePutTeamMember(w, teamReq(orgAdminCtx(), "PUT", "/api/teams/t1/members/orphan", `{"role":"member"}`, "t1", "orphan"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("team placement after the org one: code=%d body=%s", w.Code, w.Body.String())
+	}
+}

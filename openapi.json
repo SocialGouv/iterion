@@ -5967,6 +5967,18 @@
         "tags": [
           "orgs"
         ]
+      },
+      "put": {
+        "operationId": "putOrgsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
       }
     },
     "/api/orgs/{id}/oauth/connections": {

@@ -133,14 +133,18 @@ and left `Team.Status` readable by the launch gate but writable by nothing:
 | Rename | team admin | `iterion remote teams update --name X --slug x` |
 | Suspend / resume | **org** admin | `iterion remote teams status suspended --reason "…"` |
 | Delete an EMPTY team | org admin | `iterion remote teams delete` |
-| Place an EXISTING account | team admin | `iterion remote teams add-member <user-id> --role admin` |
+| Place an EXISTING account in a team | team admin | `iterion remote teams add-member <user-id> --role admin` |
+| Place an EXISTING account in the org | org admin | `iterion remote orgs add-member <user-id> --role member` |
 
 Two guards worth knowing. **Delete refuses a team that still owns
 anything** — repo integrations, forge connections, api keys, active runs —
 and names what is left: it is a refusal list, not a cascade, because the
 only correct cascade is the org purge sweeper, and the failure a hand-rolled
 one would cause is silent (a surviving webhook firing into a tenant nothing
-can reach). **`add-member` still requires the org membership**: that is the
-identity boundary a team grant sits inside, so creating one silently would
-let a team admin pull a stranger into the org. For an account that does not
-exist yet, the email invitation remains the path.
+can reach). **`teams add-member` still requires the org
+membership**: that is the identity boundary a team grant sits inside, so
+creating one silently would let a team admin pull a stranger into the org —
+which is why `orgs add-member` exists as its org-admin twin, and why the two
+are a pair. Without it the round trip was merely moved one level up: a user
+with no org at all stayed reachable only by email. For an account that does
+not exist **yet**, the email invitation remains the path.
