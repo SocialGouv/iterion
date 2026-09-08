@@ -316,11 +316,19 @@ first, then each route.
 |---|---|---|
 | `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
 | `auth` | rejected or expired credential | `claude_code`, `pi` |
-| `unavailable` | model the credential cannot reach | `claude_code` |
+| `unavailable` | model the credential cannot reach | — (no shipped backend mints the typed carrier yet) |
 | `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
 | `any` | escape hatch — clears the filter | — |
 
-The default when `on:` is omitted is **`[usage_window, unavailable]`**.
+`unavailable` is declared but **currently inert**: it is reachable only
+through the typed `delegate.ErrModelUnavailable`, which no shipped
+backend constructs (ADR-087 stage 3). `claude_code` detects the
+condition but reports it untyped, so it arrives as *unclassified* —
+which routes regardless of `on:`.
+
+The default when `on:` is omitted is **`[usage_window, unavailable]`**,
+so today it behaves as `[usage_window]` plus the always-routes
+unclassified rule.
 Two omissions are deliberate: `any` is not the default because a budget
 cap or a schema-shape failure re-fails identically on every route, and
 `auth` is not, because a rejected credential deliberately pauses for a
@@ -484,7 +492,7 @@ is evicted alongside, so "fresh" means fresh on every backend.
 
 ### Refusals
 
-Two crossings are compile-time **errors** (`C176`), because the degraded
+Three crossings are compile-time **errors** (`C176`), because the degraded
 run would be silently wrong rather than merely worse:
 
 - a route on a backend/mode pair that cannot enforce the node's
@@ -504,8 +512,12 @@ run would be silently wrong rather than merely worse:
   - **CLI → claw is refused only when the list is empty**, which on claw
     means *zero* tools. Declaring the tools explicitly is the documented
     pattern: inert on the CLI primary, load-bearing on the claw route.
+- a route that changes `backend:` on a node declaring `session: inherit`,
+  `inherit_if_available`, `fork` or `persist` — session continuity has no
+  cross-backend meaning, so the route would silently run the node fresh
+  where the author asked for a continued conversation.
 
-A third refusal is `C135`: a claw route on a node whose `tools:` list
+A further refusal is `C135`: a claw route on a node whose `tools:` list
 names something claw cannot resolve. The list is inert on the CLI
 primary, so a name like `run_command` or `list_files` looks harmless
 there — but the route resolves every name against the in-process
@@ -519,12 +531,19 @@ model specs are not portable (`claw` needs `provider/model`,
 
 ### At launch, without editing the bot
 
-An operator can add **one** run-level route instead of authoring a
-block — the studio Launch form's "Fallback route" row, or:
+An operator can add a run-level fallback **chain** instead of authoring a
+block. One stage from the studio Launch form's "Fallback route" row, or
+from the CLI:
 
 ```sh
 iterion run bot.bot --fallback 'claw:openai/gpt-5.5'
 ```
+
+The launch API takes the whole ordered chain
+(`fallback: [{backend, model, provider}, …]`; a single object is
+promoted to a one-stage chain), and each stage is screened
+independently — a refused stage is dropped with a warning while the
+later stages stay eligible.
 
 It applies to **agent nodes that declare no `fallbacks:` of their own**,
 and **never to judges** — a weaker judge still emits a well-formed
@@ -551,8 +570,8 @@ the route: the scenario this feature exists for
 — a long run outliving a quota window — is precisely the one that
 resumes.
 
-One route rather than a per-node ordered list, deliberately: the value
-is "don't lose a long run to a forfait wall", which one alternative
+A run-level chain rather than a per-node one, deliberately: the value is
+"don't lose a long run to a forfait wall", which a blanket chain
 delivers, and the Launch form persists nothing between launches — a
 per-node chain would be rebuilt cell by cell on every launch of a
 15-node bot.
@@ -629,6 +648,7 @@ actually make calls.
 | Credential | Source |
 |---|---|
 | OAuth (forfait) | **macOS:** the `Claude Code-credentials` item in the Keychain (where Claude Code 2.x stores it by default — no file is written). **Linux/WSL:** `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`; non-hidden `credentials.json` also accepted) |
+| OAuth (forfait), fallback probe | `claude auth status --json` reporting a **claude.ai** login (3 s, run only when the file and Keychain probes found nothing and the binary is present). `authMethod: api_key` is deliberately NOT accepted — an `ANTHROPIC_API_KEY` host resolves to `claw` |
 | Binary | `claude` in `$PATH`, or `~/.claude/local/claude` |
 
 On macOS the Keychain is probed for *existence only* (via
@@ -1044,7 +1064,8 @@ extension supplies the MCP half; the rest stands. Consequences for a
     `command:` must resolve there. Same caveat as `claude_code`.
   - **Connecting is bounded** by `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`
     (default 10000). Servers connect in parallel during pi's session
-    start — which iterion's own 30s handshake is waiting on — so one
+    start — which iterion's own 90s handshake
+    (`ITERION_PI_STREAM_COLD_TIMEOUT`) is waiting on — so one
     unreachable server costs its own tools, not the run. Failures are
     logged, not fatal.
 - **`__ITERION_SECRET_*__` placeholders are not materialised.** Use file
@@ -1358,15 +1379,17 @@ families internally.
   provider side. If you're pointing at OpenRouter, Ollama, or another
   OpenAI-shaped endpoint, use `backend: claw` with `model: openai/…`
   + `OPENAI_BASE_URL` instead.
-- **API keys only — no forfait via iterion.** Both Anthropic's Consumer
-  Terms (Pro/Max plans) and z.ai's Coding Plan terms restrict
-  subscription benefits to *officially supported tools*. Driving either
-  provider's subscription/OAuth forfait through iterion (or any other
-  third-party orchestrator) is a ToS violation. Always use a BYOK API
-  key path: `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, or the BYOK panel in the
-  cloud UI. The legacy in-cloud OAuth-forfait wiring
-  (`pkg/server/oauth_routes.go::OAuthKindClaudeCode`) is scheduled for
-  removal — see `.plans/zai-glm-byok.md`.
+- **z.ai: API keys only — no forfait via iterion.** z.ai's Coding Plan
+  terms restrict subscription benefits to *officially supported tools*,
+  so drive z.ai with `ZAI_API_KEY` (or the BYOK panel in the cloud UI),
+  never its subscription/OAuth forfait. Anthropic is the opposite case:
+  its subscription OAuth path is supported — it bills to the plan's
+  separate extra-usage balance, iterion warns per node, and
+  `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` refuses it (see the extra-usage
+  note under [Default preference order](#default-preference-order)). In cloud that
+  forfait is a first-class credential tier with its own refresh worker
+  and operator runbook — see
+  [cloud-llm-credentials.md](cloud-llm-credentials.md).
 - Cost: iterion's token-usage panels currently price against an
   Anthropic rate card. When you route to z.ai the wire shape is
   unchanged so token counts are still reported, but the dollar
