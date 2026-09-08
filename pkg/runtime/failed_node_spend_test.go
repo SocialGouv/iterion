@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -204,4 +206,84 @@ func TestFailedNodeSpendDoesNotSpeakForTheRun(t *testing.T) {
 			t.Fatalf("the failed node's spend was not booked: %+v", r.Checkpoint)
 		}
 	})
+}
+
+// meteredFailingBackend is the shape a real delegate returns when a
+// delegation dies: the error, and BESIDE it the result carrying what the
+// pass burned — `typedFailure` allocates the output map and annotates the
+// cost precisely so the figure survives the failure.
+type meteredFailingBackend struct {
+	calls int
+}
+
+func (b *meteredFailingBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+	b.calls++
+	return delegate.Result{
+		Output:      map[string]any{"_tokens": 31_000, "_cost_usd": 4.75},
+		Tokens:      31_000,
+		BackendName: "metered_stub",
+	}, errors.New("stream closed mid-session")
+}
+
+// The END of the chain, through the production executor rather than a
+// runtime stub: a real ClawExecutor dispatching to a real delegate.Backend
+// that fails after spending. Every layer below went to trouble to preserve
+// the figure — typedFailure allocates and annotates, dispatchChain folds the
+// abandoned routes' spend into the terminal result — and it only counts if
+// it survives the last frame into the engine, which is the only place that
+// books it against max_cost_usd, the org cap and a donor's ledger.
+//
+// A runtime-side stub cannot show this: it substitutes the very executor
+// whose failure return is under test.
+func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "metered_failure",
+		Entry: "agent",
+		Nodes: map[string]ir.Node{
+			"agent": &ir.AgentNode{
+				BaseNode:  ir.BaseNode{ID: "agent"},
+				LLMFields: ir.LLMFields{Backend: "metered_stub", Model: "anthropic/claude-opus-5"},
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "agent", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 1_000_000},
+	}
+
+	backend := &meteredFailingBackend{}
+	reg := delegate.NewRegistry()
+	reg.Register("metered_stub", backend)
+	exec := model.NewClawExecutor(model.NewRegistry(), wf,
+		model.WithBackendRegistry(reg),
+		// One attempt: the assertion is about what ONE failed delegation
+		// reports, not about what a retry ladder accumulates.
+		model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+	)
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-metered-failure", nil); err == nil {
+		t.Fatal("the run was supposed to fail")
+	}
+	if backend.calls != 1 {
+		t.Fatalf("expected exactly one delegation, got %d", backend.calls)
+	}
+
+	r, err := st.LoadRun(context.Background(), "run-metered-failure")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 31_000 {
+		t.Fatalf("the failed delegation's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 4.75 {
+		t.Fatalf("the failed delegation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
 }
