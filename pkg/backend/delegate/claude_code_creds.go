@@ -2,7 +2,10 @@ package delegate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -246,13 +249,15 @@ func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) 
 // sessions produced under one provider can be detected (and dropped)
 // when a later run targets a different one. Key values are NOT
 // included — fingerprints are safe to log and to ferry through the
-// recipe output map.
+// recipe output map. The one component that is operator-supplied text
+// rather than a fixed label, the facade base URL, goes through
+// facadeLabel first for exactly that reason.
 func providerFingerprint(env map[string]string) string {
 	if env == nil {
 		return "anthropic-env"
 	}
 	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
-		return "facade:" + base
+		return "facade:" + facadeLabel(base)
 	}
 	if env["ANTHROPIC_API_KEY"] != "" {
 		return "anthropic-direct"
@@ -264,6 +269,63 @@ func providerFingerprint(env map[string]string) string {
 	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
 	// from the process env", which is also Anthropic-direct semantically.
 	return "anthropic-env"
+}
+
+// facadeLabel renders an operator-supplied ANTHROPIC_BASE_URL as a
+// fingerprint component that carries no credential.
+//
+// The URL is operator input and may embed one — https://<token>@host/…,
+// or ?api_key=… — and the fingerprint is not a debug string: it rides
+// the node's output map (SessionFingerprintKey), the session slots in
+// run.json, NodeServed.Fingerprint, events.jsonl and a usagecap
+// Reading.Source, all readable by anyone with run-read access. The
+// secret guard is no backstop: it masks values it was SEEDED with, and
+// a token typed into a base URL never passed through the secret
+// plumbing, so it is unredacted on the event path too. Hence the fix
+// here, at the single point that builds the value.
+//
+// Two properties are load-bearing, because this value is an equality key
+// for session reuse (shouldDropSessionFork):
+//   - STABLE — one URL always renders one label, or every call decides
+//     the parent session came from a different provider and drops it.
+//   - NON-COLLIDING — two distinct URLs never render alike, or a session
+//     built on one facade is resumed on another and its provider-signed
+//     thinking blocks 400. So the stripped components are replaced by a
+//     digest of the WHOLE original rather than simply dropped.
+//
+// scheme+host+path survives verbatim: it is the readable half, it is
+// what distinguishes facades in practice, and a URL carrying none of
+// the three credential-bearing components — the ordinary case — is
+// returned unchanged, so sessions stay forkable across this change.
+// A secret in the PATH itself is out of reach of this (stripping the
+// path would collapse facades that differ only there); the three
+// components handled are the ones a URL is credential-bearing by
+// convention.
+func facadeLabel(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		// Unparseable: keep none of it. The digest alone is still
+		// stable and still tells two different values apart.
+		return "invalid#" + shortDigest(base)
+	}
+	if u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+		return base
+	}
+	digest := shortDigest(base)
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String() + "#" + digest
+}
+
+// shortDigest is the collision guard for a value we must not reproduce:
+// enough bits that two facade URLs do not share one, one-way so the
+// original is not recoverable from a run record.
+func shortDigest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:6])
 }
 
 // stampUsageSource wraps an OnUsageWindow hook so every reading leaving a

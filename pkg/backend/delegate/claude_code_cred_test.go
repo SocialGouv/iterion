@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -224,6 +225,59 @@ func TestProviderFingerprint_FacadeBaseURL(t *testing.T) {
 	want := "facade:https://api.z.ai/api/anthropic"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A base URL is operator input, so it can embed the credential it
+// authenticates with. The fingerprint is persisted on run.json, the
+// node output map and events.jsonl and read by any run-reader, and the
+// secret guard cannot mask a token that never entered the secret
+// plumbing — so the credential-bearing URL components must not survive
+// into the label. It stays an equality key for session reuse all the
+// same: stable per URL, and distinct across URLs.
+func TestProviderFingerprint_FacadeBaseURLCarriesNoCredential(t *testing.T) {
+	const secret = "sk-live-abcdef123456"
+	cases := []struct {
+		name, base string
+	}{
+		{"userinfo", "https://" + secret + "@api.z.ai/api/anthropic"},
+		{"userinfo with password", "https://user:" + secret + "@api.z.ai/api/anthropic"},
+		{"query", "https://api.z.ai/api/anthropic?api_key=" + secret},
+		{"fragment", "https://api.z.ai/api/anthropic#" + secret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": tc.base})
+			if strings.Contains(got, secret) {
+				t.Fatalf("fingerprint leaks the credential: %q", got)
+			}
+			if !strings.HasPrefix(got, "facade:") {
+				t.Errorf("got %q — the facade: prefix is what usage_cap.forSource keys on", got)
+			}
+			if !strings.Contains(got, "api.z.ai/api/anthropic") {
+				t.Errorf("got %q — scheme+host+path is the readable half, it must survive", got)
+			}
+			// Stable: a second call on the same URL must render the
+			// same label, or shouldDropSessionFork discards the parent
+			// session on every single call.
+			if again := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": tc.base}); again != got {
+				t.Errorf("unstable: %q then %q", got, again)
+			}
+			// Non-colliding: the sanitized form must not collapse onto
+			// the bare URL, or a session built on one is resumed on the
+			// other and its signed thinking blocks 400.
+			bare := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"})
+			if got == bare {
+				t.Errorf("collided with the credential-free URL: %q", got)
+			}
+		})
+	}
+
+	// Two URLs differing ONLY in the stripped part stay distinct.
+	a := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic?api_key=one"})
+	b := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic?api_key=two"})
+	if a == b {
+		t.Errorf("two distinct facades collapsed to one label: %q", a)
 	}
 }
 
