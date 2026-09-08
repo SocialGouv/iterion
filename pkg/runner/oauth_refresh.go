@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -32,20 +31,43 @@ const oauthRefreshLead = 10 * time.Minute
 // keeps the cloud STORE fresh for the NEXT run, but can't touch a file a
 // runner already materialised at claim time).
 //
-// The goroutines stop when `stop` is closed (run end / cleanup). Both
-// forfait kinds are handled: Anthropic has a known public OAuth client id,
-// and a codex credential names its own (see
-// CodexCredentialsView.OAuthClientID), so neither needs configuration.
+// The goroutines stop when `stop` is closed (run end / cleanup). Only the
+// Claude Code (Anthropic) forfait is handled, and NOT because codex lacks a
+// usable client id — a codex credential names its own (see
+// secrets.CodexCredentialsView.OAuthClientID), so that half is merely the
+// easy half. Codex is excluded because of OWNERSHIP.
+//
+// A codex run draws its blob from a SHARED tier (platform/team/pool: the
+// platform record is one meter for the whole deployment), so every
+// concurrent run materialises a copy of the SAME credential. This loop
+// refreshes a run-local FILE and never writes back to the OAuthStore — and
+// OpenAI rotates the refresh token on use, so the first run to refresh
+// would invalidate the token still held by the store, by the server's
+// OAuthRefreshWorker, and by every sibling run. One long run would poison
+// the deployment's codex forfait until a human re-connected it, which is a
+// strictly worse failure than the expiry this loop exists to avoid.
+//
+// That is not a hypothesis: it is the measured incident in
+// docs/bot-runs/feed-watch.md ("rotating refresh tokens make dual-client
+// use self-destructive — each refresh invalidates the other holder"), whose
+// remediation is stated as "one session, one record, one refresher", and
+// the reason pkg/backend/delegate/pi_codex.go goes to such lengths to keep
+// a codex refresh "the exception it should be rather than something every
+// node does". The single canonical codex refresher is the server-side
+// OAuthRefreshWorker, which rotates the record everyone reads from.
+//
+// Admitting codex here needs a centralised single-flight refresh against
+// the canonical record plus distribution of the new blob to live runs —
+// tracked as audit row B2 (native:fc0c51d4), not a `case` on this switch.
+// Anthropic is safe on the SAME shape only for want of a measured
+// counter-example; see the note on refreshAnthropicFile.
 func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files map[string]string) {
 	hc := &http.Client{Timeout: oauthRefreshHTTPTimeout}
 	for kind, path := range files {
-		k, p := secrets.OAuthKind(kind), path
-		switch k {
-		case secrets.OAuthKindClaudeCode, secrets.OAuthKindCodex:
-		default:
+		if secrets.OAuthKind(kind) != secrets.OAuthKindClaudeCode {
 			continue
 		}
-		errtrack.Go("runner.refreshForfaitOAuth", func() { r.refreshForfaitLoop(stop, hc, runID, k, p) })
+		errtrack.Go("runner.refreshAnthropicOAuth", func() { r.refreshAnthropicLoop(stop, hc, runID, path) })
 	}
 }
 
@@ -55,9 +77,9 @@ func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files 
 // immediately — so this also covers the "materialised a near-expiry token at
 // claim time" pre-run case. Best-effort: a hard failure backs off a minute
 // and retries; a missing refresh_token ends the loop (nothing we can do).
-func (r *Runner) refreshForfaitLoop(stop <-chan struct{}, hc *http.Client, runID string, kind secrets.OAuthKind, path string) {
+func (r *Runner) refreshAnthropicLoop(stop <-chan struct{}, hc *http.Client, runID, path string) {
 	for {
-		exp, refreshTok, err := readForfaitExpiry(kind, path)
+		exp, refreshTok, err := readAnthropicExpiry(path)
 		if err != nil || refreshTok == "" {
 			return // file gone / unparseable / no refresh_token — leave it to the CLI
 		}
@@ -70,9 +92,9 @@ func (r *Runner) refreshForfaitLoop(stop <-chan struct{}, hc *http.Client, runID
 			return
 		case <-time.After(wait):
 		}
-		if err := refreshForfaitFile(hc, kind, path); err != nil {
+		if err := refreshAnthropicFile(hc, path); err != nil {
 			if r.cfg.Logger != nil {
-				r.cfg.Logger.Warn("runner: oauth-forfait(%s) refresh run=%s: %v", kind, runID, err)
+				r.cfg.Logger.Warn("runner: oauth-forfait refresh run=%s: %v", runID, err)
 			}
 			select {
 			case <-stop:
@@ -82,7 +104,7 @@ func (r *Runner) refreshForfaitLoop(stop <-chan struct{}, hc *http.Client, runID
 			continue
 		}
 		if r.cfg.Logger != nil {
-			r.cfg.Logger.Info("runner: oauth-forfait(%s) token refreshed run=%s", kind, runID)
+			r.cfg.Logger.Info("runner: oauth-forfait token refreshed run=%s", runID)
 		}
 		// Sandboxed runs read a seeded in-container COPY of this file
 		// (CLAUDE_CONFIG_DIR) — push the refreshed credentials through the
@@ -91,62 +113,6 @@ func (r *Runner) refreshForfaitLoop(stop <-chan struct{}, hc *http.Client, runID
 		// blocker 3). No-op without an active real sandbox.
 		r.propagateForfaitToSandbox(runID, path)
 	}
-}
-
-// readForfaitExpiry returns the access token's expiry and refresh token for
-// either forfait kind. An expiry of zero means "unknown" and is treated by
-// the caller as due now, which is the safe direction: a needless refresh
-// costs one round-trip, a skipped one costs the run.
-func readForfaitExpiry(kind secrets.OAuthKind, path string) (time.Time, string, error) {
-	if kind == secrets.OAuthKindCodex {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return time.Time{}, "", err
-		}
-		v, err := secrets.ParseCodexView(b)
-		if err != nil {
-			return time.Time{}, "", err
-		}
-		return v.AccessTokenExpiry(), v.Tokens.RefreshToken, nil
-	}
-	return readAnthropicExpiry(path)
-}
-
-// refreshForfaitFile rewrites the materialised credential in place (0600)
-// with a freshly exchanged access token.
-func refreshForfaitFile(hc *http.Client, kind secrets.OAuthKind, path string) error {
-	if kind == secrets.OAuthKindCodex {
-		return refreshCodexFile(hc, path)
-	}
-	return refreshAnthropicFile(hc, path)
-}
-
-// refreshCodexFile mirrors refreshAnthropicFile for the ChatGPT forfait,
-// taking the OAuth client id from the credential itself.
-func refreshCodexFile(hc *http.Client, path string) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	v, err := secrets.ParseCodexView(b)
-	if err != nil {
-		return err
-	}
-	clientID := v.OAuthClientID()
-	if clientID == "" {
-		return fmt.Errorf("runner: codex credential names no oauth client id")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), oauthRefreshHTTPTimeout)
-	defer cancel()
-	res, err := secrets.RefreshCodex(ctx, hc, clientID, v.Tokens.RefreshToken)
-	if err != nil {
-		return err
-	}
-	out, err := secrets.ApplyCodexRefresh(b, res)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, out, 0o600)
 }
 
 // readAnthropicExpiry returns the access token's expiry + the refresh_token
@@ -166,6 +132,15 @@ func readAnthropicExpiry(path string) (time.Time, string, error) {
 // refreshAnthropicFile exchanges the file's refresh_token for a fresh access
 // token and rewrites the .credentials.json in place (0600). The HTTP call is
 // bounded by its own timeout context (hc.Timeout also applies).
+//
+// Note the asymmetry with codex (see startOAuthRefreshers): this writes the
+// run-local file only, never the OAuthStore, so IF Anthropic also rotated
+// the refresh token on use, the same "one credential, many refreshers"
+// hazard would apply to a shared claude_code forfait. Nothing in this tree
+// establishes either way — RefreshAnthropic merely tolerates a rotated
+// token — and no incident has been observed, so this long-standing
+// behaviour is left as it is rather than changed on a guess. It belongs
+// with the same audit row (B2 / native:fc0c51d4) as the codex fix.
 func refreshAnthropicFile(hc *http.Client, path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
