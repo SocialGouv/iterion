@@ -432,8 +432,10 @@ tool sync_harness:
         """A field declared as a FILE: an object naming the file it stands for.
 
         `{"filename": ..., "text": ...}` or `{"filename": ..., "b64": ...}`, with
-        an optional `content_type`. Anything else is an ordinary form field, so a
-        corpus that declares no upload is encoded exactly as before.
+        an optional `content_type`. A SCALAR is an ordinary form field, so a
+        corpus that declares no upload is encoded exactly as before; an object or
+        a list that fails this test is neither, and `check_form_fields` refuses it
+        rather than let it reach an encoding that would repr it.
         """
         return isinstance(value, dict) and isinstance(value.get("filename"), str)
 
@@ -3626,14 +3628,18 @@ tool sync_harness:
             # parametre, un CRLF n'ouvre ni une part ni un en-tete que le corpus
             # n'a pas declares. Sinon l'application repond a une AUTRE requete que
             # celle du corpus, et c'est cette reponse-la que la reference grave.
-            hostile = {"doc": {"filename": 'a";name="evil.pdf',
+            # Les trois interpolations, pas seulement celle du nom de fichier : le
+            # NOM DU CHAMP se coupe de la meme facon, et un mutant qui ne relache
+            # que celle-la doit mourir aussi.
+            hostile = {'champ";x="1': "v",
+                       "doc": {"filename": 'a";name="evil.pdf',
                                "content_type": "text/plain\r\nX-Injecte: 1",
                                "text": "X"}}
             hbody, hctype = encode_multipart(hostile)
             hparsed = parse_multipart(hbody, hctype)
-            check("guillemet dans le nom de fichier : le parametre entier, non tronque",
+            check("guillemet dans le nom de champ ET de fichier : parametres entiers",
                   [list(hparsed), hparsed["doc"][0], hparsed["doc"][2]],
-                  [["doc"], 'a%22;name=%22evil.pdf', b"X"])
+                  [['champ%22;x=%221', "doc"], 'a%22;name=%22evil.pdf', b"X"])
             check("CRLF echappe : aucun en-tete que le corpus n'a pas declare",
                   [b"\r\nX-Injecte:" in hbody, b"%0D%0AX-Injecte:" in hbody],
                   [False, True])
