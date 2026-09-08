@@ -40,6 +40,15 @@ func TestMain(m *testing.M) {
 	}))
 }
 
+// isHelper reports whether pid is still THIS fixture's own orphaned helper,
+// matched on the unique argv[0] it was symlinked under. A reaped PID belongs
+// to the kernel again, so neither the reclaim assertion nor the canary kill
+// may act on the number alone.
+func isHelper(pid int, helper string) bool {
+	argv, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	return err == nil && strings.HasPrefix(string(argv), helper+"\x00")
+}
+
 func TestNoProcessLeaks(t *testing.T) {
 	// Both sides of the settle boundary, made explicit: `settle` orphans a
 	// helper that exits well inside a widened window (forgiven, silent, still
@@ -80,10 +89,7 @@ func TestNoProcessLeaks(t *testing.T) {
 					return
 				}
 				if p, err := os.FindProcess(pid); err == nil {
-					// Match this fixture's unique argv before signalling a pidfd;
-					// an already-reaped PID could have been reused by another session.
-					argv, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-					if strings.HasPrefix(string(argv), helper+"\x00") {
+					if isHelper(pid, helper) {
 						_ = p.Kill()
 					}
 					_ = p.Release()
@@ -126,8 +132,11 @@ func TestNoProcessLeaks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := processState(pid); !os.IsNotExist(err) {
-					t.Fatalf("fixture process %d was not reclaimed: %v", pid, err)
+				// A PID that still resolves is not proof on its own: it was
+				// reaped, so the kernel is free to have handed it to somebody
+				// else since. Only this fixture's own argv makes it ours.
+				if _, err := processState(pid); !os.IsNotExist(err) && isHelper(pid, helper) {
+					t.Fatalf("fixture process %d was not reclaimed", pid)
 				}
 			}
 		})
