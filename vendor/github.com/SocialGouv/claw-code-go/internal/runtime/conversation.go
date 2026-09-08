@@ -48,6 +48,13 @@ type ConversationLoop struct {
 	LifecycleHooks  *lifehooks.Runner      // In-process programmatic hooks (may be nil; default no-op)
 	CommandRegistry interface{}            // Slash command registry (may be nil; *commands.Registry)
 
+	// Typed results: the last structured_output payload this loop recorded
+	// (read by a parent for its subagents), and the payloads its subagents
+	// returned, keyed by task id (read by the workflow tool's agent()).
+	structuredMu       sync.Mutex
+	structuredOutput   map[string]any
+	subagentStructured map[string]map[string]any
+
 	// --- Batch 2: registries for CRUD tools ---
 	TaskRegistry   *task.Registry         // Task registry (may be nil)
 	TeamRegistry   *team.TeamRegistry     // Team registry (may be nil)
