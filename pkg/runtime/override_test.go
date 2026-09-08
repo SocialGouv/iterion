@@ -402,9 +402,9 @@ func uncoveredOverrunWorkflow(name string, budget *ir.Budget) *ir.Workflow {
 }
 
 // runUncoveredOverrun executes uncoveredOverrunWorkflow with `over` posting
-// `raise` and returning `usage`, and hands back the run error plus the
-// budget_exceeded event data (nil when none was emitted).
-func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, usage map[string]any) (error, map[string]any) {
+// `raise` and returning `usage`, and hands back the budget_exceeded event data
+// (nil when none was emitted) plus the run error.
+func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, usage map[string]any) (map[string]any, error) {
 	t.Helper()
 
 	ch := make(chan *OverrideMsg, 1)
@@ -433,7 +433,7 @@ func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir
 			exceeded = evt.Data
 		}
 	}
-	return err, exceeded
+	return exceeded, err
 }
 
 // assertStoppedOn fails unless the run died as BUDGET_EXCEEDED on `dimension`
@@ -473,7 +473,7 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// MaxTokens must be a real cap with usage UNDER it: an axis at 0 is
 		// unlimited, RaiseCaps skips it, and the test would pass vacuously
 		// on a raise that never landed.
-		err, exceeded := runUncoveredOverrun(t, "run-raise-wrong-axis",
+		exceeded, err := runUncoveredOverrun(t, "run-raise-wrong-axis",
 			&ir.Budget{MaxCostUSD: 10, MaxTokens: 1000},
 			ir.BudgetOverrides{MaxTokens: 5000},
 			map[string]any{"ok": true, "_tokens": 5, "_cost_usd": 100.0})
@@ -485,7 +485,7 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// stop stands — and now names the cap as it stands (20), because a
 		// limit the operator has already replaced is not a useful number to
 		// be shown when deciding how much more to grant.
-		err, exceeded := runUncoveredOverrun(t, "run-raise-insufficient",
+		exceeded, err := runUncoveredOverrun(t, "run-raise-insufficient",
 			&ir.Budget{MaxCostUSD: 10},
 			ir.BudgetOverrides{MaxCostUSD: 20},
 			map[string]any{"ok": true, "_cost_usd": 100.0})
@@ -499,7 +499,7 @@ func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 		// clear that only asks "does the raise cover the RECORDED axis?"
 		// therefore drops a cost overrun nobody funded — the same silent
 		// over-cap completion, one variant over.
-		err, exceeded := runUncoveredOverrun(t, "run-raise-multi-axis",
+		exceeded, err := runUncoveredOverrun(t, "run-raise-multi-axis",
 			&ir.Budget{MaxTokens: 10, MaxCostUSD: 10},
 			ir.BudgetOverrides{MaxTokens: 1000},
 			map[string]any{"ok": true, "_tokens": 100, "_cost_usd": 100.0})
