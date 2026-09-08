@@ -236,6 +236,75 @@ iterion remote api POST /api/teams/<team-id>/oauth/codex/credentials \
 iterion remote api GET /api/teams/<team-id>/oauth/connections
 ```
 
+### A `claude setup-token` is not a `credentials.json`
+
+The codex examples above paste a file that is already the right shape.
+Anthropic's is not: `claude setup-token` prints a **bare token**
+(`sk-ant-oat…`, ~108 characters, no JSON), and that is what most hosts keep
+around. `POST .../oauth/claude_code/credentials` parses strict JSON and refuses
+it — then refuses again if the JSON omits `expiresAt` or `scopes`, because a
+record without them is what the CLI reads as *"Not logged in"*: the credential
+would exist server-side and never serve a run.
+
+Wrap it:
+
+```json
+{"claudeAiOauth":{"accessToken":"sk-ant-oat…","expiresAt":<epoch ms>,"scopes":["user:inference"]}}
+```
+
+- **`expiresAt`** — a setup token is valid ~1 year and carries no expiry of its
+  own, so `now + 365 days` in **milliseconds** is the convention (it is what the
+  already-connected records show).
+- **No `refreshToken`** — correct for a setup token; the record comes back
+  `refreshable: false` and the refresh worker leaves it alone.
+- Build the wrapper **with a script that reads the token file and writes the
+  JSON** (mode `0600`, deleted after upload). Never echo the token into a shell
+  argument or a log: `ValidateTokenShape` exists because a token that picked up
+  a newline from a copy-paste kills every downstream call with an opaque
+  "Header has invalid value".
+
+### The API response does not prove a run will use it
+
+A successful upload returns a fingerprint. That says the record is stored, not
+that anything resolves to it — tiers, window skips and per-kind precedence all
+sit between the store and a run. The proof is one line in the **server** log at
+publish time:
+
+```
+cloudpublisher: oauth-forfait(org) used run=… owner=org:<team> kind=claude_code fp=<new>
+cloudpublisher: credentials GRANTED for run=… — oauth-forfait(oauth:claude_code fp=<new>)
+```
+
+and its counterpart when a tier declines:
+
+```
+cloudpublisher: oauth-forfait(org) SKIPPED for run=… fp=<old> — provider refused the
+five_hour window (0% used) (reopens …); falling through to the next credential tier
+```
+
+Those lines name the credential, the window and the reopening. A run's own
+error message names none of the three — so read the publisher lines first when
+asking "which key paid for this, and why not the other one". The cheapest way
+to get one on demand is to `resume` a run parked on a usage window: a resume
+re-resolves credentials, so it both proves the wiring and unblocks the run.
+
+### Two connections of the same account are two meters
+
+A Claude `credentials.json` carries no account or subscription id, so
+`SubscriptionFingerprint` falls back to hashing the whole blob
+([pkg/secrets/oauth.go](../pkg/secrets/oauth.go)). The same subscription
+connected twice — on two teams, or personally and org-wide — therefore gets
+**two different fingerprints and two independent usage meters**, each starting
+empty.
+
+The practical consequence is a fleet that looks redundant and is not. Measured
+2026-09-08: three teams held what read as three credentials
+(`2b36a854`, `0b5c7442` twice) and were one Anthropic account; when its
+five-hour window closed, all three stopped together, and the single tier behind
+them was already exhausted on its weekly window. Before trusting a fallback,
+check the **account labels**, not the fingerprints — and give each tier a
+genuinely different account.
+
 ## Activating the cross-model plan review (one credential, nothing else)
 
 The plan-phase campaign bots (feature-dev, app-dev,

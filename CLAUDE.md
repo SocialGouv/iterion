@@ -193,7 +193,16 @@ the hours this one spent.
   `on` at the next launch, nothing else to configure) — and
   `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, which refuses at publish (HTTP
   `422`, a board give-back) a run no tier can fund instead of queueing one
-  that dies at its first call.
+  that dies at its first call. Read it also when **connecting** a Claude
+  forfait (a `claude setup-token` is a bare token, not the `credentials.json`
+  the endpoint parses — the wrapper, and why a record without
+  `expiresAt`/`scopes` is stored yet never serves), when asking **which key
+  paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
+  place the credential, the window and the reopening are named — a run's own
+  error names none of the three), and before trusting a **fallback**: a Claude
+  blob carries no account id, so one subscription connected twice is two
+  fingerprints and two meters, and a fleet can look redundant while sharing a
+  single provider window.
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising
