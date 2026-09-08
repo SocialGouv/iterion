@@ -232,6 +232,40 @@ func TestWarnOverrideShadow_ReportsAShadowThatAppearsMidProcess(t *testing.T) {
 	}
 }
 
+// The remedy in the warning must name THIS ROW's tier. Both origins reach this
+// warning, but they live at different endpoints — a team row handed the
+// platform remedy sends the operator to a 404, or (as a super-admin) to
+// deleting the PLATFORM override of that slug, a different row whose removal
+// changes what every tenant is served (Revi R03fa85).
+func TestWarnOverrideShadow_RemedyNamesTheRowsOwnTier(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.7.0")
+	line := buf.String()
+	if !strings.Contains(line, "DELETE /api/teams/t1/bot-sources/reviewer") {
+		t.Errorf("a team row must be pointed at its own endpoint; got:\n%s", line)
+	}
+	if strings.Contains(line, "/api/admin/bots") || strings.Contains(line, "admin bots push") {
+		t.Errorf("a team row must NOT be pointed at the platform tier; got:\n%s", line)
+	}
+
+	buf.Reset()
+	s.warnIfOverrideShadowsNewerBake(botsource.PlatformTenantID, "reviewer", "platform", "0.7.0")
+	line = buf.String()
+	for _, want := range []string{"iterion remote admin bots push bots/reviewer", "DELETE /api/admin/bots/reviewer"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("a platform row must name %q; got:\n%s", want, line)
+		}
+	}
+	if strings.Contains(line, "/bot-sources/") {
+		t.Errorf("a platform row must NOT be pointed at the team tier; got:\n%s", line)
+	}
+}
+
 // An unreadable catalog must read as UNKNOWN, never as a clean inventory — on
 // the very endpoint the runbook calls the check to run after a release
 // (Revi Re7858f).
@@ -305,8 +339,8 @@ func TestWarnOverrideShadow_DedupsPerTenantNotPerSlug(t *testing.T) {
 
 	s.warnIfOverrideShadowsNewerBake("team-a", "reviewer", "team", "0.7.0")
 	s.warnIfOverrideShadowsNewerBake("team-b", "reviewer", "team", "0.7.0")
-	// Count LINES, not slug occurrences — the message names the slug three
-	// times (subject + both remedies).
+	// Count LINES, not slug occurrences — the message names the slug more
+	// than once (subject + remedy).
 	if got := strings.Count(buf.String(), "serves the"); got != 2 {
 		t.Errorf("two tenants shadowing the same slug must BOTH warn; got %d line(s):\n%s", got, buf.String())
 	}
