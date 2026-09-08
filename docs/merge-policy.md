@@ -51,6 +51,20 @@ green.
   > failure, and the silent one is the one this file's skips produce.)
   > Nothing in the repository can catch it — the required list lives in the
   > ruleset — so the two edits go together, by hand.
+- **Three required checks run on self-hosted runners** — `test`,
+  `vendor-check` and `golangci` route to the organisation's `arc-runners`
+  scale set on `merge_group`, because the 20-job cap above is what makes a
+  cycle slow. That scale set is **outside this repository**, and it was dead
+  and unnoticed for over a year before 2026-09-08.
+
+  > **If nobody can merge and the checks never report, this is the first thing
+  > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**
+  > (Settings → Secrets and variables → Actions → Variables) and every job
+  > goes back to GitHub-hosted runners on the next run. A variable rather than
+  > an edit to `tests.yml`, deliberately: repairing by merging does not work
+  > when merging is what is broken. Unset means on. Alerting on the scale set
+  > itself is still missing — SocialGouv/iterion#983.
+
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still
   merges deliberately.

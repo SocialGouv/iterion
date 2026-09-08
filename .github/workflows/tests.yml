@@ -65,7 +65,14 @@ concurrency:
 # because renovate runs here under a self-hosted App and its author is
 # `socialgouv-renovate[bot]` (renovate.yml says so) — an equality on
 # `renovate[bot]` matches nothing at all, and a guard that matches nothing
-# looks exactly like a guard that works.
+# looks exactly like a guard that works. `dependabot[bot]` is listed although
+# Dependabot is retired here (no .github/dependabot.yml): a carve-out that
+# covers a lane before it opens costs one literal, and the alternative is
+# remembering this file the day someone turns it back on.
+#
+# The lever when the scale set stops serving is documented in
+# docs/merge-policy.md, not only here — an operator hitting a fleet-wide merge
+# stall reads the policy, not a workflow comment.
 #
 # A same-repo branch from a human or from one of this repository's own agents
 # is a different thing: pushing it already requires write access, and its
