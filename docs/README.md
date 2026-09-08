@@ -63,6 +63,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | Required reading for code-mutating workflows: anti-façade and anti-Goodhart rules. |
 | [references/patterns.md](references/patterns.md) | Reusable graph patterns. |
 | [references/productive-session-patterns.md](references/productive-session-patterns.md) | Minimal-framing patterns learned from productive agent sessions. |
+| [references/external-methodologies.md](references/external-methodologies.md) | IACDM and AI-DLC cross-checked against iterion: what they validate, the rules imported into the pitfalls doc, and what iterion deliberately does differently. |
 | [references-bootstrap.md](references-bootstrap.md) | Building grounded reference packs for bot skills. |
 
 ## Run and operate locally
