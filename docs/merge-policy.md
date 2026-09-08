@@ -15,6 +15,12 @@ green.
 - The queue creates a temporary branch = `main` + earlier-queued PRs + this PR,
   runs the required checks on it, and squash-merges only if green. Grouping is
   `ALLGREEN` (a failing entry drops out; the rest still merge).
+- **A queue entry is a full CI cycle**, and the organisation shares 20
+  concurrent jobs across every repository — so how many entries build at once
+  is what decides how long a merge takes, far more than how long any test runs.
+  Measured 2026-09-08: nine jobs totalling ~31 min of compute took 44 min of
+  wall clock, 19 of them waiting for a first slot, while five entries built in
+  parallel.
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
   `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
   an admin adds it to ruleset 18857412 (a token with `repo` scope can read the
@@ -22,6 +28,16 @@ green.
   schema-rollout integration tests (#481); until it is required, a regression
   there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
+
+  > **Promoting a check to required is a two-file change.** The four advisory
+  > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck` — carry
+  > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
+  > a job that cannot block a merge should not hold a runner slot the queue
+  > needs. Adding one to this ruleset **without deleting its skip** leaves the
+  > queue waiting `check_response_timeout_minutes` (60) for a check that never
+  > reports, then failing every entry. Nothing in the repository can catch
+  > that — the required list lives in the ruleset — so the two edits go
+  > together, by hand.
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still
   merges deliberately.
