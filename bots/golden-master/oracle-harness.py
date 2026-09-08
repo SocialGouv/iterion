@@ -209,6 +209,8 @@ class Session:
         data = None
         headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
         if fields:
+            # Before EITHER encoding: both flatten a non-scalar through repr.
+            check_form_fields(fields)
             if any(is_file_part(v) for v in fields.values()):
                 data, ctype = encode_multipart(fields)
                 headers["Content-Type"] = ctype
@@ -273,6 +275,30 @@ def is_file_part(value):
     corpus that declares no upload is encoded exactly as before.
     """
     return isinstance(value, dict) and isinstance(value.get("filename"), str)
+
+
+def check_form_fields(fields):
+    """Every field that is not a file part must be a SCALAR — a form encoding
+    carries nothing else.
+
+    An object or a list here is either a file part that misses its `filename`
+    (a typo away from working: `file_name`, `fileName`, a filename that is a
+    number) or a shape no form can carry. Both encodings answer such a value
+    the same way — they serialise it through its repr — and that is the exact
+    defect the file-part declaration exists to end, surviving one typo to its
+    left: the application receives the TEXT of a Python object, refuses the
+    request for the wrong reason, and the reference records THAT refusal as
+    the behaviour. Refused by name instead, so the corpus line gets fixed.
+    """
+    for name, value in fields.items():
+        if isinstance(value, (dict, list)) and not is_file_part(value):
+            raise SystemExit(
+                'form field %r is a %s, not a scalar. A file part is '
+                '{"filename": <string>, "text" | "b64": ...} — check that '
+                '`filename` is present and is a string. Anything else is '
+                'sent as the TEXT of a Python object, and the reference then '
+                'records the application refusing THAT'
+                % (name, type(value).__name__))
 
 
 def file_part_bytes(value):
@@ -3481,8 +3507,23 @@ def _selftest():
             check("une requete sans fichier reste urlencodee (aucun changement)",
                   [received["ctype"], received["body"]],
                   ["application/x-www-form-urlencoded", b"titre=r"])
+            # Le QUASI-MANQUE, et sur le chemin de la requete : un objet dont
+            # `filename` est mal orthographie n'est pas une part fichier et
+            # partait par son repr — le defaut meme que la declaration fichier
+            # existe pour clore, a une faute de frappe pres. Le serveur ne doit
+            # RIEN avoir recu : le refus precede l'envoi.
+            received.clear()
+            try:
+                sess.fetch("POST", "/presque", fields={
+                    "champ": {"file_name": "a.pdf", "text": "X"}})
+                near = "aucun-refus"
+            except SystemExit:
+                near = "SystemExit"
+            check("objet qui n'est pas une part fichier -> refus AVANT tout envoi",
+                  [near, received], ["SystemExit", {}])
         finally:
             srv.shutdown()
+            srv.server_close()
 
         def refuses(name, fn):
             try:
