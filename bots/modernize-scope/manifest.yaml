@@ -1,7 +1,7 @@
 name: modernize-scope
 display_name: Scopy
 icon: 📐
-version: 0.1.0
+version: 0.2.0
 description: |
   Frames a modernisation BEFORE it starts: what the repository is today,
   what a programme would have to carry, and how big the project is —
