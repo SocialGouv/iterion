@@ -78,4 +78,24 @@ remained: no process leak. The probe was removed afterward.
 
 The guard's own subprocess tests check clean success, preservation of an
 existing failure, detection/reaping of an orphan after its launcher exits, and
-preservation of an existing failure when a leak is also found.
+preservation of an existing failure when a leak is also found. A fifth case
+covers the other side of the settle boundary — an orphan that exits well
+inside a widened window is forgiven, silently, and still reaped — and asserts
+the forgiveness COUNT, without which it would pass identically to the clean
+case even with the settle logic deleted. Both mutations were checked to fail
+it: latching on first sight, and forgiving without counting.
+
+Not covered, and known: the residual `git maintenance` hazard. `pkg/runtime`'s
+tests run 15 production writing-git commands (`commit -F -`, `merge --squash`,
+`merge --ff-only`) against `t.TempDir()` fixture repositories, through
+`worktree.go`'s own factory rather than `gittest.Cmd` — so they carry no
+`maintenance.auto=false`, and on CI's git (≥ 2.48, the version behind #821/#828)
+each detaches a maintenance process that the subreaper now adopts. Measured, a
+no-op `git maintenance run --auto` on such a repository takes ~4 ms against a
+500 ms window, so the settle window absorbs it; the durable fix is
+`gittest.InitRepo` writing the opt-out into the fixture repository's own config,
+exactly as it already does for the identity and the signing opt-out and for the
+same stated reason — "a command iterion itself spawns during the test does not
+inherit this package's environment". That is a change to `internal/gittest`,
+whose `TestCmd_GitItselfReportsAutoMaintenanceOff` currently asserts the key is
+NOT in the repository config, so it needs that control reworked with it.
