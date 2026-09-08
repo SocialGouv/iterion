@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -384,6 +385,7 @@ func (f *parentSandboxFake) Command(ctx context.Context, cmd []string, opts sand
 	f.commands++
 	f.mu.Unlock()
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	proc.TerminateGroupOnCancel(c)
 	c.Dir = opts.WorkDir
 	c.Env = os.Environ()
 	for k, v := range opts.Env {

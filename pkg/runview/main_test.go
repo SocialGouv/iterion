@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // A Service launched without WithWorkDir hands the engine os.Getwd() — this
@@ -16,5 +17,5 @@ import (
 // The guard makes that visible: it fails the package when the repository the
 // tests run in gained a dead worktree entry, and names the test that left it.
 func TestMain(m *testing.M) {
-	os.Exit(gittest.NoWorktreeLeaks(m))
+	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
 }

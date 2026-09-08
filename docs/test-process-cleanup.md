@@ -1,0 +1,69 @@
+# Test helpers end with their test
+
+Issue #956 exposed a sentinel loop in the dispatcher subbot lock fixture:
+writing the release file in `t.Cleanup` did not join the dispatch. The workspace
+could disappear before the shell saw the file, leaving it polling forever.
+The fixture now cancels the dispatch context and joins it before its runner and
+temporary directories are cleaned up. The tool executor's process-group
+cancellation from #955 then reaches both the shell and its children.
+
+The CLI, runtime and cloud-runner fake shared sandboxes also use
+`proc.TerminateGroupOnCancel` when constructing host commands. A fake sandbox's
+`Exec` must have the same lifetime contract as the real host driver.
+
+## Suite guard
+
+`internal/proctest.NoProcessLeaks` wraps TestMain in dispatcher, runview, runner,
+runtime, CLI and E2E. On Linux it makes the test binary a child subreaper before
+running the suite: an orphaned descendant is adopted by this binary instead of
+escaping to init ([Linux subreaper semantics](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)).
+After all test cleanups, it checks every OS thread's direct children, reports
+live survivors, kills only its own children and repeats as grandchildren are
+adopted. Already-exited adopted children are reaped. A leak makes a successful
+suite fail, while an existing failure exit code is preserved.
+
+The guard never reaps while tests execute, where os/exec owns Wait. It never
+scans or signals another session's process tree: historical orphans and sibling
+package tests are outside its ancestry. Its five-second bound covers reclaiming
+a reported leak. Fixture cancellation is portable; the orphan-adoption guard
+is Linux-only. Like other TestMain postconditions it requires m.Run to return;
+a forced kill of the test binary cannot execute the postcondition.
+
+## Shell and helper sweep
+
+The sweep used `exec.Command`, its `CommandContext` and `osexec` aliases, plus
+sentinel loops and long-lived DSL tool recipes in `_test.go` files. Each direct
+shell family and the relevant process-owning fixtures have these dispositions:
+
+| Sites | Disposition |
+|---|---|
+| `dispatcher/engine_runner_subbot_test.go` sentinel | Cancel and join before cleanup; dispatcher suite guarded. |
+| `runview/subbot_reconcile_test.go` sentinel and `subbot_child_control_test.go` sleeps | Service Stop/Cancel owns the run and joins it; tool group cancellation reaches helpers; runview suite guarded. |
+| `runner/subbot_test.go`, `runtime/sandbox_shared_test.go`, `cli/subbot_shared_sandbox_test.go` fake sandboxes | Add group cancellation; all three suites guarded. |
+| `runner/loop_checkpoint_test.go` three shell invocations | Synchronous finite checkpoint scripts; Output joins each before assertions/TempDir cleanup. |
+| `backend/model/executor_tool_escaping_test.go` four shell invocations | Synchronous finite quoting recipes; Run/Output joins. |
+| `backend/model/executor_tool_test.go` fake copy sandbox | Command runs through the real tool-executor cancellation wrapper; fake Exec only records calls and starts no process. |
+| `backend/delegate/cliagent_test.go` and `askuser_http_test.go` sandbox commands | Real CLI backend applies group cancellation before starting these fake commands. |
+| `backend/delegate/pisdk/client_test.go` shell producer | Finite 5,000-line producer; Client.Close cleanup and exited-channel join. |
+| `backend/delegate/claudesdk/process_test.go` process fixtures | Own process-group lifecycle under test; explicit reap/cancel paths; shell `exit 0` is finite. |
+| `internal/proc/proc_unix_test.go` four shell invocations | Tests group-cancel versus detach semantics directly, with explicit cancellation/join; do not replace the primitive under test. |
+| `internal/shellquote/shellquote_test.go` | Synchronous `printf` quoting check. |
+| `sandbox/kubernetes/workspace_test.go` four shell invocations | Synchronous finite workspace/git fixup scripts. |
+| `e2e/sec_audit_cap_findings_test.go`, `sec_audit_scan_health_test.go`, `sec_audit_deps_heuristics_test.go` | Synchronous local fixture post-processing, joined before assertions. |
+| `e2e/feed_watch_test.go` shell plan and Python tools | Synchronous script execution, joined before parsing output/cleanup; no detached sentinel helper. |
+| `e2e/mcp_server_test.go` | Explicit stdin-close and cmd.Wait stop; CLI runner lifecycles remain the subject of those E2E tests. |
+| `e2e/cli_server_boot_test.go` server/runner processes | Join the server Wait goroutine during cleanup too, including early failure. Other runner commands are synchronously joined; E2E suite guarded. |
+| `e2e/claw_tool_coverage_live_test.go` Xvfb | Live-only fixture explicitly kills and waits for the started process. |
+| Other `true`, git/build and inspection commands | Finite synchronous helpers or no-op command factories; no sentinel/background lifetime. Git ownership is covered by gittest and #828/#870. |
+
+## Failure-path evidence
+
+A temporary probe made the lock fixture's shell report its PID, waited for it
+to start, deleted its workspace and called Fatal before normal release. With
+the old cleanup, the suite guard reported and reclaimed a surviving bash and
+sleep. With cancel-and-join cleanup, only the deliberately injected test failure
+remained: no process leak. The probe was removed afterward.
+
+The guard's own subprocess tests check clean success, preservation of an
+existing failure, detection/reaping of an orphan after its launcher exits, and
+preservation of an existing failure when a leak is also found.

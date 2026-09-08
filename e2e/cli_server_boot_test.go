@@ -256,7 +256,11 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 		t.Fatalf("start iterion server: %v", err)
 	}
 	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
+	waitDone := make(chan struct{})
+	go func() {
+		exitCh <- cmd.Wait()
+		close(waitDone)
+	}()
 	// Failsafe: if the test panics or times out mid-way, kill the
 	// subprocess so it doesn't leak an open port and a running server.
 	t.Cleanup(func() {
@@ -264,6 +268,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 			_ = cmd.Process.Signal(syscall.SIGKILL)
 		}
 		cancel()
+		<-waitDone
 	})
 
 	waitServerHealthy(t, base, exitCh, &stderr)
