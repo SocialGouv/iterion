@@ -483,9 +483,10 @@ func assertStoppedOn(t *testing.T, err error, events []*store.Event, dimension s
 // TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered is the counterweight to
 // TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave: a raise that DOES cover
 // the spend carries the run forward, and one that does NOT must leave the stop
-// standing. Three ways a raise fails to cover an overrun, all of which used to
-// drop it — the clear was keyed on "did ANY axis move", never on "is the run
-// still over".
+// standing. Three ways a raise fails to cover an overrun, plus the case where
+// it lands inside the exit grace and the run walks on but has to SAY so. All
+// four used to pass silently: the clear was keyed on "did ANY axis move", never
+// on "is the run still over".
 func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
 	t.Run("another axis entirely", func(t *testing.T) {
 		// Tokens are raised; cost — the axis that actually blew — is not.
