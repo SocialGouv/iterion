@@ -278,6 +278,14 @@ def is_file_part(value):
 def file_part_bytes(value):
     """The part's payload. `text` is UTF-8 (a corpus stays readable and
     replayable by hand); `b64` carries what text cannot."""
+    if "b64" in value and "text" in value:
+        # Two payloads declared, one silently dropped: the reference would then
+        # record how the application answers a file NOBODY chose to send. Every
+        # other ambiguity here refuses; this one is the same kind.
+        raise SystemExit("file field %r declares both `text` and `b64` — "
+                         "declare exactly one, or the reference records the "
+                         "behaviour of the payload that happened to win"
+                         % (value.get("filename"),))
     if "b64" in value:
         b64 = value["b64"]
         # Typed BEFORE decoding, as `text` is: `b64decode` answers a non-string
@@ -3504,6 +3512,11 @@ def _selftest():
         # un refus — un corpus mal tape doit lire la ligne a corriger.
         refuses("b64 non-chaine -> refus nomme, pas une trace d'execution",
                 lambda: encode_multipart({"d": {"filename": "a", "b64": 5}}))
+        # Deux charges utiles declarees : l'une partait en silence, et la
+        # reference gravait la reponse a un fichier que personne n'a choisi.
+        refuses("`text` ET `b64` -> refus nomme, jamais un choix silencieux",
+                lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                "b64": "aGVsbG8="}}))
 
         # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
         routes = [{"method": "GET", "pattern": "/list"},
