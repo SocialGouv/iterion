@@ -597,7 +597,7 @@ tool oracle_run:
 
 
     def header_value(s):
-        """A name, filename or content type as it may appear in a part header.
+        """A name or filename as it may appear in a QUOTED-STRING parameter.
 
         RFC 7578 §5.1 — the rule browsers actually emit: %-escape the three bytes
         that can end a header parameter early or open a line the corpus never
@@ -608,6 +608,20 @@ tool oracle_run:
         DECLARED, or the reference records the behaviour of another request.
         """
         return str(s).replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+
+
+    def header_line_value(s):
+        """A whole header VALUE, escaped for line injection only.
+
+        The quote escape above belongs to quoted-string PARAMETERS. A media type
+        is not one: `"` is legitimate syntax in it (`charset="utf-8"`, and every
+        RFC-quoted parameter), so escaping it emits a charset nobody declared and
+        the reference records the application's answer to a request the corpus
+        did not make — silently, where every other malformed declaration on this
+        path stops the run by name. CR and LF stay escaped: they open a header,
+        or a whole part, out of this one.
+        """
+        return str(s).replace("\r", "%0D").replace("\n", "%0A")
 
 
     def multipart_boundary(contents):
@@ -645,7 +659,7 @@ tool oracle_run:
                 check_file_part(name, value)
                 payloads.append(file_part_bytes(value))
                 head += '; filename="%s"' % header_value(value["filename"])
-                head += "\r\nContent-Type: %s" % header_value(
+                head += "\r\nContent-Type: %s" % header_line_value(
                     value.get("content_type") or "application/octet-stream")
             else:
                 payloads.append(("" if value is None else str(value)).encode("utf-8"))
@@ -3738,6 +3752,20 @@ tool oracle_run:
             check("CRLF echappe : aucun en-tete que le corpus n'a pas declare",
                   [b"\r\nX-Injecte:" in hbody, b"%0D%0AX-Injecte:" in hbody],
                   [False, True])
+            # Un type de media n'est pas un parametre quoted-string : `"` y est
+            # une syntaxe legitime. L'echapper emettait un charset que personne
+            # n'avait declare, et la reference enregistrait la reponse de
+            # l'application a une requete que le corpus n'avait pas faite —
+            # en silence, la ou toute autre declaration malformee arrete le run
+            # en la nommant.
+            quoted = {"doc": {"filename": "a.csv", "text": "x",
+                              "content_type": 'text/csv; charset="utf-8"'}}
+            qbody, qctype = encode_multipart(quoted)
+            check("content_type : guillemets intacts, CRLF toujours echappe",
+                  [b'Content-Type: text/csv; charset="utf-8"' in qbody,
+                   b"%22utf-8%22" in qbody,
+                   parse_multipart(qbody, qctype)["doc"][2]],
+                  [True, False, b"x"])
             # Une frontiere ecrite dans un NOM DE FICHIER — la ou un corpus
             # l'ecrit a la main — entre dans la derivation comme une charge utile.
             hidden = {"doc": {"filename": "%s.txt" % FILE_PART_BOUNDARY, "text": "X"}}

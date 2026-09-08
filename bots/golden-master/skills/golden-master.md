@@ -388,6 +388,11 @@ string** is a file part, and one such field makes the whole form
   rather than ignored, because a key the harness does not read is a
   declaration you believe you made. Those four keys — `filename`, `text`,
   `b64`, `content_type` — are the whole vocabulary; any other is refused.
+  A media type reaches the application **as you spell it**, quotes included
+  (`text/csv; charset="utf-8"`): a `"` is legitimate syntax in a header
+  value, and only `name`/`filename` are quoted-string parameters where a
+  bare `"` would end the parameter early. CR and LF are escaped in both,
+  since either opens a header the corpus never declared.
 - **A form with no file field is urlencoded exactly as before.** Nothing
   changes for the entries you already have.
 - **The boundary is derived, never random**, so two replays of one request are
