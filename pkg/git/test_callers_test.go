@@ -38,9 +38,8 @@ func TestEveryTestGitCallerDisablesAutoMaintenance(t *testing.T) {
 			// scratch clones of other people's code (.local, .works, .repos).
 			name := info.Name()
 			// internal/gittest is the chokepoint itself: its Cmd applies the
-			// config, and its own test builds one bare command on purpose, to
-			// show the assertion is not vouching for a value git would report
-			// anyway.
+			// config. Its tests deliberately use bare read-only Git commands
+			// to distinguish Cmd's flags from InitRepo's persisted config.
 			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) ||
 				path == filepath.Join("..", "..", "internal", "gittest") {
 				return filepath.SkipDir

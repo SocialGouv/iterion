@@ -1,6 +1,7 @@
 package gittest
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,9 @@ import (
 // Falsified by construction: without `-c maintenance.auto=…`, both keys are
 // unset and `git config --get` exits 1 (checked below on the same repo).
 func TestCmd_GitItselfReportsAutoMaintenanceOff(t *testing.T) {
-	repo := SourceRepo(t)
+	// Keep this control independent of InitRepo's persisted fixture policy.
+	repo := t.TempDir()
+	Run(t, repo, "init", "-q", "-b", "main")
 
 	for _, tc := range []struct{ key, want string }{
 		{"maintenance.auto", "false"},
@@ -27,15 +30,39 @@ func TestCmd_GitItselfReportsAutoMaintenanceOff(t *testing.T) {
 		if got := Run(t, repo, "config", "--get", tc.key); got != tc.want {
 			t.Errorf("git resolved %s = %q, want %q — a writing command may detach `git maintenance run --auto` into a directory the test is about to delete", tc.key, got, tc.want)
 		}
+		// Without Cmd's flags, Git must report each key as unset (exit 1).
+		bare := exec.Command("git", "config", "--get", tc.key) // #nosec G204 -- fixed config keys
+		bare.Dir = repo
+		bare.Env = Env()
+		out, err := bare.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(out) != 0 {
+			t.Fatalf("control git config --get %s = %q, %v; want unset (exit 1)", tc.key, out, err)
+		}
 	}
+}
 
-	// The same question asked WITHOUT the helper: unset, so the assertion
-	// above is not vouching for a value git would report anyway.
-	bare := exec.Command("git", "config", "--get", "maintenance.auto") // #nosec G204 -- fixed argv
-	bare.Dir = repo
-	bare.Env = Env()
-	if out, err := bare.CombinedOutput(); err == nil {
-		t.Fatalf("maintenance.auto is set in the repository itself (%q) — this test cannot tell the helper's config apart from it", strings.TrimSpace(string(out)))
+// Production commands spawned during tests do not use Cmd. The repository's
+// common config must protect both its checkout and linked run worktrees.
+func TestSourceRepo_BareGitReportsAutoMaintenanceOff(t *testing.T) {
+	repo := SourceRepo(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	Run(t, repo, "worktree", "add", "--detach", linked, "HEAD")
+	for _, checkout := range []struct{ name, dir string }{{"source", repo}, {"linked", linked}} {
+		t.Run(checkout.name, func(t *testing.T) {
+			for _, tc := range []struct{ key, want string }{
+				{"maintenance.auto", "false"},
+				{"gc.auto", "0"},
+			} {
+				bare := exec.Command("git", "config", "--get", tc.key) // #nosec G204 -- fixed config keys
+				bare.Dir = checkout.dir
+				bare.Env = Env()
+				out, err := bare.CombinedOutput()
+				if got := strings.TrimSpace(string(out)); err != nil || got != tc.want {
+					t.Errorf("bare git resolved %s = %q, %v; want %q from fixture config", tc.key, got, err, tc.want)
+				}
+			}
+		})
 	}
 }
 

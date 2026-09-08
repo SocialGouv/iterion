@@ -115,18 +115,18 @@ settling-child test passed under `-race`; removing only the ECHILD accounting
 call made it fail with `settling child not observed then forgiven`. The
 overlays did not modify the committed sources.
 
-Not covered, and tracked separately in #974: the residual `git maintenance`
-hazard. `pkg/runtime`'s tests run 15 production writing-git commands
-(`commit -F -`, `merge --squash`,
-`merge --ff-only`) against `t.TempDir()` fixture repositories, through
-`worktree.go`'s own factory rather than `gittest.Cmd` — so they carry no
-`maintenance.auto=false`, and on CI's git (≥ 2.48, the version behind #821/#828)
-each detaches a maintenance process that the subreaper now adopts. Measured, a
-no-op `git maintenance run --auto` on such a repository takes ~4 ms against a
-500 ms window, so the settle window absorbs it; the durable fix is
-`gittest.InitRepo` writing the opt-out into the fixture repository's own config,
-exactly as it already does for the identity and the signing opt-out and for the
-same stated reason — "a command iterion itself spawns during the test does not
-inherit this package's environment". That is a change to `internal/gittest`,
-whose `TestCmd_GitItselfReportsAutoMaintenanceOff` currently asserts the key is
-NOT in the repository config, so it needs that control reworked with it.
+The Git fixture gap tracked in #974 is covered at repository creation:
+`gittest.InitRepo` persists `maintenance.auto=false` and `gc.auto=0` in the
+fixture's common config, just as it persists identity and the signing opt-out.
+Production Git commands invoked by tests (for example runtime worktree squash
+and fast-forward finalization) therefore inherit the opt-outs even when they
+do not use `gittest.Cmd`. Linked worktrees share that config. This changes only
+test-owned repositories; production Git policy and operator repositories are
+unaffected.
+
+The regression asks real Git to resolve both keys without Cmd's flags, in the
+source fixture and a linked worktree. Before the fix, all four queries reported
+unset; afterward they return the opt-outs. A separate repository initialized
+without `InitRepo` keeps the command-level control discriminating: both keys
+are unset without Cmd and set with it. These are configuration-resolution
+checks, not a timing claim about detached maintenance on the host's Git.
