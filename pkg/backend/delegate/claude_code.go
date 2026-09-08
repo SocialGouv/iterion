@@ -503,9 +503,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		ExitCode:           0,
 		Stderr:             readStderr(),
 		BackendName:        BackendClaudeCode,
-		SessionID:          rm.SessionID,
 		SessionFingerprint: currentFingerprint,
 	}
+	// The id is the helper's to decide, here as on the pause and failure
+	// paths: rm's when there is one — which on this path there always is
+	// — and the streamed one otherwise. Naming rm.SessionID here too
+	// would spell that precedence a second time.
 	applyClaudeCodeSessionMeta(&result, rm, sessMeta)
 
 	var totalIn, totalOut int
