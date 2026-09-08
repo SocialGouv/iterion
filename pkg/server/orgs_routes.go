@@ -35,6 +35,9 @@ func (s *Server) registerOrgRoutes() {
 // plan/budget fields (/api/admin/orgs) which stay the platform's contract.
 type orgSettingsView struct {
 	RequireProvisionApproval bool `json:"require_provision_approval"`
+	// ProvisionApprovalScope narrows what the flag above parks: every
+	// request, or only the ones from teams with no credential of their own.
+	ProvisionApprovalScope string `json:"provision_approval_scope"`
 }
 
 func (s *Server) handleGetOrgSettings(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +52,10 @@ func (s *Server) handleGetOrgSettings(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	writeJSON(w, orgSettingsView{RequireProvisionApproval: o.RequireProvisionApproval})
+	writeJSON(w, orgSettingsView{
+		RequireProvisionApproval: o.RequireProvisionApproval,
+		ProvisionApprovalScope:   string(o.EffectiveProvisionApprovalScope()),
+	})
 }
 
 func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +66,8 @@ func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req struct {
-		RequireProvisionApproval *bool `json:"require_provision_approval,omitempty"`
+		RequireProvisionApproval *bool   `json:"require_provision_approval,omitempty"`
+		ProvisionApprovalScope   *string `json:"provision_approval_scope,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -73,6 +80,14 @@ func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request)
 	if req.RequireProvisionApproval != nil {
 		o.RequireProvisionApproval = *req.RequireProvisionApproval
 	}
+	if req.ProvisionApprovalScope != nil {
+		scope := identity.ProvisionApprovalScope(*req.ProvisionApprovalScope)
+		if !identity.ValidProvisionApprovalScope(scope) {
+			httpError(w, http.StatusBadRequest, "invalid provision_approval_scope (all|shared_credentials)")
+			return
+		}
+		o.ProvisionApprovalScope = scope
+	}
 	o.UpdatedAt = time.Now().UTC()
 	if err := s.authStore().UpdateOrg(r.Context(), o); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
@@ -80,8 +95,12 @@ func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request)
 	}
 	s.auditOrg(r, orgID, "org.settings_updated", "org", orgID, map[string]any{
 		"require_provision_approval": o.RequireProvisionApproval,
+		"provision_approval_scope":   string(o.EffectiveProvisionApprovalScope()),
 	})
-	writeJSON(w, orgSettingsView{RequireProvisionApproval: o.RequireProvisionApproval})
+	writeJSON(w, orgSettingsView{
+		RequireProvisionApproval: o.RequireProvisionApproval,
+		ProvisionApprovalScope:   string(o.EffectiveProvisionApprovalScope()),
+	})
 }
 
 // handleUpdateOrgTeamCaps lets an ORG admin set the per-team executor caps
