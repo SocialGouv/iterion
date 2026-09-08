@@ -794,11 +794,11 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 // `rm` is nil here as the RULE, not as an edge case: in Execute the
 // pendingQuestion branch returns ahead of the `streamErr != nil` test
 // precisely because the hook firing is what cancels the stream, so no
-// ResultMessage ever arrives. The session id therefore comes from the STREAM — without it
-// this path published an anonymous session, and it is the one path that
-// persists a session across a pause (ADR-089: ErrNeedsInteraction.SessionID
-// → the checkpoint's BackendSessionID, and packLiveSession, which is gated
-// on a non-empty id and so never ran).
+// ResultMessage ever arrives. The session id therefore comes from the
+// STREAM — without it this path published an anonymous session, and it is
+// the one path that persists a session across a pause (ADR-089:
+// ErrNeedsInteraction.SessionID → the checkpoint's BackendSessionID, and
+// packLiveSession, which is gated on a non-empty id and so never ran).
 func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUser, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
 	if marker != nil {
 		b.Logger.Info("[%s#%d/claude-code] 🔐 tool-permission approval escalated to the runtime", task.NodeID, task.Iteration)
