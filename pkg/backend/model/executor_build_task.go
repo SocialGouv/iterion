@@ -767,6 +767,7 @@ func (e *ClawExecutor) validateAndRetry(
 		// exists for (the OAuth forfait that cannot emit structured output
 		// at all), and an over-count kills runs that still had budget. Same
 		// rule, same arguments as the success path below.
+		//
 		// `recoverySpend` is the recovery's own claw call, which was billed
 		// even though it gave up (a stream cut mid-answer, JSON the model
 		// malformed) — zero when it never reached a provider. Same two rules,
