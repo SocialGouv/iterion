@@ -103,6 +103,27 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 		})
 	}
 
+	t.Run("a structured call the model answered off-schema", func(t *testing.T) {
+		// generateStructured: no tools, so a single billed turn — and the
+		// model answered with plain text instead of the synthetic tool_use
+		// the schema forces. The call is fully billed; only its shape is
+		// unusable.
+		reg := NewRegistry()
+		reg.Register("test", func(string) (api.APIClient, error) {
+			return newMockClient(textEvents("I would rather narrate.", 100, 30)), nil
+		})
+		backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1})
+		res, err := backend.Execute(context.Background(), delegate.Task{
+			NodeID: "judge", Model: "test/test-model", UserPrompt: "Judge.", OutputSchema: schemaJSON,
+		})
+		if err == nil {
+			t.Fatal("precondition: text instead of the synthetic tool_use must fail")
+		}
+		if res.Tokens != 130 || res.Output["_tokens"] != 130 {
+			t.Errorf("the billed structured turn was reported as free: Tokens=%d Output=%v", res.Tokens, res.Output)
+		}
+	})
+
 	t.Run("a call that never reached the provider bills nothing", func(t *testing.T) {
 		// The other half of the rule: no usage means the zero Result, not an
 		// output map stamped `_tokens: 0` that reads as a result.
@@ -119,4 +140,46 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 			t.Errorf("a spendless failure must stay the zero Result, got %+v", res)
 		}
 	})
+}
+
+// TestHumanLLMHalfKeepsWhatItBurnedOnFailure: the llm half of a human node is
+// a real LLM call, and when it fails the engine books what it burned from the
+// map the executor returns beside the error, then degrades to the human
+// pause. That booking is only as good as the map: executeHumanLLM returned a
+// bare nil, so the figure — final, since a human answers next and a human
+// reports no tokens — was lost at the last frame that could see it.
+func TestHumanLLMHalfKeepsWhatItBurnedOnFailure(t *testing.T) {
+	reg := NewRegistry()
+	// A billed turn that answers with text instead of the synthetic tool_use
+	// the schema forces: the provider charged, the node has nothing usable.
+	reg.Register("test", func(string) (api.APIClient, error) {
+		return newMockClient(textEvents("I would rather not answer in JSON.", 100, 30)), nil
+	})
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"answer_schema": {
+				Name:   "answer_schema",
+				Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}},
+			},
+		},
+	}
+	exec := NewClawExecutor(reg, wf)
+	node := &ir.HumanNode{
+		BaseNode:          ir.BaseNode{ID: "gate"},
+		InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM},
+		Model:             "test/test-model",
+		SchemaFields:      ir.SchemaFields{OutputSchema: "answer_schema"},
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]any{"q": "which db?"})
+	if err == nil {
+		t.Fatal("precondition: an off-schema answer must fail the llm half")
+	}
+	if output == nil {
+		t.Fatal("the llm half's spend never left the executor: nil output")
+	}
+	if got := output["_tokens"]; got != 130 {
+		t.Errorf("_tokens = %v, want 130 (the turn the provider billed)", got)
+	}
 }

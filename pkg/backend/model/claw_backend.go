@@ -631,6 +631,14 @@ func partialUsage(r *TextResult) Usage {
 	return r.TotalUsage
 }
 
+// objectUsage is partialUsage for a structured generation.
+func objectUsage[T any](r *ObjectResult[T]) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.TotalUsage
+}
+
 func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	// Set the explicit schema for structured output.
 	genOpts := opts
@@ -641,7 +649,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: structured generation: %w", err)
+		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 
 	output := result.Object

@@ -11,6 +11,20 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+// meteredHumanFailure renders what a FAILED human-node generation burned, in
+// the shape the engine books from. Nil when nothing was served: an output map
+// carrying only meta keys would read as an answer on a path whose caller
+// degrades to a human pause, and the engine's own guard already skips a
+// spendless failure.
+func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
+	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0) {
+		return nil
+	}
+	output := map[string]any{}
+	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	return output
+}
+
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It calls GenerateObjectDirect against api.APIClient with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
@@ -105,7 +119,12 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
-		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		// The llm half of a human node is a real LLM call, and the engine
+		// books what it burned from the map returned beside the error (it
+		// then degrades to the human pause). A bare nil made that booking
+		// inert: the attempt is over — the human answers next, and a human
+		// reports no tokens — so this figure is final or lost.
+		return meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
