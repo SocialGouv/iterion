@@ -115,6 +115,52 @@ of the baked image it replaces. That is why the surface is super-admin
 only, safe-origin-gated, and digest-audited. Treat a push like a deploy:
 review the diff first (`admin bots pull` + `git diff` against the repo).
 
+## An override outlives the release that made it necessary
+
+The tier's whole point is that a stored bundle **outranks the baked
+catalog** at every launch surface. The consequence is easy to miss: an
+override pushed once keeps serving after a later release bakes a *newer*
+bundle for the same slug. The image moves; the bot does not.
+
+Measured on 2026-09-06: `review-pr`'s override, pushed 2026-09-04 for the
+0.7.0 cost pass, was still serving every production review 29 hours after
+#742 baked the 0.8.0 review tiers into the image. Nothing said so — the
+release notes, the runner digest and the bilan all reported the tiers as
+deployed, while the graph that actually ran had no `tier_expand` node.
+
+**iterion now reports it, and still does not refuse it** (pinning an older
+bundle is a legitimate choice — a rollback is exactly this):
+
+- `GET /api/admin/bots` returns `bundle_version`, `shadowed_version` and
+  `shadows_newer_version` on every row. The last is omitted unless true, so
+  a healthy inventory stays quiet. This is the check to run after any
+  release that touched a bot you have overridden.
+  `shadowed_version` is **what would serve without that row**, which is not
+  always the bake: resolution is team → platform → baked, so a team row is
+  measured against the platform override when one exists. The same fields
+  appear on the team listing (`GET /api/teams/{id}/bot-sources`).
+  If the catalog itself cannot be read, the response carries
+  `shadow_check_unavailable: true` and the per-row shadow fields are absent —
+  an inventory that looks clean because the check could not run would be
+  worse than one that admits it did not run.
+- The resolver logs one `Warn` naming the tenant, both versions and the two
+  ways out — once per `(tenant, origin, slug, stored version)`, not per
+  launch. The tenant is in the key on purpose: many teams can hold a row for
+  the same slug, and a slug-only key would let the first one to launch
+  silence all the others.
+
+Versions are compared as dotted numeric components, so `0.10.0` correctly
+beats `0.9.0`. `Manifest.version` is free-form, so a pair that does not
+parse numerically is treated as **unordered** and never flagged — a false
+staleness alarm on an operator's own naming scheme would be worse than the
+silence it replaces.
+
+To clear a shadow, either re-push the current bundle
+(`iterion remote admin bots push bots/<slug>`) or drop the override and let
+the image serve (`DELETE /api/admin/bots/<slug>`). Prefer dropping it once
+the reason for the override has shipped: it restores the normal flow where
+releases carry bots, and removes the trap for the next release.
+
 ## Known gaps (v1)
 
 - **Binary files** cannot ride an override (the store carries JSON text);

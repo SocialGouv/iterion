@@ -83,19 +83,64 @@ func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenan
 	}
 	// Strip Files from the list payload — it is metadata only. Digest gives
 	// "what exactly is deployed" a comparable answer without the content.
+	// One catalog read for the whole listing: resolving what sits below each
+	// row would re-discover every configured bot root for each one.
+	below, shadowCheckOK := s.versionsBelow(tenantID)
 	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
 		digest := botsource.Digest(b.Files)
+		bundleVersion := ""
+		if m := b.Manifest(); m != nil {
+			bundleVersion = strings.TrimSpace(m.Version)
+		}
+		shadowedVersion, shadowed := shadowsNewerVersion(below, b.Slug, bundleVersion)
 		b.Files = nil
-		views = append(views, botSourceMetaView{BotSource: b, Digest: digest})
+		views = append(views, botSourceMetaView{
+			BotSource:           b,
+			Digest:              digest,
+			BundleVersion:       bundleVersion,
+			ShadowedVersion:     shadowedVersion,
+			ShadowsNewerVersion: shadowed,
+		})
 	}
-	s.writeJSONFor(w, r, map[string]any{"bot_sources": views})
+	s.writeJSONFor(w, r, botSourceListView{
+		BotSources:             views,
+		ShadowCheckUnavailable: !shadowCheckOK,
+	})
+}
+
+// botSourceListView is the listing payload. A named type, shared by the
+// handler and the OpenAPI declaration, so the shape the spec promises and the
+// shape the server writes cannot drift apart.
+type botSourceListView struct {
+	BotSources []botSourceMetaView `json:"bot_sources"`
+	// ShadowCheckUnavailable reports that the catalog could not be read, so
+	// every row's shadow fields are absent. An inventory that looks clean
+	// because the check could not run is worse than one that admits it did
+	// not run.
+	ShadowCheckUnavailable bool `json:"shadow_check_unavailable,omitempty"`
 }
 
 // botSourceMetaView is one list row: the metadata plus the content digest.
+//
+// It also answers the question this inventory exists to answer — "what is
+// actually serving?" — because an override outranks the tier below it
+// forever, so a row that looks current can be holding back a newer bundle the
+// deployment already has.
 type botSourceMetaView struct {
 	botsource.BotSource
 	Digest string `json:"digest,omitempty"`
+	// BundleVersion is the stored manifest's version ("" when it carries none).
+	BundleVersion string `json:"bundle_version,omitempty"`
+	// ShadowedVersion is what would serve for this slug WITHOUT this row —
+	// the baked catalog for a platform row, the platform override (else the
+	// bake) for a team one, since resolution is team → platform → baked. ""
+	// when nothing else offers the slug, which shadows nothing.
+	ShadowedVersion string `json:"shadowed_version,omitempty"`
+	// ShadowsNewerVersion reports a stored bundle strictly older than what it
+	// shadows. Omitted unless true, so a healthy inventory stays quiet. Never
+	// an error: pinning an older bundle is a legitimate choice.
+	ShadowsNewerVersion bool `json:"shadows_newer_version,omitempty"`
 }
 
 func (s *Server) handleGetBotSource(w http.ResponseWriter, r *http.Request) {

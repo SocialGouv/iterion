@@ -75,11 +75,7 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/usage-readings/{fingerprint}": {response: usageReadingsClearedView{}},
 
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
-		"GET /api/admin/bots": {
-			response: struct {
-				BotSources []botSourceMetaView `json:"bot_sources"`
-			}{},
-		},
+		"GET /api/admin/bots":              {response: botSourceListView{}},
 		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
 		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
 		"DELETE /api/admin/bots/{slug}":    {},
