@@ -232,3 +232,140 @@ func TestTeamLifecycle_putOrgMemberPlacesAnOrphanAccount(t *testing.T) {
 		t.Fatalf("team placement after the org one: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// The lost-update race, in the dangerous direction: a rename must not carry
+// back the Status it read. With `UpdateTeam` (a whole-document ReplaceOne),
+// renaming a team another admin suspended IN BETWEEN silently RESUMED it — a
+// governance action undone by an unrelated edit, with nothing in the audit
+// log saying so.
+//
+// Two sequential handler calls do NOT reproduce it (the second re-reads the
+// already-suspended row and writes it back correctly). The window is between
+// a handler's READ and its WRITE, so the test hands the handler a STALE
+// snapshot — what a read taken before the suspension would have returned —
+// while the store itself holds the suspended row. A handler that writes back
+// what it read resumes the team; one that patches only the fields it owns
+// cannot, because it never reads.
+type staleTeamReadStore struct {
+	identity.Store
+	teamID string
+	reads  int
+}
+
+func (r *staleTeamReadStore) GetTeam(ctx context.Context, id string) (identity.Team, error) {
+	t, err := r.Store.GetTeam(ctx, id)
+	if err != nil || id != r.teamID {
+		return t, err
+	}
+	r.reads++
+	// The snapshot as it was BEFORE the concurrent suspension landed.
+	t.Status = identity.TeamStatusActive
+	t.SuspendedAt, t.SuspendedBy, t.SuspendReason = nil, "", ""
+	return t, nil
+}
+
+func TestTeamLifecycle_renameDoesNotRevertAConcurrentSuspension(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	ctx := context.Background()
+
+	// The suspension is the state of the world; the handler is about to be
+	// told otherwise.
+	w := httptest.NewRecorder()
+	s.handleSetTeamStatus(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/status", `{"status":"suspended","reason":"migration"}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("suspend: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	real := s.authStore()
+	s.authSvc.SetStoreForTest(&staleTeamReadStore{Store: real, teamID: "t1"})
+
+	w = httptest.NewRecorder()
+	s.handleUpdateTeam(w, teamReq(teamAdminCtx(), "PATCH", "/api/teams/t1", `{"name":"QE"}`, "t1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("rename: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := real.GetTeam(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "QE" {
+		t.Errorf("name = %q, want QE — the rename did not land", got.Name)
+	}
+	if !got.Suspended() {
+		t.Fatalf("status = %q after a rename, want suspended — the rename wrote back a stale snapshot and resumed the team", got.EffectiveStatus())
+	}
+	if got.SuspendReason != "migration" {
+		t.Errorf("suspend reason = %q, want it preserved across the rename", got.SuspendReason)
+	}
+}
+
+// The store contract the fix rests on, asserted directly: a patch touches
+// ONLY the fields it names.
+func TestTeamLifecycle_patchTeamLeavesUnnamedFieldsAlone(t *testing.T) {
+	st := identity.NewMemoryStore()
+	ctx := context.Background()
+	if _, err := st.CreateTeam(ctx, identity.Team{ID: "t", Name: "old", Slug: "old", OrgID: "o"}); err != nil {
+		t.Fatal(err)
+	}
+	susp := identity.TeamStatusSuspended
+	if _, err := st.PatchTeam(ctx, "t", identity.TeamPatch{Status: &susp, SuspendedBy: "admin", SuspendReason: "why"}); err != nil {
+		t.Fatal(err)
+	}
+	name := "new"
+	got, err := st.PatchTeam(ctx, "t", identity.TeamPatch{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new" || got.Slug != "old" {
+		t.Errorf("name/slug = %q/%q, want new/old", got.Name, got.Slug)
+	}
+	if !got.Suspended() || got.SuspendReason != "why" {
+		t.Errorf("a name-only patch moved the suspension: %+v", got)
+	}
+	// And resuming clears the trio — a resumed team keeping a SuspendedAt is
+	// how "who suspended this, and when" stops having an answer.
+	active := identity.TeamStatusActive
+	got, err = st.PatchTeam(ctx, "t", identity.TeamPatch{Status: &active})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SuspendedAt != nil || got.SuspendedBy != "" || got.SuspendReason != "" {
+		t.Errorf("resuming left the suspension trio behind: %+v", got)
+	}
+}
+
+// The same class one level up: the credential audience and the governance
+// settings are independent editors of ONE org document, so neither may
+// revert the other.
+func TestTeamLifecycle_orgAudienceAndSettingsDoNotClobberEachOther(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	ctx := context.Background()
+
+	w := httptest.NewRecorder()
+	s.handleUpdateOrgSettings(w, orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/settings",
+		`{"require_provision_approval":true,"provision_approval_scope":"shared_credentials"}`, "o1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("settings: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	s.handleUpdateOrgCredentialAudience(w, orgReq(orgAdminCtx(), "PATCH", "/api/orgs/o1/credential-audience", `{"teams":["t1"]}`, "o1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("audience: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	o, err := s.authStore().GetOrg(ctx, "o1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.CredentialAudience.Allows("t1") {
+		t.Errorf("audience did not land: %+v", o.CredentialAudience)
+	}
+	if !o.RequireProvisionApproval {
+		t.Error("the audience write reverted require_provision_approval — a governance flip undone by an unrelated edit")
+	}
+	if o.EffectiveProvisionApprovalScope() != identity.ProvisionApprovalSharedCredentials {
+		t.Errorf("approval scope = %q, want it preserved", o.EffectiveProvisionApprovalScope())
+	}
+}

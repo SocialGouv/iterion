@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -195,6 +196,10 @@ func (s *Server) handleUpdateOrgCredentialAudience(w http.ResponseWriter, r *htt
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	// The read above is only to MERGE onto the current audience (a request
+	// that names teams but not all_teams keeps the stored flag); the write
+	// below patches the audience field alone, so a concurrent settings or
+	// plan edit is not reverted by it.
 	if req.Teams != nil {
 		// Every named team must belong to THIS org. Without the check an
 		// admin could lend their org's subscription to a team of another
@@ -228,7 +233,7 @@ func (s *Server) handleUpdateOrgCredentialAudience(w http.ResponseWriter, r *htt
 	if req.AllTeams != nil {
 		o.CredentialAudience.AllTeams = *req.AllTeams
 	}
-	if err := s.authStore().UpdateOrg(r.Context(), o); err != nil {
+	if _, err := s.authStore().PatchOrg(r.Context(), orgID, identity.OrgPatch{CredentialAudience: &o.CredentialAudience}); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
