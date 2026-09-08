@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,6 +264,10 @@ func (f *Fetcher) git(ctx context.Context, dir, cred string, args ...string) err
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", gitlib.NoAutoMaintenance(args...)...)
+	// A network fetch forks git-remote-https, which inherits the pipes
+	// CombinedOutput reads. Killing only git leaves that helper running and
+	// the read blocked, so FetchTimeout would bound nothing.
+	proc.TerminateGroupOnCancel(cmd)
 	cmd.Dir = dir
 	// SanitizeEnv first: cmd.Dir names the checkout, and an inherited GIT_DIR
 	// or GIT_INDEX_FILE would silently redirect the fetch away from it.

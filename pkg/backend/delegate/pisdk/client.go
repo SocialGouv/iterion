@@ -145,6 +145,12 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 	}
 
+	// Both arms: cancellation must reach pi's own children, not just pi.
+	// (The sandboxed Spawn returns a `docker exec`/`kubectl exec` client
+	// whose subtree lives in the container — that arm has its own kill;
+	// hardening the host-side client on top costs nothing.)
+	hardenSubtreeTermination(c.cmd)
+
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("pisdk: stdin pipe: %w", err)
@@ -457,7 +463,9 @@ func (c *Client) Close() error {
 	case <-c.exited:
 	case <-time.After(5 * time.Second):
 		if c.cmd.Process != nil {
-			_ = c.cmd.Process.Kill()
+			// The subtree, not the leader: a tool pi left running would
+			// keep the pipes open and the reap goroutine blocked.
+			_ = killSubtree(c.cmd.Process.Pid)
 		}
 		select {
 		case <-c.exited:
