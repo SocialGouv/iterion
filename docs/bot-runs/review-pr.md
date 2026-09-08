@@ -8,6 +8,43 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-08 — a green gate is one pass, not a property: 1 finding → 0 across a docs-only commit, and four defects still there (#851)
+
+- Status: **observation**, not a bilan of a launched run — recorded because it
+  bears directly on how much a `revi/review: success` is worth.
+- The measurement. PR #851 was reviewed twice, 21 minutes apart:
+
+  | head | reviewed | verdict |
+  |---|---|---|
+  | `6f08d55f1` | 05:13:15Z | **1 finding (medium)** |
+  | `fd61efe93` | 05:34:51Z | **0 findings** → `revi/review: success` |
+
+  The only commit between them adds ten lines of prose to
+  `docs/bot-runs/review-pr.md` — **no Go changed**. The severity floor is
+  `medium`, so the earlier finding would have been kept had it been raised
+  again. The PR merged on that green gate at 05:57Z.
+- What makes it falsifiable rather than a hunch: a `branch-improve-loop`
+  campaign was reading the same branch at the same time, in an independent
+  context. It re-verified the dropped finding **still present at the current
+  head** ("the branch moved twice since that review but this anchor is
+  untouched") and found three more defects plus two comments the branch's own
+  commits had inverted. Four real defects survived the pass that reported none.
+- Not a same-sha pair, so it still does not measure run-to-run variance — the
+  heads differ by one commit. But it is the closest approach in the data, and
+  it constrains the shape: what varies between passes is **the finding set**,
+  on input that is identical where it matters.
+- Consequence for the gate. `revi/review: success` is a statement about one
+  pass ("this reading found nothing ≥ `gate_severity`"), never about the
+  branch. That is the honest reading of a deterministic count over a
+  non-deterministic input, and it is why the gate blocks merges rather than
+  certifying code. Do not read a green gate as "reviewed clean"; on a change
+  that matters, a second reader is a second sample, and the campaign bots are
+  the cheaper one to add.
+- Open question this sharpens rather than answers (#685): whether the 0.7.0
+  frugality clause ("triage, don't sweep") is what drops findings between
+  passes. The experiment is unchanged — re-review with the clause disabled and
+  diff the finding sets — but the target is now the *finding set*, not the cost.
+
 ## 2026-09-05 — two guard-tier reviews die at the cost cap, no verdict (#780, #785)
 
 - Runs: `01a072d6-24ab` (#780, head `4aee1d641`) — `budget exceeded: cost_usd (36/12)`,
