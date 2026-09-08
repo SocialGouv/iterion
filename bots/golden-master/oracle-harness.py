@@ -1073,8 +1073,20 @@ def _extension_blocks(text, kind):
             obj = json.loads(body)
         except ValueError:
             obj = None
-        if not isinstance(obj, dict) or \
-                not (isinstance(obj.get("id"), str) and obj.get("id")):
+        # An id is the KEY of the certificate the parent hands this judge
+        # (`GM_ACTED_IDS`, ONE ENTRY PER LINE, because ids and paths may carry
+        # a space). Ids are LOT-authored, so an id carrying a newline comes
+        # back as TWO: the lot files "E-1\nE-2", the subbot acts it and
+        # certifies its id, and the set silently gains "E-2" — the request the
+        # subbot REFUSED — whose self-apposed act then rides the content rule,
+        # the id being that rule's only lock (peer-review finding, executed:
+        # both acts came back ok, nothing forged, the reference exempted). No
+        # encoding can be taught to carry it back unambiguously, so an id no
+        # certificate can spell line by line is refused HERE, at the single
+        # parse point, like every other block this judge cannot read.
+        ident = obj.get("id") if isinstance(obj, dict) else None
+        if not isinstance(obj, dict) or not (isinstance(ident, str) and ident) \
+                or any(ord(c) < 0x20 or ord(c) == 0x7f for c in ident):
             obj = {"id": "UNPARSEABLE", "raw": body[:120]}
         else:
             # The list-shaped fields are iterated by every judgement below. A
@@ -1137,7 +1149,9 @@ def pending_extensions(gm_dir, text=None):
     acts = _extension_blocks(text, "act")
     if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
         return [{"id": "UNPARSEABLE",
-                 "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+                 "why": "a ledger block does not parse as JSON, or names an id "
+                        "no certificate can spell line by line — escalate, do "
+                        "not guess"}]
     # Only a WELL-FORMED act closes a request: an act with no recorded path
     # acted nothing, and letting it close the term would let the constrained
     # party silence the conjunction with four lines of JSON — the
@@ -1294,9 +1308,18 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
 
     all_blocks = (_extension_blocks(head_txt, "request") +
                   _extension_blocks(head_txt, "act"))
-    if any(b.get("id") == "UNPARSEABLE" for b in all_blocks):
+    # An unreadable block is not merely reported: it makes this judge unable to
+    # read the ledger it certifies FROM, so nothing in that ledger is certified
+    # while it stands — the same shape as `ledger_append_only`, and for the
+    # same reason. Reported only, the readable blocks beside it still exempted
+    # their paths, so the ledger that escalates handed out exemptions all the
+    # same. It is an escalation, never a forgery: the requester fixes the
+    # block, no history was rewritten.
+    ledger_readable = not any(b.get("id") == "UNPARSEABLE" for b in all_blocks)
+    if not ledger_readable:
         verdict["problems"].append(
-            "a ledger block does not parse as JSON — escalate, do not guess")
+            "a ledger block does not parse as JSON, or names an id no "
+            "certificate can spell line by line — escalate, do not guess")
     requests = {b["id"]: b for b in _extension_blocks(head_txt, "request")
                 if b.get("id") != "UNPARSEABLE"}
     acts = [b for b in _extension_blocks(head_txt, "act")
@@ -1572,6 +1595,10 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
                         "%s was rewritten after the act: HEAD carries blob %s, "
                         "the subbot certified %s — the certificate covers the "
                         "content it certified, not the path" % (p, (blob_id("HEAD", p) or "?")[:12], certified[:12]))
+        if not ledger_readable:
+            row["problems"].append(
+                "the ledger carries a block this judge cannot read — nothing "
+                "it holds is certified until that block is fixed")
         row["ok"] = (req is not None and not row["problems"]
                      and verdict["ledger_append_only"])
         if row["ok"]:
@@ -3811,6 +3838,39 @@ def _selftest():
               [smug["ok"], smug.get("forged")], [False, True])
         check("l'acte du subbot, lui, reste certifie",
               [r["ok"] for r in v_smug["acted"] if r["id"] == "E-1"], [True])
+
+        # LA MEME CONTREBANDE, par l'ID cette fois : le certificat des ids est
+        # une entree PAR LIGNE, et les ids sont ecrits par le lot. Une demande
+        # nommee "E-1\nE-2" que le subbot acte revient donc du cote du juge
+        # comme DEUX ids — "E-2" y compris, la demande que le subbot a refusee
+        # — et la regle par contenu, dont l'id est la seule serrure, se rouvre
+        # pour l'acte que le lot s'est appose. `acted_ids` est ici exactement
+        # ce que `splitlines()` rend a la lecture de l'environnement.
+        req_nl = ('{"id": "E-1\\nE-2", "lot": "L", "type": "add-file",'
+                  ' "paths": [".golden-master/refs/2.txt"]}')
+        act_nl = ('{"id": "E-1\\nE-2", "lot": "L",'
+                  ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+        xreset()
+        xledger(("request", req_nl), ("request", req_e2))
+        xcommit()                                         # le lot depose les deux
+        xledger(("request", req_nl), ("request", req_e2), ("act", act_nl))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2 certifiee par le subbot\n")
+        xcommit(email="extend@golden-master.iterion")     # le subbot acte, REFUSE E-2
+        sha_nl = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_nl = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                      xroot, timeout=60)[1].strip()
+        check("un id qu'aucun certificat ne peut epeler ligne a ligne -> escalade",
+              [p["id"] for p in pending_extensions(xgm)], ["UNPARSEABLE"])
+        xledger(("request", req_nl), ("request", req_e2),
+                ("act", act_nl), ("act", act_e2))
+        xcommit(email="lot@run")                          # le lot s'acte la refusee
+        v_nl = extension_verdict(xroot, ".golden-master", xbase,
+                                 acted_commits={sha_nl},
+                                 acted_blobs={".golden-master/refs/2.txt": blob_nl},
+                                 acted_ids={"E-1", "E-2"})
+        check("registre portant un tel id : le verdict escalade, rien n'est exempte",
+              [bool(v_nl["problems"]), v_nl["ok_paths"]], [True, []])
 
         # LE DOUBLON D'ACTE, rejoue en entier : la demande du lot declare DEUX
         # chemins, le subbot en acte UN, puis le lot appose un SECOND bloc
