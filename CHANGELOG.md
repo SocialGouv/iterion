@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.3](https://github.com/SocialGouv/iterion/compare/v3.116.2...v3.116.3) (2026-09-08)
+
+### Bug Fixes
+
+* **board,forge,server:** a failure must not answer like a success — three seams that could not report one ([#928](https://github.com/SocialGouv/iterion/issues/928)) ([a650a51](https://github.com/SocialGouv/iterion/commit/a650a51fe11c2aabe6ccd31e1e3ce21822a27daa)), references [#891](https://github.com/SocialGouv/iterion/issues/891) [#904](https://github.com/SocialGouv/iterion/issues/904) [#893](https://github.com/SocialGouv/iterion/issues/893) [#884](https://github.com/SocialGouv/iterion/issues/884)
+
+    <details><summary>why</summary>
+
+    `AggregateLabels() []LabelUsage` had no error to report a failure with, so boardmongo's only option after a failed `listAll` was `return nil` — and the studio label picker, `iterion remote labels` and every vocabulary consumer read a transient Mongo failure as "this board uses no labels", with an operator re-creating labels that already exist.
+
+    </details>
+
 ## [3.116.2](https://github.com/SocialGouv/iterion/compare/v3.116.1...v3.116.2) (2026-09-08)
 
 ### Bug Fixes
