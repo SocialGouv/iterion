@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.118.0](https://github.com/SocialGouv/iterion/compare/v3.117.0...v3.118.0) (2026-09-08)
+
+### Features
+
+* **golden-master:** an upload is a multipart request, and its boundary does not move ([#902](https://github.com/SocialGouv/iterion/issues/902)) ([1921402](https://github.com/SocialGouv/iterion/commit/192140260ac4f5af3c19874154f5e09018feaed9))
+
+    <details><summary>why</summary>
+
+    A corpus that declares a file field had it flattened by `urlencode`, which serialises a structured value through its repr: the application received a form field whose value was the TEXT of a Python object, refused the request for the wrong reason, and the reference recorded THAT refusal as the behaviour. An observation point that cannot express its own request observes nothing — and the lot that needed one stopped, correctly, rather than record two rejections as if they were the product.
+
+    </details>
+
+### Bug Fixes
+
+* **sandbox:** export the seeded forfait config dirs on the container env ([#915](https://github.com/SocialGouv/iterion/issues/915)) ([167c40b](https://github.com/SocialGouv/iterion/commit/167c40bb76cf243bb35b1cefda2e20f86a865195))
+
+    <details><summary>why</summary>
+
+    The run's Claude Code / Codex forfait is delivered into the sandbox and seeded into CLAUDE_CONFIG_DIR / CODEX_HOME after start, but only the claude_code and claw delegates pointed their own spawns at those dirs. Every other process in the container — a tool node, a devbox script, a scanner driving the claude-agent-sdk — inherited the bare container env and ran unauthenticated while the credentials sat next to it.
+
+    </details>
+
 ## [3.117.0](https://github.com/SocialGouv/iterion/compare/v3.116.5...v3.117.0) (2026-09-08)
 
 ### Features
