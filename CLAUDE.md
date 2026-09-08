@@ -193,7 +193,17 @@ the hours this one spent.
   `on` at the next launch, nothing else to configure) — and
   `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, which refuses at publish (HTTP
   `422`, a board give-back) a run no tier can fund instead of queueing one
-  that dies at its first call.
+  that dies at its first call. Read it also when **connecting** a Claude
+  forfait (a bare `claude setup-token` is accepted directly — the server wraps
+  it as `credentials.json`, assuming a one-year validity the token does not
+  carry, and fingerprints the TOKEN so a re-upload keeps one meter and its
+  name), when asking **which key
+  paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
+  place the credential, the window and the reopening are named — a run's own
+  error names none of the three), and before trusting a **fallback**: a Claude
+  blob carries no account id, so one subscription connected twice is two
+  fingerprints and two meters, and a fleet can look redundant while sharing a
+  single provider window.
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising
@@ -273,7 +283,15 @@ the hours this one spent.
   role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
-  reverted, or when a run fails on "version drift".
+  reverted, or when a run fails on "version drift". Covers the **engine
+  contract** a bundle may declare (`requires: { iterion: ">= X.Y.Z" }` in
+  its manifest — [docs/bundles.md](docs/bundles.md#requires--the-engine-contract)):
+  `push` refuses `409` when the deployment's floor (min of the server's
+  build and the runner builds observed on recent runs) is below it,
+  `--force` overrides loudly, the launch refuses with a terminal
+  `BOT_REQUIRES_NEWER_ENGINE`, and `iterion validate` says the same
+  locally (C250/C251). Read it when a push is refused, or when a bot that
+  compiles dies at its first expression.
 - [docs/dispatcher.md](docs/dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
   the board **claim lease + watchdog** (ADR-096,
   `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim
@@ -1700,6 +1718,27 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 - `tmpStore()` — creates temp directory-backed RunStore for test isolation
 - `compileFixture()` — loads and compiles .bot files from `examples/` directory
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
+- **Every git subprocess a test spawns goes through [`internal/gittest`](internal/gittest/gittest.go)**
+  (`Run` / `Try` / `Cmd`, `SourceRepo`, `RemoveWorktree`) — not a style
+  preference, two defects: (1) since git 2.48 a writing command detaches
+  `git maintenance run --auto`, which keeps writing under `.git/objects`
+  after `CombinedOutput` returned and races `t.TempDir()`'s removal (that
+  ejected PRs from the merge queue, #821/#828), and (2) the operator's
+  `~/.gitconfig` otherwise decides whether a test passes (a global
+  `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
+  The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
+  sweeps `_test.go` and fails a new site that assembles its own argv.
+- **A run's workspace must be a repository the TEST owns.** An engine built
+  without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
+  inside the developer's checkout — so `worktree: auto` (the IR default)
+  registers the run's worktree in the REAL repository and the registration
+  outlives the `t.TempDir()` that held the checkout (#870: 1 773 dead
+  entries / 2.5 GB measured). Pass `gittest.SourceRepo(t)` (e2e goes through
+  `newEngine`), or `t.Chdir` into one where the CLI takes its workspace from
+  the cwd. `gittest.NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
+  `pkg/cli`) fails the suite naming the test behind any entry left behind,
+  and reclaims it **by recorded path** — never `git worktree prune`, which
+  would also drop an operator's checkout on an unmounted volume.
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
 - **Mongo conformance locally** — the `mongo-conformance` CI job is reproducible with one `mongo:8.0` replica-set container on port 27018 (`--ulimit nofile=131072:131072`, member advertised as `localhost:27018`); recipe + the two traps in [docs/development.md](docs/development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there

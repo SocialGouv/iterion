@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -313,11 +314,17 @@ func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
 // codexCLIVersion resolves the Codex CLI version string to send in the
 // `version:` HTTP header when claw operates in ChatGPT-OAuth mode. OpenAI's
 // backend gates model availability on this value (e.g. gpt-5.5 requires
-// codex-cli >= 0.130). Resolution precedence:
-//  1. ITERION_CODEX_VERSION env var (operator override; lets a fresh-but-
-//     binary-stale environment claim newer model access)
-//  2. `codex --version` parsed at most once per process (cached)
-//  3. "" — claw-code-go falls back to its baked-in version string
+// codex-cli >= 0.130, gpt-6-astra >= 0.144). Resolution precedence:
+//  1. ITERION_CODEX_VERSION env var (operator override, sent as-is; lets a
+//     fresh-but-binary-stale environment claim newer model access, or pin
+//     an older release deliberately)
+//  2. the newest of `codex --version` (parsed at most once per process),
+//     the host-side probe a sandbox launcher forwarded as
+//     ITERION_CODEX_HOST_VERSION, and claw's baked api.ChatGPTClientVersion
+//     — a stale codex binary on either side of the sandbox boundary must
+//     not downgrade the identity below what claw alone would present
+//     (measured: a runner image shipping 0.139.0 was refused a model the
+//     0.144.6 baseline is served)
 var (
 	codexVersionOnce   sync.Once
 	codexVersionCached string
@@ -343,7 +350,72 @@ func codexCLIVersion() string {
 		}
 		codexVersionCached = fields[len(fields)-1]
 	})
-	return codexVersionCached
+	return newerCodexVersion(newerCodexVersion(codexVersionCached, os.Getenv(codexHostVersionEnv)), api.ChatGPTClientVersion)
+}
+
+// codexHostVersionEnv carries the launcher's own `codex --version` probe into
+// a sandboxed runner, which cannot probe a binary the image does not ship.
+// Unlike ITERION_CODEX_VERSION it is a PROBE, not a decision: the runner
+// still keeps the newer of it and its own baked release.
+const codexHostVersionEnv = "ITERION_CODEX_HOST_VERSION"
+
+// newerCodexVersion returns the higher of two dotted numeric versions. A
+// side that does not parse loses; when neither parses, b (the baked value)
+// is returned. A pre-release ("0.145.0-beta.1") ranks below its release
+// ("0.145.0") and above the previous one, as semver orders them.
+func newerCodexVersion(a, b string) string {
+	av, apre, aok := parseDottedVersion(a)
+	bv, bpre, bok := parseDottedVersion(b)
+	switch {
+	case !aok:
+		return b
+	case !bok:
+		return a
+	}
+	for i := 0; i < len(av) || i < len(bv); i++ {
+		var x, y int
+		if i < len(av) {
+			x = av[i]
+		}
+		if i < len(bv) {
+			y = bv[i]
+		}
+		if x != y {
+			if x > y {
+				return a
+			}
+			return b
+		}
+	}
+	if apre && !bpre {
+		return b
+	}
+	return a
+}
+
+// parseDottedVersion reads "0.144.6" / "v0.145.0-beta.1" into its numeric
+// components; pre reports a pre-release suffix, whose own parts are not
+// compared. ok is false when a numeric component is not a number.
+func parseDottedVersion(s string) (parts []int, pre bool, ok bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" {
+		return nil, false, false
+	}
+	for _, p := range strings.Split(s, ".") {
+		if i := strings.IndexAny(p, "-+"); i >= 0 {
+			p = p[:i]
+			pre = true
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false, false
+		}
+		parts = append(parts, n)
+		if pre {
+			break
+		}
+	}
+	return parts, pre, true
 }
 
 // Register adds a provider factory under the given name.

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -68,7 +69,7 @@ workflow control_parent:
 // non-terminal state, returning its id. Fails the test on timeout.
 func waitForActiveChild(t *testing.T, svc *Service, parentID string) string {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
 	for {
 		if time.Now().After(deadline) {
 			t.Fatal("child run never appeared active")
@@ -100,7 +101,10 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 		t.Fatalf("write parent bot: %v", err)
 	}
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	// The run gets a repository the test OWNS: without one, `worktree: auto`
+	// (the IR default) takes os.Getwd() — this package inside the developer's
+	// checkout — and registers the run's worktree there for good (#870).
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -109,6 +113,17 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
+	// A run goroutine that outlives the test writes into the store while
+	// t.TempDir() is removing it — "directory not empty" on cleanup, a second
+	// failure that hides the first.
+	t.Cleanup(func() {
+		_ = svc.Cancel(res.RunID)
+		select {
+		case <-res.Done:
+		case <-time.After(waitBudget(t, 30*time.Second)):
+			t.Error("the run goroutine outlived the test; its writes race t.TempDir() removal")
+		}
+	})
 
 	childID := waitForActiveChild(t, svc, res.RunID)
 
@@ -124,9 +139,23 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 
 	// The child ends cancelled, and the parent branch fails (its subbot node
 	// returns the child's error) — not a hang.
+	//
+	// The ceiling is a HANG detector, and it must not be the child's own
+	// blocking duration: the child sits in `sleep 30`, so a bare 30s here
+	// reads "the tool node ran to completion" as "the parent hung", with a
+	// margin equal to the launch→cancel gap alone. Measured post-cancel on a
+	// starved box (GOMAXPROCS=1, 30 busy processes, n=30): 0.15-0.18s once the
+	// run's source repository is one the test owns, 5.7-20.3s when it was the
+	// developer's checkout — a spread that reached this ceiling on CI (#927).
+	// waitBudget is the package's own allowance for a contended runner, which
+	// every budget in the sibling subbot_restart_test.go already takes.
+	//
+	// Raising it does not make the row vacuous: the status assertion below
+	// still refuses a child that merely ran its sleep out instead of being
+	// cancelled.
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(waitBudget(t, 30*time.Second)):
 		t.Fatal("parent did not terminate after the child was cancelled")
 	}
 
@@ -160,7 +189,10 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 		t.Fatalf("write parent bot: %v", err)
 	}
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	// The run gets a repository the test OWNS: without one, `worktree: auto`
+	// (the IR default) takes os.Getwd() — this package inside the developer's
+	// checkout — and registers the run's worktree there for good (#870).
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -182,7 +214,7 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 	}
 
 	// Within a few loop boundaries the child checkpoints as paused_operator.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(waitBudget(t, 30*time.Second))
 	for {
 		if time.Now().After(deadline) {
 			child, _ := svc.store.LoadRun(context.Background(), childID)

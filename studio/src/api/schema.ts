@@ -5500,6 +5500,7 @@ export interface components {
             backend_conversation?: string;
             backend_name?: string;
             backend_pending_tool_use_id?: string;
+            backend_session_fingerprint?: string;
             backend_session_id?: string;
             backend_session_state_ref?: string;
             budget_cost_usd?: number;
@@ -5790,6 +5791,7 @@ export interface components {
             backend: string;
             context_window?: number;
             declared_model?: string;
+            fingerprint?: string;
             max_output_tokens?: number;
             model?: string;
         };
@@ -5971,6 +5973,8 @@ export interface components {
             active_duration_ms: number;
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
+            bot_source_tenant?: string;
+            bot_source_tier?: string;
             budget?: components["schemas"]["RunBudget"];
             bundle_display_name?: string;
             bundle_name?: string;
@@ -6372,6 +6376,9 @@ export interface components {
         };
         pipelineBoardReadyRequest: {
             ready: boolean;
+        };
+        pipelineBoardResetRequest: {
+            fresh: boolean;
         };
         pipelineBoardTaskRequest: {
             blockers?: string[];
@@ -10990,12 +10997,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["botSourceListView"];
+                };
             };
         };
     };
@@ -13258,14 +13267,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardResetRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
             };
         };
     };

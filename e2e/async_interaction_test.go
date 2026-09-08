@@ -48,7 +48,7 @@ func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
 		t.Fatalf("answer interaction: %v", err)
 	}
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 
 	seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 
 	done := make(chan error, 1)
 	go func() { done <- eng.Run(context.Background(), runID, nil) }()
@@ -164,7 +164,7 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 		iid := runID + "_asker_async_1"
 		seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
 
-		eng := runtime.New(wf, s, newScenarioExecutor())
+		eng := newEngine(t, wf, s, newScenarioExecutor())
 		done := make(chan error, 1)
 		go func() { done <- eng.Run(context.Background(), runID, nil) }()
 
@@ -225,7 +225,7 @@ func TestAwaitAnswersTimeout(t *testing.T) {
 
 	seedAsyncInteraction(t, s, runID, "asker", iid, "never answered")
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	err := eng.Run(context.Background(), runID, nil)
 	if err == nil {
 		t.Fatal("run succeeded, want timeout failure")
@@ -253,7 +253,7 @@ func TestAwaitAnswersNoQuestions(t *testing.T) {
 	s := tmpStore(t)
 	runID := "e2e-async-noq"
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}

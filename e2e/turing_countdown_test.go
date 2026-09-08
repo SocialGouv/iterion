@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -27,7 +26,7 @@ func TestTuringCountdown(t *testing.T) {
 	s := tmpStore(t)
 	// The bot has no LLM/tool nodes, so the executor is never invoked; a bare
 	// stub satisfies the engine constructor.
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 
 	if err := eng.Run(context.Background(), "e2e-turing-countdown", nil); err != nil {
 		t.Fatalf("run countdown: %v", err)

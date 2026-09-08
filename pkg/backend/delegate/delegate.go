@@ -1559,7 +1559,16 @@ const (
 	SessionStateBlobKey = "_session_state_blob"
 	// SessionFingerprintKey is the provider fingerprint of a CLI session.
 	SessionFingerprintKey = "_session_fingerprint"
-	BackendNameKey        = "_backend"
+	// SessionOptionalKey marks a SessionIDKey whose backing transcript may
+	// no longer exist, so the node may run fresh instead of failing on it
+	// (Task.SessionOptional). Set by the engine when the id was recovered
+	// from a PAUSE: the CLI transcript that backs it lives on the host
+	// that ran the node, and a resume can arrive on another one — a fresh
+	// cloud pod with an empty ~/.claude — hours later. That is a property
+	// of the pause, not of the node's declared `session:` mode, which is
+	// why it travels as its own key.
+	SessionOptionalKey = "_session_optional"
+	BackendNameKey     = "_backend"
 )
 
 // AwaitPendingInteractionsKey is the reserved Interaction.Questions key

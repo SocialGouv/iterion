@@ -580,6 +580,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				NodeID:    f.id,
 				Questions: questions,
 				SessionID: result.SessionID,
+				// The fingerprint belongs with the id: a fork whose
+				// parent provider is unknown is dropped by the backend,
+				// so an id checkpointed without it names a session the
+				// resume is then forbidden to use.
+				SessionFingerprint: result.SessionFingerprint,
 				// The conversation on this pause belongs to whichever
 				// element served, so the checkpoint must name THAT
 				// backend — resuming against the requested one would
@@ -1371,6 +1376,16 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		// session files with it). Mark the session droppable so the
 		// executor can degrade to fresh instead of failing the node forever.
 		if f.session == ir.SessionInheritIfAvailable || f.session == ir.SessionPersist {
+			task.SessionOptional = true
+		}
+		// The engine says so for an id recovered from a PAUSE, whatever
+		// the declared mode: the transcript backing it lives on the host
+		// that ran the node, and the resume can land on another one (a
+		// fresh cloud pod) hours later. `inherit` and `fork` ask for
+		// continuity, not for a hard failure when the human gate outlived
+		// the machine — without this they resume a transcript that is not
+		// there and fail identically on every retry, forever.
+		if opt, ok := input[delegate.SessionOptionalKey].(bool); ok && opt {
 			task.SessionOptional = true
 		}
 		// Forward the provider fingerprint that produced the parent

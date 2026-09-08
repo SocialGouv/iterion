@@ -145,6 +145,13 @@ type runningEntry struct {
 	// single writer so no mutex is needed.
 	CancelIssuedAt time.Time
 
+	// parkedNoticed brackets the log episode for a run the stall watchdog
+	// is exempting because a subbot descendant awaits human input (see
+	// exemptParkedFromStall). Without it a weekend-long review would emit
+	// one line per tick; without any line at all, the exemption would be
+	// indistinguishable from a hung watchdog. Actor-owned; no mutex.
+	parkedNoticed bool
+
 	// setupPending is true between claim-time allocation (dispatch, on the
 	// actor) and the off-actor setup worker reporting the in-progress
 	// transition + workspace back via cmdDispatchSetupDone. It marks the

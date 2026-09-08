@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -103,7 +102,7 @@ func TestCampaignPlanPhase_ReviewOffStillAuthorsThePlan(t *testing.T) {
 			captureCampaignInputs(exec, &ins)
 
 			s := tmpStore(t)
-			eng := runtime.New(wf, s, exec)
+			eng := newEngine(t, wf, s, exec)
 			runID := "run-plan-review-off-" + tc.name
 			if err := eng.Run(context.Background(), runID, map[string]any{"plan_review": "off"}); err != nil {
 				t.Fatalf("Run: %v", err)
@@ -156,7 +155,7 @@ func TestCampaignPlanPhase_OffSkipsPlanningExplicitly(t *testing.T) {
 			captureCampaignInputs(exec, &ins)
 
 			s := tmpStore(t)
-			eng := runtime.New(wf, s, exec)
+			eng := newEngine(t, wf, s, exec)
 			runID := "run-plan-phase-off-" + tc.name
 			if err := eng.Run(context.Background(), runID, map[string]any{"plan_phase": "off"}); err != nil {
 				t.Fatalf("Run: %v", err)
@@ -219,7 +218,7 @@ func runProbeRefusal(t *testing.T, tc campaignBotCase, reason string) {
 	}
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	runID := "run-probe-refusal-" + tc.name + "-" + strings.Fields(reason)[0]
 	if err := eng.Run(context.Background(), runID, nil); err == nil {
 		t.Fatal("Run: want an error (workspace_probe -> fail), got nil")

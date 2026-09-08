@@ -71,7 +71,14 @@ const (
 // through to is walled until Monday. Fourteen reviews slept four days
 // instead of three hours on that difference. The resume re-resolves the
 // chain, so coming back at the earlier instant lands on the reopened key.
-func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, skippedReopensAt time.Time) (time.Time, string, bool) {
+//
+// That earlier wake is SPECULATIVE — the skipped credential may be refused
+// too — while every arming spends one attempt of the same budget
+// (store.RunRetryStore.ScheduleRunRetry increments it and refuses past
+// max_attempts). attemptsSpent is how many this run has already armed
+// (store.RunRetryState.Attempts), and it is what keeps the two clocks out of
+// one purse: see reservesLastAttempt.
+func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, skippedReopensAt time.Time, attemptsSpent int) (time.Time, string, bool) {
 	if execErr == nil || !pol.Enabled() {
 		return time.Time{}, "", false
 	}
@@ -81,21 +88,37 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, sk
 		return time.Time{}, "", false
 	}
 
+	// authoritativeAt is the failed credential's own reset — the wall that
+	// actually blocks this run. It stays zero when the provider named no
+	// instant: a blind wait is a guess, so there is no wall to reserve an
+	// attempt for.
+	var authoritativeAt time.Time
+
 	// A usage window with no usable reset instant still gets a retry — the
 	// window is real, only its end is unknown.
 	if at.IsZero() {
 		if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
 			at, source = parsed, source+"+parsed_text"
+			authoritativeAt = parsed
 		} else {
 			at, source = now.Add(usageWindowBlindWait), source+"+blind_wait"
 		}
 	} else {
 		// Come back just after the reset, not exactly on it.
 		at = at.Add(time.Minute)
+		authoritativeAt = at
 	}
 	if !skippedReopensAt.IsZero() {
 		if alt := skippedReopensAt.Add(time.Minute); alt.Before(at) {
-			at, source = alt, "skipped_credential"
+			if reservesLastAttempt(pol, attemptsSpent, authoritativeAt, now) {
+				// The budget has one arming left and the wall is still
+				// ahead: spending it on another credential's reopening
+				// would retire the run before the wall it waits on falls.
+				// Keep the authoritative instant, and say so on the event.
+				source += "+last_attempt_pinned"
+			} else {
+				at, source = alt, "skipped_credential"
+			}
 		}
 	}
 
@@ -112,6 +135,40 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, sk
 		at = ceiling
 	}
 	return at.UTC(), source, true
+}
+
+// reservesLastAttempt reports that the arming about to happen is the LAST one
+// the budget allows and the authoritative reset is still reachable — the two
+// conditions under which the speculative wake must be declined.
+//
+// The invariant: the attempt budget must not expire before the authoritative
+// reset is reachable. Every arming spends one attempt, so a speculative wake
+// taken on the last one leaves nothing for the wall that actually blocks the
+// run — five attempts on a five-hour cycle cover 25h of a seven-day window.
+// Reserving the last one gives the run exactly one try at that wall, and
+// leaves the "do not hammer a wall that cannot move" bound untouched.
+//
+// It reserves nothing in three cases, each because there is no reachable wall
+// to reserve for:
+//   - the provider named no reset instant (authoritativeAt zero): a blind wait
+//     is a guess, not a wall;
+//   - the reset is already behind us: the window has reopened;
+//   - the reset lies past the policy's horizon — including the jitter, which
+//     is added BEFORE the max_wait clamp, so a reservation the spread would
+//     clamp back short of the wall is no reservation at all. There the
+//     ceiling clamp would land the attempt before the reset anyway, and the
+//     speculative wake is the strictly better use of it.
+func reservesLastAttempt(pol retrypolicy.Policy, attemptsSpent int, authoritativeAt, now time.Time) bool {
+	if pol.MaxAttempts <= 0 || authoritativeAt.IsZero() {
+		return false
+	}
+	if attemptsSpent+1 < pol.MaxAttempts {
+		return false // a later attempt can still take the authoritative reset
+	}
+	if !authoritativeAt.After(now) {
+		return false
+	}
+	return !authoritativeAt.Add(pol.JitterDuration()).After(now.Add(pol.MaxWaitDuration()))
 }
 
 // usageWindowEvidence answers the one question "did this error mean the
@@ -256,7 +313,17 @@ func (r *Runner) armUsageWindowRetry(
 	if runMeta.SkippedCredReopensAt != nil {
 		skipped = *runMeta.SkippedCredReopensAt
 	}
-	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped)
+	// Attempts already charged to this run, read from the same document
+	// ScheduleRunRetry's CAS increments below — so the decision is made
+	// against the count the arming is about to be charged against. The run
+	// document is the only place it lives: a final continuation clears
+	// retry_after but keeps attempts, so the count is a lifetime total and
+	// survives the re-failure that precedes every arming.
+	var attemptsSpent int
+	if runMeta.RetryState != nil {
+		attemptsSpent = runMeta.RetryState.Attempts
+	}
+	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped, attemptsSpent)
 	if !ok {
 		return usageRetryNotApplicable
 	}

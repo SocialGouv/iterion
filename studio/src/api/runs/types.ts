@@ -203,6 +203,12 @@ export interface NodeServed {
   declared_model?: string;
   context_window?: number;
   max_output_tokens?: number;
+  // Provider routing label of the session behind this record
+  // ("anthropic-oauth", "facade:<base url>", …). A model id alone cannot
+  // tell that an Anthropic-shaped facade answered a claude id with
+  // whatever it aliases it to. Absent when the backend reports none —
+  // that reads "route unknown", never "not a facade".
+  fingerprint?: string;
 }
 
 // Effective budget cap set captured at launch — the workflow's `budget:`
@@ -303,6 +309,15 @@ export interface RunHeader {
   // run's repo identity (work_dir is a runner-pod path there). Empty
   // for local and repo-less runs.
   project_path?: string;
+  // Which tier resolved this run's bundle at launch: "team" (the
+  // launching team's own botsource row — a studio-editor fork), "platform"
+  // (a deployment-wide override) or "baked" (the catalog in the image).
+  // ABSENT on local runs and on runs predating the stamp — an absent tier
+  // is NOT "baked"; render nothing rather than a claim (runBotSourceMeta).
+  bot_source_tier?: string;
+  // Owner of the stored row bot_source_tier names — the team id, or the
+  // platform sentinel. Absent on the baked tier and on unstamped runs.
+  bot_source_tenant?: string;
   worktree?: boolean;
   // True when work_dir still exists on the server's filesystem — i.e. the
   // inline file editor + live diff surfaces can be served without a 409.

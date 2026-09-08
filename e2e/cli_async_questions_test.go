@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -69,7 +68,7 @@ func TestRunsQuestionsThenAnswerReleasesAwaitGate(t *testing.T) {
 	iid := runID + "_asker_async_1"
 	seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	done := make(chan error, 1)
 	go func() { done <- eng.Run(context.Background(), runID, nil) }()
 	waitForRun(t, s, runID)

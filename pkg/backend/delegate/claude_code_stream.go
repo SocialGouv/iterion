@@ -170,6 +170,28 @@ func isBlockingOrchestrationTool(name string) bool {
 // any single assistant turn. Combined with ResultMessage.ModelUsage it
 // drives the run-view's per-node model name and context-usage gauge.
 type sessionMeta struct {
+	// sessionID is the CLI's own session identifier, taken from the
+	// `system/init` event — the FIRST thing the CLI emits, long before
+	// any result message. Kept here for the two Results built when NO
+	// ResultMessage ever arrives, which until this capture published an
+	// anonymous session:
+	//
+	//   - the ask_user / permission PAUSE, where it is load-bearing: the
+	//     id reaches ErrNeedsInteraction → the checkpoint → the resume's
+	//     `_session_id`, and gates packLiveSession, so without it the one
+	//     path written to persist a session across a human gate persisted
+	//     nothing;
+	//   - a stream that DIED, where it is reporting only. The executor
+	//     discards a failed Result (executeBackend returns `nil, err`) and
+	//     the failure checkpoint has no field for a backend session, so
+	//     nothing above the delegate resumes a dead node's session today —
+	//     naming it is what makes wiring that possible, not the wiring.
+	sessionID string
+	// sessionIDFromInit records that sessionID came from `system/init`,
+	// the CLI's own announcement of this session. A value taken from any
+	// other subtype is provisional and yields to the first init.
+	sessionIDFromInit bool
+
 	effectiveModel  string
 	peakContextLoad int
 	thinkingTokens  int // approximate extended-thinking tokens (re-encoded text)
@@ -220,8 +242,20 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 	out.PeakInputTokens = sm.peakContextLoad
 	out.ThinkingTokens = sm.thinkingTokens
 	out.ThinkingMs = sm.thinkingMs
+	// One rule for the id, so every caller can hand it a zero-valued
+	// Result and get the same answer: the result message's when there is
+	// one — the same id, read from the authoritative end of the session —
+	// and the streamed one otherwise. The rm-less callers are the pause
+	// (where the id then travels the checkpoint) and a stream that died
+	// (where it is reporting only; see sessionMeta.sessionID).
+	if out.SessionID == "" {
+		out.SessionID = sm.sessionID
+	}
 	if rm == nil {
 		return
+	}
+	if rm.SessionID != "" {
+		out.SessionID = rm.SessionID
 	}
 	if mu, ok := rm.ModelUsage[sm.effectiveModel]; ok {
 		out.ContextWindow = mu.ContextWindow
@@ -672,6 +706,20 @@ func backfillEmptyResult(result *claudesdk.ResultMessage, lastAssistantText stri
 // model when a proxy or alias is in play). Hook-lifecycle subtypes are
 // noisy and routed to debug.
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudesdk.SystemMessage, task Task, meta *sessionMeta) {
+	// Captured on EVERY subtype, not only init, because a stream that
+	// failed before init still names the session on whatever it did emit.
+	// But `init` is the AUTHORITY — it is the CLI announcing this session
+	// — so a non-init id is only ever provisional: kept while nothing
+	// authoritative has spoken, replaced the moment init does. Without
+	// that precedence, one hook or sub-agent event reaching the stream
+	// first would pin its own id onto the checkpoint, and the resume would
+	// reopen the wrong conversation. Among inits the first wins: two would
+	// be two sessions in one stream, and the one this call opened is the
+	// conservative reading.
+	if m.SessionID != "" && (meta.sessionID == "" || (m.Subtype == "init" && !meta.sessionIDFromInit)) {
+		meta.sessionID = m.SessionID
+		meta.sessionIDFromInit = m.Subtype == "init"
+	}
 	if m.Subtype == "init" {
 		b.Logger.Info("[%s#%d/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",
 			task.NodeID, task.Iteration, m.SessionID, m.Model, m.ToolCount(), m.MCPServerCount())

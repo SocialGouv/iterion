@@ -285,8 +285,9 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 // --- platform bot overrides (DB-backed catalog) ---
 
 var (
-	remoteAdminBotSlug string
-	remoteAdminBotOut  string
+	remoteAdminBotSlug  string
+	remoteAdminBotOut   string
+	remoteAdminBotForce bool
 )
 
 var remoteAdminBotsCmd = &cobra.Command{
@@ -299,6 +300,7 @@ the next launch; deleting it reverts to the baked catalog.
 
   iterion remote admin bots                       # list overrides (slug, version, digest)
   iterion remote admin bots push bots/review-pr   # push a local bundle dir
+  iterion remote admin bots push bots/review-pr --force   # ... even below its requires.iterion
   iterion remote admin bots show review-pr        # stored files + metadata
   iterion remote admin bots pull review-pr --out /tmp/review-pr
   iterion remote admin bots fork review-pr        # seed the override from the baked bundle
@@ -324,7 +326,7 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug)
+			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce)
 		case "show":
 			slug, err := needArg("slug")
 			if err != nil {
@@ -715,6 +717,7 @@ func init() {
 
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotSlug, "slug", "", "Override slug (push; default: bundle dir basename)")
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotOut, "out", "", "Output directory (pull; default: ./<slug>)")
+	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotForce, "force", false, "Push even when the deployment's engine is below the bundle's requires.iterion (the push then carries the warning)")
 
 	for _, role := range []string{"reviewer", "revi_converse", "brancher", "implementer"} {
 		flag := strings.ReplaceAll(role, "_", "-")

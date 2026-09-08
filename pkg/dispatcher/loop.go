@@ -213,6 +213,16 @@ func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 		}
 		rows = append(rows, stalledRow{id, r})
 	}
+	if len(rows) == 0 {
+		return
+	}
+	// One store handle for the whole sweep, opened only now that something
+	// has actually aged out: store.New does MkdirAll + gitignore housekeeping,
+	// too expensive to run on the actor goroutine every tick. A store that
+	// cannot be opened leaves rs nil, and the exemption below then fails
+	// closed exactly as an unreadable record does.
+	rs, _ := c.openRunStore()
+
 	for _, row := range rows {
 		id, r := row.id, row.r
 		// A run still in its claimed→running setup hasn't started — don't
@@ -223,6 +233,15 @@ func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 			continue
 		}
 		if r.CancelIssuedAt.IsZero() {
+			// Silence is not a stall when a subbot descendant is parked on a
+			// human gate: the parent sits in runview.AwaitSubbotTerminal
+			// polling the child, emitting nothing. Checked only before the
+			// FIRST cancel — once the ladder has started the run is being torn
+			// down, and letting a late park block the force-reap would pin the
+			// concurrency slot for good.
+			if rs != nil && c.exemptParkedFromStall(ctx, rs, r) {
+				continue
+			}
 			atomicLag := now.Sub(r.lastEventTime())
 			actorLag := now.Sub(r.LastEventAt)
 			c.logger.Warn("dispatcher: %s stalled (atomic_lag=%s actor_lag=%s timeout=%s) — cancelling", r.Identifier, atomicLag, actorLag, timeout)

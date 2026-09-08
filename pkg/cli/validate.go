@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
@@ -138,6 +139,10 @@ func RunValidate(path string, p *Printer) error {
 			Frontmatter: bundle.ParseFrontmatter(src), // reuse the bytes already read
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
+			// The engine contract (C250/C251), held against THIS binary — the
+			// author's local half of the guard the push admission and the
+			// runner apply on a deployment.
+			EngineBuild: appinfo.FullVersion(),
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())

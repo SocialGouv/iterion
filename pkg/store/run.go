@@ -203,6 +203,20 @@ func EndedBecausePRClosed(r *Run) bool {
 // Bump this when making breaking changes to the Run struct.
 const RunFormatVersion = 1
 
+// The bot-resolution tiers a launch can be served by, persisted on
+// Run.BotSourceTier. The vocabulary lives here, next to the field, so the
+// resolver that produces it and the publisher that stores it cannot drift.
+const (
+	// BotSourceTierTeam — the launching team's own botsource row (a fork
+	// authored in the studio editor, or a bot only that team has).
+	BotSourceTierTeam = "team"
+	// BotSourceTierPlatform — a deployment-wide override under the
+	// reserved platform sentinel tenant.
+	BotSourceTierPlatform = "platform"
+	// BotSourceTierBaked — the catalog baked into the image.
+	BotSourceTierBaked = "baked"
+)
+
 // Run is the top-level metadata for a single workflow invocation.
 //
 // bson tags mirror the json tags exactly (same snake_case names) so a
@@ -311,6 +325,16 @@ type NodeServed struct {
 	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
+	// Fingerprint is the provider fingerprint the backend reported for the
+	// session behind this record ("anthropic-oauth", "facade:<base url>",
+	// …). A model id alone cannot tell that an Anthropic-shaped facade
+	// answered a claude id with whatever it aliases it to; the fingerprint
+	// can. It names the route that SERVED on a success and the one that
+	// was ATTEMPTED on a failure that still reported a model — the same
+	// reading as Model beside it, and last-write-wins with it. Empty when
+	// the backend reports none (claw and the CLI-agent backends report no
+	// fingerprint), so empty is "route unknown", never "not a facade".
+	Fingerprint string `json:"fingerprint,omitempty" bson:"fingerprint,omitempty"`
 }
 
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the
@@ -786,6 +810,13 @@ type Run struct {
 	// (or the baked bundle), and a unique-slug team bot could not resume
 	// at all.
 	BotSourceTenant string `json:"bot_source_tenant,omitempty" bson:"bot_source_tenant,omitempty"`
+	// BotSourceTier names the tier that SERVED this launch — BotSourceTierTeam,
+	// BotSourceTierPlatform or BotSourceTierBaked. BotSourceTenant already
+	// identifies a stored ROW, but its empty value conflates "baked catalog"
+	// with "nothing recorded", so it cannot answer which tier a launch
+	// resolved through. Empty here means the launch predates the stamp or
+	// resolved no bot at all (a loose .bot).
+	BotSourceTier string `json:"bot_source_tier,omitempty" bson:"bot_source_tier,omitempty"`
 	// KeyOverrides pins a BYOK key per LLM provider (provider → api_key id)
 	// for this run, persisted so cloud resume re-resolves with the same
 	// keys. Set by webhook launches carrying per-webhook key bindings;
@@ -1235,6 +1266,13 @@ type Checkpoint struct {
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty" bson:"backend_session_id,omitempty"`
+	// BackendSessionFingerprint is the provider fingerprint that produced
+	// BackendSessionID. Checkpointed beside the id because the id alone
+	// is not usable on a `session: fork` resume: the backend drops a fork
+	// whose parent provider it cannot identify, to avoid cross-provider
+	// thinking-block 400s. Empty on checkpoints written before this field
+	// existed — absent stays "unknown", the conservative reading.
+	BackendSessionFingerprint string `json:"backend_session_fingerprint,omitempty" bson:"backend_session_fingerprint,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty" bson:"backend_name,omitempty"`
 	// BackendConversation is the opaque, backend-specific persisted

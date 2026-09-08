@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -104,7 +103,7 @@ func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -148,7 +147,7 @@ func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-block", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -180,7 +179,7 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"target": "persistence & resume lifecycle"}
 	if err := eng.Run(context.Background(), "run-endy-scoped", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -219,7 +218,7 @@ func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"target": "   "}
 	if err := eng.Run(context.Background(), "run-endy-blank", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -260,7 +259,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-orphan", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -306,7 +305,7 @@ func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -335,7 +334,7 @@ func TestE2ECoverage_EventTrace(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-events", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

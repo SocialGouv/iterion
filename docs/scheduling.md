@@ -334,6 +334,19 @@ back at that instant lands on the reopened key. A skipped credential that
 has already reopened by the time the run parks means "re-resolve now": the
 retry lands at the five-minute floor.
 
+That earlier wake is a **guess** — the skipped credential may be refused
+too — and it spends an attempt of the same `max_attempts` budget as a wake
+on the real reset. So the **last** attempt the budget allows is reserved
+for the failed credential's own reset whenever that reset is still ahead
+and inside `max_wait`: the event then reads `reset_source:
+typed_error+last_attempt_pinned` (or `runtime_code+…`, whichever evidence
+named the instant). Without it, five wakes on a five-hour cycle cover 25
+hours of a seven-day window and the run is abandoned days before the wall
+it waits on falls. Earlier attempts still take the early wake, so the
+recovery above is unchanged; and when the reset lies past `max_wait`, or
+the provider named no instant at all, nothing is reserved — there is no
+reachable wall to reserve for.
+
 Not covered by this: a budget cap (`max_cost_usd` and friends) still needs
 a human to raise the cap and resume — retrying the same cap would re-fail
 instantly. Nor an auth failure, which is a credential problem time does not

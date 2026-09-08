@@ -66,6 +66,13 @@ type Manifest struct {
 	// produce a clear error pointing at the user's iterion build.
 	SchemaVersion int `yaml:"schema_version"`
 
+	// Requires states the engine this bundle needs — the contract that
+	// keeps a bot from reaching a build whose evaluator cannot run it.
+	// Deliberately NOT under Compat: a requirement is only worth
+	// declaring if the engine that cannot honour it refuses instead of
+	// dropping it. See requires.go.
+	Requires *Requires `yaml:"requires,omitempty"`
+
 	// Compat is a forward-compatible bag for additive fields. Unknown
 	// keys here are ignored without breaking loads from newer bundles.
 	Compat map[string]any `yaml:"compat,omitempty"`
@@ -948,6 +955,14 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	m.Icon = strings.TrimSpace(m.Icon)
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
+	}
+	// The engine contract is parsed HERE, at the one door every manifest
+	// load goes through, so a requirement this build cannot read fails on
+	// the manifest rather than at the admission site that meant to enforce
+	// it — a requirement silently skipped is the failure mode the field
+	// exists to close.
+	if err := m.Requires.Validate(); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	// Soft-normalize only — launch names may reference workflow vars,
 	// which the manifest loader cannot see, so nothing here hard-fails.

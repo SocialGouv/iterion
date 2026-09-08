@@ -94,6 +94,14 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
 		return rerr
 	}
+	// The bundle may declare an engine this build is below. Refused BEFORE
+	// the claim, like the two guards above: the run keeps the resumable
+	// status it had, so an operator who then aligns the build can resume it —
+	// nothing is lost by asking, and re-executing on this build could only
+	// reach the same verdict at the first node.
+	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
+		return rerr
+	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers)
@@ -311,13 +319,14 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: paused node %q not found in workflow", humanNodeID)}
 		}
 		ni := &model.ErrNeedsInteraction{
-			NodeID:           humanNodeID,
-			Questions:        cp.InteractionQuestions,
-			SessionID:        cp.BackendSessionID,
-			Backend:          cp.BackendName,
-			Conversation:     cp.BackendConversation,
-			PendingToolUseID: cp.BackendPendingToolUseID,
-			SessionStateRef:  cp.BackendSessionStateRef,
+			NodeID:             humanNodeID,
+			Questions:          cp.InteractionQuestions,
+			SessionID:          cp.BackendSessionID,
+			SessionFingerprint: cp.BackendSessionFingerprint,
+			Backend:            cp.BackendName,
+			Conversation:       cp.BackendConversation,
+			PendingToolUseID:   cp.BackendPendingToolUseID,
+			SessionStateRef:    cp.BackendSessionStateRef,
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
@@ -1833,6 +1842,25 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 
 	if ni.SessionID != "" {
 		nodeInput[delegate.SessionIDKey] = ni.SessionID
+		// An id recovered from a pause is best-effort by construction:
+		// the CLI transcript behind it lives on the host that ran the
+		// node, and a human gate can outlive that host (a cloud resume
+		// gets a fresh pod with an empty ~/.claude). Declaring it
+		// droppable lets the executor degrade to a fresh session once,
+		// loudly, instead of re-issuing `--resume <gone>` and failing the
+		// node identically on every attempt for the rest of the run.
+		nodeInput[delegate.SessionOptionalKey] = true
+		// The fingerprint travels with the id, and REPLACES whatever the
+		// edge carried: the pause's id is this node's own session, so an
+		// upstream node's fingerprint left beside it would describe a
+		// different session. Absent (a checkpoint written before the
+		// field existed) means unknown, which is what the backend's fork
+		// guard already treats conservatively.
+		if ni.SessionFingerprint != "" {
+			nodeInput[delegate.SessionFingerprintKey] = ni.SessionFingerprint
+		} else {
+			delete(nodeInput, delegate.SessionFingerprintKey)
+		}
 	}
 	if ni.SessionStateRef != "" || rs.pauseSessionRef != "" {
 		ref := ni.SessionStateRef
@@ -1958,10 +1986,11 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		"backend": ni.Backend,
 	}
 	pi := pauseInfo{
-		BackendSessionID:        ni.SessionID,
-		BackendName:             ni.Backend,
-		BackendConversation:     ni.Conversation,
-		BackendPendingToolUseID: ni.PendingToolUseID,
+		BackendSessionID:          ni.SessionID,
+		BackendSessionFingerprint: ni.SessionFingerprint,
+		BackendName:               ni.Backend,
+		BackendConversation:       ni.Conversation,
+		BackendPendingToolUseID:   ni.PendingToolUseID,
 	}
 	if len(ni.SessionStateBlob) > 0 {
 		ref := newSessionRef()
@@ -1996,11 +2025,16 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 // the backend with the original session ID (CLI backends) or replay the
 // persisted conversation (claw).
 type pauseInfo struct {
-	BackendSessionID        string
-	BackendName             string
-	BackendConversation     json.RawMessage
-	BackendPendingToolUseID string
-	BackendSessionStateRef  string
+	BackendSessionID string
+	// BackendSessionFingerprint is the provider fingerprint of
+	// BackendSessionID: without it a `session: fork` resume is refused
+	// the session the pause just recorded (shouldDropSessionFork drops a
+	// fork of unknown provenance).
+	BackendSessionFingerprint string
+	BackendName               string
+	BackendConversation       json.RawMessage
+	BackendPendingToolUseID   string
+	BackendSessionStateRef    string
 	// Kind tags the written Interaction (store.InteractionKindAwait for
 	// an await_answers tool escalation, "" for ordinary blocking pauses).
 	Kind string
@@ -2119,6 +2153,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.InteractionID = interactionID
 	cp.InteractionQuestions = questions
 	cp.BackendSessionID = info.BackendSessionID
+	cp.BackendSessionFingerprint = info.BackendSessionFingerprint
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID

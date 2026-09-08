@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
@@ -495,20 +496,7 @@ workflow child:
 // parent's sandbox would never mount.
 func TestSharedChildRunsInPlace(t *testing.T) {
 	workDir := t.TempDir()
-	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.email", "t@x"}, {"config", "user.name", "t"}} {
-		if out, err := exec.Command("git", append([]string{"-C", workDir}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command("git", "-C", workDir, "add", "-A").CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", workDir, "commit", "-qm", "seed").CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v %s", err, out)
-	}
+	gittest.InitRepo(t, workDir)
 	wf := compileBot(t, `
 schema out:
   ok: bool

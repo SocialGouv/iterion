@@ -1,8 +1,9 @@
 package runtime
 
 import (
-	"os/exec"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestWorkspaceHasCommits distinguishes an unborn-HEAD repo (freshly
@@ -13,11 +14,7 @@ func TestWorkspaceHasCommits(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	run("init", "-b", "main")
 	if workspaceHasCommits(dir) {

@@ -292,7 +292,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 		return nil
 	}
 
-	fixer := s.reviewFixerFor(integration)
+	fixer := s.reviewFixerFor(ctx, integration)
 	if fixer == "" {
 		s.logWarn("gate auto-fix: %s opted in but no enabled bot on it consumes a review — nothing to launch", repo)
 		return nil
@@ -460,9 +460,9 @@ func autofixIdemKey(teamID, repo string, number int, sha string) string {
 // review. That declaration already means "I start from a review and act on it",
 // which is exactly the bot a red gate needs — so the lane names no bot, and a
 // repo that enables a different fixer gets that one.
-func (s *Server) reviewFixerFor(integration forge.RepoIntegration) string {
+func (s *Server) reviewFixerFor(ctx context.Context, integration forge.RepoIntegration) string {
 	for _, want := range integration.BotIDs {
-		for _, c := range s.handoffConsumersFor(want) {
+		for _, c := range s.handoffConsumersFor(ctx, integration.TenantID, want) {
 			if c.Kind == bundle.HandoffKindReview {
 				return want
 			}

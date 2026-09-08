@@ -40,7 +40,7 @@ func TestSnapshotCapturesTransitiveChildren(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "child/main.bot"), []byte(snapshotParent("newchild")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lb, err := s.resolveBotSource(context.Background(), "parent")
+	lb, err := s.resolveBotSource(context.Background(), "", "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func snapshotFixture(t *testing.T) (*Server, string) {
 
 func TestSnapshotCatalogLaunchAndResume(t *testing.T) {
 	s, root := snapshotFixture(t)
-	lb, err := s.resolveBotSource(context.Background(), "parent")
+	lb, err := s.resolveBotSource(context.Background(), "", "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestSnapshotChildUsesServerAuthorityAndRefusesMissingChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := s.resolveBotSource(context.Background(), "parent")
+	lb, err := s.resolveBotSource(context.Background(), "", "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestSnapshotChildUsesServerAuthorityAndRefusesMissingChild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "parent/main.bot"), []byte(snapshotParent("missing")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.resolveBotSource(context.Background(), "parent"); err == nil || !strings.Contains(err.Error(), "missing") {
+	if _, err := s.resolveBotSource(context.Background(), "", "parent"); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("missing child = %v", err)
 	}
 }

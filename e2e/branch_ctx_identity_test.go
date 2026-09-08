@@ -7,7 +7,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 // ctxProbeExecutor records, per node id, the run identity and the template
@@ -76,7 +75,7 @@ func TestFanOutBranchesCarryTheSnapshotNotTheIdentity(t *testing.T) {
 	const runID = "e2e-branch-ctx-identity"
 
 	exec := &ctxProbeExecutor{seen: map[string][]ctxProbe{}}
-	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

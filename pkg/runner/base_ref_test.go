@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 )
@@ -146,10 +147,8 @@ func newStackedPRFixture(t *testing.T) *stackedPRFixture {
 // gitErr runs git and returns only whether it failed — for asserting that a
 // revision does (or does not) resolve.
 func gitErr(dir string, args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return &gitFailure{args: strings.Join(args, " "), out: strings.TrimSpace(string(out))}
+	if out, err := gittest.Try(dir, args...); err != nil {
+		return &gitFailure{args: strings.Join(args, " "), out: out}
 	}
 	return nil
 }

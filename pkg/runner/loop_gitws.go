@@ -14,6 +14,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -530,7 +531,7 @@ func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []s
 	// inherits our output pipes — killing only the parent leaves
 	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
 	// final unblock if a helper still holds them after the group kill.
-	hardenGitCancel(cmd)
+	proc.TerminateGroupOnCancel(cmd)
 	cmd.WaitDelay = 10 * time.Second
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.

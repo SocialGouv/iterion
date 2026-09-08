@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -25,13 +25,7 @@ import (
 
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimSpace(string(out))
+	return gittest.Run(t, dir, args...)
 }
 
 func bankFixture(t *testing.T) (r *Runner, msg *queue.RunMessage, work, origin string, base string) {
@@ -92,7 +86,7 @@ func TestBankRepoWorkspaceNoWorkIsNoop(t *testing.T) {
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
-	if out, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID).CombinedOutput(); err == nil {
+	if out, err := gittest.Try(origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID); err == nil {
 		t.Errorf("a workless run banked a branch anyway: %s", out)
 	}
 	if run := loadRun(t, r, msg.RunID); run.FinalBranch != "" || run.FinalCommit != "" {
@@ -131,8 +125,8 @@ func bankedBranch(t *testing.T, origin, runID string) (string, bool) {
 
 func refAt(t *testing.T, origin, ref string) (string, bool) {
 	t.Helper()
-	out, err := exec.Command("git", "-C", origin, "rev-parse", ref).CombinedOutput()
-	return strings.TrimSpace(string(out)), err == nil
+	out, err := gittest.Try(origin, "rev-parse", ref)
+	return out, err == nil
 }
 
 func TestBankRepoWorkspaceExportMismatchRefusesStaleTree(t *testing.T) {
@@ -721,8 +715,7 @@ func TestBankPushLeaseRejectsAStaleExpectation(t *testing.T) {
 	gitOut(t, work, "checkout", "-q", first)
 	gitOut(t, work, "commit", "--allow-empty", "-m", "our divergent head")
 	ours := gitOut(t, work, "rev-parse", "HEAD")
-	args := append([]string{"-C", work}, bankPushArgs(branch, ours, first)...)
-	if out, err := exec.Command("git", args...).CombinedOutput(); err == nil {
+	if out, err := gittest.Try(work, bankPushArgs(branch, ours, first)...); err == nil {
 		t.Fatalf("the stale-lease push succeeded and clobbered the sibling: %s", out)
 	}
 	if got, _ := bankedBranch(t, origin, msg.RunID); got != sibling {
@@ -1022,7 +1015,7 @@ func TestBankAttemptRefVerifiedNoopStaysSilent(t *testing.T) {
 	r.bankIfBankable(context.Background(), msg, work, base,
 		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base}, runtime.ErrRunPaused)
 
-	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+	if out, err := gittest.Try(origin, "for-each-ref", "refs/heads/iterion/"); err != nil || out != "" {
 		t.Fatalf("a workless pause parked something anyway: %q (%v)", out, err)
 	}
 	if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
@@ -1042,7 +1035,7 @@ func TestBankAttemptRefIntegrityRefusalIsLoudOnTheTimeline(t *testing.T) {
 	r.bankIfBankable(context.Background(), msg, work, base,
 		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead}, runtime.ErrRunInterrupted)
 
-	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+	if out, err := gittest.Try(origin, "for-each-ref", "refs/heads/iterion/"); err != nil || out != "" {
 		t.Fatalf("an unverifiable export parked a ref anyway: %q (%v)", out, err)
 	}
 	run := loadRun(t, r, msg.RunID)
@@ -1092,7 +1085,7 @@ func TestBankAttemptRefUnreadableHeadIsLoud(t *testing.T) {
 
 	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunInterrupted)
 
-	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+	if out, err := gittest.Try(origin, "for-each-ref", "refs/heads/iterion/"); err != nil || out != "" {
 		t.Fatalf("an unreadable HEAD parked something: %q (%v)", out, err)
 	}
 	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)

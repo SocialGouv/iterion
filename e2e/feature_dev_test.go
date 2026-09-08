@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -104,7 +103,7 @@ func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-first", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -145,7 +144,7 @@ func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-review", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -176,7 +175,7 @@ func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -227,7 +226,7 @@ func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -257,7 +256,7 @@ func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"open_mr": true}
 	if err := eng.Run(context.Background(), "run-fd-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -369,7 +368,7 @@ func TestVibeFeatureDev_ProbeSeesLoopIteration(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-iter", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

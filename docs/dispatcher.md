@@ -172,7 +172,7 @@ sibling planner from the workflow entry:
 | `running` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
 | `queued` | Hold without probing the run lock. Pipeline-queued runs deliberately have no lock owner until a concurrency slot opens; their queue owner advances their state machine. |
 | `failed_resumable` | Resume the **same** run id. Internal stops (stall reap, external state change, daemon shutdown) cancel the run context with `runtime.ErrRunInterrupted` as the cause, so the engine persists this status — which is what keeps stall/shutdown recovery automatic. |
-| `cancelled` | Hold, **never auto-resume**: only an operator produces this status now, and resuming it would undo their decision. The card is held before the claim with a visible reason; the way out is an explicit resume, or `iterion issue update --clear-last-run`. |
+| `cancelled` | Hold, **never auto-resume**: only an operator produces this status now, and resuming it would undo their decision. The card is held before the claim with a visible reason; the way out is an explicit resume, or dropping the pointer (⋯ → *Retry from zero* on the pipeline board, `iterion issue update --clear-last-run` from a terminal). |
 | `finished` | No hold: a fresh run is allowed — dragging the card back to an eligible column **is** the re-queue gesture. |
 | none, or hard `failed`, and the ticket is explicitly eligible | The only other legitimate fresh run. |
 
@@ -184,9 +184,13 @@ the dispatcher worker already returned when the run first parked, so
 `finishRun` is not in the loop.
 
 To really start over: drag a `finished` or hard-`failed` ticket back to
-`ready`. A `cancelled` `last_run` still holds the ticket (no fresh sibling)
-but is never auto-resumed — resume it explicitly, or clear it with
-`iterion issue update --clear-last-run`.
+`ready`. A `failed_resumable` one is not enough — the table above resumes it,
+so the board's **Retry** means *resume* on a dispatcher-owned board even
+though the studio's own admission loop would have minted a fresh run. Drop
+the pointer to make the restart deterministic: ⋯ → **Retry from zero** on the
+pipeline board, or `iterion issue update --clear-last-run`. Same for a
+`cancelled` `last_run`, which holds the ticket (no fresh sibling) but is
+never auto-resumed — resume it explicitly, or drop the pointer.
 
 ### In-progress transition (`agent.running_state`)
 

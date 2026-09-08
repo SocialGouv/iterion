@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/google/uuid"
 )
 
@@ -155,32 +156,67 @@ func TestDispatcherE2E_CancelInFlight(t *testing.T) {
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
-	started := make(chan struct{}, 1)
-	runner.Handler = func(ctx context.Context, _ dispatcher.DispatchSpec) error {
-		started <- struct{}{}
+	started := make(chan string, 1)
+	var calls atomic.Int32
+	var handlerReturned atomic.Bool
+	runner.Handler = func(ctx context.Context, spec dispatcher.DispatchSpec) error {
+		// Report only the first run: a regressed redispatch must not block the
+		// notification send and prevent fixture cleanup from cancelling it.
+		if calls.Add(1) == 1 {
+			started <- spec.RunID
+		}
 		<-ctx.Done()
-		return ctx.Err()
+		handlerReturned.Store(true)
+		// Match EngineRunner's operator-cancel outcome. context.Canceled means
+		// force-reap to finishRun: it releases the claim and permits a new run.
+		// The old stub took that path, so Running was empty only until the next
+		// poll and a delayed observer waited forever on a SECOND run (#943).
+		return runtime.ErrRunCancelled
 	}
 
-	iss, _ := ns.Create(native.Issue{Title: "hangs", State: "ready"})
-
+	iss, err := ns.Create(native.Issue{Title: "hangs", State: "ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstRunID string
 	select {
-	case <-started:
+	case firstRunID = <-started:
 	case <-time.After(10 * time.Second):
 		t.Fatal("worker never started")
 	}
 
 	c.Cancel(iss.ID)
 
-	// The cancel→handler-return→cmdRunFinished→finishRun chain completes in
-	// ~30ms unloaded, but it crosses the actor's command channel twice and a
-	// dispatch-worker teardown, so 10s is the hard ceiling that still catches a
-	// genuine cancel-flush hang. waitUntil logs the wait when it eats most of
-	// that budget and dumps goroutines on failure — this assertion has already
-	// been widened once for flakiness, and the passing runs said nothing about
-	// whether the margin was shrinking.
-	waitUntil(t, 10*time.Second, "cancel to flush the running entry",
-		func() bool { return len(c.Snapshot().Running) == 0 })
+	// An operator cancel frees the slot AND leaves the issue held. Requiring
+	// that stable outcome rejects the transient empty snapshot between a
+	// force-reap and its next dispatch. Keep the timeout as a hang detector.
+	waitUntil(t, 10*time.Second, "cancel to free the slot and hold the issue",
+		func() bool {
+			snap := c.Snapshot()
+			if len(snap.Running) != 0 {
+				return false
+			}
+			for _, skip := range snap.DispatchSkips {
+				if skip.IssueID == iss.ID && strings.Contains(skip.Reason, "cancelled by the operator") {
+					return true
+				}
+			}
+			return false
+		},
+		func() string {
+			return fmt.Sprintf("first run=%s, starts=%d, handler returned=%v, snapshot=%+v",
+				firstRunID, calls.Load(), handlerReturned.Load(), c.Snapshot())
+		})
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("dispatches = %d, want one cancelled run", got)
+	}
+	held, err := ns.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.Claim == "" {
+		t.Fatal("operator cancel released the claim; a future tick could redispatch")
+	}
 }
 
 func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {

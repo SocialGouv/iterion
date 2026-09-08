@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"time"
 )
@@ -438,7 +437,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"new_count": 0, "duplicate_count": 0, "pending_totals": map[string]any{}, "committed": false, "summary": "s", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-collect", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-collect", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-collect")
@@ -462,7 +461,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-empty", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-empty", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-empty")
@@ -497,7 +496,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"posted": false, "dry_run": true, "delivered": 0, "targets": []any{}, "summary": "dry", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-dry", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-dry", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-dry")
@@ -535,7 +534,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"cleared": 1, "archived": true, "committed": false, "summary": "s", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-full", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-full", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-full")

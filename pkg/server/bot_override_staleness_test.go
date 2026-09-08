@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -232,6 +234,40 @@ func TestWarnOverrideShadow_ReportsAShadowThatAppearsMidProcess(t *testing.T) {
 	}
 }
 
+// The remedy in the warning must name THIS ROW's tier. Both origins reach this
+// warning, but they live at different endpoints — a team row handed the
+// platform remedy sends the operator to a 404, or (as a super-admin) to
+// deleting the PLATFORM override of that slug, a different row whose removal
+// changes what every tenant is served (Revi R03fa85).
+func TestWarnOverrideShadow_RemedyNamesTheRowsOwnTier(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.7.0")
+	line := buf.String()
+	if !strings.Contains(line, "DELETE /api/teams/t1/bot-sources/reviewer") {
+		t.Errorf("a team row must be pointed at its own endpoint; got:\n%s", line)
+	}
+	if strings.Contains(line, "/api/admin/bots") || strings.Contains(line, "admin bots push") {
+		t.Errorf("a team row must NOT be pointed at the platform tier; got:\n%s", line)
+	}
+
+	buf.Reset()
+	s.warnIfOverrideShadowsNewerBake(botsource.PlatformTenantID, "reviewer", "platform", "0.7.0")
+	line = buf.String()
+	for _, want := range []string{"iterion remote admin bots push bots/reviewer", "DELETE /api/admin/bots/reviewer"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("a platform row must name %q; got:\n%s", want, line)
+		}
+	}
+	if strings.Contains(line, "/bot-sources/") {
+		t.Errorf("a platform row must NOT be pointed at the team tier; got:\n%s", line)
+	}
+}
+
 // An unreadable catalog must read as UNKNOWN, never as a clean inventory — on
 // the very endpoint the runbook calls the check to run after a release
 // (Revi Re7858f).
@@ -293,6 +329,136 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 	}
 }
 
+// docs/platform-bots.md promises the shadow fields on BOTH listings, and one
+// handler (listBotSourcesFor) serves both — so both must name the payload's
+// type in the generated spec. The team operation was left untyped ("default:
+// Response"), which makes the doc a promise with nothing to verify it against:
+// the documented-but-unverifiable shape this whole family exists to end.
+func TestOpenAPI_BothBotSourceListingsAreTypedWithTheShadowFields(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	s.mux.Handle("GET /api/admin/bots", http.NotFoundHandler())
+	s.mux.Handle("GET /api/teams/{id}/bot-sources", http.NotFoundHandler())
+
+	doc := s.buildOpenAPI()
+	paths := doc["paths"].(map[string]any)
+	for _, p := range []string{"/api/admin/bots", "/api/teams/{id}/bot-sources"} {
+		item, ok := paths[p].(map[string]any)
+		if !ok {
+			t.Fatalf("%s absent from the spec", p)
+		}
+		resp, ok := item["get"].(map[string]any)["responses"].(map[string]any)["200"].(map[string]any)
+		if !ok {
+			t.Errorf("%s has no typed 200 response: %+v", p, item["get"])
+			continue
+		}
+		schema := resp["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+		if ref, _ := schema["$ref"].(string); ref != "#/components/schemas/botSourceListView" {
+			t.Errorf("%s 200 $ref = %q, want botSourceListView", p, ref)
+		}
+	}
+
+	// And the named type must carry the field names the runbook tells an
+	// operator to read, or the reference is typed but still not the contract.
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	props := func(name string) map[string]any {
+		t.Helper()
+		sch, ok := schemas[name].(map[string]any)
+		if !ok {
+			t.Fatalf("components.schemas missing %q", name)
+		}
+		p, _ := sch["properties"].(map[string]any)
+		return p
+	}
+	for _, f := range []string{"bot_sources", "shadow_check_unavailable"} {
+		if _, ok := props("botSourceListView")[f]; !ok {
+			t.Errorf("botSourceListView is missing %q", f)
+		}
+	}
+	for _, f := range []string{"bundle_version", "shadowed_version", "shadows_newer_version"} {
+		if _, ok := props("botSourceMetaView")[f]; !ok {
+			t.Errorf("botSourceMetaView is missing %q", f)
+		}
+	}
+}
+
+// A platform row that carries NO version still serves — storedLaunchBot asks
+// only for a non-empty main.bot, and forking a loose <name>.bot copies no
+// manifest at all (POST /api/admin/bots/{slug}/fork reaches exactly that).
+// Reading such a row as absent left the BAKED version standing as "what would
+// serve below this team row", so the team row was reported as shadowing a
+// bundle that removing it would not serve.
+func TestVersionsBelow_AnUnversionedPlatformRowIsPresentNotAbsent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"no manifest at all", map[string]string{botsource.MainBotFile: testBotMain}},
+		{"a manifest with no version", map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: reviewer\n",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newBotSourceTestServer(t)
+			seedBakedBot(t, s, "reviewer", "0.8.0")
+			pctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+			if _, err := s.botSources.Create(pctx, botsource.BotSource{
+				TenantID: botsource.PlatformTenantID,
+				Slug:     "reviewer",
+				Files:    tc.files,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.invalidatePlatformBots()
+
+			below, shadowed := shadowsNewerVersionFor(t, s, "t1", "reviewer", "0.7.0")
+			if shadowed {
+				t.Errorf("the platform row serves here, so nothing orderable is shadowed; got below=%q", below)
+			}
+			if below != "" {
+				t.Errorf("shadowed_version must not name the bake, which removing the team row would not serve; got %q", below)
+			}
+		})
+	}
+}
+
+// A team row is measured against the platform overlay, so an overlay that
+// could not be READ is unknown — not "no platform rows". Answering "the bake"
+// there reports a team row deliberately pinned to match an older platform
+// override as shadowing, and warnIfOverrideShadowsNewerBake caches only
+// positive verdicts, so that false line could never be superseded once the
+// overlay recovered.
+func TestVersionsBelow_AnUnreadablePlatformOverlayIsUnknown(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	seedBakedBot(t, s, "reviewer", "0.8.0")
+
+	// The overlay read fails from cold: the resolver has no last-known value,
+	// so Get serves nil — the same shape a Mongo blip produces at boot.
+	s.platformBots = platformcfg.NewResolverFunc(func(context.Context) (*platformBotSet, error) {
+		return nil, errors.New("bot-source store unavailable")
+	}, nil)
+
+	if below, ok := s.versionsBelow("t1"); ok {
+		t.Errorf("an unreadable platform overlay must read as unknown; got below=%v ok=%v", below, ok)
+	}
+
+	// And the warn path must stay silent rather than name a shadow it cannot
+	// establish.
+	var buf bytes.Buffer
+	s.logger = iterlog.New(iterlog.LevelWarn, &buf)
+	staleOverrideWarned.Range(func(k, _ any) bool { staleOverrideWarned.Delete(k); return true })
+	s.warnIfOverrideShadowsNewerBake("t1", "reviewer", "team", "0.7.0")
+	if strings.Contains(buf.String(), "serves the") {
+		t.Errorf("no shadow may be claimed while the overlay is unreadable; got:\n%s", buf.String())
+	}
+
+	// The platform tier itself is measured against the bake, which IS
+	// readable — the outage must not blind that half too.
+	if below, ok := s.versionsBelow(botsource.PlatformTenantID); !ok || below["reviewer"] != "0.8.0" {
+		t.Errorf("a platform row still compares against the readable bake; got below=%v ok=%v", below, ok)
+	}
+}
+
 // The dedup key must carry the tenant. A slug-only key let the FIRST team to
 // launch a shadowed override consume it and silenced every other team holding
 // the same one — the very silence this file exists to end (Revi R7c09d4).
@@ -305,8 +471,8 @@ func TestWarnOverrideShadow_DedupsPerTenantNotPerSlug(t *testing.T) {
 
 	s.warnIfOverrideShadowsNewerBake("team-a", "reviewer", "team", "0.7.0")
 	s.warnIfOverrideShadowsNewerBake("team-b", "reviewer", "team", "0.7.0")
-	// Count LINES, not slug occurrences — the message names the slug three
-	// times (subject + both remedies).
+	// Count LINES, not slug occurrences — the message names the slug more
+	// than once (subject + remedy).
 	if got := strings.Count(buf.String(), "serves the"); got != 2 {
 		t.Errorf("two tenants shadowing the same slug must BOTH warn; got %d line(s):\n%s", got, buf.String())
 	}

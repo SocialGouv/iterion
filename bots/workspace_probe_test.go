@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // shellQuote wraps a value so `sh -c` passes it through verbatim, the way
@@ -35,7 +37,7 @@ func hermeticGitEnv(t *testing.T) []string {
 // the test on a non-zero exit.
 func gitHermetic(t *testing.T, env []string, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := gittest.Cmd(dir, args...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -92,7 +94,7 @@ func runnerStyleClone(t *testing.T, env []string) string {
 	gitHermetic(t, env, ws, "checkout", "-q", "-B", "feature", "FETCH_HEAD")
 
 	// The fixture must have the runner's shape, or the case proves nothing.
-	if out, err := exec.Command("git", "-C", ws, "rev-parse", "--verify", "-q", "develop^{commit}").CombinedOutput(); err == nil {
+	if out, err := gittest.Try(ws, "rev-parse", "--verify", "-q", "develop^{commit}"); err == nil {
 		t.Fatalf("fixture drift: `develop` resolves as a LOCAL ref in the runner-style clone (%s)", out)
 	}
 	gitHermetic(t, env, ws, "rev-parse", "--verify", "-q", "refs/remotes/origin/develop^{commit}")

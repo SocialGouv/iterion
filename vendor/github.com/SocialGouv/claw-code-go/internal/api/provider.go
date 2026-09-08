@@ -13,6 +13,14 @@ const (
 	AuthMethodAzureIdentity AuthMethod = "azure_identity" // Azure Managed Identity (Foundry)
 )
 
+// ChatGPTClientVersion is the codex-cli release claw presents on the
+// ChatGPT-Codex wire (`version:` header + User-Agent) when the caller passes
+// no OpenAIClientVersion. The backend gates model availability on it: a model
+// newer than the release claw claims is refused with "requires a newer
+// version of Codex" (measured 2026-09-07: gpt-6-astra refused at 0.139.0,
+// served at 0.144.6). Bump it when a new model line ships.
+const ChatGPTClientVersion = "0.144.6"
+
 // ProviderConfig holds the credentials and settings needed to create a provider client.
 type ProviderConfig struct {
 	APIKey     string // API key (Anthropic direct, Azure Foundry)
@@ -31,9 +39,9 @@ type ProviderConfig struct {
 	// OpenAIClientVersion is the version string sent in both the `version:`
 	// HTTP header and the User-Agent when the OpenAI provider operates in
 	// ChatGPT-OAuth mode. OpenAI's backend gates model availability on this
-	// value (e.g. gpt-5.5 requires codex-cli >= 0.130). Callers should pass
-	// the locally installed Codex CLI version. Empty defaults to a baseline
-	// version embedded in the provider.
+	// value (e.g. gpt-5.5 requires codex-cli >= 0.130). Callers that can
+	// probe a real Codex CLI should pass the newer of its version and
+	// ChatGPTClientVersion. Empty defaults to ChatGPTClientVersion.
 	OpenAIClientVersion string
 
 	// UserAgent overrides the User-Agent header sent on every request.

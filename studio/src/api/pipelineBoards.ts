@@ -638,10 +638,20 @@ export async function deletePipelineTask(taskId: string): Promise<void> {
 // cancels every still-active run in the ticket's tree, then restages the
 // ticket to Ready so the admission loop relaunches it fresh. Refused (409)
 // when a run is held by another process.
-export async function resetPipelineTask(taskId: string): Promise<void> {
+//
+// `fresh` additionally drops the ticket's last-run pointer, which is what
+// makes the restart deterministic — without it a live `iterion dispatch`
+// resolves that pointer and RESUMES the discarded run from its checkpoint
+// while the studio's own loop would have started a new one. The server
+// refuses `fresh` (409) while anything in the ticket's tree is still
+// non-terminal, and touches nothing when it does.
+export async function resetPipelineTask(
+  taskId: string,
+  opts: { fresh?: boolean } = {},
+): Promise<void> {
   await apiRequest<unknown>(
     `${BASE}/tasks/${encodeURIComponent(taskId)}/reset`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: "POST", body: JSON.stringify({ fresh: opts.fresh === true }) },
   );
 }
 

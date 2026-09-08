@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
@@ -63,9 +64,7 @@ func TestVerifyRunDriftTail(t *testing.T) {
 	gitWorkspace := func(t *testing.T) string {
 		t.Helper()
 		ws := t.TempDir()
-		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v (%s)", err, out)
-		}
+		gittest.Run(t, ws, "init", "-q")
 		return ws
 	}
 
@@ -317,9 +316,7 @@ func TestVerifyRunMaskedPipeline(t *testing.T) {
 	setup := func(t *testing.T, body string) (string, string) {
 		t.Helper()
 		ws, scratch := t.TempDir(), t.TempDir()
-		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v (%s)", err, out)
-		}
+		gittest.Run(t, ws, "init", "-q")
 		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -456,9 +453,7 @@ func TestAppDevVerifyRunEnforcesTheSameTail(t *testing.T) {
 	workspace := func(t *testing.T, ci bool) (string, string) {
 		t.Helper()
 		ws, scratch := t.TempDir(), t.TempDir()
-		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v (%s)", err, out)
-		}
+		gittest.Run(t, ws, "init", "-q")
 		if ci {
 			dir := filepath.Join(ws, ".github", "workflows")
 			if err := os.MkdirAll(dir, 0o755); err != nil {

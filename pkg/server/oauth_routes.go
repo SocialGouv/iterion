@@ -418,8 +418,22 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// What the fingerprint is taken over. Only the claude_code branch moves
+	// it off the blob, and only when it wraps a bare setup token.
+	identity := blob
 	switch kind {
 	case secrets.OAuthKindClaudeCode:
+		nb, err := secrets.NormalizeAnthropicBlob(blob, now)
+		if err != nil {
+			return secrets.OAuthRecord{}, err
+		}
+		if nb.Wrapped {
+			// Said out loud, because the expiry below is iterion's
+			// assumption and not something the provider stated.
+			s.logger.Info("oauth: owner=%s kind=%s ingested a bare setup token — wrapped as credentials.json, scope %q, assumed validity %s (the token carries no expiry of its own)",
+				ownerKey, kind, "user:inference", secrets.SetupTokenAssumedLifetime)
+		}
+		blob, identity = nb.Payload, nb.Identity
 		v, err := secrets.ParseAnthropicView(blob)
 		if err != nil {
 			return secrets.OAuthRecord{}, pastedBlobParseError("credentials.json", origin, err)
@@ -496,10 +510,11 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// worker rewrites tokens for the SAME subscription and preserves it.
 	// Derived from the account the payload names where it names one, so
 	// connecting ONE subscription twice does not open two meters.
-	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, blob)
+	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, identity)
 	// The name follows the fingerprint. A re-connect that names no account
 	// keeps the previous label ONLY when it provably re-connects the same
-	// subscription (codex: same account id; claude_code: the same blob).
+	// subscription (codex: same account id; claude_code: the same setup
+	// token, or the same credentials.json byte for byte).
 	// Any other re-connect may be an account SWAP — the same owner key
 	// re-pointed at somebody else's forfait — and inheriting the old name
 	// there would answer "whose subscription paid?" with the wrong person.

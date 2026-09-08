@@ -98,6 +98,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
+	// Engine contract: the attached bundle may declare the build it needs.
+	// Beside the enum gate for the same reason — every launch surface reaches
+	// here, and a doomed run must be refused before a worktree or a sandbox
+	// is spun up for it. The RuntimeError's code rides through
+	// setupFailureCode, so the run is terminal and typed.
+	if err := e.refuseBundleRequiringNewerEngine(); err != nil {
+		e.markFailedBestEffort(ctx, runID, "engine requirement", err)
+		return e.setupErr(ctx, err)
+	}
+
 	// Worktree setup stays inline: the finalizeOnExit defer must
 	// capture the named return `err`, and the defer installation
 	// is the meaningful side effect — extracting it would require

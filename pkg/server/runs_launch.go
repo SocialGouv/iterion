@@ -290,7 +290,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 
 	var req launchRunRequest
-	if err := readJSON(r, &req); err != nil {
+	// STRICT: an unknown field is refused, not dropped. A launch is the one
+	// request whose parameters are read back hours later — a name this
+	// struct does not declare took its value with it, the run used the
+	// workflow's own default instead, and the payload the client kept is
+	// indistinguishable from one that worked.
+	if err := readJSONStrict(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		span.SetStatus(codes.Error, "invalid request")
 		return
@@ -464,6 +469,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 	}
+	// The tenant the bot resolution above ran under, so the retry chain reads
+	// the bot layer from the tier that will actually serve this launch.
+	retryID, _ := auth.FromContext(r.Context())
+	retryTeamID := retryID.TeamID
 
 	spec := runview.LaunchSpec{
 		FilePath:          absPath,
@@ -490,7 +499,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// `retry: usage_window: off` be auto-retried anyway whenever a
 		// human pressed Launch — a declared directive silently violated on
 		// the one path where the author is watching.
-		RetryPolicy:        s.resolveRunRetryPolicy(botID),
+		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,

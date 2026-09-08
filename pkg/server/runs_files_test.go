@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -46,21 +47,13 @@ func initRepo(t *testing.T) string {
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "test"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "a.txt"}, {"commit", "-q", "-m", "init"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	return dir
 }
@@ -212,32 +205,20 @@ func TestRunFiles_Historical_RepoRootStaleFallsBackToCWD(t *testing.T) {
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "test"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "a.txt"}, {"commit", "-q", "-m", "base"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	baseSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
 	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "b.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "b.txt"}, {"commit", "-q", "-m", "add b"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	finalSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
 
@@ -285,13 +266,7 @@ func TestRunFiles_Historical_RepoRootStaleFallsBackToCWD(t *testing.T) {
 
 func revParse(t *testing.T, dir, ref string) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", ref)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse %s: %v", ref, err)
-	}
-	return string(out[:len(out)-1]) // strip trailing newline
+	return gittest.Run(t, dir, "rev-parse", ref)
 }
 
 // TestRunFiles_ModeBranch verifies that mode=branch on a live worktree
@@ -309,11 +284,7 @@ func TestRunFiles_ModeBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "b.txt"}, {"commit", "-q", "-m", "add b"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	// One uncommitted change that must be excluded in branch mode.
 	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("uncommitted\n"), 0o644); err != nil {
@@ -731,32 +702,20 @@ func TestRunFiles_ModeProduced_WorktreeGone(t *testing.T) {
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "test"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "a.txt"}, {"commit", "-q", "-m", "base"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	baseSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
 	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "b.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "b.txt"}, {"commit", "-q", "-m", "add b"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srv.cfg.WorkDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, srv.cfg.WorkDir, args...)
 	}
 	finalSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
 

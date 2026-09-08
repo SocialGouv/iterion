@@ -606,6 +606,7 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	// carry the very context the operator is trying to change.
 	cp.BackendName = ""
 	cp.BackendSessionID = ""
+	cp.BackendSessionFingerprint = ""
 	cp.BackendConversation = nil
 	cp.BackendPendingToolUseID = ""
 	cp.BackendSessionStateRef = ""

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/worktreepool"
 )
@@ -94,18 +94,11 @@ func (f *cleanFixture) git(dir string, args ...string) string {
 }
 
 func (f *cleanFixture) gitErr(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	// Same scrub as production (clean.go / pkg/git): an inherited GIT_DIR
-	// would make worktree add write into another repository's admin dir
-	// and fail with "could not open '.git/worktrees/<name>/locked'".
-	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()),
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
-		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com",
-		"LC_ALL=C", "LANG=C")
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	// gittest scrubs the environment the way production does (clean.go /
+	// pkg/git): an inherited GIT_DIR would make worktree add write into another
+	// repository's admin dir and fail with "could not open
+	// '.git/worktrees/<name>/locked'".
+	return gittest.Try(dir, args...)
 }
 
 // addWorktree creates <store>/worktrees/<runID> the way iterion does:
