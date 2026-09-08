@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.119.0](https://github.com/SocialGouv/iterion/compare/v3.118.1...v3.119.0) (2026-09-08)
+
+### Features
+
+* **pipelines:** Retry from zero — a board action that forces a FRESH run ([#954](https://github.com/SocialGouv/iterion/issues/954)) ([27efc84](https://github.com/SocialGouv/iterion/commit/27efc84c82703b9d97c0b3fceef73e8457a32cfc)), closes [#496](https://github.com/SocialGouv/iterion/issues/496) [#494](https://github.com/SocialGouv/iterion/issues/494), references [#495](https://github.com/SocialGouv/iterion/issues/495)
+
+    <details><summary>why</summary>
+
+    On a needs-attention card, Retry only restages the ticket and lets whoever claims it decide what "retry" meant: the studio's admission loop mints a fresh run, a live `iterion dispatch` resolves `last_run_id` and RESUMES the dead one from its checkpoint (resolveRunID -> LastRunForIssue -> resumableRunID). So on a dispatcher-owned board Retry is effectively *Resume* — beside a menu that already offers "Resume from checkpoint" as a separate, deliberate action. For a run that died in a way resuming…
+
+    </details>
+
+### Bug Fixes
+
+* **runtime:** cancel a node's whole process group, not just its shell ([#935](https://github.com/SocialGouv/iterion/issues/935)) ([#955](https://github.com/SocialGouv/iterion/issues/955)) ([cd3a01b](https://github.com/SocialGouv/iterion/commit/cd3a01ba6f460e96ebc8b2e6641b4883c7799a54))
+
+    <details><summary>why</summary>
+
+    A tool node runs its recipe through `exec.CommandContext(ctx, "bash", "-c", …)` without Setpgid, so cancellation killed the shell and nothing else. A job the recipe backgrounded survived, kept the inherited stdout pipe open, and `cmd.Output()` never returned: the run reported cancelled while the work it paid for ran to completion — burning wall-clock, a cloud pod, and writing the workspace that finalization was about to capture.
+
+    </details>
+* **server:** a team's forked bot serves every launch surface, not only the manual one ([#940](https://github.com/SocialGouv/iterion/issues/940)) ([6f8bcf1](https://github.com/SocialGouv/iterion/commit/6f8bcf163980bc9b0206a5fc1e1cdd361555e89a)), closes [#871](https://github.com/SocialGouv/iterion/issues/871), references [#871](https://github.com/SocialGouv/iterion/issues/871) [#946](https://github.com/SocialGouv/iterion/issues/946)
+
+    <details><summary>why</summary>
+
+    `resolveBotSource` — the chokepoint the board dispatcher, the trigger spine, the cloud scheduler and the inbound webhooks all cross — hardcoded an empty team id, so the team tier of `team -> platform -> baked` applied on the studio button alone. A team that forked a catalog bot in the studio editor ran its fork by hand and the baked/platform bundle on every board card, trigger, schedule and webhook review, with no diagnostic: documented as functional while inert.
+
+    </details>
+
 ## [3.118.1](https://github.com/SocialGouv/iterion/compare/v3.118.0...v3.118.1) (2026-09-08)
 
 ### Bug Fixes
