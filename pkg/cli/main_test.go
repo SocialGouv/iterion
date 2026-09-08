@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/proctest"
 )
 
 // `iterion run` takes its workspace from the process cwd — this package's own
@@ -16,5 +17,5 @@ import (
 // The guard fails the package when the registry the tests run in gained such
 // an entry, and names the test that left it.
 func TestMain(m *testing.M) {
-	os.Exit(gittest.NoWorktreeLeaks(m))
+	os.Exit(proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) }))
 }
