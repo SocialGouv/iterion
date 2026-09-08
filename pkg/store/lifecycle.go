@@ -152,6 +152,15 @@ const (
 	// redelivery lands on a healthy pod, where a stuck kubectl-exec pipe
 	// routinely clears.
 	FailureSandboxSetupTimeout FailureCode = "SANDBOX_SETUP_TIMEOUT"
+	// FailureBotRequiresNewerEngine: the bundle's manifest declares an
+	// engine floor (`requires.iterion`) this build is below. TERMINAL, not
+	// resumable: the bundle and the image are what disagree, and neither
+	// changes by re-running the same pod — a resume re-queues onto the same
+	// fleet and re-reads the same manifest. What clears it is a deploy or a
+	// bot edit, and after either the caller RE-LAUNCHES (the fixed bot's IR
+	// is not the one this run checkpointed). Written before any node
+	// executes, so there is nothing half-done to preserve.
+	FailureBotRequiresNewerEngine FailureCode = "BOT_REQUIRES_NEWER_ENGINE"
 	// FailureSandboxCapacity: the sandbox never STARTED because the
 	// cluster had no room for its pod (unschedulable past the start
 	// deadline, or still being brought up on the node it landed on).
@@ -212,6 +221,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureLaunchFailed,
 	FailureSandboxSetupTimeout,
 	FailureSandboxCapacity,
+	FailureBotRequiresNewerEngine,
 }
 
 // reservedFailureCodes indexes ReservedFailureCodes for lookup. Built

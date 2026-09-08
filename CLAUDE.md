@@ -273,7 +273,15 @@ the hours this one spent.
   role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
-  reverted, or when a run fails on "version drift".
+  reverted, or when a run fails on "version drift". Covers the **engine
+  contract** a bundle may declare (`requires: { iterion: ">= X.Y.Z" }` in
+  its manifest — [docs/bundles.md](docs/bundles.md#requires--the-engine-contract)):
+  `push` refuses `409` when the deployment's floor (min of the server's
+  build and the runner builds observed on recent runs) is below it,
+  `--force` overrides loudly, the launch refuses with a terminal
+  `BOT_REQUIRES_NEWER_ENGINE`, and `iterion validate` says the same
+  locally (C250/C251). Read it when a push is refused, or when a bot that
+  compiles dies at its first expression.
 - [docs/dispatcher.md](docs/dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
   the board **claim lease + watchdog** (ADR-096,
   `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim

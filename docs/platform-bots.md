@@ -107,6 +107,46 @@ and the failure auto-resumes in a loop (#857, #858). The order that works:
 3. only then dogfood; a platform override is for iterating on a bot the
    deployed engine already supports.
 
+## A bundle may declare the engine it needs — `requires.iterion`
+
+The two-halves rule above was documented in prose, and a production push broke
+it anyway. A bundle can now state its own floor:
+
+```yaml
+# bots/<slug>/manifest.yaml
+requires:
+  iterion: ">= 3.112.14"
+```
+
+`push` then **refuses** (409) when the deployment cannot honour it, naming
+what the bot asked for, what the deployment runs, and where that number came
+from:
+
+```
+bot "branch-improve-loop": bot requires iterion >= 3.112.14 but this build is
+v3.112.7+abc123 — upgrade the engine (or the image this bot runs on), or relax
+the manifest's requires.iterion (floor from runner v3.112.7+abc123). Bump the
+runner image and restart the server first (docs/platform-bots.md § Shipping a
+baked-catalog change), or push anyway with --force
+```
+
+The floor is the **minimum** of this server's own build and every runner build
+observed on runs in the last 7 days (`Run.runner_version`, the build each
+runner stamps on what it executes — there is no other channel: the server
+follows `:edge`, the runners are pinned by digest). Both halves count: the
+server compiles the bot at launch, the runners evaluate it, and a queued run
+lands on whichever pod takes it.
+
+`--force` is the escape hatch — pushing ahead of a rollout is legitimate — and
+is never silent: the response carries the overridden requirement as a warning.
+
+If the push lands anyway (forced, or the guard could not decide), the **runner
+refuses at launch**: the run ends `failed` — not `failed_resumable` — with
+`BOT_REQUIRES_NEWER_ENGINE`, and the delivery is acked so no redelivery
+repeats the same arithmetic. `iterion validate` reports the same thing locally
+as **C250** (unmet) / **C251** (this build has no orderable version, so the
+check could not run). Full contract: [docs/bundles.md](bundles.md#requires--the-engine-contract).
+
 ## Trust model
 
 A platform override executes across **all tenants**, with each tenant's

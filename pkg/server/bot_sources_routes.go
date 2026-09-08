@@ -203,7 +203,19 @@ func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantI
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
-	s.writeBotSource(w, r, tenantID, userID, bs, s.platformPushWarnings(tenantID, bs)...)
+	// Compiling here says nothing about the ENGINE that will evaluate it: a
+	// call to a builtin the runners' evaluator lacks parses generically. The
+	// manifest's `requires.iterion` is what closes that, held against the
+	// deployment's actual floor (engine_floor.go).
+	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	if !ok {
+		return
+	}
+	warnings := s.platformPushWarnings(tenantID, bs)
+	if engineWarning != "" {
+		warnings = append(warnings, engineWarning)
+	}
+	s.writeBotSource(w, r, tenantID, userID, bs, warnings...)
 }
 
 // platformPushWarnings surfaces the known gaps a platform push does NOT
@@ -281,6 +293,16 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 	}
 	if diags := validateBundleCompile(bs.Files); len(diags) > 0 {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
+		return
+	}
+	// Same guard as the whole-bundle push: an edit to manifest.yaml alone can
+	// introduce (or raise) the requirement, and this path persists it too.
+	engineWarning, ok := s.guardBundleEngineRequirement(w, r, bs)
+	if !ok {
+		return
+	}
+	if engineWarning != "" {
+		s.writeBotSource(w, r, tenantID, userID, bs, engineWarning)
 		return
 	}
 	s.writeBotSource(w, r, tenantID, userID, bs)

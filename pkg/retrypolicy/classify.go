@@ -115,10 +115,17 @@ var classification = map[store.FailureCode]Disposition{
 	// smaller. Redelivering it burns MaxDeliver pods on one verdict.
 	store.FailureContextLengthExceeded: DispositionDeterministic,
 	store.FailureIRUnloadable:          DispositionDeterministic, // the same image compiles the same IR
-	store.FailureQueueSchemaMismatch:   DispositionDeterministic, // the same runner rejects the same envelope
-	store.FailureLaunchFailed:          DispositionDeterministic, // the run never left the launch path — no checkpoint exists
-	store.FailureDLQParked:             DispositionDeterministic, // the deliveries are already spent
-	store.FailureCancelled:             DispositionDeterministic, // an operator's decision, not a fault
+	// The bundle's manifest names an engine floor this build is below. The
+	// verdict is a comparison between two constants — the manifest's
+	// `requires.iterion` and the pod's own build — so every redelivery
+	// reaches it identically. This is the exact shape of the incident the
+	// table was written for: a bot pushed for a newer engine burned seven
+	// pods on one arithmetic.
+	store.FailureBotRequiresNewerEngine: DispositionDeterministic,
+	store.FailureQueueSchemaMismatch:    DispositionDeterministic, // the same runner rejects the same envelope
+	store.FailureLaunchFailed:           DispositionDeterministic, // the run never left the launch path — no checkpoint exists
+	store.FailureDLQParked:              DispositionDeterministic, // the deliveries are already spent
+	store.FailureCancelled:              DispositionDeterministic, // an operator's decision, not a fault
 	// The provider will not serve this model to this caller. Nothing in
 	// the request's content is at fault, so a different sample cannot
 	// help either — this is the one provider rejection that does not

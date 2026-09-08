@@ -43,6 +43,9 @@ const (
 	ErrCodeAuthFailed            = store.FailureAuthFailed
 	ErrCodeModelUnavailable      = store.FailureModelUnavailable
 	ErrCodeSchemaUnusable        = store.FailureSchemaUnusable
+	// Raised before the first node when the attached bundle declares a
+	// `requires.iterion` this build is below (engine_requirement.go).
+	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine
 )
 
 // RuntimeError is a structured error carrying a machine-readable code,

@@ -199,6 +199,12 @@ type Server struct {
 	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
 	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
 	botSources botsource.Store
+	// runnerBuilds answers "what engine actually executes runs here", read off
+	// the build each runner stamps on the runs it takes. Nil in local mode
+	// (server and engine are one process) and on any store without the
+	// capability — the engine floor then reports this build alone
+	// (engine_floor.go).
+	runnerBuilds runnerBuildObserver
 	// botRoles / sandboxCfg are TTL resolvers over the platform settings
 	// families; the *Store fields are the write surfaces of the admin routes.
 	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
@@ -642,6 +648,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// exist for them — same reason the roles/sandbox resolvers are.
 	s.platformBots = s.newPlatformBotsResolver()
 	s.bakedCatalog = s.newBakedCatalogResolver()
+	// The fleet's own build report, when the store can serve it (Mongo).
+	// Absent in local mode, where appinfo already answers for both halves.
+	if obs, ok := cfg.Store.(runnerBuildObserver); ok {
+		s.runnerBuilds = obs
+	}
 	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
 	// A malformed env policy leaves it nil — the health echo reports the
 	// invalid value (existing behaviour) instead of a resolver quietly

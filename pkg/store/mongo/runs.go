@@ -768,6 +768,65 @@ func (s *Store) SetRunnerVersion(ctx context.Context, id, version string) error 
 	return nil
 }
 
+// ObservedRunnerBuilds returns the distinct iterion builds that have EXECUTED
+// a run since `since`, newest first — the fleet's build, read from what the
+// fleet itself stamped (Run.RunnerVersion) rather than from a channel an
+// operator has to keep true.
+//
+// It exists because the server and the runners are two deployments that move
+// independently: the server follows a moving tag, each runner is pinned by
+// digest. Nothing else on the server can answer "what engine will actually
+// evaluate this bot" — its own appinfo answers for the wrong half.
+//
+// CROSS-TENANT by construction, and deliberately NOT routed through
+// withTenantFilter: the fleet is one fleet, so the answer must not depend on
+// the scope the caller happens to sit in. The platform-bot push handler
+// re-scopes its request to the `platform:` sentinel tenant, under which no run
+// has ever existed — a tenant-scoped read there returns nothing, and the push
+// guard reads nothing as "could not check" and lets every push through. That
+// silent blindness is the failure class this method was added to close.
+//
+// It is not a tenancy hole: what leaves is a set of BUILD STRINGS, deployment
+// configuration the server already publishes on /healthz — no run id, no
+// tenant, no payload.
+//
+// Bounded by `limit` and index-backed by `updated_desc`; the returned set is a
+// SAMPLE of the fleet, never a proof that no older pod exists.
+func (s *Store) ObservedRunnerBuilds(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	filter := bson.M{
+		"runner_version": bson.M{"$exists": true, "$ne": ""},
+		"updated_at":     bson.M{"$gte": since},
+	}
+	cur, err := s.runs.Find(ctx, filter,
+		options.Find().
+			SetProjection(bson.M{"_id": 0, "runner_version": 1}).
+			SetSort(bson.M{"updated_at": -1}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list observed runner builds: %w", err)
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		RunnerVersion string `bson:"runner_version"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("store/mongo: decode observed runner builds: %w", err)
+	}
+	seen := make(map[string]bool, len(rows))
+	out := make([]string, 0, 4)
+	for _, r := range rows {
+		if r.RunnerVersion == "" || seen[r.RunnerVersion] {
+			continue
+		}
+		seen[r.RunnerVersion] = true
+		out = append(out, r.RunnerVersion)
+	}
+	return out, nil
+}
+
 // SetRunBudgetSnapshot persists the effective caps (see store.RunStore).
 // Granular $set (with $unset for nil), like SetRunBudgetOverrides, so the
 // status transition a resume just applied stays intact.
