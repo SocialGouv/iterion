@@ -670,6 +670,13 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 		// too late for the single case it exists to serve, while the API had
 		// already answered "queued … it is not lost". Same goroutine as the
 		// top-of-loop drain, so it needs no more locking than that one does.
+		//
+		// The position is load-bearing, not incidental: AFTER selectEdgeRS. A
+		// drain a few lines higher would also apply a queued bump_loop before
+		// the edge is chosen, so a back-edge the loop guard had declined for
+		// want of budget would start being funded one edge earlier than it is
+		// today — a behaviour change on a DIFFERENT command, invisible in
+		// this one's tests.
 		e.drainOverrides(rs)
 		if exc := rs.budget.takeExceeded(); exc != nil {
 			anchor := nextNodeID
