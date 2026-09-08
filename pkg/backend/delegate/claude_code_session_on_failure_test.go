@@ -35,7 +35,7 @@ func TestStreamFailureNamesTheSessionTheCLIAnnounced(t *testing.T) {
 			t.Fatal("a broken stream must still return an error")
 		}
 		if res.SessionID != "sess-from-init" {
-			t.Fatalf("SessionID = %q, want the id system/init announced — a failure that cannot name its session forces the node to start over", res.SessionID)
+			t.Fatalf("SessionID = %q, want the id system/init announced — a failure that names no session leaves the run nothing to report or, later, to resume", res.SessionID)
 		}
 	})
 
