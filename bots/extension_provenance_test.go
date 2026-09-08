@@ -646,6 +646,41 @@ func TestGoldenMasterExtendBaseRefusesAnIdentityRepairGitDidNotTake(t *testing.T
 	}
 }
 
+// The THIRD site of the class the two above close. `extend_base` SETS the
+// net's identity, and that `git config` dropped its exit code too: on a
+// workspace where the write cannot take, the run went on committing under
+// the OPERATOR's identity while every line it published claimed the net's —
+// the attribution the whole marker dance exists to make legible, wrong and
+// silent. A guard on two of three sites is a guard the third walks past.
+func TestGoldenMasterExtendBaseRefusesAnIdentityGitWouldNotTake(t *testing.T) {
+	const verdict = `{"acted": [], "ok_paths": [], "ledger_append_only": True, "requests_added": 0, "problems": []}`
+	ws, _ := extendVerifyRepo(t, verdict, `{"pending": [{"id": "E-L29-1", "lot": "L29"}]}`)
+	gitDir := gitInNet(t, ws, "rev-parse", "--absolute-git-dir")
+	marker := filepath.Join(gitDir, "iterion-extend-prev-identity")
+	// No marker: nothing was displaced before this run, which is the shape
+	// that makes the dropped exit code invisible — there is no repair path
+	// to trip over it later.
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the fixture must start with no marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExtendBase(t, ws)
+	if res.Clean || len(res.Pending) != 0 {
+		t.Fatalf("a net whose identity never took read as startable: %+v", res)
+	}
+	if !strings.HasPrefix(res.Notice, "REFUSED") {
+		t.Fatalf("the refusal must be stated, not implied: %q", res.Notice)
+	}
+	// The marker goes with the refusal: nothing was displaced, so leaving one
+	// behind makes the NEXT run read a leak that never happened and "restore"
+	// over a live identity.
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a marker survived a refusal that displaced nothing: %v", err)
+	}
+}
+
 // runExtendRestore runs the subbot's terminal restore node against ws.
 func runExtendRestore(t *testing.T, ws string) map[string]any {
 	t.Helper()

@@ -411,8 +411,32 @@ tool extend_base:
         if marker:
             with open(marker, "w", encoding="utf-8") as f:
                 json.dump({"name": prev_name, "email": prev_email}, f)
-        subprocess.run(["git", "-C", ws, "config", "user.name", {{vars.actor_name}}])
-        subprocess.run(["git", "-C", ws, "config", "user.email", {{vars.actor_email}}])
+        want = {"user.name": {{vars.actor_name}}, "user.email": {{vars.actor_email}}}
+        for key, val in want.items():
+            subprocess.run(["git", "-C", ws, "config", key, val])
+        # The THIRD site of the class the two above closed: git must agree it
+        # took. A `config` that silently failed here left the workspace on the
+        # operator's identity while every notice this run publishes says the
+        # net's — the attribution the whole marker dance exists to make legible
+        # would be wrong, and quietly. The marker is dropped with the refusal
+        # because nothing was displaced: keeping it would make the NEXT run
+        # read a leak that never happened and "restore" over a live identity.
+        back = {k: git_out("config", "--local", "--get", k) for k in want}
+        if back != want:
+            clean = False
+            pending = []
+            if marker:
+                try:
+                    os.remove(marker)
+                except OSError:
+                    pass
+            notice = ("REFUSED at start: the net's identity could not be set — "
+                      "asked for %r, git reports %r. Acting now would commit the "
+                      "net's work under someone else's name while every line "
+                      "this run publishes claims otherwise. Check for a stale %s "
+                      "and that %s is writable, then relaunch."
+                      % (want, back, os.path.join(git_dir, "config.lock"), ws)) + \
+                     ((" | " + notice) if notice else "")
 
     print(json.dumps({"head": head.stdout.strip(), "dirty": "\n".join(dirty_paths),
                       "pending": pending, "notice": notice, "clean": clean,
