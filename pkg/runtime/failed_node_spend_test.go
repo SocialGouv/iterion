@@ -122,6 +122,85 @@ func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 			t.Fatalf("a failed node's cost was not booked: %v", cp.BudgetCostUSD)
 		}
 	})
+
+	// The other half, and the one a booking call added at the retry exit would
+	// break silently: an attempt the engine retries IN PLACE is NOT booked,
+	// because the retry continues the same session and reports that session's
+	// running total. Booking the abandoned attempt as well bills its tokens a
+	// second time. Driven through the production ClawExecutor and a real
+	// delegate.Backend, so the numbers under test are the ones a session-
+	// cumulative backend actually reports — a runtime stub would only be
+	// re-stating the assumption.
+	t.Run("an in-place retry books the session once, not once per attempt", func(t *testing.T) {
+		backend := &sessionCumulativeBackend{}
+		reg := delegate.NewRegistry()
+		reg.Register("cumulative_stub", backend)
+		wf := build()
+		wf.Nodes["agent"] = &ir.AgentNode{
+			BaseNode:  ir.BaseNode{ID: "agent"},
+			LLMFields: ir.LLMFields{Backend: "cumulative_stub", Model: "anthropic/claude-opus-5"},
+		}
+		exec := model.NewClawExecutor(model.NewRegistry(), wf,
+			model.WithBackendRegistry(reg),
+			// The engine's recovery dispatcher drives the retry; the
+			// executor's own ladder would hide it inside one Execute.
+			model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+		)
+		// Retry the first failure, then let the second attempt stand.
+		dispatch := RecoveryDispatch(func(_ context.Context, _ error, prior func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+			if prior(ErrCodeRateLimited) > 0 {
+				return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeRateLimited
+			}
+			return RecoveryAction{Kind: RecoveryRetrySameNode}, ErrCodeRateLimited
+		})
+
+		st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+		eng := New(wf, st, exec, WithRecoveryDispatch(dispatch))
+		if err := eng.Run(context.Background(), "run-spend-retry", nil); err != nil {
+			t.Fatalf("the retry was supposed to carry the run through: %v", err)
+		}
+		if backend.calls != 2 {
+			t.Fatalf("expected a failed attempt and its retry, got %d delegation(s)", backend.calls)
+		}
+		cp := st.last
+		if cp == nil {
+			t.Fatal("no checkpoint to read the budget from")
+		}
+		// 8_000 is the SESSION's total as the successful retry reports it.
+		// 13_000 (5_000 + 8_000) is what booking the abandoned attempt too
+		// would produce — the same tokens billed twice.
+		if cp.BudgetTokensUsed != 8_000 {
+			t.Fatalf("the retried session was not booked exactly once: %d tokens (5_000 + 8_000 = double-billed)", cp.BudgetTokensUsed)
+		}
+		if cp.BudgetCostUSD != 1.60 {
+			t.Fatalf("the retried session's cost was not booked exactly once: %v", cp.BudgetCostUSD)
+		}
+	})
+}
+
+// sessionCumulativeBackend is the shape the engine's no-book-on-retry rule
+// rests on: the first delegation dies after burning 5_000 tokens, and the
+// retry — continuing the SAME session — reports the session's running total
+// (8_000), not the 3_000 it added. claude_code accounts this way by design
+// (`annotateCost` takes the max across result messages rather than the sum).
+type sessionCumulativeBackend struct {
+	calls int
+}
+
+func (b *sessionCumulativeBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+	b.calls++
+	if b.calls == 1 {
+		return delegate.Result{
+			Output:      map[string]any{"_tokens": 5_000, "_cost_usd": 1.00},
+			Tokens:      5_000,
+			BackendName: "cumulative_stub",
+		}, errors.New("stream closed mid-session")
+	}
+	return delegate.Result{
+		Output:      map[string]any{"ok": true, "_tokens": 8_000, "_cost_usd": 1.60},
+		Tokens:      8_000,
+		BackendName: "cumulative_stub",
+	}, nil
 }
 
 // Booking is ACCOUNTING, never a verdict. A failing node whose spend also
