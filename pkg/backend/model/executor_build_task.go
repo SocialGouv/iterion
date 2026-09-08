@@ -605,7 +605,16 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		if schema, ok := e.schemas[f.outputSchema]; ok {
 			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
 			if err != nil {
-				return nil, err
+				// The node failed AFTER the model answered and the call was
+				// paid for — often twice, since a retry-eligible failure
+				// buys a second generation. validateAndRetry hands back a
+				// METERED result on each of its three error exits (it goes
+				// to the trouble of accumulating the first attempt's tokens
+				// onto the retry's for exactly this reason); dropping it
+				// here undid that work one line later, and the engine — the
+				// only caller that books — saw nothing.
+				out.Result = validated
+				return meteredFailureOutput(out, servingBackendName), err
 			}
 			result = validated
 			// The schema retry (and the claw extraction fallback) hand
@@ -726,7 +735,15 @@ func (e *ClawExecutor) validateAndRetry(
 		if out, ok := e.extractStructuredViaClaw(ctx, f.id, task, retryResult, result, schema, backendName); ok {
 			return out, nil
 		}
-		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
+		// The retry was a second generation and it was billed, whether it
+		// errored or came back parse-fallback again. Returning the first
+		// attempt alone reports half the bill to the caller that books it
+		// — the same accumulation the success path does at the bottom of
+		// this function, on the exit where the money is already spent and
+		// nothing downstream can recover it.
+		var abandoned chainSpend
+		abandoned.add(retryResult)
+		return abandoned.applyTo(result), fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 	}
 	// Accumulate token/duration from the first attempt so per-node
 	// accounting reflects the full cost paid (dropping it understated
