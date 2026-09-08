@@ -463,6 +463,10 @@ func testFanOutEachPendingBranchPanicReleasesResumeBarrier(t *testing.T) {
 			t.Fatal("resume unexpectedly succeeded after branch panic")
 		}
 	case <-ctx.Done():
+		// The deadline cancelled Resume; join it before TempDir removes the
+		// store it may still be checkpointing during cancellation — the join
+		// resumeWithinDeadline carries, which this inline copy predates.
+		<-done
 		t.Fatal("resume hung: panic did not release sibling resume barrier")
 	}
 }
