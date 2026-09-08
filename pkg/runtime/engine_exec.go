@@ -505,9 +505,15 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// failure produces failed_resumable as before. The run-ID-
 		// enriched ctx is passed so Compact() can locate the per-
 		// node session.
-		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr)
+		// The output travels in: the two decisions that end the attempt by
+		// writing a checkpoint (a recovery pause, a teardown during the
+		// retry backoff) have to book the spend BEFORE that write, and only
+		// handleNodeFailure knows which decision it took. Booking here on
+		// the way out would be too late — the checkpoint a resume reads its
+		// budget carry from is already on disk by then, with this pass
+		// missing from it.
+		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr, output)
 		if recoveryErr != nil {
-			e.recordFailedNodeSpend(rs, currentNodeID, output)
 			return nil, false, recoveryErr
 		}
 		if retry {
