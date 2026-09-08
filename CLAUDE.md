@@ -235,6 +235,17 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/merge-policy.md](docs/merge-policy.md) — how a change reaches `main`:
+  the merge queue, the required checks, and the admin bypass. Read it when
+  **nobody can merge** — three required checks (`test`, `vendor-check`,
+  `golangci`) run on the organisation's self-hosted `arc-runners` scale set,
+  which sits outside this repository and was dead unnoticed for over a year,
+  so the first thing to try is the `CI_SELF_HOSTED=off` repository variable
+  (a variable, not a commit: repairing by merging does not work when merging
+  is what is broken). Also carries why a queue entry is a full CI cycle
+  against a 20-job organisation cap, and the trap that promoting an advisory
+  job to required without deleting its `merge_group` skip produces a silent
+  FALSE GREEN rather than a stalled queue.
 - [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
   on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
   what the command seeds (prior-review hand-off, push-back, ledger, gate),
