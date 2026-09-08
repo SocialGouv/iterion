@@ -1317,10 +1317,12 @@ tool lot_verify:
                                    "; ".join(r.get("problems") or []))
                                 for r in bad)
                 report["refs_untouched"] = False
-            # Provenance refused = the constrained party acted its own request,
-            # or rewrote a certified reference: typed and terminal, never a
-            # repair pass — a resume from the banked branch would find the act
-            # at its base and certify it.
+            # Provenance refused = the constrained party acted its own
+            # request, or an act introduced outside the subbot's commits:
+            # typed and terminal, never a repair pass — a resume from the
+            # banked branch would find the act at its base and certify it.
+            # A rewritten certificate is NOT in this set: it is refused as an
+            # ordinary non-converged row above, and repaired by a pass.
             if any(r.get("forged") for r in (verdict.get("acted") or [])):
                 report["extension_forged"] = True
                 report["refs_untouched"] = False
@@ -1783,12 +1785,22 @@ workflow modernize:
   ## the timeout is: the engine takes the first `when` that holds, and this
   ## verdict may ALSO carry a pending request — routed to `extend`, the net's
   ## own subbot would act on a tree that already carries a forged reference.
-  ## And it is structurally unrepairable by a pass: dropping the act block
-  ## breaks `ledger_append_only`, deleting the reference makes the recorded
-  ## path absent at HEAD, amending yields a sha still outside the subbot's
-  ## commits, and a harness sync is the net owner's act — so each repair pass
-  ## would be a guaranteed-red campaign plus a full exit gate, paid
-  ## max_passes times (review finding, executed).
+  ## And what reaches this edge is structurally unrepairable by a pass: the
+  ## act was introduced OUTSIDE the subbot's commits (amending yields a sha
+  ## still outside them), the requester acted its own request (the two commits
+  ## are in history), or the net's harness never said it applied the rule and
+  ## a sync is the net owner's act. Each repair pass would be a guaranteed-red
+  ## campaign plus a full exit gate, paid max_passes times.
+  ##
+  ## What does NOT reach it, since the certificate-content refusals stopped
+  ## setting `forged`: a duplicate act block, a path recorded without a
+  ## certificate, a certified reference rewritten after the act. Those sit
+  ## ABOVE the run's base — and `ledger_append_only` is
+  ## `head_txt.startswith(base_txt)`, which pins only the text below it — so
+  ## narrowing the block or restoring the blob is a legal edit and one pass
+  ## does it. They stay ordinary non-converged refusals and go round the
+  ## repair loop, which is where they went before the provenance work
+  ## (review finding Rf213cf, executed).
   lot_gate -> extension_provenance when forged
 
   ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
