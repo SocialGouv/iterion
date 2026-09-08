@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.5](https://github.com/SocialGouv/iterion/compare/v3.121.4...v3.121.5) (2026-09-08)
+
+### Bug Fixes
+
+* **test:** persist Git fixture maintenance opt-outs ([#987](https://github.com/SocialGouv/iterion/issues/987)) ([1b79f49](https://github.com/SocialGouv/iterion/commit/1b79f497d4af062cd21237165fe009198d60da05)), closes [#974](https://github.com/SocialGouv/iterion/issues/974)
+
+    <details><summary>why</summary>
+
+    Production Git commands invoked by tests do not inherit gittest.Cmd flags. Persist both opt-outs in the fixture common config and verify real Git resolution from source and linked worktrees, keeping a separate command-level control. Fixes #974.
+
+    </details>
+
 ## [3.121.4](https://github.com/SocialGouv/iterion/compare/v3.121.3...v3.121.4) (2026-09-08)
 
 ### Bug Fixes
