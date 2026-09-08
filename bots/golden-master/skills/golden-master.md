@@ -377,8 +377,12 @@ object instead of a string and the whole request is sent as `multipart/form-data
 ```
 
 - **`filename` is what makes it a file part.** A `fields` value that is an object
-  with a string `filename` is a file; anything else is an ordinary form field, so
-  a corpus that declares no upload is encoded exactly as it always was.
+  with a string `filename` is a file. An object *without* one is a declaration you
+  got wrong, not an ordinary field, and it is refused by name: emitted as an
+  ordinary field it would reach the wire as the text of a Python object, and the
+  reference would record the application's refusal of that text as its behaviour.
+  A string value stays a form field exactly as before, so a corpus that declares
+  no upload is encoded as it always was.
 - **Exactly one of `text` or `b64`** carries the payload — `text` for anything
   readable (a corpus stays replayable by hand), `b64` (a **string**) for what
   text cannot hold. Declaring neither, or both, is refused by name rather than
