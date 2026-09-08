@@ -336,6 +336,10 @@ A `write` entry declares:
 }
 ```
 
+A `fields` value is a string, **or an object naming a file** — see *Uploading a
+file* below, which is how a `write` entry observes a form the application
+receives as `multipart/form-data`.
+
 and the capture holds **two** things: what the write answered, and what the
 readback rendered. The second is the one that carries the verdict.
 
@@ -359,6 +363,51 @@ Three rules, and each of them was learned by paying for it:
 3. **The payload is not decorative.** Put in it the shapes a migration or an
    upgrade is known to lose: semantic tags that render like presentational ones,
    attributes a renderer ignores, ordering. Those are what come back deformed.
+
+### Uploading a file — a `fields` value that is an object
+
+A form that carries a file is not a form with a string in it. Give the field an
+object instead of a string and the whole request is sent as `multipart/form-data`:
+
+```json
+"fields": {
+  "titre": "rapport",
+  "doc": { "filename": "a.pdf", "content_type": "application/pdf", "text": "…" }
+}
+```
+
+- **`filename` is what makes it a file part.** A `fields` value that is an object
+  with a string `filename` is a file; anything else is an ordinary form field, so
+  a corpus that declares no upload is encoded exactly as it always was.
+- **Exactly one of `text` or `b64`** carries the payload — `text` for anything
+  readable (a corpus stays replayable by hand), `b64` (a **string**) for what
+  text cannot hold. Declaring neither, or both, is refused by name rather than
+  resolved: a silent winner puts bytes on the wire you did not declare, and the
+  reference then describes those.
+- **`content_type` is optional**, defaulting to `application/octet-stream`.
+- **One file field makes the WHOLE form multipart**, its sibling text fields
+  included. They are emitted in the order you declare them, and `csrf_field` is
+  appended after your fields.
+- **No canonicalisation rule is needed for the boundary.** It is derived from
+  the parts, never drawn at random, so two replays of one request are the same
+  bytes and anything the application echoes back — a validation message quoting
+  the raw part, a stored name — stays still. Erasing a boundary from the capture
+  is the usual repair, and it buys stability by blinding the net to a region of
+  every upload response.
+
+**What is refused, and where.** The values that land in the part headers are
+checked in their own syntactic context, because a filename carrying a CRLF can
+forge a whole extra part — a request the corpus never declared, whose behaviour
+the reference would then record:
+
+| value | refused |
+|---|---|
+| the field name, `filename` (inside `name="…"` / `filename="…"`) | `"`, CR, LF |
+| `content_type` (the whole header value) | CR, LF — a quote is legitimate media-type syntax, e.g. `text/plain; charset="UTF-8"` |
+
+Probing an application with a hostile filename is therefore out of this lane's
+reach by construction; it is a proof to write beside the net, like any other the
+capture cannot express.
 
 ## Honesty clause
 
