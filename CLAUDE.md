@@ -336,6 +336,10 @@ the hours this one spent.
   avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
   App (no logo API; the studio hands over the file + the settings page).
   Read it when a bot posts with a default avatar, or before touching a logo.
+- [docs/bot-bundle-snapshots.md](docs/bot-bundle-snapshots.md) — cloud launches
+  freeze workflow, resources and sibling subbots through the server authority;
+  queue v13, bounded immutable snapshot transport, strict runner resolution and
+  resume semantics. Read before changing cloud bundle or subbot resolution.
 - [docs/cloud-deployment.md](docs/cloud-deployment.md#verifying-that-an-infra-apps-push-landed-argocd-sync-liveness) —
   how a build reaches a deployment: the server follows the moving `:edge`
   tag (a `rollout restart` picks it up), the runner is pinned BY DIGEST in

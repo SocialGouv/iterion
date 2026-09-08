@@ -240,8 +240,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// the dual-accept window advances to MinSchemaVersion=10.
 	// v=12 (2026-09-02) adds the runner rollout epoch. A stale consumer must
 	// reject it rather than silently ignore the fence.
-	if SchemaVersion != 12 {
-		t.Errorf("SchemaVersion = %d, want 12 (bump intentionally)", SchemaVersion)
+	// v=13 snapshots the bundle collection; old consumers must not ignore it.
+	if SchemaVersion != 13 {
+		t.Errorf("SchemaVersion = %d, want 13 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 10 {
 		t.Errorf("MinSchemaVersion = %d, want 10", MinSchemaVersion)

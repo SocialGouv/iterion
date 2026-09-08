@@ -120,7 +120,7 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 // child's terminal output. Children carry the parent linkage so the studio
 // folds them into the parent's card, re-attach across a pod restart through
 // the same records runview keeps, and are charged like any attempt.
-func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir string, runLogger *iterlog.Logger) runtime.SubbotRunner {
+func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir string, runLogger *iterlog.Logger, snapshotRoot ...string) runtime.SubbotRunner {
 	if runLogger == nil {
 		runLogger = r.cfg.Logger
 	}
@@ -144,7 +144,13 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			return out, aerr
 		}
 
-		childPath, err := resolveSubbotSource(req.Source, parentDir, r.cfg.BotsPaths)
+		var childPath string
+		var err error
+		if len(snapshotRoot) > 0 && snapshotRoot[0] != "" {
+			childPath, err = bundle.ResolveSnapshotSource(req.Source, parentDir, snapshotRoot[0])
+		} else {
+			childPath, err = resolveSubbotSource(req.Source, parentDir, r.cfg.BotsPaths)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -238,7 +244,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring: a child that declares subbot nodes resolves
 			// its own children relative to ITS directory.
-			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger)),
+			runtime.WithSubbotRunner(r.subbotRunnerFor(&child, filepath.Dir(childPath), childWorkDir, childLogger, snapshotRoot...)),
 			runtime.WithEventObserver(childUsage.observe),
 			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
 				if out != nil {

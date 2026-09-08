@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // SchemaVersion is incremented at every breaking change to the wire
@@ -106,7 +107,9 @@ import (
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 12
+// v=13: BotBundle snapshots include sibling workflows and resources. An old
+// runner must reject them instead of silently attaching its own catalog.
+const SchemaVersion = 13
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -179,12 +182,9 @@ type RunMessage struct {
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
 	Supervisors string `json:"supervisors,omitempty"`
-	// BotBundle, when set, points at the STORED bot bundle (a team-authored
-	// bot or a platform override — a pkg/botsource row) this run was
-	// resolved from. The runner fetches the row, verifies Version still
-	// matches (a racing push fails the run loudly rather than pairing this
-	// message's IR with newer resources), and materializes it as the run's
-	// bundle INSTEAD of the baked BotsPaths one. Nil = baked/loose bot.
+	// BotBundle carries the server-resolved immutable collection in v13.
+	// Legacy refs without a snapshot still resolve a stored row with a version
+	// check. Nil retains the legacy baked/loose-bot resource lookup.
 	BotBundle *BotBundleRef `json:"bot_bundle,omitempty"`
 	// SandboxImage is the effective `sandbox: auto` fallback image resolved
 	// by the PUBLISHER (platform runtime setting over the env default) and
@@ -238,11 +238,14 @@ type RunMessage struct {
 
 // BotBundleRef is the wire mirror of runview.BotBundleRef (kept local so
 // this schema package stays dependency-free — the BudgetOverrides pattern):
-// the (tenant scope, slug, version) of a stored bot-bundle row.
+// origin tuple plus an immutable collection inline or through a blob reference.
 type BotBundleRef struct {
-	TenantID string `json:"tenant_id"`
-	Slug     string `json:"slug"`
-	Version  int    `json:"version"`
+	TenantID       string          `json:"tenant_id"`
+	Slug           string          `json:"slug"`
+	Version        int             `json:"version"`
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	SnapshotDigest string          `json:"snapshot_digest,omitempty"`
+	SnapshotRef    *IRRef          `json:"snapshot_ref,omitempty"`
 }
 
 // Contributions is the wire mirror of runtime.Contributions: the plugin
@@ -438,6 +441,22 @@ func (m *RunMessage) Validate() error {
 		case IRBackendS3, IRBackendMongo:
 		default:
 			return fmt.Errorf("queue: IRRef.Backend %q invalid (want s3|mongo)", m.IRRef.Backend)
+		}
+	}
+	if b := m.BotBundle; b != nil && (b.SnapshotDigest != "" || len(b.Snapshot) > 0 || b.SnapshotRef != nil) {
+		if m.V < 13 {
+			return fmt.Errorf("%w: bundle snapshots require v13", ErrSchemaVersion)
+		}
+		if len(b.SnapshotDigest) != 64 || strings.Trim(b.SnapshotDigest, "0123456789abcdef") != "" {
+			return fmt.Errorf("queue: bundle snapshot digest must be lowercase SHA-256")
+		}
+		if (len(b.Snapshot) > 0) == (b.SnapshotRef != nil) {
+			return fmt.Errorf("queue: exactly one bundle snapshot payload/ref is required")
+		}
+		if b.SnapshotRef != nil {
+			if b.SnapshotRef.StorageKey == "" || (b.SnapshotRef.Backend != IRBackendS3 && b.SnapshotRef.Backend != IRBackendMongo) {
+				return fmt.Errorf("queue: invalid bundle snapshot reference")
+			}
 		}
 	}
 	return nil

@@ -193,7 +193,7 @@ func botSourceTenantOf(ref *runview.BotBundleRef) string {
 	return ref.TenantID
 }
 
-// queueBotBundleRef converts the launch-resolved stored-bundle ref to its
+// queueBotBundleRef converts the launch-resolved bundle snapshot/origin to its
 // wire mirror. A stored bot's FULL bundle (skills, prompts, devbox,
 // attachments) is rebuilt runner-side from this ref — the successor of the
 // old appendTenantBotSkills partial transport, which shipped flat skills
@@ -203,7 +203,8 @@ func queueBotBundleRef(ref *runview.BotBundleRef) *queue.BotBundleRef {
 	if ref == nil {
 		return nil
 	}
-	return &queue.BotBundleRef{TenantID: ref.TenantID, Slug: ref.Slug, Version: ref.Version}
+	return &queue.BotBundleRef{TenantID: ref.TenantID, Slug: ref.Slug, Version: ref.Version,
+		Snapshot: append([]byte(nil), ref.Snapshot...), SnapshotDigest: ref.SnapshotDigest}
 }
 
 // effectiveSandboxImage resolves the deployment's `sandbox: auto` fallback

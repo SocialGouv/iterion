@@ -27,6 +27,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -1839,7 +1840,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    would exceed the NATS max_payload. The runner side re-parses +
 	//    re-compiles, so the wire payload is the AST File, not the compiled
 	//    IR.
-	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
+	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return 0, err
 	}
@@ -2057,7 +2058,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID string, reaso
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) (retErr error) {
-	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
+	body, err := marshalIRFromSpec(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
@@ -2304,6 +2305,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 }
 
 func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
+	if err := p.offloadBundleSnapshot(ctx, msg); err != nil {
+		return err
+	}
 	if err := p.offloadOversizedIR(ctx, msg); err != nil {
 		return err
 	}
@@ -2416,7 +2420,7 @@ func (p *Publisher) offloadOversizedIR(ctx context.Context, msg *queue.RunMessag
 	}
 	// Cheap gate: if the IR plus the envelope reserve is under the limit,
 	// it fits — skip the precise (re-)marshal on the hot path.
-	if int64(len(msg.IRCompiled))+irEnvelopeReserve <= maxPayload {
+	if msg.BotBundle == nil && int64(len(msg.IRCompiled))+irEnvelopeReserve <= maxPayload {
 		return nil
 	}
 	body, err := json.Marshal(msg)
@@ -2497,7 +2501,7 @@ func (p *Publisher) queuePosition(ctx context.Context, runID string) (int, error
 // shared filesystem) → `path` on local disk (fallback for tests and
 // migration tooling). The runner re-parses + re-compiles, so the
 // wire payload is the AST File, not the compiled IR.
-func marshalIRFromSpec(path, source string) (json.RawMessage, error) {
+func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessage, error) {
 	var src string
 	parserPath := path
 	switch {
@@ -2523,6 +2527,15 @@ func marshalIRFromSpec(path, source string) (json.RawMessage, error) {
 	}
 	if pr.File == nil {
 		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
+	}
+	if len(bundleDirs) > 0 && bundleDirs[0] != "" {
+		b, err := bundle.OpenDir(bundleDirs[0])
+		if err != nil {
+			return nil, fmt.Errorf("cloudpublisher: open snapshotted bundle: %w", err)
+		}
+		if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
+			return nil, err
+		}
 	}
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
