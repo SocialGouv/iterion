@@ -519,6 +519,16 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
+		// An unstampable record is accepted — it serves runs perfectly well
+		// until its token dies — but it will never be swept, so say that
+		// once, here, where the cause is still visible. Learning it later
+		// means reading it off a run's first LLM call failing on an expired
+		// token, which names neither the credential nor the reason.
+		if rec.AccessTokenExpiresAt == nil {
+			s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry — the token states none "+
+				"(no readable `exp` claim, no expires_in), so the refresh worker cannot select this record and the "+
+				"forfait will need a manual re-connect when it expires", ownerKey, kind)
+		}
 		rec.NotRefreshable = v.Tokens.RefreshToken == ""
 	}
 	sealed, err := secrets.SealOAuthPayload(s.sealer, ownerKey, kind, blob)

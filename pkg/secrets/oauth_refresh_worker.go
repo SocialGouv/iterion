@@ -83,6 +83,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// Still open (audit row B2 / native:fc0c51d4): a sandboxed codex
 		// reader is permitted to rotate its own writable copy in place, so
 		// a long run remains a second holder this worker cannot see.
+
 		// A payload without a refresh token can never be refreshed; only
 		// a re-connect renews it. Not a failure — skipping keeps the sweep
 		// quiet instead of erroring on the same record every cycle.
