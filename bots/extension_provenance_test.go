@@ -277,11 +277,36 @@ func runExtendBase(t *testing.T, ws string) extendBaseOut {
 	return res
 }
 
+// gitEnv is the environment every child of this file runs under: the host's,
+// with git's identity variables REMOVED — not merely overridden, because the
+// point of these fixtures is that CONFIG decides who committed. `-c
+// user.email=…` is outranked by GIT_AUTHOR_EMAIL / GIT_COMMITTER_EMAIL, so on
+// any host that exports them (devcontainer, CI image, agent sandbox) every
+// fixture commit carried the caller's name: the positive case went red for a
+// reason unrelated to the code under test, and the two negative cases passed
+// VACUOUSLY — `!identity_ok` held because of the host, not because of what the
+// subtest set up. Same rule, same reason, as the harness's own pop at its
+// selftest dispatch (oracle-harness.py). A caller that WANTS an ambient
+// identity appends it on top of this base.
+func gitEnv(extra ...string) []string {
+	scrubbed := make([]string, 0, len(os.Environ())+2+len(extra))
+	for _, kv := range os.Environ() {
+		switch strings.SplitN(kv, "=", 2)[0] {
+		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+			"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL":
+			continue
+		}
+		scrubbed = append(scrubbed, kv)
+	}
+	scrubbed = append(scrubbed, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	return append(scrubbed, extra...)
+}
+
 func gitInNet(t *testing.T, ws string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-C", ws}, args...)
 	cmd := exec.Command("git", full...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v (%s)", args, err, out)
@@ -414,6 +439,16 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		return runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
 	}
 	t.Run("commits, blobs, ids and identity are published", func(t *testing.T) {
+		// Exported HERE, so this case proves on every host what it could only
+		// stumble over on some: git's identity env outranks the `-c
+		// user.email` the fixture commits under, and `gitEnv` is what keeps
+		// the configured identity — the one the node actually sets — deciding.
+		for _, kv := range [][2]string{
+			{"GIT_AUTHOR_NAME", "ambient"}, {"GIT_AUTHOR_EMAIL", "ambient@host"},
+			{"GIT_COMMITTER_NAME", "ambient"}, {"GIT_COMMITTER_EMAIL", "ambient@host"},
+		} {
+			t.Setenv(kv[0], kv[1])
+		}
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
 		sha, blob := act(t, ws, "extend@golden-master.iterion")
 		res := runExtendVerify(t, ws, base, `[{"id": "E-L29-1"}]`)
@@ -473,7 +508,7 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 	t.Run("an ambient git identity is said, and certifies all the same", func(t *testing.T) {
 		ws, base := extendVerifyRepo(t, verdict, `{"pending": []}`)
 		cmd := exec.Command("git", "-C", ws, "add", "-A")
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		cmd.Env = gitEnv()
 		if err := os.WriteFile(filepath.Join(ws, ".golden-master", "refs", "002.txt"), []byte("STATUS 200\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +526,7 @@ func TestGoldenMasterExtendVerifyPublishesItsProvenance(t *testing.T) {
 		// The environment wins over `-c user.email`, which is the whole point.
 		commit := exec.Command("git", "-C", ws, "-c", "user.email=extend@golden-master.iterion",
 			"-c", "user.name=x", "commit", "-qm", "act")
-		commit.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		commit.Env = gitEnv(
 			"GIT_AUTHOR_EMAIL=ambient@host", "GIT_COMMITTER_EMAIL=ambient@host",
 			"GIT_AUTHOR_NAME=ambient", "GIT_COMMITTER_NAME=ambient")
 		if out, cerr := commit.CombinedOutput(); cerr != nil {
@@ -820,7 +855,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		g := func(args ...string) {
 			t.Helper()
 			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
-			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+			cmd.Env = gitEnv()
 			if out, gerr := cmd.CombinedOutput(); gerr != nil {
 				t.Fatalf("git %v: %v (%s)", args, gerr, out)
 			}
@@ -835,9 +870,9 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		g("commit", "-qm", "base")
 		cmd := exec.Command("python3", harness)
 		cmd.Dir = ws
-		cmd.Env = append(append(os.Environ(),
-			"GM_MODE=extend-verify", "GM_WORKSPACE="+ws, "GM_DIR=.golden-master",
-			"GM_BASE=HEAD"), env...)
+		cmd.Env = gitEnv(append([]string{
+			"GM_MODE=extend-verify", "GM_WORKSPACE=" + ws, "GM_DIR=.golden-master",
+			"GM_BASE=HEAD"}, env...)...)
 		out, _ := cmd.Output()
 		exit := 0
 		if cmd.ProcessState != nil {
@@ -876,7 +911,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		g := func(args ...string) string {
 			t.Helper()
 			cmd := exec.Command("git", append([]string{"-C", ws}, args...)...)
-			cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+			cmd.Env = gitEnv()
 			out, gerr := cmd.CombinedOutput()
 			if gerr != nil {
 				t.Fatalf("git %v: %v (%s)", args, gerr, out)
@@ -914,7 +949,7 @@ func TestHarnessReadsTheCertificateOneEntryPerLine(t *testing.T) {
 		// can cover this act, and only if its id survived the parser.
 		cmd := exec.Command("python3", harness)
 		cmd.Dir = ws
-		cmd.Env = append(os.Environ(), "GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
+		cmd.Env = gitEnv("GM_MODE=extend-verify", "GM_WORKSPACE="+ws,
 			"GM_DIR=.golden-master", "GM_BASE="+base, "GM_ACTED_COMMITS=",
 			"GM_ACTED_IDS="+id,
 			"GM_ACTED_BLOBS=.golden-master/refs/2.txt="+blob)
