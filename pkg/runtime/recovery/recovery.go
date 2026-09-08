@@ -162,6 +162,31 @@ func AuthFailedRecipe() Recipe {
 	})
 }
 
+// SchemaUnusableRecipe: no retry. The declaration rides the IR, so a
+// second attempt builds the same request from the same schema and is
+// refused by the same parser.
+func SchemaUnusableRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the node's declared output schema is unusable by the serving backend — fix the schema (or the backend that cannot read it), then resume",
+		}
+	})
+}
+
+// ModelUnavailableRecipe: no retry at all. The provider answered about
+// the MODEL, not about this request, so a second call from the same
+// image asks the same question and is told the same thing — and the
+// automatic resume above it would spend a pod per attempt to hear it.
+func ModelUnavailableRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "the provider does not serve this model to this client (unknown id, no access, or a client release it gates on) — change the model or the image, then resume",
+		}
+	})
+}
+
 // TransientToolRecipe: retry with linear backoff up to maxRetries
 // (model gets the error in its next turn), then fail terminal.
 func TransientToolRecipe(maxRetries int) Recipe {
@@ -294,6 +319,8 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
 		runtime.ErrCodeNetworkTransient:      NetworkTransientRecipe(6),
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
+		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
+		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
 	}
 }
 
@@ -361,6 +388,13 @@ func Classify(err error) runtime.ErrorCode {
 	if errors.As(err, &authFailed) {
 		return runtime.ErrCodeAuthFailed
 	}
+	// The node's own declaration is what the backend refused. Checked by
+	// TYPE first, like the credential above: the needle below only
+	// catches today's wording.
+	var schemaUnusable *delegate.ErrSchemaUnusable
+	if errors.As(err, &schemaUnusable) {
+		return runtime.ErrCodeSchemaUnusable
+	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
 		if rateLimited.Kind == delegate.RateLimitKindUsageWindow {
@@ -394,6 +428,14 @@ func Classify(err error) runtime.ErrorCode {
 		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
 			return runtime.ErrCodeAuthFailed
 		}
+		// A model this caller may not have. 404 says it by status; the
+		// wordings say it under a 400, which the backends use for a
+		// model gated on a minimum client release. A bare 400 is NOT
+		// included: one raised mid-turn can be the model's own tool
+		// arguments, and those differ on the next sample.
+		if apiErr.StatusCode == 404 || matchesModelUnavailable(body) {
+			return runtime.ErrCodeModelUnavailable
+		}
 		return runtime.ErrCodeExecutionFailed
 	}
 	// String-pattern fallback for unstructured errors that bubble up
@@ -422,12 +464,51 @@ func Classify(err error) runtime.ErrorCode {
 			return runtime.ErrCodeAuthFailed
 		}
 	}
+	// The out-of-process host (the claw runner) flattens the typed error
+	// above into text before it reaches here, so the wording is read too
+	// — this is the shape that was actually measured in the cloud.
+	if strings.Contains(msg, "parse explicitschema") {
+		return runtime.ErrCodeSchemaUnusable
+	}
+	// Checked through the SAME list the typed branch reads, and after
+	// the credential needles: a rejection that names both a credential
+	// and a model is a credential to re-authenticate first.
+	if matchesModelUnavailable(msg) {
+		return runtime.ErrCodeModelUnavailable
+	}
 	for _, needle := range networkTransientNeedles {
 		if strings.Contains(msg, needle) {
 			return runtime.ErrCodeNetworkTransient
 		}
 	}
 	return runtime.ErrCodeExecutionFailed
+}
+
+// modelUnavailableNeedles enumerates lowercase substrings that say the
+// provider will not serve the MODEL, whatever the request contains. ALL
+// entries MUST be lowercase — both callers lowercase first.
+var modelUnavailableNeedles = []string{
+	// Scoped to the MODEL on purpose: a bare "requires a newer version"
+	// is any tool announcing a version floor, and a false positive here
+	// PARKS a run — the disposition is deterministic.
+	"model requires a newer version",
+	"api error 404",   // claw/openai verbatim: the model id reached no endpoint
+	"model_not_found", // OpenAI error code field
+	"unknown model",   // gateway wording for an id no backend claims
+}
+
+// matchesModelUnavailable is the ONE reading of that list. Both the
+// typed *api.APIError branch and the flattened-string fallback call it,
+// because an out-of-process backend (the claw runner) stringifies its
+// typed error before it reaches here — the same reason the credential
+// needles exist twice over.
+func matchesModelUnavailable(msg string) bool {
+	for _, needle := range modelUnavailableNeedles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // authFailedNeedles enumerates lowercase substrings that indicate the
