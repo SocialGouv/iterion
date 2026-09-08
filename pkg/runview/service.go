@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -179,17 +180,15 @@ type LaunchSpec struct {
 	// The cloud publisher uses it to resolve bot-secret bindings during
 	// credential sealing. Empty for plain .bot launches.
 	BotID string
-	// BundleDir, when set, is the launch-materialized directory of a STORED
-	// bot bundle (a team-authored bot or a platform override): compile merges
+	// BundleDir, when set, is the launch-materialized directory of a resolved
+	// cloud bundle (catalog, team bot or platform override): compile merges
 	// its prompts/ into the AST exactly like a baked bundle's, so they
 	// participate in IR validation and the workflow hash. Server-owned temp
 	// dir, cleaned up by the launch surface after Launch returns; never
 	// persisted.
 	BundleDir string
-	// BotBundle is the stored-bundle ref the cloud publisher stamps on the
-	// queue message so the runner rebuilds the SAME bundle from the store
-	// (skills/, devbox.json, attachments) instead of attaching the stale
-	// baked one. Nil for baked catalog bots and plain .bot launches.
+	// BotBundle carries the immutable collection and its origin to the cloud
+	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef
 	// KeyOverrides pins a specific BYOK key per LLM provider for this run
 	// (provider name → api_key id), overriding the org/user default in
@@ -324,7 +323,8 @@ func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride 
 	return out
 }
 
-// BotBundleRef identifies a STORED bot bundle (pkg/botsource row) by its
+// BotBundleRef freezes a cloud bundle collection and identifies a stored
+// origin, when present, by its
 // tenant scope — a team id, or botsource.PlatformTenantID for a
 // deployment-wide override — plus slug and the row version resolved at
 // launch. The runner fetches the row, VERIFIES the version still matches
@@ -335,6 +335,10 @@ type BotBundleRef struct {
 	TenantID string `json:"tenant_id"`
 	Slug     string `json:"slug"`
 	Version  int    `json:"version"`
+	// Snapshot carries the immutable launch-resolved collection (including
+	// sibling subbots). The publisher may offload it; the digest binds bytes.
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	SnapshotDigest string          `json:"snapshot_digest,omitempty"`
 }
 
 // ResumeSpec describes a resume request.
