@@ -916,22 +916,21 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 // is the base, and per-call envs are layered on top via the env
 // command.
 //
-// LIMITATION: a `sh -c <huge-script>` cmd is passed as a single argv
-// element to `kubectl exec`, so a hundreds-of-KB interpolated script
-// can in principle trip the host's ARG_MAX (E2BIG) the same way the
-// docker driver did before its stdin-streaming fallback (see
-// [shouldStreamScriptViaStdin] in pkg/sandbox/docker/driver.go). Not
-// observed in practice yet — cloud runs interpolate smaller payloads
-// — so the kubernetes driver currently relies on the argv path. If a
-// real symptom appears, mirror the docker fix here using
-// `kubectl exec -i … -- sh -s` with the script wired to Cmd.Stdin.
+// A `sh -c <script>` cmd larger than [sandbox.MaxInlineArgBytes] is
+// streamed through stdin as `kubectl exec --stdin … -- <shell> -s`
+// instead of being passed as a single argv element, which the kernel
+// caps at MAX_ARG_STRLEN (128 KiB) regardless of ulimit. Both exec
+// shapes below take that route, since the custom-workdir wrapper only
+// grows the script it embeds.
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		return exec.CommandContext(ctx, "")
 	}
 
+	stdinScript := sandbox.ShouldStreamScriptViaStdin(cmd, opts)
+
 	args := []string{"--namespace", r.namespace, "exec"}
-	if opts.Stdin != nil || opts.KeepStdinOpen {
+	if opts.Stdin != nil || opts.KeepStdinOpen || stdinScript != "" {
 		args = append(args, "--stdin")
 	}
 	args = append(args, r.podName, "--container", "workload", "--")
@@ -946,21 +945,43 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		// argv form to avoid an extra shell layer (preserves signal
 		// semantics and exit codes).
 		args = appendEnvPrefix(args, opts.Env)
-		args = append(args, cmd...)
-		return r.cmdContext(ctx, args, opts)
+		if stdinScript != "" {
+			// `<shell> -s` reads the script from stdin. cmd[0] is "sh"
+			// or "bash" (guaranteed by the predicate), so a bash recipe
+			// keeps bash semantics. The env prefix still precedes it and
+			// applies to the shell that reads the script.
+			args = append(args, cmd[0], "-s")
+		} else {
+			args = append(args, cmd...)
+		}
+		return r.cmdContext(ctx, args, stdinScript, opts)
 	}
 
 	// Custom workdir — wrap in `sh -c "cd <dir> && exec <cmd...>"`.
 	wrapped := buildShellChdirExec(workDir, cmd, opts.Env)
+	if opts.Stdin == nil && len(wrapped) > sandbox.MaxInlineArgBytes {
+		// The wrapper embeds cmd, so it is at least as large as the
+		// script it carries: stream the whole wrapper instead. `sh -s`
+		// runs it, and the wrapper still exec's cmd[0] itself, so a
+		// bash recipe keeps bash.
+		args = append(args, "sh", "-s")
+		return r.cmdContext(ctx, args, wrapped, opts)
+	}
 	args = append(args, "sh", "-c", wrapped)
-	return r.cmdContext(ctx, args, opts)
+	return r.cmdContext(ctx, args, "", opts)
 }
 
 // cmdContext finalises the *exec.Cmd: ctx, args, stdin pipe, pgid.
-func (r *Run) cmdContext(ctx context.Context, args []string, opts sandbox.ExecOpts) *exec.Cmd {
+// stdinScript, when non-empty, is the script to feed the in-pod shell
+// through stdin; it is only ever set on paths where opts.Stdin is nil,
+// so a caller-provided reader always wins.
+func (r *Run) cmdContext(ctx context.Context, args []string, stdinScript string, opts sandbox.ExecOpts) *exec.Cmd {
 	c := exec.CommandContext(ctx, r.driver.kubectl, args...)
-	if opts.Stdin != nil {
+	switch {
+	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
+	case stdinScript != "":
+		c.Stdin = strings.NewReader(stdinScript)
 	}
 	proc.DetachProcessGroup(c)
 	return c

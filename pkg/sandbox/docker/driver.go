@@ -593,45 +593,6 @@ func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) er
 	return nil
 }
 
-// maxInlineArgBytes caps the size of a single argv element passed to
-// `docker exec`. Linux's ARG_MAX is typically 128 KiB–2 MiB for the
-// total argv+env block; a single element well below that bound is
-// always safe, while a multi-hundred-KB shell script interpolated into
-// `docker exec … sh -c <script>` (e.g. Seki's majority_verdict tool
-// node concatenating three large voter verdicts) overflows the kernel's
-// E2BIG check and the docker fork fails with
-// "fork/exec /usr/bin/docker: argument list too long". 100 KB leaves
-// headroom for the rest of the argv (flags, env, container id) on the
-// smallest realistic ARG_MAX and is far above any normal tool snippet.
-const maxInlineArgBytes = 100_000
-
-// shouldStreamScriptViaStdin reports whether the given cmd is the
-// `sh -c <script>` shape and should be routed through stdin instead of
-// argv to avoid ARG_MAX (E2BIG) overflow. Returns the script when so;
-// the empty string otherwise.
-//
-// Conditions: cmd is exactly `["sh","-c", script]` or `["bash","-c",
-// script]`, no stdin is already attached (so we don't clobber a
-// caller-provided reader), and the script exceeds [maxInlineArgBytes].
-// Both shells are matched because internal callers emit both: the
-// tool-node executor runs recipes via `bash -c`, while RunPostCreate
-// and the claw bash builtin use `sh -c`. Any other shell or argv shape
-// falls through to the standard argv path so behavior is byte-for-byte
-// unchanged. The reroute (see Command) re-uses cmd[0] for the `-s`
-// invocation, so bash recipes keep bash semantics.
-func shouldStreamScriptViaStdin(cmd []string, opts sandbox.ExecOpts) string {
-	if len(cmd) != 3 || (cmd[0] != "sh" && cmd[0] != "bash") || cmd[1] != "-c" {
-		return ""
-	}
-	if opts.Stdin != nil {
-		return ""
-	}
-	if len(cmd[2]) <= maxInlineArgBytes {
-		return ""
-	}
-	return cmd[2]
-}
-
 // Command returns an *exec.Cmd that, when started, runs cmd inside the
 // container via `docker exec`. Stdin/Stdout/Stderr on the returned cmd
 // are forwarded transparently to the in-container process by docker
@@ -647,7 +608,7 @@ func shouldStreamScriptViaStdin(cmd []string, opts sandbox.ExecOpts) string {
 // the inner program.
 //
 // When cmd is `["sh","-c", script]` and the script is larger than
-// [maxInlineArgBytes], the script is streamed through stdin via
+// [sandbox.MaxInlineArgBytes], the script is streamed through stdin via
 // `sh -s` instead of being passed as a single argv element. This
 // avoids the kernel's ARG_MAX (E2BIG) limit on the host `docker exec`
 // fork — see [shouldStreamScriptViaStdin] for the trigger predicate.
@@ -658,7 +619,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		return exec.CommandContext(ctx, "")
 	}
 
-	stdinScript := shouldStreamScriptViaStdin(cmd, opts)
+	stdinScript := sandbox.ShouldStreamScriptViaStdin(cmd, opts)
 
 	args := []string{"exec"}
 	if opts.Stdin != nil || opts.KeepStdinOpen || stdinScript != "" {
@@ -690,7 +651,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		// `<shell> -s` reads the script from stdin instead of taking it
 		// as an argv element. Works identically on dash, bash, busybox
 		// sh. cmd[0] is "sh" or "bash" (guaranteed by
-		// shouldStreamScriptViaStdin), so bash recipes keep bash. The
+		// sandbox.ShouldStreamScriptViaStdin), so bash recipes keep bash. The
 		// script never enters the docker argv, sidestepping E2BIG.
 		args = append(args, cmd[0], "-s")
 	} else {
