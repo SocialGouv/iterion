@@ -223,7 +223,13 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
 		e.newElementBuilder(node.ID, backendName, backend, assemble))
 	if err != nil {
-		return nil, err
+		// The other seam that spends: an LLM router is a model call, and a
+		// router that burned a fallback chain's worth of routes before
+		// failing owes the same figure to max_cost_usd, the org cap and a
+		// donor's ledger as an agent node does. Hand the metered result up
+		// beside the error, exactly as executeBackend does — the engine is
+		// the only caller that reads it.
+		return meteredFailureOutput(out, backendName), err
 	}
 	result := out.Result
 

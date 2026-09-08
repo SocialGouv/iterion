@@ -366,3 +366,62 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 		t.Fatalf("the failed delegation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
 	}
 }
+
+// The OTHER node kind that spends: an LLM router is a model call, and a
+// failing one is special-dispatched — it never reaches execLoopRunNode, so
+// the standard path's booking cannot cover it. Both frames had to be fixed
+// for the figure to survive: the executor returned a bare nil beside the
+// error, and the engine's router path dropped whatever it was handed.
+func TestFailedLLMRouterSpendReachesTheRun(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "metered_router_failure",
+		Entry: "route",
+		Nodes: map[string]ir.Node{
+			"route": &ir.RouterNode{
+				BaseNode:   ir.BaseNode{ID: "route"},
+				LLMFields:  ir.LLMFields{Backend: "metered_stub", Model: "anthropic/claude-opus-5"},
+				RouterMode: ir.RouterLLM,
+			},
+			"a":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "route", To: "a"}, {From: "route", To: "b"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 1_000_000},
+	}
+
+	backend := &meteredFailingBackend{}
+	reg := delegate.NewRegistry()
+	reg.Register("metered_stub", backend)
+	exec := model.NewClawExecutor(model.NewRegistry(), wf,
+		model.WithBackendRegistry(reg),
+		model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+	)
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-metered-router", nil); err == nil {
+		t.Fatal("the run was supposed to fail on the router")
+	}
+	if backend.calls != 1 {
+		t.Fatalf("expected exactly one delegation, got %d", backend.calls)
+	}
+
+	r, err := st.LoadRun(context.Background(), "run-metered-router")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 31_000 {
+		t.Fatalf("the failed router's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 4.75 {
+		t.Fatalf("the failed router's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
