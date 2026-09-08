@@ -47,6 +47,13 @@ func (s *checkpointCapturingStore) SaveCheckpoint(ctx context.Context, runID str
 	return s.RunStore.SaveCheckpoint(ctx, runID, cp)
 }
 
+func (s *checkpointCapturingStore) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) error {
+	if cp != nil {
+		s.capture(cp)
+	}
+	return s.RunStore.PauseRun(ctx, id, cp)
+}
+
 func (s *checkpointCapturingStore) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
 	if cp != nil {
 		s.capture(cp)
@@ -662,5 +669,142 @@ func TestFailedLLMRouterSpendReachesTheRun(t *testing.T) {
 	}
 	if r.Checkpoint.BudgetCostUSD != 4.75 {
 		t.Fatalf("the failed router's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// The class is wider than a failing node: ANY branch exit that writes no
+// checkpoint leaves the spend booked before it in memory only. A branch that
+// spends and then reaches a fail node never calls recordFailedBranchSpend —
+// its last node SUCCEEDED — so the accounting write never arms, and the run's
+// durable budget forgets a whole branch's session exactly as it did for a
+// failed node. Same forced ordering: the sibling checkpoints its own 1_000
+// before this branch books anything.
+func TestBranchSpendBeforeAFailNodeReachesTheRun(t *testing.T) {
+	wf := budgetFanOutWorkflow(&ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2})
+	for _, e := range wf.Edges {
+		if e.From == "a" && e.To == "done" {
+			e.To = "fail"
+		}
+	}
+	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+
+	siblingBooked := make(chan struct{})
+	var once sync.Once
+	st.onSave = func(cp *store.Checkpoint) {
+		if cp != nil && cp.BudgetTokensUsed == 1_000 {
+			once.Do(func() { close(siblingBooked) })
+		}
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 1_000, "_cost_usd": 0.10}, nil
+	})
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		select {
+		case <-siblingBooked:
+		case <-time.After(30 * time.Second):
+			t.Error("the sibling never checkpointed its own spend; the ordering this test rests on is gone")
+		}
+		return map[string]any{"ok": true, "_tokens": 15_000, "_cost_usd": 4.20}, nil
+	})
+
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-branch-failnode-spend", nil); err != nil {
+		t.Fatalf("the best-effort join was supposed to carry the run: %v", err)
+	}
+
+	cp := st.lastCheckpoint()
+	if cp == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if cp.BudgetTokensUsed != 16_000 {
+		t.Fatalf("the fail-node branch's session never reached the run: %d tokens", cp.BudgetTokensUsed)
+	}
+}
+
+// The accounting write is a full checkpoint, so it must carry everything a
+// checkpoint owns — including the pause pointer of a SIBLING. A run parked on
+// a human gate names its interaction in cp.InteractionID, which is what resume
+// reads to find the answer; a booking write that omitted it would answer "no
+// interaction pending" for a run that has one, and the parked branch would be
+// unreachable.
+func TestBranchSpendWriteKeepsASiblingsPausePointer(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "fanout_gate_and_spend",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"pre":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "pre"}},
+			"gate":    &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"a":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"collect": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitBestEffort},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "pre"},
+			{From: "pre", To: "gate"},
+			{From: "router", To: "a"},
+			{From: "gate", To: "collect", Condition: "approved"},
+			{From: "a", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+		Schemas:   map[string]*ir.Schema{},
+		Prompts:   map[string]*ir.Prompt{},
+		Vars:      map[string]*ir.Var{},
+		Loops:     map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{},
+		Budget:    &ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2},
+	}
+
+	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+	parked := make(chan struct{})
+	var once sync.Once
+	st.onSave = func(cp *store.Checkpoint) {
+		if cp != nil && cp.InteractionID != "" {
+			once.Do(func() { close(parked) })
+		}
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	aStarted := make(chan struct{})
+	exec.on("pre", func(map[string]any) (map[string]any, error) {
+		// Park only once the sibling is inside its node: a gate that parks
+		// first cancels the sibling before it can spend anything.
+		select {
+		case <-aStarted:
+		case <-time.After(30 * time.Second):
+			t.Error("the spending sibling never started")
+		}
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("a", func(map[string]any) (map[string]any, error) {
+		close(aStarted)
+		select {
+		case <-parked:
+		case <-time.After(30 * time.Second):
+			t.Error("the sibling never parked; the ordering this test rests on is gone")
+		}
+		return map[string]any{"_tokens": 15_000, "_cost_usd": 4.20}, errors.New("cancelled mid-branch")
+	})
+
+	eng := New(wf, st, exec)
+	err := eng.Run(context.Background(), "run-spend-write-keeps-pause", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("the gate was supposed to park the run: %v", err)
+	}
+
+	cp := st.lastCheckpoint()
+	if cp == nil {
+		t.Fatal("no checkpoint at all")
+	}
+	if cp.InteractionID == "" {
+		t.Fatal("the last checkpoint no longer names the pending interaction: the parked branch is unreachable on resume")
 	}
 }

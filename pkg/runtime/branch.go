@@ -45,10 +45,11 @@ type branchResult struct {
 	// growing the same monotonic-max daily-cap ledger entry.
 	costUSD float64
 	// spendUncheckpointed marks spend booked into the shared run budget that
-	// no checkpoint has carried yet. Only a failing branch node sets it: every
-	// other booking is followed by a branch checkpoint that snapshots the run
-	// budget along with the cursor, whereas a failure returns from execBranch
-	// immediately. See persistBranchSpend.
+	// no checkpoint has carried yet. Every booking sets it; the next snapshot
+	// that carries the budget clears it. What makes it necessary is that a
+	// branch does not checkpoint on linear edges, so an exit taken between two
+	// boundaries — a failed node, a fail node, an unresolvable edge — would
+	// leave the booking in memory alone. See persistBranchSpend.
 	spendUncheckpointed bool
 }
 
@@ -132,6 +133,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	if branchCP != nil && branchCP.CurrentNodeID != "" {
 		currentNodeID = branchCP.CurrentNodeID
 	}
+	// Registered before the cursor defer so it runs after it: a checkpoint
+	// written on the way out clears the flag, and this then has nothing to do.
+	// Every branch exit passes here, including the ones that return straight
+	// out of the loop (fail node, unresolvable edge, exceeded budget).
+	defer e.persistBranchSpend(rs, parallel, result)
 	defer func() {
 		// A sibling pause cancels the invocation after its interaction is
 		// durable. Persist this branch's current in-memory cursor once at that
@@ -254,7 +260,6 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			if branchHuman && result.err != nil && !errors.Is(result.err, ErrRunPaused) && !errors.Is(result.err, errBranchPauseDeferred) {
 				e.emitBranchNodeFailed(ctx, runID, branchID, currentNodeID, result.err, result)
 			}
-			e.persistBranchSpend(rs, parallel, result)
 			return result
 		}
 		branchRS.outputs[currentNodeID] = output
@@ -787,6 +792,14 @@ func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, bra
 		return nil
 	}
 	checks := rs.budget.RecordUsage(tokens, costUSD)
+	if tokens > 0 || costUSD > 0 {
+		// The run budget just moved in memory. Every exit of this branch that
+		// writes no checkpoint would leave it there: a failed node, a fail
+		// node, an edge that cannot resolve, an exceeded budget. The flag is
+		// cleared by the next snapshot that carries the budget, and flushed by
+		// persistBranchSpend on the way out.
+		result.spendUncheckpointed = true
+	}
 
 	for _, w := range findWarnings(checks) {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
@@ -851,6 +864,14 @@ func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutio
 	}
 	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
+	if ps.PendingInteractionID != "" {
+		// A sibling parked on a human gate owns this run's pause pointer, and
+		// resume reads it from cp.InteractionID. An accounting write that
+		// omitted it would answer "no interaction pending" for a run that has
+		// one — checkpointBranchState carries it for the same reason.
+		cp.InteractionID = ps.PendingInteractionID
+		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
+	}
 	// Detached for the reason the booking was: the branch's context is the
 	// one that just died, and this is the last frame that can write.
 	writeCtx, cancel := detachedBookingCtx(parent.ctx)
