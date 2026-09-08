@@ -78,3 +78,8 @@ at run start: `whats-next` (playbook), `iterion-board`,
 `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
 `operator-arbitrage`, `factory-ops`, `session-continuity`,
 `iterion-dsl-quickref`, `dogfood-cycle`.
+
+`iterion-dsl-quickref` ships in `skills/` and is mirrored like the rest,
+but it is **not in Nexie's prompt roster** (`main.bot`'s Skills block
+names the other ten), so she does not reach for it on her own — ask for
+it by name when a turn needs `.bot` syntax.

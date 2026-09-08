@@ -32,6 +32,7 @@ DSL edit.
 | `mission_notes` | no | Repo-specific arbitrations for this run (which module to extend, seams, exclusions) |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree — do not override) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
+| `scratch_dir` | no | Out-of-tree home of the deterministic gate's `verify.sh` / `verify.log` (default `${PROJECT_SCRATCH_DIR}/instrument`). Never point it inside the worktree, and never hardcode `~/.iterion` — the `-full` image's pinned non-host user gets EACCES |
 | `max_passes` | no | Continuation-loop cap (default 6) |
 | `open_mr` | no | Push the series + open a PR on convergence (default false) |
 | `mr_branch` / `mr_base` / `source_issue_ref` | no | PR wiring — see main.bot |
