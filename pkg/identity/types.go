@@ -518,3 +518,45 @@ func SlugifyTeamName(name string) string {
 	}
 	return string(out)
 }
+
+// TeamPatch is a PARTIAL team update: only the non-nil fields are written.
+//
+// It exists because UpdateTeam replaces the whole document, which makes
+// every "read, change one field, write back" handler a lost-update race
+// against every other one. The dangerous direction was measured: a rename
+// carries the Status it read, so renaming a team that another admin
+// suspended in between silently RESUMES it — a governance action undone by
+// an unrelated edit. Same class as the run store's missing CAS.
+//
+// Status carries the suspension trio with it deliberately: they are one
+// fact, and letting a caller write them apart is how a resumed team keeps
+// a SuspendedAt nobody notices.
+type TeamPatch struct {
+	Name *string
+	Slug *string
+	// Status, when non-nil, sets the lifecycle status AND derives the
+	// suspension trio from it: stamped when suspending, cleared otherwise.
+	Status        *TeamStatus
+	SuspendedBy   string
+	SuspendReason string
+}
+
+// Empty reports whether the patch would write nothing.
+func (p TeamPatch) Empty() bool { return p.Name == nil && p.Slug == nil && p.Status == nil }
+
+// OrgPatch is TeamPatch's org-level twin, for the same reason: the org
+// settings, the credential audience and the super-admin plan fields are
+// three independent editors of one document.
+type OrgPatch struct {
+	Name                     *string
+	Slug                     *string
+	RequireProvisionApproval *bool
+	ProvisionApprovalScope   *ProvisionApprovalScope
+	CredentialAudience       *CredentialAudience
+}
+
+// Empty reports whether the patch would write nothing.
+func (p OrgPatch) Empty() bool {
+	return p.Name == nil && p.Slug == nil && p.RequireProvisionApproval == nil &&
+		p.ProvisionApprovalScope == nil && p.CredentialAudience == nil
+}

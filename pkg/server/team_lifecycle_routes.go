@@ -121,27 +121,20 @@ func (s *Server) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	t, err := s.authStore().GetTeam(r.Context(), teamID)
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+	if req.Name != nil && *req.Name == "" {
+		httpError(w, http.StatusBadRequest, "name cannot be empty")
 		return
 	}
-	if req.Name != nil {
-		if *req.Name == "" {
-			httpError(w, http.StatusBadRequest, "name cannot be empty")
-			return
-		}
-		t.Name = *req.Name
+	if req.Slug != nil && *req.Slug == "" {
+		httpError(w, http.StatusBadRequest, "slug cannot be empty")
+		return
 	}
-	if req.Slug != nil {
-		if *req.Slug == "" {
-			httpError(w, http.StatusBadRequest, "slug cannot be empty")
-			return
-		}
-		t.Slug = *req.Slug
-	}
-	t.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateTeam(r.Context(), t); err != nil {
+	// PATCH, not read-modify-write: UpdateTeam replaces the whole document,
+	// so a rename would carry back the Status it read and silently RESUME a
+	// team another admin suspended in between — a governance action undone
+	// by an unrelated edit.
+	t, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{Name: req.Name, Slug: req.Slug})
+	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
@@ -177,24 +170,13 @@ func (s *Server) handleSetTeamStatus(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid status (active|suspended|read_only)")
 		return
 	}
-	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	// The patch carries the suspension trio with the status — one fact, one
+	// write — so a concurrent rename cannot revert it, and a resumed team
+	// cannot keep a SuspendedAt.
+	t, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{
+		Status: &st, SuspendedBy: id.UserID, SuspendReason: req.Reason,
+	})
 	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
-		return
-	}
-	t.Status = st
-	if st == identity.TeamStatusSuspended {
-		now := time.Now().UTC()
-		t.SuspendedAt = &now
-		t.SuspendedBy = id.UserID
-		t.SuspendReason = req.Reason
-	} else {
-		t.SuspendedAt = nil
-		t.SuspendedBy = ""
-		t.SuspendReason = ""
-	}
-	t.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateTeam(r.Context(), t); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}

@@ -72,25 +72,22 @@ func (s *Server) handleUpdateOrgSettings(w http.ResponseWriter, r *http.Request)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	o, err := s.authStore().GetOrg(r.Context(), orgID)
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
-		return
-	}
-	if req.RequireProvisionApproval != nil {
-		o.RequireProvisionApproval = *req.RequireProvisionApproval
-	}
+	patch := identity.OrgPatch{RequireProvisionApproval: req.RequireProvisionApproval}
 	if req.ProvisionApprovalScope != nil {
 		scope := identity.ProvisionApprovalScope(*req.ProvisionApprovalScope)
 		if !identity.ValidProvisionApprovalScope(scope) {
 			httpError(w, http.StatusBadRequest, "invalid provision_approval_scope (all|shared_credentials)")
 			return
 		}
-		o.ProvisionApprovalScope = scope
+		patch.ProvisionApprovalScope = &scope
 	}
-	o.UpdatedAt = time.Now().UTC()
-	if err := s.authStore().UpdateOrg(r.Context(), o); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+	// PATCH, not read-modify-write: the org settings, the credential
+	// audience and the super-admin plan fields are three independent
+	// editors of ONE document, and a whole-document replace lets each
+	// silently revert the others.
+	o, err := s.authStore().PatchOrg(r.Context(), orgID, patch)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
 	s.auditOrg(r, orgID, "org.settings_updated", "org", orgID, map[string]any{
