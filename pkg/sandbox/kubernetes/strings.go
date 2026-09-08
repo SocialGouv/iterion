@@ -121,6 +121,14 @@ func buildShellChdirExec(dir string, argv []string, env map[string]string) strin
 // because there is no command to prefix: the script runs in the shell
 // that read it. `cd` failing aborts instead of running the script in the
 // wrong directory.
+//
+// Quoting, stated because it differs from [buildShellChdirExec]: `dir`
+// and each `K=V` pair are shell-quoted, but `script` is written RAW and
+// unquoted — it IS shell source, and quoting it would stop it being
+// executable. So this builder gives the script no isolation whatsoever
+// from the surrounding payload, by design; the caller's script is trusted
+// exactly as much as it was when it arrived as `<shell> -c <script>`,
+// which is where every caller of this path gets it from.
 func buildShellChdirScript(dir string, env map[string]string, script string) string {
 	var b strings.Builder
 	b.WriteString("cd ")
