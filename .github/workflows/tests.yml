@@ -41,9 +41,26 @@ concurrency:
 # The list lives in a ruleset, outside this repo, so nothing here can assert
 # it — docs/merge-policy.md carries the same warning beside the required list.
 
+# WHERE these jobs run. The organisation shares 20 concurrent GitHub-hosted
+# jobs across every repository, which is what makes a cycle here take 40
+# minutes of wall clock for 30 minutes of compute. The self-hosted scale set
+# `arc-runners` (org-scoped, ovh-dev) has no such cap.
+#
+# It serves every ref EXCEPT a pull request from a fork, and that exclusion is
+# the whole security argument, not a detail: a fork PR is arbitrary code from
+# anyone, and running it on a runner inside the cluster would hand that code a
+# pod on our network. A same-repo branch is a different thing — pushing it
+# already requires write access, which is the same trust boundary.
+#
+# So the expression below reads: fork pull request -> GitHub-hosted;
+# everything else (same-repo PR, push, merge_group) -> self-hosted. It is
+# repeated per job because `runs-on` cannot read workflow-level `env`, and
+# routing it through a `needs:` job would put every job behind one
+# GitHub-hosted slot — reintroducing the queue this exists to escape.
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -183,7 +200,7 @@ jobs:
     # (ubuntu-latest ships gcc). Runs in parallel with `test`; a compile error
     # surfaces here too, so no `needs:` ordering. ~2-3x slower than the plain
     # test job, hence the wider -timeout and job budget.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 45
     env:
       CGO_ENABLED: "1"
@@ -231,7 +248,7 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     services:
       # Plain mongo here because GitHub-Actions service containers can't
@@ -350,7 +367,7 @@ jobs:
     # in-tree so a developer's plain `go test ./...` skips them; CI
     # provides the URI explicitly so the contract stays enforced.
     # Mirror of the mongo-conformance job above.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -410,7 +427,7 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 25
     env:
       KIND_CLUSTER: iterion-e2e
@@ -599,7 +616,7 @@ jobs:
     # CI runner compiles vs what a fresh clone compiles — the kind of
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -625,7 +642,7 @@ jobs:
     # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -672,7 +689,7 @@ jobs:
     # OFF — it flags French comments as misspelled English (1097 false
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -695,7 +712,7 @@ jobs:
     # noise — we keep both. Advisory-only for now: a zero-day disclosure
     # mid-release shouldn't gate a hotfix; results surface in the GitHub
     # Security tab via SARIF so an operator can still triage.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'arc-runners' }}
     permissions:
       security-events: write
       contents: read
