@@ -520,6 +520,18 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			// NOT booked: the node runs again, and a recovery retry can
 			// continue the same session — whose usage is cumulative, so
 			// booking this attempt and then the retry bills it twice.
+			//
+			// "Can", not "always does": claude_code is session-cumulative by
+			// construction (annotateCost takes the MAX across result
+			// messages, never the sum), while a backend that starts a fresh
+			// session on retry reports only its own invocation, and this
+			// attempt's spend is then lost. The rule is deliberately the
+			// conservative one — under-count rather than double-bill: these
+			// totals are ENFORCEMENT (max_cost_usd, a donor's clamped
+			// allowance), so an over-count kills runs that still had budget.
+			// Charging every attempt exactly needs the backend to declare
+			// which semantics it reports; until it does, this is the safe
+			// error, and TestFailedNodeSpendReachesTheRunOnlyOnce pins it.
 			return nil, true, nil
 		}
 		// Fail terminally carrying BOTH the classified code and the
