@@ -821,6 +821,11 @@ func (e *ClawExecutor) newElementBuilder(
 			task.SessionID = ""
 			task.SessionFingerprint = ""
 			task.ForkSession = false
+			// Cleared with the id it qualifies: this field now has a
+			// SECOND writer (a retry that carries a session forward), so
+			// an entry left behind here is reachable from a direction it
+			// was not when only the declared modes set it.
+			task.SessionOptional = false
 		}
 		return bn, backend, task, nil
 	}
@@ -1032,6 +1037,9 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend = backendName
+		// Set when THIS dispatch carried a session forward, so the carry
+		// can be undone: only a session we introduced is ours to drop.
+		carriedSession := false
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		}, func(prev delegate.Result) {
@@ -1050,9 +1058,31 @@ func (e *ClawExecutor) dispatchChain(
 			// (log, session_degraded event, _session_degraded output stamp
 			// a deterministic gate can fail closed on). One degradation
 			// path, not a second one beside it.
+			if carriedSession {
+				// It had its one chance. A CARRIED session is
+				// opportunistic — its status quo ante is a fresh start —
+				// so when the attempt that resumed it dies too, the
+				// session itself is a suspect and the remaining budget
+				// goes to a clean attempt instead of re-loading it every
+				// time. The degrade path below cannot do this job: it is
+				// gated on UNCLASSIFIED, and the failure this whole
+				// change was measured on classifies as `transient
+				// (network)` — so a poisoned carried session would be
+				// re-carried on every attempt, silently, with the only
+				// guard that would drop it switched off for its
+				// category.
+				//
+				// A DECLARED session is the opposite trade: the workflow
+				// asked for it, dropping it loses contracted continuity,
+				// and its unclassified-only rule is untouched here.
+				task.SessionID = ""
+				task.SessionOptional = false
+				return
+			}
 			if task.SessionID == "" && prev.SessionID != "" {
 				task.SessionID = prev.SessionID
 				task.SessionOptional = true
+				carriedSession = true
 			}
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
