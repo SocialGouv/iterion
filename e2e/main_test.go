@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // e2eParallelCap bounds how many of this package's tests run at once.
@@ -30,9 +32,16 @@ const e2eParallelCap = 8
 // holds its GOMAXPROCS default, i.e. nobody chose).
 const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 
+// The suite runs out of the developer's own checkout, so an engine built
+// without WithWorkDir hands `worktree: auto` (the IR default) that repository
+// as its source: `git worktree add` registers the run's worktree THERE while
+// the checkout lives under t.TempDir() and is deleted on return. Measured at
+// 1 773 dead entries / 2.5 GB after two days of parallel agent work (#870),
+// and 66 more per full `go test ./...`. gittest.NoWorktreeLeaks fails the
+// package when that count moves, and names the test that moved it.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(m.Run())
+	os.Exit(gittest.NoWorktreeLeaks(m))
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left

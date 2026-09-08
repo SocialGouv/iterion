@@ -1,10 +1,11 @@
 package runtime
 
 import (
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // A run's squash message must describe the RUN, and the range that bounds it
@@ -24,8 +25,8 @@ func TestBuildSquashMessageForMerge_NeverEnumeratesFromTheRoot(t *testing.T) {
 	addCommit(t, repo, "history2.md", "two\n", "chore: second commit on main")
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "a.go", "package main\n// a\n", "feat(lot-1): the run's first unit")
 	finalSHA := addCommit(t, wt, "b.go", "package main\n// b\n", "feat(lot-1): the run's second unit")
@@ -58,11 +59,11 @@ func TestBuildSquashMessageForMerge_KeepsAResolvableBase(t *testing.T) {
 	base := addCommit(t, repo, "history.md", "one\n", "chore: main moved on")
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "a.go", "package main\n", "feat: only unit")
-	finalSHA := strings.TrimSpace(string(mustOutput(t, wt, "git", "rev-parse", "HEAD")))
+	finalSHA := gittest.Run(t, wt, "rev-parse", "HEAD")
 
 	got := BuildSquashMessageForMerge(repo, base, "main", finalSHA, "run")
 	if !strings.HasPrefix(got, "feat: only unit") {
@@ -80,8 +81,8 @@ func TestBuildSquashMessageForMerge_UnreachableBaseFallsToMergeBase(t *testing.T
 	addCommit(t, repo, "history.md", "one\n", "Add new directory")
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "a.go", "package main\n", "feat: the run's unit")
 
@@ -99,10 +100,10 @@ func TestBuildSquashMessageForMerge_UnreachableBaseFallsToMergeBase(t *testing.T
 // so the full walk is the right answer there and must be preserved.
 func TestBuildSquashMessageForMerge_GreenfieldKeepsTheWholeHistory(t *testing.T) {
 	dir := t.TempDir()
-	mustRun(t, dir, "git", "init", "-b", "main")
-	mustRun(t, dir, "git", "config", "user.email", "test@example.com")
-	mustRun(t, dir, "git", "config", "user.name", "Test")
-	mustRun(t, dir, "git", "config", "commit.gpgsign", "false")
+	gittest.Run(t, dir, "init", "-b", "main")
+	gittest.Run(t, dir, "config", "user.email", "test@example.com")
+	gittest.Run(t, dir, "config", "user.name", "Test")
+	gittest.Run(t, dir, "config", "commit.gpgsign", "false")
 	addCommit(t, dir, "a.go", "package main\n", "feat: scaffold the app")
 	finalSHA := addCommit(t, dir, "b.go", "package main\n// b\n", "feat: first endpoint")
 

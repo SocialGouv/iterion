@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // product-docs (Prody) ships four deterministic nodes that decide the run:
@@ -88,18 +90,7 @@ func runExpectingFailure(t *testing.T, command, wantSubstr string) {
 
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s (in %s): %v\n%s", strings.Join(args, " "), dir, err, out)
-	}
-	return string(out)
+	return gittest.Run(t, dir, args...)
 }
 
 func writeFile(t *testing.T, dir, rel, content string) {
@@ -1101,11 +1092,7 @@ func TestProductDocsScopeCheck(t *testing.T) {
 	// at the moment the run starts.
 	headOf := func(t *testing.T, ws string) string {
 		t.Helper()
-		out, err := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
-		if err != nil {
-			t.Fatalf("git rev-parse HEAD: %v", err)
-		}
-		return strings.TrimSpace(string(out))
+		return gittest.Run(t, ws, "rev-parse", "HEAD")
 	}
 	prodyCommit := func(t *testing.T, ws, msg string) {
 		gitIn(t, ws, "add", "-A")
@@ -1338,11 +1325,7 @@ func TestProductDocsScopeCheckAcceptsAccentedPages(t *testing.T) {
 	writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
 	gitIn(t, ws, "add", "-A")
 	gitIn(t, ws, "commit", "-q", "-m", "seed")
-	baseOut, err := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("git rev-parse: %v", err)
-	}
-	base := strings.TrimSpace(string(baseOut))
+	base := gittest.Run(t, ws, "rev-parse", "HEAD")
 
 	// One accented page committed (the diff path), one still untracked
 	// (the status -uall path) — both must stay in scope.
@@ -1437,8 +1420,7 @@ func TestProductDocsScanHintsIncrementalScopedToProduct(t *testing.T) {
 	writeFile(t, ws, "docs/demo/page.md", "# Page\n")
 	gitIn(t, ws, "add", "-A")
 	gitIn(t, ws, "commit", "-q", "-m", "docs(demo): align\n\nBot: product-docs")
-	demoOut, _ := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
-	demoSHA := strings.TrimSpace(string(demoOut))
+	demoSHA := gittest.Run(t, ws, "rev-parse", "HEAD")
 	// …then a SIBLING product's newer one, then drift on this product.
 	writeFile(t, ws, "docs/autre/page.md", "# Autre page\n")
 	gitIn(t, ws, "add", "-A")

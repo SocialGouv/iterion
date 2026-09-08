@@ -5,12 +5,11 @@ package e2e
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -105,11 +104,9 @@ func TestLive_FeatureDev(t *testing.T) {
 	}
 
 	// The acceptance criterion: at least one new commit beyond the seed.
-	cmd := exec.Command("git", "-C", workspaceDir, "rev-list", "--count", "HEAD")
-	out, err := cmd.CombinedOutput()
-	commitCount := strings.TrimSpace(string(out))
+	commitCount, err := gittest.Try(workspaceDir, "rev-list", "--count", "HEAD")
 	if err != nil {
-		t.Errorf("git rev-list failed: %v\n%s", err, out)
+		t.Errorf("git rev-list failed: %v\n%s", err, commitCount)
 	} else if commitCount == "1" {
 		t.Errorf("expected at least 2 commits (seed + one feature commit), got %s — commit_changes likely never landed", commitCount)
 	} else {
@@ -204,9 +201,8 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 	requireWorkspaceCommitGrowth(t, workspaceDir, commitsBefore)
-	cmd := exec.Command("git", "-C", workspaceDir, "log", "--oneline", "-10")
-	out, _ := cmd.CombinedOutput()
-	t.Logf("Recent commits:\n%s", string(out))
+	out, _ := gittest.Try(workspaceDir, "log", "--oneline", "-10")
+	t.Logf("Recent commits:\n%s", out)
 
 	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
 	assessQualityRaw(t, "feature-dev", "Featurly", "Add POST users/id/posts endpoint with validation, idempotency, and table-driven tests", runID, workspaceDir, storeDir, s, events, time.Since(start), reason, gitArtifactEvidence(t, workspaceDir))

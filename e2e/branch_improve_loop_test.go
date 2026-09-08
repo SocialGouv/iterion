@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -116,7 +115,7 @@ func TestBranchImproveLoop_ContinuesUntilClean(t *testing.T) {
 	stubBranchCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -156,7 +155,7 @@ func TestBranchImproveLoop_ConvergesFirstPass(t *testing.T) {
 	stubBranchCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-first", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -201,7 +200,7 @@ func TestBranchImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -230,7 +229,7 @@ func TestBranchImproveLoop_MRPathOnConverge(t *testing.T) {
 	stubBranchCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"open_mr": true}
 	if err := eng.Run(context.Background(), "run-bil-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -420,7 +419,7 @@ func TestBranchImproveLoop_PlanBudgetExhaustedFailsBeforeCampaign(t *testing.T) 
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	err := eng.Run(context.Background(), "run-bil-plan-budget-fail", map[string]any{"plan_review": "on"})
 	if err == nil {
 		t.Fatal("Run: want an error (the plan budget guard routes to plan_exhausted), got nil")
@@ -483,7 +482,7 @@ func TestBranchImproveLoop_PlanBudgetWithinShareRunsCampaign(t *testing.T) {
 	stubConvergingCampaignTail(exec, &campaignIns)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-plan-budget-ok", map[string]any{"plan_review": "on"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -535,7 +534,7 @@ func TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce(t *testing.T) {
 	stubConvergingCampaignTail(exec, &campaignIns)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-plan-budget-recap", map[string]any{"plan_review": "on"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -575,7 +574,7 @@ func TestBranchImproveLoop_PlanBudgetUnboundedNeverTrips(t *testing.T) {
 	stubConvergingCampaignTail(exec, &campaignIns)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-plan-budget-uncapped", map[string]any{"plan_review": "on"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -613,7 +612,7 @@ func TestBranchImproveLoop_PlanBudgetResumeRunsTheCampaign(t *testing.T) {
 
 	exec := newScenarioExecutor()
 	planBudgetGateStubs(exec, planOverShareUSD)
-	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, map[string]any{"plan_review": "on"}); err == nil {
+	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, map[string]any{"plan_review": "on"}); err == nil {
 		t.Fatal("first pass succeeded; $37.50 must cross the $22.50 share")
 	}
 	run, err := s.LoadRun(context.Background(), runID)
@@ -632,7 +631,7 @@ func TestBranchImproveLoop_PlanBudgetResumeRunsTheCampaign(t *testing.T) {
 	planBudgetGateStubs(resumeExec, planOverShareUSD)
 	var campaignIns []map[string]any
 	stubConvergingCampaignTail(resumeExec, &campaignIns)
-	if err := runtime.New(wf, s, resumeExec).Resume(context.Background(), runID, nil); err != nil {
+	if err := newEngine(t, wf, s, resumeExec).Resume(context.Background(), runID, nil); err != nil {
 		t.Fatalf("resume failed: %v", err)
 	}
 

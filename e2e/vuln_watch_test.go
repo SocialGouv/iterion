@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -1253,13 +1254,7 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	bare := filepath.Join(dir, "origin.git")
 	run := func(wd string, args ...string) {
 		t.Helper()
-		c := exec.Command("git", args...)
-		c.Dir = wd
-		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
-		if out, err := c.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, wd, args...)
 	}
 	run(dir, "init", "--bare", "-b", "main", bare)
 	run(dir, "clone", bare, ws)
@@ -1325,10 +1320,8 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	if b, rerr := os.ReadFile(precious); rerr != nil || string(b) != "hours of work\n" {
 		t.Fatalf("the operator's uncommitted file was destroyed (err %v, content %q)", rerr, string(b))
 	}
-	log := exec.Command("git", "log", "--oneline")
-	log.Dir = ws
-	out, _ := log.CombinedOutput()
-	if !strings.Contains(string(out), "operator's own commit") {
+	out, _ := gittest.Try(ws, "log", "--oneline")
+	if !strings.Contains(out, "operator's own commit") {
 		t.Fatalf("the operator's unpushed commit was destroyed:\n%s", out)
 	}
 }

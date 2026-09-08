@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 func TestParseConflictHunks_TwoWay(t *testing.T) {
@@ -136,17 +138,7 @@ func TestParseConflicts_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
-			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"LC_ALL=C",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\noutput: %s", args, err, string(out))
-		}
+		gittest.Run(t, dir, args...)
 	}
 	write := func(name, content string) {
 		t.Helper()
@@ -172,10 +164,8 @@ func TestParseConflicts_EndToEnd(t *testing.T) {
 	run("commit", "-qam", "main-change")
 
 	// Squash into main; conflict expected.
-	cmd := exec.Command("git", "merge", "--squash", "feature")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	_, _ = cmd.CombinedOutput() // intentionally ignore the non-zero exit
+	// The conflict is the point, so the non-zero exit is expected.
+	_, _ = gittest.Try(dir, "merge", "--squash", "feature")
 
 	det, err := ParseConflicts(dir)
 	if err != nil {

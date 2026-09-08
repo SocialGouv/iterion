@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -61,7 +60,7 @@ func runReserveScenario(t *testing.T, id string, tweak func(*ir.Workflow)) *stor
 	stubBranchPlanRelay(exec)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), id, map[string]any{"plan_phase": "off"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestBranchImproveLoop_WindowStoppedPassLeavesTheLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-bil-window-stop", map[string]any{"plan_phase": "off"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

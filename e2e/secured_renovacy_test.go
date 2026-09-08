@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -186,7 +185,7 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-patch", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -396,7 +395,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-minor", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -573,7 +572,7 @@ func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-fix", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

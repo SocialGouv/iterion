@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestModernizePlanReadExitGateForms pins the contract surface of the
@@ -133,18 +135,7 @@ func modernizePlanRead(t *testing.T, script, planYAML, onlyLot string, wantExit 
 	ws := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		full := append([]string{"-C", ws}, args...)
-		cmd := exec.Command("git", full...)
-		// The throwaway repo must not inherit the operator's global or
-		// system config: a core.hooksPath or commit.gpgsign there fails
-		// `git commit` for reasons unrelated to what this test pins.
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_GLOBAL=/dev/null",
-			"GIT_CONFIG_SYSTEM=/dev/null",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
+		gittest.Run(t, ws, args...)
 	}
 	git("init", "-q", "-b", "main")
 	git("config", "user.email", "t@example.com")

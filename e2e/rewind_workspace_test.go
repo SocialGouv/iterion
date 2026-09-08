@@ -59,7 +59,7 @@ func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 	})
 
 	const runID = "e2e-rewind-workspace"
-	eng := runtime.New(wf, st, exec,
+	eng := newEngine(t, wf, st, exec,
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(ws),
 		runtime.WithWorkspaceTracker(tracker),
@@ -169,7 +169,7 @@ func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
 
 	const runID = "e2e-rewind-after-resume"
 	newEngine := func() *runtime.Engine {
-		return runtime.New(wf, st, exec,
+		return newEngine(t, wf, st, exec,
 			runtime.WithLogger(iterlog.Nop()),
 			runtime.WithWorkDir(ws),
 			runtime.WithWorkspaceTracker(tracker),
@@ -266,7 +266,7 @@ func TestRewindScopeAfterHumanGatePause(t *testing.T) {
 
 	const runID = "e2e-rewind-human-gate"
 	newEngine := func() *runtime.Engine {
-		return runtime.New(wf, st, exec,
+		return newEngine(t, wf, st, exec,
 			runtime.WithLogger(iterlog.Nop()),
 			runtime.WithWorkDir(ws),
 			runtime.WithWorkspaceTracker(tracker),
@@ -358,7 +358,7 @@ func TestRewindScopeAfterDelegatePause(t *testing.T) {
 
 	const runID = "e2e-rewind-delegate-pause"
 	newEngine := func() *runtime.Engine {
-		return runtime.New(wf, st, exec,
+		return newEngine(t, wf, st, exec,
 			runtime.WithLogger(iterlog.Nop()),
 			runtime.WithWorkDir(ws),
 			runtime.WithWorkspaceTracker(tracker),
@@ -445,7 +445,7 @@ func TestRewindScopeCoversAFailedNodesDebris(t *testing.T) {
 	})
 
 	const runID = "e2e-rewind-failed-node"
-	eng := runtime.New(wf, st, exec,
+	eng := newEngine(t, wf, st, exec,
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(ws),
 		runtime.WithWorkspaceTracker(tracker),

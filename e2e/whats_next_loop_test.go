@@ -143,7 +143,7 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-nexie-chat", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
@@ -228,7 +228,7 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-nexie-askuser", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {

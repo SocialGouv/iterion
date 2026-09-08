@@ -5,12 +5,11 @@ package e2e
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -219,10 +218,9 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 	requireWorkspaceCommitGrowth(t, workspaceDir, commitsBefore)
-	cmd := exec.Command("git", "-C", workspaceDir, "diff", "--stat", "HEAD")
-	out, _ := cmd.CombinedOutput()
-	if len(strings.TrimSpace(string(out))) > 0 {
-		t.Logf("Uncommitted fixer changes (working tree):\n%s", string(out))
+	out, _ := gittest.Try(workspaceDir, "diff", "--stat", "HEAD")
+	if out != "" {
+		t.Logf("Uncommitted fixer changes (working tree):\n%s", out)
 	}
 
 	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)

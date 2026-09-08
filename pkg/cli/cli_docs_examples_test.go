@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestNoIterExtensionAnywhere is the zero-trace guard for the deprecated
@@ -37,10 +39,9 @@ import (
 func TestNoIterExtensionAnywhere(t *testing.T) {
 	root := repoRootForDocsTest(t)
 
-	cmd := exec.Command("git", "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
+	cmd := gittest.Cmd(root, "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
 		"--", ".", ":(exclude)vendor/",
 		":(exclude)CHANGELOG.md", ":(exclude)docs/changelog/")
-	cmd.Dir = root
 	out, err := cmd.Output()
 	// git grep exits 1 with no output when there are no matches — the
 	// success case. A real match exits 0 with the offending lines.

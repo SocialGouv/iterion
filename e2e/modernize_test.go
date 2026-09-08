@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,7 +44,7 @@ func TestModernize_OnlyLotBlockedFailsTyped(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	runErr := eng.Run(context.Background(), "run-modernize-blocked", map[string]any{"only_lot": "lot-2"})
 	if runErr == nil {
 		t.Fatal("Run: want an error (work_gate routes a non-actionable only_lot to fail), got nil")
@@ -102,7 +101,7 @@ func TestModernize_UnfilteredNothingToDoStaysGreen(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-modernize-done", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

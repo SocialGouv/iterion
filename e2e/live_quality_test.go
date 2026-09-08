@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -301,19 +302,18 @@ func worktreeArtifactEvidence(t *testing.T, ws string) string {
 
 // gitOut runs a git command in dir and returns combined output (best-effort).
 func gitOut(dir string, args ...string) string {
-	full := append([]string{"-C", dir}, args...)
-	out, _ := exec.Command("git", full...).CombinedOutput()
-	return string(out)
+	out, _ := gittest.Try(dir, args...)
+	return out
 }
 
 // iterionSHA returns the short HEAD sha of the iterion repo (for snapshot
 // provenance). Repo root is the e2e parent directory.
 func iterionSHA() string {
-	out, err := exec.Command("git", "-C", "..", "rev-parse", "--short", "HEAD").CombinedOutput()
+	out, err := gittest.Try("..", "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // liveJudgeInvoker composes the cross-family judge panel's backends:

@@ -156,9 +156,14 @@ func TestDispatcherE2E_CancelInFlight(t *testing.T) {
 	defer cleanup()
 
 	started := make(chan struct{}, 1)
+	// Whether the worker came back is what splits the two failures this row
+	// can have. Without it the timeout says only that the entry is still
+	// there, which is the symptom both halves share.
+	var handlerReturned atomic.Bool
 	runner.Handler = func(ctx context.Context, _ dispatcher.DispatchSpec) error {
 		started <- struct{}{}
 		<-ctx.Done()
+		handlerReturned.Store(true)
 		return ctx.Err()
 	}
 
@@ -180,7 +185,19 @@ func TestDispatcherE2E_CancelInFlight(t *testing.T) {
 	// been widened once for flakiness, and the passing runs said nothing about
 	// whether the margin was shrinking.
 	waitUntil(t, 10*time.Second, "cancel to flush the running entry",
-		func() bool { return len(c.Snapshot().Running) == 0 })
+		func() bool { return len(c.Snapshot().Running) == 0 },
+		func() string {
+			// The measured shape of this wait is ~25ms or never (60 runs under
+			// -race on a starved box: 0.020-0.035s, no slow tail), so a
+			// timeout here is a park, not a slow machine — and no budget
+			// widens into it. It has been widened twice already (2s -> 10s,
+			// a354dc0a0 and 5368500f5 "flaky race job") and still reaches the
+			// ceiling on the race job. What the next occurrence needs is which
+			// half parked, not another number.
+			return fmt.Sprintf("handler returned=%v (false: the cancel never reached the worker's ctx; "+
+				"true: the worker came back and the actor never drained cmdRunFinished), snapshot=%+v",
+				handlerReturned.Load(), c.Snapshot())
+		})
 }
 
 func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {

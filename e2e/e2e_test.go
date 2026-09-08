@@ -244,7 +244,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-happy", nil)
 	if err != nil {
@@ -391,7 +391,7 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-refine", nil)
 	if err != nil {
@@ -484,7 +484,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-reloop", nil)
 	if err != nil {
@@ -606,7 +606,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-dual-happy", nil)
 	if err != nil {
@@ -754,7 +754,7 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-dual-reloop", nil)
 	if err != nil {
@@ -859,7 +859,7 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-comp-nohuman", nil)
 	if err != nil {
@@ -974,7 +974,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	// Phase 1: Run should pause at human checkpoint.
 	err := eng.Run(context.Background(), "e2e-comp-human", nil)
@@ -1141,7 +1141,7 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-comp-refine", nil)
 	if err != nil {
@@ -1220,7 +1220,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-happy", nil)
 	if err != nil {
@@ -1334,7 +1334,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-loop", nil)
 	if err != nil {
@@ -1424,7 +1424,7 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-exhaust", nil)
 	if err == nil {
@@ -1564,7 +1564,7 @@ func TestEventSequenceCoherence(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	if err := eng.Run(context.Background(), "e2e-events", nil); err != nil {
 		t.Fatalf("run error: %v", err)

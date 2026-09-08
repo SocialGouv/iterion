@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,7 +23,7 @@ func TestReviewPRDual_CollectorChainFiresOnce(t *testing.T) {
 
 	s := tmpStore(t)
 	runID := "e2e-dual-converges-once"
-	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, map[string]any{
+	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, map[string]any{
 		"review_tier": "audit", "mono_family": "claude",
 	}); err != nil {
 		t.Fatalf("run error: %v", err)
