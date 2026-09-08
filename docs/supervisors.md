@@ -29,8 +29,10 @@ The coordinator (`pkg/supervise`) subscribes to the run's event stream
 (`runview.Service.ObserveRun`), tracks the active node, and wakes the
 supervisor bot on:
 
-- **turn boundaries** (`llm_step_finished` / `node_finished` /
-  `node_started` / `run_paused`), debounced and rate-limited by a
+- **turn boundaries** (`llm_step_finished` / `assistant_text` /
+  `node_finished` / `node_started` / `run_paused`) — `assistant_text` is
+  the only per-turn signal a claude_code node emits, so it is what makes
+  the cooldown mean anything there — debounced and rate-limited by a
   cooldown, and
 - **monitor matches** — event patterns the bot registers interest in
   (a Bash failure, an edit to a path, a cost threshold), which fire
@@ -75,9 +77,11 @@ prompt watchdog_policy:
 nodes themselves run on** (their `provider:` routing, a `provider/`
 model prefix, or the backend's family — claude_code → anthropic,
 codex → openai), honoured when that provider is detected in the env OR
-funded by the run's own ctx credentials (a per-provider API key, or the
-codex ChatGPT forfait for openai; the anthropic OAuth forfait does NOT
-count — it is usable only by the claude_code CLI, never by claw) → the
+funded by the run's own ctx credentials (a per-provider API key, the
+codex ChatGPT forfait for openai, or the Claude Code OAuth forfait for
+anthropic — the last unless `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` or an
+`ANTHROPIC_BASE_URL` pointing anywhere but api.anthropic.com, the same
+predicate claw's own factory applies) → the
 detector's first available provider. The family
 preference is what keeps the coach on the credential the run already
 proved working: without it, a dead key sitting first in the host
@@ -133,10 +137,11 @@ auto-spawned, observes the run, and is torn down when the run ends. The
 `watches:` ids must name agent or judge nodes (a warning `C190` fires
 otherwise — both kinds execute through the same model executor and pick
 up steering at their next turn),
-and `system:` must reference a declared prompt (`C193`). Monitors aren't
-declared in the DSL — the supervisor bot registers the patterns it cares
-about at runtime; use the CLI `--monitor` flag to pre-seed them when
-attaching externally.
+and `system:` must reference a declared prompt (`C193`); a duplicate
+supervisor name is `C192`. Monitors may be pre-seeded in the DSL
+(`monitors:`, syntax-checked at validate by `C191`) and the supervisor
+bot registers more at runtime; when attaching externally use the CLI
+`--monitor` flag, which shares the same grammar.
 
 ### Disabling declared supervisors (kill switch)
 
@@ -242,11 +247,14 @@ Claude Code settings:
 
 ```sh
 iterion supervise install-hook --cwd /path/to/repo   # writes .claude/settings.local.json
+iterion supervise install-hook --cwd /path/to/repo --project  # writes the shared .claude/settings.json instead
 ```
 
 This adds a `Stop` + `PostToolUse` command hook that runs
 `iterion __claude-hook-drain`. It is non-destructive (existing hooks and
-keys are preserved) and idempotent; remove it with `uninstall-hook`. The
+keys are preserved) and idempotent; remove it with `uninstall-hook`,
+which takes the same `--cwd` / `--project` pair. Commit the `--project`
+form to install the hook for the whole team. The
 hook must be present **before** the `claude` session starts (Claude Code
 reads hooks at session start).
 

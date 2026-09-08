@@ -24,7 +24,7 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/` (claude_code discovers via `--setting-sources project`) |
 | `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/` (claude_code discovers via `--setting-sources project`) |
 | `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
-| `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
+| `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (the manifest's `auto_index` is declared but not yet executed by the engine) |
 
 `skills` / `commands` / `agents` share one mirror mechanism + the bundle
 collision policy (copy / no-op / refresh / shadow) — a same-named
@@ -166,7 +166,9 @@ description: …                  # shown in `plugin list`
 author: …
 schema_version: 1               # default 1; a newer version than the binary supports is rejected
 default_enabled: true           # enable state when the operator has expressed none
-auto_index: false               # run lifecycle.index before a run if enabled
+auto_index: false               # declared intent to run lifecycle.index before a
+                                # run — surfaced in the UI, NOT yet executed by
+                                # the engine; prime it explicitly instead
 contributes:
   rewriters:
     - id: rtk
@@ -301,7 +303,9 @@ context:
   (Homebrew, `npm -g`, or the runner image's pre-installed global) and degrades
   to passthrough when none is present, so it never pays `npx` startup on a
   per-command hook. Priming the index first turns MCP activation into a load
-  rather than a rebuild, which is what `auto_index: true` does before a run.
+  rather than a rebuild, which is what the `index` lifecycle does — run it
+  explicitly (`iterion plugin run <name> index`); the manifest's
+  `auto_index: true` is a declaration the runtime does not act on yet.
 
 ```sh
 iterion plugin enable repo-falcon
