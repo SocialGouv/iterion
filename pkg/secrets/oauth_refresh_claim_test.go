@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // blockingOAuthServer answers the token endpoint but parks the FIRST
@@ -278,5 +280,59 @@ func TestMemoryOAuthStore_RefreshClaimIsFencedAndSelfHealing(t *testing.T) {
 	}
 	if rec.RefreshClaimOwner != "" || rec.RefreshNotBefore != nil {
 		t.Fatalf("claim not released by the commit: owner=%q notBefore=%v", rec.RefreshClaimOwner, rec.RefreshNotBefore)
+	}
+}
+
+// The fence lives in the Mongo write's FILTER, which is the half of the
+// write that leaves no trace: an unfenced UpdateOne matches every time and
+// the record it leaves is indistinguishable from a legitimate commit's. So
+// a store that built the fenced filter and then sent an unfenced literal
+// compiled, passed every claim test above (they run on the memory twin,
+// which enforces the fence in Go) and shipped a promise it did not keep —
+// the only suite that could see it, the Mongo conformance one, skips
+// without ITERION_TEST_MONGO_URI.
+//
+// Assert the pair the store actually sends, with no Mongo at all.
+func TestOAuthTokenUpdateWrite_FencesOnTheClaim(t *testing.T) {
+	now := time.Now().UTC()
+	cool := now.Add(time.Hour)
+
+	filter, update := oauthTokenUpdateWrite("alice", OAuthKindCodex,
+		OAuthTokenUpdate{SealedPayload: []byte("sealed-v2"), RefreshNotBefore: &cool}.WithClaim("owner-a"), now)
+	if got := filter["user_id"]; got != "alice" {
+		t.Fatalf("filter user_id = %v, want alice", got)
+	}
+	if got := filter["kind"]; got != OAuthKindCodex {
+		t.Fatalf("filter kind = %v, want %v", got, OAuthKindCodex)
+	}
+	if got := filter["refresh_claim_owner"]; got != "owner-a" {
+		t.Fatalf("fenced commit filter refresh_claim_owner = %v, want owner-a — without it a superseded "+
+			"holder's tokens overwrite the credential an operator's re-connect just installed", got)
+	}
+	set, ok := update["$set"].(bson.M)
+	if !ok {
+		t.Fatalf("update = %v, want a $set body", update)
+	}
+	if got := set["refresh_claim_owner"]; got != "" {
+		t.Fatalf("$set refresh_claim_owner = %v, want the claim released by the same write", got)
+	}
+	if got, isTime := set["refresh_not_before"].(time.Time); !isTime || !got.Equal(cool) {
+		t.Fatalf("$set refresh_not_before = %v, want the cool-down %v", set["refresh_not_before"], cool)
+	}
+	if got := set["sealed_payload"]; string(got.([]byte)) != "sealed-v2" {
+		t.Fatalf("$set sealed_payload = %v, want the refreshed blob", got)
+	}
+
+	// The unfenced shape (the self-heal, which takes no claim) must neither
+	// fence on a claim it does not hold nor clear the holder's.
+	filter, update = oauthTokenUpdateWrite("alice", OAuthKindCodex, OAuthTokenUpdate{NotRefreshable: true}, now)
+	if _, fenced := filter["refresh_claim_owner"]; fenced {
+		t.Fatalf("unfenced write filtered on a claim: %v", filter)
+	}
+	set, _ = update["$set"].(bson.M)
+	for _, k := range []string{"refresh_claim_owner", "refresh_not_before"} {
+		if _, wrote := set[k]; wrote {
+			t.Fatalf("unfenced write touched %q: %v — it would free (or re-stamp) a live holder's claim", k, set)
+		}
 	}
 }

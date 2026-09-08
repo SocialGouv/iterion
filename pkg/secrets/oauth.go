@@ -838,15 +838,18 @@ func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind O
 	defer s.mu.Unlock()
 	key := mkOAuthKey(userID, kind)
 	r, ok := s.m[key]
-	if !ok {
-		return ErrOAuthNotFound
-	}
 	if upd.ClaimOwner != "" {
-		if r.RefreshClaimOwner != upd.ClaimOwner {
+		// A fenced commit reads its verdict off the fence, exactly like
+		// ReleaseRefreshClaim: a record that vanished under the holder is
+		// the claim-lost outcome, not a lookup failure — and the Mongo
+		// twin's filtered UpdateOne cannot tell the two apart either.
+		if !ok || r.RefreshClaimOwner != upd.ClaimOwner {
 			return ErrRefreshClaimLost
 		}
 		r.RefreshClaimOwner = ""
 		r.RefreshNotBefore = copyTimePtr(upd.RefreshNotBefore)
+	} else if !ok {
+		return ErrOAuthNotFound
 	}
 	if upd.SealedPayload != nil {
 		r.SealedPayload = upd.SealedPayload
@@ -1004,13 +1007,26 @@ func notBeforeValue(t *time.Time) any {
 	return t.UTC()
 }
 
-func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
+// oauthTokenUpdateWrite builds the (filter, update) pair the Mongo
+// UpdateTokens commits. It is a separate pure function for two reasons,
+// both learned from the fence being built and then not sent — a filter is
+// the one half of a Mongo write nothing observable can betray, since an
+// unfenced UpdateOne matches every time and leaves a record identical to a
+// legitimate commit's:
+//
+//   - the fence becomes assertable with no live Mongo, which is where the
+//     only suite that could have caught it skips
+//     (TestOAuthTokenUpdateWrite_FencesOnTheClaim);
+//   - the filter arrives as a RETURNED value, so a call site that passes a
+//     literal instead leaves it unused and does not compile. Built in place,
+//     it was "used" by its own map-index assignments and compiled fine.
+func oauthTokenUpdateWrite(userID string, kind OAuthKind, upd OAuthTokenUpdate, now time.Time) (bson.M, bson.M) {
 	// A literal $set of the refresh-owned keys, never the struct: the
 	// account label — and anything else a future writer owns — stays
 	// whatever its own endpoint last wrote.
 	set := bson.M{
 		"not_refreshable": upd.NotRefreshable,
-		"updated_at":      time.Now().UTC(),
+		"updated_at":      now.UTC(),
 	}
 	filter := bson.M{"user_id": userID, "kind": kind}
 	if upd.ClaimOwner != "" {
@@ -1038,14 +1054,25 @@ func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind 
 	if upd.Fingerprint != "" {
 		set["fingerprint"] = upd.Fingerprint
 	}
-	res, err := s.coll.UpdateOne(ctx,
-		bson.M{"user_id": userID, "kind": kind},
-		bson.M{"$set": set},
-	)
+	return filter, bson.M{"$set": set}
+}
+
+func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
+	filter, update := oauthTokenUpdateWrite(userID, kind, upd, time.Now())
+	res, err := s.coll.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("secrets: update oauth tokens: %w", err)
 	}
 	if res.MatchedCount == 0 {
+		if upd.ClaimOwner != "" {
+			// The fence is what failed to match — the same verdict
+			// ReleaseRefreshClaim reads off MatchedCount, and for the same
+			// reason: a record whose claim moved on and one that vanished
+			// under the holder both mean "these tokens belong to a session
+			// that is no longer stored". Callers branch on the sentinel to
+			// DISCARD the exchange rather than count a persist failure.
+			return ErrRefreshClaimLost
+		}
 		return ErrOAuthNotFound
 	}
 	return nil
