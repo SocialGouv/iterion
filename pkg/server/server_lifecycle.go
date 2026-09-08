@@ -413,11 +413,6 @@ func (s *Server) ListenAndServe() error {
 	return s.server.Serve(ln)
 }
 
-// startUserNotify builds the usernotify dispatcher (web-push sink), attaches
-// it to the event spine, and starts the reconciliation sweep. No-op when the
-// feature is off. The dispatcher subscribes on the shared EventsBus (cloud
-// NATSBus — queue-group delivery dedups across replicas) or, locally, on the
-// trigger coordinator's in-proc bus.
 // startOAuthForfaitRefresh runs the OAuth-forfait refresh sweep: proactively
 // rotate Claude Code (and Codex) subscription access tokens before they
 // expire so neither an interactive run nor an automated
@@ -478,6 +473,11 @@ func (s *Server) startOAuthForfaitRefresh() {
 	}()
 }
 
+// startUserNotify builds the usernotify dispatcher (web-push sink), attaches
+// it to the event spine, and starts the reconciliation sweep. No-op when the
+// feature is off. The dispatcher subscribes on the shared EventsBus (cloud
+// NATSBus — queue-group delivery dedups across replicas) or, locally, on the
+// trigger coordinator's in-proc bus.
 func (s *Server) startUserNotify() {
 	if !s.webPushEnabled() || s.runs == nil {
 		return
