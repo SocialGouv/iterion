@@ -61,11 +61,14 @@ node, which builds an index and splits pending deps into *already
 analysed at acceptable scanner_version* (skip) and *new or stale*
 (scan).
 
-The cache is **auto-mounted into the sandbox** when
-`host_state: auto` is in effect (the default), so sandboxed runs
-share the cache transparently. Pass `--sandbox-host-state=none` to
-opt out — useful in multi-tenant cloud runners that must not share
-operator state.
+At the **default** `cache_path` there is nothing host-wide to mount: the
+path is engine run scratch, which under a sandbox is per-run, so the
+cache does not dedup across runs. Cross-repo reuse is the opt-in above —
+point `cache_path` at a host path
+(`--var cache_path=$HOME/.iterion/security-cache/packages.jsonl`), which
+`host_state: auto` (the default) then bind-mounts into the sandbox. Pass
+`--sandbox-host-state=none` to opt out — useful in multi-tenant cloud
+runners that must not share operator state.
 
 ## Pipeline
 
