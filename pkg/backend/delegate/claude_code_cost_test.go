@@ -20,6 +20,12 @@ func TestAnnotateCost(t *testing.T) {
 		rms       []*claudesdk.ResultMessage
 		wantModel string
 		wantCost  func(t *testing.T, cost any)
+		// wantSessionTotal pins the provenance of the figure above: true
+		// only when the CLI itself reported a cost, which is the sole case
+		// where two calls of one session may be folded at their MAX. A
+		// token estimate that silently claimed to be a session total would
+		// make a retry under-report by a whole attempt.
+		wantSessionTotal bool
 	}{
 		{
 			name:      "empty task model falls back to effective model for pricing",
@@ -55,6 +61,7 @@ func TestAnnotateCost(t *testing.T) {
 					t.Fatalf("_cost_usd = %v, want the CLI-reported 0.42", cost)
 				}
 			},
+			wantSessionTotal: true,
 		},
 		{
 			name:      "max across result messages, never the sum",
@@ -70,6 +77,7 @@ func TestAnnotateCost(t *testing.T) {
 					t.Fatalf("_cost_usd = %v, want max 0.35 (not the 0.65 sum)", cost)
 				}
 			},
+			wantSessionTotal: true,
 		},
 		{
 			name:      "no model resolvable: tokens recorded, cost omitted",
@@ -97,6 +105,9 @@ func TestAnnotateCost(t *testing.T) {
 				t.Errorf("_model = %v, want %q", got, tt.wantModel)
 			}
 			tt.wantCost(t, result.Output["_cost_usd"])
+			if got := result.CostIsSessionTotal; got != tt.wantSessionTotal {
+				t.Errorf("CostIsSessionTotal = %v, want %v", got, tt.wantSessionTotal)
+			}
 		})
 	}
 }
