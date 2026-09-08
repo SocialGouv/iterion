@@ -130,6 +130,24 @@ func TestRunWaitTimeoutIsBoundedByTheOperationAndNeverOutlivesTheHarness(t *test
 	}
 }
 
+// stopService joins the service's background workers and every run goroutine
+// before the test's t.TempDir goes — a service left running writes into a
+// directory RemoveAll is already walking.
+//
+// The context is what BOUNDS that join: Manager.Stop waits per handle on
+// `select { case <-h.done: case <-ctx.Done(): return }`, and with
+// context.Background() the second arm is nil and can never fire. A wedged run
+// goroutine — a subbot child registered mid-flight, for one — would then block
+// teardown forever and surface only as a package-wide harness panic naming
+// whichever test was in flight. waitDeadlineMargin is what every wait in this
+// package already reserves for exactly this unwind.
+func stopService(t *testing.T, svc *Service) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), waitDeadlineMargin)
+	defer cancel()
+	svc.Stop(ctx)
+}
+
 func awaitRunCompletion(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
 	ctx := runWaitContext(t)

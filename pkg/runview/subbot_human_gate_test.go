@@ -92,7 +92,7 @@ func TestServiceLaunch_SubbotChildHumanGate_ParkAndResume(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	defer svc.Stop(context.Background())
+	defer stopService(t, svc)
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {

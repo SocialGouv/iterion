@@ -43,11 +43,7 @@ func TestServiceLaunch_SubbotReattachAfterRestart(t *testing.T) {
 	// Stop joins the orphan reconciler and every run goroutine before the
 	// TempDir goes: a service left running writes into a directory RemoveAll
 	// is already walking.
-	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer stopCancel()
-		svc.Stop(stopCtx)
-	})
+	t.Cleanup(func() { stopService(t, svc) })
 
 	// 1. Launch the parent under a cancelable context (the "process").
 	runCtx, cancel := context.WithCancel(context.Background())

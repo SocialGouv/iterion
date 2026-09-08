@@ -67,7 +67,7 @@ The service test sweep included `time.After`, `context.WithTimeout` and
 | `manager`, `service_drain`, `reconcile_shutdown`, `service_stop_background` | Retain shutdown, cancellation and background-worker lifecycle contracts. |
 | `periodic_reconcile`, `reattach` | Retain bounded observations of reconciliation/timer behaviour in their separate fixtures. |
 | `merge_claim`, `service_runs_skip_log`, `service_test` | Backdated timestamps construct old records; they are not wait deadlines. |
-| `subbot_restart` shutdown cleanup | Retain the separate 30-second shutdown budget; it bounds service teardown, not child workflow progress. |
+| `subbot_{restart,child_control,human_gate}` service teardown | `stopService` keeps the separate 30-second shutdown budget (`waitDeadlineMargin`); it bounds service teardown, not child workflow progress. A `context.Background()` there is unbounded: `Manager.Stop`'s `ctx.Done()` arm is nil and can never fire, so a wedged run goroutine blocks teardown forever. |
 
 ## Falsification performed
 

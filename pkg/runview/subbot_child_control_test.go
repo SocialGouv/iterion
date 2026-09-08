@@ -93,7 +93,7 @@ func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	t.Cleanup(func() { svc.Stop(context.Background()) })
+	t.Cleanup(func() { stopService(t, svc) })
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
@@ -161,7 +161,7 @@ func TestServiceLaunch_SubbotChild_PauseMidFlight(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	t.Cleanup(func() { svc.Stop(context.Background()) })
+	t.Cleanup(func() { stopService(t, svc) })
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
