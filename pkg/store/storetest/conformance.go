@@ -921,6 +921,12 @@ func testNodesServed(t *testing.T, s store.RunStore) {
 		DeclaredModel:   "anthropic/claude-opus-5",
 		ContextWindow:   200_000,
 		MaxOutputTokens: 8192,
+		// Set here, not left zero: the comparisons below are struct
+		// equality, so a field the fixture never populates proves
+		// nothing about its bson tag — both twins would return "" and
+		// agree. This is the only place the FS and Mongo halves are
+		// held to the same NodeServed shape.
+		Fingerprint: "facade:https://api.z.ai/api/anthropic",
 	}
 	if err := s.RecordNodeServed(ctx, "run_served", "implement", first); err != nil {
 		t.Fatalf("RecordNodeServed implement: %v", err)
