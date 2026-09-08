@@ -283,37 +283,48 @@ re-measures.
 - then the ordinary wait: `run_retry_scheduled` with `retry_after` at the
   window's reopening, and `run_auto_resumed` when it fires.
 
-### Two sentences, two very different situations
+### Two shapes, three situations — and the number is what tells them apart
 
-The warn line comes in two shapes, and reading the wrong one wastes the time
-the cap was meant to save. Both begin `usage cap:`, and only one of them is
-about the cap.
-
-```
-usage cap: seven_day window at 76% ≥ 75% (week, hard), resets …
-```
-
-**We stopped ourselves.** The provider is still serving; iterion refused
-because its own telemetry crossed the operator's percentage. Raising the cap
-(`iterion remote admin caps set --week …`) lets work through immediately.
+The warn line comes in two shapes, and the shape alone does **not** say who
+refused. Reading it as if it did is what wastes the time this page exists to
+save.
 
 ```
 usage cap: provider rejected on the seven_day window (week cap 85%, hard), resets …
 ```
 
-**The provider refused.** This wording is emitted only when the reading's
-status is *rejected* AND it carries no utilization number — a real refusal
-from the API, not a threshold crossing. The `(week cap 85%, hard)` in
-parentheses names the policy in force, **not the reason**, which is exactly
-what makes it easy to misread: touching the cap changes nothing, because the
-call never got as far as the cap. The only thing that helps is the reset
-instant, and the run is already waiting for it.
+**The provider refused, and said so without a number.** `evaluate` picks this
+wording only when the reading's status is *rejected* AND it carries no
+utilization figure. The `(week cap 85%, hard)` in parentheses names the policy
+in force, **not the reason** — which is what makes it easy to misread. Touching
+the cap changes nothing: the call never got as far as the cap.
+
+```
+usage cap: seven_day window at 76% ≥ 75% (week, hard), resets …
+```
+
+**This one is ambiguous, and the percentage resolves it.**
+
+- **Below 100%** — we stopped ourselves. The provider is still serving and
+  iterion refused because its own telemetry crossed the operator's percentage.
+  Raising the cap (`iterion remote admin caps set --week …`) lets work through
+  immediately.
+- **At or above 100%** — the provider refused, in the same words. A reading can
+  be *rejected* and still carry a number, and it then renders in this shape;
+  the Anthropic forfait probe marks every window at ≥100% rejected while
+  keeping the figure. A rejected reading is blocked at **any** cap — the guard
+  reads `if !rejected && pct < cap`, so even a cap of 100% refuses it. Raise
+  nothing; the reset instant is the only lever.
+
+So the rule to carry is not *"which sentence is it"* but **"is the reading
+rejected"**, and the two things that answer it are the missing number and the
+percentage at or above 100%.
 
 Two consequences worth having in mind before touching anything:
 
-- The refusal shape can appear while the provider's own dashboard shows
-  headroom on the *other* window. A weekly wall and a five-hour wall are
-  independent, and a run refused on one says nothing about the other.
+- A refusal can appear while the provider's own dashboard shows headroom on
+  the *other* window. The weekly and five-hour walls are independent, and a run
+  refused on one says nothing about the other.
 - `iterion remote admin usage-readings clear` will happily forget a refusal
   too, and it buys nothing: the next run is admitted and then refused at the
   call instead of at admission. That command earns its keep on the *opposite*
@@ -322,9 +333,9 @@ Two consequences worth having in mind before touching anything:
   Reach for it when the provider's dashboard disagrees with iterion, not when
   the provider itself is saying no.
 
-Measured on 2026-09-08: fifteen review runs refused this way over an hour, on
-a deployment whose caps had just been lowered — the caps were not the cause,
-and every one of the fifteen resumed and delivered by itself once the window
+Measured on 2026-09-08: fifteen review runs refused over an hour on a
+deployment whose caps had just been lowered — the caps were not the cause, and
+every one of the fifteen resumed and delivered by itself once the window
 reopened.
 
 ## What a cap does NOT stop
