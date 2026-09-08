@@ -691,6 +691,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // max_cost_usd, the org monthly cap and a lending donor's ledger read the
 // same totals, and a failed agent node can be the most expensive thing a
 // run did.
+//
 // A booking also counts an iteration, as every recordBudget does — so a
 // failed node that spent consumes a max_iterations slot and one that spent
 // nothing does not. That asymmetry is deliberate: the guard below is what
