@@ -483,8 +483,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
-		// went to trouble to keep the figure: `typedFailure` allocates the
-		// output map and annotates the cost on a typed refusal, and
+		// went to trouble to keep the figure: claude_code's `typedFailure`
+		// allocates the output map and annotates the cost on a typed
+		// refusal, claw's `meteredFailure` does the same over the partial
+		// result its generation layer returns beside the error, and
 		// dispatchChain folds every abandoned route's spend into the
 		// terminal result. Returning a bare nil threw all of it away one
 		// frame short of the engine, which is the only place that books it

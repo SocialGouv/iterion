@@ -328,10 +328,15 @@ func TestFailedNodeSpendDoesNotSpeakForTheRun(t *testing.T) {
 	})
 }
 
-// meteredFailingBackend is the shape a real delegate returns when a
-// delegation dies: the error, and BESIDE it the result carrying what the
-// pass burned — `typedFailure` allocates the output map and annotates the
-// cost precisely so the figure survives the failure.
+// meteredFailingBackend is the shape a delegate returns when a delegation
+// dies: the error, and BESIDE it the result carrying what the pass burned.
+// Each shipped backend reaches that shape its own way — claude_code through
+// `typedFailure`, which allocates the output map and annotates the cost on a
+// typed refusal; claw through `meteredFailure` over the partial result its
+// generation layer returns beside the error. That the SHIPPED ones actually
+// fill it is pinned where they live
+// (model.TestClawBackendKeepsWhatAnAbandonedGenerationBurned); what this stub
+// pins is the frame above them.
 type meteredFailingBackend struct {
 	calls int
 }
@@ -346,10 +351,10 @@ func (b *meteredFailingBackend) Execute(_ context.Context, _ delegate.Task) (del
 }
 
 // The END of the chain, through the production executor rather than a
-// runtime stub: a real ClawExecutor dispatching to a real delegate.Backend
-// that fails after spending. Every layer below went to trouble to preserve
-// the figure — typedFailure allocates and annotates, dispatchChain folds the
-// abandoned routes' spend into the terminal result — and it only counts if
+// runtime stub: a real ClawExecutor dispatching a registered delegate that
+// fails after spending. Every layer below went to trouble to preserve the
+// figure — the backends stamp it on their failure result, dispatchChain folds
+// the abandoned routes' spend into the terminal one — and it only counts if
 // it survives the last frame into the engine, which is the only place that
 // books it against max_cost_usd, the org cap and a donor's ledger.
 //
