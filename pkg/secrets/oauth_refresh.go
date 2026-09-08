@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -251,12 +253,14 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		// So fall back to the access token's own `exp` claim, which is the
 		// blob's only self-contained deadline (`expires_in` is relative to
 		// an exchange that may be old, and `last_refresh` dates the write,
-		// not the token). Zero stays zero: an expiry we cannot read is left
-		// unstamped rather than invented.
+		// not the token).
+		//
+		// Zero stays zero: an expiry we cannot read is left unstamped
+		// rather than invented.
 		if t := codexRefreshedExpiry(res, updated); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
 		}
-	default:
+		default:
 		return fmt.Errorf("secrets: RefreshRecord unsupported kind %q", rec.Kind)
 	}
 	rec.LastRefreshedAt = &now
@@ -323,6 +327,28 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 		out.Scopes = strings.Fields(tok.Scope)
 	}
 	return out, nil
+}
+
+// RefreshClaimTTL bounds how long one holder may keep a record's refresh
+// claim (OAuthStore.ClaimRefresh). It has to outlast the slowest provider
+// exchange — the HTTP client timeout plus refreshRetrySchedule — so a live
+// refresher is never superseded mid-flight, and stay well under the sweep
+// interval so a replica that died holding a claim costs at most one skipped
+// cycle rather than a stuck credential.
+const RefreshClaimTTL = 2 * time.Minute
+
+// NewRefreshClaimOwner mints the fencing token for ONE refresh attempt —
+// the value both the sweep and the manual endpoint claim with, and commit
+// conditionally on. Deliberately per attempt rather than per replica: the
+// token's job is to bind the commit to the exchange that produced it, so
+// the same process's next attempt must not be able to commit the previous
+// one's result.
+func NewRefreshClaimOwner() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("secrets: mint refresh claim owner: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // codexRefreshedExpiry resolves the access-token deadline to store after a

@@ -125,6 +125,18 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   refresh codex (`runner.startOAuthRefreshers` takes claude_code only),
   and each deployment wants its own `codex login` session rather than one
   shared with an operator's laptop.
+  "One refresher" is **enforced on the record, not assumed of the
+  deployment** — that worker runs in every server replica with no leader
+  election. Each refresh (the sweep's and the manual
+  `POST …/oauth/{kind}/refresh`) first takes a compare-and-swap claim on
+  the record (`refresh_claim_owner` + `refresh_not_before`, a 2-minute
+  lease) and commits only while it still holds it. Consequences you can
+  observe: a manual refresh answers **409** while another one is in
+  flight; a re-connect during an exchange wins, and the refresh that was
+  in flight discards its tokens (409, "replaced while the refresh was in
+  flight") instead of overwriting the credential you just uploaded; and a
+  replica that dies mid-refresh costs one sweep, not a stuck credential —
+  the lease simply expires.
   That worker only ever sees records `ExpiringBefore` returns, which
   requires `access_token_expires_at` to exist. It is now stamped from the
   access token's own `exp` claim at connect and after each refresh — but

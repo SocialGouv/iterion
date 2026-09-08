@@ -109,9 +109,41 @@ type OAuthRecord struct {
 	// No bson omitempty: the Mongo store writes records through $set, and
 	// an omitted key leaves the OLD value in place — so clearing the label
 	// would report success and keep the stale name.
-	AccountLabel string    `bson:"account_label" json:"account_label,omitempty"`
-	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
-	UpdatedAt    time.Time `bson:"updated_at" json:"updated_at"`
+	AccountLabel string `bson:"account_label" json:"account_label,omitempty"`
+	// RefreshClaimOwner / RefreshNotBefore fence the ONE refresh exchange a
+	// record may have in flight, and hold the sweep off a record it must
+	// not retry yet. They are the record's scheduling state, never a
+	// credential fact — nothing outside the refresh paths reads them, which
+	// is why both are `json:"-"`.
+	//
+	// The claim exists because a refresh is NOT an atomic write: the caller
+	// reads the record, spends a round trip at the provider, then persists.
+	// OpenAI rotates the refresh token on that round trip, so two holders
+	// exchanging concurrently retire each other's token and the credential
+	// dies until a human re-connects it (measured:
+	// docs/bot-runs/feed-watch.md). Every server replica runs its own
+	// OAuthRefreshWorker with no leader election, so "one refresher" is a
+	// property that has to be enforced per record, not assumed.
+	//
+	// RefreshClaimOwner is a fencing token minted per attempt, never a
+	// replica identity: the commit (UpdateTokens with ClaimOwner set) is
+	// conditional on it, so a refresher whose claim expired — or was
+	// superseded by a re-connect, which clears both fields — discards its
+	// exchange instead of overwriting the credential that replaced it.
+	//
+	// RefreshNotBefore doubles as a cool-down when no owner holds it: a
+	// refresh that succeeded but yielded no readable expiry leaves the
+	// record inside ExpiringBefore's window forever, and without a
+	// cool-down every sweep would re-run the exchange (and rotate the
+	// refresh token) every 10 minutes for good.
+	//
+	// No bson omitempty on either: the Mongo store writes through $set, so
+	// an omitted key would leave a stale claim in place — the trap already
+	// documented on AccountLabel. Clearing has to travel on the wire.
+	RefreshClaimOwner string     `bson:"refresh_claim_owner" json:"-"`
+	RefreshNotBefore  *time.Time `bson:"refresh_not_before" json:"-"`
+	CreatedAt         time.Time  `bson:"created_at" json:"created_at"`
+	UpdatedAt         time.Time  `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.
@@ -137,8 +169,34 @@ type OAuthStore interface {
 	// reverting a rename committed in the meantime to the label it happened
 	// to hold. Missing record → ErrOAuthNotFound. Upsert is left to the
 	// connect paths, which legitimately replace the record.
+	//
+	// When upd.ClaimOwner is set the write is CONDITIONAL on still holding
+	// that claim: ErrRefreshClaimLost and no write otherwise.
 	UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error
+	// ClaimRefresh elects the ONE holder allowed to exchange this record's
+	// refresh token, by compare-and-swap: it succeeds only while nobody
+	// holds a live claim (RefreshNotBefore absent or already past), and
+	// stamps owner + until when it does. Returns false — not an error —
+	// when someone else holds it; that caller must not touch the provider.
+	// A crashed holder's claim is re-claimable as soon as `until` passes,
+	// so nothing has to release it. Missing record → false, no error.
+	ClaimRefresh(ctx context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error)
+	// ReleaseRefreshClaim hands the claim back without writing tokens — the
+	// path a FAILED exchange takes, so the next sweep may retry at once
+	// instead of waiting the lease out. Conditional on still owning the
+	// claim (ErrRefreshClaimLost otherwise), so a slow holder can never
+	// free its successor's. notBefore sets the cool-down the sweep must
+	// respect afterwards; nil clears it.
+	ReleaseRefreshClaim(ctx context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error
 }
+
+// ErrRefreshClaimLost is the outcome of a refresh whose claim no longer
+// holds at commit time — the lease expired under a slow exchange, or a
+// re-connect replaced the credential while the provider round trip was in
+// flight. It is not a failure of the exchange but a verdict on it: the
+// tokens just obtained belong to a session that is no longer the stored
+// one, so they are DISCARDED rather than written over what replaced them.
+var ErrRefreshClaimLost = errors.New("secrets: oauth refresh claim lost")
 
 // OAuthTokenUpdate is the set of fields a refresh (or its self-heal) may
 // rewrite. Everything absent from it belongs to another writer — the
@@ -166,6 +224,18 @@ type OAuthTokenUpdate struct {
 	// NotRefreshable is always written: a successful refresh proves the
 	// record IS refreshable, and the self-heal path exists to set it.
 	NotRefreshable bool
+	// ClaimOwner is a PRECONDITION, not a field write: when set, the store
+	// commits only while the record still carries that claim owner
+	// (ErrRefreshClaimLost otherwise) and releases the claim as part of the
+	// same write. Empty means "no claim was taken" and leaves the claim
+	// fields exactly as stored — the shape the self-heal partial writes use.
+	ClaimOwner string
+	// RefreshNotBefore is the cool-down to leave behind when releasing the
+	// claim, and — like NotRefreshable — it is always written on a claimed
+	// commit, nil meaning "cleared". Leaving a stale cool-down in place
+	// would hold the sweep off a record the refresh just made schedulable
+	// again. Ignored when ClaimOwner is empty.
+	RefreshNotBefore *time.Time
 }
 
 // OAuthTokenUpdateFrom projects the refresh-owned fields out of a record
@@ -180,7 +250,21 @@ func OAuthTokenUpdateFrom(rec OAuthRecord) OAuthTokenUpdate {
 		Scopes:               rec.Scopes,
 		Fingerprint:          rec.Fingerprint,
 		NotRefreshable:       rec.NotRefreshable,
+		// RefreshNotBefore travels too: RefreshRecord sets it when it
+		// refreshed a token it could not date, and that cool-down is the
+		// only thing keeping the record out of the next sweep.
+		RefreshNotBefore: rec.RefreshNotBefore,
 	}
+}
+
+// WithClaim returns the update fenced by a refresh claim: the store then
+// commits only while that claim still holds, and releases it in the same
+// write. The claim owner is never taken from the record — a record read
+// before the claim was taken carries the previous owner, and fencing on
+// that would defeat the mechanism.
+func (u OAuthTokenUpdate) WithClaim(owner string) OAuthTokenUpdate {
+	u.ClaimOwner = owner
+	return u
 }
 
 // ErrOAuthNotFound is the sentinel for missing records.
@@ -706,6 +790,51 @@ func (s *MemoryOAuthStore) SetAccountLabel(_ context.Context, userID string, kin
 	return nil
 }
 
+func (s *MemoryOAuthStore) ClaimRefresh(_ context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := mkOAuthKey(userID, kind)
+	r, ok := s.m[key]
+	if !ok {
+		return false, nil
+	}
+	if r.RefreshNotBefore != nil && r.RefreshNotBefore.After(now) {
+		return false, nil
+	}
+	u := until.UTC()
+	r.RefreshClaimOwner = owner
+	r.RefreshNotBefore = &u
+	r.UpdatedAt = now.UTC()
+	s.m[key] = r
+	return true, nil
+}
+
+func (s *MemoryOAuthStore) ReleaseRefreshClaim(_ context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := mkOAuthKey(userID, kind)
+	r, ok := s.m[key]
+	// A record that vanished under the holder is the claim-lost outcome,
+	// not a lookup failure — same verdict the Mongo twin's MatchedCount
+	// gives, and the caller acts on it identically.
+	if !ok || r.RefreshClaimOwner != owner {
+		return ErrRefreshClaimLost
+	}
+	r.RefreshClaimOwner = ""
+	r.RefreshNotBefore = copyTimePtr(notBefore)
+	r.UpdatedAt = time.Now().UTC()
+	s.m[key] = r
+	return nil
+}
+
+func copyTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	c := t.UTC()
+	return &c
+}
+
 func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -713,6 +842,13 @@ func (s *MemoryOAuthStore) UpdateTokens(_ context.Context, userID string, kind O
 	r, ok := s.m[key]
 	if !ok {
 		return ErrOAuthNotFound
+	}
+	if upd.ClaimOwner != "" {
+		if r.RefreshClaimOwner != upd.ClaimOwner {
+			return ErrRefreshClaimLost
+		}
+		r.RefreshClaimOwner = ""
+		r.RefreshNotBefore = copyTimePtr(upd.RefreshNotBefore)
 	}
 	if upd.SealedPayload != nil {
 		r.SealedPayload = upd.SealedPayload
@@ -816,6 +952,58 @@ func (s *MongoOAuthStore) SetAccountLabel(ctx context.Context, userID string, ki
 	return nil
 }
 
+// ClaimRefresh is the CAS: the filter matches only while no live claim
+// stands (refresh_not_before absent, null, or already past — `nil` matches
+// the first two in Mongo), so the first replica to stamp its owner wins and
+// the rest get (false, nil). One refresher per record, no leader.
+func (s *MongoOAuthStore) ClaimRefresh(ctx context.Context, userID string, kind OAuthKind, owner string, now, until time.Time) (bool, error) {
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"user_id": userID, "kind": kind, "$or": []bson.M{
+			{"refresh_not_before": nil},
+			{"refresh_not_before": bson.M{"$lte": now.UTC()}},
+		}},
+		bson.M{"$set": bson.M{
+			"refresh_claim_owner": owner,
+			"refresh_not_before":  until.UTC(),
+			"updated_at":          now.UTC(),
+		}},
+	)
+	if err != nil {
+		return false, fmt.Errorf("secrets: claim oauth refresh: %w", err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (s *MongoOAuthStore) ReleaseRefreshClaim(ctx context.Context, userID string, kind OAuthKind, owner string, notBefore *time.Time) error {
+	set := bson.M{
+		"refresh_claim_owner": "",
+		"refresh_not_before":  notBeforeValue(notBefore),
+		"updated_at":          time.Now().UTC(),
+	}
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"user_id": userID, "kind": kind, "refresh_claim_owner": owner},
+		bson.M{"$set": set},
+	)
+	if err != nil {
+		return fmt.Errorf("secrets: release oauth refresh claim: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrRefreshClaimLost
+	}
+	return nil
+}
+
+// notBeforeValue renders the cool-down for a $set: a nil pointer must reach
+// the wire as an explicit null (clearing it), never be omitted — an omitted
+// key leaves the OLD instant in place and holds the sweep off a record that
+// is due.
+func notBeforeValue(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC()
+}
+
 func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind OAuthKind, upd OAuthTokenUpdate) error {
 	// A literal $set of the refresh-owned keys, never the struct: the
 	// account label — and anything else a future writer owns — stays
@@ -823,6 +1011,17 @@ func (s *MongoOAuthStore) UpdateTokens(ctx context.Context, userID string, kind 
 	set := bson.M{
 		"not_refreshable": upd.NotRefreshable,
 		"updated_at":      time.Now().UTC(),
+	}
+	filter := bson.M{"user_id": userID, "kind": kind}
+	if upd.ClaimOwner != "" {
+		// Fenced commit: the tokens land only while this holder still owns
+		// the claim, and the claim is released by the same write. A lost
+		// claim means a re-connect (which clears the owner) or an expired
+		// lease superseded us, and the exchange result belongs to a
+		// session that is no longer stored.
+		filter["refresh_claim_owner"] = upd.ClaimOwner
+		set["refresh_claim_owner"] = ""
+		set["refresh_not_before"] = notBeforeValue(upd.RefreshNotBefore)
 	}
 	if upd.SealedPayload != nil {
 		set["sealed_payload"] = upd.SealedPayload

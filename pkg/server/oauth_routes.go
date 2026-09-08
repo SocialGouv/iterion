@@ -577,7 +577,33 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Take the record's refresh claim before touching the provider, exactly
+	// as the background sweep does. A refresh is not atomic — read, provider
+	// round trip, persist — and the provider RETIRES the refresh token it is
+	// handed, so a manual refresh racing the sweep (or another operator's
+	// click) leaves one of the two holding a credential the provider has
+	// already invalidated. Whoever loses the claim does not exchange.
+	owner, err := secrets.NewRefreshClaimOwner()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), ownerKey, kind, owner, now, now.Add(secrets.RefreshClaimTTL))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if !claimed {
+		httpError(w, http.StatusConflict, "a refresh of this connection is already in flight — retry in a moment")
+		return
+	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
+		// Give the claim back so the sweep is not held off by a failed
+		// attempt; a claim already superseded has nothing to release.
+		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), ownerKey, kind, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
+			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
+		}
 		if errors.Is(err, secrets.ErrNotRefreshable) {
 			// Self-heal the record so the background worker stops
 			// attempting it; surface an actionable message instead of
@@ -596,8 +622,15 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	// Only the refresh-owned keys: the record read above is a round trip
-	// old, so writing it whole would revert a rename committed since.
-	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec)); err != nil {
+	// old, so writing it whole would revert a rename committed since. Fenced
+	// by the claim, so a re-connect that landed during the exchange (which
+	// clears the claim) keeps the credential the operator just uploaded
+	// instead of being overwritten by a refresh of the session it replaced.
+	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+		if errors.Is(err, secrets.ErrRefreshClaimLost) {
+			httpError(w, http.StatusConflict, "this connection was replaced while the refresh was in flight — the refreshed tokens were discarded")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

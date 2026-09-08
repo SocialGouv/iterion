@@ -66,13 +66,17 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// failing its first LLM call with "authentication token is
 		// expired", far from the cause.
 		//
-		// This worker is the SINGLE canonical refresher of a codex
-		// credential, and deliberately so: the blob is shared (the
-		// platform record is one meter for the whole deployment), OpenAI
-		// rotates the refresh token on use, and a second refresher
-		// therefore invalidates this one's token. That is why the runner's
-		// per-run loop refuses the kind (see runner.startOAuthRefreshers)
-		// and why nothing else here may start rotating it.
+		// A codex credential must have exactly ONE refresher in flight:
+		// the blob is shared (the platform record is one meter for the
+		// whole deployment), OpenAI rotates the refresh token on use, and
+		// a second refresher therefore invalidates this one's token. That
+		// is why the runner's per-run loop refuses the kind (see
+		// runner.startOAuthRefreshers).
+		//
+		// "One refresher" is ENFORCED per record, not assumed: this worker
+		// runs in every server replica with no leader election, so the
+		// exchange below is fenced by a ClaimRefresh CAS and committed
+		// only while that claim still holds.
 		//
 		// Removing the skip was necessary but NOT sufficient: this loop
 		// only ever sees what ExpiringBefore returns, which requires
@@ -90,7 +94,34 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		if rec.NotRefreshable {
 			continue
 		}
+		// Elect this sweep as the record's refresher before spending a
+		// round trip at the provider. A lost race is not an error: the
+		// holder that won is doing the work, and this one must not
+		// exchange — the provider retires the refresh token it is given,
+		// so two exchanges leave one holder with a dead credential.
+		// It also covers the cool-down a previous sweep may have left.
+		owner, oerr := NewRefreshClaimOwner()
+		if oerr != nil {
+			return refreshed, fmt.Errorf("secrets: oauth refresh sweep: %w", oerr)
+		}
+		now := time.Now().UTC()
+		claimed, cerr := w.Store.ClaimRefresh(ctx, rec.UserID, rec.Kind, owner, now, now.Add(RefreshClaimTTL))
+		if cerr != nil {
+			failures++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("claim %s/%s: %w", rec.UserID, rec.Kind, cerr)
+			}
+			continue
+		}
+		if !claimed {
+			continue
+		}
 		if err := RefreshRecord(ctx, w.Sealer, w.HTTP, w.AnthropicClientID, w.CodexClientID, &rec); err != nil {
+			// Hand the claim back so the next sweep may retry at once
+			// rather than wait the lease out. Best-effort: a claim we no
+			// longer own has already been superseded, and there is nothing
+			// to give back.
+			_ = w.Store.ReleaseRefreshClaim(ctx, rec.UserID, rec.Kind, owner, nil)
 			if errors.Is(err, ErrNotRefreshable) {
 				// Self-heal legacy records sealed before NotRefreshable
 				// existed so future sweeps skip them without decrypting.
@@ -110,7 +141,15 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdateFrom(rec)); err != nil {
+		// Fenced commit: the fresh tokens land only while this sweep still
+		// holds the claim. A re-connect that landed during the exchange
+		// clears it, and its credential must win — overwriting it here
+		// would replace an operator's freshly uploaded session with one
+		// refreshed from the session it replaced.
+		if err := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+			if errors.Is(err, ErrRefreshClaimLost) {
+				continue
+			}
 			failures++
 			if firstErr == nil {
 				firstErr = fmt.Errorf("persist %s/%s: %w", rec.UserID, rec.Kind, err)
