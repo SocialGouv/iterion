@@ -511,6 +511,40 @@ tool oracle_run:
         return text.encode("utf-8")
 
 
+    # What a part HEADER may carry. The three corpus-supplied values that reach
+    # one are emitted in DIFFERENT syntactic contexts, so they do not share a
+    # rule: `name` and `filename` sit inside a quoted-string, where a `"` ends the
+    # parameter early and the rest of the value becomes syntax; `content_type` is
+    # the WHOLE header value, where a quote is legitimate media-type syntax
+    # (`charset="UTF-8"`) — refusing it there would reject a valid declaration and
+    # prevent nothing. CR and LF end a header in all three, and a `--<boundary>`
+    # line behind them ends the PART: a filename carrying one made the wire read
+    # `doc=PWNED` and a fabricated `role=admin` while the corpus declared
+    # `doc=X, role=user` (measured). The reference would then describe a request
+    # nobody wrote — which is the one thing an observation point may never do.
+    #
+    # That refusal is also what makes `multipart_boundary`'s payload-only scan
+    # sound: a delimiter only acts at the start of a line, and no header value can
+    # open one.
+    QUOTED_PARAM = ('"', "\r", "\n")
+    HEADER_VALUE = ("\r", "\n")
+    _HEADER_POISON = {'"': "a quote", "\r": "a carriage return", "\n": "a newline"}
+
+
+    def checked_part_header(label, text, forbidden):
+        """The header value the corpus declared, or a named refusal — never a
+        request other than the one the corpus wrote."""
+        text = str(text)
+        for c in forbidden:
+            if c in text:
+                raise SystemExit("%s %r carries %s — emitted raw into a part "
+                                 "header it would send a request the corpus never "
+                                 "declared (an injected header, or a forged part). "
+                                 "Refused by name, like an undecodable payload."
+                                 % (label, text, _HEADER_POISON[c]))
+        return text
+
+
     def multipart_boundary(payloads):
         """A boundary that no part contains — derived from the parts, not drawn
         at random, so the same request encodes to the same bytes forever.
@@ -520,6 +554,12 @@ tool oracle_run:
         payload happens to contain it, a counter is appended until it does not.
         Deterministic in both branches: the collision is a property of the
         content, and the same content yields the same boundary.
+
+        Payloads ONLY, and that is sound rather than partial: a delimiter is
+        recognised at the start of a line, and `checked_part_header` refuses CR
+        and LF in every value that reaches a header, so no header can open the
+        line a `--<boundary>` would need. Drop that refusal and this scan becomes
+        a hole.
         """
         boundary = FILE_PART_BOUNDARY
         n = 0
@@ -537,18 +577,21 @@ tool oracle_run:
         reader of a reference can predict.
         """
         parts, payloads = [], []
-        for name, value in fields.items():
+        for value in fields.values():
             if is_file_part(value):
                 payloads.append(file_part_bytes(value))
             else:
                 payloads.append(("" if value is None else str(value)).encode("utf-8"))
         boundary = multipart_boundary(payloads)
         for (name, value), payload in zip(fields.items(), payloads):
-            head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
+            head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (
+                boundary, checked_part_header("field name", name, QUOTED_PARAM))
             if is_file_part(value):
-                head += '; filename="%s"' % value["filename"]
-                head += "\r\nContent-Type: %s" % (value.get("content_type")
-                                                   or "application/octet-stream")
+                head += '; filename="%s"' % checked_part_header(
+                    "filename", value["filename"], QUOTED_PARAM)
+                head += "\r\nContent-Type: %s" % checked_part_header(
+                    "content_type", value.get("content_type")
+                    or "application/octet-stream", HEADER_VALUE)
             parts.append(head.encode("utf-8") + b"\r\n\r\n" + payload + b"\r\n")
         parts.append(("--%s--\r\n" % boundary).encode("utf-8"))
         return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
@@ -3649,6 +3692,43 @@ tool oracle_run:
                     lambda: encode_multipart({"d": {"filename": "a.txt"}}))
             refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
                     lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
+
+            # Les EN-TETES de partie : le second moyen d'envoyer une requete que
+            # le corpus n'a pas declaree. Le vecteur decisif d'abord — un nom de
+            # fichier portant un CRLF et une ligne de frontiere fabriquait une
+            # partie entiere, invisible pour `multipart_boundary` qui ne lit que
+            # les charges utiles.
+            forge = ('a.pdf"\r\n\r\nPWNED\r\n--%s\r\nContent-Disposition: '
+                     'form-data; name="role"\r\n\r\nadmin\r\n--%s--\r\n'
+                     % (FILE_PART_BOUNDARY, FILE_PART_BOUNDARY))
+            refuses("nom de fichier fabriquant une partie entiere -> refus nomme",
+                    lambda: encode_multipart({"doc": {"filename": forge, "text": "X"},
+                                              "role": "user"}))
+            refuses("guillemet dans le nom de fichier -> refus nomme",
+                    lambda: encode_multipart({"d": {"filename": 'a"b.pdf', "text": "X"}}))
+            refuses("CRLF dans le nom de fichier -> refus nomme",
+                    lambda: encode_multipart({"d": {"filename": "a\r\nX-Evil: 1",
+                                                    "text": "X"}}))
+            refuses("guillemet dans le nom de champ -> refus nomme",
+                    lambda: encode_multipart({'n"x': "v",
+                                              "d": {"filename": "a", "text": "X"}}))
+            refuses("CRLF dans le nom de champ -> refus nomme",
+                    lambda: encode_multipart({"n\r\nX-Evil: 1": "v",
+                                              "d": {"filename": "a", "text": "X"}}))
+            refuses("CRLF dans content_type -> refus nomme",
+                    lambda: encode_multipart({"d": {"filename": "a", "text": "X",
+                                                    "content_type": "text/plain\r\nX-Evil: 1"}}))
+            # Et la borne de l'autre cote : un guillemet est de la SYNTAXE valide
+            # dans un type de media, la ou il est une injection dans un
+            # quoted-string. Le refuser rejetterait une declaration juste.
+            qt, qct = encode_multipart({"d": {"filename": "a.txt", "text": "X",
+                                              "content_type": 'text/plain; charset="UTF-8"'}})
+            qmsg = email.parser.BytesParser().parsebytes(
+                b"Content-Type: " + qct.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + qt)
+            check("parametre de media entre guillemets : accepte et relu",
+                  [[p.get_content_type() for p in qmsg.get_payload()],
+                   [p.get_param("charset") for p in qmsg.get_payload()]],
+                  [["text/plain"], ["UTF-8"]])
 
             # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
             routes = [{"method": "GET", "pattern": "/list"},
