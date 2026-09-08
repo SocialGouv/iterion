@@ -314,7 +314,20 @@ func hostOf(base string) string {
 }
 
 // Sentinel errors. Callers compare with errors.Is.
+//
+// Two families live here and the difference is invisible in the text: a
+// sentinel is IN the ErrNotFound class iff it wraps ErrNotFound. Membership
+// is what pkg/server's forgeUpstreamStatus reads, so wrapping one of the
+// store misses below into the class would turn every "could not be recorded"
+// %w-wrap in the forge layer into a 404 — the messages unchanged, only what
+// errors.Is answers. Each sentinel states its family; the table and the guard
+// that pins it live next to forgeUpstreamStatus.
 var (
+	// ErrConnectionNotFound, ErrIntegrationNotFound and ErrOAuthAppNotFound
+	// report an iterion STORE miss, and are deliberately OUTSIDE the
+	// ErrNotFound class: they are iterion's own state, never an answer the
+	// forge gave, and every handler that %w-wraps a store failure relies on
+	// them not classifying as a forge 404.
 	ErrConnectionNotFound  = errors.New("forge: connection not found")
 	ErrIntegrationNotFound = errors.New("forge: repo integration not found")
 	ErrOAuthAppNotFound    = errors.New("forge: oauth app not found")
@@ -323,7 +336,13 @@ var (
 	// "the forge has no such thing" matches on it; one that acts on a
 	// specific absence matches the resource sentinel (ErrHookNotFound) or
 	// reads the *NotFoundError the operation carries.
-	ErrNotFound     = errors.New("forge: not found")
+	//
+	// Membership is by wrapping, and it is the whole meaning: forgeUpstreamStatus
+	// answers a member 404. Only what the forge itself answered belongs.
+	ErrNotFound = errors.New("forge: not found")
+	// ErrHookNotFound is IN the ErrNotFound class — a forge-answered 404 the
+	// orchestrator additionally reads as "the hook is already gone", so
+	// deprovision treats it as done.
 	ErrHookNotFound = fmt.Errorf("%w: hook", ErrNotFound)
 	// ErrForbidden is returned by an admin client when the credential lacks
 	// the scope to perform an operation (e.g. create a webhook). The

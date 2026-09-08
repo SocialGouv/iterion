@@ -68,6 +68,9 @@ type ProvisionApprovalStore interface {
 	ListByTenant(ctx context.Context, tenantID string) ([]ProvisionApproval, error)
 }
 
+// ErrProvisionApprovalNotFound reports a request the approval store does not
+// hold. A store miss, so OUTSIDE the ErrNotFound class: the forge was never
+// asked.
 var ErrProvisionApprovalNotFound = errors.New("forge: provision approval not found")
 
 // ---- in-memory store (tests / local) ----
