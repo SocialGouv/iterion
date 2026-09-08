@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.122.2](https://github.com/SocialGouv/iterion/compare/v3.122.1...v3.122.2) (2026-09-08)
+
+### Bug Fixes
+
+* **server:** a team-scoped write must land in the PATH team, not the caller's tenant ([#997](https://github.com/SocialGouv/iterion/issues/997)) ([#1003](https://github.com/SocialGouv/iterion/issues/1003)) ([d6d1fe7](https://github.com/SocialGouv/iterion/commit/d6d1fe7d7db6ff7bea85e2604b342e692034465b))
+
+    <details><summary>why</summary>
+
+    The auth middleware stamps ONE tenant — the caller's JWT — while authorization is checked against the team in the path, and canManageTeam deliberately admits a super-admin (or an org admin) on a team that is not their active one. When a handler forgot to re-scope, the row landed as (scope_team = path team, tenant_id = caller's team): invisible from both list endpoints, invisible to the target team's runs, and answered 201. The bot then ran without the credential it had been given.
+
+    </details>
+
 ## [3.122.1](https://github.com/SocialGouv/iterion/compare/v3.122.0...v3.122.1) (2026-09-08)
 
 ### Bug Fixes
