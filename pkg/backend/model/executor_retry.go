@@ -194,15 +194,23 @@ func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
 // This is the no-fallback form: callers with no further chain element
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
-func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, nil, fn)
+func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sessionID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sessionID, nil, fn)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
 // the caller has a fallback route that would take THIS failure, which
 // lets it skip a budget that cannot succeed (see shouldRetryInPlace).
 // A nil predicate means "no route will take it".
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+// sessionID is the session the attempts run in, taken from the task the
+// closure re-invokes with. It is the ONE fact that decides how two
+// attempts' accounting folds together — see richerSpend. Empty means
+// every attempt opens a session of its own.
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sessionID string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	// The closure re-invokes with an UNCHANGED task, so this answer holds
+	// for every attempt: a session resumed once is resumed each time, and
+	// a task with none opens a fresh one each time.
+	sameSession := sessionID != ""
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -231,48 +239,67 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 			// Cancelled between attempts: no output survives, but what the
 			// attempts already burned is not undone by it — the caps and
 			// the ledgers read the map, not the struct.
-			return richerSpend(result, delegate.Result{}), ctx.Err()
+			return richerSpend(result, delegate.Result{}, sameSession), ctx.Err()
 		}
 
 		prev := result
 		result, err = fn()
-		result = richerSpend(prev, result)
+		result = richerSpend(prev, result, sameSession)
 	}
 	return result, err
 }
 
-// richerSpend keeps the higher of two attempts' ACCOUNTING on the later
-// attempt's result — the answer is the later one's, the figure is whichever
-// is true.
+// richerSpend folds two attempts' ACCOUNTING onto the later attempt's
+// result — the answer is the later one's, the figure is what both of them
+// truly burned. Whether that figure is a MAX or a SUM is decided by ONE
+// fact, and getting it from the wrong one is wrong in both directions.
 //
-// MAX, never a sum, and the reason is the same one annotateCost states for
-// the formatting passes: the CLI's usage accounting is SESSION-CUMULATIVE,
-// so a retry inside one session re-reports the running total and adding the
-// attempts would double-count it. The failure this closes is the other
-// direction: when the last attempt is the CHEAP one — attempt 1 spends an
-// agentic session, attempt 2 cannot even spawn and reports nothing — taking
-// the last attempt's figure reported the cost of nothing, and the class has
-// two documented precedents in this file (the chain's own chainSpend, and
-// validateAndRetry, whose comment records that dropping the first attempt's
-// usage "broke budget enforcement at the margins").
-func richerSpend(prev, next delegate.Result) delegate.Result {
+// A CLI backend reports usage per SESSION, cumulatively (the reason
+// annotateCost takes a MAX over the result messages of one invocation).
+// So:
+//
+//   - sameSession: the retry RESUMED the session, and its report already
+//     contains the earlier attempt's spend. Adding them double-counts it.
+//     Take the higher — the later report, unless the attempt that carried
+//     the spend was the earlier one (attempt 1 runs an agentic session,
+//     attempt 2 cannot even spawn and reports nothing).
+//   - not sameSession: each attempt opened a session of its own and each
+//     report covers only its own work. The spend is their SUM. A MAX here
+//     UNDER-reports, which is the direction that lets a run walk past
+//     max_cost_usd — and a node executing for the first time carries no
+//     session id, so this is the common case, not the exotic one.
+//
+// The precedents in this file agree once read this way: chainSpend adds
+// across ROUTES (always different sessions), and validateAndRetry adds
+// across its two invocations, its comment recording that dropping the
+// first attempt's usage "broke budget enforcement at the margins".
+func richerSpend(prev, next delegate.Result, sameSession bool) delegate.Result {
 	pt, nt := prev.Tokens, next.Tokens
 	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
-	if pt <= nt && pc <= nc {
+
+	tokens, usd := pt+nt, pc+nc
+	if sameSession {
+		tokens, usd = nt, nc
+		if pt > nt {
+			tokens = pt
+		}
+		if pc > nc {
+			usd = pc
+		}
+	}
+	if tokens == nt && usd == nc {
 		return next
 	}
-	if pt > nt {
-		next.Tokens = pt
-	}
+	next.Tokens = tokens
 	// An unallocated map records nothing, and the map is what the caps read.
 	if next.Output == nil {
 		next.Output = map[string]any{}
 	}
-	if pt > nt {
-		next.Output["_tokens"] = pt
+	if tokens != nt {
+		next.Output["_tokens"] = tokens
 	}
-	if pc > nc {
-		next.Output["_cost_usd"] = pc
+	if usd != nc {
+		next.Output["_cost_usd"] = usd
 	}
 	return next
 }
@@ -929,7 +956,7 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend = backendName
-		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, task.SessionID, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
@@ -976,7 +1003,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionID = ""
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
-				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, fresh.SessionID, accepts, func() (delegate.Result, error) {
 					return backend.Execute(ctx, fresh)
 				})
 				if freshErr == nil {

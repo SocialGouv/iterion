@@ -667,9 +667,14 @@ func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
 	if out.ServedBy != "gpt" {
 		t.Errorf("ServedBy = %q, want gpt", out.ServedBy)
 	}
-	// Head's spend is folded into the winner (R5180a7 still holds).
-	if got, want := out.Result.Tokens, 130; got != want {
-		t.Errorf("tokens = %d, want %d (head 100 + gpt 30, api never ran)", got, want)
+	// Head's spend is folded into the winner (R5180a7 still holds). The
+	// head has no session, so each of its attempts opened one of its own
+	// and burned its own 100 — the expectation is counted from the
+	// attempts the stub recorded, not from a number that only held while
+	// a retried route was billed once.
+	if got, want := out.Result.Tokens, len(head.tasks)*100+30; got != want {
+		t.Errorf("tokens = %d, want %d (head %d×100 + gpt 30, api never ran)",
+			got, want, len(head.tasks))
 	}
 }
 
@@ -902,13 +907,17 @@ func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
 	if len(tail.tasks) != 0 {
 		t.Fatalf("tail ran %d times, want 0 (filter refused)", len(tail.tasks))
 	}
-	// Head burned 1000 tokens; it is the terminal result and must appear
-	// exactly once — not once in spent and once in result.
-	if got, want := out.Result.Tokens, 1000; got != want {
-		t.Errorf("tokens = %d, want %d (filter-stop must not double-count the last route)", got, want)
+	// The head is the terminal result and must appear exactly once — not
+	// once in spent and once in result. "Once" is once per ATTEMPT: the
+	// route carries no session, so every attempt opened one of its own
+	// and burned its own 1000. Counting from the stub's record keeps the
+	// anti-double-count assertion exact without pinning an attempt count.
+	if got, want := out.Result.Tokens, len(head.tasks)*1000; got != want {
+		t.Errorf("tokens = %d, want %d (%d attempts × 1000; a filter-stop must not count the route twice on top)",
+			got, want, len(head.tasks))
 	}
-	if got, _ := out.Result.Output["_cost_usd"].(float64); got != 0.40 {
-		t.Errorf("_cost_usd = %v, want 0.40", got)
+	if got, want := out.Result.Output["_cost_usd"].(float64), float64(len(head.tasks))*0.40; got != want {
+		t.Errorf("_cost_usd = %v, want %v", got, want)
 	}
 }
 
@@ -940,13 +949,20 @@ func TestExhaustedChainCarriesEverySpend(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the chain to fail")
 	}
-	// Each route reports its last attempt's usage (the retry loop does
-	// not accumulate across attempts), so the node's total is the head's
-	// 1000 plus the tail's 500 — asserted as an EXACT sum, because a
-	// loose lower bound is exactly what let a double-count of the last
-	// route pass unnoticed.
-	if got, want := out.Result.Tokens, 1500; got != want {
-		t.Errorf("tokens = %d, want %d (each route folded in exactly once)", got, want)
+	// Neither route carries a session, so each ATTEMPT opened one of its
+	// own and burned its own report. The node's total is every attempt of
+	// the head plus every attempt of the tail — asserted EXACTLY, because
+	// a loose lower bound is what let a double-count of the last route
+	// pass unnoticed. Counted from the stubs' own record: a fixed number
+	// here would pass while the retry budget silently changed under it.
+	want := len(head.tasks)*1000 + len(tail.tasks)*500
+	if len(head.tasks) < 2 || len(tail.tasks) < 2 {
+		t.Fatalf("both routes must have retried for this to mean anything: head=%d tail=%d",
+			len(head.tasks), len(tail.tasks))
+	}
+	if got := out.Result.Tokens; got != want {
+		t.Errorf("tokens = %d, want %d (head %d×1000 + tail %d×500, each attempt folded in exactly once)",
+			got, want, len(head.tasks), len(tail.tasks))
 	}
 }
 
