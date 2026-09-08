@@ -397,6 +397,11 @@ string** is a file part, and one such field makes the whole form
   `b64` — each stops the run with the field named. That is deliberate: a broken payload
   sent as its own error text would record the application refusing *the
   harness*, and a reference of that refusal can never fail again.
+- **Write `""` for an empty field, never `null`.** The two encodings disagree
+  on null — urlencoded sends the text `None`, multipart sends nothing — so the
+  same corpus line would leave differently depending on whether a *sibling*
+  field is a file. It is refused rather than guessed; `""` is exact and
+  identical in both.
 - **A near miss is refused too, and that is the one to expect.** An object or
   a list that is NOT a file part — `file_name`, `fileName`, a `filename` that
   is a number — has no form encoding, so both encodings would fall back to the
