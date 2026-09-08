@@ -1,6 +1,9 @@
 package ir
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // ---------------------------------------------------------------------------
 // C009 — session: inherit/fork forbidden on convergence points
@@ -307,6 +310,76 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 				r.ID, count)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// C249 — a branch-spawning router names the same target more than once
+// ---------------------------------------------------------------------------
+//
+// fan_out_all and llm-multi spawn one goroutine per outgoing edge, and both
+// derive the branch identity from the TARGET
+// (runtime: "branch_<router>_<target>"). Two edges to the same node therefore
+// produce two executions wearing one branch id: they collapse onto one output
+// slot at convergence, and onto one durable BranchCheckpoint whose cursor each
+// goroutine overwrites — so a resume can restart one execution at the other's
+// position.
+//
+// The shape has always compiled and an operator may have leaned on it, so this
+// warns rather than refuses. fan_out_each is the shape that actually delivers
+// N executions of one node: its branch ids are item-indexed
+// ("branch_<router>_<i>"), which is why it is the remedy named below. It is
+// excluded here on its own account too — C115 already requires exactly one
+// outgoing template edge, so a second complaint would be noise.
+//
+// Every outgoing edge counts, conditional or not: fan_out_all takes them all
+// without evaluating any condition, and C022 already refuses a conditional
+// edge on an llm router.
+func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
+	for _, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(r) || r.RouterMode == RouterFanOutEach {
+			continue
+		}
+		counts := make(map[string]int)
+		var order []string
+		for _, e := range w.Edges {
+			if e.From != r.ID {
+				continue
+			}
+			if counts[e.To] == 0 {
+				order = append(order, e.To)
+			}
+			counts[e.To]++
+		}
+		for _, target := range order {
+			if counts[target] < 2 {
+				continue
+			}
+			c.warnfAt(DiagDuplicateFanOutTarget, r.ID, edgeID(r.ID, target),
+				"%s declares %d edges to %q; every branch is identified by branch_<router>_<target>, so those executions share one branch id, one output slot and one durable checkpoint — a resume can restart one at the other's position (C249). %s",
+				describeBranchRouter(r), counts[target], target, duplicateFanOutRemedy(r))
+		}
+	}
+}
+
+// describeBranchRouter names a branch-spawning router the way its declaration
+// reads, so the diagnostic points at something greppable in the .bot.
+func describeBranchRouter(r *RouterNode) string {
+	if r.RouterMode == RouterLLM {
+		return fmt.Sprintf("llm router %q (multi: true)", r.ID)
+	}
+	return fmt.Sprintf("fan_out_all router %q", r.ID)
+}
+
+// duplicateFanOutRemedy differs by mode. An llm router selects each target by
+// NAME, so a second edge to one can never mean "run it twice" — there is
+// nothing to convert it to. fan_out_all's duplicate, on the other hand, is
+// usually an attempt at N executions of one node, which fan_out_each delivers.
+func duplicateFanOutRemedy(r *RouterNode) string {
+	if r.RouterMode == RouterLLM {
+		return "Remove the duplicate edge: the model names each target once, so the extra edge only doubles the goroutine"
+	}
+	return "Remove the duplicate edge, or use a fan_out_each router (branch ids are item-indexed) when the intent is N executions of the same node"
 }
 
 // validateBoundedIterationInExecBranch accepts a bounded cycle only when both

@@ -157,4 +157,7 @@ const (
 	// Typed terminal failure (`fail <name>:` with code/message/resumable).
 	DiagInvalidFailCode  DiagCode = "C247" // `code:` on a fail node is not an UPPER_SNAKE identifier (error — it is persisted as the run's failure_code and read by machines)
 	DiagReservedFailCode DiagCode = "C248" // `code:` on a fail node collides with an engine failure code (error — the engine reads those as control flow: auto-resume, usage-window retry)
+	// C249 continues the C240 parallel-branch band: a branch-spawning router
+	// that names one target twice gives two goroutines one branch id.
+	DiagDuplicateFanOutTarget DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
 )
