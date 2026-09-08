@@ -293,6 +293,15 @@ func sharesSession(task *delegate.Task) bool {
 // and SUM then yields the earlier attempt's figure unchanged — the same
 // answer a MAX would give.
 //
+// The MAX rests on one further invariant, held today by construction: a
+// `prev` reaching it never already carries ANOTHER route's spend. Both
+// paths that fold chainSpend into a result also drop the session the fold
+// keys on — a route change clears SessionID/ForkSession on the rebuilt
+// task (newElementBuilder, index > 0), and the optional-session degrade
+// continues on `fresh`, whose id is empty — so sharedSession is false
+// wherever `spent` is non-empty. A new spent.add site that KEEPS the
+// session id would break that, and the MAX would then swallow a route.
+//
 // The precedents in this file agree once read this way: chainSpend adds
 // across ROUTES (always different sessions), and validateAndRetry adds
 // across its two invocations, its comment recording that dropping the
