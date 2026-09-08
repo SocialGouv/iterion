@@ -116,6 +116,8 @@ matches plan §C.2:
 | Subject | `iterion.queue.runs` | Where the publisher writes |
 | DLQ subject | `iterion.queue.runs.dlq` | DLQ park subject |
 | KV bucket | `iterion-run-locks` | Distributed lease per run id |
+| Rollout KV bucket | `iterion-runner-rollout` | Runner generation fence (`epoch.high-water`); persistent, **no TTL** — unlike the lock bucket |
+| Events stream | `ITERION_EVENTS` (`iterion.events.>`) | Trigger spine fan-out — deliberately separate from the run WORK queue: lossy at-least-once notifications vs exactly-once KV-locked runs |
 | Durable consumer | `iterion-runners` | The pull-consumer the runner pool drains |
 
 Pinned semantics:
@@ -167,6 +169,16 @@ every 60s for `queued` past the redelivery window + margin (~90min with
 the defaults: `MaxDeliver × AckWait` + 10min) or `running > 10min` AND no
 current NATS-KV lease, then CAS-flips matched rows to `failed_resumable`.
 Bumps `iterion_runs_orphan_recovered_total`.
+
+The queued half carries one guard: if the durable consumer still reports
+unfetched messages, the sweeper **skips the queued pass entirely** for
+that tick and runs only the `running` pass. A queued row with no lease
+cannot tell a genuine orphan from a run nobody has fetched yet because
+every pod is busy, and killing the latter is worse than recovering a tick
+late. The backlog probe fails soft — unreadable, and the queued pass runs
+on the lease signal alone. So a `queued` run that is *not* being flipped
+while the queue is deep is the guard working, not the sweeper wedged; a
+debug log line names the pending count.
 
 The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
@@ -252,6 +264,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_auth_password_resets_total{step}` | server | Reset flow (`requested`, `confirmed`) |
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
 | `iterion_runs_orphan_recovered_total` | server | Sweeper flips |
+| `iterion_orphan_sweep_errors_total{stage}` | server | A sweeper step failed (`stage` = scan / lease / flip). Growth means orphan recovery is degraded — watch it *beside* the recovered counter, which alone cannot tell "no orphans" from "sweeper broken" |
 | `iterion_dlq_depth` | server | Sweeper poll of NATS state |
 
 All from a shared registry in

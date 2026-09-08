@@ -88,9 +88,14 @@ autonomously:
 
 The same chain handles an on-demand re-review: a reviewer types `/revi`
 in the MR's notes, GitLab POSTs a Note Hook to the same URL, iterion's
-GitLab handler recognises the command word
-([pkg/webhooks/gitlab/note.go:IsReviewCommand](../pkg/webhooks/gitlab/note.go)),
-and a fresh review fires under a different idempotency key.
+GitLab handler extracts the leading slash-command generically
+([pkg/webhooks/gitlab/note.go:ParsedNote.Command](../pkg/webhooks/gitlab/note.go),
+over the shared grammar in
+[pkg/webhooks/command.go:ParseSlashCommand](../pkg/webhooks/command.go)),
+routes it to the bot bound to that command word, and a fresh review fires
+under a different idempotency key. The handler is deliberately not
+`/revi`-aware — that is what lets `/billy` and any other command ride the
+same path without the engine learning a bot's name.
 
 ## The primitives
 

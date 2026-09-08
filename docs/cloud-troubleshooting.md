@@ -153,7 +153,7 @@ Diagnose:
 
 Fix:
 - Update the offending dependency. Most Go advisories resolve by `go get -u <module>@<version>` then `go mod tidy`.
-- Container base image CVEs: rebuild from a fresh `iterion-sandbox-slim` tag. The release pipeline emits a new tag every Monday.
+- Container base image CVEs: rebuild from a fresh `iterion-sandbox-slim` tag. `:edge` is re-published on **every push to `main`** (image.yml → _finalize.yml restamps the current binary onto the tool base), so pulling `:edge` usually suffices. The tool base layers themselves only rebuild when `sandbox/**` changes — if the CVE is in a base layer, land the fix under `sandbox/` to trigger sandbox-images.yml. Versioned `:vX.Y.Z` images come from release-images.yml on release tags.
 - Genuinely irrelevant CVE (e.g. a vulnerability only triggered by a code path iterion doesn't use): add a `.trivyignore` entry with a justification comment. Don't bypass without one — drift is how compliance findings accumulate.
 
 ### Helm chart upgrade fails with `manifests version drift`
