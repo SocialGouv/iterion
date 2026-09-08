@@ -14,10 +14,11 @@ filesystem. The ambient default degrades gracefully instead of
 failing: outside a git repository it is silently not applicable, and
 on a host with no container runtime the run proceeds unsandboxed with
 a visible `sandbox_skipped` event. An EXPLICIT sandbox request (CLI
-flag or workflow block) never degrades — it errors. (The cloud runner
-currently pins `ITERION_SANDBOX_OVERRIDE=none` — the runner pod is the
-isolation boundary there until the k8s sandbox path carries worktree
-git access and interactive channels end-to-end.)
+flag or workflow block) never degrades — it errors. (Whether a cloud run
+is sandboxed is a deployment choice: with `runner.sandbox.enabled: false`
+the chart pins `ITERION_SANDBOX_OVERRIDE=none` and the runner pod is
+itself the isolation boundary; with `runner.sandbox.enabled: true` no
+override is set and each run gets its own sibling pod.)
 
 ## Quick start
 
@@ -100,11 +101,20 @@ one knob wherever it runs, so an operator raising it for a slow toolchain
 install raises it everywhere. `post_create` gets its own, larger budget
 because installing a toolchain legitimately outlasts a copy; raising one
 knob does not move another. Every knob takes a Go duration (`5m`, `45m`,
-`2h`) and fails **closed**: a value that is not a positive duration —
-including `5`, which Go reads as five *nanoseconds*, not five minutes —
-is refused rather than honoured, the default applies, and one stderr line
-per process names the variable, the value and the default that replaced
-it.
+`2h`). The three phase knobs that share one resolver
+(`ITERION_SANDBOX_POST_CREATE_TIMEOUT`,
+`ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT`,
+`ITERION_SANDBOX_K8S_APPLY_TIMEOUT`) fail **closed**: a value that is not
+a positive duration — including `5`, which Go reads as five
+*nanoseconds*, not five minutes — is refused rather than honoured, the
+default applies, and one stderr line per process names the variable, the
+value and the default that replaced it.
+
+Two knobs sit outside that resolver and behave differently:
+`ITERION_SANDBOX_PULL_TIMEOUT` falls back to its default **silently**,
+and `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` does not fall back at all —
+it must be a duration of at least `1s`, and a malformed value makes the
+runner refuse to start.
 
 The apply bound is enforced at both ends of the pipe: the phase deadline
 kills the local `kubectl`, and `--request-timeout` makes `kubectl` itself
@@ -131,19 +141,16 @@ stay terminal).
 ### Workspace bind-mount
 
 The host worktree (when `worktree: auto`) or repo (when `worktree: none`)
-is bind-mounted RW into the container. The default mount target depends
-on `host_state` (see below):
+is bind-mounted RW into the container, at the **same absolute path as on
+the host** — whatever `host_state` says. This keeps absolute-path-derived
+state identical inside and outside the container (Claude Code project
+keys, prompts that reference `${PROJECT_DIR}`, tool nodes that pass
+absolute paths around).
 
-- `host_state: auto` (the default) — mounted at the **same absolute
-  path as on the host**. This keeps absolute-path-derived state
-  identical inside and outside the container (Claude Code project
-  keys, prompts that reference `${PROJECT_DIR}`, tool nodes that pass
-  absolute paths around).
-- `host_state: none` or workflow that pins `workspace_folder` —
-  mounted at the configured target (default `/workspace`).
-
-Override via `workspaceFolder` in `.devcontainer/devcontainer.json`
-or `workspace_folder:` in the inline `sandbox:` block.
+Only an explicit target changes it: `workspaceFolder` in
+`.devcontainer/devcontainer.json` or `workspace_folder:` in the inline
+`sandbox:` block. `/workspace` is a legacy value you have to ask for, not
+a default.
 
 #### Copy-based drivers: a host write does NOT reach the agent
 
@@ -212,7 +219,7 @@ every `spec.Env` value and every path in `spec.PostCreate` against the
 mounts the driver keeps, so the next promise made on a dropped bind
 fails in CI rather than in a campaign.
 
-### Host state mounts (`~/.iterion`, `~/.claude`)
+### Host state mounts (`~/.iterion`, `~/.claude`, …)
 
 When `host_state: auto` (the default), iterion also bind-mounts:
 
@@ -220,8 +227,11 @@ When `host_state: auto` (the default), iterion also bind-mounts:
 |--------------------------|--------------------------|---------|
 | `~/.iterion/` (or `$ITERION_HOME`) | same absolute path | Run store: events, artifacts, recoveries, the `runs/<id>/` tree. The in-container `iterion __claw-runner` writes here and host iterion reads it after the run. |
 | `~/.claude/`             | same absolute path      | Claude Code OAuth credentials, per-project `projects/<key>/` chat history, user-level `CLAUDE.md`. Keeps memory persistent across runs. |
+| `~/.claude.json`         | same absolute path      | Claude Code's TOP-LEVEL config file — a *sibling* of `~/.claude/`, not inside it. Without it the in-container CLI can refuse to start against a mounted `~/.claude/backups/`, emitting no stdout at all and reading as a cold-phase timeout on every attempt. |
+| `~/.codex/`              | same absolute path      | Codex CLI's `auth.json` — the "Sign in with ChatGPT" OAuth token + account_id that claw's OpenAI provider reads when no `OPENAI_API_KEY` is set. Without it, sandboxed claw nodes on an `openai/*` model fail for users on the ChatGPT forfait. |
+| `~/.gitconfig`           | same absolute path      | The operator's `user.name` / `user.email` (and the rest of their global git config). Without it in-container `git commit` fails with "Author identity unknown" — the blocker for every commit-producing bot. |
 
-Both are RW. The container's `HOME` env var is set to the host home so
+All are RW. The container's `HOME` env var is set to the host home so
 processes that resolve `~` land in the mounted tree (no EACCES against
 a stock image's `/root`).
 
@@ -271,10 +281,10 @@ explicit skip keeps `docker inspect` readable.
 **Opt-out and security.** Set `host_state: none` in the workflow,
 pass `--sandbox-host-state=none`, or export
 `ITERION_SANDBOX_HOST_STATE=none` to disable. This is the recommended
-posture for **multi-tenant cloud runners and shared CI**: the RW mount
-exposes `~/.claude/.credentials.json` (OAuth) to every exec in the
-container, which is fine on a single-user dev box but a leak vector
-on shared infrastructure. The `kubernetes` driver hard-errors on
+posture for **multi-tenant cloud runners and shared CI**: the RW mounts
+expose `~/.claude/.credentials.json` and `~/.codex/auth.json` (both
+OAuth) to every exec in the container, which is fine on a single-user dev
+box but a leak vector on shared infrastructure. The `kubernetes` driver hard-errors on
 `host_state: auto` for the same reason: cloud pods have no host
 filesystem to bind and the design refuses to fake it.
 
@@ -284,7 +294,8 @@ container workspace path, and every mount that landed.
 
 ### Network policy
 
-When a sandbox is active **with a non-open network policy**, an
+When a sandbox is active **with a non-open network policy** — or with the
+opt-in TLS-inspection mode on, whatever the policy — an
 iterion-managed HTTP CONNECT proxy runs on the host (127.0.0.1,
 ephemeral port). The container receives the proxy URL via standard
 `HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
@@ -309,7 +320,10 @@ starting point for allowlist mode: it covers the LLM endpoints
 (anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
 azure, mistral, z.ai) plus package registries (npm, PyPI, golang
 proxy) plus code hosts (github, gitlab, bitbucket) plus apt
-mirrors. It is **not** applied implicitly — operators name it
+mirrors, plus the Nix binary cache and Devbox catalog
+(`cache.nixos.org`, `channels.nixos.org`, `releases.nixos.org`,
+`nix-community.cachix.org`, `devbox.sh`, `get.jetify.com`) that the
+sandbox images' `devbox install` reaches. It is **not** applied implicitly — operators name it
 explicitly so the default-open posture and the curated-allowlist
 posture are unambiguous from the YAML.
 
@@ -342,7 +356,7 @@ Modes:
 | ----------- | ----------------------------------------- |
 | `allowlist` | deny                                      |
 | `denylist`  | allow                                     |
-| `open`      | accept everything (skips the proxy entirely; **the default**) |
+| `open`      | accept everything (skips the proxy entirely unless TLS inspection is on; **the default**) |
 
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
@@ -484,6 +498,13 @@ iterion sandbox doctor                 # report driver + capabilities
    runtime). Engines embedded without an explicit default (tests,
    library use) stay neutral: no sandbox.
 
+**One exception at tier 2:** `--sandbox=auto` (and
+`ITERION_SANDBOX_OVERRIDE=auto`) loses to a workflow-level block-form
+`sandbox:` that already pins an `image:`. The block is the more specific
+expression of the same intent, and forcing `auto` would break with "no
+devcontainer.json found" on workflows that ship none. `--sandbox=none`
+still wins everywhere — an explicit opt-out is non-overridable.
+
 The same chain applies to `host_state` via `--sandbox-host-state`,
 `sandbox.host_state:` in the workflow block, and
 `ITERION_SANDBOX_HOST_STATE`. The built-in default is `auto`.
@@ -502,7 +523,21 @@ pinned to the running iterion version:
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
 Snapshot/dev binaries pull the `:edge` tag.
 
-**Why two variants?** The slim image is small enough to pull on
+**Second chance on `:latest`.** A binary built from a commit whose
+release never published a sandbox image pins a tag nobody pushed, and the
+pull would die on a raw "manifest unknown" before any node runs. So the
+engine-chosen ref carries a fallback: the docker driver retries on
+`<repo>:latest`, with a warning. That second chance is offered **only**
+for the version-pinned built-in — an image the operator named through
+`--sandbox-default-image` or `ITERION_SANDBOX_DEFAULT_IMAGE` is honoured
+exactly, because a sandbox that silently runs a different image than the
+one asked for is worse than one that refuses to start.
+
+Two further variants are published and selected via `sandbox.image:`
+rather than as auto-mode fallbacks: `iterion-sandbox-sec` (the scanner
+toolchain the sec-audit bots pin) and `iterion-sandbox-browser`.
+
+**Why these variants?** The slim image is small enough to pull on
 demand and supports the common workflow (the agent calls `devbox install`
 against the workspace `devbox.json` to materialise its toolchain). The
 full image trades extra MB at first pull for not having to install
@@ -881,7 +916,7 @@ Checks (each `pass` / `warn` / `fail`):
 
 | Check | What it verifies | Failure means |
 | ----- | ---------------- | ------------- |
-| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or `--sandbox-driver=noop` to bypass — **downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
+| **driver available** | a real driver (not `noop`) is selectable for the active spec | install Docker/Podman, or set `sandbox: none` on the workflow — there is no CLI bypass, an active spec with no runtime is refused. **Downgraded to `warn`** under an explicit cross-host `--target` (see below), so a valid cloud/local spec validates from a foreign host |
 | **spec valid** | `Spec.Validate` (image XOR build, inline needs image, absolute `workspace_folder`, valid network mode/inherit, valid `host_state`) | fix the `sandbox:` block |
 | **docker daemon** | the daemon answers `version --format {{.Server.Version}}` | start Docker Desktop / `systemctl start docker` |
 | **spec safety** | no `source=` bind of `docker.sock`, `/proc`, `/sys`, or host credentials; no flag injection on image/user/workdir; no env-var name/value injection | remove/fix the offending bind, arg, or env var |
@@ -937,9 +972,11 @@ Architecture:
   Kimi, Grok, and direct tool-node commands reach in via `kubectl exec`.
   Codex is the exception: its pinned SDK cannot use Iterion's outer
   sandbox and the node fails explicitly.
-- Workspace is provided by an `emptyDir` volume mounted at
-  `/workspace`, populated at pod start (V2) by tar-streaming the run's
-  workspace (`RunInfo.WorkspacePath`) in via `kubectl exec` — the driver
+- Workspace is provided by an `emptyDir` volume mounted at the run's
+  **host absolute workspace path** (`RunInfo.WorkspacePath`, the same
+  target the docker driver bind-mounts at — `/workspace` only when the
+  run has no workspace), populated at pod start (V2) by tar-streaming the
+  run's workspace in via `kubectl exec` — the driver
   has no host filesystem to bind-mount, so it copies. A git worktree's
   `.git` is a pointer file, so the *clone root* is copied (real `.git` +
   `origin`) so the sandboxed bot can commit and push.
