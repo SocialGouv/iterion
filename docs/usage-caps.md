@@ -283,6 +283,50 @@ re-measures.
 - then the ordinary wait: `run_retry_scheduled` with `retry_after` at the
   window's reopening, and `run_auto_resumed` when it fires.
 
+### Two sentences, two very different situations
+
+The warn line comes in two shapes, and reading the wrong one wastes the time
+the cap was meant to save. Both begin `usage cap:`, and only one of them is
+about the cap.
+
+```
+usage cap: seven_day window at 76% ≥ 75% (week, hard), resets …
+```
+
+**We stopped ourselves.** The provider is still serving; iterion refused
+because its own telemetry crossed the operator's percentage. Raising the cap
+(`iterion remote admin caps set --week …`) lets work through immediately.
+
+```
+usage cap: provider rejected on the seven_day window (week cap 85%, hard), resets …
+```
+
+**The provider refused.** This wording is emitted only when the reading's
+status is *rejected* AND it carries no utilization number — a real refusal
+from the API, not a threshold crossing. The `(week cap 85%, hard)` in
+parentheses names the policy in force, **not the reason**, which is exactly
+what makes it easy to misread: touching the cap changes nothing, because the
+call never got as far as the cap. The only thing that helps is the reset
+instant, and the run is already waiting for it.
+
+Two consequences worth having in mind before touching anything:
+
+- The refusal shape can appear while the provider's own dashboard shows
+  headroom on the *other* window. A weekly wall and a five-hour wall are
+  independent, and a run refused on one says nothing about the other.
+- `iterion remote admin usage-readings clear` will happily forget a refusal
+  too, and it buys nothing: the next run is admitted and then refused at the
+  call instead of at admission. That command earns its keep on the *opposite*
+  shape — a dated reading trusted past a reset the ledger could not see (see
+  [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time)).
+  Reach for it when the provider's dashboard disagrees with iterion, not when
+  the provider itself is saying no.
+
+Measured on 2026-09-08: fifteen review runs refused this way over an hour, on
+a deployment whose caps had just been lowered — the caps were not the cause,
+and every one of the fifteen resumed and delivered by itself once the window
+reopened.
+
 ## What a cap does NOT stop
 
 **A run is only refused in advance when it could not possibly avoid
