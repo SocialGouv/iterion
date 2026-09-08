@@ -127,4 +127,20 @@ func TestAskUserPauseNamesItsSessionWithoutAResultMessage(t *testing.T) {
 	if _, ok := res.Output["_needs_interaction"]; !ok {
 		t.Fatalf("the pause envelope was lost: %v", res.Output)
 	}
+	// The fingerprint rides with the id: the checkpoint needs it to be
+	// ALLOWED to reuse the session it records — a fork whose parent
+	// provider is unknown is dropped, so an anonymous id resumes nothing.
+	if res.SessionFingerprint != "fp" {
+		t.Fatalf("SessionFingerprint = %q, want fp — the id alone does not let a fork resume", res.SessionFingerprint)
+	}
+
+	// And the exception keeps rm's id, decided in the ONE place that
+	// decides it. The pause used to spell that precedence a second time
+	// inline, in a function whose premise is that rm is nil.
+	withRM := b.buildAskUserPendingResult(task, p, nil,
+		&claudesdk.ResultMessage{SessionID: "sess-from-result"},
+		sessionMeta{sessionID: "sess-from-init"}, "fp", time.Second, "")
+	if withRM.SessionID != "sess-from-result" {
+		t.Fatalf("SessionID = %q, want the result message's", withRM.SessionID)
+	}
 }

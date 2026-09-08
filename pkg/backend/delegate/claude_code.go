@@ -782,10 +782,6 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 	} else {
 		b.Logger.Info("[%s#%d/claude-code] 🛑 ask_user escalated via native MCP tool", task.NodeID, task.Iteration)
 	}
-	sessID := ""
-	if rm != nil {
-		sessID = rm.SessionID
-	}
 	questions := map[string]any{AskUserQuestionKey: p.Question}
 	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
@@ -799,13 +795,21 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
-		Duration:           duration,
-		ExitCode:           0,
-		Stderr:             stderr,
-		BackendName:        BackendClaudeCode,
-		SessionID:          sessID,
+		Duration:    duration,
+		ExitCode:    0,
+		Stderr:      stderr,
+		BackendName: BackendClaudeCode,
+		// SessionFingerprint is NOT redundant with the line below the way
+		// a hand-set SessionID would be: nothing else supplies it, and the
+		// checkpoint needs it to be allowed to reuse the session this
+		// pause records (shouldDropSessionFork drops a fork of unknown
+		// provenance).
 		SessionFingerprint: currentFingerprint,
 	}
+	// One rule for the id, not two: rm's when there is one, the streamed
+	// one otherwise. Setting it from rm here as well would spell the same
+	// precedence a second time, in a function whose whole premise is that
+	// rm is nil.
 	applyClaudeCodeSessionMeta(&askResult, rm, sessMeta)
 	return askResult
 }
