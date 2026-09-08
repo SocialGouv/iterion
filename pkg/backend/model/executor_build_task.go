@@ -610,7 +610,20 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		if schema, ok := e.schemas[f.outputSchema]; ok {
 			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
 			if err != nil {
-				return nil, err
+				// The same reason the dispatch failure above hands its
+				// metered result up, one frame further in: the delegation
+				// SUCCEEDED here and only the schema check failed, so this
+				// is a whole served session — and, on the after-retry
+				// return, TWO (validateAndRetry folds the first attempt's
+				// tokens into the retry's). validated carries it: the map
+				// was stamped before validation ran, and the retry path
+				// re-stamps its own. Returning a bare nil here made every
+				// booking downstream inert on the failure mode that costs
+				// the most, since a node that dies on its schema has still
+				// paid for every token the model emitted.
+				failed := out
+				failed.Result = validated
+				return meteredFailureOutput(failed, servingBackendName), err
 			}
 			result = validated
 			// The schema retry (and the claw extraction fallback) hand

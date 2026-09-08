@@ -398,6 +398,174 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 	}
 }
 
+// meteredInvalidBackend SUCCEEDS — a served, paid-for delegation — and hands
+// back output whose `verdict` is a string where the schema declares a bool. A
+// type mismatch is deliberately NOT retry-eligible (the model returns it in a
+// stable shape), so the node dies on its schema after exactly one session.
+type meteredInvalidBackend struct {
+	calls int
+}
+
+func (b *meteredInvalidBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+	b.calls++
+	return delegate.Result{
+		Output:      map[string]any{"verdict": "not-a-bool", "_tokens": 22_000, "_cost_usd": 3.30},
+		Tokens:      22_000,
+		BackendName: "metered_stub",
+	}, nil
+}
+
+// The dispatch-failure seam above is only half the surface: a delegation can
+// SUCCEED and the node still fail, on the schema check that runs after it. The
+// spend is identical — a whole served session, and on the after-retry return
+// two of them — but the executor returned a bare nil there, one frame further
+// in than the return the rest of this file is about, so every booking
+// downstream was inert on it.
+//
+// This is the failure mode that costs the most: a node that dies on its schema
+// has paid for every token the model emitted, and a weak or degraded model is
+// both the likeliest to emit unusable shape and the likeliest to have been
+// reached through a fallback chain that burned other routes first.
+func TestPostDispatchValidationFailureStillBooksItsSpend(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "metered_invalid_output",
+		Entry: "agent",
+		Nodes: map[string]ir.Node{
+			"agent": &ir.AgentNode{
+				BaseNode:     ir.BaseNode{ID: "agent"},
+				LLMFields:    ir.LLMFields{Backend: "metered_stub", Model: "anthropic/claude-opus-5"},
+				SchemaFields: ir.SchemaFields{OutputSchema: "verdict_output"},
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "agent", To: "done"}},
+		Schemas: map[string]*ir.Schema{
+			"verdict_output": {Name: "verdict_output", Fields: []*ir.SchemaField{
+				{Name: "verdict", Type: ir.FieldTypeBool},
+			}},
+		},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 1_000_000},
+	}
+
+	backend := &meteredInvalidBackend{}
+	reg := delegate.NewRegistry()
+	reg.Register("metered_stub", backend)
+	exec := model.NewClawExecutor(model.NewRegistry(), wf,
+		model.WithBackendRegistry(reg),
+		model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+	)
+
+	st := tmpStore(t)
+	eng := New(wf, st, exec)
+	if err := eng.Run(context.Background(), "run-metered-invalid", nil); err == nil {
+		t.Fatal("the run was supposed to fail on the schema")
+	}
+	if backend.calls != 1 {
+		t.Fatalf("a type mismatch is not retry-eligible; expected one delegation, got %d", backend.calls)
+	}
+
+	r, err := st.LoadRun(context.Background(), "run-metered-invalid")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 22_000 {
+		t.Fatalf("the served session's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 3.30 {
+		t.Fatalf("the served session's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// meteredUnparseableBackend takes the router's OTHER post-dispatch exit: the
+// backend could not emit JSON at all, the executor wrapped its prose in a
+// `text` field, and the extraction attempt fails too. The prose was still
+// generated and still billed.
+type meteredUnparseableBackend struct {
+	calls int
+}
+
+func (b *meteredUnparseableBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+	b.calls++
+	return delegate.Result{
+		Output:        map[string]any{"text": "I think we should go left.", "_tokens": 22_000, "_cost_usd": 3.30},
+		Tokens:        22_000,
+		ParseFallback: true,
+		BackendName:   "metered_stub",
+	}, nil
+}
+
+// The same post-dispatch hole on the router seam: `{"verdict": …}` carries no
+// `route`, so the router's own schema rejects it after a served, metered
+// delegation. Both of that function's post-dispatch returns were bare nils, so
+// the sub-test below drives the other one — unparseable prose after the text
+// wrapper — through the same assertion.
+func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "metered_invalid_router",
+		Entry: "route",
+		Nodes: map[string]ir.Node{
+			"route": &ir.RouterNode{
+				BaseNode:   ir.BaseNode{ID: "route"},
+				LLMFields:  ir.LLMFields{Backend: "metered_stub", Model: "anthropic/claude-opus-5"},
+				RouterMode: ir.RouterLLM,
+			},
+			"a":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "route", To: "a"}, {From: "route", To: "b"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 1_000_000},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		backend delegate.Backend
+	}{
+		{"schema invalid", &meteredInvalidBackend{}},
+		{"unparseable after the text wrapper", &meteredUnparseableBackend{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := delegate.NewRegistry()
+			reg.Register("metered_stub", tc.backend)
+			exec := model.NewClawExecutor(model.NewRegistry(), wf,
+				model.WithBackendRegistry(reg),
+				model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+			)
+
+			st := tmpStore(t)
+			eng := New(wf, st, exec)
+			runID := "run-metered-invalid-router"
+			if err := eng.Run(context.Background(), runID, nil); err == nil {
+				t.Fatal("the run was supposed to fail on the router's output")
+			}
+
+			r, err := st.LoadRun(context.Background(), runID)
+			if err != nil {
+				t.Fatalf("load run: %v", err)
+			}
+			if r.Checkpoint == nil {
+				t.Fatal("no checkpoint to read the budget from")
+			}
+			if r.Checkpoint.BudgetTokensUsed != 22_000 {
+				t.Fatalf("the served router session's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+			}
+			if r.Checkpoint.BudgetCostUSD != 3.30 {
+				t.Fatalf("the served router session's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+			}
+		})
+	}
+}
+
 // A fan-out branch is where the most expensive agent work in a run tends to
 // happen, and it never reaches execLoopRunNode — so the trunk's booking
 // cannot cover it. A branch node that fails is terminal for its branch:

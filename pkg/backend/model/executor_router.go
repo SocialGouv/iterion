@@ -243,14 +243,23 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
 				output = parsed
 			} else {
-				return nil, fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
+				// Metered like the dispatch failure above: the routes ran
+				// and were paid for, and only the SHAPE of what came back
+				// is unusable. `out` rather than `output` — the latter is
+				// reassigned to the parsed map on the sibling branch, and
+				// only the chain outcome still holds the served spend.
+				return meteredFailureOutput(out, backendName),
+					fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
 			}
 		}
 	}
 
 	// Strict validation against the router schema.
 	if err := ValidateOutput(output, schema); err != nil {
-		return nil, fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
+		// Same as just above: a router whose answer does not fit its schema
+		// still burned the chain that produced the answer.
+		return meteredFailureOutput(out, backendName),
+			fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
 	}
 
 	// Attach metadata.
