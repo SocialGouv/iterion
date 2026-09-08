@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.120.1](https://github.com/SocialGouv/iterion/compare/v3.120.0...v3.120.1) (2026-09-08)
+
+### Bug Fixes
+
+* **delegate:** a delegation that died still names the session it opened ([#952](https://github.com/SocialGouv/iterion/issues/952)) ([50d6574](https://github.com/SocialGouv/iterion/commit/50d6574b40f8ed38fc9a92169754d5309fcb98ba))
+
+    <details><summary>why</summary>
+
+    The claude CLI announces its session id on `system/init`, the first thing it emits. It was logged there and dropped. A session that then dies mid-stream never produces a ResultMessage, and the failure path builds its result from that message alone — so the delegate returned a failure that could not name the session it had just spent minutes or hours filling.
+
+    </details>
+
 ## [3.120.0](https://github.com/SocialGouv/iterion/compare/v3.119.0...v3.120.0) (2026-09-08)
 
 ### Features
