@@ -884,7 +884,12 @@ func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutio
 	// one that just died, and this is the last frame that can write.
 	writeCtx, cancel := detachedBookingCtx(parent.ctx)
 	defer cancel()
-	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil && e.logger != nil {
+	// No `&& e.logger != nil`: the logger is nil-receiver-safe, and folding
+	// the two into one condition is exactly what turned the sibling write in
+	// checkpointBranchState into a durability bug. Nothing is steered on the
+	// error here — this is already the last chance to write — but the idiom
+	// should not be left around to be copied back.
+	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil {
 		e.logger.Error("failed to persist branch %s spend: %v", result.branchID, err)
 	}
 }
