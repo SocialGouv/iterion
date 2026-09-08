@@ -172,12 +172,20 @@ func isBlockingOrchestrationTool(name string) bool {
 type sessionMeta struct {
 	// sessionID is the CLI's own session identifier, taken from the
 	// `system/init` event — the FIRST thing the CLI emits, long before
-	// any result message. Kept here because a session that dies mid
-	// stream never produces a ResultMessage, and until this was captured
-	// the id it had already announced was only ever logged: the delegate
-	// returned a failure that could not name the session it had opened,
-	// so nothing above it could resume that session instead of running
-	// the whole node again from zero.
+	// any result message. Kept here for the two Results built when NO
+	// ResultMessage ever arrives, which until this capture published an
+	// anonymous session:
+	//
+	//   - the ask_user / permission PAUSE, where it is load-bearing: the
+	//     id reaches ErrNeedsInteraction → the checkpoint → the resume's
+	//     `_session_id`, and gates packLiveSession, so without it the one
+	//     path written to persist a session across a human gate persisted
+	//     nothing;
+	//   - a stream that DIED, where it is reporting only. The executor
+	//     discards a failed Result (executeBackend returns `nil, err`) and
+	//     the failure checkpoint has no field for a backend session, so
+	//     nothing above the delegate resumes a dead node's session today —
+	//     naming it is what makes wiring that possible, not the wiring.
 	sessionID       string
 	effectiveModel  string
 	peakContextLoad int
@@ -229,11 +237,12 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 	out.PeakInputTokens = sm.peakContextLoad
 	out.ThinkingTokens = sm.thinkingTokens
 	out.ThinkingMs = sm.thinkingMs
-	// The result message's id wins when there is one — it is the same id,
-	// read from the authoritative end of the session. The streamed one is
-	// what the failure paths have: they reach here with rm nil, and a
-	// delegation that cannot name the session it opened forces the node to
-	// start over instead of resuming it.
+	// One rule for the id, so every caller can hand it a zero-valued
+	// Result and get the same answer: the result message's when there is
+	// one — the same id, read from the authoritative end of the session —
+	// and the streamed one otherwise. The rm-less callers are the pause
+	// (where the id then travels the checkpoint) and a stream that died
+	// (where it is reporting only; see sessionMeta.sessionID).
 	if out.SessionID == "" {
 		out.SessionID = sm.sessionID
 	}

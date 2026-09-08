@@ -16,9 +16,14 @@ func sessionFailureBackend() *ClaudeCodeBackend {
 
 // A session that dies mid-stream never produces a ResultMessage, so the
 // failure it returns could not name the session the CLI had already
-// announced on `system/init` — the id was logged and dropped. Nothing above
-// the delegate could then resume that session: the node started over from
-// zero, and on a long agent node that is the whole run's budget.
+// announced on `system/init` — the id was logged and dropped.
+//
+// Scope, so the next reader does not over-read this: naming it is a
+// REPORTING fix on this path. The executor discards a failed Result
+// (executeBackend returns `nil, err`) and the failure checkpoint carries
+// no backend session, so nothing above the delegate resumes a dead node's
+// session today. What is pinned here is the id's provenance and its
+// precedence — the prerequisite for wiring that, not the wiring.
 func TestStreamFailureNamesTheSessionTheCLIAnnounced(t *testing.T) {
 	task := Task{NodeID: "n", Iteration: 1, Model: "claude-opus-5"}
 	b := sessionFailureBackend()
