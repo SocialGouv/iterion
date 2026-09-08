@@ -84,26 +84,18 @@ func numericVersionParts(v string) ([]int, bool) {
 	return out, true
 }
 
-// bakedVersions walks the catalog ONCE and returns slug → manifest version.
-//
-// Callers comparing several rows build it once and reuse it: resolving a
-// version per row would re-walk every configured bot root and re-parse every
-// manifest for each one, turning a listing into O(rows × catalog) filesystem
-// work. The version comes straight off botregistry.Entry, which already
-// mirrors the manifest field — loading the manifest again would re-read what
-// the walk just produced.
-//
-// "Baked" means whatever THIS server discovers on disk, deliberately the same
-// source every other bot lookup uses: the field answers "what would serve if
-// this override were removed", not "what some image ships". With no
-// --bots-path pinned that follows the live WorkDir, so on a local studio the
-// answer legitimately changes with the open project — which is the correct
-// answer to the question the field asks.
 // bakedCatalog is the cached slug → version projection of the on-disk catalog.
 // A struct rather than a bare map so "never read successfully" (nil) stays
 // distinguishable from "read, and it holds nothing" (empty map): reporting a
 // broken catalog as a clean inventory would be a lie told by the very endpoint
 // the runbook calls the check to run after a release.
+//
+// "Baked" means whatever THIS server discovers on disk, deliberately the same
+// source every other bot lookup uses: it answers "what would serve if this
+// override were removed", not "what some image ships". With no --bots-path
+// pinned that follows the live WorkDir, so on a local studio the answer
+// legitimately changes with the open project — which is the correct answer to
+// the question the field asks.
 type bakedCatalog struct {
 	versions map[string]string
 }
@@ -141,6 +133,15 @@ func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	}, s.logger.Warn)
 }
 
+// bakedVersions serves the cached slug → version projection, with false when
+// the catalog has never been read successfully — the caller must then report
+// "unknown", never "nothing is shadowed".
+//
+// A caller comparing several rows takes the map ONCE and reuses it: resolving
+// a version per row would re-walk every configured bot root and re-parse every
+// manifest for each one, turning a listing into O(rows × catalog) filesystem
+// work. The returned map is the SHARED cached one — read-only for callers;
+// versionsBelow copies before overlaying the platform tier onto it.
 func (s *Server) bakedVersions() (map[string]string, bool) {
 	c := s.bakedCatalog.Get(context.Background())
 	if c == nil {
@@ -242,8 +243,14 @@ var staleOverrideWarned sync.Map
 // otherwise serve a newer one. Deliberately observational: the launch proceeds
 // on the override.
 //
-// The dedup check runs BEFORE the catalog walk, so a repeat launch of the same
-// row costs a map lookup rather than a full discovery pass.
+// The dedup check runs LAST, after the comparison — deliberately, and not the
+// cheaper order. Consuming the key first would make the dedup a cache of the
+// VERDICT, and a negative verdict must stay recomputable: the platform overlay
+// a team row is measured against is a TTL cache that every `admin bots push`
+// refills, so a shadow can appear mid-process on inputs that changed under a
+// key already burned. What keeps the repeat launch cheap is that the expensive
+// half — the catalog walk — is itself TTL-cached (bakedCatalog), leaving a map
+// copy and an overlay merge per call rather than a discovery pass.
 func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVersion string) {
 	if s.logger == nil || strings.TrimSpace(storedVersion) == "" {
 		return
