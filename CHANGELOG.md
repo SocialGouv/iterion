@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.121.0](https://github.com/SocialGouv/iterion/compare/v3.120.2...v3.121.0) (2026-09-08)
+
+### Features
+
+* **observability:** a node served through a facade says so on the run record ([#926](https://github.com/SocialGouv/iterion/issues/926)) ([b3f7efb](https://github.com/SocialGouv/iterion/commit/b3f7efb5cc282f7ae7a169b0dff720e0717a1232)), references [#474](https://github.com/SocialGouv/iterion/issues/474)
+
+    <details><summary>why</summary>
+
+    With a tenant z.ai key, the claude_code delegate's default precedence routes every node through the Anthropic-shaped facade, which answers the requested claude id with the model it aliases it to. Declared and effective ids agree, model_drift stays silent, and the only trace was the _session_fingerprint buried in the node output. Measured 2026-09-07: three claude_code probe nodes declared claude-fable-5 / claude-opus-5 / claude-opus-4-8 all carried `facade:https://api.z.ai/api/anthropic` and…
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** a stale codex-cli never downgrades the ChatGPT identity, and a JSON Schema type array parses (claw b6e34a39) ([#917](https://github.com/SocialGouv/iterion/issues/917)) ([34ea228](https://github.com/SocialGouv/iterion/commit/34ea228453fa18a0dc6f4ca50989088133e2018a))
+
+    <details><summary>why</summary>
+
+    The ChatGPT-Codex backend gates model availability on the `version:` header; iterion resolved it from a host `codex --version` probe and let that value win over claw's baked release. A stale binary in an image then downgraded every OAuth call: measured 2026-09-07 on the cloud runner (codex-cli 0.139.0 shipped in the image), the backend answered "The 'gpt-6-astra' model requires a newer version of Codex" while the same model is served to the 0.144.6 release claw now presents.
+
+    </details>
+* **runview:** list a run's artifacts from its artifact_index when the directory is not on this host ([#919](https://github.com/SocialGouv/iterion/issues/919)) ([7bf70d8](https://github.com/SocialGouv/iterion/commit/7bf70d84f2a7b99e3d0cf9788767e8ab46e1e88b))
+
+    <details><summary>why</summary>
+
+    ListAllArtifacts walked runs/<id>/artifacts on the local filesystem and returned an empty list when the directory was absent — which is every run on a cloud server pod, since the directory lives on the runner that wrote it. Measured 2026-09-07: a run whose events carried two artifact_written entries (one of them a `publish:`) answered `{"artifacts": []}` on GET /api/runs/{id}/artifacts while GET /api/runs/{id}/artifacts/{node}/0 served the body.
+
+    </details>
+* **server:** a launch field the request does not declare is refused, not dropped ([#949](https://github.com/SocialGouv/iterion/issues/949)) ([5ff01b3](https://github.com/SocialGouv/iterion/commit/5ff01b3b5aad85015843aec2732b7dce1eca2c25))
+
+    <details><summary>why</summary>
+
+    From the client, a parameter that was refused and one that was swallowed are the same answer: the request is accepted, the value does nothing, and the caller learns it from the behaviour of whatever it started rather than from what it was told.
+
+    </details>
+
 ## [3.120.2](https://github.com/SocialGouv/iterion/compare/v3.120.1...v3.120.2) (2026-09-08)
 
 ### Bug Fixes
