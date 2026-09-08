@@ -494,7 +494,28 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		if err := secrets.ValidateTokenShape("tokens.access_token", v.Tokens.AccessToken); err != nil {
 			return secrets.OAuthRecord{}, err
 		}
-		if v.Tokens.ExpiresIn > 0 {
+		// Stamp the access token's own `exp` claim in preference to
+		// expires_in. Both the record's usefulness and the whole codex
+		// refresh path hang off this one field: the refresh worker sweeps
+		// ExpiringBefore, whose query requires access_token_expires_at to
+		// EXIST, so a codex record connected without it is invisible to
+		// the worker forever and can only ever be renewed by hand.
+		//
+		// expires_in alone left exactly that hole: real ~/.codex/auth.json
+		// blobs carry access_token/refresh_token/account_id/id_token and
+		// last_refresh, and nothing writes expires_in (see
+		// delegate.piCodexExpiry), so the branch was never taken in
+		// practice. Where it IS present it is also the weaker answer —
+		// relative to an exchange that may be days old, which stamps an
+		// optimistic future expiry over an already-dead token. The claim
+		// is absolute and describes this very token.
+		//
+		// Measured cost of the hole: a platform forfait sat unrefreshed
+		// for ten days, surfacing only as a run failing its first LLM call
+		// with "authentication token is expired".
+		if t := v.AccessTokenExpiry(); !t.IsZero() {
+			rec.AccessTokenExpiresAt = &t
+		} else if v.Tokens.ExpiresIn > 0 {
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}

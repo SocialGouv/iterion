@@ -65,6 +65,24 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// simply never set the id, and the only symptom was a run
 		// failing its first LLM call with "authentication token is
 		// expired", far from the cause.
+		//
+		// This worker is the SINGLE canonical refresher of a codex
+		// credential, and deliberately so: the blob is shared (the
+		// platform record is one meter for the whole deployment), OpenAI
+		// rotates the refresh token on use, and a second refresher
+		// therefore invalidates this one's token. That is why the runner's
+		// per-run loop refuses the kind (see runner.startOAuthRefreshers)
+		// and why nothing else here may start rotating it.
+		//
+		// Removing the skip was necessary but NOT sufficient: this loop
+		// only ever sees what ExpiringBefore returns, which requires
+		// access_token_expires_at to exist. Stamping it from the access
+		// token's own `exp` claim — at connect and after each refresh — is
+		// what actually puts a codex record in front of this code.
+		//
+		// Still open (audit row B2 / native:fc0c51d4): a sandboxed codex
+		// reader is permitted to rotate its own writable copy in place, so
+		// a long run remains a second holder this worker cannot see.
 		// A payload without a refresh token can never be refreshed; only
 		// a re-connect renews it. Not a failure — skipping keeps the sweep
 		// quiet instead of erroring on the same record every cycle.

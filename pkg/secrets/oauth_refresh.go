@@ -241,8 +241,19 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 			return serr
 		}
 		rec.SealedPayload = sealed
-		if !res.ExpiresAt.IsZero() {
-			t := res.ExpiresAt
+		// Stamping the new expiry is what keeps the record SELECTABLE: the
+		// worker sweeps ExpiringBefore, which skips any record whose
+		// access_token_expires_at is absent. Leaving it unchanged after a
+		// successful refresh would refresh the record once and then lose
+		// sight of it — the token endpoint is not required to return
+		// expires_in, and nothing else recomputes the value.
+		//
+		// So fall back to the access token's own `exp` claim, which is the
+		// blob's only self-contained deadline (`expires_in` is relative to
+		// an exchange that may be old, and `last_refresh` dates the write,
+		// not the token). Zero stays zero: an expiry we cannot read is left
+		// unstamped rather than invented.
+		if t := codexRefreshedExpiry(res, updated); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
 		}
 	default:
@@ -312,6 +323,22 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 		out.Scopes = strings.Fields(tok.Scope)
 	}
 	return out, nil
+}
+
+// codexRefreshedExpiry resolves the access-token deadline to store after a
+// codex refresh: the provider's own expires_in when it sent one, otherwise
+// the `exp` claim of the token it just issued. Returns the zero time when
+// neither is readable, which callers treat as "leave the stored value
+// alone" rather than as "expired".
+func codexRefreshedExpiry(res RefreshResult, updated []byte) time.Time {
+	if !res.ExpiresAt.IsZero() {
+		return res.ExpiresAt
+	}
+	view, err := ParseCodexView(updated)
+	if err != nil {
+		return time.Time{}
+	}
+	return view.AccessTokenExpiry()
 }
 
 // ApplyCodexRefresh updates an auth.json blob with fresh tokens.
