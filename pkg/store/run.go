@@ -312,10 +312,14 @@ type NodeServed struct {
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
 	// Fingerprint is the provider fingerprint the backend reported for the
-	// session that served the node ("anthropic-oauth", "facade:<base url>",
+	// session behind this record ("anthropic-oauth", "facade:<base url>",
 	// …). A model id alone cannot tell that an Anthropic-shaped facade
 	// answered a claude id with whatever it aliases it to; the fingerprint
-	// can. Empty when the backend reports none.
+	// can. It names the route that SERVED on a success and the one that
+	// was ATTEMPTED on a failure that still reported a model — the same
+	// reading as Model beside it, and last-write-wins with it. Empty when
+	// the backend reports none (claw and the CLI-agent backends report no
+	// fingerprint), so empty is "route unknown", never "not a facade".
 	Fingerprint string `json:"fingerprint,omitempty" bson:"fingerprint,omitempty"`
 }
 
