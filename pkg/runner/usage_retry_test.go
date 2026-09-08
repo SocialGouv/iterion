@@ -33,6 +33,15 @@ func weeklyWindowErr(resetAt time.Time) error {
 	}
 }
 
+// blindUsageWindowErr is a real usage window whose end nothing parses — the
+// case where there is no authoritative instant at all.
+func blindUsageWindowErr() error {
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: "quota exhausted, no further detail",
+	}
+}
+
 func TestUsageWindowRetryAt(t *testing.T) {
 	reset := time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC)
 
@@ -147,7 +156,7 @@ func TestUsageWindowRetryAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow, time.Time{})
+			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow, time.Time{}, 0)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -174,7 +183,7 @@ func TestUsageWindowRetryAt_JitterStaysInBand(t *testing.T) {
 
 	seen := map[time.Time]bool{}
 	for i := 0; i < 200; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow, time.Time{})
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow, time.Time{}, 0)
 		if !ok {
 			t.Fatal("ok = false")
 		}
@@ -195,7 +204,7 @@ func TestUsageWindowRetryAt_JitterNeverPushesPastMaxWait(t *testing.T) {
 	pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "2h", Jitter: "30m"})
 	ceiling := retryNow.Add(2 * time.Hour)
 	for i := 0; i < 100; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow, time.Time{})
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow, time.Time{}, 0)
 		if !ok {
 			t.Fatal("ok = false")
 		}

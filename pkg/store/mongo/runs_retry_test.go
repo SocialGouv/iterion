@@ -451,3 +451,59 @@ func TestRunRetry_ContinuationFollowsTheRetryLifecycle(t *testing.T) {
 		t.Fatalf("post-abandon seq = %d, want 1", r.OutcomeSeq)
 	}
 }
+
+// TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument pins the wire the
+// runner's last-attempt reservation rides (#922): the arming charges an
+// attempt with a CAS $inc, and the NEXT arming decides whether the budget
+// still has room by reading store.Run.RetryState.Attempts off LoadRun. If
+// that number were projected away, reset by the re-failure that precedes
+// each arming, or simply never persisted, the reservation would read zero
+// forever and silently degrade to the defect it exists to close — with
+// every unit test still green, because they feed the count by hand.
+//
+// The re-failure in the loop is the production sequence: a run wakes, fails
+// on the window again (FailRunResumable), and only then arms the next
+// attempt.
+func TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	const runID = "run-attempts-visible"
+	seedFailedResumable(t, s, runID)
+
+	const budget = 5
+	for want := 1; want <= budget; want++ {
+		if want > 1 {
+			// The wake failed again on the same window before re-arming.
+			if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted", ""); err != nil {
+				t.Fatalf("re-fail before arm %d: %v", want, err)
+			}
+		}
+		scheduled, attempt, err := s.ScheduleRunRetry(ctx, runID,
+			time.Now().UTC().Add(time.Duration(want)*time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget)
+		if err != nil {
+			t.Fatalf("arm %d: %v", want, err)
+		}
+		if !scheduled || attempt != want {
+			t.Fatalf("arm %d: scheduled=%v attempt=%d, want true/%d", want, scheduled, attempt, want)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun after arm %d: %v", want, err)
+		}
+		if r.RetryState == nil {
+			t.Fatalf("after arm %d: LoadRun returned no retry state — the reservation would read zero attempts spent", want)
+		}
+		if r.RetryState.Attempts != want {
+			t.Fatalf("after arm %d: LoadRun reports %d attempts spent, want %d — the number the arming is charged against must be the number the next decision reads",
+				want, r.RetryState.Attempts, want)
+		}
+	}
+
+	// And the count the run doc carries is exactly the one that closes the
+	// budget: the arming past it refuses.
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget); err != nil {
+		t.Fatalf("arm past budget: %v", err)
+	} else if scheduled {
+		t.Errorf("scheduled = true with %d attempts already spent against a budget of %d", budget, budget)
+	}
+}
