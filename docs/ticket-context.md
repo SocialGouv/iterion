@@ -98,9 +98,49 @@ The tenancy model (ADR-048) already carries the governance:
   events (requested / approved / rejected) land in the audit log.
   Endpoints: `GET/POST /api/orgs/{id}/provision-approvals[…/approve|
   /reject]`, `GET /api/teams/{id}/provision-approvals`,
-  `GET/PATCH /api/orgs/{id}/settings`.
+  `GET/PATCH /api/orgs/{id}/settings`. From the terminal:
+  `iterion remote orgs settings` and `iterion remote orgs approvals
+  [approve|reject <id>]`.
+- **What the approval is FOR** (`Org.ProvisionApprovalScope`): `all` (the
+  default, and every pre-existing org) parks every request; a team spending
+  its own credentials answers to nobody for what it runs, so
+  **`shared_credentials`** parks only the teams that bring none — the ones
+  whose runs would be funded by the org tier, the pool or the platform.
+  `iterion remote orgs settings --approval-scope shared_credentials`.
+  "Funded" counts TEAM-scoped credentials only: the owner of a webhook,
+  board or schedule launch is a synthetic identity with no personal
+  credential, so one member's personal key funds none of the automated runs
+  the provisioning under review would create. A degraded credential read
+  fails the request 503 rather than resolving into a policy decision nobody
+  made — "I could not tell" must never read as "they pay their own way".
 - **Per-team usage caps** (studio Org → Governance): org admins set
   `max_concurrent_runs` and `launch_rate_per_min` per team of their
   org (`PATCH /api/orgs/{id}/teams/{team_id}/caps`) — enforced at
   launch by the existing gate. The org-level monthly run/cost/memory
   budget remains super-admin (platform ⇄ org contract).
+- **Shared org credentials** (`iterion remote orgs credential-audience`):
+  which of the org's teams may spend the org's own LLM keys. Its zero value
+  admits nobody. See
+  [cloud-llm-credentials.md](cloud-llm-credentials.md#the-org-tier--one-key-several-product-teams).
+
+### Team lifecycle
+
+Teams used to be create-and-list only, which made a naming mistake permanent
+and left `Team.Status` readable by the launch gate but writable by nothing:
+
+| Action | Who | Command |
+|---|---|---|
+| Rename | team admin | `iterion remote teams update --name X --slug x` |
+| Suspend / resume | **org** admin | `iterion remote teams status suspended --reason "…"` |
+| Delete an EMPTY team | org admin | `iterion remote teams delete` |
+| Place an EXISTING account | team admin | `iterion remote teams add-member <user-id> --role admin` |
+
+Two guards worth knowing. **Delete refuses a team that still owns
+anything** — repo integrations, forge connections, api keys, active runs —
+and names what is left: it is a refusal list, not a cascade, because the
+only correct cascade is the org purge sweeper, and the failure a hand-rolled
+one would cause is silent (a surviving webhook firing into a tenant nothing
+can reach). **`add-member` still requires the org membership**: that is the
+identity boundary a team grant sits inside, so creating one silently would
+let a team admin pull a stranger into the org. For an account that does not
+exist yet, the email invitation remains the path.

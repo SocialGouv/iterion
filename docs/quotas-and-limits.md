@@ -106,7 +106,17 @@ existing deployments.
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
 run/cost counters sum every team in the org. `MaxConcurrentRuns` and
 `LaunchRatePerMin` are **Team**-document fields (per-workspace executor
-caps — `pkg/identity.Team`).
+caps — `pkg/identity.Team`), and `Team.Status` is now writable through
+`iterion remote teams status` (org admin) — it was read by the gate below
+and settable by nothing.
+
+A limit this table does NOT carry: **whose credential funds the run**. That
+is a separate question with its own two gates — the org's
+`CredentialAudience` (which teams may spend the org's shared keys) and the
+platform tier's `platform_credentials` audience (which tenants may draw on
+the deployment's). Both are documented in
+[cloud-llm-credentials.md](cloud-llm-credentials.md); neither denies a
+launch, they decide what the run is handed.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
