@@ -6,8 +6,9 @@ upgrades one verified unit at a time — batching semver-safe patches and
 same-scope families, then solving the rest package-by-package with a
 security/CVE audit, changelog study, breaking-change code alignment,
 build/test validation, and a revert lane on any package that won't validate.
-Every landed upgrade carries a per-package audit doc under
-`docs/renovacy/`, and the run closes with a software bill of materials. It
+Every landed upgrade carries a per-package audit doc in the run's
+artifact-files area (`<artifacts>/renovacy/`, the studio Artifacts
+panel), and the run closes with a software bill of materials. It
 runs sandboxed by default (the `iterion-sandbox-full` image) precisely
 because it executes untrusted package-manager and post-install code — the
 same supply-chain surface `security_audit` exists to catch.
@@ -67,8 +68,11 @@ Phase 2   phase2_decider ─┬─ go_done (0 attempts or patches-only) ─▶ e
   repo's own toolchain) → `p2_verify_run` (re-runs it on the real exit code,
   no LLM judgment) → `p2_gate` closes the bounded `review_pass_loop`.
   `p2_gate.converged = p2_verify_run.passed ∧ p2_campaign.review_clean`.
-- **`emit_sbom`** writes a per-run SBOM under `docs/renovacy/` before `done`;
-  both terminal paths converge on it.
+- **`emit_sbom`** writes a per-run SBOM into the run's artifact-files area
+  (`<artifacts>/renovacy/`) before `done`; both terminal paths converge on
+  it. With `ITERION_ARTIFACT_FILES_DIR` unset it falls back to
+  `<workspace>/docs/renovacy/` in the repo — and only on that fallback is
+  the doc `git add`ed and amended into the upgrade commit.
 
 ## Inputs
 
@@ -77,9 +81,9 @@ Phase 2   phase2_decider ─┬─ go_done (0 attempts or patches-only) ─▶ e
 | `user_prompt` | `""` | Free-form operator context (issue title+body when dispatched); empty renders an empty "Project context" section. |
 | `scope` | `"patch,minor,major"` | Which semver tiers to attempt. `major` skips the patch fast-track; a run restricted to lower tiers skips major bumps. |
 | `update_scope` | `""` | What *kinds* of deps to touch — free-form, read verbatim by the agents (`libraries`, `languages`, `tooling`, `devops`, `ci_cd`, or a custom sentence). Empty = the whole dep graph. |
-| `major_policy` | `attempt` | `skip` \| `gate` \| `attempt` — how to handle major upgrades. **Ask before running `attempt`** — it mutates consuming code on breaking changes. |
+| `major_policy` | `attempt` | **Inert — declared but read nowhere.** Major gating is done entirely by `scope`: drop `major` from it to skip major bumps. |
 | `max_packages_per_run` | `30` | Cap on packages the solo loop selects in one run. |
-| `fix_loop_default` / `fix_loop_major` | `3` / `5` | Per-package `fix_after_upgrade` retry budget (major-risk upgrades get the larger budget). |
+| `fix_loop_default` / `fix_loop_major` | `3` / `5` | **Inert — declared but read nowhere.** The `fix_after_upgrade` budget is computed in `intel_join` (main.bot:4311): 5 when the changelog reports a breaking change with ≥3 alignment steps, else 3. |
 | `max_review_passes` | `5` | Phase-2 `review_pass_loop` cap (bounds loop-backs → up to N+1 campaign→verify passes). |
 | `override_install_cmd` / `override_upgrade_cmd` | `""` | Escape hatches for unusual setups; empty lets `detect_stack` supply the canonical commands. |
 | `workspace_dir` | `${PROJECT_DIR}` | Target repo — the run's worktree (`worktree: auto`; do not override). |
@@ -91,7 +95,7 @@ Phase 2   phase2_decider ─┬─ go_done (0 attempts or patches-only) ─▶ e
   `min_replier_role: maintainer`. The issue title+body become `user_prompt`.
 - **Schedule** — suggested weekly cron `0 4 * * 1` (board mode).
 - **Board** — fires on a matching card transition.
-- **Direct** — `iterion run bots/secured-renovacy/main.bot [--var scope=... --var major_policy=skip ...]`.
+- **Direct** — `iterion run bots/secured-renovacy/main.bot [--var scope=patch,minor ...]`.
 
 ## Run
 
