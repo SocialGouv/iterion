@@ -97,15 +97,15 @@ func TestForwardableProviderEnv_forwardsHostProbedCodexVersion(t *testing.T) {
 
 	hostCodexVersion = func() string { return "0.144.6" }
 	env := envFor(t, context.Background())
-	if env["ITERION_CODEX_VERSION"] != "0.144.6" {
-		t.Errorf("ITERION_CODEX_VERSION = %q, want the host-probed version forwarded when no override is set", env["ITERION_CODEX_VERSION"])
+	if env["ITERION_CODEX_HOST_VERSION"] != "0.144.6" {
+		t.Errorf("ITERION_CODEX_HOST_VERSION = %q, want the host-probed version forwarded as a probe when no override is set", env["ITERION_CODEX_HOST_VERSION"])
 	}
 
 	// No codex on the host either: forward nothing, never an empty pair.
 	hostCodexVersion = func() string { return "" }
 	env = envFor(t, context.Background())
-	if v, ok := env["ITERION_CODEX_VERSION"]; ok {
-		t.Errorf("ITERION_CODEX_VERSION = %q set with nothing to forward — an empty value must not cross", v)
+	if v, ok := env["ITERION_CODEX_HOST_VERSION"]; ok {
+		t.Errorf("ITERION_CODEX_HOST_VERSION = %q set with nothing to forward — an empty value must not cross", v)
 	}
 }
 
