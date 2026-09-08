@@ -125,7 +125,9 @@ func TestNormalizeAnthropicBlob_RefusesAMangledToken(t *testing.T) {
 	now := time.Date(2026, 9, 8, 7, 0, 0, 0, time.UTC)
 	for _, in := range []string{
 		"sk-ant-oat01-aaa bbb",
-		"sk-ant-oat01-aaa​bbb",
+		// A zero-width space, escaped: written literally it is invisible in
+		// the source too, which is how it reaches a token in the first place.
+		"sk-ant-oat01-aaa" + "\u200b" + "bbb",
 	} {
 		if _, err := NormalizeAnthropicBlob([]byte(in), now); err == nil {
 			t.Fatalf("normalize(%q) accepted a mangled token", in)
