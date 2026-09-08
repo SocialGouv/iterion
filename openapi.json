@@ -8262,8 +8262,15 @@
       "get": {
         "operationId": "getTeamsByIdBotSources",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceListView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/bot-sources",

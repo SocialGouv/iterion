@@ -329,6 +329,58 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 	}
 }
 
+// docs/platform-bots.md promises the shadow fields on BOTH listings, and one
+// handler (listBotSourcesFor) serves both — so both must name the payload's
+// type in the generated spec. The team operation was left untyped ("default:
+// Response"), which makes the doc a promise with nothing to verify it against:
+// the documented-but-unverifiable shape this whole family exists to end.
+func TestOpenAPI_BothBotSourceListingsAreTypedWithTheShadowFields(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	s.mux.Handle("GET /api/admin/bots", http.NotFoundHandler())
+	s.mux.Handle("GET /api/teams/{id}/bot-sources", http.NotFoundHandler())
+
+	doc := s.buildOpenAPI()
+	paths := doc["paths"].(map[string]any)
+	for _, p := range []string{"/api/admin/bots", "/api/teams/{id}/bot-sources"} {
+		item, ok := paths[p].(map[string]any)
+		if !ok {
+			t.Fatalf("%s absent from the spec", p)
+		}
+		resp, ok := item["get"].(map[string]any)["responses"].(map[string]any)["200"].(map[string]any)
+		if !ok {
+			t.Errorf("%s has no typed 200 response: %+v", p, item["get"])
+			continue
+		}
+		schema := resp["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+		if ref, _ := schema["$ref"].(string); ref != "#/components/schemas/botSourceListView" {
+			t.Errorf("%s 200 $ref = %q, want botSourceListView", p, ref)
+		}
+	}
+
+	// And the named type must carry the field names the runbook tells an
+	// operator to read, or the reference is typed but still not the contract.
+	schemas := doc["components"].(map[string]any)["schemas"].(map[string]any)
+	props := func(name string) map[string]any {
+		t.Helper()
+		sch, ok := schemas[name].(map[string]any)
+		if !ok {
+			t.Fatalf("components.schemas missing %q", name)
+		}
+		p, _ := sch["properties"].(map[string]any)
+		return p
+	}
+	for _, f := range []string{"bot_sources", "shadow_check_unavailable"} {
+		if _, ok := props("botSourceListView")[f]; !ok {
+			t.Errorf("botSourceListView is missing %q", f)
+		}
+	}
+	for _, f := range []string{"bundle_version", "shadowed_version", "shadows_newer_version"} {
+		if _, ok := props("botSourceMetaView")[f]; !ok {
+			t.Errorf("botSourceMetaView is missing %q", f)
+		}
+	}
+}
+
 // A platform row that carries NO version still serves — storedLaunchBot asks
 // only for a non-empty main.bot, and forking a loose <name>.bot copies no
 // manifest at all (POST /api/admin/bots/{slug}/fork reaches exactly that).
