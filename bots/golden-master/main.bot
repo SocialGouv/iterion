@@ -3593,13 +3593,29 @@ tool oracle_run:
             raise AssertionError(
                 "selftest: os.system(%r) bypasses the git audit — use subprocess" % command)
 
-        saved_git_env = {k: os.environ.get(k) for k in
-                         ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
-                          "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1")}
+        # APPENDED after whatever is already declared, never written at index 0:
+        # the engine injects the workspace's safe.directory entry through this same
+        # environment (runtime/sandbox_mounts.go sets GIT_CONFIG_COUNT=1), so
+        # writing slot 0 destroys it and every git of the selftest then refuses the
+        # workspace for dubious ownership. Measured: safe.directory=/tmp/x became
+        # whatever the operator's global config said, or nothing.
+        raw_count = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+        try:
+            base_count = int(raw_count)
+        except ValueError:
+            raise SystemExit(
+                "selftest: GIT_CONFIG_COUNT=%r is not a count — refusing to guess "
+                "where to append the auto-maintenance switches" % raw_count)
+        if base_count < 0:
+            raise SystemExit("selftest: GIT_CONFIG_COUNT=%r is negative" % raw_count)
+        saved_git_env = {"GIT_CONFIG_COUNT": os.environ.get("GIT_CONFIG_COUNT")}
         for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
-            os.environ["GIT_CONFIG_KEY_%d" % i] = key
-            os.environ["GIT_CONFIG_VALUE_%d" % i] = value
-        os.environ["GIT_CONFIG_COUNT"] = str(len(_GIT_MAINTENANCE_OFF))
+            slot = base_count + i
+            for name, declared in (("GIT_CONFIG_KEY_%d" % slot, key),
+                                   ("GIT_CONFIG_VALUE_%d" % slot, value)):
+                saved_git_env[name] = os.environ.get(name)
+                os.environ[name] = declared
+        os.environ["GIT_CONFIG_COUNT"] = str(base_count + len(_GIT_MAINTENANCE_OFF))
         subprocess.Popen = _AuditedPopen
         os.system = _refuse_system
 
