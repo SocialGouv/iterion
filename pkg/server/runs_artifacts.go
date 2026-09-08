@@ -53,7 +53,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
-	out, err := s.runs.ListArtifacts(id, node)
+	out, err := s.runs.ListArtifactsCtx(r.Context(), id, node)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifacts: %v", err)
 		return

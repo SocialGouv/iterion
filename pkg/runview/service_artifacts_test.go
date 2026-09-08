@@ -140,6 +140,77 @@ func TestListAllArtifacts_FromIndexStoreFailureIsAnError(t *testing.T) {
 	}
 }
 
+// TestListArtifacts_FromStoreWhenNoDirectory is the drill-in half of the
+// cloud shape: each card of the aggregate listing expands into a per-node
+// version list, which the studio uses to pick which versions to fetch. On a
+// server pod the node's artifact directory is on the runner, so reading it
+// locally yields nothing — and an empty list pins BOTH of the studio's
+// version selectors to v1 (ArtifactDiff.tsx `sorted[0]?.version ?? 1`),
+// which 404s for the engine's first version (v0) and silently renders a
+// stale v1 for a node whose latest is v3. The store must answer instead.
+func TestListArtifacts_FromStoreWhenNoDirectory(t *testing.T) {
+	logger := iterlog.Nop()
+	seed, err := store.New(t.TempDir(), store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := seed.CreateRun(ctx, "run4", "wf", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	for _, v := range []int{0, 3} {
+		if err := seed.WriteArtifact(ctx, &store.Artifact{RunID: "run4", NodeID: "report", Version: v, Data: map[string]any{"v": v}}); err != nil {
+			t.Fatalf("write artifact v%d: %v", v, err)
+		}
+	}
+	// storeDir holds no artifact directory for the run — the cloud pod.
+	svc, err := NewService(t.TempDir(), WithLogger(logger), WithStore(seed))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	got, err := svc.ListArtifacts("run4", "report")
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+	if len(got) != 2 || got[0].Version != 0 || got[1].Version != 3 {
+		t.Fatalf("versions = %+v, want v0 and v3 ascending (an empty list pins the studio to v1)", got)
+	}
+	if got[0].WrittenAt.IsZero() || got[1].WrittenAt.IsZero() {
+		t.Errorf("versions carry no timestamp: %+v", got)
+	}
+
+	// A node that genuinely published nothing is still an empty list, not
+	// an error — the studio renders an empty state for it.
+	none, err := svc.ListArtifacts("run4", "never-ran")
+	if err != nil || len(none) != 0 {
+		t.Errorf("unpublished node: got %+v, %v; want empty, nil", none, err)
+	}
+}
+
+// failingVersionsStore is a real store whose ListArtifactVersions fails —
+// the outage shape the drill-in must surface rather than render as "this
+// node published nothing".
+type failingVersionsStore struct{ store.RunStore }
+
+func (failingVersionsStore) ListArtifactVersions(context.Context, string, string) ([]store.ArtifactVersionInfo, error) {
+	return nil, errors.New("s3: connection reset")
+}
+
+func TestListArtifacts_FromStoreFailureIsAnError(t *testing.T) {
+	real, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc, err := NewService(t.TempDir(), WithLogger(iterlog.Nop()), WithStore(failingVersionsStore{RunStore: real}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.ListArtifacts("run-any", "report"); err == nil {
+		t.Fatal("a store outage must not be reported as an empty version list")
+	}
+}
+
 // failingRunStore is a real store whose LoadRun fails with a non-not-found
 // error (an outage), the shape the index fallback must not swallow.
 type failingRunStore struct{ store.RunStore }

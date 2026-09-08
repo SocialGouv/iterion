@@ -14,11 +14,22 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// ListArtifacts enumerates the persisted artifacts for one node by
-// reading the artifact directory directly — avoids the O(versions)
-// JSON-decode of the full bodies that LoadArtifact would do just to
-// extract the version number. Returns the versions in ascending order.
+// ListArtifacts enumerates the persisted artifacts for one node.
+//
+// Uses context.Background with the mongo tenant filter bypassed — it does
+// NOT carry caller identity. Use ListArtifactsCtx from cloud HTTP handlers
+// so the tenant_id filter applies.
 func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error) {
+	return s.ListArtifactsCtx(store.WithoutTenantFilter(context.Background()), runID, nodeID)
+}
+
+// ListArtifactsCtx is the tenant-aware variant of ListArtifacts. It reads
+// the node's artifact directory directly when it is on this host — which
+// avoids the O(versions) JSON-decode of the full bodies that LoadArtifact
+// would do just to extract the version number — and otherwise asks the
+// store, the case of a cloud server pod (the directory lives on the runner
+// that wrote it). Returns the versions in ascending order.
+func (s *Service) ListArtifactsCtx(ctx context.Context, runID, nodeID string) ([]ArtifactSummary, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -29,7 +40,7 @@ func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return s.listArtifactVersionsFromStore(ctx, runID, nodeID)
 		}
 		return nil, fmt.Errorf("runview: list artifacts: %w", err)
 	}
@@ -48,6 +59,30 @@ func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error)
 			continue
 		}
 		out = append(out, ArtifactSummary{Version: v, WrittenAt: info.ModTime().UTC()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	return out, nil
+}
+
+// listArtifactVersionsFromStore asks the store for a node's persisted
+// versions when the artifact directory is not on this host — the same
+// condition that sends the aggregate listing to the artifact index.
+//
+// Without it the per-node drill-in behind every card of that listing came
+// back empty, and the studio's version picker falls back to v1 for both
+// selectors (ArtifactDiff.tsx: `sorted[0]?.version ?? 1`). The engine's
+// first version is v0, so the common case answered 404 on expand and a
+// node whose latest is v3 rendered a stale v1. An empty version list here
+// means the node published nothing; a store failure is an error, never an
+// empty listing.
+func (s *Service) listArtifactVersionsFromStore(ctx context.Context, runID, nodeID string) ([]ArtifactSummary, error) {
+	versions, err := s.store.ListArtifactVersions(ctx, runID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("runview: list artifacts: store versions: %w", err)
+	}
+	out := make([]ArtifactSummary, 0, len(versions))
+	for _, v := range versions {
+		out = append(out, ArtifactSummary{Version: v.Version, WrittenAt: v.WrittenAt})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
@@ -103,7 +138,7 @@ func (s *Service) ListAllArtifactsCtx(ctx context.Context, runID string) ([]RunA
 			continue
 		}
 		nodeID := n.Name()
-		versions, verr := s.ListArtifacts(runID, nodeID)
+		versions, verr := s.ListArtifactsCtx(ctx, runID, nodeID)
 		if verr != nil || len(versions) == 0 {
 			continue
 		}
