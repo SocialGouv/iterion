@@ -493,8 +493,9 @@ tool oracle_run:
 
 
     def check_form_fields(fields):
-        """Every field that is not a file part must be a SCALAR — a form encoding
-        carries nothing else.
+        """Every field that is not a file part must be a PRESENT SCALAR — a form
+        encoding carries nothing else, and it must carry the same thing whichever
+        encoding the rest of the form selects.
 
         An object or a list here is either a file part that misses its `filename`
         (a typo away from working: `file_name`, `fileName`, a filename that is a
@@ -506,6 +507,18 @@ tool oracle_run:
         the behaviour. Refused by name instead, so the corpus line gets fixed.
         """
         for name, value in fields.items():
+            if value is None:
+                # The two encodings disagree on null, so the SAME corpus line
+                # would leave differently depending on whether a sibling field
+                # happens to be a file. `""` is exact and identical in both, so
+                # refusing null costs no capability — only its ambiguous spelling.
+                raise SystemExit(
+                    'form field %r is null, and the two encodings disagree on '
+                    'what that means: urlencoded sends the text "None", '
+                    'multipart sends nothing. The same line would then go out '
+                    'differently depending on whether a SIBLING field is a file. '
+                    'Declare "" for an empty field — exact, and identical in '
+                    'both.' % name)
             if isinstance(value, (dict, list)) and not is_file_part(value):
                 raise SystemExit(
                     'form field %r is a %s, not a scalar. A file part is '
@@ -3740,6 +3753,26 @@ tool oracle_run:
                     near = "SystemExit"
                 check("objet qui n'est pas une part fichier -> refus AVANT tout envoi",
                       [near, received], ["SystemExit", {}])
+                # Et `null` : urlencode en fait le TEXTE "None", multipart n'en
+                # fait rien. La meme ligne de corpus partirait donc autrement selon
+                # qu'un champ VOISIN est un fichier. `""` dit la meme chose aux
+                # deux ; `null` est refuse plutot que devine.
+                received.clear()
+                try:
+                    sess.fetch("POST", "/nul", fields={"note": None})
+                    nul = "aucun-refus"
+                except SystemExit:
+                    nul = "SystemExit"
+                check("champ null -> refus : les deux encodages ne s'accordent pas",
+                      [nul, received], ["SystemExit", {}])
+                # `""` en revanche est exact, et identique des deux cotes.
+                sess.fetch("POST", "/vide", fields={"note": ""})
+                vide_url = received["body"]
+                sess.fetch("POST", "/vide", fields={"note": "", "doc": {
+                    "filename": "a.txt", "text": "P"}})
+                vide_multi = received["body"].split(b"\r\n\r\n")[1].split(b"\r\n--")[0]
+                check('"" dit la meme chose dans les deux encodages',
+                      [vide_url, vide_multi], [b"note=", b""])
             finally:
                 srv.shutdown()
                 srv.server_close()
