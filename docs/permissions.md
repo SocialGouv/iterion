@@ -67,8 +67,13 @@ Matching semantics (`pkg/backend/permission`):
 
 - **Bash** patterns match the `command`; `prefix:*` is a prefix match,
   a bare wildcard `*`/`**` is a greedy match, no wildcard is exact.
-- **Read / Edit / Write / NotebookEdit** patterns match the file path;
-  `pkg/**`, `*.go` etc. work as gitignore-style globs.
+- **Read / Edit / Write / NotebookEdit** patterns match the file path.
+  `*` and `**` are both **greedy** (`.*`) and the pattern is anchored
+  end-to-end — a deliberate superset of segment-aware globbing, not
+  gitignore semantics: `Edit(pkg/*)` also matches `pkg/dsl/ir/foo.go`,
+  and a pattern must match the path **as the agent spells it**
+  (`Read(.env*)` does not match `./.env` or an absolute path; prefer
+  `Read(**/.env*)`).
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 
@@ -118,7 +123,8 @@ Environment: `ITERION_PERMISSION=ask|deny|off`.
 The resolved `permission.Policy` is carried on `delegate.Task.Permission`
 and evaluated by each gated backend before every tool runs:
 
-- **claw** — `executeToolsDirect` (pkg/backend/model/generation.go)
+- **claw** — `executeToolsDirect` → `executeOneTool`
+  (pkg/backend/model/generation_toolexec.go)
   evaluates the policy before `gt.Execute`. Allow → execute; Deny → a
   synthetic `isError` tool_result the model adapts to; Ask → the loop
   aborts with `delegate.ErrAskUser` so the run pauses. **Sandboxed claw
@@ -259,4 +265,7 @@ decode the native event and spell the native verdict.
 - `docs/plugins.md` — the sibling opt-in `compress:` field this mirrors
 - Diagnostics: **C110** (invalid permission mode), **C111** (rules
   declared but gate off), **C112** (tool-node `permission:` — parsed but
-  not enforced).
+  not enforced), **C136** (a gated grok/kimi route, or an ask-capable
+  claw route, on a workflow that has not opted out of the sandbox —
+  warning), **C176** (a primary or fallback route that cannot enforce the
+  declared gate — error).
