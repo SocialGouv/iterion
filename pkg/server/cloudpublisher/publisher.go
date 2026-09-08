@@ -150,9 +150,11 @@ type Config struct {
 }
 
 // TeamResolver is the slice of the identity store the publisher needs
-// for org spend attribution.
+// for org spend attribution and for the ORG credential tier, whose
+// audience lives on the Org document.
 type TeamResolver interface {
 	GetTeam(ctx context.Context, id string) (identity.Team, error)
+	GetOrg(ctx context.Context, id string) (identity.Org, error)
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -601,14 +603,29 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 		}
 		addOAuth(ownerID, "user")
-		addOAuth(secrets.OrgOwnerKey(tenantID), "org")
+		// Labelled "team", not "org": OrgOwnerKey's argument is a TENANT
+		// id, so this record is the team's shared forfait. The genuine
+		// org tier is step 4 below.
+		addOAuth(secrets.OrgOwnerKey(tenantID), "team")
 	}
 
-	// 4. Mutualised pool — the LAST resort, and only for a run that has no
+	// 4. ORG tier — the parent org's own shared credentials, lent to the
+	//    teams its CredentialAudience admits. It sits here, below
+	//    everything the team resolved and above the pool, because that is
+	//    what "shared inside the org" means: a team that brought its own
+	//    key spends it, a team the org lends to spends the org's, and
+	//    neither takes a stranger's donation while either is available.
+	//    Fills per WIRE FAMILY like the platform tier, so an org key can
+	//    never shadow a credential the team already holds in another shape.
+	p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips)
+
+	// 5. Mutualised pool — the LAST resort, and only for a run that has no
 	//    credential of its own at all. Spending a contributor's lent
 	//    subscription while the tenant holds a usable key of its own would
 	//    be taking a donation nobody needed; "the tenant is out of
-	//    credentials" is the condition the pool exists for.
+	//    credentials" is the condition the pool exists for. An org-funded
+	//    run therefore never reaches it — by construction, since the fill
+	//    above left the bundle non-empty.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
 		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks); grant != nil {
@@ -645,7 +662,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 	}
 
-	// 5. Platform tier — the deployment's own DB-backed credentials, the
+	// 6. Platform tier — the deployment's own DB-backed credentials, the
 	//    last stop before the runner's env fallback (which stays: an empty
 	//    platform store keeps today's behaviour byte-identical). Fills only
 	//    the slots tiers 1–4 left empty, per WIRE FAMILY, so a platform key
@@ -700,7 +717,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 
 	// Record which review families the resolved credentials back — every
-	// tier included (BYOK, oauth-forfait, pool grant, platform). This is
+	// tier included (BYOK, oauth-forfait, org, pool grant, platform). This is
 	// what lets SubmitLaunch resolve the credential-derived topology vars
 	// (review_mode / plan_review / llm_families) for a queued run, where
 	// no host detection report applies. Empty when nothing resolved: the
@@ -755,7 +772,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// silence it exactly where it matters.
 	noLLMCred := len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0
 	if noLLMCred && (wf == nil || wf.UsesLLM()) {
-		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
 			runID, tenantID)
 	}
 	// The deployment may REFUSE what the Warn only reports. Per route, on
@@ -1631,15 +1648,15 @@ func pledgeSkipSummary(skips []credpool.PledgeSkip) string {
 // (a grant used to be silent — #659 pt 1), and the answer an operator
 // needed to `grep run=<id>` for instead of `/proc/<pid>/environ` inside
 // a pod (measured, 2026-09-03). The line carries the credential's
-// TIER (byok / oauth-forfait / pool / platform), the slot name
+// TIER (byok / oauth-forfait / org / pool / platform), the slot name
 // (provider or oauth kind), and the FINGERPRINT — never plaintext.
 func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, grant *credpool.Grant) {
 	if logger == nil {
 		return
 	}
 	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	// API keys — the PlatformSourced map tells apart platform-tier
-	// grants (deployment-wide fallback keys) from tenant BYOK.
+	// API keys — the provenance maps tell apart the shared tiers
+	// (deployment-wide fallback keys, the org's lent key) from tenant BYOK.
 	for _, prov := range allKnownProviders {
 		if _, ok := bundle.APIKeys[prov]; !ok {
 			continue
@@ -1650,6 +1667,8 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 			tier = "pool"
 		case bundle.PlatformSourced[string(prov)]:
 			tier = "platform"
+		case bundle.OrgSourced[string(prov)]:
+			tier = "org"
 		}
 		fp := apiKeyFPs[prov]
 		if fp == "" {
@@ -1658,17 +1677,21 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
 	}
 	// OAuth-forfait — grant != nil means a donor's subscription came in
-	// via the pool tier; the platform sentinel marks the deployment's
-	// own fallback forfait; otherwise it is a user-or-org connect.
+	// via the pool tier; the platform sentinel marks the deployment's own
+	// fallback forfait, the org one the parent org's lent forfait;
+	// otherwise it is a user-or-team connect.
 	for _, kind := range []string{string(secrets.OAuthKindClaudeCode), string(secrets.OAuthKindCodex)} {
 		if _, ok := bundle.OAuthCredentials[kind]; !ok {
 			continue
 		}
 		tier := "oauth-forfait"
-		if grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth {
+		switch {
+		case grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth:
 			tier = "pool"
-		} else if bundle.PlatformSourced[kind] {
+		case bundle.PlatformSourced[kind]:
 			tier = "platform"
+		case bundle.OrgSourced[kind]:
+			tier = "org"
 		}
 		fp := bundle.OAuthFingerprints[kind]
 		if fp == "" {

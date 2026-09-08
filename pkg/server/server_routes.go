@@ -143,6 +143,13 @@ func (s *Server) routes() {
 	// place — caller must wire AuthService + ApiKeys + Sealer.
 	if s.apiKeys != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerBYOKRoutes()
+		// The ORG credential tier rides the same stores under a reserved
+		// scope: an org's shared keys/forfaits plus the audience naming
+		// which of its teams may spend them. The OAuth half is a no-op
+		// without an OAuth store, which its own handlers already tolerate.
+		if s.authStore() != nil {
+			s.registerOrgCredentialRoutes()
+		}
 	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
