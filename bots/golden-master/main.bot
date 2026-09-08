@@ -1905,7 +1905,13 @@ tool oracle_run:
         for act in acts:
             row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
             if act.get("id") in seen_act_ids:
-                row["forged"] = True
+                # REFUSED, not forged. The duplicate block was appended during this
+                # segment, so it sits ABOVE the run's base — and ledger_append_only
+                # only pins the text below it. Removing the extra block is a legal
+                # edit, which makes this a shape a repair pass can fix: the row
+                # stays not-ok, its paths stay out of ok_paths, refs_untouched goes
+                # false and the lot does not converge. `forged` is reserved for
+                # what NO pass can undo (see the two sites below).
                 row["problems"].append(
                     "a SECOND act block for %r — an id is acted once. Its "
                     "provenance would resolve on the FIRST act's commit, so any "
@@ -2057,13 +2063,20 @@ tool oracle_run:
                         continue
                     certified = acted_blobs.get(p)
                     if not certified:
-                        row["forged"] = True
+                        # REFUSED, not forged: the act block was appended in this
+                        # segment, so narrowing it back to the paths the subbot
+                        # certified is a legal append-only edit.
                         row["problems"].append(
                             "%s is recorded by the act but the subbot certified no "
                             "blob for it — a path appended to the record after the "
                             "act is not part of the act" % p)
                     elif blob_id("HEAD", p) != certified:
-                        row["forged"] = True
+                        # REFUSED, not forged: the repair is one commit — restore
+                        # the file to the blob the subbot certified. The trigger is
+                        # accidental and realistic (a repo-wide sweep by the lot's
+                        # own agent touching a reference after extend ran), and
+                        # ending the run there costs the whole campaign for
+                        # something the next pass undoes.
                         row["problems"].append(
                             "%s was rewritten after the act: HEAD carries blob %s, "
                             "the subbot certified %s — the certificate covers the "
@@ -4635,9 +4648,11 @@ tool oracle_run:
             xcommit(email="lot@run")                         # commit C, le lot reecrit
             v_rw = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b},
                                      acted_blobs={".golden-master/refs/2.txt": blob_b})
-            check("reference reecrite apres l'acte certifie : refusee, pas exemptee",
+            # Refusee sans etre FORGEE : la reparation est un commit (restaurer le
+            # blob certifie), donc le lot doit repasser, pas mourir.
+            check("reference reecrite apres l'acte certifie : refusee, reparable, pas exemptee",
                   [v_rw["acted"][0]["ok"], v_rw["acted"][0].get("forged"), v_rw["ok_paths"]],
-                  [False, True, []])
+                  [False, None, []])
             v_rw2 = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
                                       acted_blobs={".golden-master/refs/2.txt": blob_b})
             check("sha inconnu ET contenu different : refuse", v_rw2["acted"][0]["ok"], False)
@@ -4717,10 +4732,10 @@ tool oracle_run:
                                       acted_blobs={".golden-master/refs/2.txt": blob_one},
                                       acted_ids={"E-1"})
             dup = v_dup["acted"][1]
-            check("second bloc `act` de meme id : refuse, forge, et n'exempte rien",
+            check("second bloc `act` de meme id : refuse, reparable, et n'exempte rien",
                   [dup["ok"], dup.get("forged"),
                    ".golden-master/refs/9.txt" in v_dup["ok_paths"]],
-                  [False, True, False])
+                  [False, None, False])
             check("l'acte du subbot reste certifie, lui",
                   [v_dup["acted"][0]["ok"], v_dup["ok_paths"]],
                   [True, [".golden-master/refs/2.txt"]])
@@ -4754,11 +4769,11 @@ tool oracle_run:
                                        acted_blobs={".golden-master/refs/2.txt": blob_w},
                                        acted_ids={"E-1"})
             wide = v_wide["acted"][0]
-            check("bloc `act` du subbot elargi apres coup : refuse, forge, "
+            check("bloc `act` du subbot elargi apres coup : refuse, reparable, "
                   "et le chemin ajoute n'est pas exempte",
                   [wide["ok"], wide.get("forged"),
                    ".golden-master/refs/9.txt" in v_wide["ok_paths"]],
-                  [False, True, False])
+                  [False, None, False])
             check("et le chemin que le subbot a bien certifie n'exempte plus rien "
                   "non plus : c'est l'acte entier qui est refuse",
                   v_wide["ok_paths"], [])
