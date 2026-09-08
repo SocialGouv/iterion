@@ -55,6 +55,22 @@ Backend selection and provider routing use `ITERION_DEFAULT_BACKEND`,
 `ITERION_BACKEND_PREFERENCE`, `ITERION_OPENAI_USE_OAUTH`, and
 `ITERION_CODEX_VERSION` — documented in [backends.md](backends.md).
 
+### MCP
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_MCP_AUTOLOAD` | `false`/`0` stops loading the project's `.mcp.json`. | enabled |
+| `ITERION_MCP_HEALTHCHECK` | `false`/`0` skips MCP pre-execution health checks entirely. Broader than `ITERION_SKIP_MCP_HEALTH`, which only stops a failure from aborting the run. | enabled |
+| `ITERION_MCP_CACHE_TTL` | TTL of the on-disk MCP tool-discovery cache. `0` disables caching. | `1h` |
+
+### Model specs and classifiers
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_MODEL_SPECS` | `off`/`0`/`false`/`no` disables the dynamic model-spec registry (context windows + published pricing, ADR-042), which also disables the spec-derived cost tier. | enabled |
+| `ITERION_MODEL_SPECS_URL` / `_CACHE` / `_TTL` / `_REFRESH` | Source URL, on-disk cache path, refresh interval (a positive Go duration) and a boolean force-refresh for that registry. | package defaults |
+| `ITERION_LLM_CLASSIFIER_MODEL` | When set (e.g. `anthropic/claude-haiku-4-5`), chains an LLM permission classifier after the rule classifier, with a 30-min TTL cache. Empty = rule classifier only. | unset |
+
 ## Sandbox
 
 | Variable | Effect | Default |
@@ -101,6 +117,42 @@ documented in [sandbox.md](sandbox.md).
 | `ITERION_REPO_DEVBOX` | Env level of the `repo_devbox:` chain (`--repo-devbox` → workflow → this → default). `off` skips the **target repo's** `devbox.json`; the bot's own is always installed. Worth turning off for a run that reads a repo without building it — see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox). | `on` |
 | `ITERION_WEBHOOK_SYNC_DEBOUNCE` | Quiet window a **synchronize** (push-to-PR) review launch waits out, so a push volley costs one review of the final head instead of N−1 runs cancelled mid-flight. A Go duration; `0` disables the debounce and every push launches immediately — the kill switch for the whole deferred lane. An unparsable value keeps the default with a stderr warning (failing open would silently restore the waste it exists to cut). PR open, `/revi` and a re-request click are never debounced. See [webhooks.md](webhooks.md). | `3m` |
 
+### Cloud runner pod
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_RUNNER_WORKDIR` | Root the runner clones into. | `/tmp/iterion` |
+| `ITERION_RUNNER_CONCURRENCY` | In-flight runs per runner pod; must be `≥ 1`. Horizontal scale is "more pods" — see [cloud-architecture.md](cloud-architecture.md). | `1` |
+| `ITERION_RUNNER_GIT_TIMEOUT` | Per-git-operation bound on a cloud clone/fetch, so a wedged remote cannot pin a runner pod indefinitely. `≤ 0` disables the bound. | `15m` |
+| `ITERION_RUNNER_CLONE_ALLOW_PRIVATE` | `1` relaxes the strict public-address check on the repo host so an **internal** forge can be cloned. | refused |
+| `ITERION_HEARTBEAT_INTERVAL` | How often a runner refreshes its NATS-KV lease; must be `> 0`. A single failed refresh makes the runner self-cancel rather than split-brain. | `20s` |
+| `ITERION_ORPHAN_RECONCILE_INTERVAL` | How often the periodic orphan scan re-runs after boot. `0` or negative keeps only the boot-time scan. | `60s` |
+
+### Dispatcher
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_DISPATCHER_AUTOSTART` | `0`/`false`/`no`/`off` keeps the dispatcher from auto-starting — the CI posture. | on |
+| `ITERION_DISPATCHER_STALL_REAP_GRACE` | How long after a stall-cancel the slot is force-reaped, so a backend that swallows its context cannot starve `max_concurrent`. A Go duration; a non-positive or unparsable value keeps the default. | `60s` |
+
+### Server and studio escape hatches
+
+Each of these overrides a deliberate refusal — read the effect before setting one.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_STUDIO_INSECURE_NONLOOPBACK` | `1` accepts starting an **unauthenticated** studio on a non-loopback bind. Otherwise a hard refusal: any reachable host would get unauthenticated super-admin, and launching a bot or tool node is host RCE. | refused |
+| `ITERION_REQUIRE_WS_ORIGIN` | `1` refuses a WebSocket upgrade carrying no `Origin` header. The default keeps parity with the HTTP surface, which lets empty-Origin clients (curl) through. | permitted |
+| `ITERION_BROWSE_ROOT` | Gates the server-side directory browser. Unset → the endpoint returns 403; set → its value is the traversal root and anything outside is rejected. | unset (feature off) |
+
+### Size limits
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_BUNDLE_MAX_BYTES` | Cap on the total **uncompressed** size of an extracted `.botz`. | `256 MiB` |
+| `ITERION_BUNDLE_MAX_ENTRIES` | Cap on archive entry count — the inode-exhaustion defence. | `10000` |
+| `ITERION_MEMORY_MAX_DOC` | Largest single memory markdown document. | `2 MiB` |
+
 ## Run alerts
 
 The run observer (`pkg/alert`) watches runtime events plus a per-run
@@ -121,6 +173,19 @@ than per-deployment.
 | `ITERION_ALERTS_STALL_TIMEOUT` | No-activity window after which a non-terminal run is flagged **stalled** (Go duration). An unparseable value keeps the default under `iterion studio`; on the cloud server it is a config-load error and the process refuses to start. | `5m` |
 | `ITERION_ALERTS_BASE_URL` | Origin used to build clickable `/runs/<id>` deep links in webhook payloads. **Studio only.** When unset it is derived from the bind address + port; with an OS-assigned (`0`) port the absolute base is left empty, since a wrong link is worse than none. The cloud server ignores this variable and uses `ITERION_PUBLIC_URL`. | derived from bind + port (studio); `ITERION_PUBLIC_URL` (cloud) |
 | `ITERION_ALERTS_DESKTOP_ENABLED` | `true` turns on the native desktop-notification sink. Parsed strictly: under `iterion studio` anything unparseable is `false`; on the cloud server it is a config-load error. | `false` |
+
+`ITERION_PROMETHEUS_ADDR` (documented in
+[observability/README.md](observability/README.md)) has a companion:
+`ITERION_PROMETHEUS_REQUIRED`, truthy, makes a failed bind **fatal**
+instead of a logged warning — the setting for a deployment whose
+dashboards must not silently go blank. Default: best-effort bind.
+
+## Cloud server
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_CLOUD_BOARD_TICK` | Pace of the cloud `board_events` poll-tail feeding the trigger spine (a Go duration). | `3s` |
+| `ITERION_CLOUD_MARKETPLACE` | `ParseBool`-truthy opts the cloud server into the marketplace routes. | off |
 
 ## Platform budget ceiling (cloud)
 
