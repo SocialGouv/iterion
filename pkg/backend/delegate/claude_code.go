@@ -316,18 +316,24 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			return Result{}, err
 		}
 	}
+	// cliTurnCompleted records that the CLI carried this call to its own
+	// ResultMessage. It is the discriminator turnFinished needs and the
+	// defer below cannot read: `rm` is declared further down, so the
+	// closure registered here cannot close over it.
+	var cliTurnCompleted bool
 	// Fire OnTurnFinished once on the way out, when the runtime wired
 	// the hook and the delegate produced a SessionID. Wrapped in a
-	// defer so every successful return path (Pass 1, recovery, two-
-	// pass, ask_user escalation) flows through the same notification —
-	// avoiding the maintenance trap of remembering to call it before
-	// every `return result, ...`. Skipped on hard errors with no
-	// captured session (rm.SessionID empty).
+	// defer so every return path that HAS a turn (Pass 1, recovery,
+	// two-pass, ask_user escalation, and a result the guards below then
+	// type as a failure) flows through the same notification — avoiding
+	// the maintenance trap of remembering to call it before every
+	// `return result, ...`. Skipped when no session was ever opened, and
+	// when the stream died before the CLI produced a result.
 	defer func() {
 		if task.Hooks.OnTurnFinished == nil {
 			return
 		}
-		if !turnFinished(err, result) {
+		if !turnFinished(err, cliTurnCompleted, result) {
 			return
 		}
 		text := ""
@@ -497,6 +503,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	if streamErr != nil {
 		return b.buildStreamErrorResult(rm, sessMeta, streamErr, readStderr(), duration, task)
 	}
+	// The CLI carried the call to its own ResultMessage: the turn ran to
+	// its end. Everything below judges that result's CONTENT — a rendered
+	// API error, an error subtype, a recovery pass that could not extract
+	// structured output — and typing the content a failure does not unmake
+	// the turn, or the session an operator may want to fork from.
+	cliTurnCompleted = true
 
 	result = Result{
 		Duration:           duration,
@@ -697,13 +709,21 @@ func errorBodyObject(obj map[string]any) bool {
 // announce.
 //
 // It used to be spelled inline as "the result carries a session id", which
-// was a PROXY for "the delegation succeeded": true only while a failure
-// could not carry one. A failure now names the session the CLI announced —
-// that is the point of capturing it — so the proxy is gone and the
-// condition has to say what it meant. A turn that ended in an error is not
-// a turn that finished, however well it names its session.
-func turnFinished(err error, result Result) bool {
-	return err == nil && result.SessionID != ""
+// was a PROXY for "the CLI got far enough to have a turn": true only while
+// a failure could not carry one. A stream that DIES now names the session
+// it opened — that is the point of capturing it — so the proxy no longer
+// holds and the condition has to say what it meant.
+//
+// What it meant is not "the delegation succeeded". The hook's one consumer
+// writes the store.TurnCheckpoint that anchors a FORK (`claude --resume
+// <id> --fork-session`), and forking the session of a node that ended on a
+// rendered API error is exactly the recovery an operator reaches for — it
+// ran a whole session before the failure. So a turn the CLI carried to its
+// own ResultMessage is announced whatever verdict iterion then puts on its
+// content; only a delegation that died before producing one has no turn to
+// announce.
+func turnFinished(err error, cliTurnCompleted bool, result Result) bool {
+	return result.SessionID != "" && (err == nil || cliTurnCompleted)
 }
 
 // typedFailure returns err with the delegation's spend stamped on the result
