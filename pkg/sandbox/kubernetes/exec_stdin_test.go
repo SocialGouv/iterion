@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -42,6 +43,23 @@ func readStdin(t *testing.T, r io.Reader) string {
 	return string(b)
 }
 
+// assertStdinAnnounced is the invariant every case below asserts, and
+// the one the whole streaming design turns on: kubectl opens a stdin
+// stream to the pod ONLY when `--stdin` is on its argv, so a reader
+// attached without the flag is dropped on the floor — the in-pod
+// `<shell> -s` reads EOF, executes nothing, and exits 0, turning an
+// oversized payload into a *successful empty run* instead of a loud,
+// retryable E2BIG. Asserting it once here catches the whole class,
+// not the three instances of it. (The converse, flag without reader,
+// is legitimate: a KeepStdinOpen caller wires its own pipe later.)
+func assertStdinAnnounced(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd.Stdin != nil && !argvHas(cmd.Args, "--stdin") {
+		t.Fatalf("cmd.Stdin is attached but kubectl was not given --stdin: "+
+			"the payload is dropped and the pod exits 0 having run nothing; args=%v", cmd.Args)
+	}
+}
+
 // A tool node whose interpolated recipe exceeds the kernel's
 // single-argument cap must not reach `kubectl exec` through argv: the
 // fork fails with E2BIG ("argument list too long") before the pod is
@@ -53,6 +71,7 @@ func TestCommand_OversizedScriptStreamsThroughStdin(t *testing.T) {
 
 	cmd := r.Command(context.Background(), []string{"bash", "-c", script}, sandbox.ExecOpts{})
 
+	assertStdinAnnounced(t, cmd)
 	for _, a := range cmd.Args {
 		if strings.Contains(a, big) {
 			t.Fatalf("oversized script leaked into argv (E2BIG risk); arg len=%d", len(a))
@@ -77,6 +96,7 @@ func TestCommand_SmallScriptKeepsArgvPath(t *testing.T) {
 
 	cmd := r.Command(context.Background(), []string{"bash", "-c", script}, sandbox.ExecOpts{})
 
+	assertStdinAnnounced(t, cmd)
 	if !argvHas(cmd.Args, script) {
 		t.Errorf("small script must stay in argv; args=%v", cmd.Args)
 	}
@@ -97,6 +117,10 @@ func TestCommand_OversizedScriptWithCustomWorkDirStreamsToo(t *testing.T) {
 
 	cmd := r.Command(context.Background(), []string{"bash", "-c", big}, sandbox.ExecOpts{WorkDir: "/elsewhere"})
 
+	assertStdinAnnounced(t, cmd)
+	if !argvHas(cmd.Args, "--stdin") {
+		t.Errorf("kubectl needs --stdin to forward the streamed wrapper; args=%v", cmd.Args)
+	}
 	for _, a := range cmd.Args {
 		if strings.Contains(a, big) {
 			t.Fatalf("oversized wrapper leaked into argv (E2BIG risk); arg len=%d", len(a))
@@ -123,10 +147,101 @@ func TestCommand_CallerStdinWins(t *testing.T) {
 
 	cmd := r.Command(context.Background(), []string{"bash", "-c", big}, sandbox.ExecOpts{Stdin: mine})
 
+	assertStdinAnnounced(t, cmd)
 	if got := readStdin(t, cmd.Stdin); got != "caller payload" {
 		t.Fatalf("caller stdin must survive; got %.60q", got)
 	}
 	if n := len(cmd.Args); n >= 2 && cmd.Args[n-1] == "-s" {
 		t.Error("with caller stdin attached the script must stay on argv, not take the -s route")
+	}
+}
+
+// The gap window the shipped custom-workdir branch could not see: a
+// script that fits in one argv element but whose WRAPPER does not.
+// `buildShellChdirExec` prepends `cd <dir> && exec ` and re-quotes the
+// script, expanding every `'` to `'\”` — so a quote-heavy recipe well
+// under the cap crosses it once wrapped. The size trigger and the
+// `--stdin` flag used to be computed from different values here, which
+// streamed the wrapper to a kubectl that never opened the stream.
+func TestCommand_WrapperCrossesCapWhileScriptFits(t *testing.T) {
+	r := testRun()
+	// Quote-heavy, and deliberately just under the cap so the raw
+	// per-element predicate cannot fire — the wrapper's own growth is
+	// the only thing that crosses it.
+	script := strings.Repeat("x", 98_000) + strings.Repeat("'", 800)
+	if len(script) > sandbox.MaxInlineArgBytes {
+		t.Fatalf("premise broken: script must fit one argv element (%d > %d)", len(script), sandbox.MaxInlineArgBytes)
+	}
+	cmd3 := []string{"bash", "-c", script}
+	wrapper := buildShellChdirExec("/elsewhere", cmd3, nil)
+	if len(wrapper) <= sandbox.MaxInlineArgBytes {
+		t.Fatalf("premise broken: wrapper must cross the cap (%d <= %d)", len(wrapper), sandbox.MaxInlineArgBytes)
+	}
+
+	cmd := r.Command(context.Background(), cmd3, sandbox.ExecOpts{WorkDir: "/elsewhere"})
+
+	assertStdinAnnounced(t, cmd)
+	for _, a := range cmd.Args {
+		if len(a) > sandbox.MaxInlineArgBytes {
+			t.Fatalf("wrapper stayed in argv at %d bytes — E2BIG at fork", len(a))
+		}
+	}
+	// Assert the exact bytes, not a substring: `shellquote` re-escapes
+	// the recipe's own quotes on the way in, so the raw script is NOT a
+	// substring of the payload — which is the whole reason the wrapper
+	// can outgrow the script it carries.
+	if got := readStdin(t, cmd.Stdin); got != wrapper {
+		t.Errorf("streamed payload must be the wrapper verbatim: got %d bytes, want %d", len(got), len(wrapper))
+	}
+}
+
+// Same window, non-shell shape: the wrapper flattens EVERY argv element
+// into one `sh -c` argument, so a plain binary call with a large flag
+// value crosses the cap on kubernetes even though each element fits.
+// Docker has no counterpart (it takes a native --workdir), which is why
+// this rule is k8s-only and shape-agnostic.
+func TestCommand_NonShellShapeWithCustomWorkDirStreams(t *testing.T) {
+	r := testRun()
+	big := strings.Repeat("q", sandbox.MaxInlineArgBytes+1)
+
+	cmd := r.Command(context.Background(), []string{"my-tool", "--payload", big}, sandbox.ExecOpts{WorkDir: "/elsewhere"})
+
+	assertStdinAnnounced(t, cmd)
+	for _, a := range cmd.Args {
+		if strings.Contains(a, big) {
+			t.Fatalf("oversized wrapper leaked into argv (E2BIG risk); arg len=%d", len(a))
+		}
+	}
+	got := readStdin(t, cmd.Stdin)
+	if !strings.Contains(got, big) || !strings.Contains(got, "my-tool") {
+		t.Error("streamed wrapper must still carry the full command")
+	}
+}
+
+// KeepStdinOpen means the caller wires cmd.StdinPipe() afterwards
+// (pi_rpc's RPC session, claw_backend's runner, claude_code's session
+// mode) — all three also pass a WorkDir. Commandeering their stdin for
+// the wrapper would make that pipe fail with "exec: Stdin already set",
+// and even if it didn't the program would inherit a consumed reader
+// instead of a live pipe. They keep the argv path: a loud, retryable
+// E2BIG beats a broken session.
+func TestCommand_KeepStdinOpenNeverCommandeered(t *testing.T) {
+	r := testRun()
+	big := strings.Repeat("k", sandbox.MaxInlineArgBytes+1)
+
+	cmd := r.Command(context.Background(), []string{"my-tool", big}, sandbox.ExecOpts{
+		WorkDir:       "/elsewhere",
+		KeepStdinOpen: true,
+	})
+
+	assertStdinAnnounced(t, cmd)
+	if cmd.Stdin != nil {
+		t.Fatalf("KeepStdinOpen caller must keep Stdin free for its own pipe, got %T", cmd.Stdin)
+	}
+	if n := len(cmd.Args); n >= 2 && cmd.Args[n-1] == "-s" {
+		t.Error("KeepStdinOpen caller must stay on the argv path, not take the -s route")
+	}
+	if !argvHas(cmd.Args, "--stdin") {
+		t.Errorf("KeepStdinOpen still needs --stdin for the caller's own pipe; args=%v", cmd.Args)
 	}
 }
