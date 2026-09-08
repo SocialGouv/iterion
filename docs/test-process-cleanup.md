@@ -36,7 +36,11 @@ keyed on PID *and* start time, so a recycled PID cannot inherit an expired one.
 The guard never reaps while tests execute, where os/exec owns Wait. It never
 scans or signals another session's process tree: historical orphans and sibling
 package tests are outside its ancestry. Its five-second bound, which starts
-after the settle window, covers reclaiming a reported leak. Fixture
+after the settle window, covers reclaiming a reported leak; when that bound
+expires the guard names and kills whatever is still alive before failing, so a
+descendant adopted late — inside the last settle window of the budget, before
+it could earn a verdict of its own — is still reported and reclaimed rather
+than outliving the suite unnamed. Fixture
 cancellation is portable; the orphan-adoption guard is Linux-only. Like other
 TestMain postconditions it requires m.Run to return; a forced kill of the test
 binary cannot execute the postcondition.

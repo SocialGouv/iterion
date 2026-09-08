@@ -122,11 +122,7 @@ func NoProcessLeaks(run func() int) int {
 				if now.Sub(since) >= settle && !reported[key] {
 					leaked = true
 					reported[key] = true
-					name, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-					fmt.Fprintf(os.Stderr, "FAIL: test process survived suite cleanup: pid=%d command=%s\n", pid, strings.TrimSpace(string(name)))
-					if err := p.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-						fmt.Fprintf(os.Stderr, "FAIL: reclaim test process %d: %v\n", pid, err)
-					}
+					reclaim(p)
 				}
 			}
 			_ = p.Release()
@@ -138,6 +134,29 @@ func NoProcessLeaks(run func() int) int {
 		forgave += forgiven(firstSeen, alive, reported)
 		firstSeen = alive
 		if time.Now().After(deadline) {
+			// The budget is spent, so every window still open is spent with it.
+			// Without this sweep a descendant first seen inside the last
+			// `settle` of the budget would leave unnamed and alive — the guard
+			// killed on sight before the window existed, and the promise that
+			// a survivor is always reported and reclaimed must not lapse on
+			// the one path where a teardown proved hardest.
+			for key := range firstSeen {
+				if reported[key] {
+					continue // already named, already signalled; it just won't die
+				}
+				p, err := os.FindProcess(key.pid)
+				if err != nil {
+					continue
+				}
+				// Same PID-reuse standard as procKey, and the same definition of
+				// alive as the scan above: an entry that died between the last
+				// scan and here is not a survivor, and must not be named as one.
+				if stat, err := processState(key.pid); err == nil && stat.start == key.start &&
+					stat.parent == os.Getpid() && stat.state != "Z" && stat.state != "X" {
+					reclaim(p)
+				}
+				_ = p.Release()
+			}
 			fmt.Fprintln(os.Stderr, "FAIL: test descendants did not exit after cleanup")
 			return failing(code)
 		}
@@ -150,6 +169,17 @@ func NoProcessLeaks(run func() int) int {
 		return 1
 	}
 	return code
+}
+
+// reclaim names a survivor and kills it. It takes the *os.Process the caller
+// already verified rather than a bare PID: on Linux that handle is a pidfd,
+// so the signal cannot land on whoever inherits the number next.
+func reclaim(p *os.Process) {
+	name, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", p.Pid))
+	fmt.Fprintf(os.Stderr, "FAIL: test process survived suite cleanup: pid=%d command=%s\n", p.Pid, strings.TrimSpace(string(name)))
+	if err := p.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		fmt.Fprintf(os.Stderr, "FAIL: reclaim test process %d: %v\n", p.Pid, err)
+	}
 }
 
 // forgiven counts the children of prev that are gone from cur without ever
