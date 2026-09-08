@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.2](https://github.com/SocialGouv/iterion/compare/v3.116.1...v3.116.2) (2026-09-08)
+
+### Bug Fixes
+
+* **cloud:** snapshot complete bot collections before dispatch ([#918](https://github.com/SocialGouv/iterion/issues/918)) ([e348289](https://github.com/SocialGouv/iterion/commit/e348289922268ce490c4c10f7cdf837568427a2e))
+
 ## [3.116.1](https://github.com/SocialGouv/iterion/compare/v3.116.0...v3.116.1) (2026-09-08)
 
 ### Bug Fixes
