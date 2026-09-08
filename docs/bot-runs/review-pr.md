@@ -80,6 +80,16 @@ stable quantity in the whole dataset: **$0.61–$0.71** across all 33 runs.
   one commit (#758 gained `3f27d71c5`, #745 four commits, #761
   `2c9c06385`). Nothing here measures run-to-run variance on identical
   input. Measuring it needs two reviews launched on the same head.
+- *"Cost saturates at $3.5–$6.0"* — true of the reviews that **finished**,
+  and only of those. Every one of the 33 was sampled from `runs list` as a
+  `finished` row, so the population is conditioned on completion and the
+  expensive tail is invisible by construction. The #780/#785 entry above
+  measures that tail on the SAME day: `(36/12)`, `(30/12)`, `(14/12)` —
+  three reviews that died at the cap, none of which could appear here.
+  So the shape is **bimodal**, not saturating: most reviews land at $2–6,
+  a few explode past the cap and take the run with them.
+  **Do not size a budget from the table above** — it describes survivors.
+  The cap that the tail actually required is 48 (that entry's change).
 
 ### Open question — do NOT close it with cost
 
