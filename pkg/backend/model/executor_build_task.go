@@ -490,8 +490,9 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		// dispatchChain folds every abandoned route's spend into the
 		// terminal result. Returning a bare nil threw all of it away one
 		// frame short of the engine, which is the only place that books it
-		// against max_cost_usd, the org monthly cap and a lending donor's
-		// ledger. Hand the metered result up beside the error instead —
+		// against the run's budget and the daily-cap ledger
+		// (runtime.recordFailedNodeSpend states the reach, and its limit).
+		// Hand the metered result up beside the error instead —
 		// every caller on the failure path reads the error and drops the
 		// output, except the engine, which now books it.
 		return meteredFailureOutput(out, backendName), err

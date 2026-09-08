@@ -440,9 +440,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// A node that FAILED still spent: the delegate stamps the pass's
 		// cost on the result it returns with the error, and until now
 		// nothing read it — `recordBudget` runs only on the success path, so
-		// the run's totals, the daily cap and a donor's ledger all missed
-		// whatever the failing node burned. On a long agent node that is a
-		// whole session.
+		// the run's budget and the daily cap both missed whatever the failing
+		// node burned. On a long agent node that is a whole session.
+		// recordFailedNodeSpend's doc states the reach and where it stops.
 		//
 		// NOT recorded when this node will run again in the SAME session: an
 		// in-place retry continues a session whose usage is cumulative, so

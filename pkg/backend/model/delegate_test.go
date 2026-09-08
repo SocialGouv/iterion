@@ -490,8 +490,8 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 // output the router schema refuses. The dispatch-failure exit above already
 // hands the metered result up; these two returned a bare nil, so the engine
 // (the only caller that books) saw nothing and a whole routing call fell out
-// of max_cost_usd, the org monthly cap and a lending donor's ledger. Unlike
-// a dispatch failure, here the model DID answer — the bill is certain.
+// of max_cost_usd and the daily-cap ledger. Unlike a dispatch failure, here
+// the model DID answer — the bill is certain.
 func TestLLMRouterKeepsSpendOnPostGenerationFailure(t *testing.T) {
 	cases := []struct {
 		name   string

@@ -746,10 +746,28 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 //
 // Accounting only: the node's own failure is the run's verdict, and a
 // budget verdict raised here would replace a named cause with a generic
-// one on a run that is already ending. The figure still has to land —
-// max_cost_usd, the org monthly cap and a lending donor's ledger read the
-// same totals, and a failed agent node can be the most expensive thing a
-// run did.
+// one on a run that is already ending. The figure still has to land — a
+// failed agent node can be the most expensive thing a run did.
+//
+// WHAT IT REACHES, exactly, so no reader over-reads the booking:
+//   - the run's shared budget, which is what max_cost_usd / max_tokens /
+//     max_iterations are enforced against for the rest of the run — and,
+//     through it, a credential-pool donor's allowance, since that
+//     allowance is enforced by CLAMPING this run's own max_cost_usd;
+//   - the daily spend-cap ledger (dailyCap.Record);
+//   - the budget carry a resume reads off the checkpoint — which is why
+//     every caller books BEFORE the exit that writes one.
+//
+// What it does NOT reach is the runner's per-run totals, and from them the
+// org monthly bucket and the donor's post-hoc ledger: those accumulate
+// from EVENTS (`llm_step_finished`, `delegate_finished`), and a failed
+// delegation emits `delegate_error`, which metricsEmitter.observe has no
+// case for. claw's per-step events land there regardless of how the node
+// ends, so on the in-process backend the org bucket does see this spend;
+// on a CLI backend it does not. Closing that half is a pkg/runner change
+// (a delegate_error case carrying cost_usd, with the same
+// already-summarised guard delegate_finished uses for claw), deliberately
+// not made here.
 //
 // A booking also counts an iteration, as every recordBudget does — so a
 // failed node that spent consumes a max_iterations slot and one that spent

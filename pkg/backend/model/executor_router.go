@@ -225,8 +225,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
-		// failing owes the same figure to max_cost_usd, the org cap and a
-		// donor's ledger as an agent node does. Hand the metered result up
+		// failing owes the run's budget the same figure an agent node does
+		// (runtime.recordFailedNodeSpend states the reach). Hand it up
 		// beside the error, exactly as executeBackend does — the engine is
 		// the only caller that reads it.
 		return meteredFailureOutput(out, backendName), err

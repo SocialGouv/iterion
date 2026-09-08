@@ -73,9 +73,10 @@ func (s *checkpointCapturingStore) FailRunTerminal(ctx context.Context, id strin
 
 // A node that FAILED still spent. The delegate stamps the pass's cost on the
 // result it returns beside the error; until this landed, nothing read it —
-// `recordBudget` runs on the success path only, so the run's totals, the
-// daily cap and a lending donor's ledger all missed whatever the failing node
-// burned. On a long agent node that is a whole session.
+// `recordBudget` runs on the success path only, so the run's budget and the
+// daily cap both missed whatever the failing node burned. On a long agent
+// node that is a whole session. (recordFailedNodeSpend's doc states the
+// booking's reach and where it stops.)
 func TestFailedNodeSpendIsRecorded(t *testing.T) {
 	wf := branchLocalLoopWorkflow()
 	wf.Budget = &ir.Budget{MaxTokens: 10_000}
@@ -359,7 +360,7 @@ func (b *meteredFailingBackend) Execute(_ context.Context, _ delegate.Task) (del
 // figure — the backends stamp it on their failure result, dispatchChain folds
 // the abandoned routes' spend into the terminal one — and it only counts if
 // it survives the last frame into the engine, which is the only place that
-// books it against max_cost_usd, the org cap and a donor's ledger.
+// books it against max_cost_usd and the daily-cap ledger.
 //
 // A runtime-side stub cannot show this: it substitutes the very executor
 // whose failure return is under test.
