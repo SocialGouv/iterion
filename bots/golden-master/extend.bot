@@ -351,20 +351,44 @@ tool extend_base:
                       "relaunch." % (marker, why, marker)) + \
                      ((" | " + notice) if notice else "")
         else:
-            for key, val in (("user.name", leaked.get("name") or ""),
-                             ("user.email", leaked.get("email") or "")):
+            want = {"user.name": leaked.get("name") or "",
+                    "user.email": leaked.get("email") or ""}
+            for key, val in want.items():
                 if val:
                     subprocess.run(["git", "-C", ws, "config", key, val])
                 else:
                     subprocess.run(["git", "-C", ws, "config", "--unset", key])
-            notice = ((notice + " | ") if notice else "") + (
-                "a previous extension did not restore the workspace identity; "
-                "the pre-run identity it recorded was re-applied before this "
-                "run read its own.")
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+            # git must AGREE the repair took, before the record of it is
+            # destroyed. `git config` can fail — a stale `config.lock`, a
+            # read-only `.git` — and its exit code was dropped here: the
+            # workspace kept the net's name, `prev_email` twenty lines below
+            # read THAT as the operator's identity, extend_restore put it back,
+            # and the marker that could have repaired it was already gone. The
+            # unreadable-marker branch just above refuses for exactly this
+            # outcome; a repair that silently did not happen reaches it too.
+            back = {k: git_out("config", "--local", "--get", k) for k in want}
+            if back != want:
+                clean = False
+                pending = []
+                notice = ("REFUSED at start: the identity marker %s records %r, "
+                          "but git still reports %r after re-applying it — this "
+                          "workspace commits under someone else's name and this "
+                          "run cannot repair it, so it will not record that name "
+                          "as the operator's. The marker is kept, nothing is "
+                          "acted. Check for a stale %s, put the identity back by "
+                          "hand, delete %s, then relaunch."
+                          % (marker, want, back,
+                             os.path.join(git_dir, "config.lock"), marker)) + \
+                         ((" | " + notice) if notice else "")
+            else:
+                notice = ((notice + " | ") if notice else "") + (
+                    "a previous extension did not restore the workspace identity; "
+                    "the pre-run identity it recorded was re-applied before this "
+                    "run read its own.")
+                try:
+                    os.remove(marker)
+                except OSError:
+                    pass
 
     # No git dir, no marker, and no marker means no durable record of the
     # identity this run would displace — so setting one would be a leak by
@@ -728,25 +752,39 @@ tool extend_restore:
                                 "workspace may still commit under the net's name "
                                 "— check `git config user.email`" % (marker, e))
         if isinstance(prev, dict):
-            for key, val in (("user.name", prev.get("name") or ""),
-                             ("user.email", prev.get("email") or "")):
+            want = {"user.name": prev.get("name") or "",
+                    "user.email": prev.get("email") or ""}
+            for key, val in want.items():
                 if val:
                     subprocess.run(["git", "-C", ws, "config", key, val])
                 else:
                     subprocess.run(["git", "-C", ws, "config", "--unset", key])
-            report["restored"] = True
-            report["notice"] = ("the workspace identity is back to %r: the lot's "
-                                "later commits must not wear the net's name"
-                                % (prev.get("email") or "unset"))
-            # Removed only once the identity it held is BACK. A marker this
-            # node could not read is the only remaining record of what the
-            # operator's identity was, on a workspace still wearing the net's
-            # — deleting it there ends the repair for good, where keeping it
-            # makes the next extend_base refuse and say so.
-            try:
-                os.remove(marker)
-            except OSError:
-                pass
+            # Removed only once the identity it held is BACK — and "back" is
+            # what git says, not what this node asked for. `git config` can
+            # fail (a stale `config.lock`, a read-only `.git`) and its exit
+            # code was dropped, so a restore that never happened reported
+            # `restored: true` and deleted the last record of the operator's
+            # identity, on a workspace still wearing the net's — the very
+            # outcome the unreadable-marker branch below refuses.
+            back = {k: git_out("config", "--local", "--get", k) for k in want}
+            if back == want:
+                report["restored"] = True
+                report["notice"] = ("the workspace identity is back to %r: the "
+                                    "lot's later commits must not wear the net's "
+                                    "name" % (prev.get("email") or "unset"))
+                try:
+                    os.remove(marker)
+                except OSError:
+                    pass
+            else:
+                report["notice"] = ("the identity could NOT be put back: the "
+                                    "marker %s records %r and git still reports "
+                                    "%r — this workspace may keep committing "
+                                    "under the net's name. The marker is kept so "
+                                    "the next run repairs from it; check for a "
+                                    "stale %s and `git config user.email`."
+                                    % (marker, want, back,
+                                       os.path.join(git_dir, "config.lock")))
 
     print(json.dumps(report))
 
