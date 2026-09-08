@@ -2,7 +2,6 @@ package runview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,14 +66,26 @@ type RunArtifactSummary struct {
 }
 
 // ListAllArtifacts enumerates the latest published artifact per node for a
-// run — the data behind the centralized Artifacts view. It walks
-// runs/<id>/artifacts/*/ when the run's artifact directory is on this
+// run — the data behind the centralized Artifacts view.
+//
+// Uses context.Background with the mongo tenant filter explicitly
+// bypassed — it does NOT carry caller identity. The bypass is load-bearing,
+// not decoration: the index fallback below goes through LoadRun, whose
+// mongo implementation PANICS on a context carrying neither a tenant nor
+// this marker. Use ListAllArtifactsCtx from cloud HTTP handlers so the
+// tenant_id filter applies instead.
+func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
+	return s.ListAllArtifactsCtx(store.WithoutTenantFilter(context.Background()), runID)
+}
+
+// ListAllArtifactsCtx is the tenant-aware variant of ListAllArtifacts. It
+// walks runs/<id>/artifacts/*/ when the run's artifact directory is on this
 // host, and otherwise serves the run document's artifact_index (the case
 // of a cloud server pod: the directory lives on the runner that wrote it).
 // Each node's latest version is loaded to surface its labels + title.
 // Sorted by node id for stable rendering. Few artifacts per run, so the
 // per-node body read is cheap.
-func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
+func (s *Service) ListAllArtifactsCtx(ctx context.Context, runID string) ([]RunArtifactSummary, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -82,7 +93,7 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 	nodes, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return s.listAllArtifactsFromIndex(runID)
+			return s.listAllArtifactsFromIndex(ctx, runID)
 		}
 		return nil, fmt.Errorf("runview: list artifacts: %w", err)
 	}
@@ -97,7 +108,7 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 			continue
 		}
 		latest := versions[len(versions)-1]
-		art, lerr := s.LoadArtifact(runID, nodeID, latest.Version)
+		art, lerr := s.LoadArtifactCtx(ctx, runID, nodeID, latest.Version)
 		if lerr != nil || art == nil {
 			continue
 		}
@@ -115,15 +126,17 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 
 // listAllArtifactsFromIndex serves the listing from run.ArtifactIndex
 // (node id → latest version), which every store maintains on WriteArtifact.
-// Reached when no artifact directory exists on this host. An unknown run is
-// an empty list, like the directory walk; any other store failure is an
-// error, not an empty listing — on the cloud pod this fallback exists for,
-// a transient outage must not read as "this run published nothing".
-func (s *Service) listAllArtifactsFromIndex(runID string) ([]RunArtifactSummary, error) {
-	ctx := context.Background()
+// Reached when no artifact directory exists on this host. A run that is
+// absent — never existed, or tombstoned — is an empty list, like the
+// directory walk; any other store failure is an error, not an empty
+// listing — on the cloud pod this fallback exists for, a transient outage
+// must not read as "this run published nothing".
+//
+// ctx is the caller's, so the mongo tenant filter scopes the LoadRun.
+func (s *Service) listAllArtifactsFromIndex(ctx context.Context, runID string) ([]RunArtifactSummary, error) {
 	run, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
-		if errors.Is(err, store.ErrRunNotFound) {
+		if store.RunAbsent(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("runview: list artifacts: load run: %w", err)

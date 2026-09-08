@@ -27,7 +27,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
-	out, err := s.runs.ListAllArtifacts(id)
+	out, err := s.runs.ListAllArtifactsCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifacts: %v", err)
 		return
