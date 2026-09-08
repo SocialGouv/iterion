@@ -611,7 +611,8 @@ func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) er
 // [sandbox.MaxInlineArgBytes], the script is streamed through stdin via
 // `sh -s` instead of being passed as a single argv element. This
 // avoids the kernel's ARG_MAX (E2BIG) limit on the host `docker exec`
-// fork — see [shouldStreamScriptViaStdin] for the trigger predicate.
+// fork — see [sandbox.ShouldStreamScriptViaStdin] for the trigger
+// predicate, now shared with the kubernetes driver.
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		// Mirror noop's degenerate case: return a cmd that errors on
