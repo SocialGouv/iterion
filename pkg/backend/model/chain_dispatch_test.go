@@ -985,3 +985,59 @@ func TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain(t *testing.T) {
 		t.Errorf("collapse kept the wrong elements: %+v", got)
 	}
 }
+
+// cumulativeScriptedBackend models a CLI whose usage accounting is
+// SESSION-CUMULATIVE: the second attempt's report contains the first
+// attempt's spend, because it resumed the same session.
+type cumulativeScriptedBackend struct {
+	name    string
+	calls   int
+	report  []int // tokens reported on each successive call
+	failFor int   // fail the first N calls
+}
+
+func (b *cumulativeScriptedBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+	b.calls++
+	tokens := b.report[len(b.report)-1]
+	if b.calls <= len(b.report) {
+		tokens = b.report[b.calls-1]
+	}
+	res := delegate.Result{
+		BackendName: b.name, Tokens: tokens, Duration: time.Millisecond,
+		Output: map[string]any{"served_by": b.name, "_tokens": tokens},
+	}
+	if b.calls <= b.failFor {
+		return res, &delegate.ErrTransient{Reason: "stream closed"}
+	}
+	return res, nil
+}
+
+// The session id has to REACH the fold, not merely exist on the task. If
+// the dispatch hands the loop an empty one, a node that resumed its
+// session is billed for the running total twice — silently, and in the
+// direction that parks a run that still had budget. Nothing else pins
+// this wire: the fold's own tests call the loop directly.
+func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
+	head := &cumulativeScriptedBackend{
+		name: delegate.BackendClaudeCode, report: []int{1000, 1300}, failFor: 1,
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review", SessionID: "sess-1"}, nil
+		})
+	out, err := e.dispatchChain(context.Background(), "review",
+		[]chainElement{{Label: "primary"}}, "claude-opus-5", build)
+	if err != nil {
+		t.Fatalf("the second attempt succeeds: %v", err)
+	}
+	if head.calls != 2 {
+		t.Fatalf("want one retry, got %d calls", head.calls)
+	}
+	if got := out.Result.Tokens; got != 1300 {
+		t.Errorf("tokens = %d, want 1300 — the attempts resumed one session, so 1300 already contains the 1000; %d means the session id never reached the fold", got, got)
+	}
+}
