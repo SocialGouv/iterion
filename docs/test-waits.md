@@ -20,10 +20,14 @@ seconds proving that a human has not answered.
 ## Real-process service fixtures
 
 Service launch, resume, subbot control, reconciliation and restart tests keep a
-real clock. `waitForSubbotStatus` observes the persisted state and reports a
-terminal child or parent immediately. `awaitRunCompletion` joins the service's
-Done channel. Neither predicts how long creating a worktree or running a shell
-should take.
+real clock. `waitForSubbotStatus` observes the persisted state and reports
+immediately on a child that has SETTLED elsewhere — terminal, or paused
+awaiting an operator — and on a terminal parent, since none of those can reach
+the wanted status on their own; on timeout it names the child's last status,
+not only the parent's. That fail-fast is the fixture's contract: exactly one
+subbot, gated so it cannot legitimately finish before it is observed.
+`awaitRunCompletion` joins the service's Done channel. Neither predicts how
+long creating a worktree or running a shell should take.
 
 `runWaitContext` bounds one wait by the EARLIER of two figures (`runWaitTimeout`
 derives them; its own unit test pins the edge cases). First, a per-operation

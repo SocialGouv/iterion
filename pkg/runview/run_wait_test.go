@@ -164,11 +164,26 @@ func awaitRunCompletion(t *testing.T, done <-chan struct{}, what string) {
 	}
 }
 
+// waitForSubbotStatus returns the id of parentID's subbot child once it is
+// persisted in `want`. Its oracle is that state, never a duration.
+//
+// A child that is DORMANT in another status — terminal, or paused awaiting an
+// operator — fails the test on the spot: neither can reach `want` without help
+// nobody is coming to give, so waiting on is waiting for the ceiling. That
+// fail-fast assumes the caller's fixture: exactly ONE subbot, GATED (a release
+// file, a human gate, a long tool) so it cannot legitimately finish before it
+// is observed. A caller that spawns several children, or lets one complete on
+// purpose, wants a helper that skips settled children instead of failing on
+// the first.
 func waitForSubbotStatus(t *testing.T, svc *Service, parentID string, want store.RunStatus) string {
 	t.Helper()
 	ctx := runWaitContext(t)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	// The last child observed, so a timeout names WHICH state it is stuck in
+	// rather than only the parent's — the child's status is the diagnostic
+	// that separates "never spawned" from "spawned and went elsewhere".
+	lastChild, lastStatus := "", store.RunStatus("")
 	for {
 		ids, err := svc.store.ListChildRuns(ctx, parentID)
 		if err != nil {
@@ -182,8 +197,9 @@ func waitForSubbotStatus(t *testing.T, svc *Service, parentID string, want store
 			if child.Status == want {
 				return id
 			}
-			if child.Status.IsTerminal() {
-				t.Fatalf("child %s reached %s (%s), want %s", id, child.Status, child.Error, want)
+			lastChild, lastStatus = id, child.Status
+			if child.Status.IsTerminal() || child.Status.IsPaused() {
+				t.Fatalf("child %s settled in %s (%s) and cannot reach %s on its own", id, child.Status, child.Error, want)
 			}
 		}
 		parent, err := svc.store.LoadRun(ctx, parentID)
@@ -196,7 +212,11 @@ func waitForSubbotStatus(t *testing.T, svc *Service, parentID string, want store
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			t.Fatalf("child of %s never reached %s (parent %s, error %q): %v", parentID, want, parent.Status, parent.Error, ctx.Err())
+			if lastChild == "" {
+				t.Fatalf("no child of %s was ever persisted (parent %s, error %q): %v", parentID, parent.Status, parent.Error, ctx.Err())
+			}
+			t.Fatalf("child %s of %s stayed %s, never %s (parent %s, error %q): %v",
+				lastChild, parentID, lastStatus, want, parent.Status, parent.Error, ctx.Err())
 		}
 	}
 }
