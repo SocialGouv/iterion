@@ -164,6 +164,9 @@ type RunHeader struct {
 	FinalCommit      string `json:"final_commit,omitempty"`
 	FinalBranch      string `json:"final_branch,omitempty"`
 	FinalBranchError string `json:"final_branch_error,omitempty"`
+	// WorkspaceCheckpoint is the last successful checkpoint push observed in
+	// the persisted timeline. It is not a completed delivery bank.
+	WorkspaceCheckpoint *WorkspaceCheckpoint `json:"workspace_checkpoint,omitempty"`
 	// Outcome bookkeeping (see store.Run): the episode counter, the
 	// typed cause of the last terminal transition, and who owns the
 	// continuation. This is what lets an outcome consumer act on the
@@ -448,7 +451,8 @@ type SnapshotBuilder struct {
 	// deployTraceCommit is the commit the traceability gate resolved from
 	// git. Held separately from deployment.Commit so the two groups can
 	// arrive in either order; buildDeployment applies the precedence.
-	deployTraceCommit string
+	deployTraceCommit   string
+	workspaceCheckpoint *WorkspaceCheckpoint
 }
 
 // backendAgg accumulates one (backend, model) pair while folding events.
@@ -532,6 +536,10 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	}
 
 	switch evt.Type {
+	case store.EventRunWorkspaceCheckpoint:
+		if cp := workspaceCheckpointFromEvent(evt); cp != nil {
+			b.workspaceCheckpoint = cp
+		}
 	case store.EventNodeStarted:
 		b.handleNodeStarted(evt, branch)
 	case store.EventNodeFinished:
@@ -592,6 +600,10 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	// snapshot already handed out under the documented incremental usage.
 	header.FallbacksUsed = append([]FallbackUsage(nil), b.fallbacksUsed...)
 	header.Deployment = b.buildDeployment()
+	if b.workspaceCheckpoint != nil {
+		cp := *b.workspaceCheckpoint
+		header.WorkspaceCheckpoint = &cp
+	}
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,

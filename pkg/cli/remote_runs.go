@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // remoteRunSummary mirrors runview.RunSummary's CLI-visible fields.
@@ -196,13 +197,14 @@ func RemoteRunsUploadFile(ctx context.Context, c *RemoteClient, path string) (st
 func RemoteRunsGet(ctx context.Context, c *RemoteClient, p *Printer, id string) error {
 	var run struct {
 		Run struct {
-			ID         string     `json:"id"`
-			Name       string     `json:"name"`
-			Status     string     `json:"status"`
-			FilePath   string     `json:"file_path"`
-			CreatedAt  time.Time  `json:"created_at"`
-			FinishedAt *time.Time `json:"finished_at"`
-			Error      string     `json:"error"`
+			ID                  string                       `json:"id"`
+			Name                string                       `json:"name"`
+			Status              string                       `json:"status"`
+			FilePath            string                       `json:"file_path"`
+			CreatedAt           time.Time                    `json:"created_at"`
+			FinishedAt          *time.Time                   `json:"finished_at"`
+			Error               string                       `json:"error"`
+			WorkspaceCheckpoint *runview.WorkspaceCheckpoint `json:"workspace_checkpoint"`
 		} `json:"run"`
 	}
 	raw, err := c.Call(ctx, "GET", "/api/runs/"+id, nil, &run)
@@ -232,6 +234,13 @@ func RemoteRunsGet(ctx context.Context, c *RemoteClient, p *Printer, id string) 
 	}
 	if run.Run.Error != "" {
 		p.KV("Error", run.Run.Error)
+	}
+	if cp := run.Run.WorkspaceCheckpoint; cp != nil {
+		p.KV("Workspace checkpoint", cp.Ref)
+		p.KV("Checkpoint commit", cp.Commit)
+		p.KV("Checkpoint source", fmt.Sprintf("%s event %d at %s", cp.Source, cp.EventSeq, cp.RecordedAt.Format(time.RFC3339)))
+		p.KV("Fetch", cp.FetchCommand)
+		p.KV("Recovery note", cp.Warning)
 	}
 	return nil
 }

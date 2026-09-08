@@ -231,6 +231,33 @@ against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
 worked example — it compares `align.applied` with the branch head and blocks on
 a contradiction). Git is the durable state; an uncommitted working tree is not.
 
+### Recovering a workspace checkpoint after a pod dies
+
+A copy-based sandbox can push a workspace checkpoint before teardown even if
+the run later dies without `final_branch` or `final_commit`. Inspect
+`iterion remote runs get <id>`: its `workspace_checkpoint` recovery hint names
+the latest successfully pushed checkpoint recorded in the run's timeline,
+with its ref, commit, event sequence and timestamp. The same hint is returned
+by `iterion remote runs commits <id>` when the commit list is unavailable.
+`available=false` and `reason=no_baseline` still mean that the API cannot
+produce the run's commit range; they do not imply that no saved work exists.
+
+The JSON paths are `run.workspace_checkpoint` on `GET /api/runs/{id}` and
+`workspace_checkpoint` on an unavailable `GET /api/runs/{id}/commits` response.
+`source=run_workspace_checkpoint` identifies the persisted event provenance.
+A later failed push does not erase the last successful record. If there is no
+successful record, the field is omitted; no ref is invented from the run ID.
+An event-store read failure remains an error, rather than an absent hint.
+
+Run the provided `fetch_command` from a clone of the run's repository with that
+repository configured as `origin`, then check `git rev-parse FETCH_HEAD`
+against the recorded `commit`. The record proves a push succeeded at that
+time, not that the ref still exists or still points to that SHA. A checkpoint
+may include unfinished or automatically committed work and is **not a delivery
+bank or proof of a passed delivery gate**: inspect and validate it before
+merging. Merely displaying this hint does not restore files, resume the run,
+or change merge eligibility.
+
 ## Source integrity and bundles
 
 The launch stores a SHA-256 workflow hash. Resume recompiles the source and
