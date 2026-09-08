@@ -137,6 +137,9 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 // finalize path concurrent with an engine status update, would
 // otherwise read-modify-write through each other and lose fields.
 func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if r.Status != RunStatusRunning {
+		r.AwaitAnswersWaits = nil
+	}
 	if err := s.guardNotDeleted(r.ID); err != nil {
 		return err
 	}
@@ -630,6 +633,9 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) error {
 	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
 	transition := r.Status != status
+	if transition || status != RunStatusRunning {
+		r.AwaitAnswersWaits = nil
+	}
 	if terminal && transition {
 		r.OutcomeSeq++
 	}
@@ -768,6 +774,7 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
+	r.AwaitAnswersWaits = nil
 	// A paused run has no platform continuation statement — same
 	// discipline as FailureCode below.
 	r.ContinuationState = ""

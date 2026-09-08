@@ -80,6 +80,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("AwaitAnswersWaits", func(t *testing.T) { RunAwaitAnswersWaitConformance(t, factory(t)) })
 	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
 	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })

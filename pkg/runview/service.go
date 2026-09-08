@@ -1106,6 +1106,9 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
+		alert.WithHumanWaitLookup(func(ctx context.Context, id string, now time.Time) bool {
+			return store.HasBlockingHumanWait(ctx, s.store, id, now)
+		}),
 		alert.WithBaseURL(set.BaseURL),
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
