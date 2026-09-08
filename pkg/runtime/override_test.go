@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,5 +371,91 @@ func TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave(t *testing.T) {
 	res, err := msg.Await(context.Background(), time.Second)
 	if err != nil || res.Err != nil || res.Noop {
 		t.Fatalf("await = (%+v, %v) — the grant must report itself applied", res, err)
+	}
+}
+
+// blockingRaiserExecutor blocks in the named node until its context is
+// cancelled — the shape of a long agent node killed by the per-node deadline —
+// and posts a raise_budget from INSIDE that node first, which is what "the
+// operator raises the cap while the run is busy" actually looks like. The send
+// is non-blocking so a retried node cannot wedge the executor.
+type blockingRaiserExecutor struct {
+	blockNode string
+	ch        chan *OverrideMsg
+	msg       *OverrideMsg
+}
+
+func (e *blockingRaiserExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
+	if node.NodeID() == e.blockNode {
+		select {
+		case e.ch <- e.msg:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+// TestRaiseBudget_DeadlineExpiryIsJudgedOnTheRaisedCap covers the path that
+// actually kills a long node, and which the node-boundary drain never sees: the
+// per-node wall-clock deadline. That expiry is classified by its own `return`
+// well before execLoopAfterExec, so a raise posted during the node was still
+// sitting in the channel when the verdict was taken — and the run was parked on
+// a ceiling the operator had already lifted.
+//
+// The node's DEATH is not repairable: its deadline is frozen into the ctx when
+// it starts, so no later grant moves it. The VERDICT is. With the cap raised,
+// the expiry must stop being a budget stop and fall through to ordinary
+// recovery dispatch, exactly as an unrelated DeadlineExceeded already does.
+func TestRaiseBudget_DeadlineExpiryIsJudgedOnTheRaisedCap(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "raise_deadline_test",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			// "a" runs fast so a checkpoint exists before "slow" fails.
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "slow"},
+			{From: "slow", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxDuration: "300ms"},
+	}
+
+	ch := make(chan *OverrideMsg, 2)
+	msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: "1h"}, "")
+	exec := &blockingRaiserExecutor{blockNode: "slow", ch: ch, msg: msg}
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithOverrideChannel(ch))
+	err := eng.Run(context.Background(), "run-raise-deadline", nil)
+
+	// The node still dies — that is the frozen deadline, not something a
+	// grant can undo. What must NOT survive is the budget verdict.
+	if err != nil && strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("the expiry was judged against the un-raised cap: %v", err)
+	}
+
+	events, lerr := s.LoadEvents(context.Background(), "run-raise-deadline")
+	if lerr != nil {
+		t.Fatalf("load events: %v", lerr)
+	}
+	if hasEventType(events, store.EventBudgetExceeded) {
+		t.Error("a budget_exceeded event was emitted for a cap the operator had already raised")
+	}
+
+	r, lerr := s.LoadRun(context.Background(), "run-raise-deadline")
+	if lerr != nil {
+		t.Fatalf("load run: %v", lerr)
+	}
+	if r.BudgetRaises == nil || r.BudgetRaises.MaxDuration != "1h0m0s" {
+		t.Fatalf("the grant did not land before the verdict: %+v", r.BudgetRaises)
 	}
 }

@@ -471,6 +471,21 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// originated inside the node (some shorter internal timeout) is NOT
 		// misclassified as a budget stop.
 		if errors.Is(execErr, context.DeadlineExceeded) {
+			// Steering is drained BEFORE this verdict, because this return
+			// never reaches the node boundary where the other drain sits. A
+			// raise posted while THIS node was running is still in the
+			// channel, and classifying against the un-raised cap parks the
+			// run on a ceiling the operator has already lifted — which is the
+			// very case raise_budget exists for on a long node, answered with
+			// a 202 and a dead run.
+			//
+			// The node's death is NOT repairable here: its deadline was
+			// frozen into the ctx when the node started, so no later grant
+			// moves it. The VERDICT is. With the cap raised the guard below
+			// reads false, and the expiry falls through to ordinary recovery
+			// dispatch — what an unrelated DeadlineExceeded already gets —
+			// instead of a budget stop naming a limit that no longer exists.
+			e.drainOverrides(rs)
 			if used, limit, bounded := rs.budget.DurationStatus(); bounded && limit > 0 && used >= limit*budgetHardThreshold {
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
 					exceeded: true, dimension: "duration", used: used, limit: limit,
