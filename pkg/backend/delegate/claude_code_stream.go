@@ -186,7 +186,12 @@ type sessionMeta struct {
 	//     the failure checkpoint has no field for a backend session, so
 	//     nothing above the delegate resumes a dead node's session today —
 	//     naming it is what makes wiring that possible, not the wiring.
-	sessionID       string
+	sessionID string
+	// sessionIDFromInit records that sessionID came from `system/init`,
+	// the CLI's own announcement of this session. A value taken from any
+	// other subtype is provisional and yields to the first init.
+	sessionIDFromInit bool
+
 	effectiveModel  string
 	peakContextLoad int
 	thinkingTokens  int // approximate extended-thinking tokens (re-encoded text)
@@ -701,13 +706,19 @@ func backfillEmptyResult(result *claudesdk.ResultMessage, lastAssistantText stri
 // model when a proxy or alias is in play). Hook-lifecycle subtypes are
 // noisy and routed to debug.
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudesdk.SystemMessage, task Task, meta *sessionMeta) {
-	// Captured on EVERY subtype, not only init: the id is the same for the
-	// whole session, and a stream that failed before init still names it on
-	// whatever it did emit. First non-empty wins — the value never changes
-	// within one session, and re-reading it later would only risk taking a
-	// sub-agent's.
-	if m.SessionID != "" && meta.sessionID == "" {
+	// Captured on EVERY subtype, not only init, because a stream that
+	// failed before init still names the session on whatever it did emit.
+	// But `init` is the AUTHORITY — it is the CLI announcing this session
+	// — so a non-init id is only ever provisional: kept while nothing
+	// authoritative has spoken, replaced the moment init does. Without
+	// that precedence, one hook or sub-agent event reaching the stream
+	// first would pin its own id onto the checkpoint, and the resume would
+	// reopen the wrong conversation. Among inits the first wins: two would
+	// be two sessions in one stream, and the one this call opened is the
+	// conservative reading.
+	if m.SessionID != "" && (meta.sessionID == "" || (m.Subtype == "init" && !meta.sessionIDFromInit)) {
 		meta.sessionID = m.SessionID
+		meta.sessionIDFromInit = m.Subtype == "init"
 	}
 	if m.Subtype == "init" {
 		b.Logger.Info("[%s#%d/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",

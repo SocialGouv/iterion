@@ -16,9 +16,12 @@ type Session struct {
 	ctrl *controller
 
 	sessionID string
-	mu        sync.Mutex
-	closed    bool
-	started   bool
+	// sessionIDFromInit records that sessionID came from a `system/init`
+	// message rather than some other subtype. See noteSessionID.
+	sessionIDFromInit bool
+	mu                sync.Mutex
+	closed            bool
+	started           bool
 
 	// hookCallbacks maps callback IDs to their handlers.
 	hookCallbacks map[string]HookCallback
@@ -43,23 +46,27 @@ func ResumeSession(sessionID string, opts ...Option) *Session {
 	return NewSession(opts...)
 }
 
-// noteSessionID records the session id the CLI announces. FIRST non-empty
-// wins: a Session is one session and its id does not change, so the two
-// possible rules only ever differ when a later SystemMessage carries a
-// DIFFERENT id — where keeping the first is the conservative reading, since
-// it is the session this object opened. Same rule as the delegate's own
-// capture (claude_code_stream.go, sessionMeta.sessionID): two readings of
-// one fact with opposite rules is a trap for whoever wires the second.
-func (s *Session) noteSessionID(id string) {
+// noteSessionID records the session id the CLI announces. `system/init` is
+// the AUTHORITY — it is the CLI announcing this session — so an id read off
+// any other subtype is provisional: kept while nothing authoritative has
+// spoken, replaced by the first init. Among inits the first wins, since two
+// would be two sessions in one stream and the one this object opened is the
+// conservative reading.
+//
+// Same rule as the delegate's own capture (claude_code_stream.go,
+// sessionMeta.sessionID): two readings of one fact with different rules is
+// a trap for whoever wires the second.
+func (s *Session) noteSessionID(id string, fromInit bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// One condition, not two: first-non-empty already covers an empty
-	// announcement (assigning "" over "" changes nothing, and a set id is
-	// never displaced). An extra `if id == ""` guard reads like a rule and
-	// is unreachable as one — no test can tell it apart, which is how a
-	// dead branch survives while documenting a behaviour it does not have.
-	if s.sessionID == "" {
+	// One condition, not three: the empty-id case needs no rule of its own
+	// (assigning "" over "" changes nothing, and a set id is never
+	// displaced by one), and a separate `if id == ""` guard would read
+	// like a rule while being unreachable as one — which is how a dead
+	// branch survives documenting a behaviour it does not have.
+	if id != "" && (s.sessionID == "" || (fromInit && !s.sessionIDFromInit)) {
 		s.sessionID = id
+		s.sessionIDFromInit = fromInit
 	}
 }
 
@@ -195,16 +202,13 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 				continue
 			}
 
-			// Capture the session ID the CLI announces. FIRST non-empty
-			// wins: a Session is one session, its id does not change, and
-			// the two rules only ever differ when a later SystemMessage
-			// carries a DIFFERENT id — where keeping the first is the
-			// conservative reading, since it is the session this object
-			// opened. Same rule as the delegate's own capture
-			// (claude_code_stream.go, sessionMeta.sessionID), so the two
-			// readings of one fact cannot disagree.
+			// Capture the session ID the CLI announces. `init` is the
+			// authority and any other subtype is provisional — see
+			// noteSessionID, which spells the same rule as the delegate's
+			// own capture (claude_code_stream.go, sessionMeta.sessionID)
+			// so the two readings of one fact cannot disagree.
 			if sys, ok := msg.(*SystemMessage); ok {
-				s.noteSessionID(sys.SessionID)
+				s.noteSessionID(sys.SessionID, sys.Subtype == "init")
 			}
 
 			if !yield(msg, nil) {

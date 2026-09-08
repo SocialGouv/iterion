@@ -57,10 +57,12 @@ func TestStreamFailureNamesTheSessionTheCLIAnnounced(t *testing.T) {
 }
 
 // The id is announced on `system/init`, but a stream that broke before it
-// still names the session on whatever it did emit. First non-empty wins:
-// the value never changes within a session, and re-reading later risks
-// taking a sub-agent's.
-func TestSystemMessageCapturesTheSessionOnAnySubtype(t *testing.T) {
+// still names the session on whatever it did emit — so the capture takes
+// any subtype. `init` stays the AUTHORITY though: it is the CLI announcing
+// THIS session, and without that precedence a hook or sub-agent event
+// reaching the stream first would pin its own id onto the checkpoint, and
+// the resume would reopen the wrong conversation.
+func TestSystemMessageCapturesTheSessionOnAnySubtypeButInitDecides(t *testing.T) {
 	b := sessionFailureBackend()
 	task := Task{NodeID: "n", Iteration: 1}
 
@@ -69,12 +71,20 @@ func TestSystemMessageCapturesTheSessionOnAnySubtype(t *testing.T) {
 	if meta.sessionID != "s-early" {
 		t.Fatalf("sessionID = %q, want s-early — a non-init subtype names the session too", meta.sessionID)
 	}
-	b.handleSystemMessage(&claudesdk.SystemMessage{Subtype: "init", SessionID: "s-later", Model: "m"}, task, &meta)
-	if meta.sessionID != "s-early" {
-		t.Fatalf("sessionID = %q, want the FIRST one kept", meta.sessionID)
+	b.handleSystemMessage(&claudesdk.SystemMessage{Subtype: "init", SessionID: "s-init", Model: "m"}, task, &meta)
+	if meta.sessionID != "s-init" {
+		t.Fatalf("sessionID = %q, want s-init — a provisional id yields to the CLI's own announcement", meta.sessionID)
 	}
 	if meta.effectiveModel != "m" {
 		t.Fatalf("the init capture regressed: effectiveModel = %q", meta.effectiveModel)
+	}
+
+	// And once init has spoken, nothing displaces it: not a sub-agent's
+	// system event, not a second init.
+	b.handleSystemMessage(&claudesdk.SystemMessage{Subtype: "hook", SessionID: "s-sub"}, task, &meta)
+	b.handleSystemMessage(&claudesdk.SystemMessage{Subtype: "init", SessionID: "s-other-init"}, task, &meta)
+	if meta.sessionID != "s-init" {
+		t.Fatalf("sessionID = %q, want s-init kept — the checkpoint must name the session this call opened", meta.sessionID)
 	}
 }
 
