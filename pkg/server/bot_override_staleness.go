@@ -153,9 +153,21 @@ func (s *Server) versionsBelow(tenantID string) (map[string]string, bool) {
 	if tenantID == botsource.PlatformTenantID {
 		return baked, true
 	}
+	if s.botSources == nil {
+		// No stored tier at all on this deployment: the bake IS what serves
+		// below a team row, and there is nothing unknown about that.
+		return baked, true
+	}
 	set := s.platformBotSetCached()
 	if set == nil {
-		return baked, true
+		// A SUCCESSFUL read that found nothing returns a non-nil set with an
+		// empty map, so nil here is never "no platform rows" — it is a
+		// cold-start failure of the platform read. Answering "the bake" would
+		// measure a team row deliberately pinned to match an older platform
+		// override against the bake instead, and the warn path caches only
+		// POSITIVE verdicts, so that false line could never be superseded once
+		// the overlay recovered. Unknown, exactly as an unreadable catalog is.
+		return nil, false
 	}
 	// Copy: the cached catalog map is shared, and the platform overlay is
 	// per-tenant-tier.
