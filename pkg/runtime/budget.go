@@ -762,9 +762,10 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // org monthly bucket and the donor's post-hoc ledger: those accumulate
 // from EVENTS (`llm_step_finished`, `delegate_finished`), and a failed
 // delegation emits `delegate_error`, which metricsEmitter.observe has no
-// case for. claw's per-step events land there regardless of how the node
-// ends, so on the in-process backend the org bucket does see this spend;
-// on a CLI backend it does not. Closing that half is a pkg/runner change
+// case for. claw reports step by step and fires that event BEFORE its
+// structured parse, so the in-process backend still reaches the org bucket
+// for everything but a stream that died mid-answer; a CLI backend reaches
+// it for nothing a failed node burned. Closing that half is a pkg/runner change
 // (a delegate_error case carrying cost_usd, with the same
 // already-summarised guard delegate_finished uses for claw), deliberately
 // not made here.
