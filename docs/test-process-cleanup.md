@@ -40,10 +40,10 @@ after the settle window, covers reclaiming a reported leak; when that bound
 expires the guard names and kills whatever is still alive before failing, so a
 descendant adopted late — inside the last settle window of the budget, before
 it could earn a verdict of its own — is still reported and reclaimed rather
-than outliving the suite unnamed. Fixture
-cancellation is portable; the orphan-adoption guard is Linux-only. Like other
-TestMain postconditions it requires m.Run to return; a forced kill of the test
-binary cannot execute the postcondition.
+than outliving the suite unnamed. Fixture cancellation is portable; the
+orphan-adoption guard is Linux-only. Like other TestMain postconditions it
+requires m.Run to return; a forced kill of the test binary cannot execute the
+postcondition.
 
 ## Shell and helper sweep
 
