@@ -732,11 +732,6 @@ compute extend_result:
     ## an agent told to «report in summary» writes a file instead to make its
     ## reasoning survive — a file its own gate then refuses (production
     ## finding). Evidence beside the verdict, never in place of it.
-    ## The subbot's own line travels with the deterministic verdict, plainly
-    ## attributed: without it the cause a refusal states reaches nobody, and
-    ## an agent told to «report in summary» writes a file instead to make its
-    ## reasoning survive — a file its own gate then refuses (production
-    ## finding). Evidence beside the verdict, never in place of it.
     ##
     ## Read from extend_verify, not from the agent node: `if()` evaluates
     ## BOTH branches (its arguments are computed before the call), so a
