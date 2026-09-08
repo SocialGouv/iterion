@@ -85,6 +85,14 @@ the forgiveness COUNT, without which it would pass identically to the clean
 case even with the settle logic deleted. Both mutations were checked to fail
 it: latching on first sight, and forgiving without counting.
 
+That count is settled on two paths, and a unit test pins the one no fixture
+can schedule: the guard reaps each child in the same pass that reads its
+state, so a child dying in between is gone from `/proc` before the next pass
+and never reaches the per-pass accounting. It is forgiven where the scan ends
+instead — on the kernel's ECHILD verdict, with no children left — which is
+why `forgiven` takes the remaining set as an argument and is asserted directly
+on a nil one.
+
 Not covered, and known: the residual `git maintenance` hazard. `pkg/runtime`'s
 tests run 15 production writing-git commands (`commit -F -`, `merge --squash`,
 `merge --ff-only`) against `t.TempDir()` fixture repositories, through

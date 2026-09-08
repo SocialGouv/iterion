@@ -82,6 +82,14 @@ func NoProcessLeaks(run func() int) int {
 			var status unix.WaitStatus
 			_, err := unix.Wait4(-1, &status, unix.WNOHANG, nil)
 			if errors.Is(err, unix.ECHILD) {
+				// Nothing of ours is left, so anything still awaiting a verdict
+				// finished on its own. This is not the same set the loop below
+				// settles: a child seen alive by one pass and reaped by that
+				// SAME pass (the per-PID Wait4 runs after the state read) stays
+				// in firstSeen and is gone from /proc before the next pass, so
+				// it never reaches that accounting — and forgiveness would
+				// under-count exactly the children that exited fastest.
+				forgave += forgiven(firstSeen, nil, reported)
 				break
 			}
 			if err != nil && !errors.Is(err, unix.EINTR) {
@@ -127,14 +135,7 @@ func NoProcessLeaks(run func() int) int {
 			var status unix.WaitStatus
 			_, _ = unix.Wait4(pid, &status, unix.WNOHANG, nil)
 		}
-		// A child seen alive and no longer alive finished inside its window.
-		// Counting it is what keeps the forgiveness path observable: forgiving
-		// is otherwise silent, indistinguishable from never having seen it.
-		for key := range firstSeen {
-			if _, still := alive[key]; !still && !reported[key] {
-				forgave++
-			}
-		}
+		forgave += forgiven(firstSeen, alive, reported)
 		firstSeen = alive
 		if time.Now().After(deadline) {
 			fmt.Fprintln(os.Stderr, "FAIL: test descendants did not exit after cleanup")
@@ -149,6 +150,26 @@ func NoProcessLeaks(run func() int) int {
 		return 1
 	}
 	return code
+}
+
+// forgiven counts the children of prev that are gone from cur without ever
+// having produced a verdict: each was seen alive and then finished inside its
+// window. Counting them is what keeps the forgiveness path observable —
+// forgiving is otherwise silent, indistinguishable from never having seen the
+// child at all. A nil cur is the end of the scan, where nothing of ours is
+// left and every entry still pending is therefore forgiven.
+//
+// It must be called on every path that drops entries from the tracking map,
+// and each key must be dropped exactly once, or the count drifts from the
+// number of children the guard actually forgave.
+func forgiven(prev, cur map[procKey]time.Time, reported map[procKey]bool) int {
+	n := 0
+	for key := range prev {
+		if _, still := cur[key]; !still && !reported[key] {
+			n++
+		}
+	}
+	return n
 }
 
 // failing turns a teardown verdict into an exit code without overwriting the

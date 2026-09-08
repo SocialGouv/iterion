@@ -49,6 +49,37 @@ func isHelper(pid int, helper string) bool {
 	return err == nil && strings.HasPrefix(string(argv), helper+"\x00")
 }
 
+// The subprocess table below cannot reach the scan-ended case: it needs a
+// child to die inside the microseconds between the guard's state read and its
+// per-PID reap, which no fixture can schedule. So the accounting is pinned
+// here instead — without the nil-cur row, that child is silently dropped and
+// the `settle` fixture's count assertion is flaky rather than wrong.
+func TestForgiven(t *testing.T) {
+	settling := procKey{pid: 11, start: 100}
+	survivor := procKey{pid: 22, start: 200}
+	seen := map[procKey]time.Time{settling: {}, survivor: {}}
+	reported := map[procKey]bool{survivor: true}
+	for _, tc := range []struct {
+		name string
+		cur  map[procKey]time.Time
+		want int
+	}{
+		{name: "still-alive", cur: seen, want: 0},
+		{name: "settling-child-gone", cur: map[procKey]time.Time{survivor: {}}, want: 1},
+		// The ECHILD break: no children left at all, so the entry the previous
+		// pass reaped after seeing it alive is forgiven here or nowhere.
+		{name: "scan-ended", cur: nil, want: 1},
+		// A leak already has its verdict; the count is forgiveness, not exits.
+		{name: "reported-never-forgiven", cur: map[procKey]time.Time{settling: {}}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := forgiven(seen, tc.cur, reported); got != tc.want {
+				t.Fatalf("forgiven = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNoProcessLeaks(t *testing.T) {
 	// Both sides of the settle boundary, made explicit: `settle` orphans a
 	// helper that exits well inside a widened window (forgiven, silent, still
