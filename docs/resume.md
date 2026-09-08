@@ -300,8 +300,9 @@ Two mechanics matter when raising a cap here:
 The `--max-*` flags are the recommended path. The historical
 "source-swap" recovery (POST `{"source": "<the .bot with a larger
 cap>", "force": true}`) is NOT equivalent: it edits `wf.Budget` before
-compile, and `resolveResumeBudgetAsk` then still merges the persisted
-launch ask over top — on a run whose launch ask carried an explicit
+compile, and `runtime.MergeResumeBudgetAsk`
+([pkg/runtime/budget_persist.go](../pkg/runtime/budget_persist.go)) then
+still merges the persisted launch ask over top — on a run whose launch ask carried an explicit
 cap the swap is overridden and the run dies at the persisted cap.
 Prefer the flags; the swap is retained as a last-resort escape for the
 case where no launch ask was ever recorded.
@@ -393,7 +394,12 @@ Deliberately **not** reset:
   are about to repeat. Its payload is
   `{from_node, to_node, dropped_nodes, tombstoned_artifacts, orphaned_child_runs,
   promoted_from, files_reverted, files_ref, files_revert_commit,
-  files_backup_ref, files_skip_reason}`.
+  files_backup_ref, files_skip_reason, files_restore_scope, files_scope_count,
+  files_overwritten, files_left_in_place, files_overwritten_paths,
+  files_left_in_place_paths}` — the last six are what let an
+  API- or agent-driven rewind (which never sees the CLI's stderr) answer
+  "what did that rewind take from me". The two `_paths` lists are capped;
+  the counts beside them stay exact.
 
 Reset, because carrying them into the replay would be wrong: any pending
 interaction (the rewound run never asked that question) and the backend
@@ -619,7 +625,8 @@ waiting, the dispatcher **does not mint a new run id**.
 | `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input` (dispatcher-owned runs). No auto-resume (no answers). |
 | `running` | Hold while the owner lives. An orphaned run (no live lock, past the grace window) is promoted to `failed_resumable` / `failed` first — never a sibling from the workflow entry. |
 | `queued` | Hold without a lock probe: pipeline-queued runs have no lock owner until their concurrency slot opens. |
-| `failed_resumable` / `cancelled` | `Engine.Resume` on the **same** id. |
+| `failed_resumable` | `Engine.Resume` on the **same** id. |
+| `cancelled` | **Held, never auto-resumed.** Internal stops (stall reap, external state change, shutdown) persist `failed_resumable`, so a `cancelled` run can only be an operator's own cancel — auto-resuming it would undo their decision. The card stays held until they resume it explicitly or clear `last_run`. |
 | `finished` | Fresh run allowed — dragging the card back to `ready` is the re-queue gesture. |
 | none, or hard `failed` + ticket explicitly back in `ready` | Fresh run. |
 
@@ -627,7 +634,8 @@ waiting, the dispatcher **does not mint a new run id**.
 run after a bot edit. If that resume parks again on a later human node,
 the next dispatcher tick re-parks the same card — it does not start the
 workflow over. To throw the work away, finish the run or let it fail
-hard: a `cancelled` run is resumed from its checkpoint, not replaced.
+hard: a `cancelled` run is neither auto-resumed nor replaced — the ticket
+stays held until you resume it explicitly or clear `last_run`.
 
 See [dispatcher](dispatcher.md#paused-runs--the-awaiting_input-column--parked-sweep).
 
