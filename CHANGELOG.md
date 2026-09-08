@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.122.3](https://github.com/SocialGouv/iterion/compare/v3.122.2...v3.122.3) (2026-09-08)
+
+### Bug Fixes
+
+* **secrets,runner:** a codex forfait refreshes itself, and an unrefreshable one stops being silent ([#977](https://github.com/SocialGouv/iterion/issues/977)) ([bf05b07](https://github.com/SocialGouv/iterion/commit/bf05b07dd1d85a5fb14a1ab792c7fe0b071918c6))
+
+    <details><summary>why</summary>
+
+    Nothing refreshed the ChatGPT (codex) forfait. The server's worker skipped the kind outright when no client id was configured, and the runner's per-run refresher handled only Anthropic, "left to the CLI / store worker" — which was in turn skipping it. Measured on a real deployment: a forfait last refreshed on 2026-08-29 was still being served on 2026-09-08, and the only symptom was a run failing its first LLM call with `401 Provided authentication token is expired`, ten days and one layer away…
+
+    </details>
+
 ## [3.122.2](https://github.com/SocialGouv/iterion/compare/v3.122.1...v3.122.2) (2026-09-08)
 
 ### Bug Fixes
