@@ -374,6 +374,139 @@ func TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave(t *testing.T) {
 	}
 }
 
+// uncoveredOverrunWorkflow builds the fixture the three tests below share:
+// `a` → `over` → `done`, where `over` blows the caps and posts a raise from
+// inside itself. `done` is the successor ON PURPOSE — a DoneNode is dispatched
+// by execLoopDispatchSpecial, which runs NO pre-exec budget check, so it is the
+// successor that turns "the pending overrun was dropped" into "the run finished
+// over its cap" instead of merely deferring the stop by one node.
+func uncoveredOverrunWorkflow(name string, budget *ir.Budget) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  name,
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"over": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "over"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "over"},
+			{From: "over", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  budget,
+	}
+}
+
+// runUncoveredOverrun executes uncoveredOverrunWorkflow with `over` posting
+// `raise` and returning `usage`, and hands back the run error plus the
+// budget_exceeded event data (nil when none was emitted).
+func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir.BudgetOverrides, usage map[string]any) (error, map[string]any) {
+	t.Helper()
+
+	ch := make(chan *OverrideMsg, 1)
+	msg := NewRaiseBudgetOverride(raise, "")
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("over", func(_ map[string]any) (map[string]any, error) {
+		ch <- msg
+		return usage, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(uncoveredOverrunWorkflow(runID, budget), s, exec, WithOverrideChannel(ch))
+	err := eng.Run(context.Background(), runID, nil)
+
+	events, lerr := s.LoadEvents(context.Background(), runID)
+	if lerr != nil {
+		t.Fatalf("load events: %v", lerr)
+	}
+	var exceeded map[string]any
+	for _, evt := range events {
+		if evt.Type == store.EventBudgetExceeded {
+			exceeded = evt.Data
+		}
+	}
+	return err, exceeded
+}
+
+// assertStoppedOn fails unless the run died as BUDGET_EXCEEDED on `dimension`
+// with the given live figures — the whole point being that a stop the raise did
+// not cover must still be there, and must name numbers that are true NOW.
+func assertStoppedOn(t *testing.T, err error, exceeded map[string]any, dimension string, used, limit float64) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("the run finished with %s still over its cap — a raise the operator never asked to cover it dropped the stop", dimension)
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("err = %v, want a BUDGET_EXCEEDED stop on %s", err, dimension)
+	}
+	if exceeded == nil {
+		t.Fatalf("no budget_exceeded event — the sole audit record that the cap bound")
+	}
+	if exceeded["dimension"] != dimension {
+		t.Errorf("budget_exceeded names %v, want %s", exceeded["dimension"], dimension)
+	}
+	if got, _ := exceeded["used"].(float64); got != used {
+		t.Errorf("used = %v, want %v", exceeded["used"], used)
+	}
+	if got, _ := exceeded["limit"].(float64); got != limit {
+		t.Errorf("limit = %v, want %v (the cap as it now stands, not the one the overrun was measured against)", exceeded["limit"], limit)
+	}
+}
+
+// TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered is the counterweight to
+// TestRaiseBudget_ArrivesInTimeForTheNodeItMustSave: a raise that DOES cover
+// the spend carries the run forward, and one that does NOT must leave the stop
+// standing. Three ways a raise fails to cover an overrun, all of which used to
+// drop it — the clear was keyed on "did ANY axis move", never on "is the run
+// still over".
+func TestRaiseBudget_KeepsAnOverrunTheRaiseNeverCovered(t *testing.T) {
+	t.Run("another axis entirely", func(t *testing.T) {
+		// Tokens are raised; cost — the axis that actually blew — is not.
+		// MaxTokens must be a real cap with usage UNDER it: an axis at 0 is
+		// unlimited, RaiseCaps skips it, and the test would pass vacuously
+		// on a raise that never landed.
+		err, exceeded := runUncoveredOverrun(t, "run-raise-wrong-axis",
+			&ir.Budget{MaxCostUSD: 10, MaxTokens: 1000},
+			ir.BudgetOverrides{MaxTokens: 5000},
+			map[string]any{"ok": true, "_tokens": 5, "_cost_usd": 100.0})
+		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 10)
+	})
+
+	t.Run("right axis, still under water", func(t *testing.T) {
+		// The operator raised the axis that blew, but not far enough. The
+		// stop stands — and now names the cap as it stands (20), because a
+		// limit the operator has already replaced is not a useful number to
+		// be shown when deciding how much more to grant.
+		err, exceeded := runUncoveredOverrun(t, "run-raise-insufficient",
+			&ir.Budget{MaxCostUSD: 10},
+			ir.BudgetOverrides{MaxCostUSD: 20},
+			map[string]any{"ok": true, "_cost_usd": 100.0})
+		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 20)
+	})
+
+	t.Run("the axis the overrun was not recorded under", func(t *testing.T) {
+		// One node blows tokens AND cost. checkLocked evaluates tokens
+		// first and noteExceeded keeps only the first, so the pending
+		// overrun reads "tokens" and the cost overrun is stored nowhere. A
+		// clear that only asks "does the raise cover the RECORDED axis?"
+		// therefore drops a cost overrun nobody funded — the same silent
+		// over-cap completion, one variant over.
+		err, exceeded := runUncoveredOverrun(t, "run-raise-multi-axis",
+			&ir.Budget{MaxTokens: 10, MaxCostUSD: 10},
+			ir.BudgetOverrides{MaxTokens: 1000},
+			map[string]any{"ok": true, "_tokens": 100, "_cost_usd": 100.0})
+		assertStoppedOn(t, err, exceeded, "cost_usd", 100, 10)
+	})
+}
+
 // blockingRaiserExecutor blocks in the named node until its context is
 // cancelled — the shape of a long agent node killed by the per-node deadline —
 // and posts a raise_budget from INSIDE that node first, which is what "the

@@ -164,11 +164,26 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 		// would kill the run with the grant already applied — the exact case
 		// raise_budget exists for, since a raise reaches a run busy inside a
 		// long node only at the boundary where that node's own overrun is
-		// taken. Dropped, never suppressed: the stop is re-derived from LIVE
-		// usage by the pre-exec check on the next node, so a run still past
-		// the NEW cap stops there, one node later and against the right
-		// number.
-		b.exceeded = nil
+		// taken. So the stop is RE-DERIVED against the caps as they now
+		// stand, and only a raise that leaves every axis under its ceiling
+		// drops it.
+		//
+		// Re-derived across ALL FOUR axes, never just the recorded one:
+		// noteExceeded keeps only the FIRST overrun a node produced
+		// (checkLocked's order — iterations, tokens, cost_usd, duration), so
+		// a node that blew tokens AND cost is remembered as "tokens" alone.
+		// Clearing on a tokens raise would drop a cost overrun nobody funded.
+		//
+		// And it cannot be left to the next node's pre-exec check, which is
+		// what an earlier draft of this claimed: checkBudgetBeforeExec runs
+		// on the STANDARD node path only, while Done/Fail/compute/router/
+		// subbot/emit/wait are dispatched before it ever runs. A dropped
+		// overrun whose successor is any of those is gone for good —
+		// takeExceeded has a single consumer — and the run finishes over its
+		// cap with no budget_exceeded event at all.
+		if b.exceeded != nil {
+			b.exceeded = b.liveOverrunLocked()
+		}
 	}
 	return b.capsLocked(), raised
 }
@@ -483,6 +498,38 @@ func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
 		room("cost_usd", b.costUsed, b.maxCostUSD) &&
 		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 	return graced, ok && graced != ""
+}
+
+// liveOverrunLocked returns the first axis whose LIVE usage is at or past its
+// cap — in checkLocked's own order, so the dimension an operator is shown never
+// depends on which path derived it — or nil when every axis is under. Caller
+// holds b.mu.
+//
+// Deliberately NOT checkLocked(): that one mutates warningsEmitted for the 80%
+// tier, and its sole caller here (RaiseCaps) has just deleted those flags to
+// re-arm a fresh warning against the new ceiling. Routing through it would
+// consume that re-arm and then discard the warning it produced — the one-shot
+// hazard unpricedWarningLocked's own comment already documents.
+//
+// `used >= limit` is checkLocked's `ratio >= 1.0` without the division, and the
+// `limit <= 0` skip is its "an axis at 0 is unlimited" convention.
+func (b *SharedBudget) liveOverrunLocked() *budgetCheckResult {
+	over := func(dimension string, used, limit float64) *budgetCheckResult {
+		if limit <= 0 || used < limit {
+			return nil
+		}
+		return &budgetCheckResult{exceeded: true, dimension: dimension, used: used, limit: limit}
+	}
+	if r := over("iterations", float64(b.iterationsUsed), float64(b.maxIterations)); r != nil {
+		return r
+	}
+	if r := over("tokens", float64(b.tokensUsed), float64(b.maxTokens)); r != nil {
+		return r
+	}
+	if r := over("cost_usd", b.costUsed, b.maxCostUSD); r != nil {
+		return r
+	}
+	return over("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 }
 
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
