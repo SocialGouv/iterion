@@ -89,6 +89,28 @@ func appendEnvPrefix(args []string, env map[string]string) []string {
 // Each argv element is single-quoted with embedded ' escaped per
 // POSIX rules. We don't use Go's strconv because shell quoting
 // follows different rules.
+
+func buildShellChdirExec(dir string, argv []string, env map[string]string) string {
+	var b strings.Builder
+	b.WriteString("cd ")
+	b.WriteString(shellquote.Quote(dir))
+	b.WriteString(" && exec ")
+	if len(env) > 0 {
+		b.WriteString("env ")
+		for _, k := range slices.Sorted(maps.Keys(env)) {
+			b.WriteString(shellquote.Quote(k + "=" + env[k]))
+			b.WriteByte(' ')
+		}
+	}
+	for i, a := range argv {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(shellquote.Quote(a))
+	}
+	return b.String()
+}
+
 // buildShellChdirScript renders a chdir + env + INLINE script payload for
 // a shell reading it on stdin (`<shell> -s`). Unlike
 // [buildShellChdirExec] it never puts the script back on an argv
@@ -110,26 +132,5 @@ func buildShellChdirScript(dir string, env map[string]string, script string) str
 		b.WriteByte('\n')
 	}
 	b.WriteString(script)
-	return b.String()
-}
-
-func buildShellChdirExec(dir string, argv []string, env map[string]string) string {
-	var b strings.Builder
-	b.WriteString("cd ")
-	b.WriteString(shellquote.Quote(dir))
-	b.WriteString(" && exec ")
-	if len(env) > 0 {
-		b.WriteString("env ")
-		for _, k := range slices.Sorted(maps.Keys(env)) {
-			b.WriteString(shellquote.Quote(k + "=" + env[k]))
-			b.WriteByte(' ')
-		}
-	}
-	for i, a := range argv {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(shellquote.Quote(a))
-	}
 	return b.String()
 }
