@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.120.2](https://github.com/SocialGouv/iterion/compare/v3.120.1...v3.120.2) (2026-09-08)
+
+### Bug Fixes
+
+* **runtime:** a queued raise_budget must reach the boundary that is about to kill the run ([#938](https://github.com/SocialGouv/iterion/issues/938)) ([62829f3](https://github.com/SocialGouv/iterion/commit/62829f31f41f55be3af0d3e0500ca90bf8c4d204))
+
+    <details><summary>why</summary>
+
+    `POST /runs/{id}/raise-budget` on a run busy inside a long node answers "queued … the run is busy in a long node and will apply it at its next boundary — it is not lost". For `bump_loop` that is true. For the budget it was false in the one case the command exists for.
+
+    </details>
+* **sandbox:** a tool recipe too large for one argv element streams through stdin on kubernetes too ([#937](https://github.com/SocialGouv/iterion/issues/937)) ([03370e7](https://github.com/SocialGouv/iterion/commit/03370e74871314eccfc44a3519b4952ceb2fedf4))
+
+    <details><summary>why</summary>
+
+    The kubernetes driver passed a `sh -c <script>` recipe to `kubectl exec` as a single argv element. Linux caps ONE argument at MAX_ARG_STRLEN (32 pages = 128 KiB) — a limit no ulimit raises — so a large interpolated recipe fails the fork with E2BIG before the pod is ever contacted:
+
+    </details>
+
 ## [3.120.1](https://github.com/SocialGouv/iterion/compare/v3.120.0...v3.120.1) (2026-09-08)
 
 ### Bug Fixes
