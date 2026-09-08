@@ -369,6 +369,45 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 	}
 }
 
+// A fan-out branch is where the most expensive agent work in a run tends to
+// happen, and it never reaches execLoopRunNode — so the trunk's booking
+// cannot cover it. A branch node that fails is terminal for its branch:
+// nothing retries it in place, and the trunk aggregates the failure without
+// ever seeing the output, so this is the last frame that can book what it
+// burned.
+func TestFailedBranchNodeSpendReachesTheRun(t *testing.T) {
+	wf := budgetFanOutWorkflow(&ir.Budget{MaxTokens: 1_000_000, MaxParallelBranches: 2})
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_tokens": 15_000, "_cost_usd": 4.20}, errors.New("stream closed mid-branch")
+	})
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 1_000, "_cost_usd": 0.10}, nil
+	})
+
+	st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+	eng := New(wf, st, exec)
+	// best_effort convergence: the sibling carries the run, so the failing
+	// branch's spend has to land WITHOUT the run failing to make it visible.
+	if err := eng.Run(context.Background(), "run-branch-spend", nil); err != nil {
+		t.Fatalf("the best-effort join was supposed to carry the run: %v", err)
+	}
+
+	cp := st.last
+	if cp == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	// 15_000 (the failed branch) + 1_000 (its sibling); the entry node spent
+	// nothing. Without the booking the run reads 1_000 and the operator is
+	// billed for a session the totals never saw.
+	if cp.BudgetTokensUsed != 16_000 {
+		t.Fatalf("the failed branch's session never reached the run: %d tokens", cp.BudgetTokensUsed)
+	}
+}
+
 // The call that raised ErrNeedsInteraction is deliberately NOT booked — "its
 // spend is the resumed call's to report". That deferral is only honest if the
 // resumed call books at its own terminal exit: otherwise a re-invocation that
