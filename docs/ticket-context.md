@@ -61,6 +61,35 @@ For a local CLI run: `iterion secret set tracker_token`, then
 `iterion run bots/review-pr/main.bot --var pr_url=… --var
 tracker_api_base=… [--var ticket_refs=…]`.
 
+### Validated wiring (reference)
+
+The first production wiring, validated end-to-end on 2026-09-08 against a
+private Jira Cloud (bilan: [docs/bot-runs/review-pr.md](bot-runs/review-pr.md)):
+
+| | value |
+|---|---|
+| team | `PIC (GitLab)` — where the repo's integration lives |
+| secret | `jira_dam_token` (Jira Cloud API token, `--from-file`) |
+| binding | `review-pr` ← `tracker_token`, `allowed_hosts: [jira-mcas.atlassian.net]` |
+| launch_vars | `tracker_api_base: https://jira-mcas.atlassian.net`, `tracker_user: <service account email>` |
+| trigger | `/revi` on the MR — it applies the integration's `launch_vars`; a manual launch does **not** |
+
+Note the team choice is a real decision: a binding is per `(team, bot)`, so
+every repo of that team could read those tickets if someone set
+`tracker_api_base` on it. When a product deserves its own credential
+boundary, give it its own team (there is an empty `PIC DematAmiante` team
+waiting for exactly that move).
+
+> **Do steps 2 and 3 from the target team.** Until
+> [#997](https://github.com/SocialGouv/iterion/issues/997) lands, a secret or
+> binding created for another team — by path (`/api/teams/<other>/…`) or by
+> `--team` — is written into the tenant of your *active* team instead. It is
+> acknowledged (201), then invisible from both teams, and the run silently
+> finds no credential (the review reports `unverifiable — tracker token file
+> does not exist`). Run `iterion remote teams switch <team>` first, and
+> confirm with a list call from that same team. Measured on prod on
+> 2026-09-08 (see [docs/bot-runs/review-pr.md](bot-runs/review-pr.md)).
+
 ### Limits to know
 
 - A binding is per **(team, bot)** — one `tracker_token` per team for
