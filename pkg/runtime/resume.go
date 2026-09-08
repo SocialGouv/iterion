@@ -1835,6 +1835,14 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 
 	if ni.SessionID != "" {
 		nodeInput[delegate.SessionIDKey] = ni.SessionID
+		// An id recovered from a pause is best-effort by construction:
+		// the CLI transcript behind it lives on the host that ran the
+		// node, and a human gate can outlive that host (a cloud resume
+		// gets a fresh pod with an empty ~/.claude). Declaring it
+		// droppable lets the executor degrade to a fresh session once,
+		// loudly, instead of re-issuing `--resume <gone>` and failing the
+		// node identically on every attempt for the rest of the run.
+		nodeInput[delegate.SessionOptionalKey] = true
 		// The fingerprint travels with the id, and REPLACES whatever the
 		// edge carried: the pause's id is this node's own session, so an
 		// upstream node's fingerprint left beside it would describe a

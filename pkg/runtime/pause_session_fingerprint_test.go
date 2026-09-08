@@ -70,6 +70,13 @@ func TestPauseCarriesTheFingerprintOfTheSessionItRecords(t *testing.T) {
 	if got, _ := resumeInput[delegate.SessionFingerprintKey].(string); got != "anthropic-oauth" {
 		t.Fatalf("re-invocation _session_fingerprint = %q, want anthropic-oauth — the fork this resumes is dropped without it", got)
 	}
+	// And the id is declared best-effort: the transcript behind it lives
+	// on the host that ran the node, and this resume can land on another
+	// one. Without the marker a `session: fork`/`inherit` node re-issues
+	// `--resume <gone>` and fails identically forever.
+	if opt, _ := resumeInput[delegate.SessionOptionalKey].(bool); !opt {
+		t.Fatalf("re-invocation _session_optional = %v, want true — a pause can outlive the host that holds its transcript", resumeInput[delegate.SessionOptionalKey])
+	}
 }
 
 // The pause's id is THIS node's own session, so an upstream fingerprint

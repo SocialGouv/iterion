@@ -1344,6 +1344,16 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		if f.session == ir.SessionInheritIfAvailable || f.session == ir.SessionPersist {
 			task.SessionOptional = true
 		}
+		// The engine says so for an id recovered from a PAUSE, whatever
+		// the declared mode: the transcript backing it lives on the host
+		// that ran the node, and the resume can land on another one (a
+		// fresh cloud pod) hours later. `inherit` and `fork` ask for
+		// continuity, not for a hard failure when the human gate outlived
+		// the machine — without this they resume a transcript that is not
+		// there and fail identically on every retry, forever.
+		if opt, ok := input[delegate.SessionOptionalKey].(bool); ok && opt {
+			task.SessionOptional = true
+		}
 		// Forward the provider fingerprint that produced the parent
 		// session so the backend can detect cross-provider forks
 		// (which fail with 400 "Invalid signature in thinking block"
