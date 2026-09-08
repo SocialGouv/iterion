@@ -244,9 +244,9 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	// joins: a descendant of the server holding an inherited write end would
 	// block Wait — and therefore the cleanup's join below — forever, hanging
 	// the whole e2e binary until the go-test timeout. Setpgid with no Pgid
-	// makes the child its own group leader, so the negative PID addresses
-	// exactly the subtree this test created, and os/exec only calls Cancel
-	// before Wait reaps, so it can never be a recycled PID.
+	// makes the child its own group leader; cancellation uses that group ID,
+	// matching the shared process primitive. It is not a pidfd-backed group
+	// signal, and WaitDelay below covers descendants that leave the group.
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil

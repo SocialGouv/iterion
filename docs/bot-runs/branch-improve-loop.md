@@ -54,6 +54,16 @@
   Git-maintenance gap in fixture repository config is tracked separately in
   #974 after verification against main. No shared infrastructure, historical
   orphan, other session's branch, or operator Git configuration was changed.
+- Independent review of the delivered bank found `Race656`: a missing Linux
+  child-scan/subreaper capability could fail or skip a whole package suite.
+  The owner completed this bounded follow-up after the quota stop, checking
+  first that no fixer was active on this PR. Startup now probes the scanner
+  before enabling adoption, logs unavailability, and runs the suite normally;
+  a post-activation scan failure still fails. A red-first capability-boundary
+  regression covers both missing capabilities, exactly-once suite execution,
+  preservation of success/failure results and later hard scan errors. The
+  original process-group comment was also corrected: it is not a pidfd-backed
+  group signal and does not prove PID reuse impossible.
 
 ## The delivery tail's contract (bot 1.7.0)
 

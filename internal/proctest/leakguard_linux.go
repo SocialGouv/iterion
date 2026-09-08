@@ -51,10 +51,26 @@ type procKey struct {
 // Compose it in TestMain: os.Exit(proctest.NoProcessLeaks(m.Run)). A guard
 // around an existing suite wrapper works too. It never reaps during run:
 // os/exec owns Wait while tests are executing.
+// If the kernel cannot support the guard, it reports that limitation and
+// still runs the suite. An inspection failure after activation remains fatal.
 func NoProcessLeaks(run func() int) int {
-	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL: enable test process leak guard: %v\n", err)
-		return 1
+	return noProcessLeaks(run, func() error {
+		return unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+	}, childPIDs)
+}
+
+// Keep the capability boundary injectable so unsupported startup and a scan
+// failure after activation can be distinguished without changing the host.
+func noProcessLeaks(run func() int, enableSubreaper func() error, inspectChildren func() ([]int, error)) int {
+	// Probe the scanner before enabling adoption. Otherwise an unsupported
+	// /proc leaves the process adopting children it cannot subsequently find.
+	if _, err := inspectChildren(); err != nil {
+		fmt.Fprintf(os.Stderr, "proctest: leak guard unavailable (child scan: %v); running unguarded\n", err)
+		return run()
+	}
+	if err := enableSubreaper(); err != nil {
+		fmt.Fprintf(os.Stderr, "proctest: leak guard unavailable (subreaper: %v); running unguarded\n", err)
+		return run()
 	}
 	settle := settleWindow()
 	code := run()
@@ -70,7 +86,7 @@ func NoProcessLeaks(run func() int) int {
 	// entire owned tree is gone. This is a teardown bound, not a test budget.
 	deadline := time.Now().Add(settle + reclaimBudget)
 	for {
-		children, err := childPIDs()
+		children, err := inspectChildren()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: inspect test descendants: %v\n", err)
 			return failing(code)

@@ -49,6 +49,49 @@ func isHelper(pid int, helper string) bool {
 	return err == nil && strings.HasPrefix(string(argv), helper+"\x00")
 }
 
+func TestNoProcessLeaksCapabilityBoundary(t *testing.T) {
+	for _, stage := range []string{"children-unavailable", "subreaper-unavailable", "scan-failed-after-suite"} {
+		for _, suiteCode := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/suite-exit-%d", stage, suiteCode), func(t *testing.T) {
+				calls, enables, scans := 0, 0, 0
+				unavailable := errors.New("capability unavailable in this environment")
+				got := noProcessLeaks(func() int {
+					calls++
+					return suiteCode
+				}, func() error {
+					enables++
+					if stage == "subreaper-unavailable" {
+						return unavailable
+					}
+					return nil
+				}, func() ([]int, error) {
+					scans++
+					if stage == "children-unavailable" || (stage == "scan-failed-after-suite" && calls > 0) {
+						return nil, unavailable
+					}
+					return nil, nil
+				})
+				if calls != 1 {
+					t.Fatalf("suite ran %d times, want exactly once even without guard support", calls)
+				}
+				want := suiteCode
+				if stage == "scan-failed-after-suite" && want == 0 {
+					want = 1
+				}
+				if got != want {
+					t.Fatalf("exit = %d, want %d", got, want)
+				}
+				if stage == "children-unavailable" && enables != 0 {
+					t.Fatal("adoption was enabled without a usable child scan")
+				}
+				if stage == "scan-failed-after-suite" && (enables != 1 || scans != 2) {
+					t.Fatalf("post-suite scan error was not distinguished from startup: enables=%d scans=%d", enables, scans)
+				}
+			})
+		}
+	}
+}
+
 // The subprocess table below cannot reach the scan-ended case: it needs a
 // child to die inside the microseconds between the guard's state read and its
 // per-PID reap, which no fixture can schedule. So the accounting is pinned
@@ -81,6 +124,7 @@ func TestForgiven(t *testing.T) {
 }
 
 func TestNoProcessLeaks(t *testing.T) {
+	unsupported := false
 	// Both sides of the settle boundary, made explicit: `settle` orphans a
 	// helper that exits well inside a widened window (forgiven, silent, still
 	// reaped), the `orphan` pair one that outlives a narrowed one (reported).
@@ -143,6 +187,13 @@ func TestNoProcessLeaks(t *testing.T) {
 			if code != tc.code {
 				t.Fatalf("exit=%d want %d: %s", code, tc.code, out)
 			}
+			// The clean subprocess is also the capability probe, before any
+			// intentional orphan is spawned. Other package suites still run
+			// unguarded on this host; only this kernel-specific fixture skips.
+			if strings.Contains(string(out), "proctest: leak guard unavailable (") {
+				unsupported = true
+				return
+			}
 			if reported := strings.Contains(string(out), "test process survived suite cleanup"); reported != tc.leak {
 				t.Fatalf("leak reported=%v want %v: %s", reported, tc.leak, out)
 			}
@@ -171,5 +222,8 @@ func TestNoProcessLeaks(t *testing.T) {
 				}
 			}
 		})
+		if unsupported {
+			t.Skip("kernel does not support the process leak guard")
+		}
 	}
 }

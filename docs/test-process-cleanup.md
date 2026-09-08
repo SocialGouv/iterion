@@ -22,6 +22,14 @@ survivors, kills only its own children and repeats as grandchildren are
 adopted. Already-exited adopted children are reaped. A leak makes a successful
 suite fail, while an existing failure exit code is preserved.
 
+The guard probes its child scanner before enabling adoption. If the kernel
+does not expose `/proc/self/task/*/children` or refuses the subreaper option,
+it prints `proctest: leak guard unavailable (...)` and still runs the suite,
+preserving its result. Errors after successful activation remain hard
+failures. The guard's own orphan fixtures skip after a clean subprocess
+detects this unsupported environment, before intentionally spawning an orphan;
+the other package suites continue to run.
+
 "Cleanups returned" is not "the kernel finished the teardown", so a child is
 only a leak once it is **still alive after a settle window** — 500 ms, or
 `ITERION_PROCTEST_SETTLE`. A helper a cleanup signalled without joining, or one
