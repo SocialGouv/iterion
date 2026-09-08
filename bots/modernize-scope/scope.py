@@ -43,6 +43,19 @@ GIT_SCRUB = {
     "GIT_NO_REPLACE_OBJECTS": "1",
     "LC_ALL": "C",
     "TZ": "UTC",
+    # A writing git command detaches `git maintenance run --auto`, which is
+    # still writing under .git/objects after the command returns — so a
+    # temporary repository removed on the way out races a process the caller has
+    # no handle on. Injected through the environment rather than added to each
+    # argv: these are the only two knobs, and the argv sites are many.
+    # `maintenance.auto` is git >= 2.48; `gc.auto` is the older knob, and the
+    # fallback newer git consults when the first is unset. Both, or the guard
+    # holds on one version of git and not the other.
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "maintenance.auto",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "gc.auto",
+    "GIT_CONFIG_VALUE_1": "0",
 }
 GIT_ENV = dict(os.environ, **GIT_SCRUB)
 
@@ -715,6 +728,10 @@ def selftest():
             == serialise(written["scope"]),
             # the envelope carries the callee's own fields, whatever they are
             envelope(lambda: {"scope": {}})["ok"] is True,
+            # auto-maintenance is refused, asked of git itself rather than of the
+            # dict: what matters is the config git RESOLVES, not what was set
+            git(repo, "config", "--get", "maintenance.auto").strip() == "false",
+            git(repo, "config", "--get", "gc.auto").strip() == "0",
             # a walk is decided on the FLAGS, never on a value
             is_walk(("rev-list", "--count", "S")) is True,
             is_walk(("tag", "--merged", "S")) is True,
