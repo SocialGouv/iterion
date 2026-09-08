@@ -227,43 +227,7 @@ func (s *Server) ListenAndServe() error {
 			}
 		}()
 	}
-	// OAuth-forfait token refresh: proactively rotate Claude Code (and
-	// Codex) subscription access tokens before they expire so neither an
-	// interactive run nor an automated (webhook/dispatcher/cron) run ever
-	// reads a stale credential. Covers personal AND org-scoped records.
-	// No-op without a store/sealer or any configured client id.
-	if s.oauthStore != nil && s.sealer != nil && (s.cfg.AnthropicOAuthClientID != "" || s.cfg.CodexOAuthClientID != "") {
-		worker := &secrets.OAuthRefreshWorker{
-			Store:             s.oauthStore,
-			Sealer:            s.sealer,
-			HTTP:              s.httpClient,
-			AnthropicClientID: s.cfg.AnthropicOAuthClientID,
-			CodexClientID:     s.cfg.CodexOAuthClientID,
-			Lead:              30 * time.Minute,
-		}
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
-			t := time.NewTicker(10 * time.Minute)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-						s.logger.Warn("oauth-forfait refresh: %v", err)
-					} else if n > 0 && s.logger != nil {
-						s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
-					}
-				}
-			}
-		}()
-	}
+	s.startOAuthForfaitRefresh()
 	// Forge → board issue sync (cloud only): periodically mirror every
 	// sync-enabled repo's forge issues onto its team board. Off unless a
 	// cloud board + the integration store are wired. See board_forge.go.
@@ -454,6 +418,65 @@ func (s *Server) ListenAndServe() error {
 // feature is off. The dispatcher subscribes on the shared EventsBus (cloud
 // NATSBus — queue-group delivery dedups across replicas) or, locally, on the
 // trigger coordinator's in-proc bus.
+// startOAuthForfaitRefresh runs the OAuth-forfait refresh sweep: proactively
+// rotate Claude Code (and Codex) subscription access tokens before they
+// expire so neither an interactive run nor an automated
+// (webhook/dispatcher/cron) run ever reads a stale credential. Covers
+// personal AND org-scoped records. No-op without a store/sealer or any
+// configured client id.
+//
+// Its own method so the boot sweep below is reachable from a test — the
+// hazard it closes is invisible in a unit test of RunOnce, which is exactly
+// how it went missing.
+func (s *Server) startOAuthForfaitRefresh() {
+	if s.oauthStore == nil || s.sealer == nil || (s.cfg.AnthropicOAuthClientID == "" && s.cfg.CodexOAuthClientID == "") {
+		return
+	}
+	worker := &secrets.OAuthRefreshWorker{
+		Store:             s.oauthStore,
+		Sealer:            s.sealer,
+		HTTP:              s.httpClient,
+		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
+		CodexClientID:     s.cfg.CodexOAuthClientID,
+		Lead:              30 * time.Minute,
+	}
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-s.shutdown
+			cancel()
+		}()
+		sweep := func() {
+			if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("oauth-forfait refresh: %v", err)
+			} else if n > 0 && s.logger != nil {
+				s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
+			}
+		}
+		// Boot sweep, for the same reason as the forge worker above: a
+		// restart re-phases the ticker onto this pod's start time, so a
+		// token the old replica was about to rotate would otherwise sit
+		// expired until this replica's first tick — ten minutes in which the
+		// publisher hands out a credential it knows is dead (it seals what
+		// the store holds; no tier checks the expiry). It also covers a
+		// connect: an expired-but-refreshable record is accepted on the
+		// promise that "the refresh worker renews it on its next pass", and
+		// after a restart that pass is a full period away.
+		sweep()
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
+}
+
 func (s *Server) startUserNotify() {
 	if !s.webPushEnabled() || s.runs == nil {
 		return
