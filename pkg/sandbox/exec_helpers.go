@@ -126,3 +126,43 @@ func (lw *lineLogger) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// MaxInlineArgBytes caps how large a `sh -c <script>` argument may get
+// before a driver routes it through stdin instead of argv. Linux caps a
+// SINGLE argv element at MAX_ARG_STRLEN (32 pages = 128 KiB), a limit
+// no ulimit raises; exceeding it fails the exec with E2BIG
+// ("argument list too long") before the command ever reaches the
+// container. 100 KB leaves headroom for the rest of the argv (flags,
+// env, pod/container id) and is far above any normal tool snippet.
+const MaxInlineArgBytes = 100_000
+
+// ShouldStreamScriptViaStdin reports whether cmd is the
+// `sh -c <script>` shape and should be routed through stdin instead of
+// argv to avoid E2BIG. Returns the script when so; "" otherwise.
+//
+// Conditions: cmd is exactly `["sh","-c", script]` or `["bash","-c",
+// script]`, no stdin is already attached (so a caller-provided reader
+// is never clobbered), and the script exceeds [MaxInlineArgBytes].
+// Both shells are matched because internal callers emit both: the
+// tool-node executor runs recipes via `bash -c`, while RunPostCreate
+// and the claw bash builtin use `sh -c`. Any other shell or argv shape
+// falls through to the standard argv path so behaviour is byte-for-byte
+// unchanged. Callers re-use cmd[0] for the `-s` invocation, so bash
+// recipes keep bash semantics.
+//
+// Shared by the docker and kubernetes drivers: both fork a host binary
+// whose argv carries the script, so both are subject to the same
+// kernel limit. A driver that grew its own copy of this predicate
+// would drift from the other the first time the threshold moved.
+func ShouldStreamScriptViaStdin(cmd []string, opts ExecOpts) string {
+	if len(cmd) != 3 || (cmd[0] != "sh" && cmd[0] != "bash") || cmd[1] != "-c" {
+		return ""
+	}
+	if opts.Stdin != nil {
+		return ""
+	}
+	if len(cmd[2]) <= MaxInlineArgBytes {
+		return ""
+	}
+	return cmd[2]
+}

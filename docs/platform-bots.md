@@ -39,11 +39,36 @@ is CLI-first.
   compile check as team-authored bots (the pattern platform LLM
   credentials established). Hard limits: 6 MiB / 512 files per bundle.
 - **Resolution precedence** (most specific wins): *team botsource →
-  platform botsource → baked catalog FS*. The team tier applies only on
-  the studio launch surface (a team's experimental fork must not silently
-  hijack its schedules/webhooks); the platform tier applies everywhere a
-  bot id resolves, enforced by the central resolver in
-  `pkg/server/bot_resolver.go` and its static sweep test.
+  platform botsource → baked catalog FS*, on **every launch surface** —
+  the studio button, the board dispatcher, the trigger spine, a cloud
+  schedule and an inbound webhook — because each launcher knows the team
+  it launches for (the card's, the subscription's, the schedule's, the
+  webhook token's). A team that forks a bot runs its fork on its own
+  automation, and every launch records which tier served it
+  (`bot_source_tier`) **and shows it** — the run API returns it on the run
+  header, the studio badges a `team bot` / `platform override` run beside
+  its bot chip, and *Launched with* names the tier in full. A run that
+  recorded no tier shows nothing rather than defaulting to `baked`: an
+  unresolved tier reading as a working one is the failure mode this whole
+  section exists for. Enforced
+  by the central resolver in `pkg/server/bot_resolver.go` and its static
+  sweep tests — one of which fails a launch site that hardcodes an empty
+  team.
+- **Spelling.** All three tiers tolerate the same variants
+  (`feature_dev` / `Feature-Dev` / `"feature dev"` → `feature-dev`),
+  because a board card, an agent's `set_bot` and a hand-written
+  subscription all carry operator-typed names. A slug may legitimately be
+  stored with `_` too, so the team tier compares both sides normalized.
+- **A metadata read must match the tier that will SERVE the launch**, or
+  the two disagree in silence — a fork that renames a `consumes:` var
+  gets an empty seed, not an error. Wired: the webhook hand-off seeds,
+  the gate-var defaults and the retry-policy manifest all read the team
+  row first (`effectiveFindByNameForTeam` / `botManifestFor`, both over
+  the same row resolution the launch uses). Still tenant-free, and
+  therefore still able to describe a bundle it will not run: the /bots
+  listing, the command-routing discovery, the config-share surface, and
+  the hand-off PRODUCER set (a deployment-wide question a per-team read
+  cannot answer). Tracked as **#946**.
 - **Launch**: the server resolves the override ONCE, materializes it to a
   temp dir, and compiles against it (prompts/ participate in IR and the
   workflow hash). The queue message (schema v9) carries a
@@ -60,8 +85,10 @@ is CLI-first.
   resume is REFUSED until you force it (and the auto-retry sweeper, which
   never forces, re-arms then abandons). Same for a deleted row.
 - **Resume re-resolves by ORIGIN, not by path**: the launch persists which
-  tier served the run (`bot_source_tenant` on the run doc — the team, the
-  `platform:` sentinel, or empty for baked). A resume/auto-retry reloads
+  tier served the run — `bot_source_tier` (`team` | `platform` | `baked`)
+  and, for the two stored tiers, the row's owner in `bot_source_tenant`
+  (the team id or the `platform:` sentinel; empty for baked, which is why
+  the tier is its own field). A resume/auto-retry reloads
   the SAME row at its current version; a row deleted mid-run fails the
   resume explicitly (relaunch, or resume with inline source). A run
   launched from the BAKED catalog picks up an override pushed since — the

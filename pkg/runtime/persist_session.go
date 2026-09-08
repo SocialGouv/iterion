@@ -48,6 +48,7 @@ func stripSessionKeys(input map[string]any) {
 	delete(input, delegate.SessionIDKey)
 	delete(input, delegate.SessionFingerprintKey)
 	delete(input, delegate.SessionStateKey)
+	delete(input, delegate.SessionOptionalKey)
 }
 
 func stringMap(v any) string {

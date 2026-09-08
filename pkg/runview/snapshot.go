@@ -133,6 +133,20 @@ type RunHeader struct {
 	// targets — the cloud run's repo identity (WorkDir is a runner-pod
 	// path there). Empty for local and repo-less runs.
 	ProjectPath string `json:"project_path,omitempty"`
+	// BotSourceTier is which tier resolved this run's bundle at launch:
+	// store.BotSourceTierTeam (the launching team's own row), …Platform (a
+	// deployment override) or …Baked (the catalog in the image). It answers
+	// "did my fork actually serve this run?" — the question that went
+	// unanswerable while the team tier was inert on four launch surfaces.
+	//
+	// ABSENT, never defaulted: a local run and a run predating the stamp
+	// record no tier, and an unresolved tier must not read as a positive
+	// `baked` claim. Consumers render nothing when it is empty.
+	BotSourceTier string `json:"bot_source_tier,omitempty"`
+	// BotSourceTenant is the owner of the stored row BotSourceTier names —
+	// the team id, or the platform sentinel. Empty on the baked tier (there
+	// is no row) and on an unstamped run.
+	BotSourceTenant string `json:"bot_source_tenant,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
 	// WorktreeAvailable is true when WorkDir still exists on THIS server's
@@ -1454,6 +1468,8 @@ func headerFromRun(r *store.Run) RunHeader {
 		Checkpoint:           r.Checkpoint,
 		WorkDir:              r.WorkDir,
 		ProjectPath:          r.ProjectPath,
+		BotSourceTier:        r.BotSourceTier,
+		BotSourceTenant:      r.BotSourceTenant,
 		Worktree:             r.Worktree,
 		WorktreeAvailable:    worktreeAvailable(r.WorkDir),
 		FinalCommit:          r.FinalCommit,

@@ -257,6 +257,75 @@ func ParseAnthropicView(payload []byte) (AnthropicCredentialsView, error) {
 	return v, nil
 }
 
+// SetupTokenAssumedLifetime is how long iterion treats a bare
+// `claude setup-token` credential as valid.
+//
+// The token carries no expiry of its own — it is an opaque string — so a
+// value has to be chosen, and the choice is asymmetric. A record with NO
+// expiry is read by the Claude CLI as "Not logged in" and never serves a
+// run; an expiry that is too SHORT retires a live credential in silence;
+// one that is too long only means the eventual refusal arrives from the
+// provider, loudly, at the call. So it errs long.
+const SetupTokenAssumedLifetime = 365 * 24 * time.Hour
+
+// setupTokenScope is the one scope a wrapped setup token declares. At
+// least one is required (an empty list is the other half of what the CLI
+// reads as "Not logged in"), and inference is what the token is for.
+const setupTokenScope = "user:inference"
+
+// AnthropicBlob is an Anthropic credential in the shape the rest of the
+// system expects, plus the bytes that identify the SUBSCRIPTION behind it.
+//
+// The two are not the same thing, and conflating them is a live hazard:
+// wrapping a setup token stamps a computed expiry into the payload, so
+// hashing the payload would hand the same token a different fingerprint on
+// every upload — a fresh usage meter and a dropped account label each time.
+type AnthropicBlob struct {
+	// Payload is what to seal and hand to a run: always credentials.json.
+	Payload []byte
+	// Identity is what to fingerprint. Stable across re-uploads of the
+	// same credential.
+	Identity []byte
+	// Wrapped reports that the input was a bare setup token rather than a
+	// credentials.json — the caller says so, since the record's expiry is
+	// then iterion's assumption and not a provider statement.
+	Wrapped bool
+}
+
+// NormalizeAnthropicBlob accepts either of the two shapes an operator
+// actually holds — the `credentials.json` of a logged-in Claude Code, or
+// the bare `sk-ant-oat…` token `claude setup-token` prints — and returns
+// the credentials.json shape for both.
+//
+// The bare token is the common case for provisioning a team or the
+// platform tier (nobody logs a shared account into a local CLI just to
+// export its file), and refusing it only moved the wrapping into every
+// operator's shell, where the expiry convention had to be re-guessed.
+//
+// A blob that is neither is returned untouched, so it reaches the JSON
+// parser and earns the existing typed refusal rather than a vaguer one.
+func NormalizeAnthropicBlob(blob []byte, now time.Time) (AnthropicBlob, error) {
+	token := strings.TrimSpace(string(blob))
+	if !strings.HasPrefix(token, anthropicOAuthTokenPrefix) {
+		return AnthropicBlob{Payload: blob, Identity: blob}, nil
+	}
+	if err := ValidateTokenShape("setup token", token); err != nil {
+		return AnthropicBlob{}, err
+	}
+	var v AnthropicCredentialsView
+	v.ClaudeAIOauth.AccessToken = token
+	v.ClaudeAIOauth.ExpiresAt = now.Add(SetupTokenAssumedLifetime).UnixMilli()
+	v.ClaudeAIOauth.Scopes = []string{setupTokenScope}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return AnthropicBlob{}, fmt.Errorf("secrets: wrap setup token as credentials.json: %w", err)
+	}
+	// The TOKEN identifies the subscription, not the wrapper built around
+	// it — and it identifies it better than a credentials.json does, since
+	// two exports of one logged-in account differ byte for byte.
+	return AnthropicBlob{Payload: payload, Identity: []byte(token), Wrapped: true}, nil
+}
+
 // ParseCodexView extracts the analogous view from auth.json.
 func ParseCodexView(payload []byte) (CodexCredentialsView, error) {
 	var v CodexCredentialsView

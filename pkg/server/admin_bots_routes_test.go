@@ -84,8 +84,8 @@ func TestAdminBots_PlatformOverrideLifecycle(t *testing.T) {
 		t.Fatal("no platform.bot.created audit row carrying the bundle digest")
 	}
 
-	// ---- every tenant-context-free launch surface resolves the override ----
-	lb, err := s.resolveBotSource(adminCtx, "reviewer")
+	// ---- a launch with no team of its own resolves the override ----
+	lb, err := s.resolveBotSource(adminCtx, "", "reviewer")
 	if err != nil {
 		t.Fatalf("resolveBotSource: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestAdminBots_PlatformOverrideLifecycle(t *testing.T) {
 	if dw.Code != http.StatusOK {
 		t.Fatalf("delete = %d: %s", dw.Code, dw.Body.String())
 	}
-	if _, err := s.resolveBotSource(context.Background(), "reviewer"); err == nil {
+	if _, err := s.resolveBotSource(context.Background(), "", "reviewer"); err == nil {
 		t.Fatal("override must be gone after delete (fallback to baked = not-found here)")
 	}
 }

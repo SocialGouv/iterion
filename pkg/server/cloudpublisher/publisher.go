@@ -1725,6 +1725,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		ProjectPath:     spec.ProjectPath,
 		BotID:           spec.BotID,
 		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
+		// The tier the launch resolver actually served, in its own field:
+		// BotSourceTenant is empty for a baked bundle AND for a run that
+		// resolved no bot, so it cannot say which of the two happened.
+		BotSourceTier:   spec.BotSourceTier,
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
 		// Cap. 3 sharding fields — propagate to the persisted Run so

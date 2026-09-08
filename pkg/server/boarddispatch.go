@@ -1805,7 +1805,9 @@ func (s *Server) boardLaunchPreconditions(ctx context.Context, tenant string, is
 		return nil, boardLaunchContext{}, fmt.Errorf("card %s has no bot: %w", iss.ID, errCardUnlaunchable)
 	}
 	ctx = store.WithIdentity(ctx, tenant, boardDispatcherActor)
-	lb, err := s.resolveBotSource(ctx, iss.Bot)
+	// The card's own team owns the resolution: a team that forked this bot
+	// runs its fork here exactly as on the studio button.
+	lb, err := s.resolveBotSource(ctx, tenant, iss.Bot)
 	if err != nil {
 		return nil, boardLaunchContext{}, fmt.Errorf("card %s names bot %q: %w: %w", iss.ID, iss.Bot, err, errCardUnlaunchable)
 	}

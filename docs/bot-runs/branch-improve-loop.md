@@ -76,6 +76,102 @@ real git repositories (`bots/push_back_banked_branch_test.go`).
   `mergeQueueEntry`: an empty `autoMergeRequest` does not establish that the
   PR is absent from the queue.
 
+## 2026-09-08 — the campaign delivered, the tail never ran: a provider cap killed the run at minute 53 and the banked branch was the only receipt (run 01a07f7a)
+
+- Status: **partial** — the review work is complete and correct; the delivery
+  tail was never exercised, so this run says nothing about it.
+- Versions: bot resolved from the baked catalog on runner
+  `iterion-runner-devbox@sha256:001a8431…` (no platform override active) ·
+  server v3.115.1 (`f47ff6e1`) · repo manifest 1.7.0.
+- Method: `/billy` on PR #851 (the override-staleness guard), after three
+  rounds of hand-fixing on the same PR had produced six real Revi findings.
+  The decision to hand it over was the point of the run.
+- Result: **not converged — `failed_resumable` at 06:18Z**, 53 min in, $3.32,
+  on the provider's own 5-hour session limit inside the `campaign` node
+  (`rate_limited (claude_code): You've hit your session limit · resets 10am`).
+  Outputs stop after `delivery_reserve`/`delivery_deadline`; neither
+  `push_back_tool` nor `publish_verdict` ever ran. Six commits were banked on
+  `refs/heads/iterion/run-01a07f7a-…` @ `bf2aa2072` — the campaign commits in
+  stride, so the work survived the death of the run that made it. The pull
+  request itself **merged at 05:57Z, 21 min before he died**: its gate had gone
+  green at 05:34 on a pass that reported zero findings, and the last check
+  cleared while he was still reading. So his final commits were written against
+  a branch already squashed onto main, and none of them shipped with it.
+- Value: **high, and it is the anti-hand-fix argument made concrete.** Four
+  defects, all inside code I had written and twice reviewed:
+  a shadowed TEAM row was handed the PLATFORM remedy (`8ff4d37b3`); an
+  unreadable platform overlay was read as empty instead of unknown
+  (`9282bee42`); a platform row with no `version:` counted as absent rather
+  than present (`5c032a0a5`); the shadow fields were promised on the team
+  listing in prose but typed only on the admin one (`8096529c0`). Plus one
+  finding he chose to **document rather than fix** (`220ecbbf1`: the catalog
+  walk escapes `platformcfg`'s 3 s fetch timeout, and cancelling a blocked
+  filesystem walk would trade bounded blocking for a goroutine leak per TTL) —
+  the right call, argued in the commit body.
+- Findings / misses: the sharpest one is `bf2aa2072` — **two comments that my
+  own commits had inverted**. `41c38d43c` wrote "the dedup check runs BEFORE
+  the catalog walk"; `6f08d55f1` then moved the `LoadOrStore` after the
+  comparison *on purpose* and left the claim standing, so the file documented
+  the opposite of what it did. A reviewer reading one chunk at a time does not
+  catch that; a campaign that re-reads the whole branch does.
+- Engine hardening: none from the bot. The run surfaced a **diagnostics**
+  defect elsewhere — see the cap note below.
+- Lessons for next run:
+  - **The delivery tail is the fragile half, and a long campaign will keep
+    dying before it.** 53 min of campaign against a 5-hour provider window is
+    a coin flip. The banked branch is what saved this run, and it is reachable
+    only by someone who knows the ref convention (#773 again, from the other
+    side: here there was no verdict at all to name it).
+  - When the tail cannot run, the work is still deliverable by hand, but only
+    if it is **verified independently**: `go build ./...`, the full
+    `pkg/server` suite, and `task openapi:gen` producing no diff. That is a
+    better receipt than the bot's own verdict would have been.
+  - **Cancel the parked run before taking its commits.** A `failed_resumable`
+    campaign has a retry armed (1/5, here for ~10:10Z); left alone it resumes
+    onto a branch that has moved.
+  - **Re-read the pull request's state immediately before pushing — taking a
+    campaign's commits by hand means taking its guards too.** #851 merged at
+    05:57Z, while the campaign was still running; the operator had last read
+    `OPEN` at 05:36Z and pushed `bf2aa2072` onto the closed branch an hour
+    later. Nothing was lost (a merged branch still accepts commits, they are
+    simply orphaned) but the work needed a second pull request onto main.
+    This is the exact case `push_back_tool` interrogates the server about, and
+    it is worth restating why git alone cannot answer it: after a squash merge
+    the source branch still exists and its head is no ancestor of the base, so
+    a merged pull request reads locally as an open one. The bot's contract was
+    written from this failure; the hand path has no such contract, so the check
+    has to be deliberate.
+
+### The cap that stopped it — and the message that misdiagnoses it
+
+Worth recording because it cost a wrong recommendation. Eight runs parked the
+same morning with:
+
+```
+usage cap: provider rejected on the seven_day window (week cap 85%, hard),
+resets 2026-09-08T21:00:00Z
+```
+
+That reads as "your 85 % weekly cap fired". It did not. In
+[pkg/usagecap/usagecap.go](../../pkg/usagecap/usagecap.go) a provider refusal
+short-circuits the threshold test (`if !rejected && pct < wp.MaxPercent`), and
+the branch that prints this message is `rejected && pct == 0` — *the provider
+refused and gave no utilization number*. The `85%` is the configured cap
+printed beside a comparison that never happened. Raising it to 95 or 100 would
+change nothing: `Enabled()` is `MaxPercent > 0`, so only `0`/`off` disarms the
+policy, and that would merely move the failure from pre-flight to the API call.
+
+The real shape was two exhausted tiers, which the publisher log states plainly:
+the org forfait (`fp=2b36a854…`) refused on its **five_hour** window until
+10:00Z, falling through to the platform credential (`fp=53d82df9…`), refused on
+its **seven_day** window until 21:00Z. Both empty means no claude_code capacity
+at all. The outage therefore ends at **10:00Z**, not 21:00Z, and the retries
+armed for ~10:00–10:10Z target the right reopening.
+
+Read the `cloudpublisher: … SKIPPED … fp=` lines before the cap record: they
+name the credential, the window and the reopening. The run error names none of
+the three.
+
 ## 2026-09-06 — 1.6.0 dogfooded live: three runs, the third validates the reserve and finds a real bug in the code it reviewed (runs 01a07804, 01a0782f, 01a07840)
 
 - Status: **validated** (run 3) — after two runs that validated nothing about

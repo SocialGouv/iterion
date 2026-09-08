@@ -81,6 +81,13 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/bots/{slug}":    {},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
 
+		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
+		// payload, including the shadow fields docs/platform-bots.md promises
+		// on this endpoint. Left untyped, that promise had no spec behind it:
+		// documented-but-unverifiable is the exact shape this family exists
+		// to end.
+		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
+
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
 			response: struct {
@@ -142,6 +149,13 @@ func routeSchemas() map[string]routeOp {
 		},
 		"PATCH /api/v1/pipeline-board/tasks/{id}": {
 			request:  pipelineBoardUpdateRequest{},
+			response: native.Issue{},
+		},
+		// The reset body is optional; `fresh` is what makes the restart
+		// deterministic (the last-run pointer is dropped, so no launch
+		// authority can resume the run being discarded).
+		"POST /api/v1/pipeline-board/tasks/{id}/reset": {
+			request:  pipelineBoardResetRequest{},
 			response: native.Issue{},
 		},
 		"GET /api/v1/pipeline-board/tasks/{id}/dependency-graph": {response: DependencyGraphResponse{}},

@@ -75,6 +75,39 @@ export function canStopRun(card: PipelineBoardCard): boolean {
   return card.column_id === "in_progress" && !!card.run_id && !card.issue_id;
 }
 
+// A run status the engine will never move again on its own. Mirrors Go's
+// store.RunStatus.IsTerminal() — the predicate the server's own `fresh`
+// guard uses — so the menu never offers an action the backend would 409.
+const TERMINAL_RUN_STATUSES = new Set([
+  "finished",
+  "failed",
+  "failed_resumable",
+  "cancelled",
+]);
+
+export function isTerminalRunStatus(status: string | undefined): boolean {
+  return !!status && TERMINAL_RUN_STATUSES.has(status);
+}
+
+// canRetryFromZero: Retry, minus the ambiguity. Plain Retry only restages
+// the ticket and lets whoever claims it decide what that meant — the studio
+// admission loop mints a fresh run, a live `iterion dispatch` resumes the
+// dead one from its checkpoint. This offers the deterministic form: the
+// server drops the last-run pointer first, so neither authority can resume.
+//
+// Offered wherever Retry is (the two failed lanes), and only once the root
+// run has settled: the server refuses while anything in the ticket's tree is
+// non-terminal, and the tree it reads includes descendants this card cannot
+// see — so the affordance mirrors the guard it can evaluate and the 409
+// remains the authority for the rest.
+export function canRetryFromZero(card: PipelineBoardCard): boolean {
+  if (!card.issue_id || !card.run_id || card.failed !== true) return false;
+  if (card.column_id !== "needs_attention" && card.column_id !== "closed") {
+    return false;
+  }
+  return isTerminalRunStatus(card.status);
+}
+
 // canCloseCard: file this pipeline for good — cancel whatever is still
 // alive under it and move it to Closed. It is the release valve for the
 // needs-attention lane, where a card holds a concurrency slot until it is

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -202,6 +203,10 @@ func (r *Rewriter) Rewrite(ctx context.Context, m Mode, cmd string) (string, boo
 		args = append(args, strings.ReplaceAll(a, plugin.CommandPlaceholder, cmd))
 	}
 	c := exec.CommandContext(rctx, bin, args...)
+	// The rewrite budget is small (hundreds of ms) and sits in front of every
+	// shell call an agent makes, so a rewriter that forks and lingers would
+	// stall each of them. Cancellation takes the subtree.
+	proc.TerminateGroupOnCancel(c)
 	// Inherit the process env first so an operator who sets a rewriter's own
 	// vars (e.g. re-enabling telemetry) still wins, then apply the spec env.
 	c.Env = os.Environ()

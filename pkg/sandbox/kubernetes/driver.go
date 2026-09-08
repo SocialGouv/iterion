@@ -916,51 +916,116 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 // is the base, and per-call envs are layered on top via the env
 // command.
 //
-// LIMITATION: a `sh -c <huge-script>` cmd is passed as a single argv
-// element to `kubectl exec`, so a hundreds-of-KB interpolated script
-// can in principle trip the host's ARG_MAX (E2BIG) the same way the
-// docker driver did before its stdin-streaming fallback (see
-// [shouldStreamScriptViaStdin] in pkg/sandbox/docker/driver.go). Not
-// observed in practice yet — cloud runs interpolate smaller payloads
-// — so the kubernetes driver currently relies on the argv path. If a
-// real symptom appears, mirror the docker fix here using
-// `kubectl exec -i … -- sh -s` with the script wired to Cmd.Stdin.
+// A payload too large to survive the kernel's MAX_ARG_STRLEN cap on a
+// single argv element (32 pages = 128 KiB, no ulimit raises it) is
+// streamed through stdin as `kubectl exec --stdin … -- <shell> -s`
+// instead. Both exec shapes below can take that route, but they cross
+// the cap for different reasons — see [resolveStreamPayload].
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		return exec.CommandContext(ctx, "")
 	}
 
-	args := []string{"--namespace", r.namespace, "exec"}
-	if opts.Stdin != nil || opts.KeepStdinOpen {
-		args = append(args, "--stdin")
-	}
-	args = append(args, r.podName, "--container", "workload", "--")
-
 	// Per-call cwd is realised by `cd <dir> && exec ...` — kubectl
 	// exec doesn't take a --workdir flag. We avoid quoting issues
 	// by exec'ing through `sh -c` only when WorkDir is non-default;
 	// otherwise the pod's container.workingDir already applies.
-	workDir := opts.WorkDir
-	if workDir == "" || workDir == r.prepared.workspace {
+	customWorkDir := opts.WorkDir != "" && opts.WorkDir != r.prepared.workspace
+	var wrapped string
+	if customWorkDir {
+		wrapped = buildShellChdirExec(opts.WorkDir, cmd, opts.Env)
+	}
+
+	// Decide what is streamed BEFORE assembling argv, so the --stdin
+	// flag and the reader attached by cmdContext are derived from ONE
+	// value and cannot disagree. They must not: kubectl opens a stdin
+	// stream to the pod only when --stdin is present, so a payload
+	// attached without the flag is dropped on the floor — the in-pod
+	// `<shell> -s` reads EOF, runs nothing, and exits 0. A size failure
+	// would then present as a SUCCESSFUL empty run instead of a loud,
+	// retryable E2BIG.
+	streamPayload := resolveStreamPayload(cmd, wrapped, customWorkDir, opts)
+
+	args := []string{"--namespace", r.namespace, "exec"}
+	if opts.Stdin != nil || opts.KeepStdinOpen || streamPayload != "" {
+		args = append(args, "--stdin")
+	}
+	args = append(args, r.podName, "--container", "workload", "--")
+
+	switch {
+	case !customWorkDir:
 		// Default workingDir already set on the container; use direct
 		// argv form to avoid an extra shell layer (preserves signal
 		// semantics and exit codes).
 		args = appendEnvPrefix(args, opts.Env)
-		args = append(args, cmd...)
-		return r.cmdContext(ctx, args, opts)
+		if streamPayload != "" {
+			// `<shell> -s` reads the script from stdin. cmd[0] is "sh"
+			// or "bash" (guaranteed by the predicate), so a bash recipe
+			// keeps bash semantics. The env prefix still precedes it and
+			// applies to the shell that reads the script.
+			args = append(args, cmd[0], "-s")
+		} else {
+			args = append(args, cmd...)
+		}
+	case streamPayload != "":
+		// The wrapper is the whole script; `sh -s` reads it from stdin
+		// and it still exec's cmd[0] itself, so a bash recipe keeps bash.
+		args = append(args, "sh", "-s")
+	default:
+		args = append(args, "sh", "-c", wrapped)
 	}
+	return r.cmdContext(ctx, args, streamPayload, opts)
+}
 
-	// Custom workdir — wrap in `sh -c "cd <dir> && exec <cmd...>"`.
-	wrapped := buildShellChdirExec(workDir, cmd, opts.Env)
-	args = append(args, "sh", "-c", wrapped)
-	return r.cmdContext(ctx, args, opts)
+// resolveStreamPayload returns the exact bytes to feed the in-pod shell
+// through stdin, or "" to keep everything on argv. It is the single
+// decision point for the argv-vs-stdin choice; [Run.Command] derives
+// both the `--stdin` flag and the reader from this one value.
+//
+// Two distinct crossings, because the two exec shapes carry the payload
+// differently:
+//
+//   - Default workdir: cmd reaches kubectl unchanged, so the exposure is
+//     one oversized argv element. That is exactly the docker driver's
+//     case, so both share [sandbox.ShouldStreamScriptViaStdin] and can
+//     never drift apart.
+//   - Custom workdir: buildShellChdirExec concatenates EVERY argv
+//     element into one `sh -c` argument, so the wrapper can cross the
+//     cap even when no single element does (`prog --flag <60KB> --flag
+//     <60KB>`). Docker has no counterpart — it takes a native
+//     --workdir and never builds this — so the rule is k8s-only and
+//     deliberately shape-agnostic: any wrapper is a shell script, and
+//     one ending in `exec <prog>` runs identically under `sh -s` and
+//     `sh -c`.
+//
+// Both crossings refuse to touch a caller that owns stdin: an attached
+// reader (opts.Stdin) is never clobbered, and a caller that asked to
+// KEEP stdin open — pi_rpc, claw_backend and claude_code session mode
+// all wire cmd.StdinPipe() afterwards — must not have it commandeered,
+// which would fail their pipe with "exec: Stdin already set". Those
+// keep the argv path and its loud, retryable E2BIG.
+func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts sandbox.ExecOpts) string {
+	if !customWorkDir {
+		return sandbox.ShouldStreamScriptViaStdin(cmd, opts)
+	}
+	if opts.Stdin != nil || opts.KeepStdinOpen || len(wrapped) <= sandbox.MaxInlineArgBytes {
+		return ""
+	}
+	return wrapped
 }
 
 // cmdContext finalises the *exec.Cmd: ctx, args, stdin pipe, pgid.
-func (r *Run) cmdContext(ctx context.Context, args []string, opts sandbox.ExecOpts) *exec.Cmd {
+// streamPayload, when non-empty, is the script fed to the in-pod shell
+// through stdin. Its caller MUST have added `--stdin` to args from the
+// same value — kubectl drops an unannounced stdin silently — which is
+// why [Run.Command] decides both from one expression.
+func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload string, opts sandbox.ExecOpts) *exec.Cmd {
 	c := exec.CommandContext(ctx, r.driver.kubectl, args...)
-	if opts.Stdin != nil {
+	switch {
+	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
+	case streamPayload != "":
+		c.Stdin = strings.NewReader(streamPayload)
 	}
 	proc.DetachProcessGroup(c)
 	return c

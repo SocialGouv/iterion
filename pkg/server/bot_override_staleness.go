@@ -84,26 +84,18 @@ func numericVersionParts(v string) ([]int, bool) {
 	return out, true
 }
 
-// bakedVersions walks the catalog ONCE and returns slug → manifest version.
-//
-// Callers comparing several rows build it once and reuse it: resolving a
-// version per row would re-walk every configured bot root and re-parse every
-// manifest for each one, turning a listing into O(rows × catalog) filesystem
-// work. The version comes straight off botregistry.Entry, which already
-// mirrors the manifest field — loading the manifest again would re-read what
-// the walk just produced.
-//
-// "Baked" means whatever THIS server discovers on disk, deliberately the same
-// source every other bot lookup uses: the field answers "what would serve if
-// this override were removed", not "what some image ships". With no
-// --bots-path pinned that follows the live WorkDir, so on a local studio the
-// answer legitimately changes with the open project — which is the correct
-// answer to the question the field asks.
 // bakedCatalog is the cached slug → version projection of the on-disk catalog.
 // A struct rather than a bare map so "never read successfully" (nil) stays
 // distinguishable from "read, and it holds nothing" (empty map): reporting a
 // broken catalog as a clean inventory would be a lie told by the very endpoint
 // the runbook calls the check to run after a release.
+//
+// "Baked" means whatever THIS server discovers on disk, deliberately the same
+// source every other bot lookup uses: it answers "what would serve if this
+// override were removed", not "what some image ships". With no --bots-path
+// pinned that follows the live WorkDir, so on a local studio the answer
+// legitimately changes with the open project — which is the correct answer to
+// the question the field asks.
 type bakedCatalog struct {
 	versions map[string]string
 }
@@ -113,6 +105,18 @@ type bakedCatalog struct {
 // the verdict: a cached verdict would outlive the platform-override overlay it
 // was computed against. A walk failure propagates, so the resolver logs it and
 // serves the LAST-KNOWN map rather than an empty one.
+//
+// THE CONTEXT IS DELIBERATELY DISCARDED, and that is a documented deviation,
+// not an oversight: botregistry.List takes no ctx, so platformcfg's 3s
+// fetchTimeout — which bounds every OTHER resolver's fetch — does not bound
+// this one. A cold-start caller therefore blocks for however long the bot-root
+// walk takes (the walk is a LOCAL filesystem read; on a network mount that is
+// not a bound anyone chose). Wrapping the walk in a goroutine and selecting on
+// ctx would NOT fix it — it cannot cancel a blocked walk, only abandon it, and
+// since Resolver.Get re-arms the TTL after a failure a wedged mount would
+// strand a fresh goroutine every refresh interval: bounded blocking traded for
+// an unbounded leak. The real remedy is cooperative cancellation inside
+// botregistry (or one long-lived single-flight walker), both out of scope here.
 func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	return platformcfg.NewResolverFunc(func(context.Context) (*bakedCatalog, error) {
 		entries, err := botregistry.List(s.botListOptions())
@@ -129,6 +133,15 @@ func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	}, s.logger.Warn)
 }
 
+// bakedVersions serves the cached slug → version projection, with false when
+// the catalog has never been read successfully — the caller must then report
+// "unknown", never "nothing is shadowed".
+//
+// A caller comparing several rows takes the map ONCE and reuses it: resolving
+// a version per row would re-walk every configured bot root and re-parse every
+// manifest for each one, turning a listing into O(rows × catalog) filesystem
+// work. The returned map is the SHARED cached one — read-only for callers;
+// versionsBelow copies before overlaying the platform tier onto it.
 func (s *Server) bakedVersions() (map[string]string, bool) {
 	c := s.bakedCatalog.Get(context.Background())
 	if c == nil {
@@ -153,15 +166,36 @@ func (s *Server) versionsBelow(tenantID string) (map[string]string, bool) {
 	if tenantID == botsource.PlatformTenantID {
 		return baked, true
 	}
+	if s.botSources == nil {
+		// No stored tier at all on this deployment: the bake IS what serves
+		// below a team row, and there is nothing unknown about that.
+		return baked, true
+	}
 	set := s.platformBotSetCached()
 	if set == nil {
-		return baked, true
+		// A SUCCESSFUL read that found nothing returns a non-nil set with an
+		// empty map, so nil here is never "no platform rows" — it is a
+		// cold-start failure of the platform read. Answering "the bake" would
+		// measure a team row deliberately pinned to match an older platform
+		// override against the bake instead, and the warn path caches only
+		// POSITIVE verdicts, so that false line could never be superseded once
+		// the overlay recovered. Unknown, exactly as an unreadable catalog is.
+		return nil, false
 	}
 	// Copy: the cached catalog map is shared, and the platform overlay is
 	// per-tenant-tier.
-	out := make(map[string]string, len(baked)+len(set.manifests))
+	out := make(map[string]string, len(baked)+len(set.slugs))
 	for k, v := range baked {
 		out[k] = v
+	}
+	// A platform row SERVES for its slug whatever version it carries — so the
+	// baked version is never what a team row holds back once one exists. Drop
+	// it first, then put back only the versions actually known: a platform row
+	// with no manifest (a fork of a loose <name>.bot copies none) or an empty
+	// version leaves the slug UNORDERED, which reports nothing — rather than
+	// naming the bake, a bundle removing this team row would not serve.
+	for slug := range set.slugs {
+		delete(out, slug)
 	}
 	for slug, m := range set.manifests {
 		if m == nil {
@@ -209,8 +243,14 @@ var staleOverrideWarned sync.Map
 // otherwise serve a newer one. Deliberately observational: the launch proceeds
 // on the override.
 //
-// The dedup check runs BEFORE the catalog walk, so a repeat launch of the same
-// row costs a map lookup rather than a full discovery pass.
+// The dedup check runs LAST, after the comparison — deliberately, and not the
+// cheaper order. Consuming the key first would make the dedup a cache of the
+// VERDICT, and a negative verdict must stay recomputable: the platform overlay
+// a team row is measured against is a TTL cache that every `admin bots push`
+// refills, so a shadow can appear mid-process on inputs that changed under a
+// key already burned. What keeps the repeat launch cheap is that the expensive
+// half — the catalog walk — is itself TTL-cached (bakedCatalog), leaving a map
+// copy and an overlay merge per call rather than a discovery pass.
 func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVersion string) {
 	if s.logger == nil || strings.TrimSpace(storedVersion) == "" {
 		return
@@ -230,6 +270,19 @@ func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVe
 	if _, seen := staleOverrideWarned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",
-		slug, origin, tenantID, storedVersion, below, slug, slug)
+	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (%s)",
+		slug, origin, tenantID, storedVersion, below, shadowRemedy(tenantID, slug))
+}
+
+// shadowRemedy names the endpoints that clear the shadow FOR THIS ROW's tier.
+// The team and platform tiers are both first-class here (storedLaunchBot warns
+// for either origin), and they live at different endpoints: handing a team row
+// the platform remedy sends the operator to a 404 — or, for a super-admin, to
+// deleting the PLATFORM override of that slug, a different row whose removal
+// changes what every tenant is served.
+func shadowRemedy(tenantID, slug string) string {
+	if tenantID != botsource.PlatformTenantID {
+		return fmt.Sprintf("re-push it, or DELETE /api/teams/%s/bot-sources/%s", tenantID, slug)
+	}
+	return fmt.Sprintf("iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s", slug, slug)
 }

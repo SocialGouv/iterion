@@ -357,6 +357,9 @@
           "backend_pending_tool_use_id": {
             "type": "string"
           },
+          "backend_session_fingerprint": {
+            "type": "string"
+          },
           "backend_session_id": {
             "type": "string"
           },
@@ -1829,6 +1832,12 @@
             },
             "type": "array"
           },
+          "bot_source_tenant": {
+            "type": "string"
+          },
+          "bot_source_tier": {
+            "type": "string"
+          },
           "budget": {
             "$ref": "#/components/schemas/RunBudget"
           },
@@ -3152,6 +3161,17 @@
         },
         "required": [
           "ready"
+        ],
+        "type": "object"
+      },
+      "pipelineBoardResetRequest": {
+        "properties": {
+          "fresh": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fresh"
         ],
         "type": "object"
       },
@@ -8262,8 +8282,15 @@
       "get": {
         "operationId": "getTeamsByIdBotSources",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceListView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/bot-sources",
@@ -10914,9 +10941,26 @@
       ],
       "post": {
         "operationId": "postV1PipelineBoardTasksByIdReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks/{id}/reset",
