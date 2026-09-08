@@ -47,6 +47,32 @@ func TestBotResolutionSweep_NoRawRegistryReads(t *testing.T) {
 	})
 }
 
+// teamlessResolveAllowed lists the files that may resolve a bot with a
+// LITERAL empty team, with the reason. Every launch surface knows the team it
+// launches for; a hardcoded "" there drops the team tier for that surface
+// alone — the #871 defect, which survived because four launchers were assumed
+// to behave like the fifth.
+var teamlessResolveAllowed = map[string]string{
+	"resume_source.go": "the no-persisted-origin branch: a run whose BotSourceTenant is empty did NOT launch from a team row (the team branch above re-resolves that row by its own tenant)",
+}
+
+func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
+	// The bare `resolveBot(` arm catches the trigger spine, which calls the
+	// authority through an injected closure field rather than by name.
+	// Only a LITERAL "" is decidable statically; a variable that happens to
+	// be empty at run time is the caller's own contract to keep.
+	teamless := regexp.MustCompile(`resolveBot(?:Source|Tiered(?:Raw)?)?\([^,]+,\s*""`)
+	sweepServerFiles(t, func(name, body string) {
+		if !teamless.MatchString(body) {
+			return
+		}
+		if _, ok := teamlessResolveAllowed[name]; ok {
+			return
+		}
+		t.Errorf("%s resolves a bot with a hardcoded empty team — pass the team the launch is FOR (the card's, the subscription's, the schedule's, the webhook's) or add an allowlist entry saying why this surface has none", name)
+	})
+}
+
 // The webhook role constants are config now (platformcfg bot_roles): a site
 // that reads a constant directly re-hardcodes the role and silently ignores
 // the operator's override.

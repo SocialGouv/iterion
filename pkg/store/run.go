@@ -203,6 +203,20 @@ func EndedBecausePRClosed(r *Run) bool {
 // Bump this when making breaking changes to the Run struct.
 const RunFormatVersion = 1
 
+// The bot-resolution tiers a launch can be served by, persisted on
+// Run.BotSourceTier. The vocabulary lives here, next to the field, so the
+// resolver that produces it and the publisher that stores it cannot drift.
+const (
+	// BotSourceTierTeam — the launching team's own botsource row (a fork
+	// authored in the studio editor, or a bot only that team has).
+	BotSourceTierTeam = "team"
+	// BotSourceTierPlatform — a deployment-wide override under the
+	// reserved platform sentinel tenant.
+	BotSourceTierPlatform = "platform"
+	// BotSourceTierBaked — the catalog baked into the image.
+	BotSourceTierBaked = "baked"
+)
+
 // Run is the top-level metadata for a single workflow invocation.
 //
 // bson tags mirror the json tags exactly (same snake_case names) so a
@@ -786,6 +800,13 @@ type Run struct {
 	// (or the baked bundle), and a unique-slug team bot could not resume
 	// at all.
 	BotSourceTenant string `json:"bot_source_tenant,omitempty" bson:"bot_source_tenant,omitempty"`
+	// BotSourceTier names the tier that SERVED this launch — BotSourceTierTeam,
+	// BotSourceTierPlatform or BotSourceTierBaked. BotSourceTenant already
+	// identifies a stored ROW, but its empty value conflates "baked catalog"
+	// with "nothing recorded", so it cannot answer which tier a launch
+	// resolved through. Empty here means the launch predates the stamp or
+	// resolved no bot at all (a loose .bot).
+	BotSourceTier string `json:"bot_source_tier,omitempty" bson:"bot_source_tier,omitempty"`
 	// KeyOverrides pins a BYOK key per LLM provider (provider → api_key id)
 	// for this run, persisted so cloud resume re-resolves with the same
 	// keys. Set by webhook launches carrying per-webhook key bindings;

@@ -39,11 +39,25 @@ is CLI-first.
   compile check as team-authored bots (the pattern platform LLM
   credentials established). Hard limits: 6 MiB / 512 files per bundle.
 - **Resolution precedence** (most specific wins): *team botsource →
-  platform botsource → baked catalog FS*. The team tier applies only on
-  the studio launch surface (a team's experimental fork must not silently
-  hijack its schedules/webhooks); the platform tier applies everywhere a
-  bot id resolves, enforced by the central resolver in
-  `pkg/server/bot_resolver.go` and its static sweep test.
+  platform botsource → baked catalog FS*, on **every launch surface** —
+  the studio button, the board dispatcher, the trigger spine, a cloud
+  schedule and an inbound webhook — because each launcher knows the team
+  it launches for (the card's, the subscription's, the schedule's, the
+  webhook token's). A team that forks a bot runs its fork on its own
+  automation, and every launch records which tier served it
+  (`bot_source_tier`), so a fork is never a silent substitution. Enforced
+  by the central resolver in `pkg/server/bot_resolver.go` and its static
+  sweep tests — one of which fails a launch site that hardcodes an empty
+  team.
+- **The team tier is a LAUNCH tier, not a metadata tier.** Listings,
+  webhook command discovery, hand-off `produces:`/`consumes:` matching,
+  gate-var defaults and the retry-policy manifest read the platform
+  overlay over the baked catalog, with no tenant context — on every
+  surface, including the studio's. So a fork whose `manifest.yaml`
+  differs from its origin's runs as the fork but is *described* by the
+  origin's manifest. The exception is a caller holding the tier a run
+  actually resolved through (`bot_source_tenant`), which reads the team
+  row first (`teamBotManifest`).
 - **Launch**: the server resolves the override ONCE, materializes it to a
   temp dir, and compiles against it (prompts/ participate in IR and the
   workflow hash). The queue message (schema v9) carries a
@@ -60,8 +74,10 @@ is CLI-first.
   resume is REFUSED until you force it (and the auto-retry sweeper, which
   never forces, re-arms then abandons). Same for a deleted row.
 - **Resume re-resolves by ORIGIN, not by path**: the launch persists which
-  tier served the run (`bot_source_tenant` on the run doc — the team, the
-  `platform:` sentinel, or empty for baked). A resume/auto-retry reloads
+  tier served the run — `bot_source_tier` (`team` | `platform` | `baked`)
+  and, for the two stored tiers, the row's owner in `bot_source_tenant`
+  (the team id or the `platform:` sentinel; empty for baked, which is why
+  the tier is its own field). A resume/auto-retry reloads
   the SAME row at its current version; a row deleted mid-run fails the
   resume explicitly (relaunch, or resume with inline source). A run
   launched from the BAKED catalog picks up an override pushed since — the

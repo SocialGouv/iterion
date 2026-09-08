@@ -28,11 +28,11 @@ type serviceLauncher struct {
 	// Injected rather than reached for, because the launcher deliberately
 	// holds no *Server.
 	resolveRetry func(botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy
-	// resolveBot is the server's tiered bot resolution (platform override →
-	// baked catalog), injected for the same no-*Server reason. REQUIRED: a
-	// second, override-blind resolution path here is exactly what the
-	// resolver sweep forbids.
-	resolveBot func(ctx context.Context, botID string) (*launchBot, error)
+	// resolveBot is the server's tiered bot resolution (the subscription's
+	// team → platform override → baked catalog), injected for the same
+	// no-*Server reason. REQUIRED: a second, override-blind resolution path
+	// here is exactly what the resolver sweep forbids.
+	resolveBot func(ctx context.Context, teamID, botID string) (*launchBot, error)
 	// gate is the server's shared launch admission (suspend → concurrency →
 	// launch rate → monthly caps), injected for the same no-*Server reason.
 	// REQUIRED: a direct launch that skipped it would be the one cloud
@@ -83,7 +83,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	// store identity scopes the run and seals its credentials, and the auth
 	// identity is what the gate reads to find the caps to apply.
 	ctx = store.WithIdentity(ctx, plan.TenantID, triggerSpineActor)
-	lb, err := l.resolveBot(ctx, plan.BotID)
+	lb, err := l.resolveBot(ctx, plan.TenantID, plan.BotID)
 	if err != nil {
 		return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
 	}

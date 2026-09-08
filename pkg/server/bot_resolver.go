@@ -25,19 +25,21 @@ import (
 // (bot_resolver_sweep_test.go) forbids new direct botregistry reads in this
 // package.
 //
-// The team tier is deliberately consulted ONLY where an active-team context
-// exists (the studio launch surface): a team's experimental fork must not
-// silently hijack that team's schedules/webhooks. The platform tier applies
-// everywhere — overriding the deployment's catalog is its purpose.
+// The team tier applies on EVERY launch surface, because every launcher
+// knows the team it launches for: the card's, the subscription's, the
+// schedule's, the webhook token's. A team that forks a bot gets its fork on
+// its board cards and its webhook reviews as much as on the studio button —
+// and each launch RECORDS the tier that served it (launchBot.Tier →
+// LaunchSpec.BotSourceTier → Run.BotSourceTier), so a fork is never a silent
+// substitution. A surface with no team id has none to invent: it resolves
+// platform-over-baked and says so by passing an empty team.
 //
-// That exclusion is a CONTRACT, not an oversight, and it binds the metadata
-// reads below as much as the launch: effectiveEntries* / effectiveFindByName
-// are the tenant-context-FREE view (platform over baked), which is exactly the
-// resolution resolveBotSource performs on the lanes that read them — the
-// webhook hand-off matcher (produces:/consumes:), the command discovery, the
-// gate-var defaults. A team-authored bot is therefore invisible to those
-// lanes, on purpose: describing a fork the launch will never run would seed a
-// run from the wrong manifest. A caller that holds the tier a bot ACTUALLY
+// The METADATA reads below are a separate, narrower view:
+// effectiveEntries* / effectiveFindByName / botExists / platformBotManifest
+// are tenant-context-FREE (platform over baked) on every surface, including
+// the manual one. So a team fork's manifest is not what the hand-off matcher
+// (produces:/consumes:), the command discovery, the gate-var defaults or the
+// retry-policy resolution read. A caller that holds the tier a bot ACTUALLY
 // resolved through — a run's BotSourceTenant, stamped at launch — asks
 // teamBotManifest first instead.
 
@@ -56,6 +58,20 @@ type launchBot struct {
 	cleanupSnapshot func()
 }
 
+// Tier maps the resolution's origin onto the persisted tier vocabulary
+// (store.BotSourceTier*). One conversion site: Origin is the resolver's
+// internal word, BotSourceTier the operator-facing one.
+func (lb *launchBot) Tier() string {
+	switch lb.Origin {
+	case "team":
+		return store.BotSourceTierTeam
+	case "platform":
+		return store.BotSourceTierPlatform
+	default:
+		return store.BotSourceTierBaked
+	}
+}
+
 // Stamp applies the resolution onto a LaunchSpec.
 func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	spec.FilePath = lb.Path
@@ -64,14 +80,16 @@ func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	lb.StampBundle(spec)
 }
 
-// StampBundle stamps the compile dir and runner ref for callers that resolved
-// path/source separately (the studio derives an absolute path first). Nil-safe.
+// StampBundle stamps the compile dir, the runner ref and the tier that served
+// the launch, for callers that resolved path/source separately (the studio
+// derives an absolute path first). Nil-safe.
 func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 	if lb == nil {
 		return
 	}
 	spec.BundleDir = lb.BundleDir
 	spec.BotBundle = lb.Ref
+	spec.BotSourceTier = lb.Tier()
 }
 
 // Cleanup removes the materialized bundle dir, if any. Safe on nil.
@@ -194,11 +212,21 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 	}, nil
 }
 
-// resolveBotSource resolves a bot id for the tenant-context-free launch
-// surfaces (webhooks, schedules, board dispatch, triggers): platform store
-// first, then the baked catalog. Errors when the id resolves nowhere.
-func (s *Server) resolveBotSource(ctx context.Context, botID string) (*launchBot, error) {
-	lb, err := s.resolveBotTiered(ctx, "", botID, "")
+// resolveBotSource resolves a bot id for the AUTOMATED launch surfaces
+// (webhooks, schedules, board dispatch, triggers) through the full tier
+// order: teamID's own botsource row, then the platform store, then the baked
+// catalog. Errors when the id resolves nowhere.
+//
+// teamID is the tenant the launch is FOR — the card's, the subscription's,
+// the schedule's, the webhook token's. It is the one thing this chokepoint
+// cannot derive for itself, so it is a parameter and not a ctx read: nearby
+// code re-scopes the ctx for forge and secret lookups, and a tier resolved
+// off whichever tenant happened to be on the ctx would be a different
+// question from "who is this launch for". Empty is legitimate only for a
+// surface that genuinely has no tenant; the resolver sweep test keeps that
+// set closed.
+func (s *Server) resolveBotSource(ctx context.Context, teamID, botID string) (*launchBot, error) {
+	lb, err := s.resolveBotTiered(ctx, teamID, botID, "")
 	if err != nil {
 		return nil, err
 	}

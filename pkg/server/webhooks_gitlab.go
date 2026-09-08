@@ -1191,7 +1191,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		return errors.New("run service unavailable")
 	}
 	ctx = store.WithIdentity(ctx, sb.TenantID, "scheduler:"+sb.BotID)
-	lb, err := s.resolveBotSource(ctx, sb.BotID)
+	lb, err := s.resolveBotSource(ctx, sb.TenantID, sb.BotID)
 	if err != nil {
 		return err
 	}
@@ -1302,7 +1302,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
-	lb, err := s.resolveBotSource(ctx, botID)
+	lb, err := s.resolveBotSource(ctx, cfg.TenantID, botID)
 	if err != nil {
 		return "", err
 	}

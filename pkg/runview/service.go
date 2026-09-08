@@ -190,6 +190,12 @@ type LaunchSpec struct {
 	// BotBundle carries the immutable collection and its origin to the cloud
 	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef
+	// BotSourceTier names which tier served this launch (store.BotSourceTier*):
+	// team, platform or baked. Persisted on the run so a launch says which
+	// bundle it ran — BotBundle answers it only for the two STORED tiers, and
+	// a baked resolution is otherwise indistinguishable from no resolution at
+	// all. Empty for loose/inline launches.
+	BotSourceTier string
 	// KeyOverrides pins a specific BYOK key per LLM provider for this run
 	// (provider name → api_key id), overriding the org/user default in
 	// secrets.Resolve. Set by webhook launches that carry per-webhook key
