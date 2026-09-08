@@ -204,11 +204,15 @@ func TestACarriedSessionGetsOneChanceThenTheBudgetGoesToACleanAttempt(t *testing
 // is a SECOND writer, so a stale `true` can now ride into an element that
 // was handed no session at all.
 func TestFallThroughClearsTheOptionalFlagWithTheSessionItQualifies(t *testing.T) {
-	head := &poisonedSessionBackend{name: delegate.BackendClaudeCode}
-	tail := &resumeScriptedBackend{name: delegate.BackendClaw}
+	// SAME backend on both elements — a provider chain, the common shape —
+	// because the builder CACHES one task per backend NAME
+	// (executor_retry.go: `tasks := map[string]*delegate.Task{}`). Fall
+	// through to a DIFFERENT backend and `assemble` hands out a fresh
+	// task, where the reset is invisible: the first version of this test
+	// did exactly that and a mutant deleting the reset stayed green.
+	be := &poisonedSessionBackend{name: delegate.BackendClaudeCode}
 	reg := delegate.NewRegistry()
-	reg.Register(delegate.BackendClaudeCode, head)
-	reg.Register(delegate.BackendClaw, tail)
+	reg.Register(delegate.BackendClaudeCode, be)
 	e := newFallbackExecutor(reg, EventHooks{})
 
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
@@ -216,20 +220,21 @@ func TestFallThroughClearsTheOptionalFlagWithTheSessionItQualifies(t *testing.T)
 			return &delegate.Task{NodeID: "review"}, nil
 		})
 	_, _ = e.dispatchChain(context.Background(), "review", []chainElement{
-		{Label: "primary"},
-		{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5"},
+		{Label: "anthropic", Provider: "anthropic"},
+		{Label: "zai", Provider: "zai"},
 	}, "claude-opus-5", build)
 
-	if len(head.tasks) < 2 || head.tasks[1].SessionID != "s-poison" {
-		t.Fatalf("the head must have carried its session before falling through: %+v", head.tasks)
+	if len(be.tasks) < 3 {
+		t.Fatalf("want the head to retry then fall through: %d attempts", len(be.tasks))
 	}
-	if len(tail.tasks) == 0 {
-		t.Fatal("the chain never fell through to the tail")
+	if be.tasks[1].SessionID != "s-poison" {
+		t.Fatalf("the head must have carried its session before falling through: %+v", be.tasks[1])
 	}
-	if tail.tasks[0].SessionID != "" {
-		t.Fatalf("a session crossed backends: %q", tail.tasks[0].SessionID)
+	last := be.tasks[len(be.tasks)-1]
+	if last.SessionID != "" {
+		t.Fatalf("a session survived the fall-through: %q", last.SessionID)
 	}
-	if tail.tasks[0].SessionOptional {
-		t.Error("the optional flag crossed backends without the id it qualifies — the fall-through reset does not clear it")
+	if last.SessionOptional {
+		t.Error("the optional flag survived the fall-through without the id it qualifies — a stale true rides into an element handed no session at all")
 	}
 }
