@@ -478,6 +478,18 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		if errors.As(execErr, &needsInput) {
 			// NOT booked: the paused call resumes where it stopped, and its
 			// spend is the resumed call's to report.
+			//
+			// Same caveat as the retry branch below, and for the same
+			// reason: that holds on a backend with real session resume.
+			// claw never reads SessionID (it replays from the run's own
+			// store), and kimi/grok resume is not wired — on those the
+			// parked call's spend is DROPPED rather than deferred. The rule
+			// is the same conservative one: these totals are ENFORCEMENT, so
+			// an under-count is the safe error and a double-bill kills runs
+			// that still had budget. Booking here would double-bill every
+			// backend that does resume, which is the common case.
+			// TestFailedReInvocationBooksTheWholeSession pins the deferral's
+			// other half — that the resumed call books the whole session.
 			ierr := e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput, 0)
 			if ierr == nil {
 				// interaction: llm / llm_or_human auto-answered and
