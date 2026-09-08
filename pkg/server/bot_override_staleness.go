@@ -230,6 +230,19 @@ func (s *Server) warnIfOverrideShadowsNewerBake(tenantID, slug, origin, storedVe
 	if _, seen := staleOverrideWarned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s)",
-		slug, origin, tenantID, storedVersion, below, slug, slug)
+	s.logger.Warn("bot %q serves the %s override of tenant %s at version %s while this deployment would otherwise serve %s — the override wins by design, so the newer bundle will not serve until it is re-pushed or removed (%s)",
+		slug, origin, tenantID, storedVersion, below, shadowRemedy(tenantID, slug))
+}
+
+// shadowRemedy names the endpoints that clear the shadow FOR THIS ROW's tier.
+// The team and platform tiers are both first-class here (storedLaunchBot warns
+// for either origin), and they live at different endpoints: handing a team row
+// the platform remedy sends the operator to a 404 — or, for a super-admin, to
+// deleting the PLATFORM override of that slug, a different row whose removal
+// changes what every tenant is served.
+func shadowRemedy(tenantID, slug string) string {
+	if tenantID != botsource.PlatformTenantID {
+		return fmt.Sprintf("re-push it, or DELETE /api/teams/%s/bot-sources/%s", tenantID, slug)
+	}
+	return fmt.Sprintf("iterion remote admin bots push bots/%s, or DELETE /api/admin/bots/%s", slug, slug)
 }
