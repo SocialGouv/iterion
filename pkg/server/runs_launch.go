@@ -464,6 +464,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 	}
+	// The tenant the bot resolution above ran under, so the retry chain reads
+	// the bot layer from the tier that will actually serve this launch.
+	retryID, _ := auth.FromContext(r.Context())
+	retryTeamID := retryID.TeamID
 
 	spec := runview.LaunchSpec{
 		FilePath:          absPath,
@@ -490,7 +494,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// `retry: usage_window: off` be auto-retried anyway whenever a
 		// human pressed Launch — a declared directive silently violated on
 		// the one path where the author is watching.
-		RetryPolicy:        s.resolveRunRetryPolicy(botID),
+		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,

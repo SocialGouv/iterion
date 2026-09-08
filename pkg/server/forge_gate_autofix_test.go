@@ -794,14 +794,14 @@ func TestReviewFixerIsDerivedNotNamed(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = writeConsumerBotFixture(t, "some-other-fixer", "prior_review")
 
-	if got := s.reviewFixerFor(forge.RepoIntegration{BotIDs: []string{"some-other-fixer"}}); got != "some-other-fixer" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{BotIDs: []string{"some-other-fixer"}}); got != "some-other-fixer" {
 		t.Errorf("reviewFixerFor = %q, want the bot that declares it consumes a review", got)
 	}
 	// A bot the repo has not enabled is not a candidate, however it is declared.
-	if got := s.reviewFixerFor(forge.RepoIntegration{BotIDs: []string{"unrelated"}}); got != "" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{BotIDs: []string{"unrelated"}}); got != "" {
 		t.Errorf("reviewFixerFor = %q, want none — that bot is not enabled on the repo", got)
 	}
-	if got := s.reviewFixerFor(forge.RepoIntegration{}); got != "" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{}); got != "" {
 		t.Errorf("reviewFixerFor = %q, want none", got)
 	}
 }
