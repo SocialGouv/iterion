@@ -1017,6 +1017,15 @@ const facadeFingerprintPrefix = "facade:"
 // answers whatever model id it is asked for with the model it aliases it
 // to, so declared and effective ids agree and emitModelDrift stays silent;
 // the fingerprint is the only evidence. Once per node and facade.
+//
+// Called from the FINISHED path only — the event's name is a claim that
+// the node was served, so a delegation that ended in an error must not
+// raise it. The fingerprint is the routing decision taken before the
+// call, not proof of an answer: claude_code stamps it on the results it
+// returns WITH an error too (a rendered failure, an auth/quota subtype),
+// so emitting on that path would report a node that failed as served.
+// The attempted route is not lost — recordServed still persists it on
+// NodesServed, the same way a failed attempt's Model is kept (#474).
 func (h *storeHooks) emitFacadeRouting(nodeID string, info DelegateInfo) {
 	if !strings.HasPrefix(info.Fingerprint, facadeFingerprintPrefix) {
 		return
@@ -1144,7 +1153,9 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
 	h.emitModelDrift(nodeID, info)
-	h.emitFacadeRouting(nodeID, info)
+	// No emitFacadeRouting here: that event asserts the node WAS served,
+	// and this delegation failed. See its doc comment — the attempted
+	// facade route still reaches the run record through recordServed.
 	// A failed attempt typically has no EffectiveModel. Last-write-wins
 	// would blank a model recorded by an earlier success — the fact a
 	// failed run.json must still keep (#474). Only persist when the
