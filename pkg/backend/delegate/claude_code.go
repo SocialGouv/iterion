@@ -690,13 +690,6 @@ func errorBodyObject(obj map[string]any) bool {
 	return len(obj) == 1 || obj["type"] == "error"
 }
 
-// typedFailure returns err with the delegation's spend stamped on the result
-// first: a typed failure still spent Pass 1 and whatever passes ran, and the
-// caps, the fallback chain's carried spend and a donor's ledger read the
-// cost from the output map — an unallocated map records nothing. Callers
-// hoist the call into its own statement before returning `result`: Go leaves
-// the order between a plain operand and a call in one return list
-// unspecified, and the stamp must land before the copy is taken.
 // turnFinished reports whether OnTurnFinished has a finished turn to
 // announce.
 //
@@ -710,6 +703,13 @@ func turnFinished(err error, result Result) bool {
 	return err == nil && result.SessionID != ""
 }
 
+// typedFailure returns err with the delegation's spend stamped on the result
+// first: a typed failure still spent Pass 1 and whatever passes ran, and the
+// caps, the fallback chain's carried spend and a donor's ledger read the
+// cost from the output map — an unallocated map records nothing. Callers
+// hoist the call into its own statement before returning `result`: Go leaves
+// the order between a plain operand and a call in one return list
+// unspecified, and the stamp must land before the copy is taken.
 func typedFailure(result *Result, task Task, totalIn, totalOut int, err error, rms ...*claudesdk.ResultMessage) error {
 	if result.Output == nil {
 		result.Output = map[string]any{}
