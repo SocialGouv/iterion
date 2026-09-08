@@ -329,6 +329,47 @@ func TestBotSourceListing_AnUnreadableCatalogIsNotACleanInventory(t *testing.T) 
 	}
 }
 
+// A platform row that carries NO version still serves — storedLaunchBot asks
+// only for a non-empty main.bot, and forking a loose <name>.bot copies no
+// manifest at all (POST /api/admin/bots/{slug}/fork reaches exactly that).
+// Reading such a row as absent left the BAKED version standing as "what would
+// serve below this team row", so the team row was reported as shadowing a
+// bundle that removing it would not serve.
+func TestVersionsBelow_AnUnversionedPlatformRowIsPresentNotAbsent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"no manifest at all", map[string]string{botsource.MainBotFile: testBotMain}},
+		{"a manifest with no version", map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: reviewer\n",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := newBotSourceTestServer(t)
+			seedBakedBot(t, s, "reviewer", "0.8.0")
+			pctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+			if _, err := s.botSources.Create(pctx, botsource.BotSource{
+				TenantID: botsource.PlatformTenantID,
+				Slug:     "reviewer",
+				Files:    tc.files,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.invalidatePlatformBots()
+
+			below, shadowed := shadowsNewerVersionFor(t, s, "t1", "reviewer", "0.7.0")
+			if shadowed {
+				t.Errorf("the platform row serves here, so nothing orderable is shadowed; got below=%q", below)
+			}
+			if below != "" {
+				t.Errorf("shadowed_version must not name the bake, which removing the team row would not serve; got %q", below)
+			}
+		})
+	}
+}
+
 // A team row is measured against the platform overlay, so an overlay that
 // could not be READ is unknown — not "no platform rows". Answering "the bake"
 // there reports a team row deliberately pinned to match an older platform
