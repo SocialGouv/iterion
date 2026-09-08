@@ -430,6 +430,7 @@ export type PassthroughEventType =
   | "delegate_stall"
   | "model_fallback"
   | "model_drift"
+  | "model_served_via_facade"
   | "session_degraded"
   | "sandbox_skipped"
   | "sandbox_started"

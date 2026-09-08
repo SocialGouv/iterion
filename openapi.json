@@ -1221,6 +1221,9 @@
           "declared_model": {
             "type": "string"
           },
+          "fingerprint": {
+            "type": "string"
+          },
           "max_output_tokens": {
             "type": "integer"
           },

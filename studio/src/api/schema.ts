@@ -5790,6 +5790,7 @@ export interface components {
             backend: string;
             context_window?: number;
             declared_model?: string;
+            fingerprint?: string;
             max_output_tokens?: number;
             model?: string;
         };
