@@ -41,6 +41,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -109,6 +110,11 @@ type Config struct {
 	// whose window is CLOSED, which is what lets the run fall through to
 	// the next credential tier instead of parking for a reset.
 	UsageCaps usagecap.Store
+	// PlatformCredentialAudience, when non-nil, gates who may draw on the
+	// PLATFORM credential tier. A nil resolver — or a deployment that never
+	// wrote the record — admits every tenant, which is the behaviour before
+	// the family existed.
+	PlatformCredentialAudience *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	// CapPolicy, when non-nil, is the operator's usage-cap posture
 	// (pkg/usagecap PolicySource). The walk consults it over the SAME
 	// readings as the refusal skip: a credential the runner's pre-flight
@@ -185,6 +191,7 @@ type Publisher struct {
 	credPool             *credpool.Broker
 	usageCaps            usagecap.Store
 	capPolicy            usagecap.PolicySource
+	platformAudience     *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	trust                usagecap.Trust
 	usageProbe           UsageProbe
 	identity             TeamResolver
@@ -282,6 +289,7 @@ func New(cfg Config) (*Publisher, error) {
 		credPool:             cfg.CredPool,
 		usageCaps:            cfg.UsageCaps,
 		capPolicy:            cfg.CapPolicy,
+		platformAudience:     cfg.PlatformCredentialAudience,
 		trust:                cfg.UsageCapTrust.Normalized(),
 		usageProbe:           cfg.UsageProbe,
 		identity:             cfg.Identity,
@@ -672,7 +680,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
+		p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
 	}
 	res.skippedReopensAt = skips.earliest
 
@@ -974,8 +982,11 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
+		return
+	}
+	if !p.platformAudienceAllows(ctx, runID, orgID, tenantID) {
 		return
 	}
 	taken := map[string]bool{}
