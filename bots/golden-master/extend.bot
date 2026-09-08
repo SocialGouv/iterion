@@ -583,9 +583,14 @@ tool extend_verify:
     report["acted_blobs"] = "\n".join(blobs)
 
     # 3. Additions-only, decided by the harness's own code — the same code
-    #    that refuses at the gate, and called with the same provenance the
-    #    parent will hand it (this run's commits and blobs), so passing here
-    #    and failing there is not a state that exists.
+    #    that refuses at the gate, and called with this run's commits and
+    #    blobs, so passing here and failing there is not a state that exists.
+    #
+    #    Not identical to the parent's call, and deliberately: `GM_ACTED_IDS`
+    #    is unknown until the listing below says what is STILL pending, and
+    #    the id clause only ever EXEMPTS. Absent, it is the stricter call —
+    #    this check can refuse what the parent would certify, never the
+    #    reverse, which is the direction that keeps the sentence above true.
     verdict = harness("extend-verify", GM_BASE=base,
                       GM_ACTED_COMMITS=report["acted_commits"],
                       GM_ACTED_BLOBS=report["acted_blobs"])
