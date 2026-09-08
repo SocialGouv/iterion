@@ -5,9 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"strings"
+	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 // fakeJWT builds an unsigned three-segment token carrying claims. The
@@ -103,9 +102,29 @@ func TestCodexOAuthClientID_MalformedTokensAreEmptyNotFatal(t *testing.T) {
 }
 
 // The defect this closes: with no client id configured, a codex refresh
-// used to fail before it started. It must now reach the network with the
-// id the credential names.
+// failed before it started. It must now reach the token endpoint carrying
+// the id the credential names.
+//
+// The oracle is the client_id that ARRIVES on the wire, not the shape of
+// an error. Asserting "the failure is no longer the 'not configured' one"
+// looks equivalent and is not: every other failure — including the
+// derivation returning nothing and refusing one line later — satisfies it
+// too, so the test passes with the whole feature removed.
 func TestRefreshRecord_CodexDerivesItsClientIDWhenUnconfigured(t *testing.T) {
+	freshRetrySchedule(t)
+	var gotClientID, gotGrant, gotRefresh string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		gotClientID, gotGrant = r.PostForm.Get("client_id"), r.PostForm.Get("grant_type")
+		gotRefresh = r.PostForm.Get("refresh_token")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"codex-newaccess1234567890","refresh_token":"rt.new","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", srv.URL+"/oauth/token")
+
 	sealer, err := NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
@@ -117,13 +136,51 @@ func TestRefreshRecord_CodexDerivesItsClientIDWhenUnconfigured(t *testing.T) {
 	}
 	rec := OAuthRecord{UserID: "alice", Kind: OAuthKindCodex, SealedPayload: sealed}
 
-	// No configured id. Refusing offline is the old behaviour; what must
-	// not survive is the "not configured" refusal.
-	err = RefreshRecord(context.Background(), sealer, &http.Client{Timeout: time.Millisecond}, "", "", &rec)
-	if err == nil {
-		t.Skip("refresh unexpectedly succeeded offline; nothing to assert")
+	// No configured id anywhere: only the credential can supply one.
+	if err := RefreshRecord(context.Background(), sealer, pinnedClient(t, srv.URL), "", "", &rec); err != nil {
+		t.Fatalf("RefreshRecord with a derivable client id: %v", err)
 	}
-	if strings.Contains(err.Error(), "not configured") {
-		t.Fatalf("codex refresh still refuses for a missing configured id: %v", err)
+	if gotClientID != "app_derived" {
+		t.Errorf("client_id on the wire = %q, want %q — the id was not taken from the credential",
+			gotClientID, "app_derived")
+	}
+	if gotGrant != "refresh_token" || gotRefresh != "rt.test" {
+		t.Errorf("grant_type=%q refresh_token=%q, want refresh_token/rt.test", gotGrant, gotRefresh)
+	}
+}
+
+// An explicitly configured id stays the operator's override: it is the
+// escape hatch for a credential whose own claim is wrong, so a derivation
+// that quietly outranked it would remove the only way to correct one.
+func TestRefreshRecord_CodexPrefersTheConfiguredClientID(t *testing.T) {
+	freshRetrySchedule(t)
+	var gotClientID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		gotClientID = r.PostForm.Get("client_id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"codex-newaccess1234567890","refresh_token":"rt.new","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", srv.URL+"/oauth/token")
+
+	sealer, err := NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	blob := codexBlob(t, fakeJWT(t, map[string]any{"client_id": "app_derived"}), "")
+	sealed, err := SealOAuthPayload(sealer, "alice", OAuthKindCodex, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	rec := OAuthRecord{UserID: "alice", Kind: OAuthKindCodex, SealedPayload: sealed}
+
+	if err := RefreshRecord(context.Background(), sealer, pinnedClient(t, srv.URL), "", "app_configured", &rec); err != nil {
+		t.Fatalf("RefreshRecord: %v", err)
+	}
+	if gotClientID != "app_configured" {
+		t.Errorf("client_id on the wire = %q, want the configured %q", gotClientID, "app_configured")
 	}
 }
