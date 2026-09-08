@@ -78,7 +78,23 @@ func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Iden
 }
 
 // teamFundsItsOwnRuns reports whether the team holds a credential of its
-// own — a team-scoped BYOK key or a team forfait — for any wire.
+// own — a team-scoped BYOK key or a team forfait — for ANY wire.
+//
+// Any wire, not the wires the requested bots will actually use, and that is
+// a deliberate limit rather than an oversight: the gate holds bot IDs, and
+// deciding which providers they resolve to would mean loading every bundle
+// and re-deriving its routes at provisioning time, for an answer the next
+// `--var model=…` invalidates. A team holding only an OpenAI key can
+// therefore provision Anthropic-only automation without review.
+//
+// What that costs is bounded, because this flag governs REVIEW, not
+// spending. Whether such a run may draw on the org's key is the org's
+// CredentialAudience — which admits nobody by default and is the org
+// admin's explicit act — and whether it may draw on the deployment's is the
+// platform audience. Pairing `shared_credentials` with an enforced platform
+// audience is what makes "BYOK is free, shared keys are reviewed" hold at
+// the wire level; the flag alone expresses "brings a credential", which is
+// coarser and says so.
 //
 // USER-scoped keys deliberately do not count. The owner of a webhook,
 // board or schedule launch is a synthetic identity with no personal

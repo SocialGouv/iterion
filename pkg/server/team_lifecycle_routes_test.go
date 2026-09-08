@@ -10,6 +10,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // Team lifecycle. The three properties that make it safe: a suspension is
@@ -367,5 +369,52 @@ func TestTeamLifecycle_orgAudienceAndSettingsDoNotClobberEachOther(t *testing.T)
 	}
 	if o.EffectiveProvisionApprovalScope() != identity.ProvisionApprovalSharedCredentials {
 		t.Errorf("approval scope = %q, want it preserved", o.EffectiveProvisionApprovalScope())
+	}
+}
+
+// The residue list must cover what still FIRES after the team is gone. A
+// standalone webhook is the sharp case: its config authenticates on its own
+// token, so deliveries keep arriving for a tenant nobody owns.
+func TestTeamLifecycle_deleteRefusesATeamWithAWebhook(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	s.webhookConfigs = webhooks.NewMemoryConfigStore()
+	if err := s.webhookConfigs.Create(withTenantCtx("t2"), webhooks.Config{
+		ID: "wh1", TenantID: "t2", Name: "hook", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleDeleteTeam(w, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t2", "", "t2", ""))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete a team holding a webhook: code=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "webhook") {
+		t.Errorf("the refusal does not name the webhook: %s", body)
+	}
+}
+
+// And what still holds a CREDENTIAL: a team forfait left behind is a sealed
+// subscription belonging to a tenant nothing can reach.
+func TestTeamLifecycle_deleteRefusesATeamWithASharedForfait(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	s.oauthStore = secrets.NewMemoryOAuthStore()
+	sealed, err := secrets.SealOAuthPayload(s.sealer, secrets.OrgOwnerKey("t2"), secrets.OAuthKindClaudeCode, []byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.oauthStore.Upsert(withTenantCtx("t2"), secrets.OAuthRecord{
+		UserID: secrets.OrgOwnerKey("t2"), Kind: secrets.OAuthKindClaudeCode, SealedPayload: sealed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleDeleteTeam(w, teamReq(orgAdminCtx(), "DELETE", "/api/teams/t2", "", "t2", ""))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete a team holding a forfait: code=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "forfait") {
+		t.Errorf("the refusal does not name the forfait: %s", body)
 	}
 }

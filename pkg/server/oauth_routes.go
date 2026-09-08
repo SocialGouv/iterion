@@ -140,6 +140,15 @@ func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind 
 	switch {
 	case ownerKey == secrets.PlatformOwnerKey:
 		s.auditPlatform(r, "", "platform.llm_oauth."+verb, "platform_llm_oauth", string(kind), meta)
+	case secrets.IsOrgTierScope(ownerKey):
+		// The ORG's own shared forfait. Without this case it matched none of
+		// the branches: a successful mutation produced NO event at all, and a
+		// refusal fell through to the personal one and was keyed on the
+		// actor's active team — an org credential filed as somebody's own.
+		// (No collision with OrgOwnerPrefix below: that is "org:", this is
+		// "orgtier:".) The api-key twin routes the same way in auditApiKey.
+		orgID, _ := secrets.OrgIDFromTierScope(ownerKey)
+		s.auditOrg(r, orgID, "org.llm_oauth."+verb, "org_llm_oauth", string(kind), meta)
 	case strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix):
 		s.auditTenant(r, strings.TrimPrefix(ownerKey, secrets.OrgOwnerPrefix), "oauth.org."+verb, "oauth_forfait", string(kind), meta)
 	case verb == "refused":
