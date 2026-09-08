@@ -593,7 +593,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// tier (a second forfait, the pool) could have served it
 				// immediately. Skipping it here is what makes the tiers a
 				// FALLBACK CHAIN rather than a fixed first choice.
-				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec, payload); !until.IsZero() {
+				meterScope := usagecap.ScopePlatform
+				if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
+					meterScope = usagecap.TenantScope(tenantID)
+				}
+				if until, why := p.forfaitWindowClosed(ctx, meterScope, ownerKey, rec, payload); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 					skips.note(until)
@@ -625,7 +629,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    neither takes a stranger's donation while either is available.
 	//    Fills per WIRE FAMILY like the platform tier, so an org key can
 	//    never shadow a credential the team already holds in another shape.
-	p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips)
+	p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
 
 	// 5. Mutualised pool — the LAST resort, and only for a run that has no
 	//    credential of its own at all. Spending a contributor's lent
@@ -710,6 +714,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			if sk.platform {
 				bundle.PlatformSourced[string(prov)] = true
 			}
+			if sk.org {
+				bundle.OrgSourced[string(prov)] = true
+			}
 			taken[secrets.WireFamily(string(prov))] = true
 			p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov)
 		}
@@ -719,6 +726,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			bundle.OAuthCredentials[kind] = sf.payload
 			setOAuthFingerprint(&bundle, kind, sf.fp)
+			if sf.org {
+				bundle.OrgSourced[kind] = true
+			}
 			taken[secrets.WireFamily(kind)] = true
 			p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
 		}
@@ -1133,6 +1143,9 @@ var poolWantOrder = func() []credpool.Credential {
 type skippedForfait struct {
 	payload []byte
 	fp      string
+	// org marks a forfait the ORG tier passed over, so a restore re-stamps
+	// the provenance the metering scope depends on.
+	org bool
 }
 
 // skippedAPIKey is a provider's refused-but-only key, held back by the
@@ -1144,6 +1157,10 @@ type skippedAPIKey struct {
 	keyID       string
 	fingerprint string
 	platform    bool
+	// org marks a key the ORG tier passed over — same role as platform:
+	// a restored credential must carry the provenance its meter keys on,
+	// or one org subscription is charged once per borrowing team.
+	org bool
 }
 
 // providersWithoutKey returns the subset of provs that filled no API-key
@@ -1189,11 +1206,19 @@ const usageCapLookupTimeout = 5 * time.Second
 //   - a STALE reading ⇒ usable (Fresh already encodes "past its own
 //     reset", so a window that reopened stops blocking by itself);
 //   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
-func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
+//
+// meterScope is the usage-cap ledger this credential's readings live in.
+// It is a PARAMETER and no longer derived from the tenant id, because the
+// derivation could only express two of the three answers: a reserved scope
+// wrapped in TenantScope produces a key nothing ever writes
+// ("tenant:orgtier:<org>" while the runner meters "org:<org>"), so the
+// window-skip read a ledger that was always empty and never skipped an
+// exhausted credential — the precise failure the skip exists to prevent.
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
 	backend := usageBackendForKind(rec.Kind)
-	scope := usagecap.ScopePlatform
-	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
-		scope = usagecap.TenantScope(tenantID)
+	scope := meterScope
+	if scope == "" {
+		scope = usagecap.ScopePlatform
 	}
 	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
 	if !until.IsZero() || p.usageProbe == nil || backend == "" || rec.Fingerprint == "" || len(payload) == 0 {

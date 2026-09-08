@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -197,6 +198,13 @@ func (s *Server) handleSetTeamStatus(w http.ResponseWriter, r *http.Request) {
 // grace window. Deleting a team by hand here would have to reimplement it,
 // and the one failure mode that matters is silent: a forge integration
 // whose webhook keeps firing into a tenant that no longer exists.
+//
+// It covers what still FIRES or still holds a CREDENTIAL, which is the set
+// whose survival is dangerous rather than merely untidy. What it does NOT
+// cover, and deliberately: inert history (finished runs, board cards). The
+// store exposes an ACTIVE-run count and no total, so blocking on history
+// would mean inventing a seam for a case the org purge already serves —
+// delete the org, not the team, when a team has a past worth removing.
 func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 	tctx := store.WithTenant(ctx, teamID)
 	var out []string
@@ -226,6 +234,42 @@ func (s *Server) teamResidue(ctx context.Context, teamID string) []string {
 			out = append(out, fmt.Sprintf("api keys (unreadable: %v)", err))
 		} else if len(keys) > 0 {
 			out = append(out, fmt.Sprintf("%d api key(s)", len(keys)))
+		}
+	}
+	// Anything that still FIRES after the team is gone. A webhook is the
+	// sharp one: its config is authenticated by its own token, so a delivery
+	// keeps arriving for a tenant that no longer exists (the intake refuses
+	// it now, but a surface that must be refused is one that should not have
+	// been left behind).
+	if s.webhookConfigs != nil {
+		if hooks, err := s.webhookConfigs.ListByTenant(tctx, teamID); err != nil {
+			out = append(out, fmt.Sprintf("webhooks (unreadable: %v)", err))
+		} else if len(hooks) > 0 {
+			out = append(out, fmt.Sprintf("%d inbound webhook(s)", len(hooks)))
+		}
+	}
+	// Anything that still holds a CREDENTIAL. Left behind, these are sealed
+	// secrets belonging to a tenant nothing can reach — the same leak the
+	// org purge sweeper exists to prevent, arrived at by a different door.
+	if s.genericSecrets != nil {
+		if secs, err := s.genericSecrets.ListByTeam(tctx, teamID, ""); err != nil {
+			out = append(out, fmt.Sprintf("secrets (unreadable: %v)", err))
+		} else if len(secs) > 0 {
+			out = append(out, fmt.Sprintf("%d named secret(s)", len(secs)))
+		}
+	}
+	if s.oauthStore != nil {
+		if recs, err := s.oauthStore.ListByUser(tctx, secrets.OrgOwnerKey(teamID)); err != nil {
+			out = append(out, fmt.Sprintf("team forfaits (unreadable: %v)", err))
+		} else if len(recs) > 0 {
+			out = append(out, fmt.Sprintf("%d shared forfait connection(s)", len(recs)))
+		}
+	}
+	if s.botSources != nil {
+		if bots, err := s.botSources.ListByTenant(tctx, teamID); err != nil {
+			out = append(out, fmt.Sprintf("team bots (unreadable: %v)", err))
+		} else if len(bots) > 0 {
+			out = append(out, fmt.Sprintf("%d team-authored bot(s)", len(bots)))
 		}
 	}
 	return out

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -138,11 +139,25 @@ func (s *Server) webhookAuth(provider webhooks.Provider, next http.Handler) http
 		// the launch gate downstream reuses it instead of re-fetching.
 		var loadedTeam *identity.Team
 		if st := s.authStore(); st != nil {
-			if t, terr := st.GetTeam(r.Context(), cfg.TenantID); terr == nil {
-				if !t.CanLaunch() {
-					httpError(w, http.StatusForbidden, "org suspended")
-					return
-				}
+			t, terr := st.GetTeam(r.Context(), cfg.TenantID)
+			switch {
+			case errors.Is(terr, identity.ErrNotFound):
+				// A tenant that no longer exists is not "no constraint to
+				// check" — it is a webhook outliving its team. Falling
+				// through left a signed delivery launching runs nobody owns
+				// and skipping the team-keyed half of the launch gate, which
+				// is worse than the suspension this branch guards.
+				httpError(w, http.StatusForbidden, "tenant no longer exists")
+				return
+			case terr != nil:
+				// A degraded identity read must not open the door either;
+				// the caller is a machine that will redeliver.
+				httpError(w, http.StatusServiceUnavailable, "tenant lookup unavailable")
+				return
+			case !t.CanLaunch():
+				httpError(w, http.StatusForbidden, "org suspended")
+				return
+			default:
 				loadedTeam = &t
 			}
 		}
