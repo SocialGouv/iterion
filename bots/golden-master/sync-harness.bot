@@ -370,7 +370,15 @@ tool sync_harness:
             data = None
             headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
             if fields:
-                if any(is_file_part(v) for v in fields.values()):
+                # An object value is how a corpus declares a FILE, and the only
+                # meaning it has here. The route is chosen on the OBJECT, not on a
+                # well-formed one: a near-miss declaration — `filename` mistyped,
+                # or not a string — must reach `encode_multipart`'s named refusal
+                # rather than `urlencode`, which flattens it to the repr of a
+                # Python object. That flattening is the exact defect the multipart
+                # path exists to close, and routing on `is_file_part` would leave
+                # it open for every declaration an author got slightly wrong.
+                if any(isinstance(v, dict) for v in fields.values()):
                     data, ctype = encode_multipart(fields)
                     headers["Content-Type"] = ctype
                 else:
@@ -542,9 +550,25 @@ tool sync_harness:
         reader of a reference can predict.
         """
         parts, payloads = [], []
-        for value in fields.values():
+        for name, value in fields.items():
             if is_file_part(value):
                 payloads.append(file_part_bytes(value))
+            elif isinstance(value, dict):
+                # The near miss, and the last way the original defect survives:
+                # an object whose `filename` is mistyped or is not a string is
+                # still a file the author meant to declare, but no longer one
+                # `is_file_part` recognises. Flattened by `str`, it reaches the
+                # wire as `{'filenam': 'a.pdf', ...}` — the application refuses
+                # the TEXT of a Python object, and the reference records that
+                # refusal as the behaviour. Refused by name, like a payload that
+                # does not decode.
+                raise SystemExit(
+                    "field %r is an object but not a file declaration: a file "
+                    "names itself — {\"filename\": <string>, \"text\"|\"b64\": "
+                    "...}. Emitted as an ordinary field it would put the text of "
+                    "a Python object on the wire, and the reference would record "
+                    "the refusal of that text as the application's behaviour."
+                    % (name,))
             else:
                 payloads.append(("" if value is None else str(value)).encode("utf-8"))
         boundary = multipart_boundary(payloads)
@@ -3644,6 +3668,19 @@ tool sync_harness:
                 check("une requete sans fichier reste urlencodee (aucun changement)",
                       [received["ctype"], received["body"]],
                       ["application/x-www-form-urlencoded", b"titre=r"])
+                # Et la declaration MANQUEE, seule dans son entree : routee sur
+                # `is_file_part`, elle repartait par urlencode et posait le repr
+                # de l'objet sur le fil, en silence. C'est le defaut d'origine,
+                # survivant a la faute de frappe la plus probable.
+                received.clear()
+                try:
+                    sess.fetch("POST", "/upload",
+                               fields={"doc": {"filenam": "a.pdf", "text": "X"}})
+                    check("declaration de fichier manquee et SEULE -> refus nomme",
+                          ["aucun-refus", received.get("body")], ["SystemExit", None])
+                except SystemExit:
+                    check("declaration de fichier manquee et SEULE -> refus nomme",
+                          ["SystemExit", received.get("body")], ["SystemExit", None])
             finally:
                 srv.shutdown()
                 srv.server_close()
@@ -3670,6 +3707,17 @@ tool sync_harness:
             refuses("text ET b64 declares -> refus nomme, aucun gagnant silencieux",
                     lambda: encode_multipart({"d": {"filename": "a", "text": "FROM-TEXT",
                                                     "b64": "RlJPTS1CNjQ="}}))
+            # La DECLARATION manquee, a cote d'un fichier valide : `filename`
+            # mal orthographie ou non textuel. `is_file_part` ne la reconnait
+            # plus, et `str` la posait sur le fil telle quelle.
+            for near in ({"filename": 42, "text": "x"},
+                         {"filenam": "a.pdf", "text": "x"},
+                         {"filename": None, "b64": "aGk="},
+                         {"text": "x"}):
+                refuses("objet qui n'est pas une declaration de fichier (%s) -> refus nomme"
+                        % sorted(near),
+                        lambda near=near: encode_multipart(
+                            {"ok": {"filename": "v.txt", "text": "K"}, "doc": near}))
 
             # Les EN-TETES de partie : le second moyen d'envoyer une requete que
             # le corpus n'a pas declaree. Le vecteur decisif d'abord — un nom de
