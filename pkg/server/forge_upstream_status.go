@@ -74,7 +74,7 @@ import (
 //	  forge.ErrAvatarUnsupported           0
 //	  forge.ErrSecurityReadMalformed       0
 //	  forge.ErrSecurityReadNoOrgKey        0
-//	  forgegithub.ErrInstallationNotOwned  0
+//	  forge/github.ErrInstallationNotOwned  0
 func forgeUpstreamStatus(err error) (int, string) {
 	if err == nil {
 		return 0, ""

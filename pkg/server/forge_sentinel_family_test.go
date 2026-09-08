@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -228,6 +229,12 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 			"errors.Is(_, forge.ErrNotFound), so forgeUpstreamStatus reads this wrap as the forge saying "+
 			"it has no such thing — for a write iterion failed, after an avatar that DID land. body=%s", w.Body.String())
 	}
+	// 5xx, not an exact code: what this guard proves is the CLASS — the store
+	// failed, so the answer belongs to iterion's side and not to the forge.
+	// The route renders that arm 502, which is arguable (a Bad Gateway for a
+	// write iterion itself failed) but shared by the five sites that fall
+	// through forgeUpstreamStatus, four of which are genuinely upstream.
+	// Tightening it is a behaviour change of its own — see #969.
 	if w.Code < 500 {
 		t.Fatalf("code=%d, want a 5xx: the store failed, which is iterion's side, not an answer the forge gave. body=%s",
 			w.Code, w.Body.String())
@@ -311,4 +318,123 @@ func declaredForgeSentinels(t *testing.T) map[string]string {
 		t.Fatal("the sweep found no sentinel at all — it is not reading pkg/forge, so it cannot go red")
 	}
 	return found
+}
+
+// docRowsCoveredElsewhere are rows of the doc table with no forgeSentinelFamilies
+// entry, each for a stated reason. A TYPE joins the ErrNotFound class by carrying
+// an Unwrap method, not by an edit to a var declaration, so it is pinned by
+// TestForgeUpstreamStatus_Table against a constructed value instead of by the
+// sweep below.
+var docRowsCoveredElsewhere = map[string]string{
+	"*forge.NotFoundError": "a type; TestForgeUpstreamStatus_Table pins it",
+}
+
+// TestForgeSentinelDoc_MatchesTheTable pins the two hand-written copies of the
+// same 20 rows against each other: the table a reader finds next to
+// forgeUpstreamStatus, and forgeSentinelFamilies, which is what the guards
+// above actually assert.
+//
+// Without this, the harmful drift is not a missing row — it is a family MOVED
+// in the map and not in the prose, which leaves the comment stating the exact
+// opposite of what the classifier does. That is the failure this whole file
+// exists to prevent, one level up: a doc line outliving the behaviour it
+// describes.
+//
+// It compares SETS OF NAMES, never wording — the prose beside each row is free
+// to say whatever serves its reader.
+func TestForgeSentinelDoc_MatchesTheTable(t *testing.T) {
+	inClass, outOfClass := parseForgeSentinelDoc(t)
+
+	doc := map[string]bool{}
+	for n := range inClass {
+		doc[n] = true
+	}
+	for n := range outOfClass {
+		if _, dup := doc[n]; dup {
+			t.Fatalf("%s appears under BOTH headings of the doc table next to forgeUpstreamStatus", n)
+		}
+		doc[n] = false
+	}
+
+	for name, f := range forgeSentinelFamilies {
+		side, listed := doc[name]
+		if !listed {
+			t.Errorf("%s is pinned in forgeSentinelFamilies but absent from the doc table next to "+
+				"forgeUpstreamStatus — a reader of the classifier cannot see it.", name)
+			continue
+		}
+		if side != f.inNotFoundClass {
+			t.Errorf("%s: the doc table next to forgeUpstreamStatus files it %s the ErrNotFound class, "+
+				"the pinned table says %s. One of the two is now lying to its reader; the guards above "+
+				"assert the pinned one, so the prose is what a moved family leaves behind.",
+				name, docSide(side), docSide(f.inNotFoundClass))
+		}
+		delete(doc, name)
+	}
+	for name := range doc {
+		if _, known := docRowsCoveredElsewhere[name]; known {
+			continue
+		}
+		t.Errorf("%s is in the doc table next to forgeUpstreamStatus but not in forgeSentinelFamilies — "+
+			"nothing asserts the side it claims. Add a row, or list it in docRowsCoveredElsewhere with "+
+			"what does pin it.", name)
+	}
+}
+
+func docSide(in bool) string {
+	if in {
+		return "IN"
+	}
+	return "OUTSIDE"
+}
+
+// parseForgeSentinelDoc reads the doc table out of forge_upstream_status.go's
+// source. It reads the file the package is built from rather than a copy, so
+// what it certifies is the comment a reader of the classifier actually finds.
+func parseForgeSentinelDoc(t *testing.T) (inClass, outOfClass map[string]struct{}) {
+	t.Helper()
+	src, err := os.ReadFile("forge_upstream_status.go")
+	if err != nil {
+		t.Fatalf("read the classifier's source: %v", err)
+	}
+	inClass, outOfClass = map[string]struct{}{}, map[string]struct{}{}
+	var current map[string]struct{}
+	started := false
+	for _, line := range strings.Split(string(src), "\n") {
+		if !strings.HasPrefix(line, "//") {
+			if started {
+				break // the comment block ended: the table is above the func.
+			}
+			continue
+		}
+		body := strings.TrimPrefix(line, "//")
+		trimmed := strings.TrimSpace(body)
+		switch {
+		case strings.HasPrefix(trimmed, "IN the class"):
+			current, started = inClass, true
+			continue
+		case strings.HasPrefix(trimmed, "OUTSIDE it"):
+			current, started = outOfClass, true
+			continue
+		}
+		if current == nil || trimmed == "" {
+			continue
+		}
+		// A row is indented under its heading; a paragraph is not.
+		if !strings.HasPrefix(body, "\t  ") {
+			current = nil
+			continue
+		}
+		name := strings.Fields(trimmed)[0]
+		current[name] = struct{}{}
+	}
+	if !started {
+		t.Fatal("no sentinel table found in forge_upstream_status.go — the headings this test reads " +
+			"(\"IN the class\" / \"OUTSIDE it\") were renamed or the table was removed.")
+	}
+	if len(inClass) == 0 || len(outOfClass) == 0 {
+		t.Fatalf("parsed %d row(s) IN and %d OUTSIDE: the table's layout changed under this parser",
+			len(inClass), len(outOfClass))
+	}
+	return inClass, outOfClass
 }
