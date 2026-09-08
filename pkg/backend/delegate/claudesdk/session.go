@@ -51,11 +51,13 @@ func ResumeSession(sessionID string, opts ...Option) *Session {
 // capture (claude_code_stream.go, sessionMeta.sessionID): two readings of
 // one fact with opposite rules is a trap for whoever wires the second.
 func (s *Session) noteSessionID(id string) {
-	if id == "" {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// One condition, not two: first-non-empty already covers an empty
+	// announcement (assigning "" over "" changes nothing, and a set id is
+	// never displaced). An extra `if id == ""` guard reads like a rule and
+	// is unreachable as one — no test can tell it apart, which is how a
+	// dead branch survives while documenting a behaviour it does not have.
 	if s.sessionID == "" {
 		s.sessionID = id
 	}
