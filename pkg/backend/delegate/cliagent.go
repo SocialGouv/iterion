@@ -877,6 +877,13 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		})
 	} else {
 		cmd = exec.CommandContext(runCtx, binary, args...) // #nosec G204 — binary/args are backend-configured, not attacker-controlled.
+		// Host arm only. A CLI agent forks its own tools (shells, language
+		// servers, MCP servers) which inherit outBuf/errBuf's pipes: killing
+		// the agent alone leaves them running and cmd.Run blocked, so the
+		// node's cancellation or timeout would buy nothing. The sandboxed arm
+		// above has its own answer (the pidfile wrapper + in-container kill),
+		// because a container's process tree is not ours to signal.
+		proc.TerminateGroupOnCancel(cmd)
 		cmd.Env = env
 		if task.WorkDir != "" {
 			cmd.Dir = task.WorkDir

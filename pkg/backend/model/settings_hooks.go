@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -133,6 +134,11 @@ func runCommandHook(ctx context.Context, event string, hctx hooks.Context, h set
 
 	inputJSON, _ := json.Marshal(hctx.ToolInput)
 	c := exec.CommandContext(cctx, "sh", "-c", h.Command)
+	// A hook's timeout has to end the hook's WORK, not only iterion's wait:
+	// a `sh -c` that backgrounds a job leaves it holding the buffers below,
+	// so c.Run would block past the timeout on a tool call the gate has
+	// already decided about.
+	proc.TerminateGroupOnCancel(c)
 	c.Env = append(os.Environ(),
 		"HOOK_EVENT="+event,
 		"HOOK_TOOL_NAME="+hctx.ToolName,

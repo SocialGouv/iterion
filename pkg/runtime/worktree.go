@@ -24,6 +24,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -44,6 +45,9 @@ const gitCmdTimeout = 60 * time.Second
 // rebuilds the dev-mode backend during an in-flight squash merge —
 // doesn't propagate and kill `git commit` mid-write with the
 // "signal: terminated" failure mode observed in run_1778021294883.
+// Isolation only, deliberately NOT proc.TerminateGroupOnCancel: the ctx
+// here is the package's own timeout over context.Background(), so the
+// run's cancellation must not abort a commit that is already writing.
 //
 // Returns the CancelFunc alongside the command; callers must `defer
 // cancel()` immediately (releases the timeout timer once the command
@@ -54,7 +58,7 @@ func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	// Strip what would override the repository this command names for itself.
 	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
-	detachGitProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd, cancel
 }
 

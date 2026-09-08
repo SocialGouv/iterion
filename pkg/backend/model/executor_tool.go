@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -585,6 +586,10 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	// A script body backgrounds jobs as freely as a shell recipe does, so
+	// its lifetime ends with the node's context the same way — see
+	// toolNodeCommand.
+	proc.TerminateGroupOnCancel(cmd)
 	// Host path only: sandboxed commands already see the variable from the
 	// container env (the same dir is bind-mounted there). runExtraEnv
 	// carries run-level provisioning (devbox profile PATH), appended
@@ -635,6 +640,12 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
+	// jobs (`&`, a daemon a build script starts), and those grandchildren
+	// inherit our stdout/stderr pipes: killing only the shell leaves the
+	// read blocked, so cancelling the run would stop the wait and not the
+	// work. Signal the whole group instead.
+	proc.TerminateGroupOnCancel(cmd)
 	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
 		// Run-level provisioning (devbox profile PATH) — appended after

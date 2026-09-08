@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -92,6 +93,11 @@ func runMergeGit(ctx context.Context, dir, token string, args ...string) (string
 	defer cancel()
 	full := gitlib.NoAutoMaintenance(append(mergeGitAuthArgs(token), args...)...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	// fetch/push fork git-remote-https, which inherits the pipes
+	// CombinedOutput reads: killing only git leaves the helper holding them
+	// and mergeGitTimeout would bound nothing. Same reason the runner's own
+	// git wrapper does this.
+	proc.TerminateGroupOnCancel(cmd)
 	if dir != "" {
 		cmd.Dir = dir
 	}
