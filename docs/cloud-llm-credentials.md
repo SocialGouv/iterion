@@ -115,6 +115,33 @@ OpenAI's ChatGPT-forfait has never had an equivalent restriction.
   `tokens.account_id`, and when it is false the forfait is silently skipped.
   Re-run `codex login` with "Sign in with ChatGPT" and upload the file
   unedited.
+- **A codex forfait has exactly ONE refresher, and a record connected by
+  an older build may be invisible to it.** OpenAI rotates the refresh
+  token on use, so two holders refreshing the same credential invalidate
+  each other — the measured incident in
+  [bot-runs/feed-watch.md](bot-runs/feed-watch.md), whose remediation reads
+  "one session, one record, one refresher". The single refresher is the
+  server-side `OAuthRefreshWorker`; runner pods deliberately do **not**
+  refresh codex (`runner.startOAuthRefreshers` takes claude_code only),
+  and each deployment wants its own `codex login` session rather than one
+  shared with an operator's laptop.
+  That worker only ever sees records `ExpiringBefore` returns, which
+  requires `access_token_expires_at` to exist. It is now stamped from the
+  access token's own `exp` claim at connect and after each refresh — but
+  real `~/.codex/auth.json` blobs carry no `expires_in`, so a record
+  connected by an OLDER build has **no** stored expiry and is skipped
+  forever. Symptom: a run failing its first LLM call with `authentication
+  token is expired` while the studio shows the credential present
+  (measured: ten days). Fix is one call — re-upload it, which stamps the
+  field:
+  ```bash
+  iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
+  ```
+  Check first with `iterion remote api GET /api/admin/llm/oauth/connections`:
+  a codex entry whose `access_token_expires_at` is absent is one of these.
+  A credential whose token states no readable deadline logs a Warn at
+  connect (`stored WITHOUT an access-token expiry`) and needs a manual
+  re-connect whenever it expires.
 - **A run with no credential at all is QUEUED, not refused, by default.**
   The publisher logs one Warn (`no credential resolved for run=… tiers
   consulted: byok, oauth-forfait, pool, platform`) and the runner falls
