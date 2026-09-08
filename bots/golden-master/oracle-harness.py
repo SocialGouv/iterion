@@ -4309,6 +4309,16 @@ def _selftest():
         os.environ["GM_SCRATCH"] = tempfile.mkdtemp(prefix="gm-scratch-")
         try:
             def sub(*a):
+                # Same reason fixture_git carries them: this repo is a temp dir
+                # deleted on the way out, and a writing command (init, add,
+                # commit, checkout) detaches `git maintenance run --auto`, which
+                # goes on writing under .git/objects afterwards. Both buttons:
+                # maintenance.auto is Git >= 2.48, gc.auto is the older one AND
+                # what a recent Git falls back to when the first is absent — the
+                # local Git here is 2.43, so one button alone would hold on one
+                # version and not the other.
+                if a and a[0] == "git":
+                    a = ("git", "-c", "gc.auto=0", "-c", "maintenance.auto=false") + tuple(a[1:])
                 return subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
             sub("git", "init", "-q")
             sub("git", "config", "user.email", "t@t")
