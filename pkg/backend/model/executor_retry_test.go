@@ -208,6 +208,53 @@ func TestRetryDelegateLoop_SessionTotalCostIsNotDoubled(t *testing.T) {
 	}
 }
 
+// And the OTHER side of that max, which nothing exercised: the LAST report is
+// the smaller one. `foldSpend` takes `usd = nc` and only then raises it to
+// `pc`, so deleting the raise leaves every suite in pkg/backend/... and
+// pkg/runtime green — measured 08/09 — while the run silently reports the
+// cheaper of two readings of the same session.
+//
+// The shape is not hypothetical: a delegation that dies still names the
+// session it opened and reports that session's cost AT THE MOMENT IT DIED. A
+// first attempt that got far, then a retry that dies early, is exactly
+// pc > nc — and taking the last figure bills the run for the shorter of the
+// two. Same class as a failed node whose spend never reached the totals: the
+// caps, the org ledger and a lending donor all read this map.
+func TestRetryDelegateLoop_SessionTotalKeepsTheLargestReading(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	calls := 0
+	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
+		calls++
+		// Attempt 1 gets far: the CLI reports the session at $0.13. Attempt 2
+		// dies early and reports the same session at $0.05 — a smaller reading
+		// of the very session that already cost $0.13.
+		tokens, usd := 1000, 0.13
+		if calls > 1 {
+			tokens, usd = 300, 0.05
+		}
+		r := delegate.Result{
+			Tokens:             tokens,
+			CostIsSessionTotal: true,
+			Output:             map[string]any{"_tokens": tokens, "_cost_usd": usd},
+		}
+		if calls < 2 {
+			return r, &delegate.ErrTransient{Reason: "stream closed"}
+		}
+		return r, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("want two attempts then success: err=%v calls=%d", err, calls)
+	}
+	if usd, _ := got.Output["_cost_usd"].(float64); usd != 0.13 {
+		t.Fatalf("the run kept the LAST session reading instead of the largest: %v (want 0.13)", usd)
+	}
+	// Tokens are per-call and still sum: the max applies to the session-total
+	// COST, never to the counts beside it.
+	if got.Tokens != 1300 {
+		t.Fatalf("per-call tokens were folded at their max instead of summed: %d", got.Tokens)
+	}
+}
+
 // The same shared session, but the cost figure is an ESTIMATE derived from
 // this call's tokens — claude_code under the OAuth forfait (the CLI reports
 // no cost, AnnotateWithUSD degrades to Annotate), and every cost.Annotate
