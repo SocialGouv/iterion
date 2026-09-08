@@ -1139,15 +1139,15 @@ func forwardableProviderEnv(ctx context.Context, model string) (map[string]strin
 		}
 	}
 	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved
-	// codex-cli version instead. The in-container runner cannot probe
-	// `codex --version` itself (the sandbox image ships no codex binary),
-	// so without a value crossing the boundary it falls back to claw's
-	// baked-in version string — which the ChatGPT-forfait backend refuses
-	// for newer models ("gpt-5.6-sol requires a newer version of Codex")
-	// even though the host's codex install is current.
+	// codex-cli version as a PROBE (ITERION_CODEX_HOST_VERSION), not as the
+	// decision. The in-container runner cannot probe `codex --version`
+	// itself (the sandbox image ships no codex binary); it keeps the newer
+	// of this probe and its own baked release, so neither a stale host
+	// binary nor a stale image can pin the ChatGPT-forfait identity below
+	// what either side would present alone.
 	if env["ITERION_CODEX_VERSION"] == "" {
 		if v := hostCodexVersion(); v != "" {
-			env["ITERION_CODEX_VERSION"] = v
+			env[codexHostVersionEnv] = v
 		}
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
