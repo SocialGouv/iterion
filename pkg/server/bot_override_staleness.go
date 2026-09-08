@@ -113,6 +113,18 @@ type bakedCatalog struct {
 // the verdict: a cached verdict would outlive the platform-override overlay it
 // was computed against. A walk failure propagates, so the resolver logs it and
 // serves the LAST-KNOWN map rather than an empty one.
+//
+// THE CONTEXT IS DELIBERATELY DISCARDED, and that is a documented deviation,
+// not an oversight: botregistry.List takes no ctx, so platformcfg's 3s
+// fetchTimeout — which bounds every OTHER resolver's fetch — does not bound
+// this one. A cold-start caller therefore blocks for however long the bot-root
+// walk takes (the walk is a LOCAL filesystem read; on a network mount that is
+// not a bound anyone chose). Wrapping the walk in a goroutine and selecting on
+// ctx would NOT fix it — it cannot cancel a blocked walk, only abandon it, and
+// since Resolver.Get re-arms the TTL after a failure a wedged mount would
+// strand a fresh goroutine every refresh interval: bounded blocking traded for
+// an unbounded leak. The real remedy is cooperative cancellation inside
+// botregistry (or one long-lived single-flight walker), both out of scope here.
 func (s *Server) newBakedCatalogResolver() *platformcfg.Resolver[bakedCatalog] {
 	return platformcfg.NewResolverFunc(func(context.Context) (*bakedCatalog, error) {
 		entries, err := botregistry.List(s.botListOptions())
