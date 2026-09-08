@@ -423,6 +423,20 @@ func runUncoveredOverrun(t *testing.T, runID string, budget *ir.Budget, raise ir
 	eng := New(uncoveredOverrunWorkflow(runID, budget), s, exec, WithOverrideChannel(ch))
 	err := eng.Run(context.Background(), runID, nil)
 
+	// The raise must actually have LANDED, or these tests are vacuous: an axis
+	// at 0 is unlimited, RaiseCaps skips it, and "the stop survived" would mean
+	// "no raise ever happened" instead of "the raise did not cover it". Noop is
+	// the budget's own report of that, so the trap is closed by assertion here
+	// rather than by everyone remembering it at each call site.
+	res, aerr := msg.Await(context.Background(), time.Second)
+	if aerr != nil || res.Err != nil {
+		t.Fatalf("await = (%+v, %v) — the raise never reached the run", res, aerr)
+	}
+	if res.Noop {
+		t.Fatalf("the raise changed no cap, so this run says nothing about whether an "+
+			"UNCOVERED overrun survives: %+v", res)
+	}
+
 	events, lerr := s.LoadEvents(context.Background(), runID)
 	if lerr != nil {
 		t.Fatalf("load events: %v", lerr)
