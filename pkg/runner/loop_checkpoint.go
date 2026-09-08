@@ -186,14 +186,27 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 // failure says which step could not be taken, because a silent one here is
 // indistinguishable from having had nothing to preserve.
 func (r *Runner) preserveSupersededCheckpoint(ctx context.Context, o sandboxObserverOpts, run sandbox.Run, ref, next string) {
+	// NO PIPELINE HERE. A POSIX pipeline exits with its LAST command's status,
+	// and `cut` exits 0 on empty input — so `ls-remote | cut -f1` reports
+	// success with empty output when ls-remote itself died (network flake,
+	// credential hiccup, exit 128). An UNREADABLE ref would then read as an
+	// ABSENT one, this function would return silently as "nothing to lose",
+	// and the force-push would destroy the very checkpoint it is here to save,
+	// in exactly the flaky conditions where a resume happens. The field is cut
+	// in Go instead, where the exit status is the one that matters.
 	res, err := run.Exec(ctx, []string{"sh", "-c",
-		"git ls-remote origin refs/heads/" + ref + " | cut -f1"}, sandbox.ExecOpts{})
+		"git ls-remote origin refs/heads/" + ref}, sandbox.ExecOpts{})
 	if err != nil || res.ExitCode != 0 {
-		r.cfg.Logger.Warn("runner: run %s: cannot read %s before overwriting it (%v; exit %d) — pushing anyway, but a previous generation's checkpoint may be lost",
-			o.runID, ref, err, res.ExitCode)
+		r.cfg.Logger.Warn("runner: run %s: cannot read %s before overwriting it (%v; exit %d): %s — pushing anyway, but a previous generation's checkpoint may be lost",
+			o.runID, ref, err, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+		r.recordCheckpoint(o, map[string]any{"ref": ref,
+			"error": "could not read the ref before overwriting it: " + strutilFirstLine(string(res.Stderr), err)})
 		return
 	}
-	prev := strings.TrimSpace(string(res.Stdout))
+	// `<sha>\t<ref>`, one line per match; empty output means the ref does not
+	// exist. Reached only on a SUCCESSFUL read, so empty now means absent.
+	prev, _, _ := strings.Cut(strings.TrimSpace(string(res.Stdout)), "\t")
+	prev = strings.TrimSpace(prev)
 	// Nothing there (first generation), or the very commit we are about to
 	// write: in both cases the force-push destroys nothing.
 	if prev == "" || prev == next {

@@ -45,6 +45,7 @@ type checkpointRun struct {
 	remote string
 	keepRC int // exit code of the fetch+push that preserves it
 	keepEr string
+	lsRC   int // exit code of the ls-remote that READS the ref
 }
 
 func (f *checkpointRun) Driver() string { return "fake-k8s" }
@@ -65,7 +66,26 @@ func (f *checkpointRun) Exec(_ context.Context, cmd []string, _ sandbox.ExecOpts
 	// is how adding one exec to the product broke two tests that had nothing
 	// to do with it.
 	if strings.HasPrefix(script, "git ls-remote") {
-		return sandbox.ExecResult{Stdout: []byte(f.remote + "\n")}, nil
+		// The real command answers `<sha>\t<ref>`; lsRC makes the READ fail.
+		out, rc, errOut := f.remote+"\trefs/heads/x\n", f.lsRC, "fatal: unable to access origin"
+		if f.remote == "" {
+			out = ""
+		}
+		if rc != 0 {
+			out = ""
+		}
+		// A REAL `sh -c` is emulated here for the one property that matters:
+		// a POSIX pipeline exits with its LAST stage's status, and `cut` exits
+		// 0 on empty input. Without this, a fake that reports the FIRST
+		// stage's status makes the piped and unpiped forms indistinguishable —
+		// and the test that exists to forbid the pipeline passes over it.
+		if strings.Contains(script, "| cut") {
+			rc, errOut = 0, ""
+			if i := strings.IndexByte(out, '\t'); i >= 0 {
+				out = out[:i] + "\n"
+			}
+		}
+		return sandbox.ExecResult{ExitCode: rc, Stdout: []byte(out), Stderr: []byte(errOut)}, nil
 	}
 	if strings.HasPrefix(script, "git fetch") {
 		return sandbox.ExecResult{ExitCode: f.keepRC, Stderr: []byte(f.keepEr)}, nil
@@ -460,4 +480,32 @@ func TestCheckpointPreservesWhatANewGenerationWouldErase(t *testing.T) {
 			t.Fatalf("want the checkpoint push despite the failed copy: %v", run.pushes())
 		}
 	})
+}
+
+// An UNREADABLE ref is not an ABSENT one, and conflating them destroys the
+// very checkpoint this preservation exists to save.
+//
+// The first version of this probe ran `git ls-remote … | cut -f1`. A POSIX
+// pipeline exits with its LAST command's status and `cut` exits 0 on empty
+// input, so a dead ls-remote — a network flake, a credential hiccup, exit 128
+// — reported success with no output. That read as "the ref does not exist,
+// the force-push destroys nothing", in exactly the flaky conditions where a
+// resume happens in the first place.
+func TestCheckpointDoesNotReadAFailedProbeAsAnEmptyRef(t *testing.T) {
+	var buf bytes.Buffer
+	r := checkpointRunner(t, "R5")
+	r.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
+	run := &checkpointRun{shas: []string{"h1 t1 c0ffee"}, remote: "", lsRC: 128}
+	o := sandboxObserverOpts{runID: "R5", tenantID: "team-a", checkpoint: true}
+
+	r.checkpointWorkspaceOnce(context.Background(), o, run, "")
+
+	if !strings.Contains(buf.String(), "cannot read") {
+		t.Fatalf("a failed read must SAY so — a silent one is indistinguishable from an absent ref: %q", buf.String())
+	}
+	// And it must still checkpoint: refusing to preserve the new work because
+	// the old could not be read trades one loss for another.
+	if len(run.pushes()) != 1 {
+		t.Fatalf("the checkpoint must still land: %v", run.pushes())
+	}
 }
