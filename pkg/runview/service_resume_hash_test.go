@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -175,7 +174,7 @@ func TestServiceResumeForceAllowsChangedWorkflow(t *testing.T) {
 		}
 		select {
 		case <-result.Done:
-		case <-time.After(5 * time.Second):
+		case <-runWaitContext(t).Done():
 			t.Fatal("forced in-process resume did not terminate")
 		}
 	})
@@ -223,7 +222,7 @@ func TestResume_RejectsWorkflowHashMismatchSynchronouslyBeforeSpawn(t *testing.T
 	}
 	select {
 	case <-launched.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run did not reach its human pause")
 	}
 
@@ -291,7 +290,7 @@ func TestResume_RejectsWorkflowHashMismatchSynchronouslyBeforeSpawn(t *testing.T
 	}
 	select {
 	case <-forced.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("forced resume did not finish")
 	}
 

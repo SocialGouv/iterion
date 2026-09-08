@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/clock"
@@ -418,6 +419,12 @@ func TestBranchNodeIterationComposesEnclosingAndLocalCounters(t *testing.T) {
 }
 
 func TestFanOutEachPendingBranchPanicReleasesResumeBarrier(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutEachPendingBranchPanicReleasesResumeBarrier)
+}
+
+func testFanOutEachPendingBranchPanicReleasesResumeBarrier(t *testing.T) {
 	wf := branchFirstHumanLoopWorkflow()
 	exec := newStubExecutor()
 	exec.on("entry", func(map[string]any) (map[string]any, error) {
@@ -917,6 +924,9 @@ func resumeWithinDeadline(t *testing.T, wf *ir.Workflow, runStore store.RunStore
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		// The deadline cancelled Resume; join it before TempDir removes the
+		// store it may still be checkpointing during cancellation.
+		<-done
 		t.Fatal("resume hung: answered branch exit did not release the sibling resume barrier")
 		return nil
 	}
@@ -1005,6 +1015,12 @@ func TestParallelCheckpointPrunesDurableArtifactAllocationKeys(t *testing.T) {
 }
 
 func TestFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutPausePersistenceFailureIsNotReportedAsPaused)
+}
+
+func testFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
 	wf := branchFirstHumanLoopWorkflow()
 	exec := newStubExecutor()
 	exec.on("entry", func(map[string]any) (map[string]any, error) {
@@ -1032,6 +1048,12 @@ func TestFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
 }
 
 func TestFanOutEachHumanGateEventsStayPairedAcrossSiblingResumes(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutEachHumanGateEventsStayPairedAcrossSiblingResumes)
+}
+
+func testFanOutEachHumanGateEventsStayPairedAcrossSiblingResumes(t *testing.T) {
 	wf := branchFirstHumanLoopWorkflow()
 	exec := newStubExecutor()
 	exec.on("entry", func(map[string]any) (map[string]any, error) {
@@ -1123,6 +1145,12 @@ func assertSingleRouterLifecyclePair(t *testing.T, events []*store.Event, router
 // can elect its own gate and the next resume re-asks the failed branch's
 // question instead of replaying the payload that already failed.
 func TestFanOutEachPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutEachPendingBranchErrorReleasesResumeBarrier)
+}
+
+func testFanOutEachPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 	wf := branchFirstHumanLoopWorkflow()
 	wf.Nodes["collect"].(*ir.AgentNode).AwaitMode = ir.AwaitBestEffort
 	for _, edge := range wf.Edges {
@@ -1210,6 +1238,12 @@ func TestFanOutEachPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 
 // The fan_out_all launcher has its own post-branch policy; cover it too.
 func TestFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
+	// Virtual time measures a blocked workflow, not how quickly the host
+	// schedules its goroutines or writes its temporary store.
+	synctest.Test(t, testFanOutAllPendingBranchErrorReleasesResumeBarrier)
+}
+
+func testFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "fanout_gate_error",
 		Entry: "entry",

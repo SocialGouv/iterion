@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -93,6 +92,8 @@ func TestServiceLaunch_SubbotChildHumanGate_ParkAndResume(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
+	defer stopService(t, svc)
+
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
@@ -101,25 +102,7 @@ func TestServiceLaunch_SubbotChildHumanGate_ParkAndResume(t *testing.T) {
 	// Wait for the child run to appear paused on its human gate. The child
 	// is discovered by ParentRunID — the same linkage the pipeline board's
 	// tree folding uses.
-	childID := ""
-	deadline := time.Now().Add(30 * time.Second)
-	for childID == "" {
-		if time.Now().After(deadline) {
-			t.Fatal("child run never reached paused_waiting_human")
-		}
-		runs, lerr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
-		if lerr != nil {
-			t.Fatalf("list runs: %v", lerr)
-		}
-		for _, r := range runs {
-			if r.ParentRunID == res.RunID && r.Status == store.RunStatusPausedWaitingHuman {
-				childID = r.ID
-			}
-		}
-		if childID == "" {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	childID := waitForSubbotStatus(t, svc, res.RunID, store.RunStatusPausedWaitingHuman)
 
 	// The parent must still be RUNNING (parked on the child), not failed.
 	parent, err := svc.store.LoadRun(context.Background(), res.RunID)
@@ -156,11 +139,7 @@ func TestServiceLaunch_SubbotChildHumanGate_ParkAndResume(t *testing.T) {
 		t.Fatalf("resume child: %v", err)
 	}
 
-	select {
-	case <-res.Done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("parent did not finish after the child's gate was answered")
-	}
+	awaitRunCompletion(t, res.Done, "parent did not finish after the child's gate was answered")
 
 	parent, err = svc.store.LoadRun(context.Background(), res.RunID)
 	if err != nil {
