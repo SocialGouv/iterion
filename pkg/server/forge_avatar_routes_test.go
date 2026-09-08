@@ -807,3 +807,30 @@ func TestForgeConnectionAvatar_UpstreamSetAvatarFailureStays502(t *testing.T) {
 		t.Errorf("uploads = %d, want 1", gl.count())
 	}
 }
+
+// The route's THIRD failure source, and the one that fails BEFORE the forge
+// is ever contacted: forgeAdminFor opens the connection's sealed token. On
+// the only kind that reaches it (KindPAT) that is pure local work, so a
+// sealer that will not open the blob is iterion's own state — yet it carries
+// no forge sentinel and no *url.Error, which is exactly what the handler's
+// 502 default arm serves. Blaming the forge for a key iterion cannot use
+// sends the operator to the forge's status page for an outage that is not
+// there. The upload count is the proof it never left the process.
+func TestForgeConnectionAvatar_SealFailureBeforeUploadIsIterionFault500(t *testing.T) {
+	s := newForgeTestServer(t)
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	// Seed with the live sealer (the blob is well-formed), then take the
+	// sealer away — the shape of a rotated or unreadable master key.
+	seedAvatarConn(t, s, forge.Connection{ID: "c-seal-fail", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+	s.sealer = nil
+
+	w := avatarReq(s, "c-seal-fail", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a seal that will not open is iterion's own and must answer 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if gl.count() != 0 {
+		t.Errorf("uploads = %d, want 0 — this failure precedes any forge call", gl.count())
+	}
+}

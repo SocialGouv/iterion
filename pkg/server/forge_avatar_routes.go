@@ -119,7 +119,15 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 	defer cancel()
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
-		return conn, "", err
+		// Nothing has reached the forge yet, and on the only kind that gets
+		// here this call cannot: the switch above refuses every kind but
+		// KindPAT, so forgeAdminFor opens the sealed token (a nil sealer, a
+		// master key that no longer opens the blob, a payload that will not
+		// unmarshal) and builds a bearer client — all local. Unmarked, none
+		// of it carries a forge sentinel or a *url.Error, so it would fall
+		// through the handler's 502 default and blame the forge for
+		// iterion's own seal — the #969 inversion, one step earlier.
+		return conn, "", NewIterionFault(err)
 	}
 	setter, ok := admin.(forge.AvatarSetter)
 	if !ok {
@@ -301,13 +309,16 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
-		// This route mixes two failure sources under one default arm: the
-		// forge round-trip (502 is the true code for what the classifier
-		// does not recognise — a broken transport, a body that is not the
-		// shape pkg/forge parses) AND iterion's OWN state failing AFTER
-		// the upload landed (persist below). NewIterionFault marks the
-		// second so it answers 500 instead of the 502 it would otherwise
-		// share with a genuine forge outage — the inversion #969 is about.
+		// This route mixes three failure sources under one default arm.
+		// Only ONE of them is the forge's: the round-trip (502 is the true
+		// code for what the classifier does not recognise — a broken
+		// transport, a body that is not the shape pkg/forge parses). The
+		// other two are iterion's own state — the seal/client construction
+		// BEFORE any forge call (forgeAdminFor), and the persist AFTER the
+		// upload already landed — and both are marked at their wrap site,
+		// where which step failed is still known, so they answer 500
+		// instead of sharing the 502 a genuine forge outage gets. That
+		// sharing is the inversion #969 is about.
 		if isIterionFault(err) {
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
