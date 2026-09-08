@@ -290,7 +290,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 
 	var req launchRunRequest
-	if err := readJSON(r, &req); err != nil {
+	// STRICT: an unknown field is refused, not dropped. A launch is the one
+	// request whose parameters are read back hours later — a name this
+	// struct does not declare took its value with it, the run used the
+	// workflow's own default instead, and the payload the client kept is
+	// indistinguishable from one that worked.
+	if err := readJSONStrict(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		span.SetStatus(codes.Error, "invalid request")
 		return
