@@ -554,6 +554,79 @@ Changes propagate to every replica within the resolver TTL (no restart).`,
 }
 
 var (
+	remotePlatformCredEnforce string
+	remotePlatformCredTeams   string
+	remotePlatformCredOrgs    string
+)
+
+var remoteAdminPlatformCredsCmd = &cobra.Command{
+	Use:   "platform-credentials [set]",
+	Short: "Who may draw on the deployment's own LLM credentials",
+	Long: `Show the platform credential audience, or set it.
+
+Every tenant with no credential of its own used to reach the deployment's
+keys in silence. This gates that, and enforcement is OPT-IN: an absent
+record, or one whose enforce is off, admits everyone — so naming a team
+does not by itself cut the fleet off from its only credential.
+
+  iterion remote admin platform-credentials
+  iterion remote admin platform-credentials set --orgs <org-id>
+  iterion remote admin platform-credentials set --enforce true
+  iterion remote admin platform-credentials set --enforce false   # back to open
+
+Enforcing an audience that names nobody is refused: its symptom would be
+every credential-less run failing at its first LLM call.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/platform-credentials"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		if args[0] != "set" {
+			return fmt.Errorf("unknown platform-credentials action %q (want set)", args[0])
+		}
+		body := map[string]any{}
+		if cmd.Flags().Changed("enforce") {
+			switch remotePlatformCredEnforce {
+			case "true", "on", "yes":
+				body["enforce"] = true
+			case "false", "off", "no":
+				body["enforce"] = false
+			default:
+				return fmt.Errorf("--enforce wants true|false, got %q", remotePlatformCredEnforce)
+			}
+		}
+		if cmd.Flags().Changed("teams") {
+			body["teams"] = splitCSV(remotePlatformCredTeams)
+		}
+		if cmd.Flags().Changed("orgs") {
+			body["orgs"] = splitCSV(remotePlatformCredOrgs)
+		}
+		if len(body) == 0 {
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b]")
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, raw)
+	}),
+}
+
+// splitCSV turns a comma list into a slice, dropping blanks. An explicit
+// empty string yields an empty slice — the way an operator CLEARS a list,
+// which must not be read as "unset".
+func splitCSV(v string) []string {
+	out := []string{}
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+var (
 	remoteSandboxImage      string
 	remoteSandboxClearImage bool
 )
@@ -727,7 +800,11 @@ func init() {
 	remoteAdminSandboxCmd.Flags().StringVar(&remoteSandboxImage, "default-image", "", "`sandbox: auto` fallback image ref (prefer an @sha256 digest)")
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd)
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredEnforce, "enforce", "", "true|false — gate who may draw on the platform credentials")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd, remoteAdminPlatformCredsCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

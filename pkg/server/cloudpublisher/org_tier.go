@@ -182,3 +182,33 @@ func (p *Publisher) fillFromOrg(
 // use to render "who may spend this". Kept beside the resolver so the API
 // and the publisher can never disagree about the predicate.
 func OrgCredentialAudienceOf(o identity.Org) identity.CredentialAudience { return o.CredentialAudience }
+
+// platformAudienceAllows reports whether this run may draw on the PLATFORM
+// tier — the deployment's own credentials, which every tenant without one
+// of its own used to reach in silence.
+//
+// It admits by default, and that direction is the opposite of the org
+// tier's on purpose. The org tier lends a key someone chose to lend, so an
+// unreadable policy must not lend it. The platform tier is what the
+// deployment already runs on, so an unreadable policy must not take it
+// away: failing closed there would turn a settings blip into a fleet-wide
+// outage, which is exactly the failure mode the probes doc warns about for
+// critical checks on shared backends.
+//
+// The refusal, when it does happen, is LOGGED with the tenant named: a run
+// that silently receives no credential fails at its first LLM call with a
+// provider error, and nothing downstream would say the audience was why.
+func (p *Publisher) platformAudienceAllows(ctx context.Context, runID, orgID, tenantID string) bool {
+	if p.platformAudience == nil {
+		return true
+	}
+	rec := p.platformAudience.Get(ctx)
+	if rec.Allows(orgID, tenantID) {
+		return true
+	}
+	if p.logger != nil {
+		p.logger.Warn("cloudpublisher: platform credential tier REFUSED for run=%s tenant=%s org=%s — the platform credential audience does not admit it; the run must bring its own credential or be added to the audience",
+			runID, tenantID, orgID)
+	}
+	return false
+}
