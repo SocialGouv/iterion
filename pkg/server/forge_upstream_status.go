@@ -148,6 +148,16 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 // A route whose ONLY failure path is a forge round-trip does NOT need
 // this: an unclassified error there IS a forge error the classifier does
 // not yet know about, and defaulting to 502 is the safe assumption.
+//
+// That premise is far easier to assert than to establish, and asserting
+// it wrongly is how the inversion spreads. A forge CLIENT METHOD is not
+// the same thing as a forge round-trip: pkg/forge/github's App client
+// mints an installation token and signs the App JWT — parsing a stored
+// private key — before its first socket, so a key that is not parseable
+// PEM fails inside what reads like a pure `admin.ListRepos(ctx)`. Trace
+// the call to its first byte on the wire before concluding a site is
+// clean; three arms on this branch were cleared on the shorter reading
+// and were wrong (see the residuals named at each).
 type iterionFault struct{ err error }
 
 // newIterionFault wraps err so a handler whose default arm is 502 can
