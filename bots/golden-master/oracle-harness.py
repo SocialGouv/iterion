@@ -3343,14 +3343,16 @@ def _selftest():
     # check_output all reach the kernel through it; hooking run alone would
     # leave the other four unseen. os.system reaches neither and is refused
     # outright rather than watched, so the door nobody guards fails closed.
-    _git_audit = {"seen": 0, "offenders": []}
+    _git_audit = {"direct": 0, "shell": 0, "offenders": []}
     _real_popen = subprocess.Popen
     _real_system = os.system
 
     class _AuditedPopen(_real_popen):
         def __init__(self, args, *rest, **kw):
+            program = args[0] if isinstance(args, (list, tuple)) and args else args
+            spawns_git = os.path.basename(str(program)) == "git"
             for tokens in _git_command_lines(args):
-                _git_audit["seen"] += 1
+                _git_audit["direct" if spawns_git else "shell"] += 1
                 if not _git_refuses_auto_maintenance(tokens, kw.get("env")):
                     _git_audit["offenders"].append(" ".join(tokens)[:120])
             super().__init__(args, *rest, **kw)
@@ -5158,10 +5160,17 @@ def _selftest():
     # spawns git its own way is caught by having RUN, which is the only thing
     # that found the one this replaces.
     check("aucune commande git du selftest ne laisse la maintenance automatique detachee"
-          " (%d invocations vues)" % _git_audit["seen"],
+          " (%d invocations vues : %d en argv, %d via sh -c)"
+          % (_git_audit["direct"] + _git_audit["shell"], _git_audit["direct"], _git_audit["shell"]),
           _git_audit["offenders"], [])
-    check("le selftest lance bien des commandes git (l'audit a une prise)",
-          _git_audit["seen"] > 0, True)
+    # Les DEUX detecteurs, pas leur somme : le selftest lance les deux formes
+    # (mesure : 426 en argv, 173 via sh -c), donc une branche cassee laisse
+    # l'autre porter le total et un audit a moitie aveugle passe pour un arbre
+    # propre. C'est le plancher d'un banc, pas une mesure de couverture.
+    check("l'audit voit les commandes git lancees en argv direct",
+          _git_audit["direct"] > 0, True)
+    check("l'audit voit les commandes git lancees a travers un shell",
+          _git_audit["shell"] > 0, True)
 
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
