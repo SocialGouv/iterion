@@ -308,11 +308,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.HMACSecretSealed = sealed
 	}
-	if err := s.validateKeyOverrides(r.Context(), teamID, cfg.KeyOverrides); err != nil {
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.KeyOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	if err := s.validateSecretOverrides(r.Context(), teamID, cfg.SecretOverrides); err != nil {
+	if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.SecretOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -493,14 +493,14 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.LaunchVars = req.LaunchVars
 	}
 	if req.KeyOverrides != nil {
-		if err := s.validateKeyOverrides(r.Context(), teamID, req.KeyOverrides); err != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.KeyOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
 		cfg.KeyOverrides = req.KeyOverrides
 	}
 	if req.SecretOverrides != nil {
-		if err := s.validateSecretOverrides(r.Context(), teamID, req.SecretOverrides); err != nil {
+		if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.SecretOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
