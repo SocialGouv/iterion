@@ -748,9 +748,17 @@ func (e *ClawExecutor) validateAndRetry(
 		// — the same accumulation the success path does at the bottom of
 		// this function, on the exit where the money is already spent and
 		// nothing downstream can recover it.
-		var abandoned chainSpend
-		abandoned.add(retryResult)
-		return abandoned.applyTo(result), fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
+		//
+		// FOLDED, not summed: `retryTask` is a copy of the task and keeps
+		// its SessionID, so on a node with `session: inherit/persist` both
+		// attempts report the SAME session — and claude_code's figure is a
+		// session TOTAL that already contains the first attempt's. Summing
+		// there bills those tokens twice on the very backend this exit
+		// exists for (the OAuth forfait that cannot emit structured output
+		// at all), and an over-count kills runs that still had budget. Same
+		// rule, same arguments as the success path below.
+		return foldSpend(result, retryResult, sharesSession(&retryTask)),
+			fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 	}
 	// Accumulate the first attempt from here so per-node accounting
 	// reflects the full cost paid (dropping it understated the run's real

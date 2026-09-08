@@ -194,6 +194,67 @@ func TestExecuteBackendKeepsSpendOnInvalidStructuredOutput(t *testing.T) {
 	})
 }
 
+// TestValidateAndRetry_AbandonedRetryFoldsASharedSession pins the arithmetic
+// of the exit the abandoned retry takes on the backend it exists for.
+//
+// `retryTask := *task` keeps the node's SessionID, so on `session:
+// inherit/persist` both attempts run in ONE session — and claude_code's
+// figure is that session's cumulative TOTAL (CostIsSessionTotal), already
+// containing the first attempt's spend. Summing there reports ~2x the real
+// cost, and an over-count is the direction that kills runs which still had
+// budget. Tokens still SUM: every backend reports its own turn.
+//
+// Driven through validateAndRetry directly because sharesSession reads the
+// TASK, and giving executeBackend a non-empty SessionID would mean plumbing
+// the session-continuity store for an accounting assertion.
+func TestValidateAndRetry_AbandonedRetryFoldsASharedSession(t *testing.T) {
+	// The retry comes back parse-fallback, so it is ABANDONED: the exit
+	// under test surfaces the first attempt's validation error and owes the
+	// bill for both generations. $2.40 is the session total AFTER the retry,
+	// i.e. it already contains the first attempt's $1.50.
+	backend := &capturingBackend{results: []delegate.Result{{
+		Output:             map[string]any{"other": "y", "_cost_usd": 2.40},
+		Tokens:             700,
+		ParseFallback:      true,
+		CostIsSessionTotal: true,
+		BackendName:        "test_backend",
+	}}}
+	reg := delegate.NewRegistry()
+	reg.Register("test_backend", backend)
+	schema := &ir.Schema{
+		Name:   "out_schema",
+		Fields: []*ir.SchemaField{{Name: "answer", Type: ir.FieldTypeString}},
+	}
+	exec := NewClawExecutor(NewRegistry(),
+		&ir.Workflow{Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{"out_schema": schema}},
+		WithBackendRegistry(reg),
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
+	)
+
+	// No OutputSchema on the task, so the last-resort claw extraction bails
+	// before any provider lookup and the abandoned exit is the one taken.
+	task := &delegate.Task{SessionID: "s1"}
+	first := delegate.Result{
+		Output:             map[string]any{"other": "x", "_cost_usd": 1.50},
+		Tokens:             1_000,
+		CostIsSessionTotal: true,
+		BackendName:        "test_backend",
+	}
+
+	out, err := exec.validateAndRetry(context.Background(),
+		backendFields{id: "answerer", outputSchema: "out_schema"},
+		"test_backend", backend, task, first, schema)
+	if err == nil {
+		t.Fatal("precondition: an abandoned parse-fallback retry must fail the node")
+	}
+	if got, _ := out.Output["_cost_usd"].(float64); got != 2.40 {
+		t.Errorf("_cost_usd = %v, want 2.40 — one shared session's total, not 1.50+2.40 billed twice", out.Output["_cost_usd"])
+	}
+	if got := out.Output["_tokens"]; got != 1_700 {
+		t.Errorf("_tokens = %v, want 1700 — each attempt reports its own turn, so tokens sum", got)
+	}
+}
+
 // The schema-validation retry is a retry IN PLACE, and its accounting has
 // to survive like one: the first attempt produced unusable output but was
 // billed for a whole agentic turn.
