@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.120.0](https://github.com/SocialGouv/iterion/compare/v3.119.0...v3.120.0) (2026-09-08)
+
+### Features
+
+* **credentials:** accept a bare Claude setup token, and fingerprint the token ([#948](https://github.com/SocialGouv/iterion/issues/948)) ([78b1957](https://github.com/SocialGouv/iterion/commit/78b195794f20bab9b857e5537c733441bff52256))
+
+    <details><summary>why</summary>
+
+    Three things a session paid for this morning, none of which the existing runbook answered.
+
+    </details>
+
+### Bug Fixes
+
+* **platform-bots:** four defects inside the shadow guard, found after [#851](https://github.com/SocialGouv/iterion/issues/851) merged ([#944](https://github.com/SocialGouv/iterion/issues/944)) ([7ad9695](https://github.com/SocialGouv/iterion/commit/7ad9695b5291626ccf161f80df65a3b753e23971))
+
+    <details><summary>why</summary>
+
+    warnIfOverrideShadowsNewerBake fires for both origins — storedLaunchBot calls it for `team` rows as well as `platform` ones, and versionsBelow has a dedicated team branch — but the remedy baked into the message was unconditionally the platform one: `iterion remote admin bots push bots/<slug>` and `DELETE /api/admin/bots/<slug>`.
+
+    </details>
+
 ## [3.119.0](https://github.com/SocialGouv/iterion/compare/v3.118.1...v3.119.0) (2026-09-08)
 
 ### Features
