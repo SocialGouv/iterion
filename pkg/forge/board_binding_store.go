@@ -30,7 +30,8 @@ import (
 // persists the repair through SaveStatusVocabulary. What no re-resolution can
 // repair — a column deleted outright — becomes DegradedReason.
 
-// ErrBoardBindingNotFound reports a team with no project board bound.
+// ErrBoardBindingNotFound reports a team with no project board bound. A store
+// miss, so OUTSIDE the ErrNotFound class: the forge was never asked.
 var ErrBoardBindingNotFound = errors.New("forge: board binding not found")
 
 // ErrBoardSyncLeaseLost reports a release by a pass that no longer holds the

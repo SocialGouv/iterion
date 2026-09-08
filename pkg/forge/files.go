@@ -48,6 +48,11 @@ type FileClient interface {
 }
 
 // ErrFileNotFound is returned by GetFile when the path does not exist (404).
+//
+// A forge-answered 404 that is nonetheless OUTSIDE the ErrNotFound class: the
+// config-share editor is the only reader and answers every read failure the
+// same way. Moving it into the class hands it to forgeUpstreamStatus instead,
+// which is a behaviour change to own, not a tidy-up.
 var ErrFileNotFound = errors.New("forge: file not found")
 
 // ErrFileConflict is returned by PutFile when the forge rejects the write for
