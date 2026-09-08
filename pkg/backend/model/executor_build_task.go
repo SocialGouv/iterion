@@ -654,10 +654,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 // so the model can correct itself. The OnDelegateRetry observer hook fires
 // for the schema-fallback retry (otherwise invisible to outer observers,
 // which only see transient-error retries), token / duration are
-// accumulated across the first attempt + retry so per-node accounting
-// reflects the full cost paid, and stampDelegateOutputMeta is re-applied
-// after the retry so observability keys remain consistent. Any other
-// validation failure (type mismatch, enum violation) or a retry that
+// accumulated across every generation the node paid for — the first
+// attempt, the retry, and the claw recovery below when it ran — so per-node
+// accounting reflects the full cost paid, and stampDelegateOutputMeta is
+// re-applied after the retry so observability keys remain consistent. Any
+// other validation failure (type mismatch, enum violation) or a retry that
 // still fails returns a wrapped error; the caller propagates it.
 //
 // Why retry on missing-field errors: a real-world failure mode (Seki's
