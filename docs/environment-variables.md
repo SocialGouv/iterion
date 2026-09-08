@@ -6,8 +6,16 @@ none of them. For the four launch knobs (compression, auto-memory,
 permission gate, backend) and their five-level precedence chain, see
 [settings-precedence.md](settings-precedence.md).
 
-Values are read at the point of use; an unset, empty, or unparseable value
-falls back to the listed default.
+Values are read at the point of use. An unset or empty value takes the
+listed default. An **unparseable** value is handled per-variable and
+documented in each row: most fall back to the default (some with a
+one-time stderr warning), but the spend and lifecycle dials fail loudly
+instead — `ITERION_SCRATCH_RETENTION`, `ITERION_WORKTREE_POOL_MAX`,
+`ITERION_SHUTDOWN_DELAY`, `ITERION_SHUTDOWN_TEARDOWN` and every
+`pkg/config` cloud overlay refuse to start, and
+`ITERION_BUDGET_EXIT_GRACE` fails **closed** to `0`. A guard that
+silently stopped guarding because of a typo is worse than one that
+refuses to start.
 
 ## Backends and models
 
@@ -26,8 +34,8 @@ falls back to the listed default.
 | `ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT` | How long a session may keep *talking* without *acting*. The idle tiers only see silence; they are blind to a model streaming text and thinking in circles (observed after a network outage: 20+ min of reasoning, no tool call, no commit). Only a tool_use, a tool result, or a turn's ResultMessage resets this timer. Deliberately longer than the hot tier so one slow build does not trip it. `0` disables it. | `25m` |
 | `ITERION_CLAUDE_CODE_CLOSE_GRACE` | How long the `claude_code` subprocess gets to exit on its own after stdin closes, before the shutdown ladder escalates. Bounds `close()` so a hung child (the CLI keeping bash background loops alive past the agent's logical end) cannot deadlock the caller's `defer sess.Close()`. | `3s` |
 | `ITERION_CLAUDE_CODE_CLOSE_TERM` | How long the same subprocess gets after `SIGTERM` before the ladder resorts to `SIGKILL`. | `1s` |
-| `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction (`0 < r ≤ 1`) at which the `claw` router compacts the conversation. Used only when the workflow does not set the field. | engine default |
-| `ITERION_CLAW_COMPACT_PRESERVE_RECENT` | Number of most-recent messages kept verbatim when `claw` compacts. Used only when the workflow does not set the field. | engine default |
+| `ITERION_CLAW_COMPACT_THRESHOLD_RATIO` | Context-window fraction at which the `claw` router compacts the conversation. Used only when neither the **node** nor the workflow sets the field (precedence: node → workflow → this → engine default). A ratio outside `(0, 1]` is ignored. | engine default |
+| `ITERION_CLAW_COMPACT_PRESERVE_RECENT` | Number of most-recent messages kept verbatim when `claw` compacts. Used only when neither the **node** nor the workflow sets the field. A non-positive count is ignored. | engine default |
 | `ITERION_PI_BIN` | Absolute path to the `pi` binary — e.g. a `bun --compile` single-file build on a host with no Node runtime. | `pi` on `PATH` |
 | `ITERION_PI_MODE` | Selects the `pi` transport. The default is the long-lived `--mode rpc` session — tool events reach the studio timeline, operator chat is delivered by pi's native `steer`, accounting comes from `get_session_stats`, and a pre-flight handshake resolves the model before any token is spent. `print` rolls back to the one-shot `--mode json` path. | `rpc` |
 | `ITERION_PI_STREAM_COLD_TIMEOUT` | How long a `pi` RPC session may produce no event at all before the node fails transiently. | `90s` |
@@ -70,13 +78,13 @@ documented in [sandbox.md](sandbox.md).
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_SKIP_MCP_HEALTH` | Truthy → do not abort the run when a declared MCP server fails its startup health-check; log a warning and continue. Equivalent to the `iterion run --skip-mcp-health` flag. Useful when an HTTP/OAuth MCP server is unreachable in this environment but the run does not depend on it. | off (abort on failure) |
+| `ITERION_SKIP_MCP_HEALTH` | `1` or `true` (case-insensitive; nothing else — `on`/`yes` are silently inert) → do not abort the run when a declared MCP server fails its startup health-check; log a warning and continue. Equivalent to the `iterion run --skip-mcp-health` flag. Useful when an HTTP/OAuth MCP server is unreachable in this environment but the run does not depend on it. | off (abort on failure) |
 | `ITERION_BRANCH_CANCEL_GRACE` | Grace period (Go duration, e.g. `30s`) a cancelled fan-out branch is given to unwind before the collector stops waiting on it — raise it for backends that need longer to abort. | `5s` |
 | `ITERION_GIT_AUTHOR_NAME` | Commit-author name seeded into a cloud-runner clone's local git config (no `~/.gitconfig` is mounted in the sandbox). The push-token identity is the preferred attributed path; this fires token-less. | `iterion-runner[bot]` |
 | `ITERION_GIT_AUTHOR_EMAIL` | Commit-author email for the same cloud-runner clone. The default uses a reserved `.invalid` domain (RFC 2606) so the commit maps to no real account. | `iterion-runner@bot.iterion.invalid` |
 | `ITERION_SHUTDOWN_DELAY` | Lame-duck window on SIGTERM: `/readyz` answers 503 for this long while the listener still accepts, so a load balancer can stop routing to the pod before its socket closes. A malformed value is a startup error, never a silent 0. See [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md). | `5s` in **cloud** mode; `0` locally (`iterion studio`, and `iterion server` without `ITERION_MODE=cloud`, which routes to the studio) |
 | `ITERION_SHUTDOWN_TEARDOWN` | What follows that window: draining in-flight runs, then letting in-flight HTTP requests finish. The ceiling on a long upload or a streamed response during a deploy. Must be > 0. | `30s` in **cloud** mode; `60s` locally |
-| `ITERION_WORKTREE_POOL_MAX` | How many per-run worktrees **no live run owns** a store may park under `<store-dir>/worktrees/` before the runtime reclaims the oldest. A worktree is a full checkout of the repository, so the pool is where a long-lived store's disk goes. The bound takes only what a durable ref already holds with nothing uncommitted — never a dirty tree, never a resumable run's checkout — and warns, naming the command, when it cannot get back under. `off` disables it. See [worktree-pool.md](worktree-pool.md). | `8` |
+| `ITERION_WORKTREE_POOL_MAX` | How many per-run worktrees **no live run owns** a store may park under `<store-dir>/worktrees/` before the runtime reclaims the oldest. A worktree is a full checkout of the repository, so the pool is where a long-lived store's disk goes. The bound takes only what a durable ref already holds with nothing uncommitted — never a dirty tree, never a resumable run's checkout — and warns, naming the command, when it cannot get back under. `off`, `none` or a non-positive count disables it; any other non-integer value is refused with an error naming the variable. See [worktree-pool.md](worktree-pool.md). | `8` |
 | `ITERION_SCRATCH_RETENTION` | How long an untouched `${PROJECT_SCRATCH_DIR}` entry is kept. A run sweeps the workspace's scratch on its way out, and `iterion clean` sweeps it too; both take only entries nothing has written to for this long — **age is the concurrency guard**, because scratch is deliberately shared between runs (a subbot writes into its parent's, which is how fan-in works). `off` disables the automatic sweep. | `168h` (7 days) |
 | `ITERION_RUNNER_DRAIN_MODE` | `complete` (lame-duck: finish the in-flight run before exiting) or `interrupt` (cancel + checkpoint for auto-resume elsewhere). | `complete` |
 | `ITERION_RUNNER_DRAIN_TIMEOUT` | Lame-duck ceiling — the longest a runner pod waits for its in-flight run before capping it for a checkpoint-resume. | `8h` |
@@ -98,17 +106,21 @@ documented in [sandbox.md](sandbox.md).
 The run observer (`pkg/alert`) watches runtime events plus a per-run
 liveness heartbeat and fires on stall, budget warning/exceeded, and
 failure. These variables configure where those alerts go; they are read
-by both `iterion studio` and the cloud server. Distinct from the
+by both `iterion studio` and the cloud server — except
+`ITERION_ALERTS_BASE_URL`, which is studio-only (a cloud deployment's
+deep links come from `ITERION_PUBLIC_URL`). Where the two differ on a
+malformed value, the row says so: the studio shrugs and keeps its
+default, the cloud server refuses to start. Distinct from the
 user-addressed web-push notifications of
 [notifications.md](notifications.md), which are per-recipient rather
 than per-deployment.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `ITERION_ALERTS_WEBHOOK_URL` | Generic incoming webhook (Slack / Discord) the alert sink posts to. Empty disables the sink. It is an **operator-set** destination posted to with a plain 15s-timeout client — unlike the operator-*supplied* completion webhooks of `pkg/notify`, it carries no SSRF guard, so point it only at a URL you control. | unset (no webhook sink) |
-| `ITERION_ALERTS_STALL_TIMEOUT` | No-activity window after which a non-terminal run is flagged **stalled** (Go duration). An unparseable value keeps the default rather than disabling the check. | `5m` |
-| `ITERION_ALERTS_BASE_URL` | Origin used to build clickable `/runs/<id>` deep links in webhook payloads. When unset it is derived from the bind address + port; with an OS-assigned (`0`) port the absolute base is left empty, since a wrong link is worse than none. | derived from bind + port |
-| `ITERION_ALERTS_DESKTOP_ENABLED` | `true` turns on the native desktop-notification sink. Parsed strictly — anything unparseable is `false`. | `false` |
+| `ITERION_ALERTS_WEBHOOK_URL` | Generic incoming webhook (Slack / Discord) the alert sink posts to. Empty disables the sink. It goes through the shared `httpdial` guard in **non-strict** mode on a 15s-timeout client: DNS is pinned per connection and redirects are never followed, but private/loopback destinations are deliberately allowed (an internal Mattermost is a legitimate receiver). The operator-*supplied* completion webhooks of `pkg/notify` run the same guard **strict**, refusing private ranges unless opted out. | unset (no webhook sink) |
+| `ITERION_ALERTS_STALL_TIMEOUT` | No-activity window after which a non-terminal run is flagged **stalled** (Go duration). An unparseable value keeps the default under `iterion studio`; on the cloud server it is a config-load error and the process refuses to start. | `5m` |
+| `ITERION_ALERTS_BASE_URL` | Origin used to build clickable `/runs/<id>` deep links in webhook payloads. **Studio only.** When unset it is derived from the bind address + port; with an OS-assigned (`0`) port the absolute base is left empty, since a wrong link is worse than none. The cloud server ignores this variable and uses `ITERION_PUBLIC_URL`. | derived from bind + port (studio); `ITERION_PUBLIC_URL` (cloud) |
+| `ITERION_ALERTS_DESKTOP_ENABLED` | `true` turns on the native desktop-notification sink. Parsed strictly: under `iterion studio` anything unparseable is `false`; on the cloud server it is a config-load error. | `false` |
 
 ## Platform budget ceiling (cloud)
 
