@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -800,6 +801,78 @@ func TestFailedHumanLLMHalfBooksItsSpendInProduction(t *testing.T) {
 	}
 	if r.Checkpoint.BudgetCostUSD <= 0 {
 		t.Fatalf("the failed generation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// meteredCtxBlockingExecutor is main's ctxBlockingExecutor with the one thing
+// this file is about: the hung node reports what it burned before the deadline
+// cut it off.
+type meteredCtxBlockingExecutor struct {
+	blockNode string
+}
+
+func (e *meteredCtxBlockingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
+	if node.NodeID() == e.blockNode {
+		<-ctx.Done()
+		return map[string]any{"_tokens": 12_000, "_cost_usd": 3.10}, ctx.Err()
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+// The duration-deadline exit is its own terminal return — it never reaches
+// handleNodeFailure, so the booking threaded through that call cannot cover
+// it. Neither side of this branch's merge tested it: the spend tests have no
+// MaxDuration case, and main's deadline tests are about ATTRIBUTION (is this
+// DeadlineExceeded really ours?), not about accounting. Dropping the booking
+// while resolving the conflict there would have left a green tree.
+//
+// A node killed by max_duration is also the single most expensive way for one
+// to die — it ran for the entire remaining budget — so it is the last one that
+// can afford to be forgotten.
+func TestBudgetDeadlineFailureBooksWhatTheNodeBurned(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "deadline_spend",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			// "a" is fast, so a checkpoint exists before "slow" dies and the
+			// failure is resumable rather than first-node terminal.
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "a", To: "slow"}, {From: "slow", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		// Long enough to reach "slow", short enough that the run's remaining
+		// duration is genuinely spent when the deadline fires — main's rule is
+		// that the deadline must have ELAPSED, not merely be close.
+		Budget: &ir.Budget{MaxDuration: "300ms"},
+	}
+
+	st := tmpStore(t)
+	eng := New(wf, st, &meteredCtxBlockingExecutor{blockNode: "slow"})
+	err := eng.Run(context.Background(), "run-deadline-spend", nil)
+	if err == nil {
+		t.Fatal("the duration deadline was supposed to end the run")
+	}
+	if !strings.Contains(err.Error(), "budget exceeded") || !strings.Contains(err.Error(), "duration") {
+		t.Fatalf("this test rests on taking the duration-deadline exit, got: %v", err)
+	}
+
+	r, loadErr := st.LoadRun(context.Background(), "run-deadline-spend")
+	if loadErr != nil {
+		t.Fatalf("load run: %v", loadErr)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("no checkpoint to read the budget from")
+	}
+	if r.Checkpoint.BudgetTokensUsed != 12_000 {
+		t.Fatalf("the timed-out node's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
+	}
+	if r.Checkpoint.BudgetCostUSD != 3.10 {
+		t.Fatalf("the timed-out node's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
 	}
 }
 
