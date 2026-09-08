@@ -129,9 +129,6 @@ func newTestExecutorForRetry(maxAttempts int) *ClawExecutor {
 // retry cannot even spawn and reports nothing, and taking the last attempt's
 // figure reports the cost of nothing. The caps, the org ledger and a lending
 // donor all read the map, so the true figure has to survive.
-//
-// MAX, never a sum: the CLI's accounting is session-cumulative, so a retry
-// inside one session re-reports the running total (see the sibling test).
 func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
@@ -142,7 +139,7 @@ func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 			Output:   map[string]any{"_tokens": tokens, "_cost_usd": usd},
 		}
 	}
-	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		if calls == 1 {
 			// A whole session, then a transient wall.
@@ -165,22 +162,31 @@ func TestRetryDelegateLoop_KeepsTheSpendItDiscards(t *testing.T) {
 	}
 }
 
-// The other direction, and the reason the fold is a MAX *when the attempts
-// share a session*: a retry that RESUMED the session re-reports the
-// session's RUNNING TOTAL, so summing the attempts would bill the same
-// tokens twice. The session id is what says so — the task carries it into
-// every attempt, and this test declares one.
-func TestRetryDelegateLoop_CumulativeUsageIsNotDoubled(t *testing.T) {
+// The other direction, and the ONE case that folds at a MAX: two attempts
+// CONTINUING one session, on a backend whose cost figure the provider
+// itself computed over the whole session (claude_code's TotalCostUSD, the
+// only shipped case — Result.CostIsSessionTotal says so). There attempt 2
+// re-reports the running total, and summing would bill it twice.
+//
+// The tokens in the same reports are NOT cumulative — claude_code adds the
+// resumed formatting pass's Usage onto pass 1's — so they still sum. Both
+// halves are asserted here precisely because they disagree.
+func TestRetryDelegateLoop_SessionTotalCostIsNotDoubled(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
-	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "sess-1", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
 		calls++
-		// Attempt 1 reports 1000; attempt 2 reports the session total, 1300.
-		tokens := 1000
+		// Attempt 1 burns 1000 tokens for $0.10; attempt 2's own turn burns
+		// 300 more, and the CLI reports the SESSION's $0.13.
+		tokens, usd := 1000, 0.10
 		if calls > 1 {
-			tokens = 1300
+			tokens, usd = 300, 0.13
 		}
-		r := delegate.Result{Tokens: tokens, Output: map[string]any{"_tokens": tokens, "_cost_usd": float64(tokens) / 10000}}
+		r := delegate.Result{
+			Tokens:             tokens,
+			CostIsSessionTotal: true,
+			Output:             map[string]any{"_tokens": tokens, "_cost_usd": usd},
+		}
 		if calls < 2 {
 			return r, &delegate.ErrTransient{Reason: "stream closed"}
 		}
@@ -189,8 +195,43 @@ func TestRetryDelegateLoop_CumulativeUsageIsNotDoubled(t *testing.T) {
 	if err != nil || calls != 2 {
 		t.Fatalf("want two attempts then success: err=%v calls=%d", err, calls)
 	}
+	if usd, _ := got.Output["_cost_usd"].(float64); usd != 0.13 {
+		t.Fatalf("a session-cumulative cost was summed instead of taken at its max: %v", usd)
+	}
 	if got.Tokens != 1300 {
-		t.Fatalf("cumulative usage was summed instead of taken at its max: %d", got.Tokens)
+		t.Fatalf("per-call tokens were folded at their max instead of summed: %d", got.Tokens)
+	}
+}
+
+// The same shared session, but the cost figure is an ESTIMATE derived from
+// this call's tokens — claude_code under the OAuth forfait (the CLI reports
+// no cost, AnnotateWithUSD degrades to Annotate), and every cost.Annotate
+// backend besides. Nothing about it is cumulative, so it sums like the
+// tokens it was computed from. A fold keyed on the session ALONE read this
+// shape as cumulative and dropped a whole attempt's spend.
+func TestRetryDelegateLoop_EstimatedCostSumsEvenInOneSession(t *testing.T) {
+	e := newTestExecutorForRetry(3)
+	calls := 0
+	got, err := e.retryDelegateLoop(context.Background(), "node1", delegate.BackendClaudeCode, true, func() (delegate.Result, error) {
+		calls++
+		tokens, usd := 9000, 0.90
+		if calls > 1 {
+			tokens, usd = 1300, 0.13
+		}
+		r := delegate.Result{Tokens: tokens, Output: map[string]any{"_tokens": tokens, "_cost_usd": usd}}
+		if calls < 2 {
+			return r, &delegate.ErrTransient{Reason: "stream closed"}
+		}
+		return r, nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("want two attempts then success: err=%v calls=%d", err, calls)
+	}
+	if got.Tokens != 10300 {
+		t.Fatalf("tokens = %d, want 10300 (every attempt billed its own turn)", got.Tokens)
+	}
+	if usd, _ := got.Output["_cost_usd"].(float64); usd < 1.02 {
+		t.Fatalf("an estimated cost was folded at its max instead of summed: %v", usd)
 	}
 }
 
@@ -202,7 +243,7 @@ func TestRetryDelegateLoop_CumulativeUsageIsNotDoubled(t *testing.T) {
 func TestRetryDelegateLoop_FreshSessionsEachSpendTheirOwn(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
-	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		// Attempt 1 runs an agentic session; attempt 2 opens its own and
 		// barely gets going. Neither report contains the other.
@@ -236,7 +277,7 @@ func TestRetryDelegateLoop_FreshSessionsEachSpendTheirOwn(t *testing.T) {
 func TestRetryDelegateLoop_CancelledKeepsTheSpend(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	ctx, cancel := context.WithCancel(context.Background())
-	got, err := e.retryDelegateLoop(ctx, "node1", "claw", "", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(ctx, "node1", "claw", false, func() (delegate.Result, error) {
 		cancel()
 		return delegate.Result{Tokens: 500, Output: map[string]any{"_tokens": 500, "_cost_usd": 0.05}},
 			&delegate.ErrTransient{Reason: "stream closed"}
@@ -253,7 +294,7 @@ func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
 	want := delegate.Result{Output: map[string]any{"k": "v"}, BackendName: "claw"}
-	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		return want, nil
 	})
@@ -271,7 +312,7 @@ func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
 func TestRetryDelegateLoop_RetriesOnTransientThenSucceeds(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
-	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		if calls < 3 {
 			return delegate.Result{}, &delegate.ErrTransient{Reason: "subprocess killed"}
@@ -292,7 +333,7 @@ func TestRetryDelegateLoop_RetriesOnTransientThenSucceeds(t *testing.T) {
 func TestRetryDelegateLoop_GivesUpAtMaxAttempts(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
-	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		return delegate.Result{}, &delegate.ErrTransient{Reason: "subprocess killed"}
 	})
@@ -307,7 +348,7 @@ func TestRetryDelegateLoop_GivesUpAtMaxAttempts(t *testing.T) {
 func TestRetryDelegateLoop_NonRetryableErrorStopsImmediately(t *testing.T) {
 	e := newTestExecutorForRetry(5)
 	calls := 0
-	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		return delegate.Result{}, errors.New("exit status 1") // application error, not retryable
 	})
@@ -325,7 +366,7 @@ func TestRetryDelegateLoop_ContextCancelStopsBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	// Cancel after the first call so we exit during the backoff sleep.
-	_, err := e.retryDelegateLoop(ctx, "node1", "claw", "", func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(ctx, "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		if calls == 1 {
 			cancel()
@@ -347,7 +388,7 @@ func TestRetryDelegateLoop_OnDelegateRetryHookFires(t *testing.T) {
 		hookFires = append(hookFires, info)
 	}
 	calls := 0
-	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", "", func() (delegate.Result, error) {
+	_, err := e.retryDelegateLoop(context.Background(), "node1", "claw", false, func() (delegate.Result, error) {
 		calls++
 		if calls < 3 {
 			return delegate.Result{}, &delegate.ErrTransient{Reason: "boom"}

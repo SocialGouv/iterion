@@ -194,23 +194,24 @@ func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
 // This is the no-fallback form: callers with no further chain element
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
-func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sessionID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sessionID, nil, fn)
+func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sharedSession bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
 // the caller has a fallback route that would take THIS failure, which
 // lets it skip a budget that cannot succeed (see shouldRetryInPlace).
 // A nil predicate means "no route will take it".
-// sessionID is the session the attempts run in, taken from the task the
-// closure re-invokes with. It is the ONE fact that decides how two
-// attempts' accounting folds together — see richerSpend. Empty means
-// every attempt opens a session of its own.
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sessionID string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	// The closure re-invokes with an UNCHANGED task, so this answer holds
-	// for every attempt: a session resumed once is resumed each time, and
-	// a task with none opens a fresh one each time.
-	sameSession := sessionID != ""
+//
+// sharedSession says the attempts CONTINUE one session — the task carries
+// a session id and does not fork it, so attempt 2 lands in the state
+// attempt 1 left. The closure re-invokes with an UNCHANGED task, so the
+// caller can answer it once for every attempt. It is computed at the call
+// site, where the task is in hand: a fork sets ForkSession beside the
+// PARENT id, and reading only the id would call two disjoint children one
+// session. It narrows exactly one thing in foldSpend — whether a
+// session-total cost may be folded at its MAX.
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -239,54 +240,81 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 			// Cancelled between attempts: no output survives, but what the
 			// attempts already burned is not undone by it — the caps and
 			// the ledgers read the map, not the struct.
-			return richerSpend(result, delegate.Result{}, sameSession), ctx.Err()
+			return foldSpend(result, delegate.Result{}, sharedSession), ctx.Err()
 		}
 
 		prev := result
 		result, err = fn()
-		result = richerSpend(prev, result, sameSession)
+		result = foldSpend(prev, result, sharedSession)
 	}
 	return result, err
 }
 
-// richerSpend folds two attempts' ACCOUNTING onto the later attempt's
+// sharesSession reports whether every attempt of one retry loop lands in
+// the SAME session state — the precondition for folding two attempts'
+// session-cumulative cost at its MAX (see foldSpend).
+//
+// A FORK does not qualify, which is why this cannot be `SessionID != ""`.
+// applySessionContinuity sets ForkSession beside the PARENT id, and
+// delegate.Task records what that means: "the forked session gets a new
+// ID and does not mutate the original session". The retry closure
+// re-invokes with the unchanged task, so each attempt forks a fresh child
+// and bills its own work while the id stays non-empty throughout.
+func sharesSession(task *delegate.Task) bool {
+	return task != nil && task.SessionID != "" && !task.ForkSession
+}
+
+// foldSpend folds two attempts' ACCOUNTING onto the later attempt's
 // result — the answer is the later one's, the figure is what both of them
-// truly burned. Whether that figure is a MAX or a SUM is decided by ONE
-// fact, and getting it from the wrong one is wrong in both directions.
+// truly burned. Dropping the earlier attempt (the historical behaviour)
+// reports the cost of nothing when the LAST attempt is the cheap one: a
+// session spends minutes, the retry cannot even spawn, and the caps, the
+// org ledger and a lending donor all read that zero.
 //
-// A CLI backend reports usage per SESSION, cumulatively (the reason
-// annotateCost takes a MAX over the result messages of one invocation).
-// So:
+// The two metrics do NOT fold the same way, and no backend NAME decides
+// it — on claude_code the halves of one result disagree:
 //
-//   - sameSession: the retry RESUMED the session, and its report already
-//     contains the earlier attempt's spend. Adding them double-counts it.
-//     Take the higher — the later report, unless the attempt that carried
-//     the spend was the earlier one (attempt 1 runs an agentic session,
-//     attempt 2 cannot even spawn and reports nothing).
-//   - not sameSession: each attempt opened a session of its own and each
-//     report covers only its own work. The spend is their SUM. A MAX here
-//     UNDER-reports, which is the direction that lets a run walk past
-//     max_cost_usd — and a node executing for the first time carries no
-//     session id, so this is the common case, not the exotic one.
+//   - TOKENS always SUM. Every shipped backend reports its own turn:
+//     claude_code and codex ADD the resumed formatting pass's Usage onto
+//     pass 1's, and pi deliberately keeps the collector's per-TURN numbers
+//     on a resumed session. Two attempts therefore report disjoint counts,
+//     and a MAX here UNDER-reports — the direction that lets a run walk
+//     past max_tokens.
+//   - COST folds at its MAX only when both figures are session-cumulative
+//     readings of ONE shared session (Result.CostIsSessionTotal, which
+//     claude_code sets from the CLI's TotalCostUSD). There attempt 2's
+//     report already contains attempt 1's spend and adding double-counts
+//     it. Everywhere else — every cost.Annotate estimate, including
+//     claude_code's own under the OAuth forfait — the figure is derived
+//     from this call's tokens and SUMS with them.
+//
+// Demanding the flag on BOTH sides is what makes the motivating case still
+// work: an attempt that could not spawn reports zero with the flag false,
+// and SUM then yields the earlier attempt's figure unchanged — the same
+// answer a MAX would give.
 //
 // The precedents in this file agree once read this way: chainSpend adds
 // across ROUTES (always different sessions), and validateAndRetry adds
 // across its two invocations, its comment recording that dropping the
 // first attempt's usage "broke budget enforcement at the margins".
-func richerSpend(prev, next delegate.Result, sameSession bool) delegate.Result {
+func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
 	pt, nt := prev.Tokens, next.Tokens
 	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
 
-	tokens, usd := pt+nt, pc+nc
-	if sameSession {
-		tokens, usd = nt, nc
-		if pt > nt {
-			tokens = pt
-		}
+	tokens := pt + nt
+	usd := pc + nc
+	if sharedSession && prev.CostIsSessionTotal && next.CostIsSessionTotal {
+		usd = nc
 		if pc > nc {
 			usd = pc
 		}
 	}
+	// The folded figure is still a session reading when every non-zero
+	// contributor to it was one — so a THIRD attempt's session total is
+	// recognised as subsuming the two already folded, instead of being
+	// summed onto a running total it already contains.
+	next.CostIsSessionTotal = (pc == 0 || prev.CostIsSessionTotal) &&
+		(nc == 0 || next.CostIsSessionTotal)
 	if tokens == nt && usd == nc {
 		return next
 	}
@@ -956,7 +984,7 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend = backendName
-		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, task.SessionID, accepts, func() (delegate.Result, error) {
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
@@ -1003,7 +1031,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionID = ""
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
-				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, fresh.SessionID, accepts, func() (delegate.Result, error) {
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return backend.Execute(ctx, fresh)
 				})
 				if freshErr == nil {

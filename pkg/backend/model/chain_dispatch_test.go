@@ -986,25 +986,31 @@ func TestCollapseHintOnlyChain_TrimsPrefixNotWholeChain(t *testing.T) {
 	}
 }
 
-// cumulativeScriptedBackend models a CLI whose usage accounting is
-// SESSION-CUMULATIVE: the second attempt's report contains the first
-// attempt's spend, because it resumed the same session.
-type cumulativeScriptedBackend struct {
+// sessionScriptedBackend models claude_code on a session: every call bills
+// its OWN turn's tokens (Execute adds the resumed formatting pass's usage
+// onto pass 1's, so Result.Tokens is per-call), while the cost the CLI
+// reports covers the whole session so far — the split Result.CostIsSessionTotal
+// exists to carry.
+type sessionScriptedBackend struct {
 	name    string
 	calls   int
-	report  []int // tokens reported on each successive call
-	failFor int   // fail the first N calls
+	tokens  []int     // this call's own tokens
+	cost    []float64 // the session total the CLI reports after this call
+	failFor int       // fail the first N calls
 }
 
-func (b *cumulativeScriptedBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
+func (b *sessionScriptedBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
 	b.calls++
-	tokens := b.report[len(b.report)-1]
-	if b.calls <= len(b.report) {
-		tokens = b.report[b.calls-1]
+	i := b.calls - 1
+	if i >= len(b.tokens) {
+		i = len(b.tokens) - 1
 	}
 	res := delegate.Result{
-		BackendName: b.name, Tokens: tokens, Duration: time.Millisecond,
-		Output: map[string]any{"served_by": b.name, "_tokens": tokens},
+		BackendName: b.name, Tokens: b.tokens[i], Duration: time.Millisecond,
+		CostIsSessionTotal: true,
+		Output: map[string]any{
+			"served_by": b.name, "_tokens": b.tokens[i], "_cost_usd": b.cost[i],
+		},
 	}
 	if b.calls <= b.failFor {
 		return res, &delegate.ErrTransient{Reason: "stream closed"}
@@ -1012,32 +1018,62 @@ func (b *cumulativeScriptedBackend) Execute(_ context.Context, _ delegate.Task) 
 	return res, nil
 }
 
-// The session id has to REACH the fold, not merely exist on the task. If
-// the dispatch hands the loop an empty one, a node that resumed its
-// session is billed for the running total twice — silently, and in the
-// direction that parks a run that still had budget. Nothing else pins
-// this wire: the fold's own tests call the loop directly.
-func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
-	head := &cumulativeScriptedBackend{
-		name: delegate.BackendClaudeCode, report: []int{1000, 1300}, failFor: 1,
-	}
+func claudeCodeChain(t *testing.T, task *delegate.Task, head delegate.Backend) chainOutcome {
+	t.Helper()
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, head)
 	e := newFallbackExecutor(reg, EventHooks{})
-
 	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
-		func(_ context.Context, _ string) (*delegate.Task, error) {
-			return &delegate.Task{NodeID: "review", SessionID: "sess-1"}, nil
-		})
+		func(_ context.Context, _ string) (*delegate.Task, error) { return task, nil })
 	out, err := e.dispatchChain(context.Background(), "review",
 		[]chainElement{{Label: "primary"}}, "claude-opus-5", build)
 	if err != nil {
 		t.Fatalf("the second attempt succeeds: %v", err)
 	}
+	return out
+}
+
+// The session facts have to REACH the fold, not merely sit on the task. If
+// the dispatch hands the loop the wrong answer, a node that resumed its
+// session is billed for the running total twice — silently, and in the
+// direction that parks a run that still had budget. Nothing else pins this
+// wire: the fold's own tests call the loop directly.
+func TestChainCarriesTheTaskSessionIntoTheSpendFold(t *testing.T) {
+	head := &sessionScriptedBackend{
+		name: delegate.BackendClaudeCode, failFor: 1,
+		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
+	}
+	out := claudeCodeChain(t, &delegate.Task{NodeID: "review", SessionID: "sess-1"}, head)
 	if head.calls != 2 {
 		t.Fatalf("want one retry, got %d calls", head.calls)
 	}
+	if got, _ := out.Result.Output["_cost_usd"].(float64); got != 0.13 {
+		t.Errorf("_cost_usd = %v, want 0.13 — the attempts continued one session, so 0.13 already contains the 0.10; anything else means the shared-session fact never reached the fold", got)
+	}
 	if got := out.Result.Tokens; got != 1300 {
-		t.Errorf("tokens = %d, want 1300 — the attempts resumed one session, so 1300 already contains the 1000; %d means the session id never reached the fold", got, got)
+		t.Errorf("tokens = %d, want 1300 — each attempt billed its own turn", got)
+	}
+}
+
+// The same task, plus the fork bit. `session: fork` sets ForkSession beside
+// the PARENT id, and a fork "does not mutate the original session": every
+// attempt opens a disjoint child and bills its own work, so the costs SUM
+// even though the id is non-empty throughout. A fold reading only the id
+// MAXes them and loses a whole attempt's spend.
+func TestChainDoesNotShareTheSessionItForks(t *testing.T) {
+	head := &sessionScriptedBackend{
+		name: delegate.BackendClaudeCode, failFor: 1,
+		tokens: []int{1000, 300}, cost: []float64{0.10, 0.13},
+	}
+	out := claudeCodeChain(t,
+		&delegate.Task{NodeID: "review", SessionID: "sess-1", ForkSession: true}, head)
+	if head.calls != 2 {
+		t.Fatalf("want one retry, got %d calls", head.calls)
+	}
+	if got, _ := out.Result.Output["_cost_usd"].(float64); got != 0.23 {
+		t.Errorf("_cost_usd = %v, want 0.23 — two forks are two sessions, and neither report contains the other", got)
+	}
+	if got := out.Result.Tokens; got != 1300 {
+		t.Errorf("tokens = %d, want 1300", got)
 	}
 }
