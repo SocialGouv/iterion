@@ -176,11 +176,13 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 		//
 		// And it cannot be left to the next node's pre-exec check, which is
 		// what an earlier draft of this claimed: checkBudgetBeforeExec runs
-		// on the STANDARD node path only, while Done/Fail/compute/router/
-		// subbot/emit/wait are dispatched before it ever runs. A dropped
-		// overrun whose successor is any of those is gone for good —
-		// takeExceeded has a single consumer — and the run finishes over its
-		// cap with no budget_exceeded event at all.
+		// on the STANDARD node path only. A Done/Fail terminal, a compute,
+		// subbot, emit, wait or await_answers node — and every router mode
+		// but `condition` — is dispatched by execLoopDispatchSpecial before
+		// that check is ever reached. A dropped overrun whose successor is
+		// one of those is gone for good (takeExceeded has a single consumer)
+		// and the run finishes over its cap with no budget_exceeded event at
+		// all.
 		if b.exceeded != nil {
 			b.exceeded = b.liveOverrunLocked()
 		}
