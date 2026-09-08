@@ -26,8 +26,8 @@ one: both are installed, both land on `PATH`, repo first. See
 
 ## What you get for free in iterion-sandbox-slim
 
-- `git`, `curl`, `bash`, `tini`, `jq`
-- Node.js 22 (system install, used by `claude` / `codex` CLIs)
+- `git`, `curl`, `bash`, `tini`, `jq`, `gnupg`, `procps`, `ca-certificates`
+- Node.js 24 (system install, used by `claude` / `codex` CLIs)
 - `devbox` + Nix (single-user, ready for `devbox shell` / `devbox run`)
 
 ## What you add via devbox.json
