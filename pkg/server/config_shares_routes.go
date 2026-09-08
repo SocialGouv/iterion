@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -79,13 +80,17 @@ func (s *Server) shareURL(id, token string) string {
 	return base + "/config/" + id + "#" + token
 }
 
-// botConfigShareSpec resolves a bot_id to its declared config-share surface
-// (manifest config_share: block), or nil when the bot declares none or is not
-// resolvable on this server (a loose .bot, or a bot absent from the effective
-// paths). Best-effort by design: the operator is trusted (canManageTeam), so a
-// bot without a discoverable surface mints with explicit operator-supplied
-// paths — the block is a guard-rail + convenience for the common case, not the
-// trust boundary against the operator.
+// botManifestFor is botManifest with the launching team's own row consulted
+// first — the manifest counterpart of effectiveFindByNameForTeam, for a lane
+// whose LAUNCH resolves the team tier. Reading a different tier than the
+// launch means describing a bundle that is not the one running.
+func (s *Server) botManifestFor(ctx context.Context, teamID, botID string) *bundle.Manifest {
+	if m := s.teamBotManifest(ctx, teamID, botID); m != nil {
+		return m
+	}
+	return s.botManifest(botID)
+}
+
 // botManifest loads a bot's manifest.yaml (persona display_name, config_share
 // surface, …) resolving the bot id against the effective bot paths. Returns nil
 // when the bot isn't resolvable on this server (e.g. a loose .bot).
@@ -106,6 +111,13 @@ func (s *Server) botManifest(botID string) *bundle.Manifest {
 	return m
 }
 
+// botConfigShareSpec resolves a bot_id to its declared config-share surface
+// (manifest config_share: block), or nil when the bot declares none or is not
+// resolvable on this server (a loose .bot, or a bot absent from the effective
+// paths). Best-effort by design: the operator is trusted (canManageTeam), so a
+// bot without a discoverable surface mints with explicit operator-supplied
+// paths — the block is a guard-rail + convenience for the common case, not the
+// trust boundary against the operator.
 func (s *Server) botConfigShareSpec(botID string) *bundle.ConfigShareSpec {
 	if m := s.botManifest(botID); m != nil {
 		return m.ConfigShare

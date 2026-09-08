@@ -74,7 +74,7 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 	if vars == nil || strings.TrimSpace(q.PRURL) == "" {
 		return
 	}
-	for _, want := range s.handoffConsumersFor(botID) {
+	for _, want := range s.handoffConsumersFor(ctx, cfg.TenantID, botID) {
 		if _, pinned := vars[want.Var]; pinned {
 			continue
 		}
@@ -86,12 +86,15 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 	}
 }
 
-// handoffConsumersFor returns the bot's declared PR-scoped consumption entries.
-func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
+// handoffConsumersFor returns the bot's declared PR-scoped consumption
+// entries, read from the tier that will SERVE the launch — teamID's own row
+// when it has one, else platform over baked. Reading a different tier than
+// the launch stamps the seed under a var the running bundle never declared.
+func (s *Server) handoffConsumersFor(ctx context.Context, teamID, botID string) []bundle.ConsumedArtifact {
 	if strings.TrimSpace(botID) == "" {
 		return nil
 	}
-	entry, ok, err := s.effectiveFindByName(botID)
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		s.logWarn("handoff: cannot read the bot catalog, %s will be launched without its declared seeds: %v", botID, err)
 		return nil
@@ -161,11 +164,13 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 // handoffProducers maps each discovered bot that declares it produces this kind
 // to the node layout to read it from.
 //
-// Resolved against the BAKED CATALOG only, not the tenant-merged set: a webhook
-// delivery carries no active-team context to read team-authored bundles with.
-// A team that forks a reviewer in the cloud editor therefore does not
-// participate in the hand-off — a real boundary, stated here because a miss is
-// silent and would otherwise read as "nothing reviewed this PR".
+// The PRODUCER side is resolved against the platform+baked set only, unlike
+// the consumer side above: this asks "who, anywhere on this deployment,
+// produces this kind", which a per-team read cannot answer without listing
+// every team's rows. So a team that forks a reviewer AND renames the node its
+// `produces:` block points at drops out of the hand-off — a real boundary,
+// stated here because a miss is silent and would otherwise read as "nothing
+// reviewed this PR". Closing it is #946.
 func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
 	entries, err := s.effectiveEntries()
 	if err != nil {

@@ -77,16 +77,24 @@ func (p *tierPublisher) only(t *testing.T) runview.LaunchSpec {
 // shape (pkg/botsource) the ticket is about.
 func newTeamForkServer(t *testing.T, pub *tierPublisher) (*Server, *store.FilesystemRunStore) {
 	t.Helper()
+	return newTeamForkServerSlug(t, pub, "probe")
+}
+
+// newTeamForkServerSlug is newTeamForkServer with the bot's slug chosen by
+// the caller — the spelling tests need a name that HAS a separator, since
+// `probe` has no non-canonical variant to mis-spell.
+func newTeamForkServerSlug(t *testing.T, pub *tierPublisher, slug string) (*Server, *store.FilesystemRunStore) {
+	t.Helper()
 	s := newOrgTestServer(t)
 	seedGate(t, s, gateSpec{id: "t1"})
 	botsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(botsDir, "probe.bot"), []byte(tierBakedBot), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(botsDir, slug+".bot"), []byte(tierBakedBot), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s.cfg.Bots.Paths = []string{botsDir}
 	s.botSources = botsource.NewMemoryStore()
 	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
-		TenantID: "t1", Slug: "probe",
+		TenantID: "t1", Slug: slug,
 		Files: map[string]string{botsource.MainBotFile: tierForkBot},
 	}); err != nil {
 		t.Fatalf("seed the team's fork: %v", err)
@@ -171,6 +179,115 @@ func TestTeamForkServesTheInboundWebhook(t *testing.T) {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
 	assertServedByTheFork(t, "inbound webhook", pub.only(t))
+}
+
+// Rf19ce0 — the team tier must tolerate the same spelling variants the
+// catalog and platform tiers already do. Board cards, an agent's `set_bot`
+// and hand-written subscriptions are documented to carry non-canonical
+// names (`feature_dev` for a `feature-dev` bundle), so a spelling-exact
+// team lookup leaves #871 open for exactly the surfaces this change routes
+// through the team tier — and stamps a truthful `baked` on the wrong
+// resolution.
+func TestTeamTierToleratesSpellingVariants(t *testing.T) {
+	// The team's fork is slugged canonically (a fork takes the catalog id);
+	// the CARD is what varies.
+	for _, spelling := range []string{"probe_bot", "PROBE-BOT", "probe bot"} {
+		t.Run("card says "+spelling, func(t *testing.T) {
+			pub := &tierPublisher{}
+			s, rs := newTeamForkServerSlug(t, pub, "probe-bot")
+			pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+
+			if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{
+				ID: "native:1", Bot: spelling, State: native.StateReady,
+			}); err != nil {
+				t.Fatalf("processBoardCard = %v, want nil", err)
+			}
+			assertServedByTheFork(t, "board dispatch ("+spelling+")", pub.only(t))
+		})
+	}
+
+	// The SYMMETRIC direction, which the two indexed reads cannot answer:
+	// botsource.ValidSlug admits `_`, so a hand-authored team row may itself
+	// be spelled non-canonically while the card carries the canonical name.
+	// Only the normalized scan closes this one.
+	t.Run("a non-canonical team row is reached by the canonical name", func(t *testing.T) {
+		pub := &tierPublisher{}
+		s := newOrgTestServer(t)
+		seedGate(t, s, gateSpec{id: "t1"})
+		botsDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(botsDir, "probe-bot.bot"), []byte(tierBakedBot), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s.cfg.Bots.Paths = []string{botsDir}
+		s.botSources = botsource.NewMemoryStore()
+		if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+			TenantID: "t1", Slug: "probe_bot", // the OPERATOR typed the underscore
+			Files: map[string]string{botsource.MainBotFile: tierForkBot},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rs, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.cfg.Store = rs
+		s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+
+		lb, err := s.resolveBotSource(boundedCtx(t), "t1", "probe-bot")
+		if err != nil || lb == nil {
+			t.Fatalf("resolve = %+v, %v", lb, err)
+		}
+		defer lb.Cleanup()
+		if lb.Origin != "team" || !strings.Contains(lb.Source, "TEAMFORK") {
+			t.Fatalf("origin=%q — a team row slugged `probe_bot` must answer to `probe-bot`", lb.Origin)
+		}
+	})
+
+	// team > platform must keep holding ACROSS spellings: the normalized
+	// lookup may not hand a platform row a tier it must never win.
+	t.Run("team still outranks platform across spellings", func(t *testing.T) {
+		pub := &tierPublisher{}
+		s, _ := newTeamForkServerSlug(t, pub, "probe-bot")
+		if _, err := s.botSources.Create(store.WithTenant(context.Background(), botsource.PlatformTenantID), botsource.BotSource{
+			TenantID: botsource.PlatformTenantID, Slug: "probe-bot",
+			Files: map[string]string{botsource.MainBotFile: strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		s.invalidatePlatformBots()
+
+		lb, err := s.resolveBotSource(boundedCtx(t), "t1", "probe_bot")
+		if err != nil || lb == nil {
+			t.Fatalf("resolve = %+v, %v", lb, err)
+		}
+		defer lb.Cleanup()
+		if lb.Origin != "team" || !strings.Contains(lb.Source, "TEAMFORK") {
+			t.Fatalf("HIJACK across spellings: origin=%q — the platform row won a tier it must never win", lb.Origin)
+		}
+	})
+
+	// And a team with NO row of its own still reaches the platform override
+	// through the same tolerated spelling — the team pass must not shadow it.
+	t.Run("no team row still reaches the platform override", func(t *testing.T) {
+		pub := &tierPublisher{}
+		s, _ := newTeamForkServerSlug(t, pub, "probe-bot")
+		if _, err := s.botSources.Create(store.WithTenant(context.Background(), botsource.PlatformTenantID), botsource.BotSource{
+			TenantID: botsource.PlatformTenantID, Slug: "probe-bot",
+			Files: map[string]string{botsource.MainBotFile: strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		s.invalidatePlatformBots()
+
+		lb, err := s.resolveBotSource(boundedCtx(t), "t2", "probe_bot")
+		if err != nil || lb == nil {
+			t.Fatalf("resolve = %+v, %v", lb, err)
+		}
+		defer lb.Cleanup()
+		if lb.Origin != "platform" || !strings.Contains(lb.Source, "PLATFORM") {
+			t.Fatalf("origin=%q source=%q, want the platform override", lb.Origin, lb.Source)
+		}
+	})
 }
 
 // The stamp answers for the OTHER two tiers as well — otherwise

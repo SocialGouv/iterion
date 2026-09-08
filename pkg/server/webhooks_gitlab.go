@@ -1196,7 +1196,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		return err
 	}
 	defer lb.Cleanup()
-	retry := s.resolveRunRetryPolicy(sb.BotID, retrypolicy.Layer{
+	retry := s.resolveRunRetryPolicy(ctx, sb.TenantID, sb.BotID, retrypolicy.Layer{
 		Source: retrypolicy.SourceSchedule,
 		Policy: sb.RetryPolicy(),
 	})
@@ -1317,7 +1317,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		// A webhook-launched run is often the one an author is waiting on,
 		// so the config's own horizon usually wants to be shorter than a
 		// nightly's — hence the layer.
-		RetryPolicy: s.resolveRunRetryPolicy(botID, retrypolicy.Layer{
+		RetryPolicy: s.resolveRunRetryPolicy(ctx, cfg.TenantID, botID, retrypolicy.Layer{
 			Source: retrypolicy.SourceWebhook,
 			Policy: cfg.RetryPolicy(),
 		}),
@@ -1498,7 +1498,7 @@ func (s *Server) handleGitLabReviewApprove(ctx context.Context, w http.ResponseW
 		s.gitlabApproveFilteredWithReply(ctx, w, cfg, meta, p, path.conn, path.connOK, sameRefusal("the forge returned no head sha for this MR"), payloadHash, srcIP)
 		return
 	}
-	gateCtx := s.resolveGateContext(cfg, reviewer)
+	gateCtx := s.resolveGateContext(ctx, cfg, reviewer)
 	if gateCtx == "" {
 		s.gitlabApproveFilteredWithReply(ctx, w, cfg, meta, p, path.conn, path.connOK, sameRefusal("no merge-gate context is pinned on this repo (pin gate_context on the integration — see docs/merge-gate.md)"), payloadHash, srcIP)
 		return

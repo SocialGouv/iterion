@@ -54,30 +54,29 @@ const gateContextVar = "gate_context"
 // (the documented setup, and the only one where a required check can span two
 // bots) was getting a green `revi/review` instead: a status nothing required,
 // leaving the real gate untouched while reporting success.
-func (s *Server) resolveGateContext(cfg webhooks.Config, botID string) string {
+func (s *Server) resolveGateContext(ctx context.Context, cfg webhooks.Config, botID string) string {
 	if v := strings.TrimSpace(cfg.OperatorLaunchVars[gateContextVar]); v != "" {
 		return v
 	}
 	if v := strings.TrimSpace(cfg.LaunchVars[gateContextVar]); v != "" {
 		return v
 	}
-	return strings.TrimSpace(s.botVarDefault(botID, gateContextVar))
+	return strings.TrimSpace(s.botVarDefault(ctx, cfg.TenantID, botID, gateContextVar))
 }
 
-// botVarDefault reads a bot's declared default for one workflow var.
-func (s *Server) botVarDefault(botID, name string) string {
-	entries, err := s.effectiveEntriesWithSchema()
-	if err != nil {
+// botVarDefault reads a bot's declared default for one workflow var, from the
+// tier that will SERVE the launch — teamID's own row when it has one, else
+// platform over baked. A fork that moves its gate context would otherwise
+// green a status nothing requires, which is the exact failure the function
+// above exists to prevent.
+func (s *Server) botVarDefault(ctx context.Context, teamID, botID, name string) string {
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	if err != nil || !ok || entry.Vars == nil {
 		return ""
 	}
-	for _, e := range entries {
-		if e.Name != botID || e.Vars == nil {
-			continue
-		}
-		for _, f := range e.Vars.Fields {
-			if f.Name == name && f.Default != nil {
-				return f.Default.StrVal
-			}
+	for _, f := range entry.Vars.Fields {
+		if f.Name == name && f.Default != nil {
+			return f.Default.StrVal
 		}
 	}
 	return ""
@@ -268,7 +267,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, sameRefusal("the forge returned no head sha for this PR"), payloadHash, srcIP)
 		return
 	}
-	gateCtx := s.resolveGateContext(cfg, reviewer)
+	gateCtx := s.resolveGateContext(ctx, cfg, reviewer)
 	if gateCtx == "" {
 		s.approveFilteredWithReply(ctx, w, cfg, meta, provider, p, sameRefusal("no merge-gate context is pinned on this repo (pin gate_context on the integration — see docs/merge-gate.md)"), payloadHash, srcIP)
 		return

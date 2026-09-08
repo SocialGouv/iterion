@@ -232,7 +232,7 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	// same PR. Derived rather than listed: a fixed list would mean a bot that
 	// declares a new hand-off gets it on the direct lane and silently loses it
 	// on the board lane — the failure this whole carry-list exists to prevent.
-	for _, c := range s.handoffConsumersFor(route.BotID) {
+	for _, c := range s.handoffConsumersFor(ctx, cfg.TenantID, route.BotID) {
 		carry = append(carry, c.Var)
 	}
 	for _, k := range carry {

@@ -54,15 +54,21 @@ is CLI-first.
   by the central resolver in `pkg/server/bot_resolver.go` and its static
   sweep tests — one of which fails a launch site that hardcodes an empty
   team.
-- **The team tier is a LAUNCH tier, not a metadata tier.** Listings,
-  webhook command discovery, hand-off `produces:`/`consumes:` matching,
-  gate-var defaults and the retry-policy manifest read the platform
-  overlay over the baked catalog, with no tenant context — on every
-  surface, including the studio's. So a fork whose `manifest.yaml`
-  differs from its origin's runs as the fork but is *described* by the
-  origin's manifest. The exception is a caller holding the tier a run
-  actually resolved through (`bot_source_tenant`), which reads the team
-  row first (`teamBotManifest`).
+- **Spelling.** All three tiers tolerate the same variants
+  (`feature_dev` / `Feature-Dev` / `"feature dev"` → `feature-dev`),
+  because a board card, an agent's `set_bot` and a hand-written
+  subscription all carry operator-typed names. A slug may legitimately be
+  stored with `_` too, so the team tier compares both sides normalized.
+- **A metadata read must match the tier that will SERVE the launch**, or
+  the two disagree in silence — a fork that renames a `consumes:` var
+  gets an empty seed, not an error. Wired: the webhook hand-off seeds,
+  the gate-var defaults and the retry-policy manifest all read the team
+  row first (`effectiveFindByNameForTeam` / `botManifestFor`, both over
+  the same row resolution the launch uses). Still tenant-free, and
+  therefore still able to describe a bundle it will not run: the /bots
+  listing, the command-routing discovery, the config-share surface, and
+  the hand-off PRODUCER set (a deployment-wide question a per-team read
+  cannot answer). Tracked as **#946**.
 - **Launch**: the server resolves the override ONCE, materializes it to a
   temp dir, and compiles against it (prompts/ participate in IR and the
   workflow hash). The queue message (schema v9) carries a

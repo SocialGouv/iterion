@@ -506,7 +506,7 @@ func TestResolveGateContextFollowsTheRepoPin(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := s.resolveGateContext(c.cfg, "any-review-bot"); got != c.want {
+			if got := s.resolveGateContext(context.Background(), c.cfg, "any-review-bot"); got != c.want {
 				t.Errorf("resolveGateContext = %q, want %q", got, c.want)
 			}
 		})

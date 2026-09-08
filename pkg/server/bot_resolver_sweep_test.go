@@ -57,11 +57,15 @@ var teamlessResolveAllowed = map[string]string{
 }
 
 func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
+	// Both halves of the class: the launch resolution AND the metadata reads
+	// that describe the same launch (a lane that launches a team's fork and
+	// then reads the origin's manifest disagrees with itself in silence).
 	// The bare `resolveBot(` arm catches the trigger spine, which calls the
 	// authority through an injected closure field rather than by name.
 	// Only a LITERAL "" is decidable statically; a variable that happens to
 	// be empty at run time is the caller's own contract to keep.
-	teamless := regexp.MustCompile(`resolveBot(?:Source|Tiered(?:Raw)?)?\([^,]+,\s*""`)
+	teamless := regexp.MustCompile(
+		`(?:resolveBot(?:Source|Tiered(?:Raw)?)?|resolveRunRetryPolicy|handoffConsumersFor|botVarDefault|botManifestFor|effectiveFindByNameForTeam)\([^,]+,\s*""`)
 	sweepServerFiles(t, func(name, body string) {
 		if !teamless.MatchString(body) {
 			return
