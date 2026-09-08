@@ -71,6 +71,7 @@ func TestDiagnosticCodes_Unique(t *testing.T) {
 		"DiagUnknownProvider":           DiagUnknownProvider,
 		"DiagProviderChainIgnored":      DiagProviderChainIgnored,
 		"DiagImplicitCollectorMove":     DiagImplicitCollectorMove,
+		"DiagDuplicateFanOutTarget":     DiagDuplicateFanOutTarget,
 	}
 	seen := make(map[DiagCode]string, len(all))
 	for name, code := range all {
