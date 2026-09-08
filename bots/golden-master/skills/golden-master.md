@@ -360,6 +360,50 @@ Three rules, and each of them was learned by paying for it:
    upgrade is known to lose: semantic tags that render like presentational ones,
    attributes a renderer ignores, ordering. Those are what come back deformed.
 
+### A field that is a FILE — uploads
+
+An upload is a lane a form-encoded field cannot express at all, so it has its
+own declaration. A field whose value is an **object whose `filename` is a
+string** is a file part, and one such field makes the whole form
+`multipart/form-data`:
+
+```json
+"fields": {
+  "titre": "rapport trimestriel",
+  "document": { "filename": "rapport.csv",
+                "content_type": "text/csv",
+                "text": "annee;montant\n2024;12\n" }
+}
+```
+
+- **`text` or `b64`, exactly one** — declaring both is refused, because the
+  loser would be dropped in silence. `text` is sent as UTF-8 and keeps the
+  corpus readable and replayable by hand — prefer it. `b64` carries what text
+  cannot (a real PNG header, a byte sequence an importer chokes on). Keep the
+  payload SMALL: it is committed, and every capture replays it.
+- **`content_type` is optional** and defaults to `application/octet-stream`.
+  Declare it when the application branches on it — a rejected type is a
+  behaviour worth a reference of its own.
+- **A form with no file field is urlencoded exactly as before.** Nothing
+  changes for the entries you already have.
+- **The boundary is derived, never random**, so two replays of one request are
+  byte-identical. That is what lets you leave the upload response ALONE in
+  `canon/rules.py`: a random boundary would force a canonicalisation rule
+  erasing it from every capture, and such a rule blinds the net to the region
+  of the response where the application quotes back the part it received —
+  a stored name, a validation message. Do not write that rule.
+- **A payload the harness cannot build is a named refusal, not a request.** No
+  `text` and no `b64`, both at once, an invalid base64, a non-string `text` or
+  `b64` — each stops the run with the field named. That is deliberate: a broken payload
+  sent as its own error text would record the application refusing *the
+  harness*, and a reference of that refusal can never fail again.
+- **What you declare is what is sent**, with one visible transformation: a `"`
+  or a CRLF inside a name, a filename or a content type is %-escaped
+  (`%22`, `%0D%0A`) exactly as a browser escapes it (RFC 7578 §5.1). So a
+  filename declared with a quote is *observed* in its escaped form — which is
+  the real browser behaviour, and the alternative was a truncated parameter or
+  a second part the corpus never declared.
+
 ## Honesty clause
 
 If the net cannot be made to see something, **write that down** rather than narrowing the corpus
