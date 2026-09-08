@@ -766,10 +766,16 @@ func annotateCost(result *Result, task Task, totalIn, totalOut int, rms ...*clau
 // ask_user MCP hook fired mid-session: it short-circuits the stream and
 // surfaces the captured question to the runtime via the
 // `_needs_interaction` / `_interaction_questions` envelope so the engine
-// can pause the run and elicit the operator. Extracted from Execute for
-// readability; the per-field semantics (Duration, ExitCode=0, Stderr,
-// SessionID-from-rm, SessionFingerprint) are identical to the original
-// inline path.
+// can pause the run and elicit the operator.
+//
+// `rm` is nil here as the RULE, not as an edge case: the ask_user branch
+// returns before the stream-error test (claude_code.go:491-497) precisely
+// because the hook firing cancels the stream, so no ResultMessage ever
+// arrives. The session id therefore comes from the STREAM — without it
+// this path published an anonymous session, and it is the one path that
+// persists a session across a pause (ADR-089: ErrNeedsInteraction.SessionID
+// → the checkpoint's BackendSessionID, and packLiveSession, which is gated
+// on a non-empty id and so never ran).
 func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUser, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
 	if marker != nil {
 		b.Logger.Info("[%s#%d/claude-code] 🔐 tool-permission approval escalated to the runtime", task.NodeID, task.Iteration)

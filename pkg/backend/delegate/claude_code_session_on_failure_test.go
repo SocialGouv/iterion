@@ -101,3 +101,30 @@ func TestTurnFinishedDoesNotFireForATurnThatFailed(t *testing.T) {
 		})
 	}
 }
+
+// The ask_user pause is the path that PERSISTS a session across a human
+// gate (ADR-089), and it reaches its builder with rm == nil as the RULE:
+// the branch returns before the stream-error test because the hook firing
+// is what cancels the stream, so no ResultMessage arrives. Until the
+// streamed id existed, that path published an ANONYMOUS session — and
+// packLiveSession, gated on a non-empty id, never ran on the one path it
+// was written for.
+//
+// Pinned because the premise is easy to get backwards: a later editor who
+// believes "the pause always has an rm" is free to move or drop the
+// session-meta application, and the hole reopens on exactly the path that
+// persists.
+func TestAskUserPauseNamesItsSessionWithoutAResultMessage(t *testing.T) {
+	b := sessionFailureBackend()
+	task := Task{NodeID: "n", Iteration: 1}
+	p := pendingAskUser{Question: "which one?"}
+
+	res := b.buildAskUserPendingResult(task, p, nil, nil,
+		sessionMeta{sessionID: "sess-from-init"}, "fp", time.Second, "")
+	if res.SessionID != "sess-from-init" {
+		t.Fatalf("SessionID = %q, want the streamed id — a pause that cannot name its session persists an anonymous one", res.SessionID)
+	}
+	if _, ok := res.Output["_needs_interaction"]; !ok {
+		t.Fatalf("the pause envelope was lost: %v", res.Output)
+	}
+}

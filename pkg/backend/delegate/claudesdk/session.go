@@ -43,6 +43,24 @@ func ResumeSession(sessionID string, opts ...Option) *Session {
 	return NewSession(opts...)
 }
 
+// noteSessionID records the session id the CLI announces. FIRST non-empty
+// wins: a Session is one session and its id does not change, so the two
+// possible rules only ever differ when a later SystemMessage carries a
+// DIFFERENT id — where keeping the first is the conservative reading, since
+// it is the session this object opened. Same rule as the delegate's own
+// capture (claude_code_stream.go, sessionMeta.sessionID): two readings of
+// one fact with opposite rules is a trap for whoever wires the second.
+func (s *Session) noteSessionID(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessionID == "" {
+		s.sessionID = id
+	}
+}
+
 // SessionID returns the session ID assigned by the CLI.
 // This is available after the first message is received.
 func (s *Session) SessionID() string {
@@ -175,11 +193,16 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 				continue
 			}
 
-			// Capture session ID from system init message.
+			// Capture the session ID the CLI announces. FIRST non-empty
+			// wins: a Session is one session, its id does not change, and
+			// the two rules only ever differ when a later SystemMessage
+			// carries a DIFFERENT id — where keeping the first is the
+			// conservative reading, since it is the session this object
+			// opened. Same rule as the delegate's own capture
+			// (claude_code_stream.go, sessionMeta.sessionID), so the two
+			// readings of one fact cannot disagree.
 			if sys, ok := msg.(*SystemMessage); ok {
-				s.mu.Lock()
-				s.sessionID = sys.SessionID
-				s.mu.Unlock()
+				s.noteSessionID(sys.SessionID)
 			}
 
 			if !yield(msg, nil) {
