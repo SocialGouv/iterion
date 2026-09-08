@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.116.0](https://github.com/SocialGouv/iterion/compare/v3.115.3...v3.116.0) (2026-09-08)
+
+### Features
+
+* **golden-master:** the two debts behind a 0/0 held-out figure are fields, not sentences ([#901](https://github.com/SocialGouv/iterion/issues/901)) ([0d7ffe3](https://github.com/SocialGouv/iterion/commit/0d7ffe3ff94ba751a9e0c0c204d122004b5df670))
+
+    <details><summary>why</summary>
+
+    The gate line checks `holdout_detected == holdout_total`, which is vacuously true at 0/0. The report already said so — in a NOTICE, and this file's own comment names why that is not enough: "a notice string is where debts go to hide". One of the two debts got a field when it was measured (`holdout_awaiting_gate`); the other stayed prose.
+
+    </details>
+
+### Bug Fixes
+
+* **runner,alert:** a checkpoint compares the WORK, and a timer tick is not the run working ([#906](https://github.com/SocialGouv/iterion/issues/906)) ([bddfcd0](https://github.com/SocialGouv/iterion/commit/bddfcd0591571b17209654c61af7c19121202426))
+
+    <details><summary>why</summary>
+
+    Two halves of one defect in the workspace checkpoint, found by the piloting session before the runner was even bumped — reproduced on a throwaway repository, three ticks a second apart.
+
+    </details>
+
 ## [3.115.3](https://github.com/SocialGouv/iterion/compare/v3.115.2...v3.115.3) (2026-09-07)
 
 ### Bug Fixes
