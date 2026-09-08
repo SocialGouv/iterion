@@ -237,7 +237,12 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 	now := time.Now().UTC()
 	recorded, err := persist(&now, "")
 	if err != nil {
-		return conn, avatarURL, fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err)
+		// The forge answered 200 to the upload; iterion's OWN store then
+		// failed to write it down. Mark it so the handler answers 500 (this
+		// really is iterion's) instead of the 502 its default arm serves
+		// for a forge that broke. Body still names the connection and the
+		// underlying cause so the operator can act on it.
+		return conn, avatarURL, NewIterionFault(fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err))
 	}
 	return recorded, avatarURL, nil
 }
@@ -296,6 +301,17 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
+		// This route mixes two failure sources under one default arm: the
+		// forge round-trip (502 is the true code for what the classifier
+		// does not recognise — a broken transport, a body that is not the
+		// shape pkg/forge parses) AND iterion's OWN state failing AFTER
+		// the upload landed (persist below). NewIterionFault marks the
+		// second so it answers 500 instead of the 502 it would otherwise
+		// share with a genuine forge outage — the inversion #969 is about.
+		if isIterionFault(err) {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
 		if !writeForgeUpstreamError(w, err, "%v", err) {
 			httpError(w, http.StatusBadGateway, "%v", err)
 		}

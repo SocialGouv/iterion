@@ -102,6 +102,12 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		// may wait out, a grant it will never get — instead of one 502 for
 		// every cause.
 		if !writeForgeUpstreamError(w, err, "read pull request %s#%d: %v", repo, number, err) {
+			// Safe default: the only failure at this site is the forge's
+			// pull-request read. An error the classifier does not name yet
+			// is still a forge outage — never iterion's own state — so
+			// 502 is the true code. Unlike the avatar route (#969), this
+			// route reads and nothing else, so no post-forge store write
+			// can mix in.
 			httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
 		}
 		return

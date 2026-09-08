@@ -479,6 +479,14 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			if !writeForgeUpstreamError(w, err, "security-read token mint: %v", err) {
+				// Safe default: every error at this site comes from the
+				// GitHub App token mint (a forge round-trip). An error the
+				// classifier does not name yet is still a forge outage —
+				// never iterion's own state — so 502 is the true code.
+				// Unlike the avatar route (#969), no post-forge store
+				// write ships here that could turn this arm into a mixed
+				// one; if that changes, mark the store step with
+				// NewIterionFault so 500 answers it here.
 				httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
 			}
 			return
@@ -564,6 +572,11 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !writeForgeUpstreamError(w, err, "list repos: %v", err) {
+			// Safe default: every error at this site comes from the forge
+			// listing (ListRepos). An error the classifier does not name
+			// yet is still a forge outage — never iterion's own state —
+			// so 502 is the true code. Unlike the avatar route (#969),
+			// this arm is not mixed with a post-forge store write.
 			httpError(w, http.StatusBadGateway, "list repos: %v", err)
 		}
 		return

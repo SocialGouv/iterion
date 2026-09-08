@@ -133,6 +133,43 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 	return true
 }
 
+// iterionFault marks an error as iterion's own state failing — a store
+// write, a marshal, a seal that will not open — on a route whose default
+// arm answers 502 to serve the forge's own failures. Without the marker,
+// the shared taxonomy cannot tell the two apart: forgeUpstreamStatus
+// returning 0 means "not an answer from the forge", which is the truth
+// AND the definition of iterion's own, but a route that ALSO makes a
+// forge call after which its own state may fail (the avatar route: upload
+// then persist) cannot safely default to 500 — an unclassified upstream
+// error would then be blamed on iterion. The marker resolves it at the
+// wrap site, where which step failed is known: mark the store-write
+// failure; leave the raw forge error alone.
+//
+// A route whose ONLY failure path is a forge round-trip does NOT need
+// this: an unclassified error there IS a forge error the classifier does
+// not yet know about, and defaulting to 502 is the safe assumption.
+type iterionFault struct{ err error }
+
+// NewIterionFault wraps err so a handler whose default arm is 502 can
+// tell iterion's own faults apart (answer 500) from a forge that
+// answered or fell silent (keep 502 / the taxonomy code).
+func NewIterionFault(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &iterionFault{err: err}
+}
+
+func (e *iterionFault) Error() string { return e.err.Error() }
+func (e *iterionFault) Unwrap() error { return e.err }
+
+// isIterionFault reports whether err (or anything it wraps) was marked
+// with iterionFault, so a 502-default handler can answer 500 instead.
+func isIterionFault(err error) bool {
+	var f *iterionFault
+	return errors.As(err, &f)
+}
+
 // retryAfterHeader renders a delay as delta-seconds, the form every client
 // reads. Zero (the forge said nothing) renders empty — never a guess.
 func retryAfterHeader(d time.Duration) string {

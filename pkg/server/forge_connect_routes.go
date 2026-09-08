@@ -126,6 +126,13 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 			return
 		}
 		if !writeForgeUpstreamError(w, err, "could not reach %s: %v", provider, err) {
+			// Safe default: every error at this site comes from the
+			// WhoAmI probe against the forge (a round-trip that must
+			// succeed BEFORE any store write). An error the classifier
+			// does not name yet is still an unreachable forge — never
+			// iterion's own state — so 502 is the true code. Unlike the
+			// avatar route (#969), this arm is not mixed with a
+			// post-forge store write.
 			httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
 		}
 		return
