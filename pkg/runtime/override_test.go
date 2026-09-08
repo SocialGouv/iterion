@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -671,37 +672,70 @@ func TestRaiseBudget_AModestRaiseAlsoLiftsTheVerdict(t *testing.T) {
 		Budget:  &ir.Budget{MaxDuration: "2s"},
 	}
 
-	ch := make(chan *OverrideMsg, 2)
 	// 2.16s = 1.08x. Under the old `used >= limit*0.9` test this still parked
 	// the run; the operator's grant bought 160ms of real room and changed
 	// nothing.
 	//
-	// The two numbers are COUPLED, so move them together or not at all. The
+	// The two numbers are COUPLED, so move them together or not at all: the
 	// ratio must stay under the old cliff at used/0.9 = 1.111x, or the test
 	// stops pinning the proximity guard and passes on the very code it exists
-	// to refuse. Their 160ms difference is also this test's own wall-clock
-	// budget: everything between the deadline firing and RemainingDuration()
-	// — executor return, span.End(), the drain, and applyRaiseBudget's two
-	// store writes — has to fit in it. Measured before trusting it, worst of
-	// 37 samples: 22ms under `-race` with the 8 cores 2x oversubscribed (7.5ms
-	// median), 26ms without `-race`. ~7x headroom at the worst observation,
-	// which is why the pair was left small rather than scaled up at 4s of wall
-	// clock in a required check.
-	msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: "2160ms"}, "")
-	exec := &blockingRaiserExecutor{blockNode: "slow", ch: ch, msg: msg}
+	// to refuse.
+	//
+	// Their 160ms difference is also this test's own wall-clock budget —
+	// executor return, span.End(), the drain, and applyRaiseBudget's two store
+	// writes all have to fit in it — and that budget IS exceeded in practice.
+	// Measured: ~22ms worst of 37 samples under `-race` with the cores 2x
+	// oversubscribed, which looked like 7x headroom; then a plain `go test
+	// ./...` blew it on the first try at 443ms (used 2.443s vs the 2.16s cap).
+	// Package-parallel `./...` is a heavier machine than saturated cores, and
+	// no ratio inside the 1.111x cliff survives a 443ms tail — 0.08 x 2s is
+	// 160ms, and buying 450ms of margin would cost a ~6s cap in a required
+	// check.
+	//
+	// So the fixture RE-ARMS instead. The two outcomes are separable from the
+	// event alone: a run whose recorded `used` reached the RAISED cap really
+	// had run out of time, and a budget stop is then the correct verdict with
+	// nothing to assert — retry. Below the raised cap, time was left on the
+	// clock and any budget stop is the regression, whether it came from the
+	// proximity guard (limit = the raised cap, used under it) or from the
+	// raise never landing before the verdict (limit = the original 2s).
+	const raisedCap = 2160 * time.Millisecond
+	const attempts = 4
 
-	s := tmpStore(t)
-	eng := New(wf, s, exec, WithOverrideChannel(ch))
-	err := eng.Run(context.Background(), "run-raise-modest", nil)
+	for attempt := 1; ; attempt++ {
+		runID := fmt.Sprintf("run-raise-modest-%d", attempt)
+		ch := make(chan *OverrideMsg, 2)
+		msg := NewRaiseBudgetOverride(ir.BudgetOverrides{MaxDuration: raisedCap.String()}, "")
+		exec := &blockingRaiserExecutor{blockNode: "slow", ch: ch, msg: msg}
 
-	if err != nil && strings.Contains(err.Error(), "budget exceeded") {
-		t.Fatalf("a raise that bought real room still parked the run: %v", err)
-	}
-	events, lerr := s.LoadEvents(context.Background(), "run-raise-modest")
-	if lerr != nil {
-		t.Fatalf("load events: %v", lerr)
-	}
-	if hasEventType(events, store.EventBudgetExceeded) {
-		t.Error("budget_exceeded emitted although the raised cap left time on the clock")
+		s := tmpStore(t)
+		eng := New(wf, s, exec, WithOverrideChannel(ch))
+		err := eng.Run(context.Background(), runID, nil)
+
+		events, lerr := s.LoadEvents(context.Background(), runID)
+		if lerr != nil {
+			t.Fatalf("load events: %v", lerr)
+		}
+
+		if exceeded := lastEventData(events, store.EventBudgetExceeded); exceeded != nil {
+			usedNS, _ := exceeded["used"].(float64)
+			used := time.Duration(usedNS)
+			if used >= raisedCap {
+				// Out of time under the RAISED cap: the verdict is right and
+				// this attempt says nothing about how it was reached.
+				if attempt == attempts {
+					t.Skipf("could not set the scenario up in %d attempts: the drain kept "+
+						"outlasting the %v the raise buys (last: used %v past a %v cap), so the "+
+						"machine is too loaded to hold the two apart", attempts, raisedCap-2*time.Second, used, raisedCap)
+				}
+				continue
+			}
+			t.Fatalf("a raise that left %v on the clock still parked the run: used %v, "+
+				"limit %v — %v", raisedCap-used, used, time.Duration(exceeded["limit"].(float64)), err)
+		}
+		if err != nil && strings.Contains(err.Error(), "budget exceeded") {
+			t.Fatalf("a raise that bought real room still parked the run: %v", err)
+		}
+		return
 	}
 }
