@@ -196,16 +196,47 @@ func (s *Service) listAllArtifactsFromIndex(ctx context.Context, runID string) (
 		if lerr != nil || art == nil {
 			s.logger.Warn("runview: run %s node %s v%d is in the artifact index but its body did not load, listing it degraded: %v",
 				runID, nodeID, version, lerr)
-			out = append(out, entry)
-			continue
+		} else {
+			entry.Labels = art.Labels
+			entry.Title = artifactTitle(art.Data)
+			entry.WrittenAt = art.WrittenAt
 		}
-		entry.Labels = art.Labels
-		entry.Title = artifactTitle(art.Data)
-		entry.WrittenAt = art.WrittenAt
+		if entry.WrittenAt.IsZero() {
+			entry.WrittenAt = s.artifactWrittenAt(ctx, runID, nodeID, version)
+		}
 		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out, nil
+}
+
+// artifactWrittenAt recovers a published artifact's timestamp when its own
+// body does not carry one.
+//
+// Only the FILESYSTEM store stamps Artifact.WrittenAt, and it does so on
+// write; the mongo store marshals the artifact exactly as handed to it, and
+// no engine writer sets the field. So on a cloud pod every entry of this
+// listing would otherwise serve `"written_at":"0001-01-01T00:00:00Z"` — an
+// epoch date for API clients, and a meaningless key for any date sort.
+//
+// The store's ListArtifactVersions is the store-agnostic answer: mongo
+// folds the artifact_written events, whose ts is real, so this also repairs
+// artifacts already written rather than only future ones. Best-effort — a
+// lookup failure leaves the zero time rather than failing a listing that is
+// otherwise complete. Guarded by the IsZero check at the call site, so the
+// filesystem path never pays for it.
+func (s *Service) artifactWrittenAt(ctx context.Context, runID, nodeID string, version int) time.Time {
+	versions, err := s.store.ListArtifactVersions(ctx, runID, nodeID)
+	if err != nil {
+		s.logger.Warn("runview: run %s node %s v%d: version lookup for a missing timestamp failed: %v", runID, nodeID, version, err)
+		return time.Time{}
+	}
+	for _, v := range versions {
+		if v.Version == version {
+			return v.WrittenAt
+		}
+	}
+	return time.Time{}
 }
 
 // artifactTitle picks a short human title from artifact data, or "".

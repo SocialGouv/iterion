@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -217,6 +218,63 @@ type failingRunStore struct{ store.RunStore }
 
 func (failingRunStore) LoadRun(context.Context, string) (*store.Run, error) {
 	return nil, errors.New("mongo: connection reset")
+}
+
+// zeroWrittenAtStore is a real store whose artifact bodies carry no
+// timestamp — the mongo shape. Only the filesystem store stamps
+// Artifact.WrittenAt (on write); mongo marshals the artifact as handed to
+// it, and no engine writer sets the field.
+type zeroWrittenAtStore struct{ store.RunStore }
+
+func (z zeroWrittenAtStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	art, err := z.RunStore.LoadArtifact(ctx, runID, nodeID, version)
+	if err != nil || art == nil {
+		return art, err
+	}
+	art.WrittenAt = time.Time{}
+	return art, nil
+}
+
+// TestListAllArtifacts_FromIndexRecoversWrittenAt: the directory walk takes
+// WrittenAt from the file mtime, which is always real. The index path takes
+// it from the body, which on every non-filesystem store is the zero time —
+// so the listing would serve an epoch date for every entry. It must be
+// recovered from the store's version enumeration instead.
+func TestListAllArtifacts_FromIndexRecoversWrittenAt(t *testing.T) {
+	logger := iterlog.Nop()
+	seed, err := store.New(t.TempDir(), store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := seed.CreateRun(ctx, "run6", "wf", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := seed.WriteArtifact(ctx, &store.Artifact{RunID: "run6", NodeID: "report", Version: 1, Data: map[string]any{"title": "R"}}); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	want, err := seed.ListArtifactVersions(ctx, "run6", "report")
+	if err != nil || len(want) != 1 {
+		t.Fatalf("seed versions: %+v, %v", want, err)
+	}
+
+	svc, err := NewService(t.TempDir(), WithLogger(logger), WithStore(zeroWrittenAtStore{RunStore: seed}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.ListAllArtifacts("run6")
+	if err != nil {
+		t.Fatalf("ListAllArtifacts: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(got), got)
+	}
+	if got[0].WrittenAt.IsZero() {
+		t.Fatal("written_at is the zero time — the listing serves an epoch date for every cloud artifact")
+	}
+	if !got[0].WrittenAt.Equal(want[0].WrittenAt) {
+		t.Errorf("written_at = %v, want the store's %v", got[0].WrittenAt, want[0].WrittenAt)
+	}
 }
 
 // unreadableBodyStore is a real store whose artifact BODIES will not load,
