@@ -151,6 +151,30 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 // the studio's backends_used chip and `iterion report`'s per-step tag,
 // so stamping the requested name would make both assert a false fact
 // about a degraded run.
+// meteredFailureOutput renders what a FAILED delegation spent, in the shape
+// the engine books from (`_tokens` / `_cost_usd`).
+//
+// Nil when there is nothing to book, never an empty map presented as a
+// result: the engine's own guard already skips a spendless output, and a
+// node that failed has no output — only a bill. The map is materialised
+// when the delegate reported tokens on the Result but never allocated the
+// map itself (`Output` is nil on a stream that died before its first
+// message), because the engine reads the map, not the Result.
+func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
+	output := out.Result.Output
+	if output == nil {
+		if out.Result.Tokens <= 0 {
+			return nil
+		}
+		output = map[string]any{}
+	}
+	// The success path stamps below; the failure path must too, or a
+	// delegate that filled Result.Tokens without touching the map reports
+	// a spend of zero.
+	stampDelegateOutputMeta(output, out.Result, firstNonEmpty(out.BackendName, backendName))
+	return output
+}
+
 func stampDelegateOutputMeta(output map[string]any, result delegate.Result, backendName string) {
 	if output == nil {
 		return
@@ -458,7 +482,17 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		})
 	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
-		return nil, err
+		// A failed delegation still SPENT, and everything below this line
+		// went to trouble to keep the figure: `typedFailure` allocates the
+		// output map and annotates the cost on a typed refusal, and
+		// dispatchChain folds every abandoned route's spend into the
+		// terminal result. Returning a bare nil threw all of it away one
+		// frame short of the engine, which is the only place that books it
+		// against max_cost_usd, the org monthly cap and a lending donor's
+		// ledger. Hand the metered result up beside the error instead —
+		// every caller on the failure path reads the error and drops the
+		// output, except the engine, which now books it.
+		return meteredFailureOutput(out, backendName), err
 	}
 	// An `action: skip` terminal route completed the node without serving
 	// it: synthesize the zero-value output here — the one place the schema
