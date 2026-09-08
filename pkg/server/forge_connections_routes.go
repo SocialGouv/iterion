@@ -479,14 +479,20 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			if !writeForgeUpstreamError(w, err, "security-read token mint: %v", err) {
-				// Safe default: every error at this site comes from the
-				// GitHub App token mint (a forge round-trip). An error the
-				// classifier does not name yet is still a forge outage —
-				// never iterion's own state — so 502 is the true code.
-				// Unlike the avatar route (#969), no post-forge store
-				// write ships here that could turn this arm into a mixed
-				// one; if that changes, mark the store step with
-				// NewIterionFault so 500 answers it here.
+				// Default, and NOT a clean one. Most of what lands here is
+				// the App token mint failing against the forge, where 502
+				// is the true code — but the mint's PRE-FLIGHT is
+				// iterion's own and arrives unmarked:
+				// githubAppConfigForConnection answers "no github app
+				// available" for a store read that failed as much as for
+				// an App key that will not unseal, and
+				// MintInstallationToken signs the App JWT — a stored key
+				// that is not parseable PEM — before it opens a socket.
+				// Both answer 502 today: the #969 inversion, still open
+				// here. Ending it belongs in the mint chain, which alone
+				// knows which step failed; a blanket NewIterionFault over
+				// mint() would stamp a genuine GitHub 5xx as iterion's —
+				// the same lie reversed. Residual on #969.
 				httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
 			}
 			return
@@ -572,11 +578,16 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !writeForgeUpstreamError(w, err, "list repos: %v", err) {
-			// Safe default: every error at this site comes from the forge
-			// listing (ListRepos). An error the classifier does not name
-			// yet is still a forge outage — never iterion's own state —
-			// so 502 is the true code. Unlike the avatar route (#969),
-			// this arm is not mixed with a post-forge store write.
+			// Default, and NOT a clean one for a github_app connection.
+			// A PAT connection's ListRepos is a pure round-trip, so 502
+			// is the true code there; an App's goes through
+			// AppClient.rest, which mints an installation token and signs
+			// the App JWT locally FIRST — a stored key that is not
+			// parseable PEM fails before any socket and answers 502 here.
+			// The #969 inversion, still open on this arm; the fix belongs
+			// in the mint chain (see the security-read arm above).
+			// Residual on #969. The route's pre-forge half IS right:
+			// forgeAdminFor above already answers 500.
 			httpError(w, http.StatusBadGateway, "list repos: %v", err)
 		}
 		return
