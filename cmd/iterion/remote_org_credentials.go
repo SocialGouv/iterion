@@ -110,6 +110,32 @@ var remoteOrgsAudienceCmd = &cobra.Command{
 	}),
 }
 
+var remoteOrgMemberRole string
+
+var remoteOrgsAddMemberCmd = &cobra.Command{
+	Use:   "add-member <user-id>",
+	Short: "Place an EXISTING account in the org with an org role (--role)",
+	Long: "The org-level twin of `teams add-member`, and the half without which\n" +
+		"that one cannot serve the case it exists for: a user with no org at all\n" +
+		"is otherwise reachable only by email. Idempotent — re-running sets the\n" +
+		"role. For an account that does not exist yet, use `orgs invitations`.",
+	Args: cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if remoteOrgMemberRole == "" {
+			return fmt.Errorf("--role is required (member|admin|owner)")
+		}
+		org, err := c.ResolveOrg(cmd.Context(), remoteOrgFlag)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(map[string]any{"role": remoteOrgMemberRole})
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendData(cmd.Context(), c, p, "PUT", "/api/orgs/"+org+"/members/"+args[0], string(raw), "member JSON")
+	}),
+}
+
 // --- governance: settings + the provisioning approval queue ---
 
 var (
@@ -190,6 +216,7 @@ var remoteOrgsApprovalsCmd = &cobra.Command{
 func init() {
 	for _, c := range []*cobra.Command{
 		remoteOrgsOAuthCmd, remoteOrgsAudienceCmd, remoteOrgsSettingsCmd, remoteOrgsApprovalsCmd,
+		remoteOrgsAddMemberCmd,
 	} {
 		c.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id (default: switched/active org)")
 	}
@@ -200,5 +227,7 @@ func init() {
 	remoteOrgsAudienceCmd.Flags().StringVar(&remoteAudienceTeams, "teams", "", "Comma-separated team ids allowed to spend the org's credentials (empty string revokes all)")
 	remoteOrgsAudienceCmd.Flags().StringVar(&remoteAudienceAllTeams, "all-teams", "", "true|false — admit every team of the org")
 
-	remoteOrgsCmd.AddCommand(remoteOrgsOAuthCmd, remoteOrgsAudienceCmd, remoteOrgsSettingsCmd, remoteOrgsApprovalsCmd)
+	remoteOrgsAddMemberCmd.Flags().StringVar(&remoteOrgMemberRole, "role", "", "Org role (member|admin|owner)")
+
+	remoteOrgsCmd.AddCommand(remoteOrgsOAuthCmd, remoteOrgsAudienceCmd, remoteOrgsSettingsCmd, remoteOrgsApprovalsCmd, remoteOrgsAddMemberCmd)
 }

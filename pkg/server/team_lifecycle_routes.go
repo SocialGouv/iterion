@@ -29,6 +29,67 @@ func (s *Server) registerTeamLifecycleRoutes() {
 	s.mux.Handle("POST /api/teams/{id}/status", s.requireAuth(http.HandlerFunc(s.handleSetTeamStatus)))
 	s.mux.Handle("DELETE /api/teams/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTeam)))
 	s.mux.Handle("PUT /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutTeamMember)))
+	s.mux.Handle("PUT /api/orgs/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handlePutOrgMember)))
+}
+
+// handlePutOrgMember places an EXISTING account in the org with an org
+// role, idempotently — the org-level twin of handlePutTeamMember, and the
+// half without which that one cannot serve the case it was written for: a
+// user with no org at all could still only be reached by email, so the
+// round trip was merely moved one level up.
+//
+// PATCH on the same path updates an EXISTING membership and 404s otherwise;
+// this creates or updates. Org admin, like every other org roster write.
+func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	memberID := r.PathValue("user_id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	var req struct {
+		Role string `json:"role"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	role := identity.OrgRole(req.Role)
+	if !role.Valid() {
+		httpError(w, http.StatusBadRequest, "invalid org role (member|admin|owner)")
+		return
+	}
+	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	if o.Personal {
+		httpError(w, http.StatusUnprocessableEntity, "a personal org takes no other member")
+		return
+	}
+	u, err := s.authStore().GetUser(r.Context(), memberID)
+	if err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			httpError(w, http.StatusNotFound,
+				"no such user — this endpoint places an EXISTING account; invite an unknown email with POST /api/orgs/{id}/invitations")
+			return
+		}
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	if u.Status == identity.UserStatusDisabled {
+		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it an org", u.Email)
+		return
+	}
+	if err := s.authStore().UpsertOrgMembership(r.Context(), identity.OrgMembership{
+		UserID: memberID, OrgID: orgID, Role: role, JoinedAt: time.Now().UTC(),
+	}); err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOrg(r, orgID, "org_member.added", "member", memberID, map[string]any{"role": string(role), "email": u.Email})
+	writeJSON(w, map[string]any{"user_id": memberID, "org_id": orgID, "role": string(role)})
 }
 
 func (s *Server) handleGetTeam(w http.ResponseWriter, r *http.Request) {
