@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.117.0](https://github.com/SocialGouv/iterion/compare/v3.116.5...v3.117.0) (2026-09-08)
+
+### Features
+
+* **dsl:** warn (C249) when a branch-spawning router names one target twice ([#934](https://github.com/SocialGouv/iterion/issues/934)) ([c122095](https://github.com/SocialGouv/iterion/commit/c12209547cc0f2ca0194c6f340b7fbec8ac11c9f))
+
+    <details><summary>why</summary>
+
+    `fork -> a` declared twice on a `fan_out_all` router validated clean and still does: the compiler keeps both edges, the run finishes, nothing says anything. But `fan_out_all` spawns one goroutine per outgoing edge and derives every branch id from the TARGET (`branch_<router>_<target>`), so the two executions wear one id — they collapse onto one output slot at convergence and, since durable branch checkpoints, onto one `BranchCheckpoint` whose cursor each goroutine overwrites, which lets a…
+
+    </details>
+
+### Bug Fixes
+
+* **bundle,runner,server:** a bundle may declare the engine it needs, and three surfaces refuse what they cannot run ([#942](https://github.com/SocialGouv/iterion/issues/942)) ([4afe964](https://github.com/SocialGouv/iterion/commit/4afe96461f0b0e89752a7e6ba70169df3ff6fefa)), references [#858](https://github.com/SocialGouv/iterion/issues/858) [#881](https://github.com/SocialGouv/iterion/issues/881) [#881](https://github.com/SocialGouv/iterion/issues/881) [#858](https://github.com/SocialGouv/iterion/issues/858) [#881](https://github.com/SocialGouv/iterion/issues/881)
+
+    <details><summary>why</summary>
+
+    #858 layer 1. Layer 2 (C138, builtin arity at compile) shipped in #881; this is the complementary half — the arity check catches a builtin the evaluator does not KNOW, this catches everything else a newer engine brought.
+
+    </details>
+
 ## [3.116.5](https://github.com/SocialGouv/iterion/compare/v3.116.4...v3.116.5) (2026-09-08)
 
 ### Bug Fixes
