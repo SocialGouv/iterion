@@ -170,6 +170,15 @@ func isBlockingOrchestrationTool(name string) bool {
 // any single assistant turn. Combined with ResultMessage.ModelUsage it
 // drives the run-view's per-node model name and context-usage gauge.
 type sessionMeta struct {
+	// sessionID is the CLI's own session identifier, taken from the
+	// `system/init` event — the FIRST thing the CLI emits, long before
+	// any result message. Kept here because a session that dies mid
+	// stream never produces a ResultMessage, and until this was captured
+	// the id it had already announced was only ever logged: the delegate
+	// returned a failure that could not name the session it had opened,
+	// so nothing above it could resume that session instead of running
+	// the whole node again from zero.
+	sessionID       string
 	effectiveModel  string
 	peakContextLoad int
 	thinkingTokens  int // approximate extended-thinking tokens (re-encoded text)
@@ -220,8 +229,19 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 	out.PeakInputTokens = sm.peakContextLoad
 	out.ThinkingTokens = sm.thinkingTokens
 	out.ThinkingMs = sm.thinkingMs
+	// The result message's id wins when there is one — it is the same id,
+	// read from the authoritative end of the session. The streamed one is
+	// what the failure paths have: they reach here with rm nil, and a
+	// delegation that cannot name the session it opened forces the node to
+	// start over instead of resuming it.
+	if out.SessionID == "" {
+		out.SessionID = sm.sessionID
+	}
 	if rm == nil {
 		return
+	}
+	if rm.SessionID != "" {
+		out.SessionID = rm.SessionID
 	}
 	if mu, ok := rm.ModelUsage[sm.effectiveModel]; ok {
 		out.ContextWindow = mu.ContextWindow
@@ -672,6 +692,14 @@ func backfillEmptyResult(result *claudesdk.ResultMessage, lastAssistantText stri
 // model when a proxy or alias is in play). Hook-lifecycle subtypes are
 // noisy and routed to debug.
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudesdk.SystemMessage, task Task, meta *sessionMeta) {
+	// Captured on EVERY subtype, not only init: the id is the same for the
+	// whole session, and a stream that failed before init still names it on
+	// whatever it did emit. First non-empty wins — the value never changes
+	// within one session, and re-reading it later would only risk taking a
+	// sub-agent's.
+	if m.SessionID != "" && meta.sessionID == "" {
+		meta.sessionID = m.SessionID
+	}
 	if m.Subtype == "init" {
 		b.Logger.Info("[%s#%d/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",
 			task.NodeID, task.Iteration, m.SessionID, m.Model, m.ToolCount(), m.MCPServerCount())

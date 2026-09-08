@@ -327,7 +327,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		if task.Hooks.OnTurnFinished == nil {
 			return
 		}
-		if result.SessionID == "" {
+		if !turnFinished(err, result) {
 			return
 		}
 		text := ""
@@ -697,6 +697,19 @@ func errorBodyObject(obj map[string]any) bool {
 // hoist the call into its own statement before returning `result`: Go leaves
 // the order between a plain operand and a call in one return list
 // unspecified, and the stamp must land before the copy is taken.
+// turnFinished reports whether OnTurnFinished has a finished turn to
+// announce.
+//
+// It used to be spelled inline as "the result carries a session id", which
+// was a PROXY for "the delegation succeeded": true only while a failure
+// could not carry one. A failure now names the session the CLI announced —
+// that is the point of capturing it — so the proxy is gone and the
+// condition has to say what it meant. A turn that ended in an error is not
+// a turn that finished, however well it names its session.
+func turnFinished(err error, result Result) bool {
+	return err == nil && result.SessionID != ""
+}
+
 func typedFailure(result *Result, task Task, totalIn, totalOut int, err error, rms ...*claudesdk.ResultMessage) error {
 	if result.Output == nil {
 		result.Output = map[string]any{}
