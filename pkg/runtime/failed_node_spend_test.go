@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/clock"
+
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -364,6 +366,69 @@ func TestFailedNodeSpendSurvivesTheProductionExecutor(t *testing.T) {
 	}
 	if r.Checkpoint.BudgetCostUSD != 4.75 {
 		t.Fatalf("the failed delegation's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
+	}
+}
+
+// ctxRefusingSpendStore is the shape a real remote ledger has: a write on a
+// done context is refused, the way a Mongo write is. The filesystem store
+// ignores ctx entirely, which is exactly what hides this class of bug
+// locally.
+type ctxRefusingSpendStore struct {
+	*memSpendStore
+	refused int
+}
+
+func (s *ctxRefusingSpendStore) AddSpend(ctx context.Context, date, runID string, cum float64) (*store.DailySpend, error) {
+	if err := ctx.Err(); err != nil {
+		s.refused++
+		return nil, err
+	}
+	return s.memSpendStore.AddSpend(ctx, date, runID, cum)
+}
+
+// A teardown mid-node is the exit where the booked figure is most certainly
+// final — the run is over, nothing will re-report it. It is also the one exit
+// reached BECAUSE the run's context is done, so booking through that context
+// hands the daily ledger a write it must refuse. The spend has to land anyway.
+func TestFailedNodeSpendLandsInTheLedgerOnATornDownRun(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "cancelled_spend",
+		Entry: "agent",
+		Nodes: map[string]ir.Node{
+			"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "agent", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 1_000_000},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := newStubExecutor()
+	exec.on("agent", func(_ map[string]any) (map[string]any, error) {
+		// The drain/operator cancel arrives while the node is executing;
+		// the delegate returns the session's spend beside its error.
+		cancel()
+		return map[string]any{"_tokens": 12_000, "_cost_usd": 3.50}, errors.New("stream closed")
+	})
+
+	ledger := &ctxRefusingSpendStore{memSpendStore: newMemSpendStore()}
+	guard := NewDailyCapGuard(ledger, clock.Default, DailyCapConfig{MaxCostPerDayUSD: 100})
+	eng := New(wf, tmpStore(t), exec, WithDailyCap(guard))
+	if err := eng.Run(ctx, "run-cancelled-spend", nil); err == nil {
+		t.Fatal("the run was supposed to stop on the teardown")
+	}
+
+	if ledger.refused > 0 {
+		t.Fatalf("the booking wrote through the run's own dead context: %d refused ledger write(s)", ledger.refused)
+	}
+	day := ledger.get(clock.DayKey(clock.Default.Now()))
+	if got := day.RunsContributed["run-cancelled-spend"]; got != 3.50 {
+		t.Fatalf("the torn-down run's spend never reached the daily ledger: %v", got)
 	}
 }
 
