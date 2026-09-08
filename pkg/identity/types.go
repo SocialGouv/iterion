@@ -295,7 +295,52 @@ type Org struct {
 	// admins (and super-admins) provisioning themselves are not gated.
 	// Off by default — existing orgs keep the direct-provision behaviour.
 	RequireProvisionApproval bool `bson:"require_provision_approval,omitempty" json:"require_provision_approval,omitempty"`
+
+	// CredentialAudience decides which of the org's teams may spend the
+	// org's OWN shared LLM credentials (the org tier). Its zero value
+	// admits NOBODY: lending a key is an explicit act, so a team that was
+	// never named funds its runs itself or does not run.
+	CredentialAudience CredentialAudience `bson:"credential_audience,omitempty" json:"credential_audience,omitempty"`
 }
+
+// CredentialAudience answers one question — may THIS team of the org draw
+// on the org's shared LLM credentials? It is the org-tier counterpart of
+// credpool.Audience, deliberately narrower: the pool lends across tenants
+// (hence its orgs/contributors dials), an org lends only inside itself, so
+// naming teams and "all of them" is the whole vocabulary.
+//
+// The zero value admits nobody. That asymmetry with the pool is the point:
+// a pool's zero value serves its owning org because a donor pledged it to
+// their own people, while an org key exists precisely so that SOME teams
+// spend it and others do not.
+type CredentialAudience struct {
+	// Teams is an explicit allow-list of team ids within the org.
+	Teams []string `bson:"teams,omitempty" json:"teams,omitempty"`
+	// AllTeams admits every team of the org, including ones created later.
+	// The setting a single-tenant org wants; the one a governed org grants
+	// team by team instead.
+	AllTeams bool `bson:"all_teams,omitempty" json:"all_teams,omitempty"`
+}
+
+// Allows reports whether teamID may spend the org's shared credentials.
+func (a CredentialAudience) Allows(teamID string) bool {
+	if teamID == "" {
+		return false
+	}
+	if a.AllTeams {
+		return true
+	}
+	for _, id := range a.Teams {
+		if id == teamID {
+			return true
+		}
+	}
+	return false
+}
+
+// Empty reports whether the audience admits nobody — the zero value, and
+// the state in which reading the org's credentials at all is pointless.
+func (a CredentialAudience) Empty() bool { return !a.AllTeams && len(a.Teams) == 0 }
 
 // EffectiveStatus treats an empty status (legacy rows) as active.
 func (o Org) EffectiveStatus() TeamStatus {

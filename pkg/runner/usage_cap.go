@@ -49,28 +49,40 @@ type runCredKeys struct {
 
 // usageCapCredKeys reads the run's resolved credentials once. Scope: a
 // bundle carrying any credential the TENANT resolved is the tenant's own;
-// anything else shares the cross-tenant meter — a slot the publisher
-// filled from the DB-backed platform tier (the deployment's single
-// subscription) and a slot the credential POOL filled with a contributor's
-// lent one (the donor's single subscription, borrowed by several tenants
-// in turn). Both ride the bundle exactly like a tenant credential and
-// neither is one; metering a lent credential per borrower would open one
-// ledger per borrower of the SAME account, so what one of them measured —
-// a refusal, a window at 95% — would reach none of the others.
+// anything else shares a cross-tenant meter — a slot the publisher filled
+// from the DB-backed platform tier (the deployment's single subscription),
+// one the credential POOL filled with a contributor's lent one (the
+// donor's single subscription, borrowed by several tenants in turn), and
+// one the ORG tier filled with the org's own key (one subscription serving
+// every team of its audience). All three ride the bundle exactly like a
+// tenant credential and none is one; metering a shared credential per
+// borrower would open one ledger per borrower of the SAME account, so what
+// one of them measured — a refusal, a window at 95% — would reach none of
+// the others.
+//
+// The org tier gets its OWN scope rather than the platform one: its
+// subscription is the org's, and merging it with the deployment's would
+// make one org's exhausted window park every other tenant's runs.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 	k := runCredKeys{scope: usagecap.ScopePlatform}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
 		return k
 	}
-	tenantOwnZai := creds.APIKey(secrets.ProviderZAI) != "" &&
-		creds.IsTenantOwned(string(secrets.ProviderZAI))
-	tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
-		creds.IsTenantOwned(string(secrets.ProviderAnthropic))
-	tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
-		creds.IsTenantOwned(delegate.BackendClaudeCode)
-	if tenantOwnZai || tenantOwnKey || tenantOwnOAuth {
+	held := func(slot string, present bool) (tenant, org bool) {
+		if !present {
+			return false, false
+		}
+		return creds.IsTenantOwned(slot), creds.IsOrgSourced(slot)
+	}
+	tenantZai, orgZai := held(string(secrets.ProviderZAI), creds.APIKey(secrets.ProviderZAI) != "")
+	tenantKey, orgKey := held(string(secrets.ProviderAnthropic), creds.APIKey(secrets.ProviderAnthropic) != "")
+	tenantOAuth, orgOAuth := held(delegate.BackendClaudeCode, creds.OAuthDir(delegate.BackendClaudeCode) != "")
+	switch {
+	case tenantZai || tenantKey || tenantOAuth:
 		k.scope = usagecap.TenantScope(msg.TenantID)
+	case orgZai || orgKey || orgOAuth:
+		k.scope = usagecap.OrgScope(msg.OrgID)
 	}
 	k.zaiFP = creds.Fingerprint(string(secrets.ProviderZAI))
 	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))

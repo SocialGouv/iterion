@@ -233,6 +233,13 @@ func (s *Server) canMutateScopedRecord(ctx context.Context, id auth.Identity, sc
 	if scopeUserID != "" {
 		return scopeUserID == id.UserID
 	}
+	// An ORG-tier record is scoped to a reserved literal, not a team id, so
+	// the membership read below can only ever miss — and a miss reads as
+	// "forbidden", which would leave the org's own shared credentials
+	// mutable by super-admins alone. Its owner is the ORG's admins.
+	if orgID, ok := secrets.OrgIDFromTierScope(scopeTeamID); ok {
+		return s.canManageOrg(ctx, id, orgID)
+	}
 	mb, err := s.authStore().GetMembership(ctx, id.UserID, scopeTeamID)
 	if err != nil {
 		return false
