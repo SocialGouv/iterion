@@ -149,3 +149,54 @@ func TestAwaitAnswersReportsPersistenceFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestAwaitAnswersFailsClosedWhenAnsweredMarkerCannotBeCleared(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s := tmpStore(t)
+		if _, err := s.CreateRun(ctx, "r", "wf", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteInteraction(ctx, &store.Interaction{ID: "q", RunID: "r", NodeID: "ask", Kind: store.InteractionKindAsync, RequestedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		failure := errors.New("cannot clear wait proof")
+		e := New(&ir.Workflow{Name: "wf"}, failingAwaitWaitStore{RunStore: s, failClear: true, err: failure}, newStubExecutor())
+		rs := e.newRunState("r", nil)
+		rs.ctx = ctx
+		done := make(chan error, 1)
+		go func() {
+			_, err := e.awaitAsyncAnswers(ctx, rs, "sync", &ir.AwaitAnswersNode{Timeout: time.Hour})
+			done <- err
+		}()
+		synctest.Wait()
+		joined := false
+		defer func() {
+			cancel()
+			if !joined {
+				<-done
+			}
+		}()
+		if _, err := store.AnswerInteraction(ctx, s, "r", "q", map[string]any{"answer": "blue"}); err != nil {
+			t.Fatal(err)
+		}
+		e.NotifyInteractionAnswered()
+		result := <-done
+		joined = true
+		if !errors.Is(result, failure) {
+			t.Fatalf("continued into work with stale wait proof: %v", result)
+		}
+		// Answers are durable interaction records, not lost output. A retry
+		// can recover them without asking the human again. Continuing after
+		// this failed clear would exempt the next genuinely wedged node for
+		// the rest of the one-hour sync timeout.
+		out, err := e.awaitAsyncAnswers(ctx, rs, "sync", &ir.AwaitAnswersNode{Timeout: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if answers, ok := out["answers"].([]any); !ok || len(answers) != 1 {
+			t.Fatalf("answered interaction lost on retry: %+v", out)
+		}
+	})
+}

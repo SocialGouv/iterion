@@ -52,6 +52,10 @@ func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID str
 		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := e.store.SetAwaitAnswersWait(clearCtx, rs.runID, token, nil); err != nil {
+			// Fail closed even after collecting answers: carrying this proof
+			// into the next node could hide a real stall until the sync timeout
+			// (possibly hours). Answers remain in the interaction store and
+			// can be collected again on retry without asking the human twice.
 			resultErr = errors.Join(resultErr, &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: nodeID, Message: "clear await_answers wait", Cause: err})
 		}
 	}()

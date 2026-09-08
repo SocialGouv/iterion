@@ -18,6 +18,14 @@ run, and deleted runs cannot be resurrected. FS and Mongo implement the same
 contract. Storage failures surface as execution errors; a failed cleanup cannot
 leave an exemption beyond the original timeout.
 
+A cleanup write failure also fails the node after answers were collected:
+continuing into the next node with stale proof could hide its genuine stall
+for the remaining sync timeout, possibly hours. The answers remain durable in
+the interaction store and are collected again on retry without a second human
+prompt. This favors a visible, recoverable storage failure over a hidden stall.
+Cleanup uses a separate five-second context; the filesystem writer retains its
+existing ten-second file-lock ceiling rather than honoring context cancellation.
+
 The shared lookup also follows `SubbotChildren` to a paused descendant or an
 active descendant sync point. Terminal subtrees are ignored. No proof, an
 expired marker, unreadable records, cycles, or exhaustion of the 256-record
@@ -25,11 +33,15 @@ probe budget never provide an exemption by themselves. A valid proof found
 elsewhere in the visited tree still qualifies, as in the original dispatcher
 oracle.
 
-Alert lookups run outside the event observer's mutex and have a five-second
-I/O bound cancelled by manager shutdown. The candidate is checked again after
+Human-wait lookups run outside the event observer's mutex with a five-second
+context deadline cancelled by manager shutdown. The candidate is checked again after
 the lookup, so progress arriving during a read prevents a stale alert. When
 the wait ends, the next poll applies the existing stall threshold to the last
 real progress event; the wait does not reset the watermark.
+
+The service's internal alert callbacks bootstrap identity from the known run
+ID, then scope descendant reads and the persisted health event to that run's
+tenant. A paused child belonging to another tenant cannot exempt the root.
 
 Regression coverage includes both original failures, answer/cancel/timeout,
 write and cleanup failure, parallel token isolation, stale saves, lifecycle
