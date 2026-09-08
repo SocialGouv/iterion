@@ -194,6 +194,14 @@ func (s *Service) listAllArtifactsFromIndex(ctx context.Context, runID string) (
 		entry := RunArtifactSummary{NodeID: nodeID, Version: version}
 		art, lerr := s.store.LoadArtifact(ctx, runID, nodeID, version)
 		if lerr != nil || art == nil {
+			// A cancelled or expired context is not a broken body: every
+			// remaining node would degrade for a reason that has nothing
+			// to do with what this run published, and a wholly degraded
+			// listing is the same lie about the store's state that the
+			// silent drop was. Surface it as the outage it is.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("runview: list artifacts: %w", ctxErr)
+			}
 			s.logger.Warn("runview: run %s node %s v%d is in the artifact index but its body did not load, listing it degraded: %v",
 				runID, nodeID, version, lerr)
 		} else {

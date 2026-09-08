@@ -327,6 +327,36 @@ func TestListAllArtifacts_FromIndexDegradesUnreadableBody(t *testing.T) {
 	}
 }
 
+// A cancelled context is an outage, not a run whose every artifact body is
+// broken: degrading the whole listing would tell the caller the same lie
+// the silent drop did, only louder.
+func TestListAllArtifacts_FromIndexCancelledContextIsAnError(t *testing.T) {
+	logger := iterlog.Nop()
+	seed, err := store.New(t.TempDir(), store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if _, err := seed.CreateRun(context.Background(), "run7", "wf", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := seed.WriteArtifact(context.Background(), &store.Artifact{RunID: "run7", NodeID: "report", Version: 0, Data: map[string]any{"title": "R"}}); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	svc, err := NewService(t.TempDir(), WithLogger(logger), WithStore(unreadableBodyStore{RunStore: seed}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ctx, cancel := context.WithCancel(store.WithoutTenantFilter(context.Background()))
+	cancel()
+	got, err := svc.ListAllArtifactsCtx(ctx, "run7")
+	if err == nil {
+		t.Fatalf("cancelled context served %+v; want an error, not a wholly degraded listing", got)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+}
+
 // tenantGuardedRunStore reproduces the mongo store's fail-closed tenant
 // guard (withTenantFilter, pkg/store/mongo/tenant.go): a LoadRun whose ctx
 // carries neither a tenant nor the explicit bypass marker PANICS. That is
