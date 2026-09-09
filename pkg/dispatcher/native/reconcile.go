@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // defaultRescanInterval is how often a Store whose watch the host refused
@@ -371,7 +370,3 @@ func (r *indexRescanner) Close() error {
 	})
 	return nil
 }
-
-// unused keeps iterlog imported for the logger type used by tests that
-// capture warnings; the package logger is *iterlog.Logger.
-var _ *iterlog.Logger

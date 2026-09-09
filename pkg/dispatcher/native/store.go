@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -273,10 +274,17 @@ func (s *Store) populateIndex() error {
 		s.index[id] = iss
 	}
 	if len(unreadable) > 0 && s.logger != nil {
-		for id, err := range unreadable {
-			s.logger.Warn("native store: %d issue file(s) could not be read at startup and were skipped (e.g. %s: %v)", len(unreadable), id, err)
-			break
+		// Name the FIRST id by sort order, not whichever one Go's
+		// randomised map iteration handed us: two restarts over the same
+		// broken tree must blame the same card, or the warning cannot be
+		// grepped for or compared across a restart. swapIndexLocked
+		// already reports its own example this way.
+		ids := make([]string, 0, len(unreadable))
+		for id := range unreadable {
+			ids = append(ids, id)
 		}
+		sort.Strings(ids)
+		s.logger.Warn("native store: %d issue file(s) could not be read at startup and were skipped (e.g. %s: %v)", len(ids), ids[0], unreadable[ids[0]])
 	}
 	return nil
 }
