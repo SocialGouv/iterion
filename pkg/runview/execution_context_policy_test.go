@@ -47,3 +47,11 @@ func TestExecutionContextPolicyFromEnvRollbackIsAuthoritative(t *testing.T) {
 		t.Fatalf("rollback policy = %s, want legacy", got)
 	}
 }
+
+func TestExecutionContextPolicyFromEnvInvalidModeKeepsValidAlias(t *testing.T) {
+	t.Setenv(reliability.EnvContextPolicyAlias, "enforce")
+	t.Setenv(reliability.EnvMode, "enforced")
+	if got := ExecutionContextPolicyFromEnv(); got != store.ContextPolicyEnforce {
+		t.Fatalf("policy with invalid new mode = %s, want enforce from compatibility alias", got)
+	}
+}

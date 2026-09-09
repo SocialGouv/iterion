@@ -163,7 +163,7 @@ func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv("ITERION_RETRY_CIRCUIT_THRESHOLD", "7")
 	t.Setenv("ITERION_RETRY_CIRCUIT_COOLDOWN", "2m")
 	c := FromEnv()
-	if c.Mode != ModeLegacy || c.ContextPolicy() != store.ContextPolicyLegacy || !c.WatcherCursorsEnabled || c.RetryCircuitThreshold != 7 || c.RetryCircuitCooldown != 2*time.Minute {
+	if c.Mode != ModeLegacy || c.ContextPolicy() != store.ContextPolicyLegacy || c.RetryCircuitThreshold != 7 || c.RetryCircuitCooldown != 2*time.Minute {
 		t.Fatalf("config = %+v", c)
 	}
 	t.Setenv(EnvMode, "enforce")
@@ -177,10 +177,6 @@ func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "")
 	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyReport {
 		t.Fatalf("older policy fallback = %s", got)
-	}
-	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
-	if got := FromEnv().OutputCorrectionBudget; got != 0 {
-		t.Fatalf("spaced correction budget = %d, want 0", got)
 	}
 }
 
@@ -205,7 +201,7 @@ func TestModeFromEnvPrecedence(t *testing.T) {
 		{name: "agreeing values", mode: "report", alias: "report", want: ModeReport, policy: store.ContextPolicyReport},
 		{name: "whitespace and case are tolerated", mode: "  Enforce\t", want: ModeEnforce, policy: store.ContextPolicyEnforce},
 		{name: "blank mode falls through to the alias", mode: "   ", alias: "enforce", want: ModeEnforce, policy: store.ContextPolicyEnforce},
-		{name: "unrecognised mode means legacy, not the alias", mode: "nonsense", alias: "enforce", want: ModeLegacy, policy: store.ContextPolicyLegacy},
+		{name: "unrecognised mode falls back to the alias", mode: "nonsense", alias: "enforce", want: ModeEnforce, policy: store.ContextPolicyEnforce},
 		{name: "unrecognised alias means legacy", alias: "nonsense", want: ModeLegacy, policy: store.ContextPolicyLegacy},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,5 +217,34 @@ func TestModeFromEnvPrecedence(t *testing.T) {
 				t.Fatalf("FromEnv mode = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestInvalidModeWarnsOnceAndKeepsValidAlias(t *testing.T) {
+	const invalid = "enforced-by-typo"
+	key := EnvMode + "\x00" + invalid
+	warnedInvalidModes.Delete(key)
+	oldWarn := emitInvalidModeWarning
+	t.Cleanup(func() {
+		emitInvalidModeWarning = oldWarn
+		warnedInvalidModes.Delete(key)
+	})
+	var calls int
+	emitInvalidModeWarning = func(name, value string) {
+		calls++
+		if name != EnvMode || value != invalid {
+			t.Fatalf("warning = (%q, %q), want (%q, %q)", name, value, EnvMode, invalid)
+		}
+	}
+	t.Setenv(EnvMode, invalid)
+	t.Setenv(EnvContextPolicyAlias, "enforce")
+	if got := ModeFromEnv(); got != ModeEnforce {
+		t.Fatalf("invalid mode masked valid alias: got %q", got)
+	}
+	if got := ModeFromEnv(); got != ModeEnforce {
+		t.Fatalf("second resolution = %q, want enforce", got)
+	}
+	if calls != 1 {
+		t.Fatalf("invalid mode warnings = %d, want one", calls)
 	}
 }

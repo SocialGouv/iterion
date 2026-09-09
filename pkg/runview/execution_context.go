@@ -16,9 +16,9 @@ import (
 //
 // The resolution itself lives in pkg/reliability, which owns the staged
 // rollout knobs: ITERION_RELIABILITY_MODE is authoritative and
-// ITERION_EXECUTION_CONTEXT_POLICY is the compatibility alias consulted only
-// when it is unset. Delegating instead of re-deriving is what keeps a rollout
-// report from naming a policy the launch surfaces do not actually apply.
+// ITERION_EXECUTION_CONTEXT_POLICY is the compatibility alias consulted when
+// the new mode is unset or invalid. Delegating instead of re-deriving keeps a
+// rollout report from naming a policy the launch surfaces do not actually apply.
 func ExecutionContextPolicyFromEnv() store.ContextPolicy {
 	return reliability.ContextPolicyFromEnv()
 }

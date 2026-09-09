@@ -7,8 +7,10 @@ package reliability
 import (
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -31,22 +33,51 @@ const (
 // the new fields.
 type Mode string
 
+var warnedInvalidModes sync.Map
+
+var emitInvalidModeWarning = func(name, value string) {
+	iterlog.NewFromEnv(os.Stderr).Warn(
+		"reliability: ignoring invalid %s=%q (expected legacy, report, or enforce)",
+		name, value,
+	)
+}
+
 // ModeFromEnv resolves the ONE rollout mode every surface must agree on.
-// EnvMode decides whenever it is set — including to an unrecognised value,
-// which resolves to legacy, the safe end of the dial, rather than falling
-// through to a variable the operator did not just touch. EnvContextPolicyAlias
-// is consulted only when EnvMode is unset.
+// A recognised EnvMode is authoritative, including an explicit legacy
+// rollback. An unset or invalid value falls back to the compatibility alias;
+// invalid values are warned once so a typo cannot silently change the gate.
 func ModeFromEnv() Mode {
-	raw := strings.TrimSpace(os.Getenv(EnvMode))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv(EnvContextPolicyAlias))
+	if raw := strings.TrimSpace(os.Getenv(EnvMode)); raw != "" {
+		if mode, ok := parseMode(raw); ok {
+			return mode
+		}
+		warnInvalidModeOnce(EnvMode, raw)
 	}
-	switch mode := Mode(strings.ToLower(raw)); mode {
-	case ModeReport, ModeEnforce:
-		return mode
+	if raw := strings.TrimSpace(os.Getenv(EnvContextPolicyAlias)); raw != "" {
+		if mode, ok := parseMode(raw); ok {
+			return mode
+		}
+		warnInvalidModeOnce(EnvContextPolicyAlias, raw)
+	}
+	return ModeLegacy
+}
+
+func parseMode(raw string) (Mode, bool) {
+	mode := Mode(strings.ToLower(strings.TrimSpace(raw)))
+	switch mode {
+	case ModeLegacy, ModeReport, ModeEnforce:
+		return mode, true
 	default:
-		return ModeLegacy
+		return "", false
 	}
+}
+
+func warnInvalidModeOnce(name, value string) {
+	key := name + "\x00" + value
+	if _, loaded := warnedInvalidModes.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	emitInvalidModeWarning(name, value)
 }
 
 // ContextPolicyFromEnv is the single resolution the launch surfaces share —
@@ -75,11 +106,8 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // so a report can print one coherent pilot configuration.
 //
 // Mode and the retry-circuit pair are knobs an operator can actually turn.
-// WatcherCursorsEnabled is not one: FromEnv sets it to a constant, and whether
-// a coordinator persists its cursor is in fact decided per launch surface
-// (Coordinator.cursorStore) rather than by any deployment-wide setting — which
-// is why `iterion reliability report` answers that question per run, from the
-// cursors a run actually wrote, instead of printing this field.
+// Watcher cursor persistence is decided per launch surface, so it is reported
+// only from the cursors each run actually wrote, never as a global setting.
 //
 // The output correction budget deliberately is not a field here at all:
 // correction fires only for an
@@ -94,12 +122,11 @@ type Config struct {
 	Mode                  Mode
 	RetryCircuitThreshold int
 	RetryCircuitCooldown  time.Duration
-	WatcherCursorsEnabled bool
 }
 
 func FromEnv() Config {
 	circuit := retrycoord.FromEnv()
-	return Config{Mode: ModeFromEnv(), RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown, WatcherCursorsEnabled: true}
+	return Config{Mode: ModeFromEnv(), RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown}
 }
 
 func (c Config) ContextPolicy() store.ContextPolicy { return c.Mode.ContextPolicy() }

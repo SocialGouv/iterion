@@ -117,8 +117,9 @@ either way — pre-pilot runs simply have none.
 `ITERION_RELIABILITY_MODE` (`legacy|report|enforce`) is the operator-facing
 switch for this rollout and it is **authoritative**.
 `ITERION_EXECUTION_CONTEXT_POLICY` — the narrower, pre-existing switch this
-rollout generalises — takes the same three values and is read only when
-`ITERION_RELIABILITY_MODE` is unset. Both resolve through one implementation
+rollout generalises — takes the same three values and is read when
+`ITERION_RELIABILITY_MODE` is unset or invalid. Both resolve through one
+implementation
 ([`reliability.ContextPolicyFromEnv`](../pkg/reliability/rollout.go), which
 `runview.ExecutionContextPolicyFromEnv` delegates to), so what a report names
 is what the launch surfaces apply.
@@ -127,9 +128,9 @@ The precedence is what makes step 4 an emergency lever rather than a
 suggestion: a deployment that already carries
 `ITERION_EXECUTION_CONTEXT_POLICY=enforce` rolls back by setting
 `ITERION_RELIABILITY_MODE=legacy` alone — it does not also have to find and
-unset the older variable. An unrecognised value in either resolves to
-`legacy`; it never falls through to the other variable, so a typo in a
-rollback cannot leave enforcement on.
+unset the older variable. An unrecognised value emits a one-time warning; an
+invalid new mode falls back to the older valid policy, while an invalid or
+absent value in both variables resolves to `legacy`.
 
 Legacy documents are always readable. Missing context, admission, correction
 or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
