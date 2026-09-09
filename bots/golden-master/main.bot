@@ -1903,24 +1903,41 @@ tool oracle_run:
                 # entry added at all, flips the gate from REFUSED to GREEN. So an
                 # actor free to write here could make an existing net greener
                 # without extending it, which is the additions-only authority this
-                # whole function holds. Four rules keep the channel to the case
-                # that forces it open:
+                # whole function holds. Three rules keep the channel to the case
+                # that forces it open, and every one of them guards an ADDED
+                # declaration, because adding is the only direction that can green
+                # anything:
                 #
-                #   1. every base declaration survives VERBATIM — re-opening a
-                #      settled identity claim is a re-anchor's job, not an
-                #      extension's;
-                #   2. an added declaration is well-formed, because the gate's
+                #   1. an added declaration is well-formed, because the gate's
                 #      reader drops a malformed one in SILENCE and it would read as
                 #      no declaration at all — an unconstrained free write into the
                 #      key just unfrozen;
-                #   3. an added declaration names at least one entry THIS extension
+                #   2. an added declaration names at least one entry THIS extension
                 #      added — the case that forces the channel open is exactly "my
                 #      new entry collides with an existing one", and a group of two
                 #      pre-existing entries means the base gate was already red,
                 #      which an extension does not get to settle;
-                #   4. no two declarations name the same group once one of them is
+                #   3. no two declarations name the same group once one of them is
                 #      added — the reader keys a dict on the group, so the second
                 #      silently wins or loses an ordering nobody audits.
+                #
+                # REMOVAL IS ALLOWED, deliberately, and an earlier rule forbidding
+                # it was withdrawn as soon as it was executed. Dropping a
+                # declaration can only do one of two things: leave an OBSERVED
+                # group undeclared, which the gate refuses — redder, not greener —
+                # or clear a record whose references have since diverged, which is
+                # the remedy the gate itself prints ("Remove the declaration").
+                # Forbidding it made those two sentences contradict each other, and
+                # since `duplicate_groups_unproven` is now a term of convergence
+                # the net could not converge through the extension lane at all
+                # until someone ran a re-anchor. Neither direction is exploitable:
+                # whether a group is still observed is decided by MEASUREMENT, not
+                # by the actor writing the file.
+                #
+                # A MODIFICATION is still refused, without a rule of its own — a
+                # rewritten declaration is not present verbatim in base, so it is
+                # judged as ADDED and rule 2 stops it unless this extension really
+                # added one of its members.
                 #
                 # The separator itself needs no rule: naming one that does not move
                 # part of the group is refused BY MEASUREMENT at the next gate,
@@ -1943,13 +1960,6 @@ tool oracle_run:
                     head_ser = [_dg_ser(d) for d in head_dg]
                     base_ser = [_dg_ser(d) for d in base_dg] \
                         if isinstance(base_dg, list) else []
-                    gone = [s for s in base_ser if s not in head_ser]
-                    if gone:
-                        corpus_problems.append(
-                            "%d `duplicate_groups` declaration(s) REMOVED or "
-                            "MODIFIED: %s — a settled identity claim is re-opened "
-                            "by a re-anchor, not by an extension"
-                            % (len(gone), "; ".join(gone)))
                     bearers = {}
                     for decl, s in zip(head_dg, head_ser):
                         added = s not in base_ser
@@ -5246,9 +5256,21 @@ tool oracle_run:
                                              "separated_by": "M-07"}]})["acted"][0]["ok"],
                   False)
 
-            # 6. Une declaration de BASE retiree ou retouchee : reouvrir une
-            #    identite tranchee est le travail d'un re-ancrage, pas d'une
-            #    extension. La base porte ici la declaration.
+            # 6. Le sens du RETRAIT, qui n'est PAS symetrique de l'ajout. Retirer
+            #    une declaration ne peut faire que deux choses : laisser un groupe
+            #    OBSERVE sans declaration — que la porte refuse, donc plus rouge —
+            #    ou effacer un enregistrement dont les references ont diverge, ce
+            #    qui est le remede que la porte imprime elle-meme (« Remove the
+            #    declaration »). L'interdire faisait se contredire ces deux phrases
+            #    et, `duplicate_groups_unproven` etant un terme de convergence,
+            #    fermait la lane d'extension jusqu'a un re-ancrage. Ni l'un ni
+            #    l'autre sens n'est exploitable : c'est la MESURE, pas l'acteur, qui
+            #    decide si un groupe est encore observe.
+            #
+            #    Une RETOUCHE, elle, reste refusee — sans regle propre : la
+            #    declaration reecrite n'est plus verbatim dans la base, donc elle est
+            #    jugee comme AJOUTEE et doit nommer une entree de cette extension.
+            #    La base porte ici la declaration.
             xreset()
             with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
                 json.dump({"entries": [base_entry],
@@ -5273,14 +5295,24 @@ tool oracle_run:
                             "duplicate_groups": [{"ids": ["1", "5"],
                                                   "separated_by": "M-01"}]})["acted"][0]["ok"],
                   True)
-            check("declaration de base retiree -> refusee",
+            check("declaration de base retiree -> ok, c'est le remede que la porte imprime",
                   xdg_from({"entries": [base_entry, new_entry],
-                            "duplicate_groups": []})["acted"][0]["ok"], False)
+                            "duplicate_groups": []})["acted"][0]["ok"], True)
+            # Et la retouche reste refusee, sans regle dediee : la declaration
+            # reecrite n'est plus verbatim dans la base, donc elle est jugee comme
+            # ajoutee et ne nomme aucune entree de cette extension.
             check("separateur d'une declaration de base reecrit -> refuse",
                   xdg_from({"entries": [base_entry, new_entry],
                             "duplicate_groups": [{"ids": ["1", "5"],
                                                   "separated_by": "M-99"}]})["acted"][0]["ok"],
                   False)
+            # Retirer une declaration dont le groupe est ENCORE observe ne verdit
+            # rien : la porte refuse alors « aucune entree ne declare ce groupe ».
+            # C'est la mesure qui tranche, pas l'ecriture.
+            check("un groupe encore observe et prive de sa declaration reste refuse par la porte",
+                  [x["ids"] for x in unproven_duplicate_groups(
+                      [["1", "5"]], {"entries": [], "duplicate_groups": []}, [])],
+                  [["1", "5"]])
             # Et la cle hors `entries` qui reste GELEE : rien ne l'epinglait, donc
             # degeler `duplicate_groups` pouvait emporter le reste sans bruit.
             check("une AUTRE cle hors `entries` reste refusee",
