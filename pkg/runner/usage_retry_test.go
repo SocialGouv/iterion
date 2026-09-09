@@ -315,10 +315,11 @@ func TestRunRetryPolicy_PlatformCeilingLowers(t *testing.T) {
 // a real Mongo client does.
 type cancelAwareStore struct {
 	store.RunStore
-	run     *store.Run
-	armed   bool
-	armedAt time.Time
-	calls   int
+	run          *store.Run
+	armed        bool
+	armedAt      time.Time
+	calls        int
+	blockCircuit bool
 }
 
 func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, error) {
@@ -337,6 +338,10 @@ func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at ti
 	return true, 1, nil
 }
 
+func (c *cancelAwareStore) DelayRunRetry(ctx context.Context, _ string, _, _ time.Time) (bool, error) {
+	return false, ctx.Err()
+}
+
 func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.Time) (bool, error) {
 	return false, ctx.Err()
 }
@@ -344,6 +349,22 @@ func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.T
 func (c *cancelAwareStore) ClearRunRetry(ctx context.Context, _ string) error { return ctx.Err() }
 
 func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, _ string) error { return ctx.Err() }
+
+func (c *cancelAwareStore) RecordRetryFailure(ctx context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+	if c.blockCircuit {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return nil, nil
+}
+
+func (c *cancelAwareStore) RetryCircuitOpen(context.Context, string, time.Time) (*store.RetryCircuitState, error) {
+	return nil, nil
+}
+
+func (c *cancelAwareStore) RecordRetrySuccess(context.Context, string, time.Time) error {
+	return nil
+}
 
 func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {
 	if err := ctx.Err(); err != nil {
@@ -369,6 +390,23 @@ func TestArmUsageWindowRetry_SurvivesACancelledContext(t *testing.T) {
 	}
 	if st.armedAt.IsZero() {
 		t.Error("retry armed with a zero instant")
+	}
+}
+
+func TestArmUsageWindowRetry_SlowCircuitLeavesTimeForMandatoryArm(t *testing.T) {
+	st := &cancelAwareStore{
+		run:          &store.Run{ID: "run-slow-circuit", Status: store.RunStatusFailedResumable, WorkflowHash: "rev-1"},
+		blockCircuit: true,
+	}
+	r := &Runner{cfg: Config{Store: st}}
+
+	started := time.Now()
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-slow-circuit", iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryArmed || !st.armed {
+		t.Fatalf("outcome = %v armed=%v, want mandatory per-run retry after circuit timeout", got, st.armed)
+	}
+	if elapsed := time.Since(started); elapsed >= usageRetryStoreTimeout {
+		t.Fatalf("circuit consumed the full %v store budget (elapsed %v)", usageRetryStoreTimeout, elapsed)
 	}
 }
 

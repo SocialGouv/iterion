@@ -103,6 +103,10 @@ func (r *retryStoreSpy) ScheduleRunRetry(_ context.Context, runID string, _ time
 	r.armed = append(r.armed, runID)
 	return true, 1, nil
 }
+
+func (r *retryStoreSpy) DelayRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
+	return false, nil
+}
 func (r *retryStoreSpy) ClaimRunRetry(_ context.Context, runID string, _ time.Time) (bool, error) {
 	r.claimed = append(r.claimed, runID)
 	return true, nil
