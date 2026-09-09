@@ -93,6 +93,66 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 	}
 }
 
+// TestReconcile_DoesNotRevertAWatcherUpdateThatRacedTheScan is the
+// out-of-process half of the test above, and the regression guard for the
+// case that actually ships: a kernel-queue overflow starts a Reconcile
+// while the watch is STILL armed (rebuildAsync), the watcher loop keeps
+// draining the events the overflow queued, and applyEvent writes them
+// into the index during the scan's mutex-free window. Unless applyEvent
+// marks those ids dirty the swap reverts both directions — a card created
+// after the scan's ReadDir is dropped, a card the loop deleted is
+// resurrected — and an armed-watch store has no rescan ticker to correct
+// it afterwards.
+//
+// reconcileScanned is a deterministic sync point (Reconcile calls it
+// after the scan, before the swap, with the store mutex released), so
+// this pins the invariant with no timing window.
+func TestReconcile_DoesNotRevertAWatcherUpdateThatRacedTheScan(t *testing.T) {
+	refuseWatch(t)
+	setRescanInterval(t, 0)
+
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// A card the scan WILL see, which the watcher loop then removes.
+	doomed, err := s.Create(Issue{Title: "Removed by an event the overflow queued", State: "backlog"})
+	if err != nil {
+		t.Fatalf("Create doomed: %v", err)
+	}
+
+	const createdID = "native:created-after-the-readdir"
+	var once sync.Once
+	setScanHooks(t, nil, func(*Store) {
+		once.Do(func() {
+			// Exactly what the watcher loop does while the rebuild scans:
+			// a create the ReadDir was too early to see...
+			writeExternal(t, dir, createdID, "Created after the ReadDir")
+			applyEvent(s, createdID, fsnotify.Create)
+			// ...and a remove the scan was too early to see.
+			if err := os.Remove(s.issuePath(doomed.ID)); err != nil {
+				t.Errorf("remove doomed: %v", err)
+				return
+			}
+			applyEvent(s, doomed.ID, fsnotify.Remove)
+		})
+	})
+
+	if err := s.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if _, err := s.Get(createdID); err != nil {
+		t.Errorf("the swap dropped a card the watcher created during the scan — on an armed-watch store nothing rescans, so it stays invisible until restart: %v", err)
+	}
+	if _, err := s.Get(doomed.ID); err == nil {
+		t.Error("the swap resurrected a card the watcher had removed during the scan")
+	}
+}
+
 // TestWatcher_ReconcilesOnKernelQueueOverflow: a full kernel queue drops
 // events that are never resent, so the overflow signal rebuilds the index
 // from disk instead of leaving the board stale until the next event.

@@ -247,11 +247,24 @@ func idFromIssuePath(eventPath, issuesPath string) string {
 // otherwise a local mutator that runs between the read and the
 // index update would have its newer state overwritten by the older
 // snapshot we read pre-lock.
+//
+// Every index mutation here also marks the id dirty, for the same reason
+// writeIssueLocked and Delete do. Holding mu is NOT enough on its own:
+// Reconcile deliberately releases mu for its disk scan and then replaces
+// the whole index with what that scan saw, keeping only the ids in the
+// dirty set. While a watch is armed this loop is the only writer that
+// matters, and Reconcile does run against an armed watch — a kernel-queue
+// overflow starts one (rebuildAsync). Unmarked, a card this loop created
+// after the scan's ReadDir is dropped by the swap, and one it deleted is
+// resurrected by it; an armed-watch store has no rescan ticker, so the
+// card then stays wrong until another event touches its file or the
+// daemon restarts — the exact silent-staleness this net exists to remove.
 func applyEvent(s *Store, id string, op fsnotify.Op) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if op&fsnotify.Remove == fsnotify.Remove {
 		delete(s.index, id)
+		s.markDirtyLocked(id)
 		return
 	}
 	iss, err := s.readIssueFromDisk(id)
@@ -266,8 +279,10 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// never fires and leaves the tombstone in the index.
 		if errors.Is(err, tracker.ErrNotFound) {
 			delete(s.index, id)
+			s.markDirtyLocked(id)
 		}
 		return
 	}
 	s.index[id] = iss
+	s.markDirtyLocked(id)
 }
