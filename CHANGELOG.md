@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.128.0](https://github.com/SocialGouv/iterion/compare/v3.127.2...v3.128.0) (2026-09-09)
+
+### Features
+
+* **dsl:** authoring lot 0 — `#` comments, positioned diagnostics with fix lines, every doc fence compiled ([#1010](https://github.com/SocialGouv/iterion/issues/1010)) ([#1039](https://github.com/SocialGouv/iterion/issues/1039)) ([b2067fd](https://github.com/SocialGouv/iterion/commit/b2067fd670c6b6a3a629bea06aef752740b215c6)), references [#936](https://github.com/SocialGouv/iterion/issues/936) [#1012](https://github.com/SocialGouv/iterion/issues/1012)
+
+    <details><summary>why</summary>
+
+    Outside a string, a prompt body or a `|` block scalar a `#` never meant anything in the language; it was a lexer error the parser then reported as an unknown property named '#'. Measured on the repository's own documentation on 2026-09-09: of the 48 ```iter fences that failed to parse, 25 failed on exactly that — the maintainers reach for `# note` as naturally as any model does, and the DSL quickref skill taught it in its canonical examples.
+
+    </details>
+
 ## [3.127.2](https://github.com/SocialGouv/iterion/compare/v3.127.1...v3.127.2) (2026-09-09)
 
 ### Bug Fixes
