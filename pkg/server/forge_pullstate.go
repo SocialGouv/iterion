@@ -111,6 +111,16 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 			// forge.ErrLocalPreflight, which writeForgeUpstreamError
 			// answers 500. What reaches here is an unclassified failure
 			// of a round trip that did happen.
+			//
+			// This ARM, not the route: `forge client:` above still
+			// answers 502 for a gateClientFor failure, which touches no
+			// network at all — an App config that did not resolve, a
+			// token that will not unseal. The sibling list-repos route
+			// answers 500 for the identical failure, and board_forge /
+			// forge_publish answer 502 like this one. Nothing marks
+			// those and no marker would reach them (the arms never ask
+			// the junction), so aligning them is its own change across
+			// four routes. Residual on #969.
 			httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
 		}
 		return
