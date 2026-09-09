@@ -45,18 +45,19 @@ func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID
 		out = &store.ExecutionContext{}
 	}
 
-	if out.RunStore.ID == "" {
-		kind := fmt.Sprintf("%T", runStore)
-		namespace := ""
-		if runStore != nil {
-			namespace = runStore.Root()
-		}
-		out.RunStore = store.ContextRef{
-			ID:        store.StableContextID(kind, namespace),
-			Kind:      kind,
-			Namespace: namespace,
-			Required:  true,
-		}
+	// These identities come from the launch authority, never from the caller's
+	// declaration. A stale or forged declaration must not become the value a
+	// later enforce gate compares as authoritative.
+	kind := fmt.Sprintf("%T", runStore)
+	namespace := ""
+	if runStore != nil {
+		namespace = runStore.Root()
+	}
+	out.RunStore = store.ContextRef{
+		ID:        store.StableContextID(kind, namespace),
+		Kind:      kind,
+		Namespace: namespace,
+		Required:  true,
 	}
 	if out.Policy == "" {
 		out.Policy = defaultPolicy
@@ -64,51 +65,29 @@ func ResolveExecutionContext(ctx context.Context, runStore store.RunStore, runID
 			out.Policy = store.ContextPolicyLegacy
 		}
 	}
-	if out.Workflow.WorkflowRevision == "" {
+	if workflowHash != "" {
 		out.Workflow.WorkflowRevision = workflowHash
 	}
-	if out.Workflow.WorkflowRoot == "" {
+	if spec.FilePath != "" {
 		out.Workflow.WorkflowRoot = spec.FilePath
-		if out.Workflow.WorkflowRoot != "" {
-			if abs, err := filepath.Abs(out.Workflow.WorkflowRoot); err == nil {
-				out.Workflow.WorkflowRoot = abs
-			}
+		if abs, err := filepath.Abs(out.Workflow.WorkflowRoot); err == nil {
+			out.Workflow.WorkflowRoot = abs
 		}
 	}
-	if out.Workflow.BundleRevision == "" && spec.BotBundle != nil {
+	if spec.BotBundle != nil {
 		out.Workflow.BundleRevision = spec.BotBundle.SnapshotDigest
 	}
-	if out.Lineage.ParentRunID == "" {
-		out.Lineage.ParentRunID = spec.ParentRunID
-	}
-	if out.Lineage.ParentNodeID == "" {
-		out.Lineage.ParentNodeID = spec.ParentNodeID
-	}
-	if out.Lineage.RootRunID == "" {
-		out.Lineage.RootRunID = rootRunID(ctx, runStore, spec.ParentRunID, runID)
-	}
+	out.Lineage.ParentRunID = spec.ParentRunID
+	out.Lineage.ParentNodeID = spec.ParentNodeID
+	out.Lineage.RootRunID = rootRunID(ctx, runStore, spec.ParentRunID, runID)
 	if wf != nil {
-		if out.Workspace.DeclaredMode == "" {
-			out.Workspace.DeclaredMode = wf.Worktree
-		}
-		if out.Workspace.Mode == "" {
-			if wf.Worktree == "auto" {
-				out.Workspace.Mode = store.WorkspaceIsolated
-			} else {
-				out.Workspace.Mode = store.WorkspaceInherited
-			}
-		}
+		out.Workspace.DeclaredMode = wf.Worktree
 	}
-	if out.Workspace.WorkspaceID == "" {
-		if out.Workspace.Mode == store.WorkspaceIsolated {
-			out.Workspace.WorkspaceID = runID
-		} else if spec.ParentRunID != "" {
-			out.Workspace.WorkspaceID = spec.ParentRunID
-		} else {
-			out.Workspace.WorkspaceID = runID
-		}
-	}
-	if out.Workspace.DeclaredRoot == "" {
+	// Effective mode and identity are runtime-owned and stay unresolved until
+	// worktree setup/adoption has made the real isolation decision.
+	out.Workspace.Mode = ""
+	out.Workspace.WorkspaceID = ""
+	if spec.WorkDir != "" || defaultWorkDir != "" {
 		out.Workspace.DeclaredRoot = spec.WorkDir
 		if out.Workspace.DeclaredRoot == "" {
 			out.Workspace.DeclaredRoot = defaultWorkDir

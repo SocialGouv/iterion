@@ -598,7 +598,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		o.rollbackConfig(ctx, createdConfig, webhookID)
 		return ProvisionResult{}, fmt.Errorf("forge: build admin client: %w", err)
 	}
-	hookURL := o.inboundURL(conn.Provider, webhookID)
+	hookURL := o.inboundURL(conn, webhookID)
 	spec := HookSpec{URL: hookURL, Secret: plaintext, Events: nativeEvents, Active: true}
 
 	// existing is the zero RepoIntegration when !hasExisting, so its HookID
@@ -1021,8 +1021,17 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	return o.Connections.Delete(ctx, connID)
 }
 
-func (o *Orchestrator) inboundURL(p Provider, webhookID string) string {
-	return strings.TrimRight(o.PublicURL, "/") + "/api/webhooks/" + string(p) + "/" + webhookID
+// inboundURL builds the hook URL the forge will call back on. The single
+// place a hook address is decided, so the per-connection override needs to
+// exist in exactly one spot: a connection that pins WebhookBaseURL keeps
+// its own base, everyone else follows the deployment's public URL and moves
+// with it.
+func (o *Orchestrator) inboundURL(conn Connection, webhookID string) string {
+	base := conn.WebhookBaseURL
+	if base == "" {
+		base = o.PublicURL
+	}
+	return strings.TrimRight(base, "/") + "/api/webhooks/" + string(conn.Provider) + "/" + webhookID
 }
 
 // ---- small helpers ----

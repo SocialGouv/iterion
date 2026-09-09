@@ -88,6 +88,12 @@ const (
 	ScopeLocal = "local"
 	// ScopeTenantPrefix prefixes a tenant that brought its own credential.
 	ScopeTenantPrefix = "tenant:"
+	// ScopeOrgPrefix prefixes an ORG that lent its own credential to the
+	// teams of its audience. It is its own scope for the same reason
+	// ScopePlatform is: one account serves several tenants, so keying it
+	// per tenant would open one ledger per team and what one team measured
+	// — a refusal, a window at 95% — would reach none of the others.
+	ScopeOrgPrefix = "org:"
 )
 
 // TenantScope builds the scope for a tenant's own credential.
@@ -97,6 +103,19 @@ func TenantScope(tenantID string) string {
 		return ScopePlatform
 	}
 	return ScopeTenantPrefix + tenantID
+}
+
+// OrgScope builds the scope for an org's own shared credential. An unknown
+// org falls back to the platform meter rather than to a per-tenant one:
+// merging with the deployment's meter is conservative (it can only make the
+// walk skip a credential sooner), while fragmenting per team is the failure
+// this scope exists to prevent.
+func OrgScope(orgID string) string {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return ScopePlatform
+	}
+	return ScopeOrgPrefix + orgID
 }
 
 // MemStore is an in-process Store: the local CLI's whole world, and the

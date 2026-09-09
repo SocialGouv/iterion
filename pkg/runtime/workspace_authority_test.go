@@ -57,6 +57,13 @@ func TestRunPersistWorkspace_WorkspaceAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateRun: %v", err)
 			}
+			run.ExecutionContext = &store.ExecutionContext{
+				RunStore: store.ContextRef{ID: "run-store", Kind: "filesystem"},
+				Workspace: store.WorkspaceContext{
+					Mode:        store.WorkspaceShared,
+					WorkspaceID: "caller-declared",
+				},
+			}
 
 			var eng *Engine
 			if tc.delegated {
@@ -79,6 +86,21 @@ func TestRunPersistWorkspace_WorkspaceAuthority(t *testing.T) {
 			}
 			if tc.wantWorktree && got.RepoRoot == "" {
 				t.Error("promoted run must carry the main repo root as its baseline")
+			}
+			if got.ExecutionContext == nil {
+				t.Fatal("execution context was not persisted")
+			}
+			wantMode := store.WorkspaceInherited
+			wantWorkspaceID := store.StableContextID("workspace", linked)
+			if tc.wantWorktree {
+				wantMode = store.WorkspaceIsolated
+				wantWorkspaceID = runID
+			}
+			if got.ExecutionContext.Workspace.Mode != wantMode {
+				t.Errorf("execution context workspace mode = %q, want %q", got.ExecutionContext.Workspace.Mode, wantMode)
+			}
+			if got.ExecutionContext.Workspace.WorkspaceID != wantWorkspaceID {
+				t.Errorf("execution context workspace id = %q, want %q", got.ExecutionContext.Workspace.WorkspaceID, wantWorkspaceID)
 			}
 		})
 	}

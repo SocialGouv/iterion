@@ -94,7 +94,6 @@ export interface AdmissionDecision {
   workflow_revision?: string;
   checked_at: string;
 }
-
 export interface OutputCorrectionEpisode {
   episode_id?: string;
   node_id?: string;

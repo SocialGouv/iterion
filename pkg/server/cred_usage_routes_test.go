@@ -123,3 +123,25 @@ func TestCredentialUsage_NotEnabled(t *testing.T) {
 		t.Fatalf("status = %d, want 404 (not a zeroed view)", w.Code)
 	}
 }
+
+// The admin per-credential view filters by tier. The switch behind it is
+// CLOSED, and its old fallthrough was silent: an unknown value answered
+// with the platform tier's numbers, so `?tier=org` did not report "I do not
+// know that tier" — it reported another credential's spend. That is how the
+// org tier was missed here when it was added to credusage.
+func TestTierOrPlatform(t *testing.T) {
+	if got, err := tierOrPlatform(""); err != nil || got != credusage.TierPlatform {
+		t.Errorf("empty filter = (%q, %v), want the platform default", got, err)
+	}
+	for _, tier := range []credusage.Tier{
+		credusage.TierTeam, credusage.TierOrg, credusage.TierPool, credusage.TierPlatform,
+	} {
+		got, err := tierOrPlatform(string(tier))
+		if err != nil || got != tier {
+			t.Errorf("tierOrPlatform(%q) = (%q, %v), want it accepted verbatim", tier, got, err)
+		}
+	}
+	if _, err := tierOrPlatform("nonesuch"); err == nil {
+		t.Error("an unknown tier was accepted — it would answer with the platform tier's numbers, which is a wrong answer rather than a missing one")
+	}
+}

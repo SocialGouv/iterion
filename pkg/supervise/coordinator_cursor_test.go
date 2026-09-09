@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -37,5 +38,42 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	c2.evaluate("turn_boundary", true)
 	if got := eval.calls(); got != 1 {
 		t.Fatalf("duplicate wake evaluated %d times after restart, want 1", got)
+	}
+}
+
+func TestCoordinatorNilDecisionIsRetryable(t *testing.T) {
+	eval := &scriptedEval{decisions: []*Decision{nil, {Intervene: false}}}
+	c := newBareCoordinator(t, Spec{MaxEvals: 5}, eval, nil)
+	c.ingest(&store.Event{Type: store.EventNodeStarted, NodeID: "agent", Timestamp: time.Now().UTC()})
+
+	c.evaluate("turn_boundary", true)
+	if c.cursor.LastTriggerFingerprint != "" {
+		t.Fatal("nil decision consumed the durable trigger")
+	}
+	c.evaluate("turn_boundary", true)
+	if got := eval.calls(); got != 2 {
+		t.Fatalf("nil decision was not retried: calls=%d", got)
+	}
+}
+
+type failingInjector struct{ err error }
+
+func (f *failingInjector) Inject(context.Context, string, string, string) error { return f.err }
+
+func TestCoordinatorFailedInjectionDoesNotCommitIntervention(t *testing.T) {
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: true, Message: "fix it"}}}
+	c := newBareCoordinator(t, Spec{MaxEvals: 5}, eval, &failingInjector{err: errors.New("inbox unavailable")})
+	c.ingest(&store.Event{Type: store.EventNodeStarted, NodeID: "agent", Timestamp: time.Now().UTC()})
+
+	c.evaluate("turn_boundary", true)
+	if c.cursor.LastTriggerFingerprint != "" {
+		t.Fatal("failed injection consumed the durable trigger")
+	}
+	if c.cursor.LastAction == "intervene" || c.cursor.LastActionFingerprint != "" {
+		t.Fatalf("failed injection recorded a successful action: %+v", c.cursor)
+	}
+	c.evaluate("turn_boundary", true)
+	if got := eval.calls(); got != 2 {
+		t.Fatalf("failed injection was not retryable: calls=%d", got)
 	}
 }

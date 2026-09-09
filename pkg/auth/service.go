@@ -896,6 +896,13 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 // through the Service.
 func (s *Service) Store() identity.Store { return s.store }
 
+// SetStoreForTest swaps the identity store. It exists for ONE thing a test
+// cannot get otherwise: wrapping the store to open a read-modify-write
+// window deterministically (a concurrent mutation landing between a
+// handler's read and its write). Production wiring passes the store at
+// construction and never calls this.
+func (s *Service) SetStoreForTest(st identity.Store) { s.store = st }
+
 // CreateTeamFor provisions a non-personal team inside org `orgID`,
 // owned by user `userID`. The user must be a member of the org (super-
 // admins may create in any org). Returns the new team. If slug is empty

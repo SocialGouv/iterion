@@ -46,6 +46,10 @@ const (
 	// enough that a wedged store cannot hold the delivery past its ack
 	// deadline.
 	usageRetryStoreTimeout = 10 * time.Second
+	// The shared circuit is advisory to the mandatory per-run arm. Give it a
+	// smaller slice so a slow circuit collection cannot consume the entire
+	// detached store budget and make ScheduleRunRetry inherit an expired ctx.
+	retryCircuitStoreTimeout = 2 * time.Second
 	// usageWindowBlindWait is the fallback when the provider told us a
 	// window is exhausted but nothing in the text parses as a reset time.
 	// Deliberately bounded and short-ish: one wasted pod an hour beats
@@ -356,7 +360,9 @@ func (r *Runner) armUsageWindowRetry(
 	// ledger remains authoritative for the attempt bound; the shared circuit
 	// only moves the next wake-up out of a provider-wide failure storm.
 	if key := retrycoord.Key(runMeta); key != "" {
-		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, decisionNow, retrycoord.FromEnv())
+		circuitCtx, circuitCancel := context.WithTimeout(ctx, retryCircuitStoreTimeout)
+		circuitState, circuitErr := retrycoord.RecordFailure(circuitCtx, r.cfg.Store, key, runID, decisionNow, retrycoord.FromEnv())
+		circuitCancel()
 		if circuitErr != nil {
 			// A circuit-store outage must not drop a durable per-run retry. The
 			// existing ScheduleRunRetry below still provides the safe fallback.

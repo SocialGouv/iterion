@@ -211,8 +211,12 @@ type Server struct {
 	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
 	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
-	botVars         *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore    platformcfg.Store[platformcfg.BotVars]
+	// platformCreds gates who may draw on the deployment's own LLM
+	// credentials; nil (or an unenforced record) admits every tenant.
+	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
+	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
+	botVars            *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore       platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots *platformcfg.Resolver[platformBotSet]
@@ -605,6 +609,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		botSources:          cfg.BotSources,
 		botRolesStore:       cfg.BotRolesSettings,
 		sandboxCfgStore:     cfg.SandboxSettings,
+		platformCredsStore:  cfg.PlatformCredentialsSettings,
 		botVarsStore:        cfg.BotVarsSettings,
 		forgeIntegrations:   cfg.ForgeIntegrations,
 		boardBindings:       cfg.BoardBindings,
@@ -642,6 +647,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		s.sandboxCfg = cfg.SandboxResolver
 	} else {
 		s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
+	}
+	// Shared with the publisher for the same reason, and more sharply: the
+	// publisher is this family's only consumer, so a private resolver here
+	// would leave Invalidate with nothing to invalidate.
+	if cfg.PlatformCredentialsResolver != nil {
+		s.platformCreds = cfg.PlatformCredentialsResolver
+	} else if cfg.PlatformCredentialsSettings != nil {
+		s.platformCreds = platformcfg.NewResolver(cfg.PlatformCredentialsSettings, logger.Warn)
 	}
 	// Built unconditionally (the fetch no-ops without a bot-source store):
 	// tests wire s.botSources after New, and the resolver must already

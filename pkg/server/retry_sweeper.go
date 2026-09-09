@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -136,6 +137,23 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator replay (iterion remote admin dlq) or resume wakes it")
 		return
+	} else if key := retrycoord.Key(run); key != "" {
+		decisionNow := time.Now().UTC()
+		circuit, circuitErr := retrycoord.Open(runCtx, s.cfg.Store, key, decisionNow)
+		if circuitErr != nil {
+			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
+		} else if circuit != nil && circuit.OpenUntil != nil && circuit.OpenUntil.After(decisionNow) {
+			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), circuit.OpenUntil.UTC())
+			if delayErr != nil {
+				s.warnf("retry sweeper: run %s: cannot delay retry behind open circuit: %v", ref.ID, delayErr)
+				return
+			}
+			if delayed {
+				s.auditRetry(ref, "run.retry.circuit_delayed", map[string]any{"retry_after": circuit.OpenUntil.UTC()})
+				s.infof("retry sweeper: run %s delayed behind workflow circuit until %s", ref.ID, circuit.OpenUntil.UTC().Format(time.RFC3339))
+			}
+			return
+		}
 	}
 
 	// An automatic resume spends real money, so it passes the same

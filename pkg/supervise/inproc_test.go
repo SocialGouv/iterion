@@ -113,6 +113,37 @@ func TestStoreInjectorAppendsNodeScopedMessage(t *testing.T) {
 	}
 }
 
+func TestStoreInjectorStableDeliveryDoesNotDuplicateOrResurrect(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &StoreInjector{Store: st}
+	const deliveryID = "msg_supervisor_stable"
+
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("first InjectOnce: %v", err)
+	}
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("replayed InjectOnce: %v", err)
+	}
+	msgs, err := st.ListQueuedMessages(ctx, "r1")
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("messages after replay = (%+v, %v), want one", msgs, err)
+	}
+	if _, _, err := store.DrainPendingForNode(ctx, st, nil, "r1", "implement"); err != nil {
+		t.Fatalf("DrainPendingForNode: %v", err)
+	}
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("post-delivery replay: %v", err)
+	}
+	pending, err := st.LoadPendingQueuedMessages(ctx, "r1")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("post-delivery replay resurrected pending message: (%+v, %v)", pending, err)
+	}
+}
+
 func TestInboxRunID(t *testing.T) {
 	if got := inboxRunID(""); got != inboxSessionKey {
 		t.Errorf("inboxRunID(\"\") = %q; want %q", got, inboxSessionKey)

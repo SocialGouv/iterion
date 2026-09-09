@@ -85,17 +85,39 @@ func (i *StoreInjector) WatcherProgressStore() store.RunStore {
 // a stale steering message that the NEXT resume/redelivery drains into a
 // fresh pass.
 func (i *StoreInjector) Inject(ctx context.Context, runID, nodeID, text string) error {
+	return i.inject(ctx, runID, nodeID, text, newInboxMessageID(), false)
+}
+
+// InjectOnce writes a supervisor delivery under a stable ID. Replaying the
+// same trigger is a no-op even when the earlier message was already consumed.
+func (i *StoreInjector) InjectOnce(ctx context.Context, runID, nodeID, text, deliveryID string) error {
+	return i.inject(ctx, runID, nodeID, text, deliveryID, true)
+}
+
+func (i *StoreInjector) inject(ctx context.Context, runID, nodeID, text, messageID string, once bool) error {
 	if r, err := i.Store.LoadRun(ctx, runID); err == nil && r != nil {
 		switch r.Status {
 		case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
 			return fmt.Errorf("supervise: run %s is %s — steering message refused", runID, r.Status)
 		}
 	}
-	msg := store.QueuedUserMessage{ID: newInboxMessageID(), Text: text, NodeID: nodeID}
-	if err := i.Store.AppendQueuedMessage(ctx, runID, msg); err != nil {
+	msg := store.QueuedUserMessage{ID: messageID, Text: text, NodeID: nodeID}
+	inserted := true
+	var err error
+	if once {
+		onceStore := store.AsQueuedMessageInsertOnceStore(i.Store)
+		if onceStore == nil {
+			return fmt.Errorf("supervise: store does not support idempotent queued messages")
+		}
+		inserted, err = onceStore.AppendQueuedMessageOnce(ctx, runID, msg)
+	} else {
+		err = i.Store.AppendQueuedMessage(ctx, runID, msg)
+	}
+	if err != nil {
 		return err
 	}
-	if err := store.NormalizeQueuedForAppend(&msg, runID); err == nil {
+	if inserted {
+		_ = store.NormalizeQueuedForAppend(&msg, runID)
 		store.PublishInboxEvent(ctx, i.Store, i.Publish, store.EventUserMessageQueued, runID, msg)
 	}
 	return nil

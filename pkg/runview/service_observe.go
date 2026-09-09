@@ -104,6 +104,14 @@ func (s *Service) Inject(ctx context.Context, runID, nodeID, text string) error 
 	return err
 }
 
+// InjectOnce is the crash-safe supervisor delivery path. deliveryID is
+// stable for one watcher trigger, so replay after a cursor-write failure does
+// not enqueue a second correction or resurrect one already consumed.
+func (s *Service) InjectOnce(ctx context.Context, runID, nodeID, text, deliveryID string) error {
+	_, err := s.QueueMessage(ctx, runID, text, WithMessageNode(nodeID), withMessageIDOnce(deliveryID))
+	return err
+}
+
 // startDeclaredSupervisors spawns a supervise.Coordinator for every
 // `supervisor NAME:` block on the workflow, each bound to this run's
 // lifetime via ctx. They observe through the broker (in-process) and

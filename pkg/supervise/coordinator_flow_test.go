@@ -132,12 +132,12 @@ func TestEvaluateSkippedWhenFinished(t *testing.T) {
 func TestApplyDecision(t *testing.T) {
 	t.Run("nil decision is a no-op", func(t *testing.T) {
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, nil)
-		c.applyDecision(nil)
+		c.applyDecision(nil, "test-trigger")
 	})
 
 	t.Run("empty watch monitors are filtered", func(t *testing.T) {
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, nil)
-		c.applyDecision(&Decision{Watch: []Monitor{{}, {EventType: "tool_error"}, {}}})
+		c.applyDecision(&Decision{Watch: []Monitor{{}, {EventType: "tool_error"}, {}}}, "test-trigger")
 		if len(c.monitors) != 1 || c.monitors[0].EventType != "tool_error" {
 			t.Fatalf("monitors = %+v; want the single non-empty one", c.monitors)
 		}
@@ -151,7 +151,7 @@ func TestApplyDecision(t *testing.T) {
 	t.Run("intervene with blank message does not inject", func(t *testing.T) {
 		inj := &recordInjector{}
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, inj)
-		c.applyDecision(&Decision{Intervene: true, Message: "   "})
+		c.applyDecision(&Decision{Intervene: true, Message: "   "}, "test-trigger")
 		if n := len(inj.snapshot()); n != 0 {
 			t.Fatalf("blank message injected %d times; want 0", n)
 		}
@@ -159,7 +159,7 @@ func TestApplyDecision(t *testing.T) {
 
 	t.Run("done marks finished", func(t *testing.T) {
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, nil)
-		c.applyDecision(&Decision{Done: true})
+		c.applyDecision(&Decision{Done: true}, "test-trigger")
 		if !c.finished {
 			t.Error("Done decision did not set finished")
 		}
@@ -171,7 +171,7 @@ func TestInjectScopingAndFraming(t *testing.T) {
 		inj := &recordInjector{}
 		c := newBareCoordinator(t, Spec{Name: "wd", Watches: []string{"impl"}}, &stubEval{}, inj)
 		c.lastWatchedActive = "impl"
-		c.inject("fix the test")
+		c.inject("fix the test", "test-trigger")
 		got := inj.snapshot()
 		if len(got) != 1 {
 			t.Fatalf("injections = %d; want 1", len(got))
@@ -188,7 +188,7 @@ func TestInjectScopingAndFraming(t *testing.T) {
 		inj := &recordInjector{}
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, inj)
 		c.lastWatchedActive = "impl" // ignored for run scope
-		c.inject("go on")
+		c.inject("go on", "test-trigger")
 		got := inj.snapshot()
 		if len(got) != 1 || got[0].node != "" {
 			t.Fatalf("injected = %+v; want one run-scoped message", got)

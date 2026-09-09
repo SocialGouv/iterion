@@ -23,14 +23,22 @@ Kimi and Grok are outside this sealed-credential matrix: their delegates rely
 on the CLI's own inherited environment/config. Codex consumes its own
 uploaded Codex credential.
 
-A **fourth** source exists when the deployment runs a credential pool: a run
-that resolves none of the three above may draw on a **contributor's lent
+A **fourth** source is the **org tier**: the parent organization's own keys
+and forfaits, lent to the teams its **credential audience** names. It sits
+below everything the team resolved and above the pool, because that is what
+"shared inside the org" means — a team that brought its own key spends it, a
+team the org lends to spends the org's, and neither takes a stranger's
+donation while either is available. See
+[the org tier section](#the-org-tier--one-key-several-product-teams).
+
+A **fifth** source exists when the deployment runs a credential pool: a run
+that resolves none of the above may draw on a **contributor's lent
 subscription** (`pkg/credpool`). It reaches the runner as an ordinary OAuth
 blob — indistinguishable from a personal forfait — but is metered against
 the lender's own ceilings and the run's `max_cost_usd` is clamped to what
 remains of them. See [credential-pool.md](credential-pool.md).
 
-A **fifth** source is the **platform tier**: the deployment's own
+A **sixth** source is the **platform tier**: the deployment's own
 credentials, stored sealed in the database under reserved scopes
 (`secrets.PlatformTenantID` for API keys, `secrets.PlatformOwnerKey` for
 forfait blobs) and managed by super-admins via `iterion remote admin llm …`
@@ -38,8 +46,11 @@ or the studio's Admin → LLM credentials console. The publisher fills, per
 wire family, only the slots the four tiers above left empty — the DB-backed
 form of the runner-pod env fallback (`ANTHROPIC_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` from the `iterion-forfait`/`iterion-llm` k8s
-secrets), which **remains the final backstop** below it. See the dedicated
-section at the end of this doc.
+secrets), which **remains the final backstop** below it. Since it serves
+every tenant that has nothing of its own, who may draw on it is now an
+explicit, **opt-in** audience — see
+[Gating the platform tier](#gating-the-platform-tier). The dedicated
+rotation section is at the end of this doc.
 
 ## Decision shortcut
 
@@ -487,6 +498,96 @@ every tenant it served). Each amount is typed `metered` or `estimate` — a
 forfait's dollar figure is what its calls would have cost metered, not money
 — and the two totals come back apart for that reason. See
 [quotas-and-limits.md](quotas-and-limits.md#per-credential-usage--what-did-this-key-cost).
+
+## The org tier — one key, several product teams
+
+**The problem it removes.** Before it existed, sharing one key across an
+org's product teams meant COPYING it into each team: N writes per rotation,
+N places to forget one, and no way to tell whose spend was whose. That was
+not theoretical — the production instance had one Claude forfait duplicated
+across two teams before this shipped.
+
+An org key is an ordinary `ApiKey` row and an org forfait an ordinary
+`OAuthRecord`, stored under a reserved scope (`secrets.OrgTierTenantID` /
+`OrgTierOwnerKey`, prefix `orgtier:`), so the whole store — tenant filter,
+defaults, rotation, `MarkUsed`, the refresh worker — is reused with zero
+schema change. That prefix is deliberately **not** `org:`: that one is taken
+by `OrgOwnerPrefix`, which despite its name keys a **team** forfait
+(`OrgOwnerKey`'s argument is a tenant id). Reusing it would collide an org
+credential with a team one in a single owner namespace, silently.
+
+```sh
+# The org's shared keys and forfaits (org admin):
+iterion remote api-keys list   --scope org --org <org-id>
+iterion remote api-keys create --scope org --provider anthropic --name "SDPC shared" \
+  --from-file ~/anthropic.key
+iterion remote orgs oauth --org <org-id>                       # list forfait connections
+iterion remote orgs oauth set claude_code --from-file ~/.claude/.credentials.json
+
+# Who may spend them — the audience:
+iterion remote orgs credential-audience                        # show
+iterion remote orgs credential-audience --teams t1,t2          # name teams
+iterion remote orgs credential-audience --all-teams true       # every team of the org
+iterion remote orgs credential-audience --teams ""             # revoke every named team
+```
+
+Semantics worth knowing:
+
+- **The zero value admits NOBODY.** Lending a key is an explicit act, so a
+  team that was never named funds its own runs or does not run. This is the
+  opposite of the platform tier's default, and the asymmetry is the design:
+  an org key is lent by someone who chose to lend it; the platform key is
+  what the deployment already runs on.
+- **It never shadows the team's own credential.** The fill is per WIRE
+  FAMILY, so an org key cannot land next to a key the team already holds in
+  another shape — the delegates rank a ctx API key above a ctx OAuth dir on
+  one wire, and a second credential there would silently serve every call.
+- **A team of another org is refused** when setting the audience (422). It
+  is an authorization list, and the publisher trusts it by design.
+- **The audience read fails CLOSED.** An unreadable org document skips the
+  tier rather than admitting a team its admins never named — safe precisely
+  because the pool, the platform tier and the pod env sit below it.
+- **Metering follows the ORG, not the borrower.** Slots the tier filled are
+  marked `RunBundle.OrgSourced`, the usage-cap meter keys on
+  `usagecap.OrgScope(orgID)`, and `pkg/credusage` records them under
+  `TierOrg`. Keying one org subscription per borrowing team would open one
+  ledger per team, and what one team measured — a refusal, a window at 95% —
+  would reach none of the others.
+- Every mutation lands in that **org's** audit log, not a tenant log under a
+  sentinel nobody can read (`iterion remote audit org`).
+
+## Gating the platform tier
+
+`fillFromPlatform` used to read no tenant policy at all: any team with no
+credential of its own drew on the deployment's shared keys in silence. The
+`platform_credentials` settings family gates that, on the ADR-090 doctrine
+(env/const default, DB record as runtime override, ≤30 s TTL resolver,
+super-admin API/CLI).
+
+```sh
+iterion remote admin platform-credentials                          # show
+iterion remote admin platform-credentials set --orgs <org-id>      # name who may draw
+iterion remote admin platform-credentials set --enforce true       # turn the gate on
+iterion remote admin platform-credentials set --enforce false      # back to open
+```
+
+- **Enforcement is OPT-IN.** An absent record — or one whose `enforce` is
+  off — admits everyone, so the migration is a no-op AND naming a team does
+  not by itself cut every other tenant off from the deployment's only
+  credential. That failure would be discovered as a fleet of 401s, one write
+  after an innocent-looking edit.
+- **Orgs are the useful grain**: a team is created inside an org without
+  asking the platform, so admitting the org admits teams the list never
+  names.
+- Enforcing an audience that names **nobody** is refused at write time: it
+  is reachable by accident (enable enforcement, forget the lists) and its
+  symptom is every credential-less run failing at its first LLM call.
+- **A degraded settings read fails OPEN** — the opposite of the org tier's
+  rule, deliberately. Failing closed on the tier a deployment runs on turns
+  a settings blip into a fleet-wide outage. A refusal that does happen is
+  logged with the tenant named, because a run that quietly receives no
+  credential fails at its first LLM call with a provider error and nothing
+  downstream would say the audience was why.
 
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
