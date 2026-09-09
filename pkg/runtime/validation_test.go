@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -16,10 +17,15 @@ type correctingExecutor struct {
 	*stubExecutor
 	correct func(map[string]any, error) (map[string]any, error)
 	calls   int
+	// sawDeadline records whether the ctx handed to the LAST correction call
+	// carried a deadline, and which one.
+	sawDeadline bool
+	deadline    time.Time
 }
 
-func (e *correctingExecutor) CorrectOutput(_ context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, error) {
+func (e *correctingExecutor) CorrectOutput(ctx context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, error) {
 	e.calls++
+	e.deadline, e.sawDeadline = ctx.Deadline()
 	if e.correct == nil {
 		return output, validationErr
 	}
@@ -432,6 +438,36 @@ func TestSchemaValidation_CorrectorMayOverrideUsage(t *testing.T) {
 	if finished["_tokens"] != 150 || finished["_cost_usd"] != 0.15 {
 		t.Fatalf("_tokens/_cost_usd = %v/%v, want the corrector's own 150/0.15",
 			finished["_tokens"], finished["_cost_usd"])
+	}
+}
+
+// A correction must inherit the run's wall-clock bound. Without it a hung
+// corrector runs unbounded AFTER the deadline-wrapped node call it exists to
+// repair already returned — the one stall max_duration cannot terminate.
+func TestSchemaValidation_CorrectionIsBoundedByRunDuration(t *testing.T) {
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxDuration: "1h"}
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	if err := New(wf, tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(context.Background(), "run-val-deadline", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	if !exec.sawDeadline {
+		t.Fatal("the correction context carried no deadline — a hung corrector would run unbounded")
+	}
+	if until := time.Until(exec.deadline); until <= 0 || until > time.Hour {
+		t.Fatalf("correction deadline is %v away, want it inside the run's remaining max_duration", until)
 	}
 }
 

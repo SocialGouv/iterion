@@ -149,9 +149,30 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		return output, validationErr
 	}
 
+	// The primary node call runs under the run's remaining-duration deadline
+	// (engine_exec.go wraps Execute in context.WithDeadline). Correction must
+	// too, or a hung corrector runs UNBOUNDED after the bounded call it exists
+	// to repair already returned — the one stall a max_duration cannot
+	// terminate. Mirrors the primary path, grace included.
+	correctCtx, cancelCorrect := e.correctionContext(ctx, rs)
+	if cancelCorrect != nil {
+		defer cancelCorrect()
+	}
+	if correctCtx.Err() != nil {
+		// No wall clock left to spend: report the validation failure rather
+		// than open a correction the run cannot afford to finish.
+		return output, validationErr
+	}
+
 	current := output
 	currentErr := validationErr
 	for episode.Attempts < episode.Budget {
+		if err := correctCtx.Err(); err != nil {
+			// Out of time (or cancelled) between attempts: stop here and let
+			// the run lifecycle classify it. The episode keeps the attempts it
+			// really spent, so a resume does not re-buy them.
+			return current, currentErr
+		}
 		episode.Status = correctionStatusActive
 		episode.Attempts++
 		episode.LastOutputFingerprint = correctionPayloadFingerprint(current)
@@ -165,7 +186,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			return current, fmt.Errorf("output correction ledger: %w (original validation: %v)", err, currentErr)
 		}
 
-		candidate, correctionErr := corrector.CorrectOutput(ctx, node, current, currentErr)
+		candidate, correctionErr := corrector.CorrectOutput(correctCtx, node, current, currentErr)
 		// Carry the engine's own `_`-prefixed metadata across. The natural
 		// corrector returns just the repaired business payload, and replacing
 		// `output` wholesale would drop `_tokens`/`_cost_usd` — deleting the
@@ -235,6 +256,30 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
 	}
 	return current, currentErr
+}
+
+// correctionContext bounds the correction loop by the run's remaining
+// wall-clock duration, exactly as execLoop bounds the primary node call. An
+// unbounded run (no max_duration) yields ctx unchanged and a nil cancel.
+func (e *Engine) correctionContext(ctx context.Context, rs *runState) (context.Context, context.CancelFunc) {
+	if rs == nil || rs.budget == nil {
+		return ctx, nil
+	}
+	rem, bounded := rs.budget.RemainingDuration()
+	if !bounded {
+		return ctx, nil
+	}
+	if rem <= 0 {
+		// Inside the duration grace: bound by the GRACED ceiling rather than
+		// run deadline-less, the same choice execLoop makes.
+		rem, _ = rs.budget.GracedRemainingDuration(budgetExitGraceRatio())
+	}
+	if rem <= 0 {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		return cancelled, cancel
+	}
+	return context.WithDeadline(ctx, time.Now().Add(rem))
 }
 
 // correctionPayloadFingerprint hashes only the SCHEMA/business payload: every
