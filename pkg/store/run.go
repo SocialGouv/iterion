@@ -420,6 +420,10 @@ type RunRetryState struct {
 	// resume. Nil = nothing armed (never armed, already claimed, or
 	// deliberately abandoned).
 	RetryAfter *time.Time `json:"retry_after,omitempty" bson:"retry_after,omitempty"`
+	// ScheduledAt anchors max_wait across circuit deferrals. ScheduleRunRetry
+	// resets it for each paid attempt; DelayRunRetry deliberately preserves it
+	// so a repeatedly extended shared circuit cannot postpone one run forever.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty" bson:"scheduled_at,omitempty"`
 	// Reason names the failure class that armed this retry
 	// ("usage_window").
 	Reason string `json:"reason,omitempty" bson:"reason,omitempty"`
