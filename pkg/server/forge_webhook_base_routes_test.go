@@ -105,6 +105,36 @@ func TestConnectionPatch_StillRefusesAnEmptyBody(t *testing.T) {
 	}
 }
 
+// TestConnectionPatch_RefusesACombinedBody: the two fields act on different
+// systems — one pins a URL, the other mints or withdraws a live org token on
+// GitHub — and nothing makes them atomic. Accepted together, a failure of
+// the security-read half returns before the persist: the URL change is
+// dropped while the error names only security-read, so the caller reads one
+// failure and cannot tell half its intent was discarded.
+func TestConnectionPatch_RefusesACombinedBody(t *testing.T) {
+	s := newForgeTestServer(t)
+	seedAppConn(t, s, "c1", "SocialGouv", "", false)
+	minted := 0
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
+		minted++
+		return "ghs_minted", time.Time{}, nil
+	}
+
+	body := `{"security_read_enabled":true,"webhook_base_url":"https://pinned.example"}`
+	w := patchWebhookBase(t, s, "c1", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+	if minted != 0 {
+		t.Fatalf("mint calls = %d, want 0 — the refusal must happen before either side acts", minted)
+	}
+	conn, _ := s.forgeConnections.Get(context.Background(), "c1")
+	if conn.WebhookBaseURL != "" || conn.SecurityReadEnabled {
+		t.Fatalf("a refused combined patch applied something: base=%q security_read=%v",
+			conn.WebhookBaseURL, conn.SecurityReadEnabled)
+	}
+}
+
 func TestCanonicalWebhookBaseURL(t *testing.T) {
 	for _, tc := range []struct {
 		in      string

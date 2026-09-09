@@ -74,6 +74,19 @@ unparseable or path-carrying value is refused with 422 at the PATCH, on
 purpose: a wrong base does not fail when it is set — it fails as hooks that
 register successfully and never arrive.
 
+Two more properties of that endpoint worth knowing:
+
+- **It refuses a body carrying `webhook_base_url` *and*
+  `security_read_enabled` together (400).** They act on different systems —
+  one pins a URL, the other mints or withdraws a live org token on GitHub —
+  and nothing makes them atomic. Sent together, a failure of the
+  security-read half would drop the URL change while the error named only
+  security-read. Send them as separate requests.
+- **An `http://` base on a non-loopback host is accepted but warned**: the
+  forge then delivers the payload *and* the signature header in the clear.
+  An internal-network endpoint is a legitimate thing to pin, so this is a
+  log line, not a refusal.
+
 **Declaring the pin is what makes the exception durable.** A hook URL that
 merely predates a public-URL change is one re-provision away from being
 silently rewritten to an address the forge is not allowed to call — and
