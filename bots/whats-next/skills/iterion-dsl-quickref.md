@@ -45,8 +45,10 @@ schema verdict:
   confidence: string
 
 prompt my_system:
-  Imperative-voice instructions. Reference {{vars.feature_prompt}}
-  or {{input.field}} or {{outputs.upstream_node.field}}.
+  Imperative-voice instructions. Reference a var as {{vars.feature_prompt}};
+  the node's own input lives under the input namespace and an upstream
+  node's output under outputs.<node>.<field> (every reference is checked
+  at validate time, so a prompt may only name what exists).
 
 cursor ambition:                  # optional prompt-engineering dial (see docs/cursors.md)
   values:
@@ -56,7 +58,8 @@ cursor ambition:                  # optional prompt-engineering dial (see docs/c
 agent worker:
   backend: "claw"
   model:   "openai/gpt-5.5"
-  ...
+  system:  my_system
+  output:  verdict
 
 workflow my_workflow:
   entry: worker
@@ -92,13 +95,15 @@ A bot-declared refusal (a budget guard, a precondition, a non-actionable lot)
 should end the run with a code the operator, `iterion remote runs list`, the
 gate notice and the alert sinks can act on — not "workflow reached fail node":
 
-```iter
+```iter fragment
 fail plan_exhausted:
   code: PLAN_BUDGET_EXHAUSTED         ## UPPER_SNAKE identifier (C247 otherwise)
   message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
   resumable: true                     ## default false = intentional, non-resumable end
 
-plan_budget_gate -> plan_exhausted when over_budget
+workflow w:
+  entry: plan_budget_gate
+  plan_budget_gate -> plan_exhausted when over_budget
 ```
 
 The engine stamps `code` as the run's `failure_code` and the rendered
@@ -127,7 +132,7 @@ deliberate refusal only changes verdict when an operator changes something.
 
 ## Agent/judge properties
 
-```iter
+```iter fragment
 agent w:
   backend: "claw"               # or claude_code / codex / pi / kimi / grok
   model:   "openai/gpt-5.5"     # claw with openai/* prefix
@@ -244,7 +249,7 @@ Session-mode notes:
 
 ## Edges
 
-```iter
+```iter fragment:edges
 src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
@@ -275,7 +280,7 @@ Rules:
 
 ## Human node
 
-```iter
+```iter fragment
 human ask_priorities:
   input:  ask_schema
   output: ask_schema
@@ -304,7 +309,7 @@ A `file`-typed schema field renders a drop zone at the gate; the
 operator's upload becomes a run attachment and the answer is a
 descriptor (`path` / `filename` / `mime` / `size` / `sha256`).
 
-```iter
+```iter fragment
 schema music_gate:
   approved: bool
   music: file
@@ -314,7 +319,7 @@ human pick_soundtrack:
   output: music_gate
 ```
 
-```iter
+```iter fragment
 prompt mix:
   Master the track at {{outputs.pick_soundtrack.music.path}}
 ```
@@ -339,7 +344,7 @@ prompt mix:
 
 ### Review-&-merge gate (`interaction: review`)
 
-```iter
+```iter fragment
 human ship_review:
   interaction: review
   model: "anthropic/claude-sonnet-4-6"   # the companion (writes test steps + verdict)
@@ -352,7 +357,7 @@ human ship_review:
   max_turns: 8                           # dialogue asymptote backstop
 ```
 
-```iter
+```iter fragment:edges
 ship_review -> done   when "decision == 'approved'"
 ship_review -> implement when "decision == 'changes_requested'" as fix_loop(5)
 ship_review -> fail    # default fallback
@@ -369,18 +374,25 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ## Tool node
 
-```iter
+```iter fragment
 tool commit_changes:
-  command: sh
-  args: ["-c", "git add -A && git commit -m {{input.msg}}"]
-  readonly: false                # opt-out of workspace-safety read-only mode
-  await: wait_all                # only when the node has multiple incoming edges
+  command: `git add -A && git commit -m {{input.msg}}`   # one string, run through `bash -c`
+  input:   commit_request         # schema declaring `msg: string`
+  output:  commit_result          # the command prints JSON matching this schema on stdout
+  await:   wait_all               # only when the node has multiple incoming edges
 ```
 
-Tool commands run via `sh -c` (POSIX). Template substitutions
-auto-escape strings, but `string[]` substitutions split into
-multiple argv tokens — use positional argv + `--` sentinels
-when passing multi-element arrays.
+A tool node has ONE `command:` string (or a `script:` + `language:`). A
+`command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
+interpreter its `language:` names (`sh` is dash on Debian-derived images —
+keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
+runtime — never wrap it in quotes of your own (C137). **A tool's stdout IS its
+output**: print a JSON object matching the `output:` schema; any other stdout is
+silently wrapped as `{"result": "…"}` and the declared fields are absent
+downstream, while a non-zero exit fails the node (wrap a command whose failure
+is a result — a failing test suite — so it exits 0 and reports `passed: false`).
+A `json`-typed input renders as one JSON token; an output list referenced
+directly space-joins into several words.
 
 Add `publish: <name>` to a `tool` (or `compute`, or agent/human)
 node to persist its output as a versioned artifact — surfaced in the
@@ -402,7 +414,7 @@ opt into a recovery ladder so a brittle recipe self-heals instead of
 hard-blocking. Add the optional quad — `goal` + recipe (`command`/`script`)
 + `postcondition` + `policy`:
 
-```iter
+```iter fragment
 tool commit_changes:
   command: `git add -A && git commit -F - <<< {{input.msg}}`
   goal: "Commit the upgrade; working tree clean except known caches."
@@ -473,7 +485,7 @@ instead.
 When you need to thread a value through a human node or
 across a loop boundary:
 
-```iter
+```iter fragment
 schema carry:
   payload: json
 
@@ -489,7 +501,7 @@ Reference `input.x`, `outputs.x.y`, `loop.<name>.previous_output.x`
 directly without `{{...}}`. The same `run.*` members are readable bare — the
 **phase-budget guard** is one `compute`:
 
-```iter
+```iter fragment
 compute plan_budget_gate:
   output: gate
   expr:
@@ -515,7 +527,7 @@ compute plan_budget_gate:
 
 ## Workflow block
 
-```iter
+```iter fragment
 workflow my_wf:
   entry: first_node
   default_backend: "claude_code"      # default backend for every node
@@ -533,23 +545,24 @@ workflow my_wf:
     threshold: 0.9
     preserve_recent: 8
 
-  mcp:                                # workflow-wide MCP server registry
-    servers:
-      - name: my_server
-        transport: stdio
-        command: my-mcp-server
-        args: []
+  mcp:                                # workflow-wide MCP servers, by name
+    servers: [my_server]              # each one a top-level `mcp_server` declaration
 
   worktree: auto                      # see "Worktree and sandbox" below
   sandbox:  auto
 
   ## Edges go here
   first_node -> done
+
+mcp_server my_server:                 # declared at top level, referenced above
+  transport: stdio
+  command: "my-mcp-server"
+  args: []
 ```
 
 ## Worktree and sandbox
 
-```iter
+```iter fragment
 workflow safe:
   worktree: auto                      # fresh git worktree per run
   sandbox:  auto                      # reads .devcontainer/devcontainer.json
@@ -558,7 +571,7 @@ workflow safe:
 
 Block-form sandbox:
 
-```iter
+```iter fragment
 workflow isolated:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-slim:v0.13"
@@ -568,12 +581,10 @@ workflow isolated:
     #   args: { BASE: "alpine:3.20" }
     user: "1000:1000"
     network:
-      mode: allowlist                 # allowlist | inherit | none
+      mode: allowlist                 # open (default) | allowlist | denylist
       preset: default                 # LLM + npm/pypi/golang + git hosts
       inherit: false                  # add to (not replace) the preset
-      rules:
-        - host: "registry.example.com"
-          port: 443
+      rules: ["registry.example.com", "!evil.site"]   # host globs, inline; `!` denies
 ```
 
 Sandbox top-level modes: `auto`, `none`, or the block form

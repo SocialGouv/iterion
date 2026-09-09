@@ -1,6 +1,9 @@
 # Iterion DSL — Common Workflow Patterns
 
-Reusable patterns for building `.bot` workflows. Each pattern includes a skeleton snippet and explanation.
+Reusable patterns for building `.bot` workflows. Each pattern is a complete
+workflow that compiles as written (the repository's tests compile every
+snippet on this page), so it can be copied into a `.bot` and adapted. A
+`${MODEL:-…}` model spec keeps the model overridable from the environment.
 
 ---
 
@@ -9,20 +12,32 @@ Reusable patterns for building `.bot` workflows. Each pattern includes a skeleto
 The simplest pattern: nodes execute sequentially.
 
 ```iter
+schema request:
+  request: string
+
+schema step_a_output:
+  data: string
+
+schema step_b_input:
+  data: string
+
+schema step_b_output:
+  result: string
+
 agent step_a:
-  model: "${MODEL}"
-  input: input_schema
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  input: request
   output: step_a_output
 
 agent step_b:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: step_b_input
   output: step_b_output
 
 workflow pipeline:
   entry: step_a
   step_a -> step_b with {
-    data: "{{outputs.step_a}}"
+    data: "{{outputs.step_a.data}}"
   }
   step_b -> done
 ```
@@ -34,14 +49,28 @@ workflow pipeline:
 An agent produces work, a judge evaluates it. If rejected, loop back with feedback. Bounded to prevent infinite execution.
 
 ```iter
+schema task_input:
+  task: string
+  feedback: string
+
+schema task_output:
+  result: string
+
+schema eval_input:
+  submission: json
+
+schema eval_output:
+  approved: bool
+  summary: string
+
 agent worker:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: task_input
   output: task_output
   session: fresh
 
 judge evaluator:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: eval_input
   output: eval_output
   session: fresh
@@ -65,6 +94,10 @@ workflow review_loop:
 - The loop is declared with `as refine_loop(5)` — max 5 iterations
 - `{{outputs.worker.history}}` gives the agent all its previous attempts
 - The `when` condition field (`approved`) must be `bool` in `eval_output`
+- When the loop's five iterations are spent, the back-edge is declined and
+  the evaluator has no edge left, so the run fails `NO_OUTGOING_EDGE`; add a
+  bare `evaluator -> <exit>` edge (the loop-exhaustion exit, exempt from
+  C010) to route the exhausted case somewhere useful instead
 
 ---
 
@@ -73,21 +106,34 @@ workflow review_loop:
 A router sends work to multiple agents in parallel. A downstream node waits for all results.
 
 ```iter
+schema analysis_input:
+  data: string
+
+schema analysis_output:
+  findings: string
+
+schema synthesis_input:
+  result_a: json
+  result_b: json
+
+schema synthesis_output:
+  summary: string
+
 router distribute:
   mode: fan_out_all
 
 agent analyzer_a:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: analysis_input
   output: analysis_output
 
 agent analyzer_b:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: analysis_input
   output: analysis_output
 
 judge synthesizer:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   await: wait_all
   input: synthesis_input
   output: synthesis_output
@@ -125,8 +171,26 @@ workflow parallel_analysis:
 A router forwards to different agents based on conditions from upstream output.
 
 ```iter
+schema classification:
+  is_complex: bool
+
+schema handled:
+  result: string
+
+agent classifier:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: classification
+
 router dispatch:
   mode: condition
+
+agent simple_handler:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: handled
+
+agent complex_handler:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: handled
 
 workflow conditional:
   entry: classifier
@@ -151,6 +215,9 @@ workflow conditional:
 An LLM decides which target to route to. No `when` conditions on edges.
 
 ```iter
+schema handled:
+  result: string
+
 prompt router_system:
   Given the input, decide which specialist to route to.
   - code_agent: for code-level issues
@@ -158,8 +225,16 @@ prompt router_system:
 
 router smart_router:
   mode: llm
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   system: router_system
+
+agent code_agent:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: handled
+
+agent design_agent:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: handled
 
 workflow llm_routed:
   entry: smart_router
@@ -183,6 +258,23 @@ workflow llm_routed:
 Pause execution for human approval before proceeding.
 
 ```iter
+schema work_output:
+  summary: string
+
+schema approval_input:
+  submission: json
+
+schema approval_output:
+  approved: bool
+  notes: string
+
+prompt approval_instructions:
+  Review the submission below and approve it, or reject it with a note.
+
+agent worker:
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
+  output: work_output
+
 human approval_gate:
   input: approval_input
   output: approval_output
@@ -215,7 +307,7 @@ leaving executor selection to credential detection. `claude_code`, `codex`,
 explicit opt-ins. A separate `model:` pin is optional and does not select the
 backend.
 
-```iter
+```iter fragment
 agent implementer:
   backend: "claude_code"
   input: task_input
@@ -223,7 +315,7 @@ agent implementer:
   system: impl_system
   user: impl_user
   session: fresh
-  tools: [Read, Edit, Write, Bash, Glob, Grep]
+  tools: [read_file, file_edit, write_file, bash, glob, grep]
   tool_max_steps: 25
 ```
 
@@ -232,6 +324,8 @@ agent implementer:
 - Delegation supports `interaction` (forwarding human input to the subprocess)
 - `readonly: true` marks the node as non-mutating for workspace safety
 - Multiple mutating delegates cannot run in parallel (workspace safety constraint)
+- A `tools:` list uses the snake_case built-in names; it constrains `claw`
+  and is inert on CLI backends, which keep their full native toolset
 
 ---
 
@@ -240,12 +334,33 @@ agent implementer:
 Use a `tool` node to run shell commands directly (no LLM), combined with a judge for feedback loops.
 
 ```iter
+schema ci_result:
+  passed: bool
+  logs: string
+
+schema verify_input:
+  results: json
+  changes: json
+
+schema verify_output:
+  passed: bool
+  summary: string
+
+schema fix_input:
+  feedback: string
+  ci_logs: string
+
+schema fix_output:
+  changes: string
+
 tool run_ci:
-  command: "${CI_COMMAND}"
+  ## The exit code becomes a field: a failing suite is a RESULT the judge
+  ## reads, not a node failure — and stdout is the JSON the schema declares.
+  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, logs: .[-20000:]}' </tmp/ci.log`
   output: ci_result
 
 judge verify:
-  model: "${MODEL}"
+  model: "${MODEL:-anthropic/claude-sonnet-4-6}"
   input: verify_input
   output: verify_output
 
@@ -253,7 +368,6 @@ agent fixer:
   backend: "claude_code"
   input: fix_input
   output: fix_output
-  tools: [Read, Edit, Write, Bash]
 
 workflow ci_fix:
   entry: fixer
@@ -273,6 +387,14 @@ workflow ci_fix:
   }
 ```
 
+**Key points:**
+- A tool node's stdout is its output: print a JSON object matching the
+  `output:` schema (`{"passed": true, "logs": "…"}`). Any other stdout is
+  silently wrapped as `{"result": "…"}` and the declared fields are absent
+  downstream, and a non-zero exit fails the node — hence the wrapper, which
+  turns the exit code into a field and keeps only the log's last 20 000
+  characters (the judge reads that field; nothing else bounds it)
+
 ---
 
 ## 9. Session Fork for Read-Only Extraction
@@ -283,7 +405,7 @@ Fork a session to let multiple readonly agents extract information without consu
 agent worker:
   backend: "claude_code"
   session: fresh
-  tools: [Read, Edit, Write, Bash]
+  tools: [read_file, file_edit, write_file, bash]
 
 router extract_router:
   mode: fan_out_all
@@ -292,13 +414,13 @@ agent summarizer:
   backend: "claude_code"
   session: fork
   readonly: true
-  tools: [Read, Glob, Grep]
+  tools: [read_file, glob, grep]
 
 agent commit_namer:
   backend: "claude_code"
   session: fork
   readonly: true
-  tools: [Read, Bash]
+  tools: [read_file, bash]
 
 workflow fork_extract:
   entry: worker
@@ -327,18 +449,32 @@ workflow fork_extract:
 Cycle through agents one at a time, useful for dual-model approaches.
 
 ```iter
+schema task_input:
+  task: string
+
+schema task_output:
+  result: string
+
+schema verdict:
+  accepted: bool
+
 router alternator:
   mode: round_robin
 
 agent model_a:
-  model: "claude-sonnet-4-20250514"
+  model: "anthropic/claude-sonnet-4-6"
   input: task_input
   output: task_output
 
 agent model_b:
-  model: "gpt-4o"
+  backend: "claw"
+  model: "openai/gpt-5.5"
   input: task_input
   output: task_output
+
+judge evaluator:
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
 
 workflow dual_model:
   entry: alternator

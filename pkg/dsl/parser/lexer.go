@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // Safety limits to prevent DoS from malicious .bot files.
@@ -51,7 +53,7 @@ type Lexer struct {
 func NewLexer(filename, src string) *Lexer {
 	if len(src) > maxSourceSize {
 		l := &Lexer{file: filename, line: 1, col: 1}
-		l.tokens = []Token{{Type: TokenError, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
+		l.tokens = []Token{{Type: TokenError, Code: DiagUnexpectedToken, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
 		return l
 	}
 	// Normalize the source before tokenising:
@@ -85,14 +87,17 @@ func NewLexer(filename, src string) *Lexer {
 func detectStrictEscape(src string) bool {
 	lines := strings.SplitN(src, "\n", 32)
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if !strings.HasPrefix(trimmed, "##") {
+		// A comment is a `#` or `##` line — the same rule the lexer applies
+		// (workflowfile.CommentText is the shared definition), so a plain
+		// `# note` above the directive neither hides it nor ends the scan.
+		body, ok := workflowfile.CommentText(line)
+		if !ok {
 			return false
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "##"))
+		body = strings.TrimSpace(body)
 		// Accept `strict-escape: on` (with optional surrounding whitespace
 		// already trimmed) and a few cosmetic variants.
 		if body == "strict-escape: on" || body == "strict-escape:on" || body == "strict-escape = on" {
@@ -176,7 +181,7 @@ func (l *Lexer) handleLineStart() {
 	// scalar mode (heredocs preserve tab content verbatim) and in
 	// prompt body lines (handled below the dispatch).
 	if !l.blockScalarMode && !l.promptMode && l.pos < len(l.src) && l.src[l.pos] == '\t' {
-		l.emit(TokenError, "tabs are not allowed for indentation; use spaces", startLine, spaces+1)
+		l.emitError(DiagBadIndentation, "tabs are not allowed for indentation; use spaces", startLine, spaces+1)
 		// Consume the rest of the line so we don't loop on the same tab.
 		for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 			l.advance()
@@ -220,8 +225,12 @@ func (l *Lexer) handleLineStart() {
 		}
 	}
 
-	// Comment lines at line start
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	// Comment lines at line start: `#` or `##` (see scanComment). The one
+	// exception is the first line of a prompt body: prompt mode only starts
+	// when the INDENT below is emitted, so a `# Heading` opening the body
+	// (the ordinary markdown shape of a human node's instructions) must
+	// reach that INDENT as text rather than vanish as a comment.
+	if l.pos < len(l.src) && l.src[l.pos] == '#' && !l.promptBodyOpensHere(spaces) {
 		l.scanComment(startLine)
 		l.atLineStart = true
 		return
@@ -231,7 +240,7 @@ func (l *Lexer) handleLineStart() {
 	currentLevel := l.indentStack[len(l.indentStack)-1]
 	if spaces > currentLevel {
 		if len(l.indentStack) >= maxNestingDepth {
-			l.emit(TokenError, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
+			l.emitError(DiagBadIndentation, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
 			return
 		}
 		l.indentStack = append(l.indentStack, spaces)
@@ -251,35 +260,62 @@ func (l *Lexer) handleLineStart() {
 		}
 		// Verify alignment
 		if l.indentStack[len(l.indentStack)-1] != spaces {
-			l.emit(TokenError, "indentation does not match any outer level", startLine, 1)
+			l.emitError(DiagBadIndentation, "indentation does not match any outer level", startLine, 1)
 		}
 	}
 
 	l.atLineStart = false
 }
 
-// isPromptIndent checks if the last emitted tokens before the INDENT are: prompt IDENT : NEWLINE INDENT
-func (l *Lexer) isPromptIndent() bool {
-	n := len(l.tokens)
-	if n < 4 {
+// promptBodyOpensHere reports whether a line indented by `spaces` is the
+// first line of a prompt body: it is deeper than the current level and the
+// tokens emitted so far end with the `prompt <name>:` header. It is the
+// pre-INDENT twin of isPromptIndent, consulted before a `#` on such a line
+// could be scanned as a comment.
+func (l *Lexer) promptBodyOpensHere(spaces int) bool {
+	if spaces <= l.indentStack[len(l.indentStack)-1] {
 		return false
 	}
-	// tokens: ..., TokenPrompt, TokenIdent(name), TokenColon, TokenNewline, TokenIndent(just emitted)
-	// The INDENT we just emitted is at n-1
-	idx := n - 2 // should be Newline
+	return l.promptHeaderEndsAt(len(l.tokens) - 1)
+}
+
+// isPromptIndent checks if the last emitted tokens before the INDENT are: prompt IDENT : NEWLINE INDENT
+func (l *Lexer) isPromptIndent() bool {
+	// The INDENT just emitted sits at len-1; the header ends before it.
+	return l.promptHeaderEndsAt(len(l.tokens) - 2)
+}
+
+// promptHeaderEndsAt reports whether the significant tokens ending at index
+// idx are the suffix of a prompt header, `prompt <name>:` followed by an
+// optional NEWLINE. Comment tokens are skipped: a trailing `# why` on the
+// header line is a comment, not a token of the header, and must not hide the
+// body that follows (scanComment consumes the newline, so the Newline token
+// may be absent after one).
+func (l *Lexer) promptHeaderEndsAt(idx int) bool {
+	idx = l.significantIndexAt(idx)
 	if idx >= 0 && l.tokens[idx].Type == TokenNewline {
-		idx--
+		idx = l.significantIndexAt(idx - 1)
 	}
 	if idx >= 0 && l.tokens[idx].Type == TokenColon {
-		idx--
+		idx = l.significantIndexAt(idx - 1)
+	} else {
+		return false
 	}
 	if idx >= 0 && (l.tokens[idx].Type == TokenIdent || isKeywordToken(l.tokens[idx].Type)) {
+		idx = l.significantIndexAt(idx - 1)
+	} else {
+		return false
+	}
+	return idx >= 0 && l.tokens[idx].Type == TokenPrompt
+}
+
+// significantIndexAt returns the index of the last non-comment token at or
+// before idx, or -1.
+func (l *Lexer) significantIndexAt(idx int) int {
+	for idx >= 0 && l.tokens[idx].Type == TokenComment {
 		idx--
 	}
-	if idx >= 0 && l.tokens[idx].Type == TokenPrompt {
-		return true
-	}
-	return false
+	return idx
 }
 
 // emitPromptLine captures the rest of the current line as a prompt text line.
@@ -305,10 +341,18 @@ func (l *Lexer) emitPromptLine(leadingSpaces int) {
 	l.atLineStart = true
 }
 
+// scanComment consumes a comment to the end of its line. A comment opens
+// with `#`; the traditional `##` form is the same comment with one more
+// hash, so both `# note` and `## note` carry the text "note". Outside a
+// string, a prompt body or a block scalar a `#` never means anything else
+// in the language, so accepting the single form costs no ambiguity — and
+// it is the form every YAML-trained author (human or model) reaches for.
 func (l *Lexer) scanComment(startLine int) {
 	startCol := l.col
-	l.advance() // skip first #
-	l.advance() // skip second #
+	l.advance() // skip the opening #
+	if l.pos < len(l.src) && l.src[l.pos] == '#' {
+		l.advance() // the `##` form: skip the second #
+	}
 	var buf []rune
 	for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 		buf = append(buf, l.src[l.pos])
@@ -341,8 +385,8 @@ func (l *Lexer) scanToken() {
 		l.emit(TokenNewline, "", startLine, startCol)
 		l.atLineStart = true
 
-	case ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '#':
-		// Inline comment — consume rest of line
+	case ch == '#':
+		// Inline comment (`#` or `##`) — consume rest of line
 		l.scanComment(startLine)
 
 	case ch == ':':
@@ -408,7 +452,7 @@ func (l *Lexer) scanToken() {
 			l.scanBlockScalar(startLine, startCol)
 		} else {
 			l.advance()
-			l.emit(TokenError, string(ch), startLine, startCol)
+			l.emitError(DiagUnexpectedToken, "unexpected '|': a block scalar opener is only valid right after `key:`", startLine, startCol)
 		}
 
 	case unicode.IsDigit(ch):
@@ -419,7 +463,7 @@ func (l *Lexer) scanToken() {
 
 	default:
 		l.advance()
-		l.emit(TokenError, string(ch), startLine, startCol)
+		l.emitError(DiagUnexpectedToken, fmt.Sprintf("unexpected character %q", string(ch)), startLine, startCol)
 	}
 }
 
@@ -444,7 +488,11 @@ func (l *Lexer) scanString(startLine, startCol int) {
 				case '0':
 					buf = append(buf, 0)
 				default:
-					l.emit(TokenError, fmt.Sprintf("unknown escape sequence \\%c in strict-escape mode", next), startLine, startCol)
+					l.emitError(DiagBadEscape, fmt.Sprintf("unknown escape sequence \\%c in strict-escape mode", next), startLine, startCol)
+					// Consume the rest of the literal: one bad escape is one
+					// diagnostic, not one plus an "unexpected character" for
+					// every byte the string still holds.
+					l.skipRestOfString()
 					return
 				}
 				l.advance()
@@ -457,7 +505,7 @@ func (l *Lexer) scanString(startLine, startCol int) {
 			continue
 		}
 		if l.src[l.pos] == '\n' {
-			l.emit(TokenError, "unterminated string literal", startLine, startCol)
+			l.emitError(DiagUnterminatedStr, "unterminated string literal", startLine, startCol)
 			return
 		}
 		buf = append(buf, l.src[l.pos])
@@ -466,7 +514,7 @@ func (l *Lexer) scanString(startLine, startCol int) {
 	if l.pos < len(l.src) {
 		l.advance() // skip closing "
 	} else {
-		l.emit(TokenError, "unterminated string literal", startLine, startCol)
+		l.emitError(DiagUnterminatedStr, "unterminated string literal", startLine, startCol)
 		return
 	}
 	l.emit(TokenString, string(buf), startLine, startCol)
@@ -488,7 +536,7 @@ func (l *Lexer) scanRawString(startLine, startCol int) {
 		l.advance()
 	}
 	if l.pos >= len(l.src) {
-		l.emit(TokenError, "unterminated raw string literal (missing closing backtick)", startLine, startCol)
+		l.emitError(DiagUnterminatedStr, "unterminated raw string literal (missing closing backtick)", startLine, startCol)
 		return
 	}
 	l.advance() // skip closing `
@@ -527,18 +575,18 @@ func (l *Lexer) lastSignificantToken() TokenType {
 // `key: "..."` followed by a newline.
 func (l *Lexer) scanBlockScalar(startLine, startCol int) {
 	l.advance() // skip opening |
-	// Skip trailing inline whitespace and an optional ## comment on the
+	// Skip trailing inline whitespace and an optional comment on the
 	// opener line, then consume the newline that introduces the block.
 	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t') {
 		l.advance()
 	}
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	if l.pos < len(l.src) && l.src[l.pos] == '#' {
 		for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 			l.advance()
 		}
 	}
 	if l.pos < len(l.src) && l.src[l.pos] != '\n' {
-		l.emit(TokenError, "expected newline after '|' (block scalar opener)", startLine, startCol)
+		l.emitError(DiagExpectedToken, "expected newline after '|' (block scalar opener)", startLine, startCol)
 		return
 	}
 	if l.pos < len(l.src) {
@@ -610,7 +658,7 @@ func (l *Lexer) handleBlockScalarLine(spaces, startLine int) {
 // the dedenting line back through the regular indent state machine).
 func (l *Lexer) handleIndentation(spaces, startLine int) {
 	// Comment-only line at this indentation: scan it and stay at line start.
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	if l.pos < len(l.src) && l.src[l.pos] == '#' && !l.promptBodyOpensHere(spaces) {
 		l.scanComment(startLine)
 		l.atLineStart = true
 		return
@@ -619,7 +667,7 @@ func (l *Lexer) handleIndentation(spaces, startLine int) {
 	currentLevel := l.indentStack[len(l.indentStack)-1]
 	if spaces > currentLevel {
 		if len(l.indentStack) >= maxNestingDepth {
-			l.emit(TokenError, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
+			l.emitError(DiagBadIndentation, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
 			return
 		}
 		l.indentStack = append(l.indentStack, spaces)
@@ -630,7 +678,7 @@ func (l *Lexer) handleIndentation(spaces, startLine int) {
 			l.emit(TokenDedent, "", startLine, 1)
 		}
 		if l.indentStack[len(l.indentStack)-1] != spaces {
-			l.emit(TokenError, "indentation does not match any outer level", startLine, 1)
+			l.emitError(DiagBadIndentation, "indentation does not match any outer level", startLine, 1)
 		}
 	}
 	l.atLineStart = false
@@ -692,6 +740,30 @@ func (l *Lexer) advance() {
 
 func (l *Lexer) emit(tt TokenType, value string, line, col int) {
 	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col})
+}
+
+// skipRestOfString advances past the remainder of a quoted literal after an
+// error inside it — through the closing quote, or to the end of the line —
+// so the error is reported once instead of cascading.
+func (l *Lexer) skipRestOfString() {
+	for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+		ch := l.src[l.pos]
+		l.advance()
+		if ch == '\\' && l.pos < len(l.src) && l.src[l.pos] != '\n' {
+			l.advance()
+			continue
+		}
+		if ch == '"' {
+			return
+		}
+	}
+}
+
+// emitError records a lexer diagnosis as an error token that carries its
+// own diagnostic code, so the parser can report the cause wherever the token
+// surfaces — inside a block as well as at the top level.
+func (l *Lexer) emitError(code DiagCode, msg string, line, col int) {
+	l.tokens = append(l.tokens, Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col})
 }
 
 func isIdentStart(r rune) bool {

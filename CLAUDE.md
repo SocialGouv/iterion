@@ -422,10 +422,14 @@ this file uses below). All Go and node tooling come from `devbox.json`;
 A `.devcontainer/devcontainer.json` provides the same environment for VS
 Code / GitHub Codespaces.
 
-**Cross-shell note:** `.bot` tool nodes invoke commands via `sh -c`,
-which on Linux Mint/Ubuntu hosts is **dash**, but inside devbox is
-**bash 5.x**. Author tool commands as POSIX-compatible (no brace
-expansion, no `[[ ]]`, no `<<<`). See
+**Cross-shell note:** a `.bot` tool node's `command:` runs through
+**`bash -c`**, on the host and inside a sandbox alike
+([`executor_tool.go`](pkg/backend/model/executor_tool.go), `toolNodeCommand`
+— bash is pinned precisely because `/bin/sh` is **dash** on Debian-derived
+images). A `script:` node runs the interpreter its `language:` names, and
+`language: sh` is whatever `sh` is on PATH (dash on Linux Mint/Ubuntu, bash
+5.x inside devbox), so author scripts POSIX-compatible (no brace expansion,
+no `[[ ]]`, no `<<<`). See
 [docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes).
 
 **pnpm via corepack:** the `studio/` workspace is locked to a specific
@@ -1565,7 +1569,7 @@ it **on** — they build what they change. See
 Two things to know when writing one:
 
 - **Non-interactive PATH is the trap.** `tool` nodes run through a
-  non-interactive `sh -c` that never sources a shell profile, so a tool that
+  non-interactive `bash -c` that never sources a shell profile, so a tool that
   is installed but not on `PATH` is a tool that does not exist. The engine
   prepends the devbox profile's bin dir for this reason — don't hand-roll it
   per bot.

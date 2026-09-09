@@ -44,8 +44,9 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-Keep exactly one compiled workflow per file. Use `##` comments. Strings may be
-quoted, backtick-delimited raw strings, or block scalars where accepted.
+Keep exactly one compiled workflow per file. `#` starts a comment (`##` is the
+same comment). Strings may be quoted, backtick-delimited raw strings, or block
+scalars where accepted.
 
 ## Select node kinds deliberately
 
@@ -92,7 +93,7 @@ sync on demand via `await_answers`.
 
 Iterion has five router modes:
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.items}}"
@@ -122,7 +123,7 @@ provide separate workspaces.
 
 Use edge clauses in any order, at most once each:
 
-```iter
+```iter fragment:edges
 src -> dst
 src -> dst when approved
 src -> dst when not approved
@@ -147,6 +148,47 @@ Runtime templates include `vars`, `input`, `outputs`, `artifacts`,
 `{{params.name}}` at compile time. In tool commands, ordinary
 `{{input.field}}` is shell-escaped; `{{!input.field}}` is deliberately raw and
 must receive only trusted executable syntax.
+
+## Rules the grammar does not show
+
+Every one of these is enforced by the compiler or the runtime, and none of
+them can be read off the syntax tables — authors reverse-engineer them from
+shipped bots, so they are written here:
+
+- **A tool node's stdout is its output.** With `output:` declared, the
+  command must print a JSON object matching the schema; other stdout is
+  wrapped as `{"result": "…"}` and the fields downstream expect are absent. A
+  non-zero exit fails the node — wrap a command whose failure is a *result*
+  (a failing test suite) so it exits 0 and reports `passed: false`.
+- **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
+  `src -> exit` is the one legal pair of unconditional edges (the back-edge is
+  exempt from C010); without the bare edge a spent loop leaves the node with
+  no edge to take and the run fails `NO_OUTGOING_EDGE` (the log names the
+  exhausted loop).
+- **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
+  readable from any node that runs after the producer; `{{input.<field>}}`
+  only carries the node's declared input and what an edge `with` mapped.
+- **Never quote a `{{ref}}` in a `command:`.** The runtime shell-escapes it as
+  one word; your own quotes close its quoting (C137).
+- **`expr:` values and quoted `when` are expressions, not templates**: write
+  `input.x`, never `{{input.x}}` (C040).
+- **A `#` never means anything else outside a string, a prompt body or a
+  block scalar** — it is a comment, so a literal `{{…}}` example belongs in
+  prose, not in a prompt (every reference in a prompt is validated).
+- **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
+  `-> fail` target carries no code.
+
+## Validate in a loop, against the right build
+
+Write, then `iterion validate --json <file>`: every finding carries its
+source position and a `fix:` line, so correct the file at the position
+given, never by guessing. Loop until `valid` is true, then `iterion diagram`
+to check the shape, and only then run. From Claude Code the MCP
+`local_validate` tool returns the same JSON. Validate with the build the bot
+will run on (the `requires.iterion` floor in its manifest): a builtin or a
+property a newer engine added compiles on that engine and dies on an older
+one at validation or at its first evaluation — an unknown builtin name is
+C040, an argument count the older evaluator cannot satisfy is C138.
 
 ## Prefer deterministic controls
 

@@ -134,7 +134,7 @@ Behavior:
 `scan_join` and `triage`, gated by `--var shard_size=<N>` (default
 `0` = no sharding):
 
-```iter
+```iter fragment
 compute plan_shards:
   ## Lists every source file the scanners touched. If shard_size > 0,
   ## emits a shards plan; otherwise emits a single-shard plan (no fan-out).
@@ -142,18 +142,19 @@ compute plan_shards:
   output: plan_output
   expr:
     enabled: "vars.shard_size > 0"
-    ...
+    # … the shard plan fields
 
 tool dispatch_shards:
   ## Calls `iterion __scan-shards`. Skipped when plan_shards.enabled is false.
   command: `iterion __scan-shards --parent-run-id={{run.id}} ...`
-  ...
+  # … output schema, publish
 
-# Edges:
-scan_join -> plan_shards
-plan_shards -> dispatch_shards when enabled
-plan_shards -> triage when not enabled
-dispatch_shards -> done  # children emit their own issues + FileRecords
+workflow sharded:
+  entry: scan_join
+  scan_join -> plan_shards
+  plan_shards -> dispatch_shards when enabled
+  plan_shards -> triage when not enabled
+  dispatch_shards -> done  # children emit their own issues + FileRecords
 ```
 
 When sharding is enabled, the parent doesn't run triage / revalidate

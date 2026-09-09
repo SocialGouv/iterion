@@ -257,7 +257,7 @@ boundaries are worth knowing before a heavy fan-out:
 The headline pattern — *map a sub-bot over a dependency DAG of work items, each
 in its own worktree slot* — combines all of these:
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -282,6 +282,7 @@ workflow tickets:
   plan -> dispatch
   dispatch -> run_ticket
   run_ticket -> collect when validated   # collect declares await: best_effort
+  run_ticket -> escalate else            # a rejected ticket reaches a human (C012 without it)
   collect -> done
 ```
 

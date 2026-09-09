@@ -57,7 +57,7 @@ become answered, the service auto-resumes.
 **Deterministic sync point.** A new special node kind **`await_answers`**
 (sibling of `emit`/`wait`):
 
-```iter
+```iter fragment
 await_answers gate:
   from: gatherer      ## optional: only questions posted by this node
   timeout: "30m"      ## mandatory (no-silent-infinity invariant)

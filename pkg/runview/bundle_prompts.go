@@ -54,9 +54,14 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 		if err != nil {
 			return fmt.Errorf("bundle: read prompt %s: %w", name, err)
 		}
+		// The declaration's origin is the markdown file: a diagnostic on a
+		// reference inside the body then points there (line 1 — the file
+		// IS the body), not at the main.bot line of the node that consumes
+		// the prompt, which contains no reference at all.
 		f.Prompts = append(f.Prompts, &ast.PromptDecl{
 			Name: stem,
 			Body: string(body),
+			Span: ast.Span{Start: ast.Pos{File: filepath.Join(b.PromptsDir, name), Line: 1, Column: 1}},
 		})
 		declared[stem] = struct{}{}
 	}

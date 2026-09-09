@@ -47,7 +47,7 @@ extra configuration.
 
 ## Usage
 
-```iter
+```iter fragment
 agent implementer:
   backend: "claude_code"
   model: "anthropic/claude-opus-4-8"
@@ -63,13 +63,13 @@ small model such as `anthropic/claude-sonnet-4-6`.
 
 The value is also settable dynamically from an upstream node:
 
-```iter
-router -> implementer with {_reasoning_effort: "ultracode"}
+```iter fragment:edges
+plan_router -> implementer with { _reasoning_effort: "ultracode" }
 ```
 
 and via env substitution, which is resolved (and re-validated) at runtime:
 
-```iter
+```iter fragment:agent
   reasoning_effort: "${ITERION_EFFORT:-ultracode}"
 ```
 

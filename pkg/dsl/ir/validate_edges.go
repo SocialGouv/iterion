@@ -31,7 +31,7 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 			continue
 		}
 		if session == SessionInherit || session == SessionInheritIfAvailable || session == SessionFork {
-			c.errorf(DiagSessionAfterConvergence,
+			c.errorfAt(DiagSessionAfterConvergence, nodeID, "",
 				"node %q has session: %s but has await: %s (convergence point); only fresh, artifacts_only, or persist are allowed",
 				nodeID, session, awaitMode)
 		}
@@ -48,7 +48,7 @@ func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
 		if !ok || llm.GetSession() != SessionPersist || !body[id] {
 			continue
 		}
-		c.errorf(DiagPersistInFanOut,
+		c.errorfAt(DiagPersistInFanOut, id, "",
 			"node %q has session: persist but sits in a fan_out_all/fan_out_each/llm-multi body; persist is trunk-only in v1 (C243)",
 			id)
 	}
@@ -172,7 +172,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			for i, e := range g.unconditional {
 				targets[i] = e.To
 			}
-			c.errorf(DiagMultipleDefaultEdges,
+			c.errorfAt(DiagMultipleDefaultEdges, nodeID, "",
 				"node %q has %d unconditional edges (targets: %v); only one default edge is allowed",
 				nodeID, len(g.unconditional), targets)
 		}
@@ -184,14 +184,14 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			for i, e := range g.elseEdges {
 				targets[i] = e.To
 			}
-			c.errorf(DiagMultipleElseEdges,
+			c.errorfAt(DiagMultipleElseEdges, nodeID, "",
 				"node %q has %d `else` edges (targets: %v); only one else fallback is allowed",
 				nodeID, len(g.elseEdges), targets)
 		}
 		// C040: `else` REPLACES the bare unconditional fallback — having
 		// both is two competing defaults, pick one form.
 		if len(g.elseEdges) > 0 && len(g.unconditional) > 0 {
-			c.errorf(DiagElseWithUnconditional,
+			c.errorfAt(DiagElseWithUnconditional, nodeID, "",
 				"node %q has both an `else` edge (-> %s) and an unconditional edge (-> %s); `else` IS the fallback — remove one",
 				nodeID, g.elseEdges[0].To, g.unconditional[0].To)
 		}
@@ -199,7 +199,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		// mean anything — it would just be an unconditional edge wearing
 		// a misleading keyword.
 		if len(g.elseEdges) > 0 && len(g.conditional) == 0 {
-			c.errorf(DiagElseWithoutConditional,
+			c.errorfAt(DiagElseWithoutConditional, nodeID, "",
 				"node %q has an `else` edge (-> %s) but no conditional (`when`) sibling; use a plain edge",
 				nodeID, g.elseEdges[0].To)
 		}
@@ -214,7 +214,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		// edge (it is the explicit fallback form).
 		if len(g.unconditional) == 0 && len(g.loopBearing) == 0 && len(g.elseEdges) == 0 {
 			if !isExhaustive(g.conditional) {
-				c.errorf(DiagMissingFallback,
+				c.errorfAt(DiagMissingFallback, nodeID, "",
 					"node %q has conditional edges but no default (unconditional) fallback edge",
 					nodeID)
 			}
@@ -242,7 +242,7 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 			}
 		}
 		if count < 2 {
-			c.errorf(DiagRoundRobinTooFewEdges,
+			c.errorfAt(DiagRoundRobinTooFewEdges, r.ID, "",
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
 				r.ID, count)
 		}
@@ -264,14 +264,14 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorf(DiagLLMRouterConditionEdge,
+					c.errorfAtEdge(DiagLLMRouterConditionEdge, e,
 						"llm router %q edge to %q has a 'when' condition; LLM routers select targets directly",
 						r.ID, e.To)
 				}
 			}
 		}
 		if count < 2 {
-			c.errorf(DiagLLMRouterTooFewEdges,
+			c.errorfAt(DiagLLMRouterTooFewEdges, r.ID, "",
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				r.ID, count)
 		}
@@ -298,14 +298,14 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorf(DiagFanOutEachEdges,
+					c.errorfAtEdge(DiagFanOutEachEdges, e,
 						"fan_out_each router %q edge to %q has a 'when' condition; the single template edge must be unconditional",
 						r.ID, e.To)
 				}
 			}
 		}
 		if count != 1 {
-			c.errorf(DiagFanOutEachEdges,
+			c.errorfAt(DiagFanOutEachEdges, r.ID, "",
 				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
 				r.ID, count)
 		}
@@ -341,6 +341,7 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			continue
 		}
 		counts := make(map[string]int)
+		second := make(map[string]*Edge) // the first REPEAT of a target: the edge to remove
 		var order []string
 		for _, e := range w.Edges {
 			if e.From != r.ID {
@@ -348,6 +349,8 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			}
 			if counts[e.To] == 0 {
 				order = append(order, e.To)
+			} else if second[e.To] == nil {
+				second[e.To] = e
 			}
 			counts[e.To]++
 		}
@@ -355,7 +358,7 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			if counts[target] < 2 {
 				continue
 			}
-			c.warnfAt(DiagDuplicateFanOutTarget, r.ID, edgeID(r.ID, target),
+			c.warnfAtEdge(DiagDuplicateFanOutTarget, second[target],
 				"%s declares %d edges to %q; every branch is identified by branch_<router>_<target>, so those executions share one branch id, one output slot and one durable checkpoint — a resume can restart one at the other's position (C249). %s",
 				describeBranchRouter(r), counts[target], target, duplicateFanOutRemedy(r))
 		}
@@ -705,10 +708,10 @@ func routerSpawnsExecBranch(r *RouterNode) bool {
 // is a silent no-op and the intended bound (e.g. on Godot sessions) never
 // applies — exactly the failure mode the feature exists to prevent.
 func (c *compiler) validateResources(w *Workflow) {
-	for _, node := range w.Nodes {
+	for id, node := range w.Nodes {
 		for _, r := range NodeNeeds(node) {
 			if _, ok := w.Resources[r]; !ok {
-				c.errorf(DiagUnknownResourceInNeeds,
+				c.errorfAt(DiagUnknownResourceInNeeds, id, "",
 					"node %q needs resource %q, which is not declared in the workflow's resources: block",
 					node.NodeID(), r)
 			}
@@ -772,7 +775,7 @@ func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
 			default:
 				label = e.Condition
 			}
-			c.errorf(DiagAmbiguousCondition,
+			c.errorfAt(DiagAmbiguousCondition, nodeID, "",
 				"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s",
 				nodeID, prev.From, prev.To, e.From, e.To, label)
 		} else {
@@ -909,7 +912,7 @@ func (c *compiler) validateDuplicateWithKeys(w *Workflow) {
 		seen := make(map[string]string) // key -> first source
 		for _, ks := range keys {
 			if prevFrom, ok := seen[ks.key]; ok && prevFrom != ks.from {
-				c.errorf(DiagDuplicateWithKey,
+				c.errorfAt(DiagDuplicateWithKey, targetID, "",
 					"node %q receives with-mapping key %q from both %q and %q; keys must be unique across incoming edges",
 					targetID, ks.key, prevFrom, ks.from)
 			} else if !ok {

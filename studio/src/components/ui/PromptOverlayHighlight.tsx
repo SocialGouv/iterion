@@ -109,8 +109,6 @@ function Chunk({ chunk }: { chunk: HighlightChunk }) {
           {chunk.text}
         </span>
       );
-    case "comment":
-      return <span className="text-fg-subtle italic">{chunk.text}</span>;
     case "text":
     default:
       return <span>{chunk.text}</span>;

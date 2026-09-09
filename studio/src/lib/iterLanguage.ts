@@ -4,7 +4,7 @@ export const ITER_LANGUAGE_ID = "iter";
 
 export const iterLanguageConfig: languages.LanguageConfiguration = {
   comments: {
-    lineComment: "##",
+    lineComment: "#",
   },
   brackets: [
     ["{", "}"],
@@ -75,8 +75,31 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
 
   tokenizer: {
     root: [
+      // A prompt declaration: its body is TEXT on the following lines,
+      // where `# Heading` is a heading, not a comment (the lexer keeps it as
+      // prompt text). The header's indentation rides on the state name so
+      // the body ends at the first line indented no deeper than the header —
+      // a prompt inside a `group` is handled like a top-level one.
+      [/^(\s*)(prompt)(\s+)([A-Za-z_]\w*)(\s*:)/, [
+        "white", "keyword", "white", "identifier",
+        { token: "delimiter", next: "@promptHeader.$1" },
+      ]],
+
+      // A block scalar (`command: |`): its body is a script on the following
+      // lines, where `# note` is a shell comment inside the value.
+      [/^(\s*)([A-Za-z_]\w*)(\s*:\s*)(\|[-+]?)(\s*)$/, [
+        "white", "keyword", "delimiter",
+        { token: "delimiter", next: "@blockScalar.$1" },
+        "white",
+      ]],
+
+      // Raw strings: a backtick opens a shell command or a literal that a
+      // `#` must not close — `echo "#1"` is a command, not a comment. Read
+      // before the comment rule so the hash inside stays string-coloured.
+      [/`/, { token: "string.quote", next: "@rawString" }],
+
       // Comments
-      [/##.*$/, "comment"],
+      [/#.*$/, "comment"],
 
       // Template expressions {{...}}
       [/\{\{/, { token: "delimiter.template", next: "@template" }],
@@ -126,6 +149,65 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       [/[^"\\{$]+/, "string"],
       [/\\./, "string.escape"],
       [/"/, { token: "string.quote", next: "@pop" }],
+    ],
+
+    // The rest of a `prompt <name>:` header line. On the following lines,
+    // only a line indented STRICTLY deeper than the header ($S2 followed by
+    // at least one more space) belongs to the body; any other non-blank line
+    // — at the header's indent, shallower, or at column 0 — ends the
+    // declaration and is re-read by the block grammar.
+    promptHeader: [
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1~$S2\\s+": { token: "white", switchTo: "@promptBody.$S2" },
+          "@default": { token: "@rematch", next: "@pop" },
+        },
+      }],
+      [/#.*$/, "comment"],
+      [/\s+/, "white"],
+      [/./, "white"],
+    ],
+
+    // A prompt body: text, with templates and env refs coloured, until a
+    // line indented no deeper than the header.
+    promptBody: [
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1~$S2\\s+": "white",
+          "@default": { token: "@rematch", next: "@pop" },
+        },
+      }],
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^{$]+/, "string"],
+      [/[{$]/, "string"],
+    ],
+
+    // A block scalar body: the same shape as a prompt body, ended by a line
+    // indented no deeper than its key — the key may sit deeper than its
+    // block's siblings (`recovery: / repair: / command: |`), so "shallower
+    // than the key" must end it, not only "exactly the key's indent".
+    blockScalar: [
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1~$S2\\s+": "white",
+          "@default": { token: "@rematch", next: "@pop" },
+        },
+      }],
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^{$]+/, "string"],
+      [/[{$]/, "string"],
+    ],
+
+    // A raw string has no escape and may span lines: only the closing
+    // backtick ends it. Templates and env refs keep their colour inside it.
+    rawString: [
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^`{$]+/, "string"],
+      [/[{$]/, "string"],
+      [/`/, { token: "string.quote", next: "@pop" }],
     ],
 
     stringTemplate: [

@@ -68,7 +68,7 @@ my-bot/
 | `main.bot`        | The workflow source. Must live at the bundle root. |
 | `manifest.yaml`   | Bundle metadata (name, version, schema_version, optional `attachments:` map). Optional. |
 | `skills/`         | Claude Code skills. Mirrored into `<workDir>/.claude/skills/` at run time. Workspace files always win on collision (warn-logged). |
-| `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. |
+| `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. An `{{include "x.md"}}` inside one resolves next to that file, inside `prompts/`. |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
 | `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 

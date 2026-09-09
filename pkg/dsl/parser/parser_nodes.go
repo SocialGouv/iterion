@@ -645,7 +645,7 @@ func (p *parser) parseFallbacksBlock(propTok Token) []*ast.FallbackDecl {
 func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 	nameT := p.next()
 	if nameT.Type != TokenIdent && !isKeywordToken(nameT.Type) {
-		p.addError(DiagExpectedToken, nameT, "expected fallback name, got "+nameT.Type.String())
+		p.expectFailed(nameT, TokenIdent, "expected fallback name, got "+nameT.Type.String())
 		p.skipToNewline()
 		return nil
 	}
@@ -701,7 +701,7 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			case TokenIdent, TokenString:
 				fd.Action = at.Value
 			default:
-				p.addError(DiagExpectedToken, at, "expected fallback action (skip), got "+at.Type.String())
+				p.expectFailed(at, TokenIdent, "expected fallback action (skip), got "+at.Type.String())
 				p.skipToNewline()
 			}
 		case "when":
