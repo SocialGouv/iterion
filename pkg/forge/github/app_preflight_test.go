@@ -3,13 +3,34 @@ package github
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
+
+// probeReached is a stand-in forge that records whether it was contacted —
+// the oracle for "before any socket", measured instead of asserted.
+//
+// The flag is atomic because the handler that sets it runs on the server's
+// own goroutine while the test reads it on its. A plain bool is a data race
+// the moment a regression DOES open a socket — the one run where this
+// oracle has something to say — and the read may then miss the write and
+// let the test report success on the claim it exists to measure.
+type probeReached struct{ hit atomic.Bool }
+
+// server answers everything with status/body, recording that it was asked.
+func (p *probeReached) server(status int, body string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.hit.Store(true)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+}
 
 // A stored App key that is not parseable PEM fails while the JWT is being
 // signed — before a socket is opened. The assertion that matters is not the
@@ -17,11 +38,8 @@ import (
 // so: every handler downstream defaults to 502, so an unmarked failure here
 // reports GitHub as broken for a key only iterion can read.
 func TestMintInstallationToken_UnparseableKeyNeverReachesTheForge(t *testing.T) {
-	reached := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
-		w.WriteHeader(http.StatusTeapot)
-	}))
+	var probe probeReached
+	srv := probe.server(http.StatusTeapot, "")
 	defer srv.Close()
 
 	cfg := AppConfig{AppID: 42, PrivateKeyPEM: "-----BEGIN RSA PRIVATE KEY-----\nnot base64\n-----END RSA PRIVATE KEY-----", AppSlug: "iterion"}
@@ -29,7 +47,7 @@ func TestMintInstallationToken_UnparseableKeyNeverReachesTheForge(t *testing.T) 
 	if err == nil {
 		t.Fatal("an unparseable private key minted a token")
 	}
-	if reached {
+	if probe.hit.Load() {
 		t.Fatal("the mint opened a socket with a key it could not read — the pre-flight claim this marker rests on is false")
 	}
 	if !errors.Is(err, forge.ErrLocalPreflight) {
@@ -42,16 +60,17 @@ func TestMintInstallationToken_UnparseableKeyNeverReachesTheForge(t *testing.T) 
 // would be reported as iterion's own fault.
 func TestMintInstallationToken_ForgeRefusalIsNotMarkedLocal(t *testing.T) {
 	pemStr, _ := testKeyPEM(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(`{"message":"upstream is down"}`))
-	}))
+	var probe probeReached
+	srv := probe.server(http.StatusBadGateway, `{"message":"upstream is down"}`)
 	defer srv.Close()
 
 	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr, AppSlug: "iterion"}
 	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0), nil)
 	if err == nil {
 		t.Fatal("a 502 from the forge minted a token")
+	}
+	if !probe.hit.Load() {
+		t.Fatal("the forge was never asked — this test's premise is a refusal that came back over the wire, and the probe is what tells the two apart")
 	}
 	if errors.Is(err, forge.ErrLocalPreflight) {
 		t.Fatalf("a forge 5xx was marked as iterion's own (%v) — the same inversion, reversed", err)
@@ -82,11 +101,8 @@ func TestAppClientMintChain_PreservesLocalPreflight(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reached := false
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reached = true
-				w.WriteHeader(http.StatusTeapot)
-			}))
+			var probe probeReached
+			srv := probe.server(http.StatusTeapot, "")
 			defer srv.Close()
 
 			a := &AppClient{
@@ -99,7 +115,7 @@ func TestAppClientMintChain_PreservesLocalPreflight(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s served a client for a key that cannot be read", tc.name)
 			}
-			if reached {
+			if probe.hit.Load() {
 				t.Fatalf("%s opened a socket with a key it could not read", tc.name)
 			}
 			if !errors.Is(err, forge.ErrLocalPreflight) {
