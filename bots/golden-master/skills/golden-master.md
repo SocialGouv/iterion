@@ -254,6 +254,15 @@ non-list container) is **named**, never dropped in silence — a dropped
 declaration would read as "this class is undeclared" and send you to write one
 you had already written.
 
+**Proving a group does not buy back width, and that is deliberate.** The floor
+is applied to `corpus_distinct`, which counts distinct baseline observations. A
+separator proves the two references are *distinguishable under mutation*; it
+does not make them two observations of the application's behaviour at rest, and
+crediting them back would let a corpus reach its floor by padding with
+controls. So the two refusals are independent: discharge the class *and* widen
+the corpus. If the gate still says the corpus is too narrow after every group
+is proved, the answer is a new entry, never a new declaration.
+
 The extension channel may write this key: the lot that ADDS an entry is the one
 that can create a new byte-identical class, so it is also the one that must
 declare its separator. Every other key outside `entries` stays frozen.
