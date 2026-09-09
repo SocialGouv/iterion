@@ -1464,9 +1464,8 @@ type ArtifactDependency struct {
 }
 
 // ArtifactContract is the durable restart contract for one logical output.
-// Effects describes the publishing policy (currently "persist" and
-// "external" are understood); it is metadata for admission, never a request
-// to replay an external side effect.
+// runtime.ValidateArtifactContracts is what reads it, before a resume or a
+// rewind may mutate the run.
 type ArtifactContract struct {
 	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
 	ProducerNode     string `json:"producer_node" bson:"producer_node"`
@@ -1482,8 +1481,21 @@ type ArtifactContract struct {
 	// comparison stays the fallback for both.
 	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
 	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
-	Mutable      bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
-	Effects      []string             `json:"effects,omitempty" bson:"effects,omitempty"`
+
+	// Mutable and Effects are RESERVED: they are persisted and exposed, and
+	// nothing writes Mutable or reads either one today. Said plainly so the
+	// next reader does not take a value here for a decision the engine makes
+	// — an earlier comment claimed Effects' vocabulary was "understood",
+	// which would have made a stale `["persist"]` look load-bearing.
+	//
+	// Mutable is intended to mark an output a re-execution may legitimately
+	// replace; Effects to describe the publishing policy ("persist" for a
+	// store write, "external" for an output whose production also touched
+	// something outside the run). Effects is metadata for admission, never a
+	// request to replay an external side effect. Give either one a reader
+	// before giving it a meaning.
+	Mutable bool     `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects []string `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

@@ -631,6 +631,8 @@ export interface ArtifactContract {
   // written before this field existed.
   schema_hash?: string;
   dependencies?: ArtifactDependency[];
+  // Reserved, mirroring store.ArtifactContract: nothing writes `mutable` and
+  // nothing reads either field yet. Don't render one as a decision.
   mutable?: boolean;
   effects?: string[];
 }
