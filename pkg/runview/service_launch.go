@@ -405,14 +405,17 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return err
 	}
-	return runtime.ValidateArtifactContracts(parent, runtime.ArtifactContractCheck{
+	if err := runtime.ValidateArtifactContracts(parent, runtime.ArtifactContractCheck{
 		Store:    s.store,
 		Run:      r,
 		Workflow: wf,
 		Revision: hash,
 		Force:    spec.Force,
 		Logger:   s.logger,
-	})
+	}); err != nil {
+		return fmt.Errorf("%w — %s", err, runtime.ArtifactContractRemedy)
+	}
+	return nil
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -516,7 +519,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		Force:    spec.Force,
 		Logger:   s.logger,
 	}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w — %s", err, runtime.ArtifactContractRemedy)
 	}
 
 	// The budget a resume executes against composes, per field, the ask

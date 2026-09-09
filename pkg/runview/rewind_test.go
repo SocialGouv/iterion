@@ -12,6 +12,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -1116,5 +1117,31 @@ func TestRewind_SurvivesAnArtifactOfADeletedNode(t *testing.T) {
 	})
 	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
 		t.Fatalf("rewind refused over a deleted node's inert artifact, leaving no operator action at all: %v", err)
+	}
+}
+
+// Every surface that refuses a resume over a contract must say what to do
+// about it: the CLI reads the engine's typed hint, the studio only ever sees
+// the error text, and a refusal with no way out reads as a broken run.
+func TestResume_ContractRefusalCarriesTheRemedy(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, publishBot, cp, store.RunStatusFailedResumable)
+	seedContractArtifact(t, st, runID, "survey", &store.ArtifactContract{
+		LogicalRef: "old_survey_report", ProducerNode: "survey", Version: 0,
+	})
+	botPath := ""
+	if run, err := st.LoadRun(context.Background(), runID); err == nil {
+		botPath = run.FilePath
+	}
+	_, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath, Force: true})
+	if err == nil {
+		t.Fatal("resume accepted an incompatible surviving artifact")
+	}
+	if !strings.Contains(err.Error(), "artifact contract incompatible") ||
+		!strings.Contains(err.Error(), runtime.ArtifactContractRemedy) {
+		t.Fatalf("refusal = %v, want it to name the incompatibility AND the way out", err)
 	}
 }

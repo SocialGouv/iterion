@@ -69,6 +69,15 @@ func schemaFingerprint(wf *ir.Workflow, name string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ArtifactContractRemedy is the operator action that resolves a contract
+// refusal on a RESUME, shared by every surface that reports one — the engine
+// hint the CLI prints and the wrap the HTTP layer answers with — so the
+// studio does not show a dead end where the CLI shows a way out. Deliberately
+// not baked into the validator's own error: the same function serves the
+// rewind, where "rewind to the producing node" is not advice, it is what the
+// caller is already doing.
+const ArtifactContractRemedy = "rewind to the producing node so it re-executes (iterion rewind --node <id>), or restore its publish/output declaration"
+
 // ArtifactContractCheck carries the inputs of ValidateArtifactContracts. A
 // struct rather than positional arguments because the caller set is
 // heterogeneous — a resume threads `--force`, a rewind threads the artifacts

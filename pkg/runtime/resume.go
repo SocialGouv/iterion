@@ -99,7 +99,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			// ARE compatible, and this check is what found they are not.
 			// The way through is to invalidate the offending output so the
 			// node produces it again, or to restore the declaration.
-			Hint:  "rewind to the producing node so it re-executes (iterion rewind --node <id>), or restore its publish/output declaration",
+			Hint:  ArtifactContractRemedy,
 			Cause: err,
 		}
 	}
