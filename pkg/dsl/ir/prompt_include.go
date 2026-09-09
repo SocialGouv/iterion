@@ -84,13 +84,18 @@ func newIncludeBudget() *includeBudget {
 	return &includeBudget{remainingBytes: maxPromptIncludeTotalBytes, remainingFiles: maxPromptIncludeCount}
 }
 
-// charge books one inlined file against the budget, returning the error that
+// spend books files and bytes against the budget, returning the error that
 // refuses the expansion once either axis runs out. Callers must not call it
 // on a spent budget — the walk stops at the first refusal — so this reports
 // the exhaustion exactly once.
-func (b *includeBudget) charge(rel string, n int) error {
-	b.remainingBytes -= int64(n)
-	b.remainingFiles--
+//
+// The file is booked BEFORE the read, whether or not that read succeeds: the
+// marker count is attacker-controlled as much as the file sizes are, so a
+// body of markers pointing at files that are not there has to be bounded
+// like one whose files are. Only the bytes wait for a successful read.
+func (b *includeBudget) spend(rel string, files, bytes int) error {
+	b.remainingFiles -= files
+	b.remainingBytes -= int64(bytes)
 	if b.remainingBytes < 0 || b.remainingFiles < 0 {
 		b.exhausted = true
 		return fmt.Errorf("include %q: the expansion budget of %d bytes / %d files is exhausted — an include graph that fans out re-expands the same files at every path to them",
@@ -113,12 +118,16 @@ func expandPromptIncludesNested(body, baseDir string, stack []string, budget *in
 			return ""
 		}
 		rel := promptIncludeRe.FindStringSubmatch(match)[1]
+		if err := budget.spend(rel, 1, 0); err != nil {
+			errs = append(errs, err)
+			return ""
+		}
 		content, full, err := readPromptIncludeAt(baseDir, rel)
 		if err != nil {
 			errs = append(errs, err)
 			return ""
 		}
-		if err := budget.charge(rel, len(content)); err != nil {
+		if err := budget.spend(rel, 0, len(content)); err != nil {
 			errs = append(errs, err)
 			return ""
 		}

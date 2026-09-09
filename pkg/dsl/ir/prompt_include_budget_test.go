@@ -135,6 +135,41 @@ func TestPromptIncludeBudgetAppliesToCompile(t *testing.T) {
 	}
 }
 
+// A marker whose file does not exist costs nothing to write and used to cost
+// a stat plus an error string to answer, so a body of them was an
+// amplification of its own — bounded only by the parser's source limit. The
+// budget books the ATTEMPT, so the walk stops there too.
+func TestPromptIncludeBudgetBoundsMarkersThatResolveToNothing(t *testing.T) {
+	dir := t.TempDir()
+	var src strings.Builder
+	src.WriteString("prompt p:\n")
+	for i := 0; i < maxPromptIncludeCount*4; i++ {
+		fmt.Fprintf(&src, "  {{include \"absent-%d.md\"}}\n", i)
+	}
+	path := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(path, []byte(src.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pr := parser.Parse(path, src.String())
+	for _, d := range pr.Diagnostics {
+		t.Fatalf("parse: %s", d.Error())
+	}
+	err := InlinePromptIncludes(pr.File)
+	if err == nil {
+		t.Fatal("4096 markers pointing at nothing were all answered individually")
+	}
+	if !strings.Contains(err.Error(), "expansion budget") {
+		t.Errorf("the refusal does not name the budget: %v", err)
+	}
+	// One error per missing file up to the cap, then one refusal and stop —
+	// never one per marker, which is what makes the reply attacker-sized.
+	// InlinePromptIncludes prefixes each message with the prompt it came
+	// from, so the prefixes count the messages.
+	if n := strings.Count(err.Error(), `prompt "p": `); n > maxPromptIncludeCount+1 {
+		t.Errorf("the refusal answers %d of the %d markers", n, maxPromptIncludeCount*4)
+	}
+}
+
 // An honest graph — a handful of files, nested — still resolves whole. The
 // budget is a ceiling on abuse, not a new limit on ordinary authoring.
 func TestPromptIncludeBudgetLeavesAnHonestGraphAlone(t *testing.T) {
