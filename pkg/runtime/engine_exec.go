@@ -592,12 +592,13 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 		Version:  version,
 		Data:     output,
 		Labels:   labels,
-		Contract: e.artifactContractFor(nodeID, node, version),
+		Contract: e.artifactContractFor(nodeID, node, version, rs),
 	}); err != nil {
 		return fmt.Errorf("runtime: write artifact: %w", err)
 	}
 	rs.artifactVersions[nodeID] = version + 1
 	rs.artifacts[pub] = output
+	rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version}
 
 	evtData := map[string]any{
 		"publish": pub,

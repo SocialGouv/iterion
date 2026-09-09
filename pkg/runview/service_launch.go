@@ -405,9 +405,7 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return err
 	}
-	return runtime.ValidateArtifactContracts(parent, runtime.ArtifactContractCheck{
-		Store: s.store, Run: r, Workflow: wf, CurrentRevision: hash, Force: spec.Force, Logger: s.logger,
-	})
+	return runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash, spec.Force)
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -503,9 +501,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateArtifactContracts(parent, runtime.ArtifactContractCheck{
-		Store: s.store, Run: r, Workflow: wf, CurrentRevision: hash, Force: spec.Force, Logger: s.logger,
-	}); err != nil {
+	if err := runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash, spec.Force); err != nil {
 		return nil, err
 	}
 

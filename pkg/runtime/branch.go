@@ -19,14 +19,15 @@ import (
 
 // branchResult holds the outcome of a single parallel branch.
 type branchResult struct {
-	branchID         string
-	startNodeID      string
-	outputs          map[string]map[string]any
-	artifacts        map[string]map[string]any // publish name → output
-	artifactVersions map[string]int
-	joinNodeID       string // the join node this branch converged to (empty if terminal)
-	err              error
-	eventErrors      int // count of event emission failures (best-effort events)
+	branchID          string
+	startNodeID       string
+	outputs           map[string]map[string]any
+	artifacts         map[string]map[string]any // publish name → output
+	artifactRevisions map[string]store.ArtifactRevisionRef
+	artifactVersions  map[string]int
+	joinNodeID        string // the join node this branch converged to (empty if terminal)
+	err               error
+	eventErrors       int // count of event emission failures (best-effort events)
 	// terminatedAtDone is true when the branch loop exited at an
 	// *ir.DoneNode rather than at a convergence/error/cancel. Used by
 	// best_effort fan_out to recognise the "every branch finished at
@@ -44,6 +45,17 @@ type branchResult struct {
 	// seeded from the durable branch cursor so a resumed pass keeps
 	// growing the same monotonic-max daily-cap ledger entry.
 	costUSD float64
+}
+
+func mergeArtifactRevisions(base, overlay map[string]store.ArtifactRevisionRef) map[string]store.ArtifactRevisionRef {
+	merged := cloneMap(base)
+	if merged == nil {
+		merged = make(map[string]store.ArtifactRevisionRef)
+	}
+	for name, revision := range overlay {
+		merged[name] = revision
+	}
+	return merged
 }
 
 // errBranchPauseDeferred marks a branch that reached a human gate after a
@@ -305,15 +317,20 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		branchArtifactVersions[k] = v
 	}
 	result := &branchResult{
-		branchID:         branchID,
-		outputs:          make(map[string]map[string]any),
-		artifacts:        make(map[string]map[string]any),
-		artifactVersions: branchArtifactVersions,
-		selectedIncoming: make(map[string][]store.IncomingEdge),
+		branchID:          branchID,
+		outputs:           make(map[string]map[string]any),
+		artifacts:         make(map[string]map[string]any),
+		artifactRevisions: make(map[string]store.ArtifactRevisionRef),
+		artifactVersions:  branchArtifactVersions,
+		selectedIncoming:  make(map[string][]store.IncomingEdge),
 	}
 	if cp != nil {
 		result.outputs = copyOutputs(cp.Outputs)
 		result.artifacts = copyOutputs(cp.Artifacts)
+		result.artifactRevisions = cloneMap(cp.ArtifactRevisions)
+		if result.artifactRevisions == nil {
+			result.artifactRevisions = make(map[string]store.ArtifactRevisionRef)
+		}
 		if cp.ArtifactVersions != nil {
 			result.artifactVersions = cloneMap(cp.ArtifactVersions)
 		}
@@ -328,7 +345,8 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *branchResult) *runState {
 	local := cloneRunStateForBranch(parent)
 	local.outputs = result.outputs
-	local.artifacts = result.artifacts
+	local.artifacts = mergeOutputs(parent.artifacts, result.artifacts)
+	local.artifactRevisions = mergeArtifactRevisions(parent.artifactRevisions, result.artifactRevisions)
 	local.artifactVersions = result.artifactVersions
 	local.selectedIncoming = result.selectedIncoming
 	local.loopCounters = make(map[string]int)
@@ -361,6 +379,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 		Outputs:            copyOutputs(result.outputs),
 		Artifacts:          copyOutputs(result.artifacts),
 		ArtifactVersions:   cloneMap(result.artifactVersions),
+		ArtifactRevisions:  cloneMap(result.artifactRevisions),
 		LoopCounters:       cloneMap(rs.loopCounters),
 		LoopPreviousOutput: copyOutputs(rs.loopPreviousOutput),
 		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
@@ -790,7 +809,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 		NodeID:   currentNodeID,
 		Version:  version,
 		Data:     output,
-		Contract: e.artifactContractFor(currentNodeID, node, version),
+		Contract: e.artifactContractFor(currentNodeID, node, version, branchRS),
 	}
 	if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: write artifact: %w", currentNodeID, branchID, err)
@@ -799,6 +818,9 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	result.artifactVersions[currentNodeID] = version + 1
 	result.artifacts[pub] = output
 	branchRS.artifacts[pub] = output
+	revision := store.ArtifactRevisionRef{NodeID: currentNodeID, Version: version}
+	result.artifactRevisions[pub] = revision
+	branchRS.artifactRevisions[pub] = revision
 	if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]any{
 		"publish": pub,
 		"version": version,

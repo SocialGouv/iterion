@@ -31,6 +31,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
 		LoopBudgetMarksV:   loopBudgetMarksVersion,
 		ArtifactVersions:   rs.artifactVersions,
+		ArtifactRevisions:  cloneMap(rs.artifactRevisions),
 		SelectedIncoming:   cloneIncoming(rs.selectedIncoming),
 		Vars:               rs.vars,
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),

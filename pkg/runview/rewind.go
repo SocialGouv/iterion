@@ -122,6 +122,10 @@ type RewindSpec struct {
 	// Requires the run to carry Run.WorkflowSource (captured at launch).
 	// An explicit NodeID always wins.
 	Auto bool
+	// Force acknowledges that retained artifacts may have source-derived
+	// contract metadata from the workflow revision being repaired. Persisted
+	// version and dependency integrity are still enforced.
+	Force bool
 	// KeepFiles opts OUT of restoring the workspace.
 	//
 	// Deprecated: it is exactly RestoreScope == RestoreScopeNone, and is
@@ -372,34 +376,19 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
-	invalidatedSet := map[string]bool{}
-	for _, id := range invalidated {
-		invalidatedSet[id] = true
-	}
 	fromNode := cp.NodeID
 
-	// Refuse an incompatible persisted artifact before claiming the run or
-	// mutating its checkpoint/workspace — but only for the artifacts that
-	// SURVIVE this rewind. Checking the invalidated subgraph would refuse the
-	// operation for the very outputs it exists to discard, and `--auto`
-	// targets the node whose declaration just changed, i.e. precisely the one
-	// whose contract no longer matches. That would make `edit → rewind
-	// --auto → resume` — the bot-dev loop this command was built for —
-	// unusable under `enforce`, and would re-introduce here the source-change
-	// guard the contract stated 90 lines above deliberately excludes.
-	//
-	// What clears the subgraph afterwards is writeArtifactTombstones: its
-	// marker carries no Contract, so a later resume skips it as a legacy
-	// artifact. That nil contract is load-bearing, not mere tolerance.
-	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
-		Store: s.store, Run: run, Workflow: wf, Skip: invalidatedSet, Logger: s.logger,
-	}); err != nil {
-		// The remedy for a SURVIVING artifact is always reachable and never
-		// obvious: rewind further back, so the offending node falls inside the
-		// invalidated subgraph and its output is superseded rather than
-		// re-validated. Say so — the bare violation list reads like a dead end.
-		return nil, fmt.Errorf("%w — rewind further back so the offending node is itself re-executed "+
-			"(everything from the pivot onward is superseded, and only what survives is checked)", err)
+	// Validate only the artifacts that survive this rewind. Checking the
+	// pivot/downstream artifacts would make a changed publish name or schema
+	// block the very recovery operation that tombstones them. Retained
+	// artifacts still fail closed under enforce unless the operator supplied
+	// the explicit source-change override.
+	ignoredArtifacts := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		ignoredArtifacts[id] = true
+	}
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, "", spec.Force, ignoredArtifacts); err != nil {
+		return nil, err
 	}
 
 	// Claim the run BEFORE touching anything, the workspace included. The
@@ -510,7 +499,11 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// a rewind is invoked on — has no output, so the output-filtered set
 	// would skip exactly the node whose questions are still pending. Same
 	// argument detachSubbotChildren and the NodeAttempts clear rest on.
-	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, invalidatedSet); rerr != nil {
+	retireNodes := map[string]bool{}
+	for _, id := range invalidated {
+		retireNodes[id] = true
+	}
+	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, retireNodes); rerr != nil {
 		if s.logger != nil {
 			s.logger.Warn("rewind: retire async interactions for %s: %v", run.ID, rerr)
 		}
@@ -603,6 +596,11 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	for _, id := range dropped {
 		delete(cp.Outputs, id)
 		delete(cp.SelectedIncoming, id)
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			if revision.NodeID == id {
+				delete(cp.ArtifactRevisions, logicalRef)
+			}
+		}
 	}
 	// Recovery budgets clear over the UNFILTERED set: a node that failed
 	// has attempts recorded and no output, so keying this on `dropped`

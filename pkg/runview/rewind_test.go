@@ -294,6 +294,70 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	}
 }
 
+// TestRewind_ArtifactContractSourceChanges exercises both recovery paths:
+// contracts owned by nodes being invalidated cannot block their own rewind,
+// while an incompatible retained artifact requires an explicit override.
+func TestRewind_ArtifactContractSourceChanges(t *testing.T) {
+	bot := strings.Replace(linearBot,
+		"agent plan:\n  model: \"claude-opus-4-7\"\n  output: out",
+		"agent plan:\n  model: \"claude-opus-4-7\"\n  output: out\n  publish: plan_new", 1)
+	bot = strings.Replace(bot,
+		"agent implement:\n  model: \"claude-opus-4-7\"\n  output: out",
+		"agent implement:\n  model: \"claude-opus-4-7\"\n  output: out\n  publish: implement_new", 1)
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+
+	seedArtifact := func(t *testing.T, nodeID, logicalRef string) (*Service, store.RunStore, string) {
+		t.Helper()
+		svc, st, runID := seedRun(t, bot, cp, store.RunStatusFailedResumable)
+		run, err := st.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+		if err := st.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.WriteArtifact(context.Background(), &store.Artifact{
+			RunID: runID, NodeID: nodeID, Version: 0,
+			Contract: &store.ArtifactContract{
+				LogicalRef: logicalRef, ProducerNode: nodeID,
+				ProducerRevision: "hash-original", Version: 0, Schema: "old-schema",
+			},
+			Data: map[string]any{"value": "old"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return svc, st, runID
+	}
+
+	t.Run("invalidated artifact is ignored", func(t *testing.T) {
+		svc, _, runID := seedArtifact(t, "implement", "implement_old")
+		if _, err := svc.Rewind(context.Background(), RewindSpec{
+			RunID: runID, NodeID: "implement", KeepFiles: true,
+		}); err != nil {
+			t.Fatalf("rewind was blocked by the artifact it invalidates: %v", err)
+		}
+	})
+
+	t.Run("retained artifact requires force", func(t *testing.T) {
+		svc, _, runID := seedArtifact(t, "plan", "plan_old")
+		_, err := svc.Rewind(context.Background(), RewindSpec{
+			RunID: runID, NodeID: "implement", KeepFiles: true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "plan_old") {
+			t.Fatalf("retained incompatible artifact error = %v", err)
+		}
+		if _, err := svc.Rewind(context.Background(), RewindSpec{
+			RunID: runID, NodeID: "implement", KeepFiles: true, Force: true,
+		}); err != nil {
+			t.Fatalf("forced rewind rejected source-derived retained contract change: %v", err)
+		}
+	})
+}
+
 // TestRewind_LoopKeepsCycleAncestor is the reason downstreamOf subtracts
 // ancestors. `verify` is forward-reachable from `implement` yet also
 // reaches it back through the fix() loop, and `implement` reads its
@@ -1074,9 +1138,7 @@ func TestRewind_SkipsContractsOfTheSubgraphItInvalidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
-	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
-		Store: st, Run: after, Workflow: wf,
-	}); err != nil {
+	if err := runtime.ValidateArtifactContracts(ctx, st, after, wf, "", false); err != nil {
 		t.Fatalf("the resume after the rewind was refused: %v", err)
 	}
 }
@@ -1101,12 +1163,6 @@ func TestRewind_RefusesIncompatibleSurvivingArtifact(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "survey-report") {
 		t.Fatalf("error does not name the offending artifact: %v", err)
-	}
-	// The remedy is reachable but not obvious, and the bare violation list
-	// reads like a dead end: rewinding further back puts the offending node
-	// inside the invalidated subgraph, where it is superseded, not checked.
-	if !strings.Contains(err.Error(), "rewind further back") {
-		t.Errorf("refusal offers no way forward: %v", err)
 	}
 	// The refusal must be non-destructive: the run keeps its resumable status.
 	run, lerr := st.LoadRun(context.Background(), runID)

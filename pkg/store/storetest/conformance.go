@@ -106,9 +106,10 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	cp := &store.Checkpoint{
-		NodeID:        "dispatch",
-		InteractionID: "interaction-1",
-		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		NodeID:            "dispatch",
+		InteractionID:     "interaction-1",
+		FiredEvents:       map[string]map[string]any{"ready": {"value": "ok"}},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 2}},
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -126,6 +127,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					Outputs:            map[string]map[string]any{"work": {"result": "ok"}},
 					Artifacts:          map[string]map[string]any{"report": {"path": "report.md"}},
 					ArtifactVersions:   map[string]int{"work": 2},
+					ArtifactRevisions:  map[string]store.ArtifactRevisionRef{"report": {NodeID: "work", Version: 1}},
 					LoopCounters:       map[string]int{"retry": 1},
 					LoopPreviousOutput: map[string]map[string]any{"retry": {"result": "before"}},
 					LoopCurrentOutput:  map[string]map[string]any{"retry": {"result": "after"}},
@@ -153,6 +155,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
 		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
 	}
+	if revision := r.Checkpoint.ArtifactRevisions["plan"]; revision.NodeID != "planner" || revision.Version != 2 {
+		t.Fatalf("artifact revision after round-trip = %+v", revision)
+	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]
 	if got.InvocationKey != "dispatch@outer=2" || got.PendingNodeID != "gate" || got.NextArtifactVersion["gate"] != 4 {
@@ -160,6 +165,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
 		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
+	}
+	if revision := branch.ArtifactRevisions["report"]; revision.NodeID != "work" || revision.Version != 1 {
+		t.Fatalf("branch artifact revision after round-trip = %+v", revision)
 	}
 	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
 		t.Fatalf("branch nested state after round-trip = %+v", branch)

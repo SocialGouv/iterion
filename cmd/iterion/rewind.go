@@ -17,6 +17,7 @@ var rewindOpts struct {
 	runID        string
 	nodeID       string
 	auto         bool
+	force        bool
 	keepFiles    bool
 	restoreScope string
 	listSnaps    bool
@@ -122,6 +123,7 @@ subbot runs) are never undone.`,
 			RunID:        rewindOpts.runID,
 			NodeID:       rewindOpts.nodeID,
 			Auto:         rewindOpts.auto,
+			Force:        rewindOpts.force,
 			KeepFiles:    rewindOpts.keepFiles,
 			RestoreScope: scope,
 			SourcePath:   rewindOpts.file,
@@ -244,6 +246,7 @@ func init() {
 	f.StringVar(&rewindOpts.runID, "run-id", "", "Run to rewind (mutated in place)")
 	f.StringVar(&rewindOpts.nodeID, "node", "", "Pivot node id (the node the run re-executes from)")
 	f.BoolVar(&rewindOpts.auto, "auto", false, "Derive the pivot by diffing your edited .bot against the source this run executed")
+	f.BoolVar(&rewindOpts.force, "force", false, "Accept source-derived contract changes on artifacts retained by the rewind")
 	f.StringVar(&rewindOpts.restoreScope, "restore-scope", "",
 		"How much of the workspace to put back: none | produced | full (default: produced in place, full in a worktree)")
 	f.BoolVar(&rewindOpts.keepFiles, "keep-files", false, "Deprecated alias for --restore-scope none")

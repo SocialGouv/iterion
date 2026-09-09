@@ -200,13 +200,14 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// resumeFromFailure path re-executes NodeID first, then walks
 	// downstream.
 	child.Checkpoint = &store.Checkpoint{
-		NodeID:           spec.NodeID,
-		Outputs:          copyOutputs(parent.Checkpoint),
-		LoopCounters:     copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
-		ArtifactVersions: copyArtifactVersions(parent.Checkpoint),
-		Vars:             copyVars(parent.Checkpoint),
-		BackendName:      turn.Backend,
-		BackendSessionID: turn.SessionID,
+		NodeID:            spec.NodeID,
+		Outputs:           copyOutputs(parent.Checkpoint),
+		LoopCounters:      copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
+		ArtifactVersions:  copyArtifactVersions(parent.Checkpoint),
+		ArtifactRevisions: copyArtifactRevisions(parent.Checkpoint),
+		Vars:              copyVars(parent.Checkpoint),
+		BackendName:       turn.Backend,
+		BackendSessionID:  turn.SessionID,
 	}
 	// Claw rehydration: when the turn checkpoint has a MessagesRef
 	// (i.e. the parent was running on the claw backend), load the
@@ -311,6 +312,16 @@ func copyArtifactVersions(cp *store.Checkpoint) map[string]int {
 		return out
 	}
 	return map[string]int{}
+}
+
+func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisionRef {
+	if cp == nil {
+		return map[string]store.ArtifactRevisionRef{}
+	}
+	if out := maps.Clone(cp.ArtifactRevisions); out != nil {
+		return out
+	}
+	return map[string]store.ArtifactRevisionRef{}
 }
 
 func copyVars(cp *store.Checkpoint) map[string]any {

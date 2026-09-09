@@ -296,13 +296,17 @@ type runState struct {
 	// where adding ctx to every signature would 80+ call sites with
 	// no semantic gain — the lifetime of rs IS the lifetime of ctx.
 	// Set in Run() before execLoop().
-	ctx          context.Context
-	runID        string
-	runInputs    map[string]any
-	vars         map[string]any
-	outputs      map[string]map[string]any
-	artifacts    map[string]map[string]any // publish name → output
-	loopCounters map[string]int
+	ctx       context.Context
+	runID     string
+	runInputs map[string]any
+	vars      map[string]any
+	outputs   map[string]map[string]any
+	artifacts map[string]map[string]any // publish name → output
+	// artifactRevisions is the physical producer/version of the value in
+	// artifacts. It must travel with that value through branches and checkpoints:
+	// publish names are not unique and version counters are allocator cursors.
+	artifactRevisions map[string]store.ArtifactRevisionRef
+	loopCounters      map[string]int
 	// loopOverrides holds the live-steering iteration grants (bump_loop):
 	// loop name → extra iterations added to the loop's resolved max.
 	// Written only by the execution-loop goroutine (applyOverride) and
@@ -685,6 +689,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		runInputs:          inputs,
 		outputs:            make(map[string]map[string]any),
 		artifacts:          make(map[string]map[string]any),
+		artifactRevisions:  make(map[string]store.ArtifactRevisionRef),
 		loopCounters:       make(map[string]int),
 		loopPreviousOutput: make(map[string]map[string]any),
 		loopCurrentOutput:  make(map[string]map[string]any),

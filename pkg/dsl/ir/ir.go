@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -759,6 +760,47 @@ func NodePromptRefs(node Node) []string {
 			refs = append(refs, n.Instructions)
 		}
 	}
+	return refs
+}
+
+// NodeArtifactRefs returns every logical artifact name that can feed a node,
+// either directly from its body/prompts or through an incoming edge mapping.
+// Runtime callers that know which incoming edges fired should use
+// NodeArtifactRefsForEdges to exclude unselected alternatives.
+func NodeArtifactRefs(w *Workflow, nodeID string) []string {
+	return NodeArtifactRefsForEdges(w, nodeID, nil)
+}
+
+// NodeArtifactRefsForEdges is NodeArtifactRefs with an optional incoming-edge
+// predicate. A nil predicate includes all incoming mappings.
+func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*Edge) bool) []string {
+	if w == nil || nodeID == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, rc := range collectAllRefs(w) {
+		if rc.NodeID != nodeID || rc.EdgeTo != "" || rc.Ref == nil || rc.Ref.Kind != RefArtifacts || len(rc.Ref.Path) == 0 {
+			continue
+		}
+		seen[rc.Ref.Path[0]] = struct{}{}
+	}
+	for _, edge := range w.Edges {
+		if edge == nil || edge.To != nodeID || (includeIncoming != nil && !includeIncoming(edge)) {
+			continue
+		}
+		for _, mapping := range edge.With {
+			for _, ref := range mapping.Refs {
+				if ref != nil && ref.Kind == RefArtifacts && len(ref.Path) > 0 {
+					seen[ref.Path[0]] = struct{}{}
+				}
+			}
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
 	return refs
 }
 

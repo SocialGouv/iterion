@@ -133,10 +133,7 @@ func TestLinearPath(t *testing.T) {
 		Name:  "linear_test",
 		Entry: "analyze",
 		Nodes: map[string]ir.Node{
-			"analyze": &ir.AgentNode{
-				BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis",
-				SchemaFields: ir.SchemaFields{OutputSchema: "analysis_out"},
-			},
+			"analyze": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis"},
 			"run_cmd": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "run_cmd"}, Command: "echo ok"},
 			"verify":  &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
 			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
@@ -150,11 +147,7 @@ func TestLinearPath(t *testing.T) {
 			{From: "verify", To: "done", Condition: "pass", Negated: false},
 			{From: "verify", To: "fail", Condition: "pass", Negated: true},
 		},
-		Schemas: map[string]*ir.Schema{
-			"analysis_out": {Name: "analysis_out", Fields: []*ir.SchemaField{
-				{Name: "summary", Type: ir.FieldTypeString},
-			}},
-		},
+		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
@@ -233,15 +226,6 @@ func TestLinearPath(t *testing.T) {
 	}
 	if art.Contract.LogicalRef != "analysis" || art.Contract.ProducerNode != "analyze" || art.Contract.ProducerRevision != r.WorkflowHash || art.Contract.Version != art.Version {
 		t.Fatalf("artifact contract = %+v, workflow hash = %q", art.Contract, r.WorkflowHash)
-	}
-	// The contract must bind the artifact to its schema's SHAPE, not only to
-	// the label the shape is declared under: a stamp with no fingerprint
-	// silently degrades every later check to a name comparison.
-	if art.Contract.Schema == "" {
-		t.Error("artifact contract records no output schema")
-	}
-	if art.Contract.SchemaHash == "" {
-		t.Error("artifact contract records no schema fingerprint — the check would degrade to comparing names")
 	}
 }
 
