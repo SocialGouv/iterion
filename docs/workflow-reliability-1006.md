@@ -38,13 +38,41 @@ not evidence that a queued or nested launch has the same context.
 
 Schema-invalid output is corrected only when the executor implements the
 optional `runtime.OutputCorrector` capability. The engine allows at most the
-configured budget (two calls by default, or `WithOutputCorrectionBudget(0)` to
-disable it) for each node episode. Artifacts, events and outgoing edges are
-written only after a corrected payload validates.
+configured budget for each node episode, resolved
+`WithOutputCorrectionBudget` → `ITERION_OUTPUT_CORRECTION_BUDGET` → `2`.
+`0` (or `off`) disables correction entirely. No CLI flag or DSL field is
+wired yet: the env var is the operator-facing escape hatch until a launch
+surface needs a per-run one.
 
-The episode ledger is persisted on the run document. It records the attempt
-count, output/violation fingerprints and a terminal status (`succeeded`,
-`exhausted` or `unchanged`). A corrector returning the same invalid payload is
-stopped immediately, and a resume continues the existing budget rather than
-starting a new loop. Executors must keep correction side-effect free; publish
-and external-effect nodes remain behind the validation boundary.
+**What the correction boundary actually covers.** The *artifact*, the
+`node_finished` event and the outgoing *edge* are written only after a payload
+validates — those are the downstream effects a correction must not replay. It
+is not a boundary around all events: the node's own lifecycle events
+(`node_started`, `llm_request`, tool calls) necessarily precede validation and
+describe the original attempt, and so do `emitVerifiedActionIfPresent` and the
+`session: persist` slot commit, which run on the pre-correction payload by
+design — a session slot records the CLI session that produced the output, not
+the repaired copy of it.
+
+Correction is **trunk-only**. Fan-out branch nodes validate directly and are
+not corrected; the ledger key already carries a branch slot, so extending it
+later needs no migration.
+
+The episode ledger is persisted on the run document, keyed by node
+*execution* — node id plus loop-iteration path and branch id, sanitized to a
+Mongo-safe field name. It records the attempt count, output/violation
+fingerprints and a status. `unchanged` and `exhausted` are terminal: a
+corrector returning the same invalid payload stops immediately, and a resume
+continues the existing budget rather than starting a new loop — only a genuine
+budget *raise* reopens an exhausted episode, and never an `unchanged` one.
+Fingerprints cover the schema payload only, so the engine's own `_`-prefixed
+metadata (`_duration_ms` above all, which changes every execution) cannot make
+one episode look like another.
+
+The engine merges that metadata onto whatever the corrector returns, so
+`_tokens`/`_cost_usd` still reach budget accounting and `_backend`/`_model`/
+`_fallback_used`/`_served_by` still reach a downstream gate. A key the
+corrector sets wins, which is how a model-backed corrector reports its own
+spend — it has no other channel today, and a correction round trip emits no
+event of its own. Executors must keep correction side-effect free; publish and
+external-effect nodes remain behind the validation boundary.

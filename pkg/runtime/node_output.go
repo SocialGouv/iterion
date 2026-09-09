@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -48,6 +51,41 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 	}
 	return nil
 }
+
+// defaultOutputCorrectionBudget is the machine default for the bounded
+// invalid-output correction loop, used when no launch surface passes
+// WithOutputCorrectionBudget.
+const defaultOutputCorrectionBudget = 2
+
+// resolveOutputCorrectionBudget reads the machine default:
+// ITERION_OUTPUT_CORRECTION_BUDGET → defaultOutputCorrectionBudget. `0` (or
+// off/no/false/none) disables correction entirely — the escape hatch a
+// deployment needs to refuse the extra model calls outright, since a
+// hardcoded constant bounding operator work with no override is a defect.
+// Unparsable or negative values fall back to the DEFAULT rather than invent a
+// policy: unlike the exit grace this is not a spend ceiling an operator
+// tightens, it is a repair allowance, and reading a typo as "unbounded" is the
+// one answer that is never right.
+func resolveOutputCorrectionBudget() int {
+	raw := strings.TrimSpace(os.Getenv("ITERION_OUTPUT_CORRECTION_BUDGET"))
+	if raw == "" {
+		return defaultOutputCorrectionBudget
+	}
+	switch strings.ToLower(raw) {
+	case "off", "no", "false", "none":
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		correctionBudgetWarnOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "iterion: ITERION_OUTPUT_CORRECTION_BUDGET=%q is not a non-negative integer — using the default %d\n", raw, defaultOutputCorrectionBudget)
+		})
+		return defaultOutputCorrectionBudget
+	}
+	return v
+}
+
+var correctionBudgetWarnOnce sync.Once
 
 const (
 	correctionStatusActive    = "active"

@@ -471,6 +471,61 @@ func TestSchemaValidation_CorrectionIsBoundedByRunDuration(t *testing.T) {
 	}
 }
 
+// A hardcoded constant bounding operator work with no override is a defect
+// (CLAUDE.md principle 1). The machine default must be reachable from outside.
+func TestOutputCorrectionBudget_EnvOverride(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{raw: "", want: defaultOutputCorrectionBudget},
+		{raw: "5", want: 5},
+		{raw: "0", want: 0},
+		{raw: "off", want: 0},
+		{raw: "NONE", want: 0},
+		// A typo must never read as "unbounded": fall back to the default.
+		{raw: "banana", want: defaultOutputCorrectionBudget},
+		{raw: "-3", want: defaultOutputCorrectionBudget},
+	} {
+		t.Run("env="+tc.raw, func(t *testing.T) {
+			t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", tc.raw)
+			if got := resolveOutputCorrectionBudget(); got != tc.want {
+				t.Fatalf("resolveOutputCorrectionBudget() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// The env value must actually reach a constructed engine, and an explicit
+// option must still outrank it.
+func TestOutputCorrectionBudget_EnvReachesEngine(t *testing.T) {
+	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "off")
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+	if err := New(validationWorkflow(), tmpStore(t), exec, WithOutputValidation(true)).
+		Run(context.Background(), "run-val-env-off", nil); err == nil {
+		t.Fatal("expected the validation failure to stand with correction disabled")
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 with ITERION_OUTPUT_CORRECTION_BUDGET=off", exec.calls)
+	}
+
+	exec.calls = 0
+	if err := New(validationWorkflow(), tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(context.Background(), "run-val-env-override", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1 — the explicit option must outrank the env", exec.calls)
+	}
+}
+
 // singleCorrectionEpisode asserts the ledger holds exactly one episode and
 // returns it — the key is an execution identity, not a bare node id, so tests
 // must not hardcode it.

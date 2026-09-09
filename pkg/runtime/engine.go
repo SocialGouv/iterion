@@ -269,9 +269,9 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// A corrector is an optional executor capability. Keeping a small default
 	// budget makes the safety feature effective for capable production
 	// executors while preserving legacy fail-fast behaviour for executors that
-	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
-	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: 2}
+	// do not implement OutputCorrector. WithOutputCorrectionBudget(0), or
+	// ITERION_OUTPUT_CORRECTION_BUDGET=off, disables it explicitly.
+	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: resolveOutputCorrectionBudget()}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -286,7 +286,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: 2}
+	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: resolveOutputCorrectionBudget()}
 	for _, opt := range opts {
 		opt(e)
 	}

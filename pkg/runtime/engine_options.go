@@ -458,6 +458,9 @@ func WithOutputValidation(enabled bool) EngineOption {
 // made after a schema-invalid node output. A zero budget disables correction;
 // negative values are treated as zero. The budget is per node episode and is
 // persisted on the run so a resume cannot reset the bound.
+//
+// Precedence: this option → ITERION_OUTPUT_CORRECTION_BUDGET →
+// defaultOutputCorrectionBudget.
 func WithOutputCorrectionBudget(budget int) EngineOption {
 	return func(e *Engine) {
 		if budget < 0 {
