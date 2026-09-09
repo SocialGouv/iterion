@@ -79,7 +79,7 @@ func (s *Store) RetryCircuitOpen(ctx context.Context, key string, now time.Time)
 		return nil, err
 	}
 	if state.OpenUntil == nil || !state.OpenUntil.After(now.UTC()) {
-		return &state, nil
+		return nil, nil
 	}
 	return &state, nil
 }

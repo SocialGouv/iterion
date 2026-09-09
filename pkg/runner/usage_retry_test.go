@@ -214,6 +214,48 @@ func TestUsageWindowRetryAt_JitterNeverPushesPastMaxWait(t *testing.T) {
 	}
 }
 
+func TestUsageWindowCircuitAt_PreservesJitterAndMaxWait(t *testing.T) {
+	openUntil := retryNow.Add(90 * time.Minute)
+	state := &store.RetryCircuitState{OpenUntil: &openUntil}
+
+	t.Run("an open circuit is jittered", func(t *testing.T) {
+		pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "3h", Jitter: "10m"})
+		seen := map[time.Time]bool{}
+		for i := 0; i < 200; i++ {
+			at, delayed := usageWindowCircuitAt(retryNow.Add(time.Hour), state, pol, retryNow)
+			if !delayed {
+				t.Fatal("delayed = false, want an open circuit to delay the retry")
+			}
+			if at.Before(openUntil) || !at.Before(openUntil.Add(10*time.Minute)) {
+				t.Fatalf("at = %v, want within [%v, %v)", at, openUntil, openUntil.Add(10*time.Minute))
+			}
+			seen[at] = true
+		}
+		if len(seen) < 2 {
+			t.Error("circuit jitter produced one instant — the shared circuit would release a synchronized wave")
+		}
+	})
+
+	t.Run("the resolved max wait remains the ceiling", func(t *testing.T) {
+		pol := noJitter(retrypolicy.Policy{MaxWait: "30m"})
+		at, delayed := usageWindowCircuitAt(retryNow.Add(10*time.Minute), state, pol, retryNow)
+		if !delayed {
+			t.Fatal("delayed = false, want the circuit to participate even when its cooldown is clamped")
+		}
+		if want := retryNow.Add(30 * time.Minute); !at.Equal(want) {
+			t.Fatalf("at = %v, want max_wait ceiling %v", at, want)
+		}
+	})
+
+	t.Run("a circuit that does not extend the retry is ignored", func(t *testing.T) {
+		at := retryNow.Add(2 * time.Hour)
+		got, delayed := usageWindowCircuitAt(at, state, noJitter(retrypolicy.Policy{}), retryNow)
+		if delayed || !got.Equal(at) {
+			t.Fatalf("got (%v, %v), want unchanged retry %v", got, delayed, at)
+		}
+	})
+}
+
 // TestRunRetryPolicy_ReadsTheLaunchSnapshot pins that the runner takes the
 // policy resolved at launch and never re-derives it — it has no access to
 // schedules or manifests, by design.
