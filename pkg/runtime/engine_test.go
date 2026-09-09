@@ -133,7 +133,10 @@ func TestLinearPath(t *testing.T) {
 		Name:  "linear_test",
 		Entry: "analyze",
 		Nodes: map[string]ir.Node{
-			"analyze": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis"},
+			"analyze": &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis",
+				SchemaFields: ir.SchemaFields{OutputSchema: "analysis_out"},
+			},
 			"run_cmd": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "run_cmd"}, Command: "echo ok"},
 			"verify":  &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
 			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
@@ -147,7 +150,11 @@ func TestLinearPath(t *testing.T) {
 			{From: "verify", To: "done", Condition: "pass", Negated: false},
 			{From: "verify", To: "fail", Condition: "pass", Negated: true},
 		},
-		Schemas: map[string]*ir.Schema{},
+		Schemas: map[string]*ir.Schema{
+			"analysis_out": {Name: "analysis_out", Fields: []*ir.SchemaField{
+				{Name: "summary", Type: ir.FieldTypeString},
+			}},
+		},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
@@ -226,6 +233,16 @@ func TestLinearPath(t *testing.T) {
 	}
 	if art.Contract.LogicalRef != "analysis" || art.Contract.ProducerNode != "analyze" || art.Contract.ProducerRevision != r.WorkflowHash || art.Contract.Version != art.Version {
 		t.Fatalf("artifact contract = %+v, workflow hash = %q", art.Contract, r.WorkflowHash)
+	}
+	// The stamp is where the shape binding is won or lost: a contract written
+	// with no fingerprint silently degrades every later check to comparing
+	// schema NAMES, and no validator test would notice because those stamp
+	// their own contracts.
+	if art.Contract.Schema == "" {
+		t.Error("artifact contract records no output schema")
+	}
+	if art.Contract.SchemaHash == "" {
+		t.Error("artifact contract records no schema fingerprint — the compatibility check would degrade to comparing names")
 	}
 }
 

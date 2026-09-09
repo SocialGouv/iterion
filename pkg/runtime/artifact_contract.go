@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,12 +30,14 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 	if logicalRef == "" {
 		return nil
 	}
+	schema := ir.NodeOutputSchema(node)
 	contract := &store.ArtifactContract{
 		LogicalRef:       logicalRef,
 		ProducerNode:     nodeID,
 		ProducerRevision: e.workflowHash,
 		Version:          version,
-		Schema:           ir.NodeOutputSchema(node),
+		Schema:           schema,
+		SchemaHash:       schemaFingerprint(e.workflow, schema),
 		Effects:          []string{"persist"},
 	}
 	if rs == nil {
@@ -59,6 +63,65 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 		})
 	}
 	return contract
+}
+
+// schemaFingerprint digests a schema DEFINITION so the contract binds an
+// artifact to its data SHAPE and not merely to the label the shape is
+// declared under. `Schema` alone is a reference NAME: editing a schema's
+// fields — removing or renaming a field a downstream node reads as
+// `outputs.x.field`, i.e. the change that genuinely invalidates a persisted
+// artifact — keeps that name, while renaming an unchanged schema changes no
+// shape at all, so a name comparison misses the first and refuses the second.
+//
+// Returns "" when the name is empty or the workflow does not resolve it; the
+// caller then falls back to comparing names, which is all a contract written
+// before this field ever recorded.
+//
+// Fields are sorted before hashing: an artifact is a JSON object keyed by
+// field name, so reordering a schema's declarations changes no shape. Enum
+// values are part of the digest — narrowing an enum can invalidate a
+// persisted value.
+func schemaFingerprint(wf *ir.Workflow, name string) string {
+	if wf == nil || name == "" {
+		return ""
+	}
+	schema := wf.Schemas[name]
+	if schema == nil {
+		return ""
+	}
+	fields := make([]string, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		if f == nil {
+			continue
+		}
+		enum := append([]string(nil), f.EnumValues...)
+		sort.Strings(enum)
+		fields = append(fields, fmt.Sprintf("%s\x00%s\x00%s", f.Name, f.Type, strings.Join(enum, "\x01")))
+	}
+	sort.Strings(fields)
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// nodePublishingRef resolves a logical artifact reference back to the node
+// that publishes it, or "" when the workflow publishes no such ref. Iterated
+// in sorted order so a workflow that (illegally) publishes one ref twice
+// still resolves deterministically.
+func nodePublishingRef(wf *ir.Workflow, logicalRef string) string {
+	if wf == nil || logicalRef == "" {
+		return ""
+	}
+	ids := make([]string, 0, len(wf.Nodes))
+	for id := range wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if nodePublish(wf.Nodes[id]) == logicalRef {
+			return id
+		}
+	}
+	return ""
 }
 
 // consumedArtifactRefs mirrors buildNodeInputRS's selected-edge rules so a
@@ -235,8 +298,15 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			return nil
 		}
 		contract := artifact.Contract
-		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version ||
-			contract.LogicalRef == "" || contract.ProducerNode != nodeID || contract.Version != version {
+		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d loaded as %s/%s/%d", nodeID, version, artifact.RunID, artifact.NodeID, artifact.Version))
+			return nil
+		}
+		if contract.ProducerNode != nodeID {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d names producer %q", nodeID, version, contract.ProducerNode))
+			return nil
+		}
+		if contract.LogicalRef == "" || contract.Version != version {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
 			return nil
 		}
@@ -257,7 +327,15 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 				if got := nodePublish(node); got != contract.LogicalRef {
 					violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
 				}
-				if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
+				// Compare the schema shape whenever both sides carry a
+				// fingerprint. Names remain the compatibility fallback for
+				// artifacts written before SchemaHash existed.
+				schema := ir.NodeOutputSchema(node)
+				if hash := schemaFingerprint(wf, schema); contract.SchemaHash != "" && hash != "" {
+					if hash != contract.SchemaHash {
+						violations = append(violations, fmt.Sprintf("artifact %q was produced against a different definition of schema %q", contract.LogicalRef, contract.Schema))
+					}
+				} else if schema != contract.Schema {
 					violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
 				}
 			}
@@ -269,9 +347,22 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if dep.LogicalRef == "" || !dep.Required {
 				continue
 			}
+			// A dependency may name its producer NODE, or only the logical ref
+			// the workflow publishes it under. Falling back to the ref as if it
+			// were a node id looks a publish name up in a store keyed by node
+			// id: the load then fails for an artifact that is present, and
+			// since an unreadable artifact fails closed under enforce, that
+			// misresolution refuses a perfectly good resume as an
+			// infrastructure error. Resolve the ref through the workflow that
+			// publishes it instead, and when nothing does, say so as the
+			// compatibility violation it is.
 			depNode := dep.NodeID
 			if depNode == "" {
-				depNode = dep.LogicalRef
+				depNode = nodePublishingRef(wf, dep.LogicalRef)
+			}
+			if depNode == "" {
+				violations = append(violations, fmt.Sprintf("artifact %q requires %s, which no node of this workflow publishes", contract.LogicalRef, dep.LogicalRef))
+				continue
 			}
 			if err := validateRevision(artifactValidationRevision{LogicalRef: dep.LogicalRef, NodeID: depNode, Version: dep.Version}); err != nil {
 				return fmt.Errorf("artifact %q requires %s v%d: %w", contract.LogicalRef, dep.LogicalRef, dep.Version, err)

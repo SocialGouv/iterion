@@ -2,8 +2,11 @@ package native
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -30,13 +33,40 @@ func waitForIndex(t *testing.T, s *Store, cond func() bool, label string) {
 // requireIndexWatcher keeps these behavioural tests honest on hosts where
 // fsnotify cannot allocate another watcher (for example a busy CI runner that
 // reached its inotify limit). NewStore deliberately degrades to a usable store
-// in that situation, so lack of host support is a skip; a watcher that did
-// start but fails to propagate still reaches waitForIndex's hard failure.
+// in that situation, so lack of host CAPACITY is a skip.
+//
+// It is deliberately not "skip whenever the watcher is nil": a code regression
+// that stops the watcher from starting produces the very same nil, and would
+// silently turn all three regression guards into no-ops — the failure mode a
+// skip-on-error test exists to avoid. Only an errno that means "this host
+// cannot allocate one right now" skips; anything else fails, including a nil
+// watcher with no recorded reason.
 func requireIndexWatcher(t *testing.T, s *Store) {
 	t.Helper()
-	if s.watcher == nil {
-		t.Skip("fsnotify watcher unavailable on this host")
+	if s.watcher != nil {
+		return
 	}
+	if s.watcherErr == nil {
+		t.Fatal("no fsnotify watcher and no recorded reason: startIndexWatcher returned (nil, nil)")
+	}
+	if isHostWatcherExhaustion(s.watcherErr) {
+		t.Skipf("host cannot allocate an fsnotify watcher: %v", s.watcherErr)
+	}
+	t.Fatalf("fsnotify watcher did not start, and not for want of host capacity: %v", s.watcherErr)
+}
+
+// isHostWatcherExhaustion reports the errnos that mean "this host is out of
+// watch descriptors / file descriptors / memory" — the only conditions under
+// which an absent watcher says nothing about iterion's own code. ENOSPC is the
+// one inotify actually returns when /proc/sys/fs/inotify/max_user_watches is
+// reached, which is the CI symptom this skip was written for.
+func isHostWatcherExhaustion(err error) bool {
+	for _, errno := range []syscall.Errno{syscall.ENOSPC, syscall.EMFILE, syscall.ENFILE, syscall.ENOMEM} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestWatcher_PicksUpExternalCreate is the bug-fix regression guard:
@@ -149,4 +179,28 @@ func TestWatcher_PicksUpExternalUpdate(t *testing.T) {
 		iss, ok := s.index[created.ID]
 		return ok && iss.Title == "Post-update external title"
 	}, "external update")
+}
+
+// TestIsHostWatcherExhaustion pins the line the skip rests on. Getting it
+// wrong in the permissive direction is what the whole change is about: an
+// over-broad predicate turns the three watcher regression guards above into
+// no-ops the moment the watcher stops starting for a reason of our own.
+func TestIsHostWatcherExhaustion(t *testing.T) {
+	// The real inotify symptom on a CI runner at max_user_watches.
+	if !isHostWatcherExhaustion(fmt.Errorf("inotify_add_watch: %w", syscall.ENOSPC)) {
+		t.Error("ENOSPC is the host running out of inotify watches; it must skip")
+	}
+	if !isHostWatcherExhaustion(fmt.Errorf("open: %w", syscall.EMFILE)) {
+		t.Error("EMFILE is the process running out of descriptors; it must skip")
+	}
+	// Everything else is ours to answer for.
+	if isHostWatcherExhaustion(errors.New("watcher never started")) {
+		t.Error("an unclassified error must fail the test, not skip it")
+	}
+	if isHostWatcherExhaustion(fmt.Errorf("add: %w", syscall.EACCES)) {
+		t.Error("a permission error is a real defect (or a misconfigured store), not a host capacity limit")
+	}
+	if isHostWatcherExhaustion(nil) {
+		t.Error("a nil error must not read as host exhaustion")
+	}
 }

@@ -626,7 +626,13 @@ export interface ArtifactContract {
   producer_revision?: string;
   version: number;
   schema?: string;
+  // Fingerprint of the resolved schema DEFINITION. `schema` alone is a
+  // label — editing a schema's fields keeps the name. Absent on artifacts
+  // written before this field existed.
+  schema_hash?: string;
   dependencies?: ArtifactDependency[];
+  // Reserved, mirroring store.ArtifactContract: nothing writes `mutable` and
+  // nothing reads either field yet. Don't render one as a decision.
   mutable?: boolean;
   effects?: string[];
 }

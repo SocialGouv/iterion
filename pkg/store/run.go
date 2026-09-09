@@ -1491,18 +1491,38 @@ type ArtifactRevisionRef struct {
 }
 
 // ArtifactContract is the durable restart contract for one logical output.
-// Effects describes the publishing policy (currently "persist" and
-// "external" are understood); it is metadata for admission, never a request
-// to replay an external side effect.
+// runtime.ValidateArtifactContracts is what reads it, before a resume or a
+// rewind may mutate the run.
 type ArtifactContract struct {
-	LogicalRef       string               `json:"logical_ref" bson:"logical_ref"`
-	ProducerNode     string               `json:"producer_node" bson:"producer_node"`
-	ProducerRevision string               `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
-	Version          int                  `json:"version" bson:"version"`
-	Schema           string               `json:"schema,omitempty" bson:"schema,omitempty"`
-	Dependencies     []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
-	Mutable          bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
-	Effects          []string             `json:"effects,omitempty" bson:"effects,omitempty"`
+	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int    `json:"version" bson:"version"`
+	Schema           string `json:"schema,omitempty" bson:"schema,omitempty"`
+	// SchemaHash fingerprints the resolved schema DEFINITION. Schema alone is
+	// a label: editing a schema's fields — the change that actually
+	// invalidates a persisted artifact, because a downstream node reads
+	// `outputs.x.field` — keeps the name, while renaming an unchanged schema
+	// changes no shape at all. Empty on artifacts written before this field
+	// existed and on nodes with no declared output schema; the name
+	// comparison stays the fallback for both.
+	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
+	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+
+	// Mutable and Effects are RESERVED: they are persisted and exposed, and
+	// nothing writes Mutable or reads either one today. Said plainly so the
+	// next reader does not take a value here for a decision the engine makes
+	// — an earlier comment claimed Effects' vocabulary was "understood",
+	// which would have made a stale `["persist"]` look load-bearing.
+	//
+	// Mutable is intended to mark an output a re-execution may legitimately
+	// replace; Effects to describe the publishing policy ("persist" for a
+	// store write, "external" for an output whose production also touched
+	// something outside the run). Effects is metadata for admission, never a
+	// request to replay an external side effect. Give either one a reader
+	// before giving it a meaning.
+	Mutable bool     `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects []string `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
