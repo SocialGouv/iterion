@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.124.0](https://github.com/SocialGouv/iterion/compare/v3.123.3...v3.124.0) (2026-09-09)
+
+### Features
+
+* **studio:** redesign the cloud home around orchestration ([#1028](https://github.com/SocialGouv/iterion/issues/1028)) ([e5a711d](https://github.com/SocialGouv/iterion/commit/e5a711dda699f905c219bacad90a3ad99c2c1f6d))
+
+    <details><summary>why</summary>
+
+    CloudLanding is one of App.tsx's few eager view imports — PublicTopBar lives in the same module and renders on /marketplace, outside the lazy route tree. The redesign's static `import CloudHome` therefore pulled the whole product page into the entry chunk: CloudHome + PlatformFeatures + StackCompatibility, ~40 lucide icon modules, 11 @lobehub brand icons and the 348-line cloud-home.css, downloaded and parsed on first paint by every authenticated operator — an audience AuthGate never shows it to.
+
+    </details>
+
 ## [3.123.3](https://github.com/SocialGouv/iterion/compare/v3.123.2...v3.123.3) (2026-09-09)
 
 ### Bug Fixes
