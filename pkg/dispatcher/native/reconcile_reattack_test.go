@@ -143,6 +143,11 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 			t.Fatalf("NewStore: %v", err)
 		}
 		if watcher, _, watcherErr := watchState(s); watcher == nil {
+			// Close BEFORE skipping. A refused watch is exactly when a
+			// store arms a rescan ticker, and this test pins it at 20ms;
+			// skipping out with it running leaks a ticker that outlives
+			// the test and races the next one's seam setters.
+			_ = s.Close()
 			t.Skipf("this host refused a watch (%v)", watcherErr)
 		}
 		go func() { _ = os.RemoveAll(filepath.Join(dir, issuesDir)) }()
@@ -167,6 +172,7 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 	}
 	iw, _, watcherErr := watchState(s)
 	if iw == nil {
+		_ = s.Close() // as above: a refused watch means a ticker is running
 		t.Skipf("this host refused a watch (%v)", watcherErr)
 	}
 	if err := s.Close(); err != nil {
@@ -321,6 +327,10 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 	}
 	watcher, _, watcherErr := watchState(s)
 	if watcher == nil {
+		// The store's own cleanup is only registered further down, past
+		// the scan hooks this skip never reaches — close it here or a
+		// refused watch leaks the store and its rescan ticker.
+		_ = s.Close()
 		t.Skipf("this host refused a watch (%v); the overflow path needs one", watcherErr)
 	}
 
