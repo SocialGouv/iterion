@@ -73,11 +73,12 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 				Tier:        credentialTier(creds, slot),
 				TenantID:    msg.TenantID,
 			},
-			Nature:       credentialNature(slot),
-			Backend:      route.backend,
-			CostUSD:      totals.costUSD,
-			InputTokens:  totals.inputTokens,
-			OutputTokens: totals.outputTokens,
+			Nature:          credentialNature(slot),
+			Backend:         route.backend,
+			CostUSD:         totals.costUSD,
+			InputTokens:     totals.inputTokens,
+			OutputTokens:    totals.outputTokens,
+			AggregateTokens: totals.aggregateTokens,
 		}
 		if err := r.cfg.CredUsage.AddSpend(bg, at, spend); err != nil && r.cfg.Logger != nil {
 			r.cfg.Logger.Warn("runner: credential spend record for %s (run %s): %v", fp, msg.RunID, err)

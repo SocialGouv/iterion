@@ -75,14 +75,14 @@ func runCounterSuite(t *testing.T, c Counter) {
 	})
 
 	t.Run("spend accumulates", func(t *testing.T) {
-		if err := c.AddSpend(ctx, "t-spend", now, 1.234, 1000, 200); err != nil {
+		if err := c.AddSpend(ctx, "t-spend", now, 1.234, 1000, 200, 0); err != nil {
 			t.Fatalf("AddSpend: %v", err)
 		}
-		if err := c.AddSpend(ctx, "t-spend", now, 0.766, 500, 100); err != nil {
+		if err := c.AddSpend(ctx, "t-spend", now, 0.766, 500, 100, 0); err != nil {
 			t.Fatalf("AddSpend: %v", err)
 		}
 		// Zero-valued spend must be a no-op, not an error.
-		if err := c.AddSpend(ctx, "t-spend", now, 0, 0, 0); err != nil {
+		if err := c.AddSpend(ctx, "t-spend", now, 0, 0, 0, 0); err != nil {
 			t.Fatalf("AddSpend zero: %v", err)
 		}
 		u, err := c.Usage(ctx, "t-spend", now)
@@ -111,7 +111,7 @@ func runCounterSuite(t *testing.T, c Counter) {
 	})
 
 	t.Run("cost cap denies new launches", func(t *testing.T) {
-		if err := c.AddSpend(ctx, "t-costcap", now, 5.0, 0, 0); err != nil {
+		if err := c.AddSpend(ctx, "t-costcap", now, 5.0, 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		deny, err := c.AllowRun(ctx, "t-costcap", now, 0, CostToMillis(5.0))

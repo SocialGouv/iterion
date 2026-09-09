@@ -184,12 +184,15 @@ type LLMCompactInfo struct {
 // natural end-of-iteration boundary — the very state the next LLM
 // call would observe if the loop continued. Treat as immutable.
 type LLMTurnCaptureInfo struct {
-	Step             int
-	Text             string
-	ToolCalls        []ToolCallEntry
-	FinishReason     string
-	InputTokens      int
-	OutputTokens     int
+	Step         int
+	Text         string
+	ToolCalls    []ToolCallEntry
+	FinishReason string
+	InputTokens  int
+	OutputTokens int
+	// AggregateTokens is a turn total the backend could not split. Filled
+	// instead of InputTokens/OutputTokens, never alongside them.
+	AggregateTokens  int
 	CacheReadTokens  int
 	CacheWriteTokens int
 	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).

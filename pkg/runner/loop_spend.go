@@ -41,8 +41,8 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 	// instead of by org (#641). Independent of the org gate below: a route
 	// the org bucket cannot break apart is exactly what this answers.
 	r.recordCredentialSpend(ctx, msg, usage, now)
-	costUSD, in, out := usage.RunTotals()
-	spent := costUSD > 0 || in > 0 || out > 0
+	costUSD, in, out, aggregate := usage.RunTotals()
+	spent := costUSD > 0 || in > 0 || out > 0 || aggregate > 0
 	if !spent {
 		return
 	}
@@ -60,7 +60,7 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 			key = msg.TenantID
 		}
 		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := r.cfg.OrgUsage.AddSpend(bg, key, now, costUSD, in, out); err != nil {
+		if err := r.cfg.OrgUsage.AddSpend(bg, key, now, costUSD, in, out, aggregate); err != nil {
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
 		cancel()
@@ -140,7 +140,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
-	costUSD, in, out := usage.RunTotals()
+	costUSD, in, out, aggregate := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
 	// An auth rejection the recovery machinery absorbed into a human pause
 	// leaves execErr saying only "paused". Without this the donor's dead
@@ -152,12 +152,13 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
-		CostUSD:       costUSD,
-		InputTokens:   in,
-		OutputTokens:  out,
-		Condition:     condition,
-		CooldownUntil: cooldownUntil,
-		Interim:       interim,
+		CostUSD:         costUSD,
+		InputTokens:     in,
+		OutputTokens:    out,
+		AggregateTokens: aggregate,
+		Condition:       condition,
+		CooldownUntil:   cooldownUntil,
+		Interim:         interim,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}

@@ -25,17 +25,22 @@ func (s *Server) registerCredUsageRoutes() {
 // never be summed, and a client that only reads cost_usd would do exactly
 // that — so the API states it rather than leaving it to a doc nobody opens.
 type credentialUsageView struct {
-	Month        string   `json:"month"`
-	Fingerprint  string   `json:"fingerprint"`
-	Provider     string   `json:"provider"`
-	Tier         string   `json:"tier"`
-	TenantID     string   `json:"tenant_id,omitempty"`
-	Nature       string   `json:"nature"`
-	CostUSD      float64  `json:"cost_usd"`
-	InputTokens  int64    `json:"input_tokens"`
-	OutputTokens int64    `json:"output_tokens"`
-	Runs         int      `json:"runs"`
-	Backends     []string `json:"backends,omitempty"`
+	Month       string  `json:"month"`
+	Fingerprint string  `json:"fingerprint"`
+	Provider    string  `json:"provider"`
+	Tier        string  `json:"tier"`
+	TenantID    string  `json:"tenant_id,omitempty"`
+	Nature      string  `json:"nature"`
+	CostUSD     float64 `json:"cost_usd"`
+	// InputTokens / OutputTokens are a MEASURED split and stay zero when
+	// none was observed; AggregateTokens holds a CLI delegate's
+	// unsplittable total. A per-direction ratio is only meaningful when
+	// the aggregate is zero (#992).
+	InputTokens     int64    `json:"input_tokens"`
+	OutputTokens    int64    `json:"output_tokens"`
+	AggregateTokens int64    `json:"aggregate_tokens"`
+	Runs            int      `json:"runs"`
+	Backends        []string `json:"backends,omitempty"`
 }
 
 // credentialUsageListView is the response envelope.
@@ -55,7 +60,8 @@ func toCredentialUsageList(month string, rows []credusage.MonthlyUsage) credenti
 			Month: r.Month, Fingerprint: r.Fingerprint, Provider: r.Provider,
 			Tier: string(r.Tier), TenantID: r.TenantID, Nature: string(r.Nature),
 			CostUSD: r.CostUSD, InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
-			Runs: r.Runs, Backends: r.Backends,
+			AggregateTokens: r.AggregateTokens,
+			Runs:            r.Runs, Backends: r.Backends,
 		})
 		if r.Nature == credusage.NatureMetered {
 			out.MeteredUSD += r.CostUSD

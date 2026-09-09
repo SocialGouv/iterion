@@ -807,10 +807,15 @@ func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 // boundary leaves this package a pure domain — stores, limits, fairness —
 // with no dependency on the execution stack.
 type Outcome struct {
-	CostUSD      float64
-	InputTokens  int64
-	OutputTokens int64
-	Condition    Condition
+	CostUSD float64
+	// InputTokens / OutputTokens carry an observed split; AggregateTokens
+	// carries a CLI delegate's unsplittable total. A donor's ledger reads
+	// zero as "not observed", so the aggregate must not be filed under a
+	// direction it was never measured in.
+	InputTokens     int64
+	OutputTokens    int64
+	AggregateTokens int64
+	Condition       Condition
 	// CooldownUntil is the provider's own reset instant, when the caller
 	// could parse one from ConditionUsageWindow. Zero falls back to a
 	// bounded blind wait.
@@ -905,12 +910,12 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 // what that attempt says about their credential. Shared by the closing and
 // interim report paths.
 func (b *Broker) chargeAndReact(ctx context.Context, lease Lease, out Outcome, now time.Time, runID string) error {
-	if out.CostUSD > 0 || out.InputTokens > 0 || out.OutputTokens > 0 {
+	if out.CostUSD > 0 || out.InputTokens > 0 || out.OutputTokens > 0 || out.AggregateTokens > 0 {
 		// Charged against the lease's ACQUISITION instant, not now: a run
 		// that starts at 23:50 and ends at 00:10 must debit the day whose
 		// allowance admitted it, or the donor's daily cap silently leaks
 		// across the boundary.
-		if err := b.ledger.AddSpend(ctx, lease.PledgeID, lease.AcquiredAt, out.CostUSD, out.InputTokens, out.OutputTokens); err != nil {
+		if err := b.ledger.AddSpend(ctx, lease.PledgeID, lease.AcquiredAt, out.CostUSD, out.InputTokens, out.OutputTokens, out.AggregateTokens); err != nil {
 			// The lease is already closed, so this spend will never be
 			// retried — say so loudly rather than under-reporting a
 			// donation in silence.

@@ -64,7 +64,7 @@ func TestRecordCredentialSpend_SplitsOneRunAcrossItsCredentials(t *testing.T) {
 	if !ok {
 		t.Fatalf("no row for the forfait: %+v", rows)
 	}
-	if forfait.CostUSD != 4.5 || forfait.InputTokens != 9000 {
+	if forfait.CostUSD != 4.5 || forfait.AggregateTokens != 9000 {
 		t.Fatalf("forfait row = %+v, want $4.50 / 9000 tokens — not the run total", forfait)
 	}
 	// A subscription bills nothing per call: its figure is what the calls
@@ -221,8 +221,8 @@ func TestRecordCredentialSpend_SandboxedClawChargesTheCodexSlot(t *testing.T) {
 	if row.Fingerprint != "fp-codex-platform" {
 		t.Fatalf("charged fingerprint %q, want fp-codex-platform — the OpenAI tokens landed on the Anthropic credential", row.Fingerprint)
 	}
-	if row.InputTokens != 25000 {
-		t.Errorf("input tokens = %d, want 25000", row.InputTokens)
+	if row.AggregateTokens != 25000 {
+		t.Errorf("aggregate tokens = %d, want 25000", row.AggregateTokens)
 	}
 	if row.CostUSD <= 0 {
 		t.Errorf("cost = %v, want > 0 — a priced model's delegation is not a free call", row.CostUSD)

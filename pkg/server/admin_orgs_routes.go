@@ -115,6 +115,9 @@ type orgUsageView struct {
 	CostUSDThisMonth float64 `json:"cost_usd_this_month"`
 	InputTokens      int64   `json:"input_tokens_this_month"`
 	OutputTokens     int64   `json:"output_tokens_this_month"`
+	// A CLI delegate's unsplittable total, kept out of the directional
+	// pair so neither is claimed on evidence that does not exist (#992).
+	AggregateTokens int64 `json:"aggregate_tokens_this_month"`
 	// Caps as enforced by the launch gate (org override or platform
 	// default; 0 = unlimited).
 	MonthlyCostCapUSD float64 `json:"monthly_cost_cap_usd,omitempty"`
@@ -462,6 +465,7 @@ func (s *Server) buildOrgUsageView(ctx context.Context, st identity.Store, o ide
 			v.RunsThisMonth = u.Runs
 			v.CostUSDThisMonth = u.CostUSD
 			v.InputTokens = u.InputTokens
+			v.AggregateTokens = u.AggregateTokens
 			v.OutputTokens = u.OutputTokens
 		}
 	}

@@ -382,11 +382,14 @@ func NewMongoLedger(db *mongo.Database) *MongoLedger {
 func (l *MongoLedger) WithLogger(lg *iterlog.Logger) *MongoLedger { l.logger = lg; return l }
 
 type ledgerDoc struct {
-	Runs         int       `bson:"runs"`
-	CostMillis   int64     `bson:"cost_usd_millis"`
-	InputTokens  int64     `bson:"input_tokens"`
-	OutputTokens int64     `bson:"output_tokens"`
-	PeriodStart  time.Time `bson:"period_start"`
+	Runs         int   `bson:"runs"`
+	CostMillis   int64 `bson:"cost_usd_millis"`
+	InputTokens  int64 `bson:"input_tokens"`
+	OutputTokens int64 `bson:"output_tokens"`
+	// Absent before the aggregate got its own counter; those periods'
+	// aggregates sit inside InputTokens.
+	AggregateTokens int64     `bson:"aggregate_tokens"`
+	PeriodStart     time.Time `bson:"period_start"`
 }
 
 func (l *MongoLedger) Reserve(ctx context.Context, pledgeID string, when time.Time, lim Limits, live LiveCommitment) (float64, DenyReason, error) {
@@ -475,7 +478,7 @@ func (l *MongoLedger) ReleaseRun(ctx context.Context, pledgeID string, when time
 	return nil
 }
 
-func (l *MongoLedger) AddSpend(ctx context.Context, pledgeID string, when time.Time, costUSD float64, in, out int64) error {
+func (l *MongoLedger) AddSpend(ctx context.Context, pledgeID string, when time.Time, costUSD float64, in, out, aggregate int64) error {
 	inc := bson.M{}
 	if m := CostToMillis(costUSD); m > 0 {
 		inc["cost_usd_millis"] = m
@@ -485,6 +488,9 @@ func (l *MongoLedger) AddSpend(ctx context.Context, pledgeID string, when time.T
 	}
 	if out > 0 {
 		inc["output_tokens"] = out
+	}
+	if aggregate > 0 {
+		inc["aggregate_tokens"] = aggregate
 	}
 	if len(inc) == 0 {
 		return nil
@@ -532,6 +538,7 @@ func (l *MongoLedger) readBucket(ctx context.Context, pledgeID, period, key stri
 	u.CostUSD = millisToCost(doc.CostMillis)
 	u.InputTokens = doc.InputTokens
 	u.OutputTokens = doc.OutputTokens
+	u.AggregateTokens = doc.AggregateTokens
 	return u, nil
 }
 

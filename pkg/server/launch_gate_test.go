@@ -31,7 +31,7 @@ type erroringCounter struct{}
 func (erroringCounter) AllowRun(context.Context, string, time.Time, int, int64) (orgusage.DenyReason, error) {
 	return orgusage.DenyNone, context.DeadlineExceeded
 }
-func (erroringCounter) AddSpend(context.Context, string, time.Time, float64, int64, int64) error {
+func (erroringCounter) AddSpend(context.Context, string, time.Time, float64, int64, int64, int64) error {
 	return context.DeadlineExceeded
 }
 func (erroringCounter) ReleaseRun(context.Context, string, time.Time) error {
@@ -156,7 +156,7 @@ func TestGateLaunch_CostCap(t *testing.T) {
 	if _, d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
-	if err := counter.AddSpend(context.Background(), "t1", time.Now().UTC(), 6.0, 0, 0); err != nil {
+	if err := counter.AddSpend(context.Background(), "t1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, d := s.gateLaunch(ctx)
@@ -360,7 +360,7 @@ func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
 	// Runner-side spend lands on the ORG key (RunMessage.OrgID).
-	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0); err != nil {
+	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, d := s.gateLaunch(ctxA)

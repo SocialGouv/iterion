@@ -61,9 +61,10 @@ type metricsEmitter struct {
 	// Per-run accumulation for org metering. Covers both claw steps and
 	// delegate calls; a node whose model the price table cannot price
 	// contributes nothing, so this is a floor, not an exact invoice.
-	runCostUSD      float64
-	runInputTokens  int64
-	runOutputTokens int64
+	runCostUSD         float64
+	runInputTokens     int64
+	runOutputTokens    int64
+	runAggregateTokens int64
 
 	// byRoute splits the same accumulation per (backend, model) — the unit
 	// per-CREDENTIAL metering needs. One run can spend two credentials (a
@@ -100,9 +101,13 @@ type routeKey struct{ backend, model string }
 
 // routeTotals is one route's slice of the run's consumption.
 type routeTotals struct {
-	costUSD      float64
-	inputTokens  int64
-	outputTokens int64
+	costUSD float64
+	// inputTokens / outputTokens hold an OBSERVED split; aggregateTokens
+	// holds a total the delegate could not split. A route fills one or the
+	// other — see credusage.MonthlyUsage for why the distinction is public.
+	inputTokens     int64
+	outputTokens    int64
+	aggregateTokens int64
 }
 
 func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
@@ -158,7 +163,7 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 // Called with m.mu held, alongside the run-total accumulation it mirrors —
 // the two must never diverge, so they are updated in the same critical
 // section.
-func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out int64) {
+func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
 	}
@@ -167,6 +172,7 @@ func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64,
 	t.costUSD += cost
 	t.inputTokens += in
 	t.outputTokens += out
+	t.aggregateTokens += aggregate
 	m.byRoute[k] = t
 }
 
@@ -327,7 +333,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT))
+		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT), 0)
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
@@ -416,21 +422,25 @@ func (m *metricsEmitter) observe(evt store.Event) {
 					costDelta = tokensF * rate.inputUSDPerToken
 				}
 			}
-			m.runInputTokens += int64(tokensF)
+			m.runAggregateTokens += int64(tokensF)
 			m.runCostUSD += costDelta
-			// The delegate reports one aggregated token count; booked as
-			// input here for the same reason addTokens labels it that way,
-			// so a sum across directions stays meaningful.
-			m.addRouteLocked(backend, modelName, costDelta, int64(tokensF), 0)
+			// The delegate reports ONE token count and no split. It goes to
+			// the aggregate counter rather than to input: a sum stays exact
+			// either way, and only this way does a reader of the public
+			// per-credential endpoint see "not split" instead of a
+			// confident, wrong input figure (#992).
+			m.addRouteLocked(backend, modelName, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
 			return
 		}
 
-		// Delegate events report a single aggregated token count;
-		// label as input so a sum across directions stays meaningful.
-		m.addTokens(backend, modelName, "input", evt.Data["tokens"])
+		// Delegate events report a single aggregated token count. It gets
+		// its own direction label: summing every direction stays exact,
+		// and a dashboard reading `direction="input"` is no longer served
+		// output tokens under that name.
+		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
 		if costDelta > 0 && m.reg != nil {
 			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
 		}
@@ -439,10 +449,14 @@ func (m *metricsEmitter) observe(evt store.Event) {
 
 // RunTotals snapshots the run's accumulated LLM consumption — what
 // the runner charges to the org's monthly usage bucket.
-func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens int64) {
+//
+// The three token counts are disjoint: a run mixing an in-process claw loop
+// with a CLI delegate fills the directional pair AND the aggregate, and its
+// true total is the sum of all three.
+func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens, aggregateTokens int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.runCostUSD, m.runInputTokens, m.runOutputTokens
+	return m.runCostUSD, m.runInputTokens, m.runOutputTokens, m.runAggregateTokens
 }
 
 // SawAuthFailure reports whether the provider rejected this run's

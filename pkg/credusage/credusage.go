@@ -112,9 +112,19 @@ type MonthlyUsage struct {
 	Nature Nature `json:"nature"`
 	// CostUSD is the accumulated figure — real money when Nature is
 	// metered, the metered-equivalent price when it is estimate.
-	CostUSD      float64 `json:"cost_usd"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
+	CostUSD float64 `json:"cost_usd"`
+	// InputTokens / OutputTokens are DIRECTIONAL: they carry a split that
+	// was actually observed, and stay zero when none was. AggregateTokens
+	// carries the other case — a CLI delegate that reports one total and no
+	// split at all. Zero everywhere is "not observed", never "none spent".
+	//
+	// A total is therefore the sum of the three, and a per-direction ratio
+	// is only meaningful against the directional pair: a row with a non-zero
+	// aggregate is telling the reader that iterion cannot split it, instead
+	// of picking a side and being wrong in silence.
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	AggregateTokens int64 `json:"aggregate_tokens"`
 	// Runs counts the attempts that spent anything on this credential.
 	Runs int `json:"runs"`
 	// Backends lists the backends that drew on it this month, so a mixed
@@ -128,10 +138,14 @@ type Spend struct {
 	// Nature qualifies CostUSD (see the package doc). Required.
 	Nature Nature
 	// Backend is the delegate that spent it ("claude_code", "claw", …).
-	Backend      string
-	CostUSD      float64
-	InputTokens  int64
-	OutputTokens int64
+	Backend string
+	CostUSD float64
+	// InputTokens / OutputTokens carry an observed split; AggregateTokens
+	// carries an unsplittable total. A spend fills one or the other, never
+	// both — see MonthlyUsage.
+	InputTokens     int64
+	OutputTokens    int64
+	AggregateTokens int64
 }
 
 // Counter is the per-credential monthly metering surface, mirroring
@@ -200,8 +214,12 @@ func CostToMillis(usd float64) int64 {
 func millisToCost(m int64) float64 { return float64(m) / 1000 }
 
 // empty reports whether a spend carries nothing worth recording.
+//
+// AggregateTokens counts here: a CLI delegate whose price sources did not
+// know the model reports tokens and no cost, and that is the ONLY evidence
+// the credential was used at all.
 func (s Spend) empty() bool {
-	return s.CostUSD <= 0 && s.InputTokens <= 0 && s.OutputTokens <= 0
+	return s.CostUSD <= 0 && s.InputTokens <= 0 && s.OutputTokens <= 0 && s.AggregateTokens <= 0
 }
 
 // recordable reports whether a spend can be counted at all.
