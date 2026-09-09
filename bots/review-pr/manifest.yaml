@@ -11,12 +11,20 @@ version: 0.9.0
 ## automatically when the repo was provisioned. That configuration
 ## requirement was an artificial limit, so it is gone: `ticket_context`
 ## (auto|off, default auto) picks the EXTERNAL tracker when
-## `tracker_api_base` is set, else FORGE-NATIVE from the PR URL. In
-## forge-native mode the reviewers ask the FORGE which issues the PR
-## closes (GitLab `closes_issues`, GitHub `closingIssuesReferences`)
-## rather than trusting a regex over prose, and fall back to the text
-## scan. A PR with no ticket stays a normal PR — the absence of a
-## reference is never a finding.
+## `tracker_api_base` is set, else FORGE-NATIVE from the PR URL.
+## Forge-native reading is a DETERMINISTIC node (`ticket_fetch`), not a
+## recipe the reviewer runs: the run's forge token is write-capable, and
+## the reviewers ingest the diff plus every linked issue body — text an
+## outside contributor writes — so the credential stays out of every model
+## context and the agents receive ticket TEXT. That node asks the FORGE
+## which issues the PR closes (GitLab `closes_issues`, GitHub
+## `closingIssuesReferences`, paginated, each ticket keeping its own repo
+## identity) rather than trusting a regex over prose, falls back to a text
+## scan, marks a merely-mentioned reference as such (only a closing link
+## can produce a blocking `requirements` finding), and reports a number
+## that resolves to a pull request as unverifiable instead of judging it.
+## A PR with no ticket stays a normal PR — the absence of a reference is
+## never a finding.
 ## 0.8.1 — budget max_cost_usd 12 → 48: the guard tier died at $36 and $30
 ## on a 7-file PR, twice on one revision (the automatic relaunch included),
 ## and the merge gate posted no verdict. A review that reproduces its
@@ -175,19 +183,21 @@ description: |
   forge review — inline comments anchored to file:line with one-click
   ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
   or commits code — that is the improve-loops' job (Billy / Willy).
-  Optional TICKET CONFORMANCE: with a tracker API base + a bound
-  read-only tracker token, it also fetches the ticket(s) the PR
-  references (Jira, GitHub/GitLab issues) and verifies the diff answers
-  the demand — per-ticket verdicts in the review, gaps as
-  "requirements" findings.
+  TICKET CONFORMANCE, on by default and with no configuration: it reads
+  the forge's own issues the PR closes and verifies the diff answers
+  their demand — per-ticket verdicts in the review, gaps as
+  "requirements" findings. Point it at an external tracker instead
+  (Jira & co) with a tracker API base + a bound read-only tracker token,
+  or switch the check off with --var ticket_context=off.
 when_to_use: |
   Use when you want a PR/branch REVIEWED and its issues surfaced — to
   the board for triage and/or posted directly onto the PR (pass
   --var pr_url) as inline comments + ```suggestion fixes — but NOT
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
-  reviews AND fixes AND commits. Set tracker_api_base (+ bind a
-  tracker_token secret) to also have it check the PR against the
-  tracker ticket(s) it references.
+  reviews AND fixes AND commits. It checks the PR against the forge
+  issues it closes out of the box (no configuration); set
+  tracker_api_base (+ bind a tracker_token secret) to check it against
+  an external tracker's tickets instead.
 author: SocialGouv (devthejo) — review-pr/main.bot
 schema_version: 1
 triggers: [review-pr, pr-review, review]

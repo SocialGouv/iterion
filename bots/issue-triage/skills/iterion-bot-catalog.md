@@ -908,20 +908,22 @@ source:revi) and writes a markdown report. Given a pull-request URL
 forge review — inline comments anchored to file:line with one-click
 ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
 or commits code — that is the improve-loops' job (Billy / Willy).
-Optional TICKET CONFORMANCE: with a tracker API base + a bound
-read-only tracker token, it also fetches the ticket(s) the PR
-references (Jira, GitHub/GitLab issues) and verifies the diff answers
-the demand — per-ticket verdicts in the review, gaps as
-"requirements" findings.
+TICKET CONFORMANCE, on by default and with no configuration: it reads
+the forge's own issues the PR closes and verifies the diff answers
+their demand — per-ticket verdicts in the review, gaps as
+"requirements" findings. Point it at an external tracker instead
+(Jira & co) with a tracker API base + a bound read-only tracker token,
+or switch the check off with --var ticket_context=off.
 
 - **Use when**:
   Use when you want a PR/branch REVIEWED and its issues surfaced — to
   the board for triage and/or posted directly onto the PR (pass
   --var pr_url) as inline comments + ```suggestion fixes — but NOT
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
-  reviews AND fixes AND commits. Set tracker_api_base (+ bind a
-  tracker_token secret) to also have it check the PR against the
-  tracker ticket(s) it references.
+  reviews AND fixes AND commits. It checks the PR against the forge
+  issues it closes out of the box (no configuration); set
+  tracker_api_base (+ bind a tracker_token secret) to check it against
+  an external tracker's tickets instead.
 - **Triggers**: review-pr, pr-review, review
 - **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`

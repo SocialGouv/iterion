@@ -1,38 +1,42 @@
 ---
 name: ticket-context
 description: >-
-  How to obtain the ticket(s) a PR claims to deliver — from an external
-  tracker (Jira Cloud/DC) or, with no configuration, from the forge's own
-  issues (GitHub, GitLab, Forgejo) — and judge whether the diff answers
-  their demand. Load whenever ticket context is active: a non-empty
-  tracker_api_base, or simply a PR under review.
+  How to judge whether a PR delivers the ticket(s) it claims — the forge's
+  own issues, handed to you already fetched by a deterministic step, or an
+  external tracker (Jira Cloud/DC) you fetch yourself with the tracker
+  token. Load whenever ticket context is active.
 ---
 
-# Ticket context — fetch the demand, judge the conformance
+# Ticket context — read the demand, judge the conformance
 
-You are reviewing a PR that claims to implement one or more tracker
-tickets. Your job here: obtain each ticket's actual demand and verify
-the diff delivers it. This skill covers extraction, fetching, and the
-verdict discipline. Everything tracker-specific lives HERE — the
-workflow DSL knows no tracker names.
+You are reviewing a PR that claims to implement one or more tickets. Your
+job here: obtain each ticket's actual demand and verify the diff delivers
+it. Everything tracker-specific lives HERE — the workflow DSL knows no
+tracker names.
 
-## Two modes — pick yours first
+## The mode is decided FOR you — read it, never re-decide it
 
-- **EXTERNAL TRACKER** — `Tracker API base` is non-empty (Jira & co).
-  Fetch from that instance with the `Tracker token file`.
-- **FORGE-NATIVE** — no tracker API base, but a `PR URL`. The tickets
-  are the forge's OWN issues; derive the API base from the PR URL
-  (below) and authenticate with the `Forge token file`. This needs no
-  configuration and is the common case.
+Your user message carries a resolved `mode`:
 
-If `mode` says `off`, or neither a tracker base nor a PR URL is
-present, skip the whole ticket-conformance section.
+- **`forge`** — the tickets are the forge's OWN issues and they are
+  ALREADY IN YOUR USER MESSAGE, between `--- TICKET … ---` markers,
+  fetched by a deterministic step of this workflow. You hold **no forge
+  credential**, and you must not go looking for one or call the forge API
+  yourself: the run's forge token is write-capable (it can post as the bot
+  and set commit statuses), and this reviewer ingests attacker-writable
+  text — the diff, and those very ticket bodies. Keeping the credential
+  out of your context is the boundary that makes reading them safe.
+  Per-reference outcomes come with them: copy any `unverifiable` line
+  VERBATIM into your verdicts.
+- **`external`** — an operator configured a tracker API base (Jira & co).
+  Fetch each ticket yourself, per §1–§2 below, with the **tracker** token.
+- **`off` / `none`** — skip ticket conformance entirely. Leave
+  `ticket_conformance` empty and never open a finding about it.
 
 ## Inputs you were given (user message)
 
-- `PR URL` — the merge/pull request under review; the forge-native
-  source of both the API base and the linked issues.
-- `Tracker API base` — an EXTERNAL instance base URL when set.
+- The fetched tickets + per-reference outcomes (mode `forge`).
+- `Tracker API base` — the external instance base URL (mode `external`).
 - `Tracker basic-auth user` — empty means send the token as a Bearer
   header; non-empty means HTTP Basic with this value as username and
   the token as password.
@@ -40,52 +44,25 @@ present, skip the whole ticket-conformance section.
   extraction.
 - `Source branch` and the operator steering (PR title/body) — the
   extraction sources.
-- `Tracker token file` / `Forge token file` — PATHS to mounted
-  credentials, one per mode.
-
-### Deriving the forge API base from the PR URL
-
-| PR URL looks like | API base | auth header |
-|---|---|---|
-| `https://github.com/<o>/<r>/pull/<n>` | `https://api.github.com` | `Authorization: Bearer $(cat <forge token>)` |
-| `https://<host>/<group…>/<proj>/-/merge_requests/<n>` (GitLab) | `https://<host>/api/v4` | `PRIVATE-TOKEN: $(cat <forge token>)` |
-| `https://<host>/<o>/<r>/pulls/<n>` (Forgejo/Gitea) | `https://<host>/api/v1` | `Authorization: token $(cat <forge token>)` |
-
-A self-hosted GitHub Enterprise uses `https://<host>/api/v3`. When the
-shape is unrecognised, say so in the verdict rather than guessing.
+- `Tracker token file` — a PATH to the mounted tracker credential.
 
 ## Secret discipline (non-negotiable)
 
-The token is a file. Use it only as `$(cat <path>)` inside the
+The tracker token is a file. Use it only as `$(cat <path>)` inside the
 `Authorization` header of your own shell command. NEVER `cat` it to
 stdout alone, never echo it, never write it to another file, never put
 its value in your output. If the path is empty, looks like an
-unresolved `{{...}}` placeholder, or the file does not exist: try the
-fetch WITHOUT auth once (public trackers answer), and on 401/403 report
+unresolved placeholder, or the file does not exist: try the fetch
+WITHOUT auth once (public trackers answer), and on 401/403 report
 the ticket `unverifiable — no tracker credential bound`.
 
-## 1. Extract ticket references
+There is no forge-token equivalent of this recipe, and its absence is
+deliberate: in `forge` mode the fetch already happened without you.
 
-Skip when explicit refs were given.
+## 1. Extract ticket references (mode `external` only)
 
-**In FORGE-NATIVE mode, ASK THE FORGE FIRST** — it knows which issues
-this PR claims to close, which beats any regex over prose:
-
-- GitLab: `GET $BASE/projects/<url-encoded path>/merge_requests/<iid>/closes_issues`
-- Forgejo/Gitea: read the PR body's `Closes #N` refs (no dedicated
-  endpoint), then fall back to the scan below.
-- GitHub: GraphQL, since REST does not expose it —
-  `query{repository(owner:"<o>",name:"<r>"){pullRequest(number:<n>){closingIssuesReferences(first:10){nodes{number title body state}}}}}`
-  via `POST https://api.github.com/graphql`. If GraphQL is refused
-  (a token without that scope), fall back to the scan below rather
-  than reporting nothing.
-
-Take the union of what the forge reports and what the text references
-(a PR often mentions an issue it does not formally close — review
-against both, and say which is which if they disagree).
-
-Then scan, in order, the PR title/body (operator steering) and the
-source branch name for:
+Skip when explicit refs were given. Otherwise scan, in order, the PR
+title/body (operator steering) and the source branch name for:
 
 - Jira-style keys: `[A-Z][A-Z0-9]+-[0-9]+` (e.g. `PROJ-123`,
   `INFRA-42`). Branch names commonly embed them:
@@ -105,10 +82,10 @@ title/body or branch name`. Do not guess.
 reference nothing. Report the line above and move on — never open a
 `requirements` finding for the mere absence of a reference.
 
-## 2. Fetch each ticket
+## 2. Fetch each ticket (mode `external` only)
 
 Build the auth header once (BASE = tracker API base, TOKEN_FILE = the
-token path):
+tracker token path):
 
 - Bearer mode (basic-auth user empty — Jira Server/DC PATs, most APIs):
   `-H "Authorization: Bearer $(cat "$TOKEN_FILE")"`
@@ -127,15 +104,22 @@ request):
   Atlassian Document Format — harder to read; prefer v2). Acceptance
   criteria often live in the description body or a custom field; read
   the description carefully.
-- **GitHub Issues** (BASE like `https://api.github.com`):
+- **GitHub Issues** (BASE like `https://api.github.com`, or
+  `https://<host>/api/v3` on GitHub Enterprise — an enterprise base is
+  never api.github.com):
   `curl -sf -H "Authorization: Bearer $(cat "$TOKEN_FILE")" "$BASE/repos/<owner>/<repo>/issues/<N>"`
-- **GitLab Issues** — in forge-native mode BASE already ends in
-  `/api/v4` (it was derived that way), so do NOT append it twice:
-  `curl -sf -H "PRIVATE-TOKEN: $(cat "$TOKEN_FILE")" "$BASE/projects/<url-encoded path>/issues/<N>"`
-  With an externally configured base like `https://gitlab.example.org`,
-  use `$BASE/api/v4/projects/…` instead.
+  That endpoint also serves PULL REQUESTS: if the object carries a
+  `pull_request` key it is not an issue — report
+  `unverifiable — #N is a pull request, not an issue` rather than
+  judging the diff against it.
+- **GitLab Issues** (BASE like `https://gitlab.example.org`):
+  `curl -sf -H "Authorization: Bearer $(cat "$TOKEN_FILE")" "$BASE/api/v4/projects/<url-encoded path>/issues/<N>"`
+  Use `Authorization: Bearer`, never `PRIVATE-TOKEN`: Bearer serves a
+  personal access token AND an OAuth access token, `PRIVATE-TOKEN`
+  rejects the latter.
 - **Forgejo / Gitea Issues** (BASE ends in `/api/v1`):
   `curl -sf -H "Authorization: token $(cat "$TOKEN_FILE")" "$BASE/repos/<owner>/<repo>/issues/<N>"`
+  Same `pull_request` caveat as GitHub.
 - **Anything else**: try `GET $BASE/<ref>` variants ONCE each; if
   nothing readable comes back, the ticket is `unverifiable — tracker
   API shape unknown (HTTP <codes seen>)`.
@@ -160,6 +144,14 @@ it is clearly deliberate; otherwise ignore it.
 For each ticket, compare its demand + acceptance criteria against the
 DIFF (not the whole repo): does the change deliver what is asked?
 
+**Only a ticket the PR CLOSES is judged.** In `forge` mode each ticket
+is marked `closes` (a formal forge link, or a ref the operator named
+explicitly) or `mentioned` (the text referenced it without claiming to
+close it). A `mentioned` ticket is context — it may inform a question or
+the summary, never a `requirements` finding. "See also #99" is not a
+promise to deliver #99, and a blocking finding built on one is a false
+positive that stops a merge.
+
 - **covered** — the demand and its stated criteria are delivered by
   this diff (or were already delivered and this diff completes them).
 - **partial** — a real subset is delivered; name what is missing.
@@ -172,17 +164,19 @@ DIFF (not the whole repo): does the change deliver what is asked?
   vicinity); when nothing anchors, use the PR's main changed file at
   line 1 and say so in the detail.
 - **unverifiable** — you could not obtain or read the ticket; give the
-  concrete reason.
+  concrete reason (in `forge` mode, the reason you were handed).
 
 A PR may legitimately implement PART of a ticket (split work): when
 the PR title/body says so, judge against the announced slice, not the
 whole ticket — and say which slice in the verdict line.
 
-Verdict lines go in your `ticket_conformance` output, one per ticket:
+Verdict lines go in your `ticket_conformance` output, one per ticket.
+Use the ticket's full identity as it was given to you (`owner/repo#123`
+on a forge — two different repositories can both have a #123):
 
 ```
 PROJ-123: partial — export endpoint delivered, but the CSV format asked in AC-2 is absent (JSON only)
-PROJ-456: covered — both acceptance criteria verified in the diff
+acme/widgets#456: covered — both acceptance criteria verified in the diff
 ```
 
 Scope discipline still applies: findings must be about THIS diff.
