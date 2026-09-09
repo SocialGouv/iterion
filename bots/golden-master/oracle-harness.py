@@ -1618,13 +1618,22 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
             # Structure is judged HERE, truth at the gate. A malformed
             # declaration would otherwise be dropped in silence by
             # duplicate_group_decls and read as "no declaration at all".
-            for g in (head_c.get("duplicate_groups") or []):
-                _sep = g.get("separated_by") if isinstance(g, dict) else None
-                _seps = [_sep] if isinstance(_sep, str) else _sep
-                if not isinstance(g, dict) or not isinstance(g.get("ids"), list) \
-                        or len(g.get("ids") or []) < 2 \
-                        or not isinstance(_seps, list) or not _seps \
-                        or not all(isinstance(m, str) and m for m in _seps):
+            #
+            # Through duplicate_group_raw / duplicate_group_decl, which is the
+            # SAME predicate the gate reads. Hand-written here, the container
+            # loop was `for g in (head_c.get("duplicate_groups") or [])` and
+            # `{"duplicate_groups": 5}` raised a TypeError — this judge runs
+            # outside the gate's try/finally, so no mutant is stranded, but the
+            # mode prints a stack trace where the campaign expects its verdict.
+            # The file's own doctrine, one screen up: refused, not crashed.
+            if head_c.get("duplicate_groups") is not None \
+                    and not isinstance(head_c.get("duplicate_groups"), list):
+                corpus_problems.append(
+                    "`duplicate_groups` is %s, not a list — every declaration in "
+                    "it is ignored whole and reads as undeclared"
+                    % type(head_c.get("duplicate_groups")).__name__)
+            for g in duplicate_group_raw(head_c):
+                if duplicate_group_decl(g) is None:
                     corpus_problems.append(
                         "a `duplicate_groups` entry is malformed (%r) — it needs "
                         "at least two `ids` and a non-empty `separated_by`, or it "
@@ -3296,29 +3305,58 @@ def duplicate_group_decls(corpus):
     was controlled.
     """
     out = {}
-    # Ne LEVE JAMAIS. Ce lecteur est atteint depuis score_mutant, donc APRES
-    # que le mutant est applique et AVANT le revert : une exception y tue le
-    # harnais sans imprimer son rapport et laisse l'arbre MUTE. La doctrine du
-    # fichier est explicite une vis plus haut — « refused, not crashed ». Le
-    # refus, lui, est prononce par duplicate_groups_shape_problems.
-    raw = corpus.get("duplicate_groups") or []
-    if not isinstance(raw, list):
-        return out
-    for g in raw:
-        if not isinstance(g, dict):
+    for g in duplicate_group_raw(corpus):
+        norm = duplicate_group_decl(g)
+        if norm is None:
             continue
-        ids = g.get("ids")
-        sep = g.get("separated_by")
-        # One separator or several: a class of two needs one mutant to split it,
-        # a class of four needs enough of them to tell all four apart. Written
-        # as a bare string for the common case, a list when resolution costs
-        # more than one.
-        seps = [sep] if isinstance(sep, str) else sep
-        if not isinstance(ids, list) or len(ids) < 2 or not isinstance(seps, list) \
-                or not seps or not all(isinstance(m, str) and m for m in seps):
-            continue
-        out[tuple(sorted(str(i) for i in ids))] = tuple(dict.fromkeys(seps))
+        out[norm[0]] = norm[1]
     return out
+
+
+def duplicate_group_raw(corpus):
+    """The declarations as written — the list, or [] when the key is absent or
+    is not a list at all.
+
+    Ne LEVE JAMAIS, et c'est la moitie porteuse. Ce lecteur est atteint depuis
+    score_mutant, donc APRES que le mutant est applique et AVANT le revert : une
+    exception y tue le harnais sans imprimer son rapport et laisse l'arbre MUTE.
+    La doctrine du fichier est explicite quelques vis plus haut — « refused, not
+    crashed ». Le refus, lui, est prononce ailleurs : par
+    duplicate_groups_shape_problems a la porte, par le juge d'extension sur le
+    canal. Un `for g in (corpus.get("duplicate_groups") or [])` ecrit a la main
+    leve un TypeError sur `5` ou `true` — il y en avait trois copies, il n'y en
+    a plus qu'une.
+    """
+    raw = corpus.get("duplicate_groups")
+    return raw if isinstance(raw, list) else []
+
+
+def duplicate_group_decl(g):
+    """ONE declaration, read once — the single shape predicate of this file.
+
+    Returns `(class_key, separators)` normalised, or None when the entry is
+    malformed. `class_key` is the sorted tuple of ids, which is what makes the
+    declaration keyed on the byte-identical CLASS rather than on an ordering the
+    lot chose; `separators` is deduplicated and order-preserving.
+
+    One separator or several: a class of two needs one mutant to split it, a
+    class of four needs enough of them to tell all four apart. Written as a bare
+    string for the common case, a list when resolution costs more than one.
+
+    It exists as one function because the predicate had been written three
+    times — the reader, the shape refusal, and the extension judge — and three
+    copies of a rule is three chances for a corpus to be well-formed for one
+    reader and malformed for another.
+    """
+    if not isinstance(g, dict):
+        return None
+    ids = g.get("ids")
+    sep = g.get("separated_by")
+    seps = [sep] if isinstance(sep, str) else sep
+    if not isinstance(ids, list) or len(ids) < 2 or not isinstance(seps, list) \
+            or not seps or not all(isinstance(m, str) and m for m in seps):
+        return None
+    return tuple(sorted(str(i) for i in ids)), tuple(dict.fromkeys(seps))
 
 
 def duplicate_groups_shape_problems(corpus):
@@ -3336,17 +3374,7 @@ def duplicate_groups_shape_problems(corpus):
         return ["`duplicate_groups` is %s, not a list — it is ignored whole, and "
                 "every declared group then reads as undeclared"
                 % type(raw).__name__]
-    bad = []
-    for g in raw:
-        if not isinstance(g, dict):
-            bad.append(repr(g)[:80])
-            continue
-        sep = g.get("separated_by")
-        seps = [sep] if isinstance(sep, str) else sep
-        if not isinstance(g.get("ids"), list) or len(g.get("ids") or []) < 2 \
-                or not isinstance(seps, list) or not seps \
-                or not all(isinstance(m, str) and m for m in seps):
-            bad.append(repr(g)[:80])
+    bad = [repr(g)[:80] for g in raw if duplicate_group_decl(g) is None]
     if bad:
         return ["%d `duplicate_groups` entr%s malformed and silently ignored — "
                 "each needs at least two `ids` and a non-empty `separated_by` "
@@ -5061,6 +5089,25 @@ def _selftest():
         check("une declaration malformee est refusee, pas ignoree",
               any("malformed" in pb
                   for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Et le CONTENEUR lui-meme : `duplicate_groups: 5` faisait lever un
+        # TypeError a la boucle ecrite a la main ici — ce juge tourne hors du
+        # try/finally de la porte, donc aucun mutant n'est abandonne, mais le
+        # mode imprimait une traceback la ou la campagne attend son verdict.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": 5}, f)
+        xcommit()
+        try:
+            _cv, _craised = xverdict(xbase)["acted"][0], ""
+        except Exception as e:                          # noqa: BLE001 - c'est le test
+            _cv, _craised = {}, "%s: %s" % (type(e).__name__, e)
+        check("un `duplicate_groups` non-liste refuse, il ne fait pas planter le juge",
+              [_craised, any("not a list" in pb for pb in _cv.get("problems") or [])],
+              ["", True])
 
         # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
         xreset()
@@ -6117,6 +6164,26 @@ def _selftest():
               {"ids": ["a"], "separated_by": "s"}]})), 1)
     check("et un corpus sans declaration ne dit rien",
           duplicate_groups_shape_problems({"entries": []}), [])
+    # UN SEUL predicat de forme. Il en existait trois copies — le lecteur, le
+    # refus de forme, le juge d'extension — et trois copies d'une regle sont
+    # trois occasions qu'un corpus soit bien forme pour l'un et malforme pour
+    # l'autre. Ce banc pince l'accord plutot que chaque copie : ce que le
+    # normaliseur refuse est exactement ce que le lecteur laisse tomber et
+    # exactement ce que le refus nomme.
+    _shapes = [{"ids": ["a", "b"], "separated_by": "s"},          # bien forme
+               {"ids": ["a", "b"], "separated_by": ["s", "s"]},   # bien forme
+               {"ids": ["a"], "separated_by": "s"},               # trop court
+               {"ids": ["a", "b"], "separated_by": []},           # sans separateur
+               {"ids": ["a", "b"], "separated_by": [1]},          # non textuel
+               {"ids": "ab", "separated_by": "s"},                # ids non-liste
+               "pas-un-dict"]
+    check("le normaliseur et le refus de forme s'accordent entree par entree",
+          [duplicate_group_decl(g) is None for g in _shapes],
+          [False, False, True, True, True, True, True])
+    check("et le lecteur ne garde que ce que le normaliseur accepte",
+          len(duplicate_group_decls({"duplicate_groups": _shapes})), 1)
+    check("le refus de forme nomme exactement les autres",
+          len(duplicate_groups_shape_problems({"duplicate_groups": _shapes})), 1)
 
     # R8bcd2c : RETENU n'est pas ABSENT. En selfcheck le jeu tenu a l'ecart
     # n'est pas score, donc un separateur qui en vient est retenu, pas manquant
