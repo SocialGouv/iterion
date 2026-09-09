@@ -9,7 +9,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -117,11 +116,7 @@ func (s *Server) refusalFor(ctx context.Context, k secrets.ApiKey) usagecap.Refu
 	if backend == "" {
 		return usagecap.Refusal{}
 	}
-	scope := usagecap.TenantScope(k.ScopeTeamID)
-	if k.ScopeTeamID == secrets.PlatformTenantID {
-		scope = usagecap.ScopePlatform
-	}
-	readings, err := s.usageCaps.Latest(ctx, usagecap.Key(backend, scope, k.Fingerprint))
+	readings, err := s.usageCaps.Latest(ctx, usagecap.Key(backend, meterScopeForKeyScope(k.ScopeTeamID), k.Fingerprint))
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("byok: usage-reading lookup for key %s: %v", k.ID, err)
@@ -129,6 +124,26 @@ func (s *Server) refusalFor(ctx context.Context, k secrets.ApiKey) usagecap.Refu
 		return usagecap.Refusal{}
 	}
 	return usagecap.RefusedUntil(readings, time.Now(), s.usageCapTrust)
+}
+
+// meterScopeForKeyScope maps a key's STORE scope to the usage-cap meter
+// scope, so a view and the launch walk read the same ledger.
+//
+// The two reserved scopes are the whole reason it exists: a platform key
+// meters on the deployment's single meter and an org key on its org's, and
+// wrapping either in TenantScope would key the ledger under a literal no
+// run ever writes — the view would then report "never refused" for a
+// credential the walk is actively skipping. The publisher's own three call
+// sites pass their scope explicitly (see fillFromPlatform / fillFromOrg);
+// this is the read side of the same mapping.
+func meterScopeForKeyScope(scopeTeamID string) string {
+	if scopeTeamID == secrets.PlatformTenantID {
+		return usagecap.ScopePlatform
+	}
+	if orgID, ok := secrets.OrgIDFromTierScope(scopeTeamID); ok {
+		return usagecap.OrgScope(orgID)
+	}
+	return usagecap.TenantScope(scopeTeamID)
 }
 
 // usageMeterBackendForProvider names the meter backend a provider's
@@ -180,34 +195,34 @@ func (s *Server) writeApiKeyList(w http.ResponseWriter, r *http.Request, keys []
 	return true
 }
 
-// apiKeyTenantCtx scopes the store context to the team a route names in its
-// path, instead of the caller's ACTIVE team that requireAuth stamped.
-//
-// The api-keys store derives tenant_id from the context — on write it stamps
-// the row, on read it filters. So a key created for a team other than the
-// caller's active one used to land as (scope_team = target, tenant_id =
-// caller's active team): listable from the context that created it, and
-// INVISIBLE to the runs of the team it was meant to fund. Nothing failed —
-// the run simply resolved no key and fell back to the platform credential,
-// which is the one shape a credential bug must never take.
-//
-// Routes with no {id} (the /api/me family) keep the active team: there the
-// caller's own tenant IS the scope.
-func apiKeyTenantCtx(r *http.Request) context.Context {
-	if teamID := r.PathValue("id"); teamID != "" {
-		return store.WithTenant(r.Context(), teamID)
+// apiKeyScopeCtx picks the store scope for the api-key routes. It is a thin
+// adapter over teamPathTenantCtx/teamTenantCtx rather than a second
+// implementation: scopeOverride names the scope for routes whose {id} is NOT
+// one — the org credential tier, where {id} is an ORG id while the rows live
+// under the reserved secrets.OrgTierTenantID(orgID). Scoping by the path
+// there would filter on an id no row carries, so the org's own key would
+// read as absent rather than as an error.
+func apiKeyScopeCtx(r *http.Request, scopeOverride string) context.Context {
+	if scopeOverride != "" {
+		return teamTenantCtx(r.Context(), scopeOverride)
 	}
-	return r.Context()
+	return teamPathTenantCtx(r)
 }
 
-// auditApiKey routes an api-key mutation to the right audit log: platform
-// rows (ScopeTeamID == secrets.PlatformTenantID) are super-admin actions on
-// the deployment's own fallback credentials and land in the PLATFORM log —
-// a tenant-scoped row under the sentinel tenant would be readable by
-// nobody. Every other row is ordinary tenant BYOK.
+// auditApiKey routes an api-key mutation to the right audit log. A row
+// scoped to a RESERVED literal is not tenant BYOK and must not be filed as
+// such — a tenant-scoped entry under a sentinel would be readable by
+// nobody: platform rows are super-admin actions on the deployment's own
+// fallback credentials and land in the PLATFORM log, org-tier rows are
+// org-admin actions on the org's shared credentials and land in that ORG's
+// log. Every other row is ordinary tenant BYOK.
 func (s *Server) auditApiKey(r *http.Request, teamID, suffix, keyID string, meta map[string]any) {
 	if teamID == secrets.PlatformTenantID {
 		s.auditPlatform(r, "", "platform.llm_key."+suffix, "platform_llm_key", keyID, meta)
+		return
+	}
+	if orgID, ok := secrets.OrgIDFromTierScope(teamID); ok {
+		s.auditOrg(r, orgID, "org.llm_key."+suffix, "org_llm_key", keyID, meta)
 		return
 	}
 	s.auditTenant(r, teamID, "byok."+suffix, "byok", keyID, meta)
@@ -222,7 +237,7 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	// Team admins see all team-wide keys + their own user-scoped
 	// keys (matches BYOK plan). Members only see what's visible.
-	keys, err := s.apiKeys.ListByTeam(apiKeyTenantCtx(r), teamID, id.UserID)
+	keys, err := s.apiKeys.ListByTeam(teamPathTenantCtx(r), teamID, id.UserID)
 	s.writeApiKeyList(w, r, keys, err)
 }
 
@@ -307,7 +322,10 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 
 		MaxConcurrentRuns: req.MaxConcurrentRuns,
 	}
-	ctx := apiKeyTenantCtx(r)
+	// The EXPLICIT scope, not the path: on the org-credential route {id}
+	// is an org id while the row belongs under the reserved org-tier
+	// scope. teamID is already the right value on all three callers.
+	ctx := teamTenantCtx(r.Context(), teamID)
 	if err := s.apiKeys.Create(ctx, key); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -339,9 +357,15 @@ func (s *Server) refuseApiKey(w http.ResponseWriter, r *http.Request, teamID, ke
 }
 
 func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
+	s.handleUpdateApiKeyIn(w, r, "")
+}
+
+// handleUpdateApiKeyIn is the shared update path; scopeOverride names the
+// store scope for routes whose {id} is not one (the org tier).
+func (s *Server) handleUpdateApiKeyIn(w http.ResponseWriter, r *http.Request, scopeOverride string) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	ctx := apiKeyTenantCtx(r)
+	ctx := apiKeyScopeCtx(r, scopeOverride)
 	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
@@ -406,9 +430,14 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
+	s.handleDeleteApiKeyIn(w, r, "")
+}
+
+// handleDeleteApiKeyIn is the shared delete path; see handleUpdateApiKeyIn.
+func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, scopeOverride string) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	ctx := apiKeyTenantCtx(r)
+	ctx := apiKeyScopeCtx(r, scopeOverride)
 	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {

@@ -42,11 +42,29 @@ green.
   > jobs — `nats-conformance`, `cloud-e2e`, `helm-lint`, `govulncheck` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`:
   > a job that cannot block a merge should not hold a runner slot the queue
-  > needs. Adding one to this ruleset **without deleting its skip** leaves the
-  > queue waiting `check_response_timeout_minutes` (60) for a check that never
-  > reports, then failing every entry. Nothing in the repository can catch
-  > that — the required list lives in the ruleset — so the two edits go
-  > together, by hand.
+  > needs. Adding one to this ruleset **without deleting its skip** is worse
+  > than a stalled queue: a job skipped by a job-level `if:` reports
+  > **Success**, so the required check is satisfied by a job that never ran —
+  > every entry merges green on a check that did not execute. (A
+  > *workflow*-level filter is the opposite: the check never reports and the
+  > queue hangs until `check_response_timeout_minutes`. Same word, opposite
+  > failure, and the silent one is the one this file's skips produce.)
+  > Nothing in the repository can catch it — the required list lives in the
+  > ruleset — so the two edits go together, by hand.
+- **Three required checks run on self-hosted runners** — `test`,
+  `vendor-check` and `golangci` route to the organisation's `arc-runners`
+  scale set on `merge_group`, because the 20-job cap above is what makes a
+  cycle slow. That scale set is **outside this repository**, and it was dead
+  and unnoticed for over a year before 2026-09-08.
+
+  > **If nobody can merge and the checks never report, this is the first thing
+  > to try.** Set the repository variable **`CI_SELF_HOSTED` to `off`**
+  > (Settings → Secrets and variables → Actions → Variables) and every job
+  > goes back to GitHub-hosted runners on the next run. A variable rather than
+  > an edit to `tests.yml`, deliberately: repairing by merging does not work
+  > when merging is what is broken. Unset means on. Alerting on the scale set
+  > itself is still missing — SocialGouv/iterion#983.
+
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still
   merges deliberately.

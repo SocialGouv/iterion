@@ -108,33 +108,45 @@ func TestCommand_SmallScriptKeepsArgvPath(t *testing.T) {
 	}
 }
 
-// The custom-workdir path wraps the recipe in `cd <dir> && exec …`, so
-// the wrapper is at least as large as the recipe it embeds: it has to
-// take the same route, or the fix would only cover half the callers.
-func TestCommand_OversizedScriptWithCustomWorkDirStreamsToo(t *testing.T) {
+// A custom workdir over an oversized recipe is BOTH crossings at once.
+// Streaming the `cd … && exec bash -c '<script>'` wrapper would only
+// move the problem: the in-pod shell re-issues that execve, and the
+// kernel's per-argument cap applies there too. So the payload must
+// carry the script for the shell to READ, with nothing oversized left
+// on any argv — the host's or the pod's.
+func TestCommand_OversizedScriptWithCustomWorkDirStreamsTheScriptItself(t *testing.T) {
 	r := testRun()
 	big := strings.Repeat("y", sandbox.MaxInlineArgBytes+1)
 
-	cmd := r.Command(context.Background(), []string{"bash", "-c", big}, sandbox.ExecOpts{WorkDir: "/elsewhere"})
+	cmd := r.Command(context.Background(), []string{"bash", "-c", big},
+		sandbox.ExecOpts{WorkDir: "/elsewhere", Env: map[string]string{"FOO": "bar baz"}})
 
 	assertStdinAnnounced(t, cmd)
-	if !argvHas(cmd.Args, "--stdin") {
-		t.Errorf("kubectl needs --stdin to forward the streamed wrapper; args=%v", cmd.Args)
-	}
 	for _, a := range cmd.Args {
 		if strings.Contains(a, big) {
-			t.Fatalf("oversized wrapper leaked into argv (E2BIG risk); arg len=%d", len(a))
+			t.Fatalf("oversized script leaked into host argv (E2BIG risk); arg len=%d", len(a))
 		}
 	}
-	if n := len(cmd.Args); n < 2 || cmd.Args[n-2] != "sh" || cmd.Args[n-1] != "-s" {
-		t.Fatalf("argv must terminate with `sh -s`; got tail %v", cmd.Args[max(0, len(cmd.Args)-4):])
+	// The recipe's own shell reads it, so bash stays bash.
+	if n := len(cmd.Args); n < 2 || cmd.Args[n-2] != "bash" || cmd.Args[n-1] != "-s" {
+		t.Fatalf("argv must terminate with `bash -s`; got tail %v", cmd.Args[max(0, len(cmd.Args)-4):])
 	}
+
 	got := readStdin(t, cmd.Stdin)
 	if !strings.Contains(got, "/elsewhere") {
-		t.Errorf("streamed wrapper must still cd into the requested workdir; got %.120q", got)
+		t.Errorf("payload must cd into the requested workdir; got %.120q", got)
 	}
 	if !strings.Contains(got, big) {
-		t.Error("streamed wrapper must still carry the recipe")
+		t.Error("payload must carry the recipe")
+	}
+	if !strings.Contains(got, "export 'FOO=bar baz'") {
+		t.Errorf("per-call env must survive as an export line; got %.200q", got)
+	}
+	// The regression itself: the payload must not hand the script to a
+	// nested shell as an argument, which is the execve the pod would
+	// then fail on.
+	if strings.Contains(got, "exec bash -c") || strings.Contains(got, "bash -c '") {
+		t.Errorf("payload re-embeds the script as an argv element — E2BIG merely relocated into the pod; got %.200q", got)
 	}
 }
 

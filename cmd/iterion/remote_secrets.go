@@ -16,15 +16,24 @@ var (
 	remoteSecretFromFile string
 )
 
+// remoteScopedBase resolves --scope to a REST prefix through the SAME
+// authority the create/rotate helpers use (cli.RemoteSecretsBase). It used
+// to carry its own copy of the switch, and a scope added to one of the two
+// worked on `create` while `list` composed a path no route serves — a 404
+// that reads as a broken instance rather than a missing case.
 func remoteScopedBase(cmd *cobra.Command, c *cli.RemoteClient, resource string) (string, error) {
-	switch remoteSecretScope {
-	case "", "team":
-		return teamBase(cmd, c, "/"+resource)
-	case "me":
-		return "/api/me/" + resource, nil
-	default:
-		return "", fmt.Errorf("invalid --scope %q (want team|me)", remoteSecretScope)
+	return cli.RemoteSecretsBase(cmd.Context(), c, remoteSecretScope, remoteScopeFlag(), resource)
+}
+
+// remoteScopeFlag picks the tenant flag the active --scope reads: --org for
+// the org tier, --team everywhere else. Passing --team for an org scope
+// would resolve a team id into an /api/orgs/ path, which 404s with no hint
+// that the wrong flag was used.
+func remoteScopeFlag() string {
+	if remoteSecretScope == "org" {
+		return remoteOrgFlag
 	}
+	return remoteTeamFlag
 }
 
 var remoteSecretsCmd = &cobra.Command{
@@ -88,7 +97,7 @@ var remoteSecretsDeleteCmd = &cobra.Command{
 
 var remoteAPIKeysCmd = &cobra.Command{
 	Use:   "api-keys",
-	Short: "BYOK LLM provider API keys (team or personal scope)",
+	Short: "BYOK LLM provider API keys (team, personal, org or platform scope)",
 }
 
 var remoteAPIKeysListCmd = &cobra.Command{
@@ -122,7 +131,7 @@ var remoteAPIKeysCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, remoteSecretScope, remoteTeamFlag, remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault)
+		return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, remoteSecretScope, remoteScopeFlag(), remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault)
 	}),
 }
 
@@ -185,8 +194,9 @@ func init() {
 		remoteSecretsListCmd, remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteSecretsDeleteCmd,
 		remoteAPIKeysListCmd, remoteAPIKeysCreateCmd, remoteAPIKeysUpdateCmd, remoteAPIKeysDeleteCmd,
 	} {
-		c.Flags().StringVar(&remoteSecretScope, "scope", "team", "Store scope (team|me)")
+		c.Flags().StringVar(&remoteSecretScope, "scope", "team", "Store scope (team|me|org|platform — org/platform are api-keys only)")
 		c.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
+		c.Flags().StringVar(&remoteOrgFlag, "org", "", "Org id for --scope org (default: switched/active org)")
 	}
 	for _, c := range []*cobra.Command{remoteSecretsSetCmd, remoteSecretsRotateCmd, remoteAPIKeysCreateCmd} {
 		c.Flags().StringVar(&remoteSecretFromEnv, "from-env", "", "Read the value from this environment variable")

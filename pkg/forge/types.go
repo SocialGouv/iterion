@@ -129,6 +129,26 @@ type Connection struct {
 	// SSRF host-pin keeps applying.
 	ForgeBaseURL string `bson:"forge_base_url,omitempty" json:"forge_base_url,omitempty"`
 
+	// WebhookBaseURL overrides, for this connection only, the base the
+	// INBOUND hook URL is built from — the reverse direction of
+	// ForgeBaseURL, which names the host we call OUT to. Empty = the
+	// deployment's public URL, which is what every connection wants until
+	// one of them cannot reach it.
+	//
+	// It exists because a forge may refuse the deployment's canonical host
+	// outright: GitLab's outbound allowlist rejects any unlisted webhook
+	// URL with "Invalid url given" (HTTP 422), and getting a host listed is
+	// an administrative act on the forge's side, not ours. Without a
+	// per-connection escape hatch, one such forge pins the whole
+	// deployment's public URL — a re-provision would rewrite its hook to an
+	// address it is not allowed to call, and the failure would only surface
+	// as a provisioning error much later.
+	//
+	// Declaring it is what makes the exception survive: a hook URL that
+	// merely predates a public-URL change is one re-provision away from
+	// being silently replaced.
+	WebhookBaseURL string `bson:"webhook_base_url,omitempty" json:"webhook_base_url,omitempty"`
+
 	// Connected identity / namespace, populated from WhoAmI at connect time.
 	AccountLogin string `bson:"account_login,omitempty" json:"account_login,omitempty"`
 	AccountID    string `bson:"account_id,omitempty" json:"account_id,omitempty"`

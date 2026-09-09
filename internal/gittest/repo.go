@@ -10,16 +10,19 @@ import (
 // InitRepo turns dir into a git repository with one commit on `main` and
 // returns that commit's SHA.
 //
-// The identity and the signing opt-out are written into the repository's own
-// config, not only into Env: a command iterion itself spawns during the test
-// (finalizeWorktree's squash, the runner's bank) does not inherit this
-// package's environment, and CI has no global identity to fall back on.
+// Identity, signing and auto-maintenance opt-outs live in the repository's
+// common config, shared by linked worktrees. Commands iterion itself spawns
+// during tests (finalizeWorktree's squash, the runner's bank) do not inherit
+// Cmd's flags or Env: they need an identity on CI and must not detach Git
+// maintenance into a fixture that t.TempDir is about to remove.
 func InitRepo(t testing.TB, dir string) string {
 	t.Helper()
 	Run(t, dir, "init", "-q", "-b", "main")
 	Run(t, dir, "config", "user.name", "iterion test")
 	Run(t, dir, "config", "user.email", "test@iterion.invalid")
 	Run(t, dir, "config", "commit.gpgsign", "false")
+	Run(t, dir, "config", "maintenance.auto", "false")
+	Run(t, dir, "config", "gc.auto", "0")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("init\n"), 0o600); err != nil {
 		t.Fatalf("seed %s: %v", dir, err)
 	}

@@ -613,6 +613,9 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
           }
         },
         "required": [
@@ -2013,6 +2016,9 @@
           "workflow_name": {
             "type": "string"
           },
+          "workspace_checkpoint": {
+            "$ref": "#/components/schemas/WorkspaceCheckpoint"
+          },
           "worktree": {
             "type": "boolean"
           },
@@ -2466,6 +2472,42 @@
           "entry",
           "nodes",
           "edges"
+        ],
+        "type": "object"
+      },
+      "WorkspaceCheckpoint": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "event_seq": {
+            "type": "integer"
+          },
+          "fetch_command": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "commit",
+          "source",
+          "event_seq",
+          "recorded_at",
+          "fetch_command",
+          "warning"
         ],
         "type": "object"
       },
@@ -5693,6 +5735,86 @@
         ]
       }
     },
+    "/api/orgs/{id}/api-keys": {
+      "get": {
+        "operationId": "getOrgsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/api-keys",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/api-keys",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/api-keys/{key_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/api-keys/{key_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
     "/api/orgs/{id}/audit": {
       "get": {
         "operationId": "getOrgsByIdAudit",
@@ -5716,6 +5838,42 @@
           }
         }
       ]
+    },
+    "/api/orgs/{id}/credential-audience": {
+      "get": {
+        "operationId": "getOrgsByIdCredentialAudience",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/credential-audience",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdCredentialAudience",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/credential-audience",
+        "tags": [
+          "orgs"
+        ]
+      }
     },
     "/api/orgs/{id}/invitations": {
       "get": {
@@ -5848,6 +6006,214 @@
           }
         },
         "summary": "PATCH /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "put": {
+        "operationId": "putOrgsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/connections": {
+      "get": {
+        "operationId": "getOrgsByIdOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/oauth/connections",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/oauth/{kind}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/oauth/{kind}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/authorize/complete",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/authorize/start",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/credentials",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/refresh",
         "tags": [
           "orgs"
         ]
@@ -8105,6 +8471,54 @@
         ]
       }
     },
+    "/api/teams/{id}": {
+      "delete": {
+        "operationId": "deleteTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/api-keys": {
       "get": {
         "operationId": "getTeamsByIdApiKeys",
@@ -9612,6 +10026,18 @@
         "tags": [
           "teams"
         ]
+      },
+      "put": {
+        "operationId": "putTeamsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
       }
     },
     "/api/teams/{id}/oauth/connections": {
@@ -10025,6 +10451,30 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/secrets/{secret_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/status": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdStatus",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/status",
         "tags": [
           "teams"
         ]

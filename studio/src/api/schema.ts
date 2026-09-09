@@ -1635,6 +1635,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orgs/{id}/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/api-keys */
+        get: operations["getOrgsByIdApiKeys"];
+        put?: never;
+        /** POST /api/orgs/{id}/api-keys */
+        post: operations["postOrgsByIdApiKeys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/api-keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/orgs/{id}/api-keys/{key_id} */
+        delete: operations["deleteOrgsByIdApiKeysByKeyId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/orgs/{id}/api-keys/{key_id} */
+        patch: operations["patchOrgsByIdApiKeysByKeyId"];
+        trace?: never;
+    };
     "/api/orgs/{id}/audit": {
         parameters: {
             query?: never;
@@ -1652,6 +1693,26 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/credential-audience": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/credential-audience */
+        get: operations["getOrgsByIdCredentialAudience"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/orgs/{id}/credential-audience */
+        patch: operations["patchOrgsByIdCredentialAudience"];
         trace?: never;
     };
     "/api/orgs/{id}/invitations": {
@@ -1724,7 +1785,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /** PUT /api/orgs/{id}/members/{user_id} */
+        put: operations["putOrgsByIdMembersByUserId"];
         post?: never;
         /** DELETE /api/orgs/{id}/members/{user_id} */
         delete: operations["deleteOrgsByIdMembersByUserId"];
@@ -1732,6 +1794,126 @@ export interface paths {
         head?: never;
         /** PATCH /api/orgs/{id}/members/{user_id} */
         patch: operations["patchOrgsByIdMembersByUserId"];
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/oauth/connections */
+        get: operations["getOrgsByIdOauthConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/orgs/{id}/oauth/{kind} */
+        delete: operations["deleteOrgsByIdOauthByKind"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/orgs/{id}/oauth/{kind} */
+        patch: operations["patchOrgsByIdOauthByKind"];
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/{kind}/authorize/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/oauth/{kind}/authorize/complete */
+        post: operations["postOrgsByIdOauthByKindAuthorizeComplete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/{kind}/authorize/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/oauth/{kind}/authorize/start */
+        post: operations["postOrgsByIdOauthByKindAuthorizeStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/{kind}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/oauth/{kind}/credentials */
+        post: operations["postOrgsByIdOauthByKindCredentials"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/oauth/{kind}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/orgs/{id}/oauth/{kind}/refresh */
+        post: operations["postOrgsByIdOauthByKindRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/orgs/{id}/provision-approvals": {
@@ -3321,6 +3503,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id} */
+        get: operations["getTeamsById"];
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id} */
+        delete: operations["deleteTeamsById"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id} */
+        patch: operations["patchTeamsById"];
+        trace?: never;
+    };
     "/api/teams/{id}/api-keys": {
         parameters: {
             query?: never;
@@ -4038,7 +4241,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
+        /** PUT /api/teams/{id}/members/{user_id} */
+        put: operations["putTeamsByIdMembersByUserId"];
         post?: never;
         /** DELETE /api/teams/{id}/members/{user_id} */
         delete: operations["deleteTeamsByIdMembersByUserId"];
@@ -4287,6 +4491,25 @@ export interface paths {
         head?: never;
         /** PATCH /api/teams/{id}/secrets/{secret_id} */
         patch: operations["patchTeamsByIdSecretsBySecretId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/status */
+        post: operations["postTeamsByIdStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/teams/{id}/webhooks": {
@@ -5607,6 +5830,7 @@ export interface components {
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+            webhook_base_url?: string;
         };
         DependencyGraphEdge: {
             from: string;
@@ -6036,6 +6260,7 @@ export interface components {
             work_dir?: string;
             workflow_hash?: string;
             workflow_name: string;
+            workspace_checkpoint?: components["schemas"]["WorkspaceCheckpoint"];
             worktree?: boolean;
             worktree_available: boolean;
         };
@@ -6168,6 +6393,16 @@ export interface components {
             name: string;
             nodes: components["schemas"]["WireNode"][];
             stale_hash?: boolean;
+        };
+        WorkspaceCheckpoint: {
+            commit: string;
+            event_seq: number;
+            fetch_command: string;
+            /** Format: date-time */
+            recorded_at: string;
+            ref: string;
+            source: string;
+            warning: string;
         };
         apiKeyView: {
             alive_runs?: number;
@@ -8748,7 +8983,129 @@ export interface operations {
             };
         };
     };
+    getOrgsByIdApiKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdApiKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteOrgsByIdApiKeysByKeyId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchOrgsByIdApiKeysByKeyId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getOrgsByIdAudit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getOrgsByIdCredentialAudience: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchOrgsByIdCredentialAudience: {
         parameters: {
             query?: never;
             header?: never;
@@ -8849,6 +9206,27 @@ export interface operations {
             };
         };
     };
+    putOrgsByIdMembersByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteOrgsByIdMembersByUserId: {
         parameters: {
             query?: never;
@@ -8877,6 +9255,152 @@ export interface operations {
             path: {
                 id: string;
                 user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getOrgsByIdOauthConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteOrgsByIdOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchOrgsByIdOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdOauthByKindAuthorizeComplete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdOauthByKindAuthorizeStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdOauthByKindCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postOrgsByIdOauthByKindRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                kind: string;
             };
             cookie?: never;
         };
@@ -10816,6 +11340,66 @@ export interface operations {
             };
         };
     };
+    getTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdApiKeys: {
         parameters: {
             query?: never;
@@ -11995,6 +12579,27 @@ export interface operations {
             };
         };
     };
+    putTeamsByIdMembersByUserId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteTeamsByIdMembersByUserId: {
         parameters: {
             query?: never;
@@ -12393,6 +12998,26 @@ export interface operations {
             path: {
                 id: string;
                 secret_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
             };
             cookie?: never;
         };

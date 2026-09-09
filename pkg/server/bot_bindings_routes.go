@@ -34,7 +34,7 @@ func (s *Server) validateBindingSecret(r *http.Request, teamID, secretID string)
 	if s.genericSecrets == nil {
 		return true // can't validate; allow (binding still tenant-scoped)
 	}
-	sec, err := s.genericSecrets.Get(r.Context(), secretID)
+	sec, err := s.genericSecrets.Get(teamTenantCtx(r.Context(), teamID), secretID)
 	if err != nil {
 		return false
 	}
@@ -42,7 +42,7 @@ func (s *Server) validateBindingSecret(r *http.Request, teamID, secretID string)
 }
 
 func (s *Server) bindingForTenantBot(w http.ResponseWriter, r *http.Request, teamID, botID, bindingID string) (secrets.BotSecretBinding, bool) {
-	b, err := s.botBindings.Get(r.Context(), bindingID)
+	b, err := s.botBindings.Get(teamTenantCtx(r.Context(), teamID), bindingID)
 	if err != nil || b.TenantID != teamID || b.BotID != botID {
 		httpError(w, http.StatusNotFound, "binding not found")
 		return secrets.BotSecretBinding{}, false
@@ -57,7 +57,7 @@ func (s *Server) handleListBotBindings(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "not a member")
 		return
 	}
-	list, err := s.botBindings.ListByTenantBot(r.Context(), teamID, botID)
+	list, err := s.botBindings.ListByTenantBot(teamPathTenantCtx(r), teamID, botID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -101,7 +101,10 @@ func (s *Server) handleCreateBotBinding(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:             now,
 		UpdatedAt:             now,
 	}
-	if err := s.botBindings.Create(r.Context(), b); err != nil {
+	// The binding must land in the team it is created FOR — a binding
+	// stamped with the caller's active tenant is invisible to that team's
+	// runs, so the bot silently runs without the credential (#997).
+	if err := s.botBindings.Create(teamPathTenantCtx(r), b); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -139,7 +142,7 @@ func (s *Server) handleUpdateBotBinding(w http.ResponseWriter, r *http.Request) 
 		b.AllowedHosts = req.AllowedHosts
 	}
 	b.UpdatedAt = time.Now().UTC()
-	if err := s.botBindings.Update(r.Context(), b); err != nil {
+	if err := s.botBindings.Update(teamPathTenantCtx(r), b); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -157,7 +160,7 @@ func (s *Server) handleDeleteBotBinding(w http.ResponseWriter, r *http.Request) 
 	if _, ok := s.bindingForTenantBot(w, r, teamID, botID, r.PathValue("binding_id")); !ok {
 		return
 	}
-	if err := s.botBindings.Delete(r.Context(), r.PathValue("binding_id")); err != nil {
+	if err := s.botBindings.Delete(teamPathTenantCtx(r), r.PathValue("binding_id")); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}

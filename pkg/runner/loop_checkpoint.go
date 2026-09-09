@@ -133,6 +133,22 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 		return last
 	}
 
+	// The FIRST push of this runner generation is the destructive one.
+	// Whatever the ref holds was written by a PREVIOUS generation, and the
+	// force below erases it — which is fine when the resume continued the
+	// same tree, and irreversible when it did not.
+	//
+	// Measured 08/09: a sandbox died mid-gate, the workspace export died with
+	// it, and the resume reset the tree to the run's LAUNCH ref. Ten minutes
+	// later this push replaced the pre-crash checkpoint with the reset one.
+	// The dead attempt's work — 8 files, +197 lines, and a held-out set —
+	// survived only because it was fetched by hand in the gap, out of an
+	// object already unreferenced and waiting for GC. The safety net was
+	// destroyed by the one gesture that should have consulted it.
+	if last == "" {
+		r.preserveSupersededCheckpoint(cctx, o, run, ref, sha)
+	}
+
 	push := "git push --force origin " + sha + ":refs/heads/" + ref
 	pres, perr := run.Exec(cctx, []string{"sh", "-c", push}, sandbox.ExecOpts{})
 	if perr != nil || pres.ExitCode != 0 {
@@ -147,6 +163,67 @@ func (r *Runner) checkpointWorkspaceOnce(ctx context.Context, o sandboxObserverO
 	r.cfg.Logger.Info("runner: run %s: workspace checkpoint pushed: %s -> %s", o.runID, sha[:min(12, len(sha))], ref)
 	r.recordCheckpoint(o, map[string]any{"ref": ref, "commit": sha})
 	return state
+}
+
+// preserveSupersededCheckpoint copies what the checkpoint ref already holds to
+// a ref of its own, before a new generation force-pushes over it.
+//
+// The name carries its own infix on purpose, like bankAttemptRef's: a pruning
+// policy has to tell them apart by name alone. `-parked-` is the half-done work
+// of a run that may still be alive; `-checkpoint-superseded-` is a safety net a
+// later generation was about to erase, and it is only ever written when the two
+// actually differ.
+//
+// The fetch is not optional and not a detail: the pod is pushing a commit it
+// does NOT have. After a resume that reset the workspace, the previous
+// generation's checkpoint is not in this clone at all, and `git push <sha>:...`
+// resolves its argument locally. Fetching it first is what makes the copy
+// possible; without it the push fails and the ref is lost exactly when it
+// mattered most.
+//
+// Best-effort throughout, like every gesture in this file: a run's outcome is
+// decided by its nodes, never by whether its safety net could be laid. Each
+// failure says which step could not be taken, because a silent one here is
+// indistinguishable from having had nothing to preserve.
+func (r *Runner) preserveSupersededCheckpoint(ctx context.Context, o sandboxObserverOpts, run sandbox.Run, ref, next string) {
+	// NO PIPELINE HERE. A POSIX pipeline exits with its LAST command's status,
+	// and `cut` exits 0 on empty input — so `ls-remote | cut -f1` reports
+	// success with empty output when ls-remote itself died (network flake,
+	// credential hiccup, exit 128). An UNREADABLE ref would then read as an
+	// ABSENT one, this function would return silently as "nothing to lose",
+	// and the force-push would destroy the very checkpoint it is here to save,
+	// in exactly the flaky conditions where a resume happens. The field is cut
+	// in Go instead, where the exit status is the one that matters.
+	res, err := run.Exec(ctx, []string{"sh", "-c",
+		"git ls-remote origin refs/heads/" + ref}, sandbox.ExecOpts{})
+	if err != nil || res.ExitCode != 0 {
+		r.cfg.Logger.Warn("runner: run %s: cannot read %s before overwriting it (%v; exit %d): %s — pushing anyway, but a previous generation's checkpoint may be lost",
+			o.runID, ref, err, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+		r.recordCheckpoint(o, map[string]any{"ref": ref,
+			"error": "could not read the ref before overwriting it: " + strutilFirstLine(string(res.Stderr), err)})
+		return
+	}
+	// `<sha>\t<ref>`, one line per match; empty output means the ref does not
+	// exist. Reached only on a SUCCESSFUL read, so empty now means absent.
+	prev, _, _ := strings.Cut(strings.TrimSpace(string(res.Stdout)), "\t")
+	prev = strings.TrimSpace(prev)
+	// Nothing there (first generation), or the very commit we are about to
+	// write: in both cases the force-push destroys nothing.
+	if prev == "" || prev == next {
+		return
+	}
+	keep := ref + "-superseded-" + shortSHA(prev)
+	cmd := "git fetch --no-tags origin " + prev + " && git push origin " + prev + ":refs/heads/" + keep
+	pres, perr := run.Exec(ctx, []string{"sh", "-c", cmd}, sandbox.ExecOpts{})
+	if perr != nil || pres.ExitCode != 0 {
+		r.cfg.Logger.Warn("runner: run %s: could NOT preserve %s @ %.12s as %s (%v; exit %d): %s — it is about to be overwritten and will survive only as an unreferenced object",
+			o.runID, ref, prev, keep, perr, pres.ExitCode, strings.TrimSpace(string(pres.Stderr)))
+		r.recordCheckpoint(o, map[string]any{"ref": keep, "commit": prev,
+			"error": strutilFirstLine(string(pres.Stderr), perr)})
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: previous generation's checkpoint preserved: %.12s -> %s", o.runID, prev, keep)
+	r.recordCheckpoint(o, map[string]any{"ref": keep, "commit": prev, "superseded": true})
 }
 
 // checkpointState splits the script's answer into what identifies the WORK

@@ -44,10 +44,57 @@ var ErrApiKeyTenantMissing = errors.New("secrets: ApiKey store called without te
 // platformScope is the single reserved literal both platform scopes derive
 // from: one concept — "the deployment itself" — indexed in two namespaces
 // (api-key tenant ids and OAuth owner keys). The prefix-with-colon shape
-// cannot collide with a real tenant/user id (UUIDs, emails) nor with an
-// OrgOwnerKey (always "org:<team-uuid>"). Renames migrate BOTH exported
-// names at once by construction.
+// cannot collide with a real tenant/user id (UUIDs, emails), with an
+// OrgOwnerKey (always "org:<team-uuid>"), nor with an org-tier scope
+// (always "orgtier:<org-uuid>"). Renames migrate BOTH exported names at
+// once by construction.
 const platformScope = "platform:"
+
+// orgTierScope is the reserved prefix for a credential owned by an
+// identity.Org — the billing/governance tenant that groups teams — and
+// lent to the teams its CredentialAudience names. Same trick as
+// platformScope: an org key is an ordinary ApiKey row and an org forfait
+// an ordinary OAuthRecord, under a reserved scope, so the whole store
+// (tenant filter, defaults, rotation, MarkUsed, the refresh worker) is
+// reused with zero schema change.
+//
+// It deliberately is NOT "org:". That prefix is already taken by
+// OrgOwnerPrefix, which despite its name keys a TEAM-scoped forfait
+// (OrgOwnerKey's argument is a tenant/team id). Reusing it would make an
+// org credential and a team credential collide in one owner namespace,
+// and the collision would be silent — the publisher would serve whichever
+// row the store returned first.
+const orgTierScope = "orgtier:"
+
+// OrgTierTenantID is the sentinel tenant under which an ORG's own shared
+// provider API keys are stored: ordinary ApiKey rows with
+// TenantID = ScopeTeamID = OrgTierTenantID(orgID), written and read under
+// store.WithTenant. The cloud publisher consults them after the team's own
+// BYOK and forfaits and before the mutualised pool, for the teams the org's
+// CredentialAudience admits. The ApiKeyStore counterpart of
+// OrgTierOwnerKey.
+func OrgTierTenantID(orgID string) string { return orgTierScope + orgID }
+
+// OrgTierOwnerKey is the synthetic OAuth owner key under which an ORG's own
+// shared forfait blobs are stored. Shares its literal with
+// OrgTierTenantID (see orgTierScope) — one concept, two index namespaces,
+// exactly as PlatformOwnerKey shares platformScope with PlatformTenantID.
+func OrgTierOwnerKey(orgID string) string { return orgTierScope + orgID }
+
+// IsOrgTierScope reports whether a tenant id or owner key addresses the
+// org tier. Callers that must never treat a reserved scope as a real
+// tenant (roster reads, quota metering, the studio's team pickers) use it
+// rather than re-deriving the prefix.
+func IsOrgTierScope(s string) bool { return strings.HasPrefix(s, orgTierScope) }
+
+// OrgIDFromTierScope returns the org id an org-tier scope addresses, and
+// false when s is not one.
+func OrgIDFromTierScope(s string) (string, bool) {
+	if !IsOrgTierScope(s) {
+		return "", false
+	}
+	return strings.TrimPrefix(s, orgTierScope), true
+}
 
 // PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
 // provider API keys are stored — the DB-backed form of the platform env
@@ -414,11 +461,15 @@ func (m *MemoryApiKeyStore) Create(ctx context.Context, k ApiKey) error {
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Get(_ context.Context, id string) (ApiKey, error) {
+// Create already stamps the ctx tenant; the reads MUST filter on it too,
+// or the double cannot express the failure the Mongo store produces (a row
+// written under one tenant, invisible under another) and a tenant-scoping
+// regression passes its tests. See stampTenant / visibleToTenant (#997).
+func (m *MemoryApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
-	if !ok {
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ApiKey{}, ErrApiKeyNotFound
 	}
 	return k, nil
@@ -438,20 +489,23 @@ func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) 
 	return k, nil
 }
 
-func (m *MemoryApiKeyStore) Update(_ context.Context, k ApiKey) error {
+func (m *MemoryApiKeyStore) Update(ctx context.Context, k ApiKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[k.ID]; !ok {
+	cur, ok := m.keys[k.ID]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrApiKeyNotFound
 	}
+	k.TenantID = stampTenant(ctx, cur.TenantID)
 	m.keys[k.ID] = k
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Delete(_ context.Context, id string) error {
+func (m *MemoryApiKeyStore) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[id]; !ok {
+	k, ok := m.keys[id]
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ErrApiKeyNotFound
 	}
 	delete(m.keys, id)

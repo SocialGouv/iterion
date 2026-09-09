@@ -140,6 +140,15 @@ func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind 
 	switch {
 	case ownerKey == secrets.PlatformOwnerKey:
 		s.auditPlatform(r, "", "platform.llm_oauth."+verb, "platform_llm_oauth", string(kind), meta)
+	case secrets.IsOrgTierScope(ownerKey):
+		// The ORG's own shared forfait. Without this case it matched none of
+		// the branches: a successful mutation produced NO event at all, and a
+		// refusal fell through to the personal one and was keyed on the
+		// actor's active team — an org credential filed as somebody's own.
+		// (No collision with OrgOwnerPrefix below: that is "org:", this is
+		// "orgtier:".) The api-key twin routes the same way in auditApiKey.
+		orgID, _ := secrets.OrgIDFromTierScope(ownerKey)
+		s.auditOrg(r, orgID, "org.llm_oauth."+verb, "org_llm_oauth", string(kind), meta)
 	case strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix):
 		s.auditTenant(r, strings.TrimPrefix(ownerKey, secrets.OrgOwnerPrefix), "oauth.org."+verb, "oauth_forfait", string(kind), meta)
 	case verb == "refused":
@@ -494,11 +503,55 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		if err := secrets.ValidateTokenShape("tokens.access_token", v.Tokens.AccessToken); err != nil {
 			return secrets.OAuthRecord{}, err
 		}
-		if v.Tokens.ExpiresIn > 0 {
+		// Stamp the access token's own `exp` claim in preference to
+		// expires_in. Both the record's usefulness and the whole codex
+		// refresh path hang off this one field: the refresh worker sweeps
+		// ExpiringBefore, whose query requires access_token_expires_at to
+		// EXIST, so a codex record connected without it is invisible to
+		// the worker forever and can only ever be renewed by hand.
+		//
+		// expires_in alone left exactly that hole: real ~/.codex/auth.json
+		// blobs carry access_token/refresh_token/account_id/id_token and
+		// last_refresh, and nothing writes expires_in (see
+		// delegate.piCodexExpiry), so the branch was never taken in
+		// practice. Where it IS present it is also the weaker answer —
+		// relative to an exchange that may be days old, which stamps an
+		// optimistic future expiry over an already-dead token. The claim
+		// is absolute and describes this very token.
+		//
+		// Measured cost of the hole: a platform forfait sat unrefreshed
+		// for ten days, surfacing only as a run failing its first LLM call
+		// with "authentication token is expired".
+		if t := v.AccessTokenExpiry(); !t.IsZero() {
+			rec.AccessTokenExpiresAt = &t
+		} else if v.Tokens.ExpiresIn > 0 {
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
+		// An unstampable record is accepted — it serves runs perfectly well
+		// until its token dies — but it will never be swept, so say that
+		// once, here, where the cause is still visible. Learning it later
+		// means reading it off a run's first LLM call failing on an expired
+		// token, which names neither the credential nor the reason.
+		if rec.AccessTokenExpiresAt == nil {
+			s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry — the token states none "+
+				"(no readable `exp` claim, no expires_in), so the refresh worker cannot select this record and the "+
+				"forfait will need a manual re-connect when it expires", ownerKey, kind)
+		}
 		rec.NotRefreshable = v.Tokens.RefreshToken == ""
+		// Now that the deadline is readable, the dead-on-arrival case can be
+		// named at last: an expired token with nothing to renew it serves no
+		// run, and every one that draws this credential dies on its first
+		// LLM call. Said, not refused — the operator keeps the choice
+		// (uploading first and logging in after is a legitimate order), and
+		// the claude_code path already refuses the same shape only because
+		// its own "Not logged in" symptom is unreadable.
+		if rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(now) {
+			s.logger.Warn("oauth: owner=%s kind=%s stored with an access token that expired at %s and NO refresh "+
+				"token — nothing can renew it, so every run drawing this credential fails its first LLM call; "+
+				"re-run `codex login` and upload the fresh ~/.codex/auth.json",
+				ownerKey, kind, rec.AccessTokenExpiresAt.Format(time.RFC3339))
+		}
 	}
 	sealed, err := secrets.SealOAuthPayload(s.sealer, ownerKey, kind, blob)
 	if err != nil {
@@ -529,6 +582,13 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
 	}
+	// An expired credential that CAN be renewed is accepted on the promise
+	// that the refresh worker renews it — so make that promise immediate
+	// rather than up to a ticker period away. Off the request, bounded,
+	// best-effort: the upload has already succeeded either way.
+	if !rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(time.Now()) {
+		s.kickOAuthRefresh(ownerKey, kind)
+	}
 	return rec, nil
 }
 
@@ -546,7 +606,33 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Take the record's refresh claim before touching the provider, exactly
+	// as the background sweep does. A refresh is not atomic — read, provider
+	// round trip, persist — and the provider RETIRES the refresh token it is
+	// handed, so a manual refresh racing the sweep (or another operator's
+	// click) leaves one of the two holding a credential the provider has
+	// already invalidated. Whoever loses the claim does not exchange.
+	owner, err := secrets.NewRefreshClaimOwner()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), ownerKey, kind, owner, now, now.Add(secrets.RefreshClaimTTL))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if !claimed {
+		httpError(w, http.StatusConflict, "%s", s.refreshClaimRefusal(r.Context(), ownerKey, kind))
+		return
+	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
+		// Give the claim back so the sweep is not held off by a failed
+		// attempt; a claim already superseded has nothing to release.
+		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), ownerKey, kind, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
+			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
+		}
 		if errors.Is(err, secrets.ErrNotRefreshable) {
 			// Self-heal the record so the background worker stops
 			// attempting it; surface an actionable message instead of
@@ -565,8 +651,15 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	// Only the refresh-owned keys: the record read above is a round trip
-	// old, so writing it whole would revert a rename committed since.
-	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec)); err != nil {
+	// old, so writing it whole would revert a rename committed since. Fenced
+	// by the claim, so a re-connect that landed during the exchange (which
+	// clears the claim) keeps the credential the operator just uploaded
+	// instead of being overwritten by a refresh of the session it replaced.
+	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+		if errors.Is(err, secrets.ErrRefreshClaimLost) {
+			httpError(w, http.StatusConflict, "this connection was replaced while the refresh was in flight — the refreshed tokens were discarded")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -579,6 +672,36 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	writeJSON(w, toOAuthView(fresh))
+}
+
+// refreshClaimRefusal explains a refused claim to the operator who clicked
+// Refresh. Two states refuse it and they are NOT the same news:
+//
+//   - another refresh holds the lease — seconds away, "retry in a moment"
+//     is exactly right;
+//   - a cool-down left by a refresh that succeeded without a readable
+//     deadline — up to an hour, during which "retry in a moment" sends the
+//     operator back to a button that answers 409 every time.
+//
+// The two share one field on the record (the cool-down IS the lease
+// instant, with no owner), so only the stored record can tell them apart.
+// Best-effort: a read that fails falls back to the generic answer rather
+// than turning a 409 into a 500.
+func (s *Server) refreshClaimRefusal(ctx context.Context, ownerKey string, kind secrets.OAuthKind) string {
+	const inFlight = "a refresh of this connection is already in flight — retry in a moment"
+	cur, err := s.oauthStore.Get(ctx, ownerKey, kind)
+	if err != nil || cur.RefreshClaimOwner != "" || cur.RefreshNotBefore == nil {
+		return inFlight
+	}
+	if !cur.RefreshNotBefore.After(time.Now()) {
+		// The cool-down lapsed between the CAS and this read: whatever holds
+		// the record now took it in that gap.
+		return inFlight
+	}
+	return fmt.Sprintf("this connection is in a refresh cool-down until %s — its last refresh succeeded but the "+
+		"token it returned states no readable deadline, so the sweep backs off instead of re-running the exchange "+
+		"every tick; re-connect the credential to refresh it now",
+		cur.RefreshNotBefore.UTC().Format(time.RFC3339))
 }
 
 // renameOAuthForOwner sets (or clears) the account label on an existing

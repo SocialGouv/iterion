@@ -3,6 +3,128 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.123.1](https://github.com/SocialGouv/iterion/compare/v3.123.0...v3.123.1) (2026-09-09)
+
+### Bug Fixes
+
+* **bots:** a campaign verify node refuses a dirty tree instead of judging it ([#995](https://github.com/SocialGouv/iterion/issues/995)) ([9b0e19b](https://github.com/SocialGouv/iterion/commit/9b0e19bda2df4c0df976e7cb4c4aca4883899760)), references [#807](https://github.com/SocialGouv/iterion/issues/807) [#807](https://github.com/SocialGouv/iterion/issues/807) [#799](https://github.com/SocialGouv/iterion/issues/799)
+
+    <details><summary>why</summary>
+
+    A tool node whose whole contract is "judge HEAD" was judging whatever the previous attempt left on disk. Measured once: a golden-master gate ran 7,676 s until the pod's exec stream broke, the engine classified the failure NETWORK_TRANSIENT and re-executed the node on the same tree — where a mutant the harness had applied was still there. The second attempt judged a mutated program and called it the lot's; the run finished not-converged with hours of budget left.
+
+    </details>
+* **server:** an avatar recorded after a failed store write is iterion's fault, not the forge's ([#993](https://github.com/SocialGouv/iterion/issues/993)) ([cf69634](https://github.com/SocialGouv/iterion/commit/cf696343ad917c8ba5390ca602816851060634ae)), references [#969](https://github.com/SocialGouv/iterion/issues/969) [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    forgeUpstreamStatus returns 0 to mean "NOT an answer from the forge", and its own doc says the caller then answers with its fault status — "Only that arm may be a 500." The avatar route rendered that arm 502 Bad Gateway, so a persist failure AFTER an upload that had already landed on the forge was reported as a forge outage: the exact inversion the classifier was written to end, running the other way. Sentry, alerts and any client retrying on 502 were told a third party broke when iterion's own…
+
+    </details>
+
+## [3.123.0](https://github.com/SocialGouv/iterion/compare/v3.122.3...v3.123.0) (2026-09-09)
+
+### Features
+
+* **credentials,teams:** an org can lend its own LLM keys, and a team has a lifecycle ([#1000](https://github.com/SocialGouv/iterion/issues/1000)) ([ebbae7e](https://github.com/SocialGouv/iterion/commit/ebbae7eb1af96d9ea4d0351809484fd8610a9e82))
+
+    <details><summary>why</summary>
+
+    Sharing a key across an org's product teams had no home. The API-key walk only sees the team's and the user's rows, and secrets.OrgOwnerKey — despite its name — keys a TEAM forfait. The only way to share was to copy the credential into every team: N writes per rotation, N places to forget one, and no way to tell whose spend was whose. Measured on the prod instance, where one Claude forfait is already duplicated across two teams.
+
+    </details>
+* **forge:** a connection can pin the base its hook URLs are built from ([#1011](https://github.com/SocialGouv/iterion/issues/1011)) ([df80e5b](https://github.com/SocialGouv/iterion/commit/df80e5be213f49b781bd736e9dfaba8d3fc23cf1))
+
+    <details><summary>why</summary>
+
+    Hook URLs are derived from the deployment's public URL, which is right for every connection until one of them cannot reach that host. GitLab refuses any webhook URL outside its instance-wide outbound allowlist with "Invalid url given" (HTTP 422), and listing a host is an administrative act on the forge's side, not ours. One such forge therefore pinned the public URL of the WHOLE deployment: moving to a new domain meant either leaving that forge behind or not moving.
+
+    </details>
+
+## [3.122.3](https://github.com/SocialGouv/iterion/compare/v3.122.2...v3.122.3) (2026-09-08)
+
+### Bug Fixes
+
+* **secrets,runner:** a codex forfait refreshes itself, and an unrefreshable one stops being silent ([#977](https://github.com/SocialGouv/iterion/issues/977)) ([bf05b07](https://github.com/SocialGouv/iterion/commit/bf05b07dd1d85a5fb14a1ab792c7fe0b071918c6))
+
+    <details><summary>why</summary>
+
+    Nothing refreshed the ChatGPT (codex) forfait. The server's worker skipped the kind outright when no client id was configured, and the runner's per-run refresher handled only Anthropic, "left to the CLI / store worker" — which was in turn skipping it. Measured on a real deployment: a forfait last refreshed on 2026-08-29 was still being served on 2026-09-08, and the only symptom was a run failing its first LLM call with `401 Provided authentication token is expired`, ten days and one layer away…
+
+    </details>
+
+## [3.122.2](https://github.com/SocialGouv/iterion/compare/v3.122.1...v3.122.2) (2026-09-08)
+
+### Bug Fixes
+
+* **server:** a team-scoped write must land in the PATH team, not the caller's tenant ([#997](https://github.com/SocialGouv/iterion/issues/997)) ([#1003](https://github.com/SocialGouv/iterion/issues/1003)) ([d6d1fe7](https://github.com/SocialGouv/iterion/commit/d6d1fe7d7db6ff7bea85e2604b342e692034465b))
+
+    <details><summary>why</summary>
+
+    The auth middleware stamps ONE tenant — the caller's JWT — while authorization is checked against the team in the path, and canManageTeam deliberately admits a super-admin (or an org admin) on a team that is not their active one. When a handler forgot to re-scope, the row landed as (scope_team = path team, tenant_id = caller's team): invisible from both list endpoints, invisible to the target team's runs, and answered 201. The bot then ran without the credential it had been given.
+
+    </details>
+
+## [3.122.1](https://github.com/SocialGouv/iterion/compare/v3.122.0...v3.122.1) (2026-09-08)
+
+### Bug Fixes
+
+* **runner:** a new generation erased the checkpoint it should have read ([#990](https://github.com/SocialGouv/iterion/issues/990)) ([6f3926e](https://github.com/SocialGouv/iterion/commit/6f3926e1aeb2c663cbc32e76f898b62845ad361e)), references [#988](https://github.com/SocialGouv/iterion/issues/988)
+
+    <details><summary>why</summary>
+
+    The workspace checkpoint is force-pushed to ONE ref per run, so the first push of a new runner generation destroys what the previous one left. That is harmless when the resume continued the same tree, and irreversible when it did not.
+
+    </details>
+
+## [3.122.0](https://github.com/SocialGouv/iterion/compare/v3.121.5...v3.122.0) (2026-09-08)
+
+### Features
+
+* **runs:** expose persisted workspace checkpoint recovery ([#988](https://github.com/SocialGouv/iterion/issues/988)) ([e4a7f60](https://github.com/SocialGouv/iterion/commit/e4a7f60f8a92502db5146654c3552958393ce710)), closes [#972](https://github.com/SocialGouv/iterion/issues/972)
+
+    <details><summary>why</summary>
+
+    Surface the latest successful checkpoint event in inspection and unavailable commit listings, with provenance and a quoted fetch hint. Preserve no_baseline, final-bank fields and merge eligibility; report read failures and require validation of recovered work. Closes #972.
+
+    </details>
+
+## [3.121.5](https://github.com/SocialGouv/iterion/compare/v3.121.4...v3.121.5) (2026-09-08)
+
+### Bug Fixes
+
+* **test:** persist Git fixture maintenance opt-outs ([#987](https://github.com/SocialGouv/iterion/issues/987)) ([1b79f49](https://github.com/SocialGouv/iterion/commit/1b79f497d4af062cd21237165fe009198d60da05)), closes [#974](https://github.com/SocialGouv/iterion/issues/974)
+
+    <details><summary>why</summary>
+
+    Production Git commands invoked by tests do not inherit gittest.Cmd flags. Persist both opt-outs in the fixture common config and verify real Git resolution from source and linked worktrees, keeping a separate command-level control. Fixes #974.
+
+    </details>
+
+## [3.121.4](https://github.com/SocialGouv/iterion/compare/v3.121.3...v3.121.4) (2026-09-08)
+
+### Bug Fixes
+
+* **sandbox:** a custom workdir over an oversized recipe streams the script, not a wrapper that re-embeds it ([#967](https://github.com/SocialGouv/iterion/issues/967)) ([ac7b8d2](https://github.com/SocialGouv/iterion/commit/ac7b8d2d83a3bf000cd6cd28b48bdac90ad508c7))
+
+    <details><summary>why</summary>
+
+    Addresses R6a7f93. The custom-workdir path streamed `cd '<dir>' && exec bash -c '<script>'` through `sh -s`. That keeps the script off the HOST argv, but the in-pod shell then re-issues execve("bash", ["bash", "-c", "<script>"]) — and MAX_ARG_STRLEN applies to that exec too. E2BIG was relocated into the pod, not removed, for precisely the shape this streaming exists to serve: an oversized `<shell> -c <script>` combined with a non-default WorkDir.
+
+    </details>
+
+## [3.121.3](https://github.com/SocialGouv/iterion/compare/v3.121.2...v3.121.3) (2026-09-08)
+
+### Bug Fixes
+
+* **golden-master,modernize:** an extension is acted by the net's subbot only — the gate knows it by the subbot's commits and certified blobs ([#882](https://github.com/SocialGouv/iterion/issues/882)) ([e46e357](https://github.com/SocialGouv/iterion/commit/e46e357cc46f171d36a7b14c80b5176061d4c105))
+
+    <details><summary>why</summary>
+
+    Measured on a live campaign: a lot filed an extension request in one commit and acted it in the next — added the reference, appended the act block — and the harness's provenance rule, which refuses a request and an act introduced by the SAME commit, saw nothing; the lot's own file became a reference of the net that judges it, exempted as a pure addition, and the lot landed with a caveat.
+
+    </details>
+
 ## [3.121.2](https://github.com/SocialGouv/iterion/compare/v3.121.1...v3.121.2) (2026-09-08)
 
 ### Bug Fixes

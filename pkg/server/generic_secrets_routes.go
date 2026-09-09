@@ -78,7 +78,7 @@ func (s *Server) handleListTeamSecrets(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "not a member")
 		return
 	}
-	records, err := s.genericSecrets.ListByTeam(r.Context(), teamID, id.UserID)
+	records, err := s.genericSecrets.ListByTeam(teamPathTenantCtx(r), teamID, id.UserID)
 	writeGenericSecretList(w, records, err)
 }
 
@@ -140,7 +140,9 @@ func (s *Server) handleCreateGenericSecret(w http.ResponseWriter, r *http.Reques
 		CreatedAt:    now,
 		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
 	}
-	if err := s.genericSecrets.Create(r.Context(), rec); err != nil {
+	// The row must land in the team it is CREATED FOR, not in the caller's
+	// active one (#997) — see teamPathTenantCtx.
+	if err := s.genericSecrets.Create(teamTenantCtx(r.Context(), teamID), rec); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -151,7 +153,8 @@ func (s *Server) handleCreateGenericSecret(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleUpdateGenericSecret(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	secretID := r.PathValue("secret_id")
-	rec, err := s.genericSecrets.Get(r.Context(), secretID)
+	ctx := teamPathTenantCtx(r)
+	rec, err := s.genericSecrets.Get(ctx, secretID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrGenericSecretNotFound) {
 			httpError(w, http.StatusNotFound, "secret not found")
@@ -186,7 +189,7 @@ func (s *Server) handleUpdateGenericSecret(w http.ResponseWriter, r *http.Reques
 		rec.Last4 = secrets.Last4(*req.Secret)
 		rec.Fingerprint = secrets.FingerprintSHA256(*req.Secret)
 	}
-	if err := s.genericSecrets.Update(r.Context(), rec); err != nil {
+	if err := s.genericSecrets.Update(ctx, rec); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -197,7 +200,8 @@ func (s *Server) handleUpdateGenericSecret(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	secretID := r.PathValue("secret_id")
-	rec, err := s.genericSecrets.Get(r.Context(), secretID)
+	ctx := teamPathTenantCtx(r)
+	rec, err := s.genericSecrets.Get(ctx, secretID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrGenericSecretNotFound) {
 			w.WriteHeader(http.StatusNoContent)
@@ -210,7 +214,7 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusForbidden, "cannot delete this secret")
 		return
 	}
-	if err := s.genericSecrets.Delete(r.Context(), rec.ID); err != nil {
+	if err := s.genericSecrets.Delete(ctx, rec.ID); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
@@ -232,6 +236,13 @@ func (s *Server) canMutateScopedRecord(ctx context.Context, id auth.Identity, sc
 	}
 	if scopeUserID != "" {
 		return scopeUserID == id.UserID
+	}
+	// An ORG-tier record is scoped to a reserved literal, not a team id, so
+	// the membership read below can only ever miss — and a miss reads as
+	// "forbidden", which would leave the org's own shared credentials
+	// mutable by super-admins alone. Its owner is the ORG's admins.
+	if orgID, ok := secrets.OrgIDFromTierScope(scopeTeamID); ok {
+		return s.canManageOrg(ctx, id, orgID)
 	}
 	mb, err := s.authStore().GetMembership(ctx, id.UserID, scopeTeamID)
 	if err != nil {
