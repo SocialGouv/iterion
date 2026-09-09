@@ -8,6 +8,54 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
+
+- Status: **validated locally**; the cloud half arrives on its own once 0.9.0 is baked.
+- Versions: bot review-pr **0.9.0** (local) · engine `f633a830` (v3.122.3)
+- Why the change at all — a measurement, not an intuition: `tracker_api_base`
+  was set on **0 of the 16** connected GitHub repos. Ticket conformance had
+  shipped in 0.6.0 and, outside demat-amiante, **had never run once**. A PR
+  saying "Fixes #123" was reviewed without anyone reading #123, and nothing
+  said so. Everything the check needed was already in the run (the PR URL, a
+  `forge_token` bound at provisioning), so the per-repo var was an artificial
+  limit for the common case.
+- Method: `iterion run` on this very branch with `--var pr_url=<PR #1017>` and
+  `scope_notes` carrying the PR title+body (what the webhook supplies), NO
+  `tracker_api_base` — i.e. the forge-native path. 18 min, **$3.31** for the
+  run (converge $0.29).
+- Result: **`1014: covered`** — the first `covered` verdict ever observed here
+  (every earlier test produced `not covered` or `unverifiable`), so the check
+  is now known to bite in **both** directions rather than only rejecting. It
+  named the four deliverables of the issue and anchored each in the diff, and
+  it reported having read the issue *through the very path the PR builds*.
+- What the events prove rather than assert: `api.github.com/repos/SocialGouv/
+  iterion/issues/1014` was fetched with no `tracker_api_base` anywhere — the
+  base was derived from the PR URL.
+- **Three real defects found by Revi in this feature, on its own PR** (bot
+  0.8.1 reviewing 0.9.0 — the reviewer that does not yet have the feature
+  reviewing the one that adds it):
+  - `[high] requirements` — the manifest declared no `issues` scope. A GitHub
+    App provisioned from it cannot read issues, so every fetch 403s and every
+    verdict degrades to `unverifiable`. **The feature could have shipped
+    INERT**, and its failure mode reads like "no ticket" rather than "the
+    token was not allowed to look" — the exact shape of a guard that looks
+    like it works.
+  - `[medium]` — the linked-issue GraphQL POSTed to `api.github.com`
+    unconditionally, while the API-base table right above it derives
+    `https://<host>/api/v3` for GitHub Enterprise: a self-hosted instance's
+    token handed to a third party.
+  - `[medium]` — the forge token can WRITE (that is why it exists), and the
+    change put its path in front of a judge whose two inputs (diff, ticket
+    body) are attacker-controlled on a public repo.
+  All three fixed in the same session; the re-review then went green.
+- Lessons for next run: (a) a capability that needs a token scope must declare
+  it in the manifest — the runtime does not read `token_scopes`, the
+  PROVISIONER does, so an undeclared scope is a feature that installs itself
+  disabled; (b) when a skill derives a host, every other URL in that skill has
+  to derive it too, or the one hardcoded line becomes the exfiltration path;
+  (c) reviewing a feature with the version that predates it is a cheap and
+  honest adversary — it has no stake in the design.
+
 ## 2026-09-08 — ticket conformance validated on a REAL private Jira, and the cross-tenant write it exposed (runs 01a082a0 / 01a082a8 / 01a082b2)
 
 - Status: **validated** — the feature works end-to-end on the cloud instance

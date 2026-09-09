@@ -1,7 +1,22 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.8.1
+version: 0.9.0
+## 0.9.0 — ticket conformance now works with NO configuration on the
+## forge's own issues. Since 0.6.0 the check only ran when an operator
+## pinned `tracker_api_base` per repo, which meant that on 16 connected
+## GitHub repos it never ran at all: a PR saying "Fixes #123" was
+## reviewed without anyone reading #123. Yet everything needed was
+## already in the run — the PR URL, and a forge token bound
+## automatically when the repo was provisioned. That configuration
+## requirement was an artificial limit, so it is gone: `ticket_context`
+## (auto|off, default auto) picks the EXTERNAL tracker when
+## `tracker_api_base` is set, else FORGE-NATIVE from the PR URL. In
+## forge-native mode the reviewers ask the FORGE which issues the PR
+## closes (GitLab `closes_issues`, GitHub `closingIssuesReferences`)
+## rather than trusting a regex over prose, and fall back to the text
+## scan. A PR with no ticket stays a normal PR — the absence of a
+## reference is never a finding.
 ## 0.8.1 — budget max_cost_usd 12 → 48: the guard tier died at $36 and $30
 ## on a 7-file PR, twice on one revision (the automatic relaunch included),
 ## and the merge gate posted no verdict. A review that reproduces its
@@ -195,6 +210,12 @@ forge:
                              # write"; without it SetCommitStatus 403s
                              # "insufficient scope" and the gate silently
                              # advises instead of blocking)
+    issues: read             # read the issues a PR links, for the 0.9.0
+                             # forge-native ticket conformance. Without this
+                             # scope the no-config path is INERT: every fetch
+                             # 403s and every verdict degrades to
+                             # "unverifiable", which reads like "no ticket"
+                             # rather than "the token may not look".
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
