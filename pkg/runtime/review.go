@@ -253,6 +253,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 		version := rs.artifactVersions[nodeID]
 		if werr := e.store.WriteArtifact(ctx, &store.Artifact{
 			RunID: rs.runID, NodeID: nodeID, Version: version, Data: verdict,
+			Contract: e.artifactContractFor(nodeID, hn, version),
 		}); werr != nil {
 			return "", fmt.Errorf("runtime: review gate %q: write artifact: %w", nodeID, werr)
 		}

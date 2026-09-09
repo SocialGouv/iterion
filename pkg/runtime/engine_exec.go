@@ -587,11 +587,12 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 	// verdict), deduped — so explicit and heuristic labels coexist.
 	labels := dedupeLabels(append(nodePublishLabels(node), artifactlabels.Classify(output)...))
 	if err := e.store.WriteArtifact(ctx, &store.Artifact{
-		RunID:   rs.runID,
-		NodeID:  nodeID,
-		Version: version,
-		Data:    output,
-		Labels:  labels,
+		RunID:    rs.runID,
+		NodeID:   nodeID,
+		Version:  version,
+		Data:     output,
+		Labels:   labels,
+		Contract: e.artifactContractFor(nodeID, node, version),
 	}); err != nil {
 		return fmt.Errorf("runtime: write artifact: %w", err)
 	}

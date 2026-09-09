@@ -614,6 +614,24 @@ export interface ArtifactSummary {
   written_at: string;
 }
 
+export interface ArtifactDependency {
+  logical_ref: string;
+  node_id?: string;
+  version: number;
+  required?: boolean;
+}
+
+export interface ArtifactContract {
+  logical_ref: string;
+  producer_node: string;
+  producer_revision?: string;
+  version: number;
+  schema?: string;
+  dependencies?: ArtifactDependency[];
+  mutable?: boolean;
+  effects?: string[];
+}
+
 export interface Artifact {
   run_id: string;
   node_id: string;
@@ -622,6 +640,7 @@ export interface Artifact {
   // Labels categorise the artifact (e.g. "plan", "verdict"). Mirror of
   // store.Artifact.Labels. Empty/absent on legacy artifacts.
   labels?: string[];
+  contract?: ArtifactContract;
   written_at: string;
 }
 

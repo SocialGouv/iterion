@@ -398,11 +398,14 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
-	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
-	return runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force)
+	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
+		return err
+	}
+	return runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash)
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -496,6 +499,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
+		return nil, err
+	}
+	if err := runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash); err != nil {
 		return nil, err
 	}
 

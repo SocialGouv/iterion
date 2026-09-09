@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -299,6 +300,12 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
+	}
+	// Refuse an incompatible persisted artifact before claiming the run or
+	// mutating its checkpoint/workspace. Legacy/report contexts remain
+	// compatible during rollout; enforce contexts fail closed.
+	if err := runtime.ValidateArtifactContracts(ctx, s.store, run, wf, ""); err != nil {
+		return nil, err
 	}
 	// Nodes this run actually executed — the search space for --auto and
 	// the validity domain for an explicit --node.

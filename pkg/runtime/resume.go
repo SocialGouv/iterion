@@ -83,6 +83,15 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err := e.admitRun(ctx, runID, r); err != nil {
 		return err
 	}
+	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash); err != nil {
+		// Refuse before claiming the checkpoint or touching the workspace.
+		return &RuntimeError{
+			Code:    store.FailureResumeInvalid,
+			Message: "persisted artifact contract is incompatible with this workflow",
+			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract before resuming",
+			Cause:   err,
+		}
+	}
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
@@ -551,10 +560,11 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{
-			RunID:   runID,
-			NodeID:  humanNodeID,
-			Version: version,
-			Data:    answers,
+			RunID:    runID,
+			NodeID:   humanNodeID,
+			Version:  version,
+			Data:     answers,
+			Contract: e.artifactContractFor(humanNodeID, humanNode, version),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return nil, fmt.Errorf("runtime: write human artifact: %w", err)
@@ -1265,10 +1275,11 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	if pub := nodePublish(node); pub != "" {
 		version := rs.artifactVersions[nodeID]
 		artifact := &store.Artifact{
-			RunID:   rs.runID,
-			NodeID:  nodeID,
-			Version: version,
-			Data:    output,
+			RunID:    rs.runID,
+			NodeID:   nodeID,
+			Version:  version,
+			Data:     output,
+			Contract: e.artifactContractFor(nodeID, node, version),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
@@ -1912,10 +1923,11 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	if pub := nodePublish(node); pub != "" {
 		version := rs.artifactVersions[nodeID]
 		artifact := &store.Artifact{
-			RunID:   rs.runID,
-			NodeID:  nodeID,
-			Version: version,
-			Data:    output,
+			RunID:    rs.runID,
+			NodeID:   nodeID,
+			Version:  version,
+			Data:     output,
+			Contract: e.artifactContractFor(nodeID, node, version),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("runtime: write artifact: %w", err)

@@ -1445,8 +1445,37 @@ type Artifact struct {
 	// can group artifacts by label. Sourced from the node's DSL
 	// `artifact_labels:` plus a shape heuristic (pkg/artifactlabels). Empty
 	// on legacy artifacts written before this field existed.
-	Labels    []string  `json:"labels,omitempty" bson:"labels,omitempty"`
-	WrittenAt time.Time `json:"written_at" bson:"written_at"`
+	Labels []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	// Contract binds this output to its logical reference, producer revision,
+	// schema and dependencies. Nil is the legacy artifact shape and remains
+	// readable during the rollout.
+	Contract  *ArtifactContract `json:"contract,omitempty" bson:"contract,omitempty"`
+	WrittenAt time.Time         `json:"written_at" bson:"written_at"`
+}
+
+// ArtifactDependency records the artifact revision consumed while producing
+// an output. A resume must not silently feed an incompatible or missing
+// revision to a downstream node.
+type ArtifactDependency struct {
+	LogicalRef string `json:"logical_ref" bson:"logical_ref"`
+	NodeID     string `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Version    int    `json:"version" bson:"version"`
+	Required   bool   `json:"required,omitempty" bson:"required,omitempty"`
+}
+
+// ArtifactContract is the durable restart contract for one logical output.
+// Effects describes the publishing policy (currently "persist" and
+// "external" are understood); it is metadata for admission, never a request
+// to replay an external side effect.
+type ArtifactContract struct {
+	LogicalRef       string               `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string               `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string               `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int                  `json:"version" bson:"version"`
+	Schema           string               `json:"schema,omitempty" bson:"schema,omitempty"`
+	Dependencies     []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+	Mutable          bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects          []string             `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
