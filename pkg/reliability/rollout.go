@@ -40,7 +40,15 @@ type Config struct {
 }
 
 func FromEnv() Config {
-	mode := Mode(strings.TrimSpace(strings.ToLower(os.Getenv(EnvMode))))
+	// Keep the report aligned with the launch surfaces. The staged reliability
+	// switch is authoritative when both variables are set, which makes its
+	// documented legacy rollback effective even on hosts with the older policy
+	// variable still configured.
+	rawMode := strings.TrimSpace(os.Getenv(EnvMode))
+	if rawMode == "" {
+		rawMode = os.Getenv("ITERION_EXECUTION_CONTEXT_POLICY")
+	}
+	mode := Mode(strings.TrimSpace(strings.ToLower(rawMode)))
 	if mode != ModeReport && mode != ModeEnforce {
 		mode = ModeLegacy
 	}
@@ -173,6 +181,7 @@ func (c Config) Rollback() RollbackPlan {
 		PreserveEvidence:   true,
 		Actions: []string{
 			"set ITERION_RELIABILITY_MODE=legacy",
+			"set ITERION_EXECUTION_CONTEXT_POLICY=legacy for older launch surfaces",
 			"set ITERION_OUTPUT_CORRECTION_BUDGET=0 for new launches if needed",
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},

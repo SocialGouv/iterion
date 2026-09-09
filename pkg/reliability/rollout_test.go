@@ -64,6 +64,7 @@ func TestSummarizeAndRollback(t *testing.T) {
 
 func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "")
+	t.Setenv("ITERION_EXECUTION_CONTEXT_POLICY", "")
 	t.Setenv("ITERION_RETRY_CIRCUIT_THRESHOLD", "7")
 	t.Setenv("ITERION_RETRY_CIRCUIT_COOLDOWN", "2m")
 	c := FromEnv()
@@ -73,5 +74,13 @@ func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "enforce")
 	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyEnforce {
 		t.Fatalf("enforce policy = %s", got)
+	}
+	t.Setenv("ITERION_EXECUTION_CONTEXT_POLICY", "report")
+	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyEnforce {
+		t.Fatalf("reliability mode must win over older policy = %s", got)
+	}
+	t.Setenv(EnvMode, "")
+	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyReport {
+		t.Fatalf("older policy fallback = %s", got)
 	}
 }
