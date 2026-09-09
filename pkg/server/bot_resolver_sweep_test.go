@@ -96,11 +96,16 @@ var tenantFreeMetadataAllowed = map[string]string{
 	"config_shares_routes.go":    "botManifest is botManifestFor's platform + baked fall-through",
 	"forge_gate_pause_notice.go": "effectiveFindByName is teamBotManifest's fall-through, reached only when the run records no team row",
 	"webhooks_handoff.go":        "the deployment-wide producer FLOOR; teamHandoffProducers is the team half, and the scan picks per run by Run.BotSourceTenant",
+	// bakedFindByName, and only after the LAUNCH already resolved the baked
+	// tier: the tenant tiers were consulted and served nothing, so the entry
+	// must come from the bundle that will run and not from the platform
+	// overlay, whose 30s cache may still hold a deleted override.
+	"pipeline_admission.go": "the metadata of a launch that already resolved BAKED — each tier answers for itself (storedBotEntry serves the other two)",
 }
 
 func TestBotResolutionSweep_TenantFreeMetadataIsDeclared(t *testing.T) {
 	tenantFree := regexp.MustCompile(
-		`s\.(?:effectiveEntries\(\)|effectiveEntriesWithSchema\(\)|effectiveFindByName\(|botExists\(|botManifest\(|entryOrigin\(|findBot\()`)
+		`s\.(?:effectiveEntries\(\)|effectiveEntriesWithSchema\(\)|effectiveFindByName\(|bakedFindByName\(|botExists\(|botManifest\(|entryOrigin\(|findBot\()`)
 	sweepServerFiles(t, func(name, body string) {
 		if !tenantFree.MatchString(body) {
 			return

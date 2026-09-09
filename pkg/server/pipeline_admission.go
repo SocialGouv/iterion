@@ -594,15 +594,23 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 }
 
 // pipelineBotEntry reads the catalog metadata describing the bundle `lb`
-// selected — from the tier that selected it. A stored row (team or platform)
-// answers for itself, strictly: no other tier may stand in for it. Only the
-// baked tier falls through the ordinary team → platform → baked metadata
-// path, which is what it resolved through in the first place.
+// selected — from the tier that selected it, and from no other. A stored row
+// (team or platform) answers through its own live row; the baked tier answers
+// from the baked catalog with the platform overlay OFF.
+//
+// That last part is the leg the tier order cannot close by itself. Reaching
+// the baked tier means the live store served neither a team row nor a
+// platform one, while platformBotSetCached — a 30s TTL invalidated only on
+// the replica that wrote — may still carry an override that was just DELETED.
+// The overlaid read would then describe the running baked bundle with the
+// deleted override's `enabled` and name: a disabled override making an
+// enabled bot unlaunchable, or worse the reverse. Each tier answering for
+// itself is the whole shape of this chokepoint; this is its third leg.
 func (s *Server) pipelineBotEntry(ctx context.Context, teamID, botID string, lb *launchBot) (botregistry.EntryWithSchema, bool, error) {
 	if lb.Ref != nil && lb.Ref.TenantID != "" {
 		return s.storedBotEntry(ctx, lb.Ref.TenantID, lb.Ref.Slug)
 	}
-	return s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	return s.bakedFindByName(botID)
 }
 
 // launchTicketNow claims a ticket and launches its bot, returning the run

@@ -441,6 +441,47 @@ func assertUnreadableMetadataRefusal(t *testing.T, env *pipelineTierEnv) {
 	}
 }
 
+// The third leg: a platform override DELETED inside the overlay's 30s
+// window. The live store no longer has it, so the launch resolves the BAKED
+// bundle — while the cached overlay still describes the override on every
+// replica that did not serve the delete. Reading `enabled` there refuses a
+// card whose bundle is enabled and would run.
+func TestPipelineBoardIgnoresADeletedOverrideStillInTheOverlay(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	created, err := env.srv.botSources.Create(store.WithTenant(context.Background(), botsource.PlatformTenantID), botsource.BotSource{
+		TenantID: botsource.PlatformTenantID, Slug: "probe",
+		Files: map[string]string{
+			botsource.MainBotFile: strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1),
+			"manifest.yaml":       "name: probe\nversion: 2.0.0\nenabled: false\n",
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed the override: %v", err)
+	}
+	// Warm the overlay WITH the override present, then delete it: this is
+	// the state of every replica that did not serve the delete.
+	if _, _, err := env.srv.effectiveFindByNameForTeam(context.Background(), "t1", "probe"); err != nil {
+		t.Fatalf("warm the overlay: %v", err)
+	}
+	if err := env.srv.botSources.Delete(store.WithTenant(context.Background(), botsource.PlatformTenantID), created.ID); err != nil {
+		t.Fatalf("delete the override: %v", err)
+	}
+
+	// The baked `probe` is enabled, and it is what the launch now resolves.
+	card := env.createCard(t, `{"bot":"probe","title":"override withdrawn"}`)
+	r := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", "")
+	r.SetPathValue("id", card.ID)
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskLaunch(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("launch = %d %s, want 202 — the bundle that runs is the ENABLED baked `probe`, "+
+			"and `enabled` was read off an override the store no longer has", w.Code, w.Body.String())
+	}
+	if spec := env.pub.only(t); !strings.Contains(spec.Source, "BAKED") {
+		t.Errorf("the launch ran %q, want the baked bundle the deleted override no longer shadows", spec.Source)
+	}
+}
+
 // Half 3 — the admission LOOP is local-only (pipelineAdmissionEnabled
 // refuses cloud), so its board carries no tenant: it must keep resolving
 // platform-over-baked with an empty team, and must never be handed some

@@ -644,20 +644,48 @@ func (s *Server) effectiveFindByName(name string) (botregistry.EntryWithSchema, 
 	if err != nil {
 		return botregistry.EntryWithSchema{}, false, err
 	}
+	entry, found := findEntryByName(entries, name)
+	return entry, found, nil
+}
+
+// bakedFindByName is effectiveFindByName WITHOUT the platform overlay: the
+// baked catalog answering for itself, workspace overlay composed as always.
+//
+// It is for the caller that already knows which tier served — a launch that
+// resolved the baked bundle — and must not read the entry of an override
+// that did not. The overlay is a 30s cache invalidated only on the replica
+// that wrote, so for that window after an override is DELETED it still
+// describes a bundle the live store no longer has, and effectiveFindByName
+// would hand back its `enabled` and name for the baked twin now running.
+// Every OTHER reader wants the effective answer and keeps it.
+func (s *Server) bakedFindByName(name string) (botregistry.EntryWithSchema, bool, error) {
+	entries, err := botregistry.ListWithSchema(s.botListOptions())
+	if err != nil {
+		return botregistry.EntryWithSchema{}, false, err
+	}
+	entry, found := findEntryByName(entries, name)
+	return entry, found, nil
+}
+
+// findEntryByName is the launcher's name match, one implementation for every
+// entry set: an exact match first, then the NormalizeName-folded spelling
+// (review_pr → review-pr), because the launcher accepts both and a run's
+// persisted BotID may carry either.
+func findEntryByName(entries []botregistry.EntryWithSchema, name string) (botregistry.EntryWithSchema, bool) {
 	for _, e := range entries {
 		if e.Name == name {
-			return e, true, nil
+			return e, true
 		}
 	}
 	// Tolerant match: normalised comparison after the exact pass.
 	nn := botregistry.NormalizeName(name)
 	if nn == "" {
-		return botregistry.EntryWithSchema{}, false, nil
+		return botregistry.EntryWithSchema{}, false
 	}
 	for _, e := range entries {
 		if botregistry.NormalizeName(e.Name) == nn {
-			return e, true, nil
+			return e, true
 		}
 	}
-	return botregistry.EntryWithSchema{}, false, nil
+	return botregistry.EntryWithSchema{}, false
 }
