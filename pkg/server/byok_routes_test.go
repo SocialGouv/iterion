@@ -253,3 +253,26 @@ func TestCreateApiKey_RefusesUnicodeWhitespaceAndLeavesATrace(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A route whose {id} is NOT the store scope — the org credential tier,
+// where {id} is an ORG id while the rows live under the reserved org-tier
+// scope — passes the scope explicitly. Deriving it from the path there
+// would filter on an id no row carries, and the org's own key would read as
+// absent while the run silently fell through to the platform credential.
+func TestApiKeyTenantCtx_ExplicitScopeBeatsThePath(t *testing.T) {
+	r, err := http.NewRequest("POST", "/api/orgs/org-1/api-keys", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetPathValue("id", "org-1")
+	r = r.WithContext(store.WithTenant(r.Context(), "team-a"))
+
+	scope := secrets.OrgTierTenantID("org-1")
+	got, ok := store.TenantFromContext(apiKeyScopeCtx(r, scope))
+	if !ok || got != scope {
+		t.Fatalf("want the explicit org-tier scope %q, got %q (ok=%v)", scope, got, ok)
+	}
+	if got == "org-1" {
+		t.Fatal("the raw org id reached the store scope — no api-key row is stamped with it")
+	}
+}

@@ -790,6 +790,14 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 		case api.EventMessageDelta:
 			stopReason = event.StopReason
 			outputTokens = event.Usage.OutputTokens
+			// Providers that only learn the prompt count once the turn is
+			// over report it here instead of on message_start (the OpenAI
+			// endpoints). Taken only when non-zero, so a provider that
+			// already answered on message_start is not zeroed by a delta
+			// that carries nothing.
+			if event.Usage.InputTokens > 0 {
+				inputTokens = event.Usage.InputTokens
+			}
 
 		case api.EventMessageStop:
 			// stream complete

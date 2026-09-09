@@ -790,7 +790,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 		NodeID:   currentNodeID,
 		Version:  version,
 		Data:     output,
-		Contract: e.artifactContractFor(currentNodeID, node, version),
+		Contract: e.artifactContractFor(currentNodeID, node, version, branchRS),
 	}
 	if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: write artifact: %w", currentNodeID, branchID, err)

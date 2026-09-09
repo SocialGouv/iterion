@@ -592,7 +592,7 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 		Version:  version,
 		Data:     output,
 		Labels:   labels,
-		Contract: e.artifactContractFor(nodeID, node, version),
+		Contract: e.artifactContractFor(nodeID, node, version, rs),
 	}); err != nil {
 		return fmt.Errorf("runtime: write artifact: %w", err)
 	}
