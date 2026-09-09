@@ -1,0 +1,111 @@
+import { expect, test } from "@playwright/test";
+
+// studio-ui.security-headers — the CSP is enforced against the REAL SPA, not
+// asserted as a string. A policy is only worth its directives if the app it
+// governs still works under it, and the only honest oracle for that is the
+// browser.
+//
+// It also pins the self-hosting of Monaco. The editor used to be fetched at
+// runtime from cdn.jsdelivr.net, which put third-party executable code in the
+// surface that edits LLM keys and forge tokens; `script-src 'self'` is what
+// makes a regression fail loudly instead of silently phoning out again.
+
+const CDN_HOSTS = /cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/;
+
+/** Collects CSP violations and off-origin requests for the life of a page. */
+function watch(page: import("@playwright/test").Page) {
+  const violations: string[] = [];
+  const offOrigin: string[] = [];
+
+  // securitypolicyviolation fires in the page for every blocked resource.
+  // Registered via addInitScript so it is armed before the first byte runs.
+  page.addInitScript(() => {
+    (window as unknown as { __cspViolations: string[] }).__cspViolations = [];
+    document.addEventListener("securitypolicyviolation", (e) => {
+      const ev = e as SecurityPolicyViolationEvent;
+      (window as unknown as { __cspViolations: string[] }).__cspViolations.push(
+        `${ev.violatedDirective} blocked ${ev.blockedURI || "(inline)"}`,
+      );
+    });
+  });
+
+  page.on("request", (req) => {
+    if (CDN_HOSTS.test(req.url())) offOrigin.push(req.url());
+  });
+
+  return {
+    offOrigin,
+    async drain() {
+      const inPage = await page.evaluate(
+        () => (window as unknown as { __cspViolations?: string[] }).__cspViolations ?? [],
+      );
+      return violations.concat(inPage);
+    },
+  };
+}
+
+test("the studio serves its security headers", async ({ page }) => {
+  const res = await page.goto("/");
+  expect(res).not.toBeNull();
+  const headers = res!.headers();
+
+  expect(headers["x-content-type-options"]).toBe("nosniff");
+  expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  expect(headers["x-frame-options"]).toBe("SAMEORIGIN");
+
+  const csp = headers["content-security-policy"] ?? "";
+  expect(csp, "no CSP on the document").toBeTruthy();
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).toContain("frame-ancestors 'self'");
+  expect(csp).toContain("object-src 'none'");
+  // script-src is the boundary between an injected string and running code:
+  // neither escape hatch may appear there. (style-src does carry
+  // 'unsafe-inline' — measured, see the policy comment in Go.)
+  const scriptSrc = csp
+    .split(";")
+    .map((d) => d.trim())
+    .find((d) => d.startsWith("script-src "));
+  expect(scriptSrc).toBe("script-src 'self'");
+  expect(csp).not.toContain("unsafe-eval");
+});
+
+test("the app boots under the CSP with no violation and no CDN request", async ({
+  page,
+}) => {
+  const w = watch(page);
+
+  await page.goto("/runs");
+  // The seeded run must be on screen: the SPA has to boot, fetch over the API
+  // and render under the policy. Without this the test would pass on a blank
+  // page, which is exactly what a too-strict CSP produces.
+  await expect(page.getByRole("row").filter({ hasText: "/demo-bot/main.bot" })).toContainText(
+    "finished",
+  );
+  await page.waitForLoadState("networkidle");
+
+  expect(await w.drain(), "CSP violations while booting the SPA").toEqual([]);
+  expect(w.offOrigin, "the SPA fetched from a third-party CDN").toEqual([]);
+});
+
+test("Monaco loads self-hosted, under the CSP, with its workers", async ({ page }) => {
+  const w = watch(page);
+
+  await page.goto("/editor?file=bots/demo-bot/main.bot");
+  // Open the source pane — that is what mounts Monaco.
+  await page.getByRole("button", { name: "Toggle source view" }).click();
+
+  // The editor really mounted: Monaco renders its own view container, and the
+  // .bot source is tokenized into it. Without this the assertions below would
+  // pass on a page where the editor silently failed to load.
+  const monaco = page.locator(".monaco-editor").first();
+  await expect(monaco).toBeVisible({ timeout: 30_000 });
+  await expect(monaco).toContainText("ui_fixture", { timeout: 30_000 });
+
+  await page.waitForLoadState("networkidle");
+
+  expect(await w.drain(), "CSP violations after mounting Monaco").toEqual([]);
+  expect(
+    w.offOrigin,
+    "Monaco was fetched from a CDN — loader.config({ monaco }) is not in effect",
+  ).toEqual([]);
+});

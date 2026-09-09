@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "@/lib/monaco";
 
 import { Button, Dialog } from "@/components/ui";
 import {
