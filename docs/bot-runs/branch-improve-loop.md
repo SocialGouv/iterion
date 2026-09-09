@@ -1,5 +1,50 @@
 # Billy — branch-improvement validation
 
+## 2026-09-09 — #1028: lazy cloud home, bank recovered after quota stop
+
+- Status: **bank recovered; delivery review interrupted by provider quota**.
+  This was not a completed end-to-end Billy run.
+- Method: `/billy` on PR #1028, scoped to Revi finding `R8a91d4` after
+  review `01a085f9-871b-7aa9-85d6-e8724258c04c`. Run
+  `01a08605-1dd6-7907-9baa-86fae51f3e0b` started at 11:54:37Z from
+  `82f881938`; auto-merge was disabled during the pass. The owner made no
+  concurrent edits to its branch.
+- Result: `f0c723e59` defers CloudHome with React.lazy and the existing
+  BootLoading fallback while keeping PublicTopBar eager; `54a2c24d3` adds
+  a regression test; `8fe07161f` records the initial bilan. The approved
+  page content, appearance, local login fallback and marketplace flag stay
+  intact. **R8a91d4 is fixed.**
+- Evidence: the bot measured entry JS 461.25 → 289.78 kB (gzip 127.43 →
+  88.30) and entry CSS 119.68 → 98.21 kB (gzip 21.62 → 17.03). Neither
+  CloudHome nor its brand-icon payload remained in the eager preload graph.
+  The new test was falsified by temporarily restoring the static import.
+  Studio lint had zero errors, TypeScript and Vite passed, and all 1,352
+  tests in 152 files passed. The generated delivery script also passed,
+  including the OpenAPI/client drift check.
+- Stop and recovery: the final `review` node hit the Claude five-hour limit
+  at 12:41:07Z (`USAGE_LIMIT_BLOCKED`, reset advertised for 13:50Z), before
+  publishing a ledger or pushing the PR. The owner cancelled the parked run
+  and confirmed `cancelled`, with no running execution, before recovering
+  checkpoint `iterion/run-01a08605-1dd6-7907-9baa-86fae51f3e0b-checkpoint`.
+  FETCH_HEAD matched the recorded `8fe07161f6a92587a3dc34c3bb6bf155365ccd06`;
+  its three commits were preserved by fast-forward rather than replaying
+  the completed campaign after the reset.
+- Recovery validation: the owner reran Studio lint (0 errors), TypeScript,
+  all 1,352 tests and the production build successfully. Browser checks on
+  the built SPA confirm that `/login` neither requests nor preloads the
+  CloudHome JS/CSS, while `/` loads both and still navigates to login. Local
+  bundle sizes match the measurements above. GitHub CI and Revi must validate
+  the published head before queue entry.
+- Frictions: planning and peer review took about 25 minutes for one
+  import-boundary correction. A 30-second shell timeout cut off the peer's
+  baseline lint; the owner supplied the already-green baseline and advised
+  a longer timeout. Vitest cannot resolve the real page's lobehub UI import
+  in this environment, so the boundary test mocks its far side; the
+  production bundle check covers the actual dependency graph. Soft usage
+  readings (`stopped=false`, including 0%) did not predict the hard denial.
+- Lesson: validate the eager dependency graph, not just a chunk-size drop,
+  and preserve banked work when the delivery review cannot obtain a model.
+
 ## 2026-09-08 — #964: quota stop after useful fixes, bank delivered locally
 
 - Status: **banked commits recovered and locally validated**. The campaign

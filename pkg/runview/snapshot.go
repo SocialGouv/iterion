@@ -362,6 +362,10 @@ type RunSnapshot struct {
 	Run        RunHeader        `json:"run"`
 	Executions []ExecutionState `json:"executions"`
 	LastSeq    int64            `json:"last_seq"`
+	// Diagnostic is the common, versioned operator projection. It is
+	// additive and derived from the same run/events stream; callers may
+	// ignore it when they have not adopted the contract yet.
+	Diagnostic *DiagnosticProjection `json:"diagnostic,omitempty"`
 }
 
 // SnapshotBuilder is a stateful incremental reducer: feed it events in
@@ -381,10 +385,11 @@ type RunSnapshot struct {
 const NoEventsSeq int64 = -1
 
 type SnapshotBuilder struct {
-	header    RunHeader
-	execs     map[string]*ExecutionState
-	order     []string                  // execution_id in first-seen order; defines snapshot.Executions order
-	nodeCount map[string]map[string]int // branch_id → ir_node_id → next iteration index (LEGACY, for fallback int-iter path)
+	header     RunHeader
+	diagnostic *DiagnosticProjection
+	execs      map[string]*ExecutionState
+	order      []string                  // execution_id in first-seen order; defines snapshot.Executions order
+	nodeCount  map[string]map[string]int // branch_id → ir_node_id → next iteration index (LEGACY, for fallback int-iter path)
 	// lastExecID maps (branch → nodeID → exec_id) to the most recent
 	// node_started exec_id for that node. currentExec uses it to find
 	// the in-flight execution for downstream events (node_finished,
@@ -478,6 +483,7 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
+		b.diagnostic = newDiagnosticProjection(run)
 	}
 	return b
 }
@@ -496,6 +502,11 @@ func (b *SnapshotBuilder) SetRun(run *store.Run) {
 	prevAnchor := b.header.CurrentRunStart
 	hadEventDerivedTimer := b.lastSeq != NoEventsSeq
 	b.header = headerFromRun(run)
+	if b.diagnostic == nil {
+		b.diagnostic = newDiagnosticProjection(run)
+	} else {
+		b.diagnostic.refreshRun(run)
+	}
 	if hadEventDerivedTimer {
 		b.header.ActiveDurationMs = prevDuration
 		b.header.CurrentRunStart = prevAnchor
@@ -514,6 +525,9 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		return
 	}
 	b.lastSeq = evt.Seq
+	if b.diagnostic != nil {
+		b.diagnostic.observeEvent(evt)
+	}
 
 	// Authoritative monotonic active-duration base (BUG A fix): when the
 	// engine stamped Event.ActiveMs (SharedBudget CLOCK_MONOTONIC
@@ -604,11 +618,35 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 		cp := *b.workspaceCheckpoint
 		header.WorkspaceCheckpoint = &cp
 	}
+	var diagnostic *DiagnosticProjection
+	if b.diagnostic != nil {
+		copyOfDiagnostic := *b.diagnostic
+		copyOfDiagnostic.Evidence = cloneDiagnosticEvidence(b.diagnostic.Evidence)
+		diagnostic = &copyOfDiagnostic
+	}
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,
 		LastSeq:    b.lastSeq,
+		Diagnostic: diagnostic,
 	}
+}
+
+func cloneDiagnosticEvidence(in []DiagnosticEvidence) []DiagnosticEvidence {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]DiagnosticEvidence, len(in))
+	for i, evidence := range in {
+		out[i] = evidence
+		if evidence.Details != nil {
+			out[i].Details = make(map[string]string, len(evidence.Details))
+			for key, value := range evidence.Details {
+				out[i].Details[key] = value
+			}
+		}
+	}
+	return out
 }
 
 // buildLoopProgress assembles the run-level named-loop indicator from

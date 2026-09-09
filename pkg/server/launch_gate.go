@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -129,9 +130,12 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // On allow it returns the admission handle for the metered increment
 // (nil when nothing was metered).
 //
-// Fail-open on store errors, mirroring the suspend check: quotas are an
-// operator policy, not a hard security boundary — a transient Mongo
-// blip must not wedge every launch. Super-admins bypass entirely.
+// Fail-open on a DEGRADED store read, mirroring the suspend check:
+// quotas are an operator policy, not a hard security boundary — a
+// transient Mongo blip must not wedge every launch. A team the store
+// answers is GONE is not that case and is denied, since no later check
+// can bound a run whose tenant does not exist. Super-admins bypass
+// entirely.
 // The run-quota increment is the one exception to fail-open being
 // "free": when AllowRun errors the launch proceeds unmetered (logged).
 func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenial) {
@@ -159,8 +163,27 @@ func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenia
 	if !ok || t.ID != id.TeamID {
 		var err error
 		t, err = st.GetTeam(ctx, id.TeamID)
-		if err != nil {
-			return nil, nil // fail-open (see doc comment)
+		switch {
+		case errors.Is(err, identity.ErrNotFound):
+			// Not a blip — a definite answer. The token names a team that
+			// no longer exists, so admitting it runs work under a tenant
+			// nobody can suspend, bill or see. The teamless arm above
+			// refuses that situation when the claim is empty; this is the
+			// same situation arriving later. The webhook middleware draws
+			// the same line one layer up (middleware_webhook.go).
+			return nil, &launchDenial{
+				status: http.StatusForbidden,
+				reason: denyNoWorkspace,
+				detail: "the workspace this session points at no longer exists — sign in again, or ask an admin to add you to a team",
+			}
+		case err != nil:
+			// A degraded read keeps the fail-open of the doc comment, but
+			// says so: what follows is a launch with no suspend check and
+			// no metering, which is invisible from the outside otherwise.
+			if s.logger != nil {
+				s.logger.Warn("launch gate: team %s unreadable (%v) — launching UNGATED: suspend unchecked, run unmetered", id.TeamID, err)
+			}
+			return nil, nil
 		}
 	}
 	// The team's parent org owns the monthly budget + the top-level

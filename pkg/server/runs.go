@@ -30,6 +30,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/children", s.handleListRunChildren)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
+	s.mux.HandleFunc("GET /api/runs/{id}/diagnostic", s.handleGetRunDiagnostic)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts", s.handleListAllArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)

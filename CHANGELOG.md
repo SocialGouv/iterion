@@ -3,6 +3,48 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.125.0](https://github.com/SocialGouv/iterion/compare/v3.124.0...v3.125.0) (2026-09-09)
+
+### Features
+
+* **runview:** expose shared workflow diagnostics ([#1008](https://github.com/SocialGouv/iterion/issues/1008)) ([d9d136f](https://github.com/SocialGouv/iterion/commit/d9d136fb5920356fe8a44bedaf779a2d0bed1fc3))
+
+## [3.124.0](https://github.com/SocialGouv/iterion/compare/v3.123.3...v3.124.0) (2026-09-09)
+
+### Features
+
+* **studio:** redesign the cloud home around orchestration ([#1028](https://github.com/SocialGouv/iterion/issues/1028)) ([e5a711d](https://github.com/SocialGouv/iterion/commit/e5a711dda699f905c219bacad90a3ad99c2c1f6d))
+
+    <details><summary>why</summary>
+
+    CloudLanding is one of App.tsx's few eager view imports — PublicTopBar lives in the same module and renders on /marketplace, outside the lazy route tree. The redesign's static `import CloudHome` therefore pulled the whole product page into the entry chunk: CloudHome + PlatformFeatures + StackCompatibility, ~40 lucide icon modules, 11 @lobehub brand icons and the 348-line cloud-home.css, downloaded and parsed on first paint by every authenticated operator — an audience AuthGate never shows it to.
+
+    </details>
+
+## [3.123.3](https://github.com/SocialGouv/iterion/compare/v3.123.2...v3.123.3) (2026-09-09)
+
+### Bug Fixes
+
+* **server:** a tenant the store says is GONE is not a blip to launch past ([#1027](https://github.com/SocialGouv/iterion/issues/1027)) ([998baac](https://github.com/SocialGouv/iterion/commit/998baac488733577c306753513ff1ffe82bb2c0a)), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    gateLaunch is the choke point every cloud launch surface crosses — the REST launch and resume, the inbound webhooks, the retry sweeper, the board dispatcher. It read the caller's team and, on ANY error, admitted the launch: quotas are operator policy, and a transient Mongo blip must not wedge a whole deployment.
+
+    </details>
+
+## [3.123.2](https://github.com/SocialGouv/iterion/compare/v3.123.1...v3.123.2) (2026-09-09)
+
+### Bug Fixes
+
+* **golden-master,modernize:** a repairable certificate refusal no longer ends the run ([#1007](https://github.com/SocialGouv/iterion/issues/1007)) ([e8154c8](https://github.com/SocialGouv/iterion/commit/e8154c866b2de998bd26f0aa7935fc5f5e1c7887))
+
+    <details><summary>why</summary>
+
+    Rf213cf. `lot_gate -> extension_provenance when forged` lands on a `resumable: false` fail declared ahead of the repair loop, so every shape that set `forged` ended the campaign outright. The justification written above that edge — "dropping the act block breaks ledger_append_only" — holds for two of the five sites that set it, and `ledger_append_only` is `head_txt.startswith(base_txt)`: it pins only the text BELOW the run's base, so a block appended during the segment can be narrowed or…
+
+    </details>
+
 ## [3.123.1](https://github.com/SocialGouv/iterion/compare/v3.123.0...v3.123.1) (2026-09-09)
 
 ### Bug Fixes

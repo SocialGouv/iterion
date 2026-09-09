@@ -2734,6 +2734,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/diagnostic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/diagnostic */
+        get: operations["getRunsByIdDiagnostic"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/events": {
         parameters: {
             query?: never;
@@ -5869,6 +5888,27 @@ export interface components {
             pushed: boolean;
             verifiable: boolean;
         };
+        DiagnosticEvidence: {
+            details?: {
+                [key: string]: string;
+            };
+            node_id?: string;
+            seq: number;
+            type: string;
+        };
+        DiagnosticProjection: {
+            evidence?: components["schemas"]["DiagnosticEvidence"][];
+            failure_code?: string;
+            message?: string;
+            next_action: string;
+            node_id?: string;
+            outcome: string;
+            parent_run_id?: string;
+            recoverable: boolean;
+            run_id: string;
+            status: string;
+            version: number;
+        };
         ExecutionState: {
             branch_id: string;
             current_event_seq: number;
@@ -6281,6 +6321,7 @@ export interface components {
             workdir?: string;
         };
         RunSnapshot: {
+            diagnostic?: components["schemas"]["DiagnosticProjection"];
             executions: components["schemas"]["ExecutionState"][];
             last_seq: number;
             run: components["schemas"]["RunHeader"];
@@ -10432,6 +10473,28 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getRunsByIdDiagnostic: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticProjection"];
+                };
             };
         };
     };
