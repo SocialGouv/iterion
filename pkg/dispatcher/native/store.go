@@ -229,19 +229,23 @@ func (s *Store) getLogger() *iterlog.Logger {
 	return s.logger
 }
 
-// Close releases store-owned resources (currently the fsnotify
-// watcher goroutine). Safe to call multiple times; safe on a Store
-// whose watcher never started.
+// Close releases store-owned resources: the fsnotify watcher goroutine
+// and, when the host refused a watch or the kernel dropped one, the
+// rescan ticker that replaced it. Safe to call multiple times; safe on a
+// Store whose watcher never started.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
 	// Snapshot under the lock — a watch lost mid-life swaps these from the
 	// watcher goroutine — and close outside it: closing the watcher waits
-	// for its loop, which may itself be waiting for the store mutex. The
-	// closed flag stops a loss detected after this point from arming a
-	// net; one that was armed between the snapshot and the watcher's exit
-	// is picked up by the second look.
+	// for its loop, which may itself be waiting for the store mutex.
+	//
+	// Setting closed in the SAME hold as the snapshot is what makes this
+	// exhaustive: watchLost tests closed and arms its net in one hold of
+	// the same mutex, so either it ran first (and the snapshot below sees
+	// its rescanner) or it runs after (and declines to arm one). There is
+	// no third order.
 	s.mu.Lock()
 	s.closed = true
 	rescanner, watcher := s.rescanner, s.watcher
@@ -253,6 +257,11 @@ func (s *Store) Close() error {
 	if watcher != nil {
 		err = watcher.Close()
 	}
+	// Belt and braces, and unreachable through the two sites that arm a
+	// net today. It is kept for the third one: a future writer who arms a
+	// rescanner without honouring closed leaks a ticker for the life of
+	// the process, and one uncontended lock per store teardown is a
+	// cheaper price than finding that leak in production.
 	s.mu.Lock()
 	late := s.rescanner
 	s.mu.Unlock()
