@@ -402,7 +402,7 @@ func (r *Runner) armUsageWindowRetry(
 			// existing ScheduleRunRetry below still provides the safe fallback.
 			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
 		} else if circuitState != nil && circuitState.OpenUntil != nil && circuitState.OpenUntil.After(at) {
-			if moved, ok := circuitCooldownAt(*circuitState.OpenUntil, at, pol, now); ok {
+			if moved, adopted := circuitCooldownAt(*circuitState.OpenUntil, at, pol, now); adopted {
 				at, source = moved, source+"+circuit_open"
 			}
 		}
