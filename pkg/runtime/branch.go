@@ -818,7 +818,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	result.artifactVersions[currentNodeID] = version + 1
 	result.artifacts[pub] = output
 	branchRS.artifacts[pub] = output
-	revision := store.ArtifactRevisionRef{NodeID: currentNodeID, Version: version}
+	revision := store.ArtifactRevisionRef{NodeID: currentNodeID, Version: version, ContractLogicalRef: pub}
 	result.artifactRevisions[pub] = revision
 	branchRS.artifactRevisions[pub] = revision
 	if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]any{

@@ -1470,11 +1470,13 @@ type ArtifactDependency struct {
 }
 
 // ArtifactRevisionRef identifies one persisted artifact revision. Checkpoints
-// store it by logical publish name so dependency contracts describe the value
-// actually consumed rather than guessing its producer from the workflow.
+// store it by the alias visible to the workflow. ContractLogicalRef preserves
+// the immutable name in the artifact body when a forced source migration
+// exposes that same physical revision through a renamed alias.
 type ArtifactRevisionRef struct {
-	NodeID  string `json:"node_id" bson:"node_id"`
-	Version int    `json:"version" bson:"version"`
+	NodeID             string `json:"node_id" bson:"node_id"`
+	Version            int    `json:"version" bson:"version"`
+	ContractLogicalRef string `json:"contract_logical_ref,omitempty" bson:"contract_logical_ref,omitempty"`
 }
 
 // ArtifactContract is the durable restart contract for one logical output.

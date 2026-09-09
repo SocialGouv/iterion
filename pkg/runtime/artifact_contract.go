@@ -47,8 +47,12 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 		if !present || revision.NodeID == "" {
 			continue
 		}
+		logicalRef := consumedRef
+		if revision.ContractLogicalRef != "" {
+			logicalRef = revision.ContractLogicalRef
+		}
 		contract.Dependencies = append(contract.Dependencies, store.ArtifactDependency{
-			LogicalRef: consumedRef,
+			LogicalRef: logicalRef,
 			NodeID:     revision.NodeID,
 			Version:    revision.Version,
 			Required:   true,
@@ -239,8 +243,12 @@ func artifactRevisionsForValidation(run *store.Run) []artifactValidationRevision
 		}
 		authoritative = true
 		for logicalRef, revision := range revisions {
-			key := fmt.Sprintf("%s\x00%d\x00%s", revision.NodeID, revision.Version, logicalRef)
-			byKey[key] = artifactValidationRevision{LogicalRef: logicalRef, NodeID: revision.NodeID, Version: revision.Version}
+			contractLogicalRef := logicalRef
+			if revision.ContractLogicalRef != "" {
+				contractLogicalRef = revision.ContractLogicalRef
+			}
+			key := fmt.Sprintf("%s\x00%d\x00%s", revision.NodeID, revision.Version, contractLogicalRef)
+			byKey[key] = artifactValidationRevision{LogicalRef: contractLogicalRef, NodeID: revision.NodeID, Version: revision.Version}
 		}
 	}
 	if run.Checkpoint != nil {

@@ -371,7 +371,7 @@ func TestMaterializeHumanArtifactKeepsIncomingArtifactDependency(t *testing.T) {
 	}
 }
 
-func TestRebuildArtifactRevisionsDoesNotAliasPersistedProducerAfterRename(t *testing.T) {
+func TestRebuildArtifactRevisionsAliasesPersistedProducerWithCanonicalContractName(t *testing.T) {
 	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
 		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new-name"},
 		"legacy": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "legacy"}, Publish: "legacy-name"},
@@ -385,11 +385,159 @@ func TestRebuildArtifactRevisionsDoesNotAliasPersistedProducerAfterRename(t *tes
 	if got := revisions["old-name"]; got.NodeID != "writer" || got.Version != 1 {
 		t.Fatalf("persisted revision = %+v", got)
 	}
-	if _, aliased := revisions["new-name"]; aliased {
-		t.Fatalf("forced publish rename synthesized contradictory revision: %+v", revisions)
+	if got := revisions["new-name"]; got.NodeID != "writer" || got.Version != 1 || got.ContractLogicalRef != "old-name" {
+		t.Fatalf("forced publish rename lost physical or canonical provenance: %+v", revisions)
 	}
 	if got := revisions["legacy-name"]; got.NodeID != "legacy" || got.Version != 0 {
 		t.Fatalf("partial legacy revision was not inferred: %+v", revisions)
+	}
+}
+
+type failAfterArtifactLoadStore struct {
+	store.RunStore
+	maxLoads int
+	loads    int
+}
+
+func (s *failAfterArtifactLoadStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	s.loads++
+	if s.loads > s.maxLoads {
+		return nil, errors.New("transient artifact backend outage")
+	}
+	return s.RunStore.LoadArtifact(ctx, runID, nodeID, version)
+}
+
+func artifactResumeWorkflow(publishName string) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "artifact_resume",
+		Entry: "writer",
+		Nodes: map[string]ir.Node{
+			"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: publishName},
+			"resume": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "resume"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "resume", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+}
+
+func TestResumeUsesPreclaimArtifactSnapshotWithoutSecondRead(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-one-read"
+	if _, err := base.CreateRun(ctx, runID, "artifact_resume", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "exact"},
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "writer", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "checkpoint"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0, ContractLogicalRef: "plan"},
+		},
+	}
+	if err := base.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 1}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(artifactResumeWorkflow("plan"), flaky, exec, WithWorkDir(t.TempDir()), WithSandboxOverride("none")).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("resume re-read artifacts after its claim: %v", err)
+	}
+	if flaky.loads != 1 {
+		t.Fatalf("artifact loads = %d, want exactly one pre-claim read", flaky.loads)
+	}
+}
+
+func TestResumeLegacyCheckpointOnlyForkWithoutArtifactBlobs(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	const runID = "artifact-legacy-fork"
+	run, err := s.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ParentRunID = "old-parent"
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "checkpoint-only"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+	}
+	if err := s.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(artifactResumeWorkflow("plan"), s, exec, WithWorkDir(t.TempDir()), WithSandboxOverride("none")).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("legacy checkpoint-only fork stopped being resumable: %v", err)
+	}
+}
+
+func TestForcedPublishRenameRecordsCanonicalDependency(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	const runID = "artifact-forced-rename"
+	run, err := s.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowHash = "old-revision"
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "old"},
+		Contract: &store.ArtifactContract{LogicalRef: "old-name", ProducerNode: "writer", ProducerRevision: "old-revision", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "latest-output"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"old-name": {NodeID: "writer", Version: 0, ContractLogicalRef: "old-name"},
+		},
+	}
+	if err := s.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	wf := artifactResumeWorkflow("new-name")
+	resumeNode := wf.Nodes["resume"].(*ir.ToolNode)
+	resumeNode.Publish = "result"
+	resumeNode.PostcondRefs = []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"new-name"}}}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	eng := New(wf, s, exec, WithWorkflowHash("new-revision"), WithForceResume(true), WithWorkDir(t.TempDir()), WithSandboxOverride("none"))
+	if err := eng.Resume(ctx, runID, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.LoadArtifact(ctx, runID, "resume", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Contract == nil || len(result.Contract.Dependencies) != 1 {
+		t.Fatalf("result contract dependencies = %+v", result.Contract)
+	}
+	dep := result.Contract.Dependencies[0]
+	if dep.LogicalRef != "old-name" || dep.NodeID != "writer" || dep.Version != 0 {
+		t.Fatalf("renamed alias dependency lost canonical provenance: %+v", dep)
 	}
 }
 

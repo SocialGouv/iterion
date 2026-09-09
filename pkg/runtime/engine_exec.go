@@ -598,7 +598,7 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 	}
 	rs.artifactVersions[nodeID] = version + 1
 	rs.artifacts[pub] = output
-	rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version}
+	rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 
 	evtData := map[string]any{
 		"publish": pub,
