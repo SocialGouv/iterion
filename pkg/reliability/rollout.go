@@ -5,7 +5,6 @@
 package reliability
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -181,10 +180,16 @@ func Summarize(runs []*store.Run) Baseline {
 			b.Failed++
 		case store.RunStatusFailedResumable:
 			b.FailedResumable++
-		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
-			b.Paused++
 		case store.RunStatusQueued:
 			b.Queued++
+		}
+		// The paused bucket asks the store's own contract rather than
+		// re-listing the two paused statuses: a hand-rolled set here is the
+		// drift ADR-095's negative-space guard exists to catch, and it would
+		// go unnoticed because that sweep walks a fixed package list this
+		// one is not on.
+		if run.Status.IsPaused() {
+			b.Paused++
 		}
 		if run.RetryState != nil && run.RetryState.RetryAfter != nil {
 			b.RetryArmed++
@@ -217,9 +222,4 @@ func (c Config) Rollback() RollbackPlan {
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},
 	}
-}
-
-func (r CompatibilityReport) MarshalJSON() ([]byte, error) {
-	type alias CompatibilityReport
-	return json.Marshal(alias(r))
 }
