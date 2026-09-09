@@ -221,6 +221,12 @@ func TestLinearPath(t *testing.T) {
 	if art.Data["summary"] != "all good" {
 		t.Errorf("artifact data mismatch: %v", art.Data)
 	}
+	if art.Contract == nil {
+		t.Fatal("published artifact has no restart contract")
+	}
+	if art.Contract.LogicalRef != "analysis" || art.Contract.ProducerNode != "analyze" || art.Contract.ProducerRevision != r.WorkflowHash || art.Contract.Version != art.Version {
+		t.Fatalf("artifact contract = %+v, workflow hash = %q", art.Contract, r.WorkflowHash)
+	}
 }
 
 // ---------------------------------------------------------------------------

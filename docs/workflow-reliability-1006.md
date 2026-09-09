@@ -39,7 +39,7 @@ not evidence that a queued or nested launch has the same context.
 Schema-invalid output is corrected only when the executor implements the
 optional `runtime.OutputCorrector` capability. The engine allows at most the
 configured budget (two calls by default, or `WithOutputCorrectionBudget(0)` to
-disable it) for each node episode. Artifacts, events and outgoing edges are
+disable it; `ITERION_OUTPUT_CORRECTION_BUDGET` sets the process default) for each node episode. Artifacts, events and outgoing edges are
 written only after a corrected payload validates.
 
 The episode ledger is persisted on the run document. It records the attempt

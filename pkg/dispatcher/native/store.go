@@ -143,11 +143,14 @@ func NewStore(root string) (*Store, error) {
 	// so the watcher can never overwrite a fresh load with a stale
 	// disk snapshot. A failure here is non-fatal — the Store keeps
 	// working, just blind to out-of-process writes (the historical
-	// behaviour). We don't log because the package carries no logger
-	// today; the missing-watcher symptom (stale board reads) is
-	// already documented as a known mode in the cache-desync finding.
+	// behaviour). Keep the store available, but make the degraded mode
+	// visible: otherwise operators only discover it through stale board
+	// reads, and tests cannot distinguish an unavailable host watcher
+	// from a watcher that started but dropped an event.
 	if w, err := startIndexWatcher(s); err == nil {
 		s.watcher = w
+	} else {
+		s.logger.Warn("native index watcher unavailable: %v — out-of-process issue changes will not be reflected until restart", err)
 	}
 	return s, nil
 }
