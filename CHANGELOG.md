@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.123.0](https://github.com/SocialGouv/iterion/compare/v3.122.3...v3.123.0) (2026-09-09)
+
+### Features
+
+* **credentials,teams:** an org can lend its own LLM keys, and a team has a lifecycle ([#1000](https://github.com/SocialGouv/iterion/issues/1000)) ([ebbae7e](https://github.com/SocialGouv/iterion/commit/ebbae7eb1af96d9ea4d0351809484fd8610a9e82))
+
+    <details><summary>why</summary>
+
+    Sharing a key across an org's product teams had no home. The API-key walk only sees the team's and the user's rows, and secrets.OrgOwnerKey — despite its name — keys a TEAM forfait. The only way to share was to copy the credential into every team: N writes per rotation, N places to forget one, and no way to tell whose spend was whose. Measured on the prod instance, where one Claude forfait is already duplicated across two teams.
+
+    </details>
+* **forge:** a connection can pin the base its hook URLs are built from ([#1011](https://github.com/SocialGouv/iterion/issues/1011)) ([df80e5b](https://github.com/SocialGouv/iterion/commit/df80e5be213f49b781bd736e9dfaba8d3fc23cf1))
+
+    <details><summary>why</summary>
+
+    Hook URLs are derived from the deployment's public URL, which is right for every connection until one of them cannot reach that host. GitLab refuses any webhook URL outside its instance-wide outbound allowlist with "Invalid url given" (HTTP 422), and listing a host is an administrative act on the forge's side, not ours. One such forge therefore pinned the public URL of the WHOLE deployment: moving to a new domain meant either leaving that forge behind or not moving.
+
+    </details>
+
 ## [3.122.3](https://github.com/SocialGouv/iterion/compare/v3.122.2...v3.122.3) (2026-09-08)
 
 ### Bug Fixes
