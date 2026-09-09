@@ -1,11 +1,14 @@
 package ir
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
 // maxPromptIncludeBytes caps the size of a single file inlined by an
@@ -55,6 +58,44 @@ func expandPromptIncludes(body, baseDir string) (string, []error) {
 		return content
 	})
 	return out, errs
+}
+
+// HasPromptInclude reports whether a prompt body carries an include marker.
+func HasPromptInclude(body string) bool {
+	return promptIncludeRe.MatchString(body)
+}
+
+// InlinePromptIncludes resolves every {{include "..."}} marker in the
+// file's prompts INTO the prompt bodies, each relative to its prompt's own
+// source file, so the AST is self-contained: what travels — a queue message,
+// an inline upload — then compiles anywhere, without the files that sat
+// beside the source. A prompt whose recorded source file is not a file on
+// this host (an inline upload parsed as "<inline>", a client's path) has
+// nothing to resolve against: its markers are an error, never a lookup in
+// the process working directory, which on a server is nobody's.
+func InlinePromptIncludes(f *ast.File) error {
+	var errs []string
+	for _, p := range f.Prompts {
+		if !HasPromptInclude(p.Body) {
+			continue
+		}
+		if info, err := os.Stat(p.Span.Start.File); p.Span.Start.File == "" || err != nil || info.IsDir() {
+			errs = append(errs, fmt.Sprintf("prompt %q: an {{include}} cannot be resolved — its source file %q is not on this host", p.Name, p.Span.Start.File))
+			continue
+		}
+		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		if len(incErrs) > 0 {
+			for _, e := range incErrs {
+				errs = append(errs, fmt.Sprintf("prompt %q: %v", p.Name, e))
+			}
+			continue
+		}
+		p.Body = body
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // readPromptInclude validates a relative include path against baseDir

@@ -99,7 +99,7 @@ prompt review_user:
   Previous result: {{outputs.prior.summary}}
 ```
 
-`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
+`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates. On a cloud launch the includes are resolved into the prompt bodies by the server before the run is queued, so the runner never needs the files; a `.bot` uploaded inline (`iterion remote runs launch x.bot`, a studio launch of a loose file) has no files beside it, and an include in it is refused at publish — launch such a bot as a bundle.
 
 ### Schemas
 

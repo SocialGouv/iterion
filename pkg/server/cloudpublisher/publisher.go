@@ -24,6 +24,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"os"
+	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -2590,6 +2591,19 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	default:
 		return nil, fmt.Errorf("cloudpublisher: launch spec has no source and no file_path; cannot serialise IR")
 	}
+	// A prompt's {{include}} resolves beside the file the prompt came from.
+	// For a bundle launch that file is the snapshot's main.bot on THIS
+	// server, whatever path the client named; the parse is attributed to it
+	// so the includes find their files. An inline upload has no files beside
+	// its source at all — its includes cannot travel, and are refused below
+	// rather than looked up in the server's working directory.
+	bundleDir := ""
+	if len(bundleDirs) > 0 {
+		bundleDir = bundleDirs[0]
+	}
+	if bundleDir != "" {
+		parserPath = filepath.Join(bundleDir, "main.bot")
+	}
 	pr := parser.Parse(parserPath, src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
@@ -2599,14 +2613,27 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 	if pr.File == nil {
 		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
 	}
-	if len(bundleDirs) > 0 && bundleDirs[0] != "" {
-		b, err := bundle.OpenDir(bundleDirs[0])
+	if source != "" && bundleDir == "" {
+		for _, p := range pr.File.Prompts {
+			if ir.HasPromptInclude(p.Body) {
+				return nil, fmt.Errorf("cloudpublisher: prompt %q uses {{include}}, which an inline launch cannot carry (the included file is not uploaded with the source) — launch the bot as a bundle", p.Name)
+			}
+		}
+	}
+	if bundleDir != "" {
+		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
 			return nil, fmt.Errorf("cloudpublisher: open snapshotted bundle: %w", err)
 		}
 		if err := runview.MergeBundlePrompts(pr.File, b); err != nil {
 			return nil, err
 		}
+	}
+	// The AST that travels must compile on a pod that has none of the files
+	// beside the source: every include is resolved into its prompt body here,
+	// on the server that has them.
+	if err := ir.InlinePromptIncludes(pr.File); err != nil {
+		return nil, fmt.Errorf("cloudpublisher: %w", err)
 	}
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {
