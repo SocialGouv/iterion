@@ -56,6 +56,12 @@ type Store struct {
 	// it just can't see writes by other processes, which is the
 	// pre-watcher status quo.
 	watcher *indexWatcher
+	// watcherErr keeps why the watcher could not start. From the outside a
+	// missing watcher is a nil field either way, so without this a host that
+	// exhausted its inotify budget and a regression that stops the watcher
+	// starting are indistinguishable — and the behavioural tests that skip on
+	// the first would silently evaporate on the second.
+	watcherErr error
 
 	// pendingEvents buffers events whose appendEventLocked call
 	// returned an error (transient fsync failure, NFS hiccup). Every
@@ -150,6 +156,7 @@ func NewStore(root string) (*Store, error) {
 	if w, err := startIndexWatcher(s); err == nil {
 		s.watcher = w
 	} else {
+		s.watcherErr = err
 		s.logger.Warn("native index watcher unavailable: %v — out-of-process issue changes will not be reflected until restart", err)
 	}
 	return s, nil
