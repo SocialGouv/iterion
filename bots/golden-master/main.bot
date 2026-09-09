@@ -3876,8 +3876,19 @@ tool oracle_run:
         # deterministic slice of the corpus, and a member that fell outside it could
         # move unseen — which is precisely the claim the declaration makes, so the
         # one measurement that decides it must not be left to the sampling stride.
+        #
+        # Pinned against the CORPUS, and that intersection is load-bearing.
+        # `control_covered` is `len(sample)`, and the gate refuses a mutant whose
+        # coverage is 0 — "collateral: 0" with nothing to control against is vacuous
+        # rather than earned. An id that no entry declares is never captured and
+        # never compared (capture() iterates entries; diverged() reads None on both
+        # sides and calls it equal), so pinning one would have raised the coverage
+        # with a control that does not exist and silenced that refusal. A
+        # declaration naming an id the corpus does not have is refused where it
+        # belongs — as a class nothing observes — not by inflating a count here.
         sample = control_ids(corpus, set(targets), seed)
-        pinned = separator_group_ids(corpus, meta.get("id")) - set(targets)
+        corpus_ids = {e["id"] for e in corpus["entries"]}
+        pinned = (separator_group_ids(corpus, meta.get("id")) & corpus_ids) - set(targets)
         if pinned:
             sample = sorted(set(sample) | pinned)
         captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
@@ -6329,6 +6340,21 @@ tool oracle_run:
                         dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
         check("aucun epinglage pour un mutant qui ne separe rien",
               v_nopin["collateral"], [])
+        # Et JAMAIS un id que le corpus n'a pas. `control_covered` est len(sample),
+        # et la porte refuse un mutant dont la couverture est nulle — « collateral
+        # 0 » sans rien a controler est vide, pas merite. Un id qu'aucune entree ne
+        # declare n'est jamais capture ni compare : l'epingler aurait leve la
+        # couverture avec un temoin qui n'existe pas, et eteint ce refus-la.
+        # Lu sans planter : si l'epinglage repassait large, la capture serait
+        # interrogee sur un id qu'elle n'a pas — et un banc qui plante dit qu'il
+        # s'est passe quelque chose sans dire quoi.
+        try:
+            _vg = score(["001"], [], ["001"],
+                        dup_groups=[{"ids": ["001", "fantome"], "separated_by": "t"}])
+            _ghost = [_vg["control_covered"], _vg["collateral"]]
+        except Exception as e:                              # noqa: BLE001 - c'est le test
+            _ghost = "%s: %s" % (type(e).__name__, e)
+        check("un id absent du corpus n'est pas epingle comme temoin", _ghost, [0, []])
 
         # Un separateur INVALIDE ne prouve rien. Son verdict porte
         # `targets_declared` mais jamais `undetected_targets` ni `collateral`, donc
