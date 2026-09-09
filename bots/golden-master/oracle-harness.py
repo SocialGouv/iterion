@@ -3318,6 +3318,36 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
     return unproven
 
 
+def duplicate_groups_refusal(unproven, duplicate_refs, corpus_distinct, corpus_total):
+    """The gate's refusal for undischarged identity claims.
+
+    Beside the predicate rather than inline in the gate, for the same reason
+    the predicate itself is: the selftest can then pin the SENTENCE the reader
+    acts on, not a re-typed approximation of it.
+
+    The headline count is `unproven`, never `duplicate_refs`. The two range
+    over different sets — `unproven` also carries declarations whose references
+    have since diverged, which are by definition NOT byte-identical, and it is
+    shorter than `duplicate_refs` as soon as one group is discharged. Reporting
+    one number over the other's evidence told an operator with four settled
+    groups and one stale note that five groups needed work. On a gate whose
+    whole subject is precise adjudication, the number and the list it
+    introduces must count the same things.
+    """
+    return ("%d identity claim(s) are UNPROVED. Each record below carries its own reason, "
+            "and a record is either a group observed byte-identical in this pass or a "
+            "declaration whose references have since diverged — so this count is NOT the "
+            "duplicate count. A group may legitimately repeat: on a refusal lane the second "
+            "entry is a control proving a mutant moved only the first. But the claim is "
+            "discharged, not believed — the corpus names the separating mutant in "
+            "`duplicate_groups`, and this gate checks that the mutant really moves part of "
+            "the group and leaves the rest still. Separately, %d group(s) captured "
+            "byte-identical across DIFFERENT entries, which is why the corpus is %d "
+            "observations wide and not %d. Unproved: %s"
+            % (len(unproven), len(duplicate_refs), corpus_distinct, corpus_total,
+               json.dumps(unproven, ensure_ascii=False)))
+
+
 def control_ids(corpus, targets, seed):
     """Deterministic sample of non-target entries, to measure collateral."""
     pool = [e["id"] for e in corpus["entries"] if e["id"] not in targets]
@@ -5884,6 +5914,22 @@ def _selftest():
                "undetected_targets": [], "collateral": []})],
           [])
 
+    # LE REFUS COMPTE CE QU'IL MONTRE. Le nombre en tete et la liste qui le
+    # suit portaient sur deux ensembles differents : quatre groupes acquittes
+    # et une declaration caduque se lisaient « 5 groupes a traiter » sous une
+    # liste d'un seul element. Ici, deux groupes observes identiques dont UN
+    # seul reste a prouver — le message doit dire 1, et dire 2 pour la largeur.
+    msg = duplicate_groups_refusal(
+        [{"ids": ["019", "077"], "separated_by": "sep-02", "why": "caduque"}],
+        [["012", "013"], ["019", "077"]], 11, 14)
+    check("le refus compte les claims non prouvees, pas les doublons observes",
+          msg.startswith("1 identity claim(s) are UNPROVED"), True)
+    check("et il donne la largeur avec SON propre nombre",
+          "2 group(s) captured byte-identical" in msg
+          and "11 observations wide and not 14" in msg, True)
+    check("la liste montree est celle qui est comptee",
+          msg.count('"ids"'), 1)
+
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
         for f in failures:
@@ -6686,15 +6732,9 @@ def main():
             report["duplicate_refs"], corpus, verdicts, bool(only))
         report["duplicate_groups_unproven"] = unproven
         if unproven:
-            problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
-                            "so the corpus is %d observations wide, not %d — and their identity "
-                            "is NOT proved. A group may legitimately repeat (a refusal lane's "
-                            "second entry is a control), but the claim is discharged by a mutant "
-                            "that moves part of the group and leaves the rest still, declared in "
-                            "`duplicate_groups` and checked here. Unproved: %s"
-                            % (len(report["duplicate_refs"]), report["corpus_distinct"],
-                               report["corpus_total"],
-                               json.dumps(unproven, ensure_ascii=False)))
+            problems.append(duplicate_groups_refusal(
+                unproven, report["duplicate_refs"],
+                report["corpus_distinct"], report["corpus_total"]))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
                          "its result is withheld on purpose. Only the final gate scores "
