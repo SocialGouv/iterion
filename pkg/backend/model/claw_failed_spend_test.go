@@ -143,6 +143,73 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 	})
 }
 
+// TestClawParseFallbackPricesTheRecoveryPassItRan covers the OTHER exit past
+// the schema-forced recovery pass — the one the recovery exists for.
+//
+// Both exits below it read the same `obj`: the tool loop narrated instead of
+// answering, the recovery ran and was billed, and came back unusable. The
+// empty-text sibling folds `obj.TotalUsage`; this one — reached whenever the
+// loop left ANY text, which is the common shape — priced the result from the
+// tool loop alone, so the whole recovery call reported zero and never reached
+// `_cost_usd`, the caps, or the run's booking.
+//
+// It only became reachable-with-a-figure in this branch: GenerateObjectDirect
+// used to return a bare nil beside its error, so there was nothing to fold.
+// Adding the partial connected one end of that pipe and left this one open.
+func TestClawParseFallbackPricesTheRecoveryPassItRan(t *testing.T) {
+	schema := &ir.Schema{Name: "verdict", Fields: []*ir.SchemaField{{Name: "approved", Type: ir.FieldTypeBool}}}
+	schemaJSON, err := SchemaToJSON(schema)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+
+	reg := NewRegistry()
+	mock := newMockClient(
+		// Step 1 — a real tool call (which is what keeps the nudge guard out
+		// of this test's way), billed 100/30.
+		toolUseEvents("tu_1", "noop", `{}`, 100, 30),
+		// Step 2 — the loop ends on narrative prose, billed 40/10. Not JSON,
+		// so the cheap parse below the loop cannot serve it and the recovery
+		// pass fires.
+		textEvents("I reviewed the diff. No findings.", 40, 10),
+		// The recovery pass: schema forced, and the model narrates AGAIN
+		// instead of emitting the synthetic tool_use. Fully billed at 20/5,
+		// and unusable — `partial(usage)` beside "did not produce a tool_use
+		// block".
+		textEvents("Still narrating, sorry.", 20, 5),
+	)
+	reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+	backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1})
+
+	res, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID: "reviewer", Model: "test/test-model", UserPrompt: "Review.",
+		OutputSchema: schemaJSON, HasTools: true, ToolMaxSteps: 5,
+		ToolDefs: []delegate.ToolDef{{
+			Name:        "noop",
+			Description: "test tool",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Execute:     func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+		}},
+	})
+	if err != nil {
+		t.Fatalf("the parse fallback surfaces the text, it does not fail: %v", err)
+	}
+	if !res.ParseFallback {
+		t.Fatalf("precondition: want the parse-fallback exit, got %+v", res)
+	}
+	if n := len(mock.getCalls()); n != 3 {
+		t.Fatalf("precondition: want 2 loop steps THEN the recovery pass, got %d call(s)", n)
+	}
+	// 130 (tool step) + 50 (final text) + 25 (the abandoned recovery pass).
+	if res.Tokens != 205 {
+		t.Errorf("Result.Tokens = %d, want 205 — the recovery pass was billed too", res.Tokens)
+	}
+	// The map is what the engine books from (extractUsage), not the struct.
+	if got := res.Output["_tokens"]; got != 205 {
+		t.Errorf("_tokens = %v, want 205 — the engine prices from the map", got)
+	}
+}
+
 // TestClawRetryLoopKeepsEveryAttemptsSpend: the metered failure above is only
 // worth what survives the retry loop wrapping it. `result, err = fn()`
 // overwrote the previous attempt, so an expensive tool loop that hit a 429 and
