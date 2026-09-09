@@ -1473,9 +1473,16 @@ type ArtifactDependency struct {
 }
 
 // ArtifactContract is the durable restart contract for one logical output.
-// Effects describes the publishing policy (currently "persist" and
-// "external" are understood); it is metadata for admission, never a request
-// to replay an external side effect.
+//
+// The engine stamps the identity, revision and schema half of it at every
+// publish, and runtime.ValidateArtifactContracts reads exactly that half.
+// Dependencies, Mutable and Effects are DECLARED but not yet written by any
+// producer — an external writer may set them, and the validator already
+// honours Dependencies; treat them as reserved rather than as a description
+// of what iterion records today.
+//
+// Effects names the publishing policy ("persist", "external"). It is
+// metadata for admission, never a request to replay an external side effect.
 type ArtifactContract struct {
 	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
 	ProducerNode     string `json:"producer_node" bson:"producer_node"`

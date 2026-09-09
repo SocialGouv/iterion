@@ -107,10 +107,16 @@ type ArtifactContractCheck struct {
 }
 
 // ValidateArtifactContracts checks persisted artifact metadata before a
-// resume or rewind can mutate the run. Legacy artifacts without a contract
-// are accepted; report and legacy context policies LOG what enforce would
-// have refused, so the rollout can measure the flip before making it, while
-// enforce refuses it nondestructively.
+// resume or rewind can mutate the run, by the run's context policy:
+//
+//   - legacy — the regime does not apply; returns before reading anything.
+//   - report — logs what enforce would have refused, so a deployment can
+//     measure the flip before making it, and refuses nothing.
+//   - enforce — refuses, nondestructively: the caller has not yet claimed
+//     the checkpoint or touched the workspace.
+//
+// An artifact carrying no contract at all predates the feature and is
+// accepted under every policy.
 func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck) error {
 	s, run, wf := check.Store, check.Run, check.Workflow
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
