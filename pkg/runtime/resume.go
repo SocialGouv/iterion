@@ -83,7 +83,14 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err := e.admitRun(ctx, runID, r); err != nil {
 		return err
 	}
-	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash); err != nil {
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store:    e.store,
+		Run:      r,
+		Workflow: e.workflow,
+		Revision: e.workflowHash,
+		Force:    e.forceResume,
+		Logger:   e.logger,
+	}); err != nil {
 		// Refuse before claiming the checkpoint or touching the workspace.
 		return &RuntimeError{
 			Code:    store.FailureResumeInvalid,

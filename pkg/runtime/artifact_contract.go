@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -27,16 +28,48 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *
 	}
 }
 
+// ArtifactContractCheck carries the inputs of ValidateArtifactContracts. A
+// struct rather than positional arguments because the caller set is
+// heterogeneous — a resume threads `--force`, a rewind threads the artifacts
+// it is about to invalidate — and the next argument would be the seventh.
+type ArtifactContractCheck struct {
+	// Store reads the artifact versions named by Run.ArtifactIndex.
+	Store store.RunStore
+	// Run is the run about to be resumed or rewound.
+	Run *store.Run
+	// Workflow is the freshly compiled graph the caller will execute.
+	Workflow *ir.Workflow
+	// Revision is the workflow hash of Workflow. Empty skips the
+	// provenance comparison (a rewind asserts no revision).
+	Revision string
+	// Force mirrors `resume --force`. It silences the provenance advisory
+	// only: every substantive incompatibility — incomplete identity, a
+	// changed publish reference, a changed schema, a missing dependency —
+	// still refuses, because force is the operator asserting the stored
+	// outputs are compatible, not a request to stop checking whether they
+	// are (docs/resume.md).
+	Force bool
+	// Skip names nodes whose artifacts the caller is about to invalidate,
+	// so a rewind is never refused by the very output it is discarding.
+	Skip map[string]bool
+	// Logger surfaces the advisories. Optional.
+	Logger *iterlog.Logger
+}
+
 // ValidateArtifactContracts checks persisted artifact metadata before a
 // resume or rewind can mutate the run. Legacy artifacts without a contract
 // are accepted; report/legacy context policies record the mismatch through
 // the caller while enforce refuses it nondestructively.
-func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string) error {
+func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck) error {
+	s, run, wf := check.Store, check.Run, check.Workflow
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
 		return nil
 	}
-	var violations []string
+	var violations, advisories []string
 	for nodeID, version := range run.ArtifactIndex {
+		if check.Skip[nodeID] {
+			continue
+		}
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
 			// A stale index is a legacy/cache condition. Do not turn it into a
@@ -63,8 +96,18 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
 			violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
 		}
-		if currentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != currentRevision {
-			violations = append(violations, fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q", contract.LogicalRef, contract.ProducerRevision, currentRevision))
+		// Provenance drift is ADVISORY, never a refusal. It is the same
+		// coarse signal as the run-level source hash, which every resume
+		// path already gates through ValidateResumeWorkflowHash — where
+		// `--force` is the documented override. Refusing on it here too
+		// would double-gate one signal with no override, and permanently:
+		// a forced resume restamps Run.WorkflowHash to the new revision
+		// (restampWorkflowSource) while the artifacts written before it
+		// keep the old one, so every later resume of that run would need
+		// a `--force` nothing indicates. What decides compatibility is
+		// the substantive set above, which force does not waive.
+		if !check.Force && check.Revision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != check.Revision {
+			advisories = append(advisories, fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q", contract.LogicalRef, contract.ProducerRevision, check.Revision))
 		}
 		for _, dep := range contract.Dependencies {
 			if dep.LogicalRef == "" || !dep.Required {
@@ -79,6 +122,9 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion))
 			}
 		}
+	}
+	if len(advisories) > 0 && check.Logger != nil {
+		check.Logger.Warn("runtime: run %s carries artifacts from another workflow revision: %s", run.ID, strings.Join(advisories, "; "))
 	}
 	if len(violations) == 0 {
 		return nil

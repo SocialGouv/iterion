@@ -304,7 +304,12 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// Refuse an incompatible persisted artifact before claiming the run or
 	// mutating its checkpoint/workspace. Legacy/report contexts remain
 	// compatible during rollout; enforce contexts fail closed.
-	if err := runtime.ValidateArtifactContracts(ctx, s.store, run, wf, ""); err != nil {
+	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
+		Store:    s.store,
+		Run:      run,
+		Workflow: wf,
+		Logger:   s.logger,
+	}); err != nil {
 		return nil, err
 	}
 	// Nodes this run actually executed — the search space for --auto and
