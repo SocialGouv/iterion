@@ -3562,9 +3562,20 @@ tool oracle_run:
         dies — which is exactly what happened to two of these groups when a lot
         re-anchored their mutant, silently, while the notes still claimed the pair
         was controlled.
+
+        Refused, not crashed — the standard the extension guard already holds. This
+        reader runs once per mutant, from inside `score_mutant` with the mutant
+        APPLIED and its marker armed, so a `TypeError` on a non-list value escapes
+        before any report is printed: a traceback instead of a verdict, no JSON at
+        all, and a workspace left mutated with the leftover on record — the state
+        the stop-on-leftover machinery exists to prevent. A value that is not a
+        list declares nothing, and is read as nothing.
         """
+        raw = corpus.get("duplicate_groups")
+        if not isinstance(raw, list):
+            return {}
         out = {}
-        for g in (corpus.get("duplicate_groups") or []):
+        for g in raw:
             kv = duplicate_group_key(g)
             if kv is not None:
                 out[kv[0]] = kv[1]
@@ -6283,6 +6294,14 @@ tool oracle_run:
                          "pas-un-dict"]}
         check("une declaration se lit triee, et les malformees sont ignorees",
               duplicate_group_decls(corpus_dg), {("012", "013"): "sep-01"})
+        # REFUSE, PAS PLANTE — le standard que la garde d'extension tient deja. Ce
+        # lecteur tourne une fois par mutant, depuis score_mutant, mutant APPLIQUE
+        # et marqueur arme : une TypeError s'en echappe avant tout rapport, laissant
+        # une traceback au lieu d'un verdict et un arbre mute avec le reliquat au
+        # dossier.
+        for _bad in (5, True, 1.5, "pas-une-liste", {"ids": ["a", "b"]}, None):
+            check("duplicate_groups=%r ne declare rien, et ne plante pas" % (_bad,),
+                  duplicate_group_decls({"duplicate_groups": _bad}), {})
         check("les ids d'un groupe sont epingles pour SON separateur",
               separator_group_ids(corpus_dg, "sep-01"), {"012", "013"})
         check("et pour aucun autre",
