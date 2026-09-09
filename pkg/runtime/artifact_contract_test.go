@@ -1,11 +1,13 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -156,5 +158,136 @@ func TestValidateArtifactContractsRejectsMissingVersionZeroDependency(t *testing
 	})
 	if err == nil || !strings.Contains(err.Error(), "absent from the run") {
 		t.Fatalf("missing version-zero dependency error = %v", err)
+	}
+}
+
+// countingArtifactStore counts artifact-body reads so a test can assert that
+// a policy which cannot act on the result does not pay for them.
+type countingArtifactStore struct {
+	store.RunStore
+	loads int
+}
+
+func (c *countingArtifactStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	c.loads++
+	return c.RunStore.LoadArtifact(ctx, runID, nodeID, version)
+}
+
+// TestValidateArtifactContractsLegacyPolicyReadsNothing pins the ordering:
+// the context policy is resolved BEFORE any artifact is loaded. `legacy` is
+// the default for every run predating the contract and can neither refuse nor
+// report, so one full artifact-body read per published node — an S3 GET each
+// on the cloud store, three times per resume across the call sites — would
+// buy nothing at all.
+func TestValidateArtifactContractsLegacyPolicyReadsNothing(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	run, err := base.CreateRun(ctx, "artifact-legacy-policy", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	if err := base.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0,
+		Contract: &store.ArtifactContract{LogicalRef: "gone", ProducerNode: "writer", Version: 0},
+		Data:     map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingArtifactStore{RunStore: base}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}},
+	}}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: counting, Run: run, Workflow: wf, CurrentRevision: "rev",
+	}); err != nil {
+		t.Fatalf("legacy policy refused: %v", err)
+	}
+	if counting.loads != 0 {
+		t.Errorf("legacy policy performed %d artifact read(s), want 0", counting.loads)
+	}
+
+	// enforce, by contrast, must read — and refuse.
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: counting, Run: run, Workflow: wf, CurrentRevision: "rev",
+	}); err == nil {
+		t.Fatal("enforce accepted an artifact whose publish reference is gone")
+	}
+	if counting.loads == 0 {
+		t.Error("enforce performed no artifact read")
+	}
+}
+
+// TestValidateArtifactContractsFailsClosedOnUnreadableArtifact: an integrity
+// policy must not read "I could not fetch the contract" as "the contract is
+// compatible". On the cloud store LoadArtifact IS the authoritative S3 GET,
+// so an outage, an authz failure or a corrupt object arrived here as a silent
+// skip — enforce resumed having verified nothing.
+func TestValidateArtifactContractsFailsClosedOnUnreadableArtifact(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-unreadable", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The index names a version that was never persisted: LoadArtifact errors.
+	run.ArtifactIndex = map[string]int{"writer": 7}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	err = ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, CurrentRevision: "rev",
+	})
+	if err == nil {
+		t.Fatal("enforce admitted a resume whose persisted contract could not be read")
+	}
+	if !strings.Contains(err.Error(), "could not be read") {
+		t.Fatalf("error does not name the unreadable artifact: %v", err)
+	}
+}
+
+// TestValidateArtifactContractsReportPolicyIsObservable: `report` is the
+// migration probe an operator runs before flipping a deployment to `enforce`.
+// It used to return nil in silence, which made it a policy that paid for
+// every artifact read and answered nothing.
+func TestValidateArtifactContractsReportPolicyIsObservable(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-report", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0,
+		Contract: &store.ArtifactContract{LogicalRef: "report", ProducerNode: "writer", Version: 0},
+		Data:     map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "renamed"},
+	}}
+	var buf bytes.Buffer
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, CurrentRevision: "rev",
+		Logger: iterlog.New(iterlog.LevelWarn, &buf),
+	}); err != nil {
+		t.Fatalf("report policy refused the resume: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "renamed") || !strings.Contains(got, run.ID) {
+		t.Errorf("report policy recorded nothing actionable, log = %q", got)
 	}
 }

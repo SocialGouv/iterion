@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -62,17 +63,63 @@ func ValidateArtifactContracts(ctx context.Context, c ArtifactContractCheck) err
 	if c.Run == nil || c.Store == nil || c.Workflow == nil || len(c.Run.ArtifactIndex) == 0 {
 		return nil
 	}
-	run, s, wf := c.Run, c.Store, c.Workflow
-	var violations []string
-	for nodeID, version := range run.ArtifactIndex {
-		if c.Skip[nodeID] {
-			continue
+	// Resolve the policy BEFORE reading anything. `legacy` is the default for
+	// every run that predates the contract and it can neither refuse nor
+	// report, so loading one artifact body per published node — an S3 GET
+	// each on the cloud store, and agent outputs are not small — would buy
+	// literally nothing. Only `report` and `enforce` pay for the reads.
+	policy := store.ContextPolicyLegacy
+	if c.Run.ExecutionContext != nil && c.Run.ExecutionContext.Policy != "" {
+		policy = c.Run.ExecutionContext.Policy
+	}
+	if policy != store.ContextPolicyReport && policy != store.ContextPolicyEnforce {
+		return nil
+	}
+	violations := collectArtifactContractViolations(ctx, c)
+	if len(violations) == 0 {
+		return nil
+	}
+	if policy != store.ContextPolicyEnforce {
+		// `report` is the migration probe an operator runs BEFORE flipping a
+		// deployment to `enforce`. Returning nil silently would make it a
+		// policy that pays for every artifact read and answers nothing.
+		if c.Logger != nil {
+			c.Logger.Warn("run %s: artifact contract mismatch under policy %q — `enforce` would refuse this resume: %s",
+				c.Run.ID, policy, strings.Join(violations, "; "))
 		}
+		return nil
+	}
+	return fmt.Errorf("artifact contract incompatible: %s", strings.Join(violations, "; "))
+}
+
+// collectArtifactContractViolations reads every persisted contract the caller
+// did not exclude and returns what no longer matches the current workflow.
+// Node ids are walked in sorted order so the message an operator reads is
+// stable across runs.
+func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCheck) []string {
+	run, s, wf := c.Run, c.Store, c.Workflow
+	nodeIDs := make([]string, 0, len(run.ArtifactIndex))
+	for nodeID := range run.ArtifactIndex {
+		if !c.Skip[nodeID] {
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+	}
+	sort.Strings(nodeIDs)
+	var violations []string
+	for _, nodeID := range nodeIDs {
+		version := run.ArtifactIndex[nodeID]
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
-			// A stale index is a legacy/cache condition. Do not turn it into a
-			// destructive rewind; the store's artifact reader remains the source
-			// of truth and the next write repairs the index.
+			// An integrity policy must not read "I could not fetch the
+			// contract" as "the contract is compatible". On the cloud store
+			// this call IS the authoritative S3 GET, so an outage, an authz
+			// failure, a timeout or a corrupt object all land here — and a
+			// proven absence is not distinguishable from them today
+			// (pkg/store/mongo/artifacts.go flattens blob.ErrArtifactNotFound
+			// into a plain error). The index is only ever advanced by a
+			// WriteArtifact that already persisted the body, so an entry that
+			// will not load is itself the anomaly: report it, do not skip it.
+			violations = append(violations, fmt.Sprintf("artifact %s/%d could not be read: %v", nodeID, version, err))
 			continue
 		}
 		if artifact == nil || artifact.Contract == nil {
@@ -117,15 +164,5 @@ func ValidateArtifactContracts(ctx context.Context, c ArtifactContractCheck) err
 			}
 		}
 	}
-	if len(violations) == 0 {
-		return nil
-	}
-	policy := store.ContextPolicyLegacy
-	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
-		policy = run.ExecutionContext.Policy
-	}
-	if policy != store.ContextPolicyEnforce {
-		return nil
-	}
-	return fmt.Errorf("artifact contract incompatible: %s", strings.Join(violations, "; "))
+	return violations
 }
