@@ -630,7 +630,7 @@ func (s *Server) storedBotEntry(ctx context.Context, tenantID, slug string) (bot
 		return entries[0], true, nil
 	}
 	return botregistry.EntryWithSchema{}, false, fmt.Errorf(
-		"bot source %s/%s: metadata could not be materialized (its manifest.yaml does not parse, or the bundle holds more than one workflow)", tenantID, bs.Slug)
+		"bot source %s/%s: metadata could not be materialized — discovery describes the row with nothing (no manifest.yaml alongside more than one workflow, or a manifest this build cannot parse)", tenantID, bs.Slug)
 }
 
 // effectiveFindByName returns the effective (platform-overlaid) entry for a

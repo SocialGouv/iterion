@@ -565,11 +565,14 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	// tier and a bundle from another is the divergence it exists to close.
 	//
 	// A stored tier reads STRICTLY for the same reason. effectiveFindByNameForTeam
-	// falls THROUGH when the row it found will not materialize — a fork whose
-	// manifest.yaml does not parse, a store blip on the second read — and its
-	// fall-through lands on the origin this fork replaces: exactly the pairing
-	// the paragraph above forbids, arriving through a helper instead of a tier
-	// choice. Here it is an error the operator can act on.
+	// falls THROUGH when the row it found will not materialize — a store blip
+	// on the second read, a bundle discovery cannot describe (no manifest.yaml
+	// and more than one workflow), a manifest whose schema_version this build
+	// no longer accepts — and its fall-through lands on the origin the fork
+	// replaces: exactly the pairing the paragraph above forbids, arriving
+	// through a helper instead of a tier choice. Here it is an error naming
+	// the row the operator has to fix. (A hand-broken manifest is NOT on that
+	// list: botsource.Validate decodes it at write time.)
 	entry, found, err := s.pipelineBotEntry(ctx, teamID, botID, lb)
 	if err != nil {
 		lb.Cleanup()
