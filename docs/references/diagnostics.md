@@ -208,7 +208,28 @@ phrasing template and are all warnings, so a skill gap never fails validation.
 ## Quick Troubleshooting
 
 **"I get C019 (undeclared cycle)"**
-Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. Example:
+Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. This is the shape that fails:
+
+```iter invalid
+schema verdict:
+  approved: bool
+
+agent worker:
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
+
+judge evaluator:
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
+
+workflow w:
+  entry: worker
+  worker -> evaluator
+  evaluator -> done when approved
+  evaluator -> worker when not approved     # C019: a cycle with no declared loop
+```
+
+And the fix, on the back-edge:
 ```iter fragment:edges
 evaluator -> worker when not approved as retry(3) with { feedback: "{{outputs.evaluator.summary}}" }
 ```

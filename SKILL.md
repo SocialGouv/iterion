@@ -162,7 +162,9 @@ shipped bots, so they are written here:
   (a failing test suite) so it exits 0 and reports `passed: false`.
 - **A loop needs an exhaustion exit.** `src -> body as name(N)` next to a bare
   `src -> exit` is the one legal pair of unconditional edges (the back-edge is
-  exempt from C010); without the bare edge a spent loop dies `LOOP_EXHAUSTED`.
+  exempt from C010); without the bare edge a spent loop leaves the node with
+  no edge to take and the run fails `NO_OUTGOING_EDGE` (the log names the
+  exhausted loop).
 - **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
   readable from any node that runs after the producer; `{{input.<field>}}`
   only carries the node's declared input and what an edge `with` mapped.

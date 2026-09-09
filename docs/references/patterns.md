@@ -95,9 +95,9 @@ workflow review_loop:
 - `{{outputs.worker.history}}` gives the agent all its previous attempts
 - The `when` condition field (`approved`) must be `bool` in `eval_output`
 - When the loop's five iterations are spent, the back-edge is declined and
-  the run fails with `LOOP_EXHAUSTED`; add a bare `evaluator -> <exit>` edge
-  (the loop-exhaustion exit, exempt from C010) to route the exhausted case
-  somewhere useful instead
+  the evaluator has no edge left, so the run fails `NO_OUTGOING_EDGE`; add a
+  bare `evaluator -> <exit>` edge (the loop-exhaustion exit, exempt from
+  C010) to route the exhausted case somewhere useful instead
 
 ---
 
@@ -354,7 +354,9 @@ schema fix_output:
   changes: string
 
 tool run_ci:
-  command: "${CI_COMMAND:-make test}"
+  ## The exit code becomes a field: a failing suite is a RESULT the judge
+  ## reads, not a node failure — and stdout is the JSON the schema declares.
+  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; printf '{"passed":%s,"logs":%s}' "$ok" "$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[-20000:]))' </tmp/ci.log)"`
   output: ci_result
 
 judge verify:
@@ -386,9 +388,11 @@ workflow ci_fix:
 ```
 
 **Key points:**
-- A tool node with `output:` must print a JSON object matching that schema
-  on stdout (`{"passed": true, "logs": "…"}`); wrap the real command so the
-  exit code becomes a field rather than a node failure
+- A tool node's stdout is its output: print a JSON object matching the
+  `output:` schema (`{"passed": true, "logs": "…"}`). Any other stdout is
+  silently wrapped as `{"result": "…"}` and the declared fields are absent
+  downstream, and a non-zero exit fails the node — hence the wrapper, which
+  turns the exit code into a field
 
 ---
 

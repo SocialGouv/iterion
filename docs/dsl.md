@@ -142,7 +142,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 
 **Inside a fan-out branch**, every namespace above resolves exactly as it does on the trunk — a node renders the same whether it was reached by a plain edge or by a `fan_out_all` / `fan_out_each` router. `{{outputs.*}}` resolves against the BRANCH's own view: its upstream trunk outputs plus what this branch has produced, plus the per-item binding a `fan_out_each` stamped. Sibling branches are invisible to each other, which is what makes the render deterministic; their outputs only become readable at the convergence node. `{{run.*}}` is the run's, not the branch's — the whole run's consumption and caps, shared by every branch.
 
-A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}` and `{{outputs.<node>.<field>}}` — the last from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `sh -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
+A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}` and `{{outputs.<node>.<field>}}` — the last from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `bash -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
 
 ## LLM nodes: `agent` and `judge`
 
@@ -397,7 +397,7 @@ value. In an expression it is nil — the same silence as
 `vars.<unknown>` — and comparing it is what fails, loudly, at the node.
 In a rendered body it takes the missing-ref rule every namespace
 follows: the `{{…}}` placeholder stays in a prompt and in a shell
-`command:` / `postcondition:`, so `sh -c` fails on visible braces
+`command:` / `postcondition:`, so `bash -c` fails on visible braces
 instead of running one argument short, and it renders as `null` in a
 `script:` body so the interpreter still parses.
 
@@ -880,7 +880,7 @@ Quoted `when` expressions are evaluated in parallel branch bodies as well as on 
 
 Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
 
-**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined, and a node left with no other edge ends the run with `LOOP_EXHAUSTED`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
+**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `NO_OUTGOING_EDGE`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
 
 ```iter fragment:edges
 fixer -> run_tests as fix_passes(3)   # the back-edge, taken while iterations remain

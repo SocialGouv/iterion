@@ -376,7 +376,7 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ```iter fragment
 tool commit_changes:
-  command: `git add -A && git commit -m {{input.msg}}`   # one string, run through `sh -c`
+  command: `git add -A && git commit -m {{input.msg}}`   # one string, run through `bash -c`
   input:   commit_request         # schema declaring `msg: string`
   output:  commit_result          # the command prints JSON matching this schema on stdout
   await:   wait_all               # only when the node has multiple incoming edges
@@ -386,10 +386,13 @@ A tool node has ONE `command:` string (or a `script:` + `language:`). A
 `command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
 interpreter its `language:` names (`sh` is dash on Debian-derived images —
 keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
-runtime — never wrap it in quotes of your own (C137). **A tool that declares
-`output:` must print a JSON object matching that schema on stdout**; anything
-else fails the node. A `json`-typed input renders as one JSON token; an
-output list referenced directly space-joins into several words.
+runtime — never wrap it in quotes of your own (C137). **A tool's stdout IS its
+output**: print a JSON object matching the `output:` schema; any other stdout is
+silently wrapped as `{"result": "…"}` and the declared fields are absent
+downstream, while a non-zero exit fails the node (wrap a command whose failure
+is a result — a failing test suite — so it exits 0 and reports `passed: false`).
+A `json`-typed input renders as one JSON token; an output list referenced
+directly space-joins into several words.
 
 Add `publish: <name>` to a `tool` (or `compute`, or agent/human)
 node to persist its output as a versioned artifact — surfaced in the

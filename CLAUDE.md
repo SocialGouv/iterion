@@ -1554,7 +1554,7 @@ it **on** — they build what they change. See
 Two things to know when writing one:
 
 - **Non-interactive PATH is the trap.** `tool` nodes run through a
-  non-interactive `sh -c` that never sources a shell profile, so a tool that
+  non-interactive `bash -c` that never sources a shell profile, so a tool that
   is installed but not on `PATH` is a tool that does not exist. The engine
   prepends the devbox profile's bin dir for this reason — don't hand-roll it
   per bot.

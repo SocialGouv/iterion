@@ -37,9 +37,13 @@ import (
 // Markdown renderers read only the first word, so the tags are invisible
 // to readers and only this test sees them.
 
+// A fence may be indented (inside a list item); the same indentation is
+// stripped from its body. The info string after `iter` is captured whole so a
+// tag with a space in it (```iter fragment edges) is reported instead of
+// being silently dropped.
 var (
-	fenceOpenRe = regexp.MustCompile("^```iter(?:\\s+(\\S+))?\\s*$")
-	fenceEndRe  = regexp.MustCompile("^```\\s*$")
+	fenceOpenRe = regexp.MustCompile("^(\\s*)```iter\\b(.*)$")
+	fenceEndRe  = regexp.MustCompile("^\\s*```\\s*$")
 )
 
 // snippetFragmentKinds are the declaration kinds a `fragment:<kind>` fence
@@ -103,6 +107,7 @@ func extractDocSnippets(t *testing.T, path string) []docSnippet {
 	var out []docSnippet
 	var cur *docSnippet
 	var body []string
+	indent := ""
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 4*1024*1024)
 	lineNo := 0
@@ -111,7 +116,8 @@ func extractDocSnippets(t *testing.T, path string) []docSnippet {
 		line := sc.Text()
 		if cur == nil {
 			if m := fenceOpenRe.FindStringSubmatch(line); m != nil {
-				cur = &docSnippet{file: path, line: lineNo, tag: m[1]}
+				indent = m[1]
+				cur = &docSnippet{file: path, line: lineNo, tag: strings.TrimSpace(m[2])}
 				body = body[:0]
 			}
 			continue
@@ -122,7 +128,7 @@ func extractDocSnippets(t *testing.T, path string) []docSnippet {
 			cur = nil
 			continue
 		}
-		body = append(body, line)
+		body = append(body, strings.TrimPrefix(line, indent))
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -183,7 +189,7 @@ func compileSnippet(s docSnippet) (parseErrs, compileErrs []string, err error) {
 		}
 		src = indentSnippet(kind+" _snippet:", s.body)
 	default:
-		return nil, nil, fmt.Errorf("unknown fence tag %q — use `iter`, `iter fragment`, `iter fragment:edges`, `iter fragment:workflow`, `iter fragment:<kind>` or `iter invalid`", tag)
+		return nil, nil, fmt.Errorf("unknown fence tag %q — use `iter`, `iter fragment`, `iter fragment:edges`, `iter fragment:workflow`, `iter fragment:<kind>` or `iter invalid` (one word, no spaces)", tag)
 	}
 	pr := parser.Parse(filepath.Base(s.file), src)
 	for _, d := range pr.Diagnostics {
