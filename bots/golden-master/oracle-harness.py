@@ -3213,6 +3213,92 @@ def diverged(refs, captured, ids):
     return sorted(i for i in ids if refs.get(i) != captured.get(i))
 
 
+def duplicate_group_decls(corpus):
+    """The corpus's `duplicate_groups` declarations, normalised.
+
+    Two entries whose references are byte-identical are not automatically a
+    defect: on a refusal lane the second is a CONTROL proving a mutant moved
+    only the first. But a note saying so is prose, and the gate cannot read
+    prose — so the claim is declared as data and DISCHARGED by measurement:
+    each group names the mutant that separates it, and the gate checks that the
+    mutant really moves some members and leaves the others still.
+
+    That is the difference between a waiver and a proof obligation. A waiver is
+    believed; this is executed, and it goes red by itself the day its separator
+    dies — which is exactly what happened to two of these groups when a lot
+    re-anchored their mutant, silently, while the notes still claimed the pair
+    was controlled.
+    """
+    out = {}
+    for g in (corpus.get("duplicate_groups") or []):
+        if not isinstance(g, dict):
+            continue
+        ids = g.get("ids")
+        sep = g.get("separated_by")
+        if not isinstance(ids, list) or len(ids) < 2 or not isinstance(sep, str) or not sep:
+            continue
+        out[tuple(sorted(str(i) for i in ids))] = sep
+    return out
+
+
+def separator_group_ids(corpus, mutant_id):
+    """Every id of every group this mutant is declared to separate."""
+    if not mutant_id:
+        return set()
+    ids = set()
+    for group, sep in duplicate_group_decls(corpus).items():
+        if sep == mutant_id:
+            ids.update(group)
+    return ids
+
+
+def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False):
+    """Which byte-identical groups are NOT discharged by a measured separator.
+
+    Returns one record per group that fails, with the reason IN the record —
+    the gate turns them into its refusal, and the selftest calls this same
+    function, so what is tested is what runs.
+    """
+    decls = duplicate_group_decls(corpus)
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    scored = {v.get("id"): v for v in verdicts if v.get("id")}
+    unproven = []
+    for g in sorted(observed):
+        sep = decls.get(g)
+        if not sep:
+            unproven.append({"ids": list(g), "why":
+                             "no `duplicate_groups` entry declares this group. Either one "
+                             "member is redundant — drop it — or the identity is a control, "
+                             "and then it must name the mutant that separates it."})
+            continue
+        v = scored.get(sep)
+        if v is None:
+            unproven.append({"ids": list(g), "separated_by": sep, "why":
+                             "the declared separator was not scored in this pass (absent "
+                             "from the mutant set%s)" %
+                             (", or excluded by GM_MUTANTS" if restricted else "")})
+            continue
+        moved = ((set(v.get("targets_declared") or [])
+                  - set(v.get("undetected_targets") or []))
+                 | set(v.get("collateral") or []))
+        inside = moved & set(g)
+        if not inside:
+            unproven.append({"ids": list(g), "separated_by": sep, "moved": [], "why":
+                             "the declared separator moves NO member of the group — it "
+                             "does not separate anything"})
+        elif inside == set(g):
+            unproven.append({"ids": list(g), "separated_by": sep,
+                             "moved": sorted(inside), "why":
+                             "the declared separator moves EVERY member together, so it no "
+                             "longer tells them apart. Draw one that moves a strict subset, "
+                             "or accept that the group is redundant."})
+    for g in sorted(set(decls) - observed):
+        unproven.append({"ids": list(g), "separated_by": decls[g], "why":
+                         "declared, but these references are no longer byte-identical — the "
+                         "claim has nothing left to justify. Remove the declaration."})
+    return unproven
+
+
 def control_ids(corpus, targets, seed):
     """Deterministic sample of non-target entries, to measure collateral."""
     pool = [e["id"] for e in corpus["entries"] if e["id"] not in targets]
@@ -3321,7 +3407,15 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
     if meta.get("needs_restart", True):
         app_restart(config, ws)
 
+    # An entry named in a duplicate-group declaration is ALWAYS controlled when
+    # the mutant that claims to separate it runs. The sample is otherwise a
+    # deterministic slice of the corpus, and a member that fell outside it could
+    # move unseen — which is precisely the claim the declaration makes, so the
+    # one measurement that decides it must not be left to the sampling stride.
     sample = control_ids(corpus, set(targets), seed)
+    pinned = separator_group_ids(corpus, meta.get("id")) - set(targets)
+    if pinned:
+        sample = sorted(set(sample) | pinned)
     captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
     moved = diverged(refs, captured, targets)
     verdict["detected"] = bool(moved)
@@ -3693,10 +3787,12 @@ def _selftest():
                 (i in self.moved) if self.applied else (i in self.unstable)) else "")
                 for i in ids}
 
-    def score(targets, sample, moved, unstable=(), revert_code=0):
+    def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None):
         ids = ["%03d" % n for n in range(1, 13)]
         refs = {i: "ref-" + i for i in ids}
         corpus = {"entries": [{"id": i, "surface": "http"} for i in ids]}
+        if dup_groups:
+            corpus["duplicate_groups"] = dup_groups
         meta = {"id": "t", "dir": "/dev/null", "class": "code", "surface": "http",
                 "archetype": "value_change", "targets": list(targets), "needs_restart": False}
         w = World(refs, moved, unstable)
@@ -5647,6 +5743,89 @@ def _selftest():
     check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
     check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
 
+    # ─── Groupes de references identiques : la preuve, pas la parole ──────────
+    #
+    # Deux entrees byte-identiques ne sont pas fautives en soi : sur une lane de
+    # refus, la seconde est un CONTROLE qui prouve qu'un mutant n'a deplace que
+    # la premiere. Ce que la porte ne pouvait pas faire, c'est distinguer ce cas
+    # d'un doublon — une note en prose ne se verifie pas. La declaration nomme
+    # le mutant separateur, et elle est ACQUITTEE par la mesure.
+    corpus_dg = {"entries": [{"id": "012"}, {"id": "013"}, {"id": "019"}],
+                 "duplicate_groups": [
+                     {"ids": ["013", "012"], "separated_by": "sep-01"},
+                     {"ids": ["019"], "separated_by": "trop-court"},
+                     {"ids": ["019", "012"], "separated_by": ""},
+                     "pas-un-dict"]}
+    check("une declaration se lit triee, et les malformees sont ignorees",
+          duplicate_group_decls(corpus_dg), {("012", "013"): "sep-01"})
+    check("les ids d'un groupe sont epingles pour SON separateur",
+          separator_group_ids(corpus_dg, "sep-01"), {"012", "013"})
+    check("et pour aucun autre",
+          separator_group_ids(corpus_dg, "sep-02"), set())
+    check("un mutant sans id n'epingle rien",
+          separator_group_ids(corpus_dg, None), set())
+
+    # Le verdict lui-meme : ce que la porte conclut de ce qu'un separateur a
+    # REELLEMENT deplace. La forme qui compte est la derniere — un separateur
+    # qui deplace TOUT le groupe ne le separe plus, et c'est exactement ce qui
+    # est arrive a deux paires quand un lot a reancre leur mutant.
+    # Appelle la FONCTION QUE LA PORTE APPELLE — pas une reimplementation.
+    # Un banc qui rejoue la logique reste vert quand le produit derive ; celui-ci
+    # rougit avec lui.
+    def whys(group, decls, moved_by):
+        corpus_ = {"entries": [], "duplicate_groups": decls}
+        verdicts_ = [{"id": mid, "targets_declared": sorted(mv),
+                      "undetected_targets": [], "collateral": []}
+                     for mid, mv in moved_by.items()]
+        out = unproven_duplicate_groups([sorted(group)], corpus_, verdicts_)
+        return [x["ids"] for x in out]
+
+    # L'EPINGLAGE, et c'est la moitie porteuse : sans lui la mesure qui decide
+    # n'existe pas. Un membre du groupe hors de l'echantillon deterministe
+    # pourrait bouger sans etre vu, et la porte conclurait "sous-ensemble strict,
+    # groupe prouve" sur une separation qui n'a plus lieu.
+    v_pin = score(["001"], ["005"], ["001", "009"],
+                  dup_groups=[{"ids": ["001", "009"], "separated_by": "t"}])
+    check("un membre du groupe hors echantillon est quand meme controle",
+          v_pin["collateral"], ["009"])
+    # Et rien n'est epingle pour un mutant qui ne separe aucun groupe.
+    v_nopin = score(["001"], ["005"], ["001", "009"],
+                    dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
+    check("aucun epinglage pour un mutant qui ne separe rien",
+          v_nopin["collateral"], [])
+
+    D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
+    check("separateur qui deplace UN membre : preuve acquittee",
+          whys(["012", "013"], D, {"sep-01": {"013"}}), [])
+    check("separateur qui deplace TOUT le groupe : refuse",
+          whys(["012", "013"], D, {"sep-01": {"012", "013"}}), [["012", "013"]])
+    check("separateur qui ne deplace AUCUN membre : refuse",
+          whys(["012", "013"], D, {"sep-01": {"099"}}), [["012", "013"]])
+    check("separateur absent du jeu score : refuse",
+          whys(["012", "013"], D, {"autre": {"013"}}), [["012", "013"]])
+    check("groupe observe mais non declare : refuse",
+          whys(["012", "013"], [], {}), [["012", "013"]])
+    check("declaration devenue caduque : refuse",
+          whys(["012", "013"], D + [{"ids": ["019", "077"], "separated_by": "sep-02"}],
+               {"sep-01": {"013"}}), [["019", "077"]])
+    # Le collateral compte comme un deplacement : un membre que le separateur ne
+    # DECLARE pas mais deplace quand meme casse la separation aussi surement.
+    check("un membre deplace en collateral casse la separation",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": ["012"]}])],
+          [["012", "013"]])
+    # Et une cible DECLAREE qui n'a pas bouge ne compte pas comme deplacee.
+    check("une cible declaree mais immobile ne prouve rien",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "targets_declared": ["012", "013"],
+                "undetected_targets": ["012", "013"], "collateral": []}])],
+          [["012", "013"]])
+
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
         for f in failures:
@@ -5799,6 +5978,7 @@ def main():
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
+              "duplicate_groups_unproven": [],
               "runner_replayable": False,
               "holdout_reused": [],
               "log_tail": ""}
@@ -6430,18 +6610,33 @@ def main():
         if report["score_pct"] < floor:
             problems.append("mutation score %d%% is under the %d%% floor"
                             % (report["score_pct"], floor))
-        if report["duplicate_refs"]:
+        # Byte-identical references are not automatically a defect — on a
+        # refusal lane the second entry is a CONTROL proving a mutant moved only
+        # the first. What was missing is the difference between that and a
+        # redundant pair, and it cannot be settled by a note: the gate reads
+        # data, not prose. So the corpus DECLARES the separating mutant per
+        # group, and the declaration is discharged by MEASUREMENT — the mutant
+        # must move some members and leave the others still, with every member
+        # pinned into its control sample so the answer exists.
+        #
+        # A proof obligation, not a waiver. It goes red by itself the day the
+        # separator dies, which is what a waiver could never do: measured 08/09,
+        # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
+        # separator to a lot's re-anchoring — the mutant now moves both members,
+        # and the pair proves nothing at all.
+        unproven = unproven_duplicate_groups(
+            report["duplicate_refs"], corpus, verdicts, bool(only))
+        report["duplicate_groups_unproven"] = unproven
+        if unproven:
             problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
-                            "so the corpus is %d observations wide, not %d. This is NOT always a "
-                            "defect: on a refusal lane two entries legitimately capture the same "
-                            "302, and the second is a control proving a mutant moved only the "
-                            "first. It IS a defect when the endpoints were meant to differ — then "
-                            "either one is redundant, or they differ on a path this fixture does "
-                            "not exercise and the difference is captured NOWHERE. Decide which, "
-                            "per group: %s"
+                            "so the corpus is %d observations wide, not %d — and their identity "
+                            "is NOT proved. A group may legitimately repeat (a refusal lane's "
+                            "second entry is a control), but the claim is discharged by a mutant "
+                            "that moves part of the group and leaves the rest still, declared in "
+                            "`duplicate_groups` and checked here. Unproved: %s"
                             % (len(report["duplicate_refs"]), report["corpus_distinct"],
                                report["corpus_total"],
-                               json.dumps(report["duplicate_refs"], ensure_ascii=False)))
+                               json.dumps(unproven, ensure_ascii=False)))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
                          "its result is withheld on purpose. Only the final gate scores "
