@@ -16,7 +16,13 @@ import (
 )
 
 const (
-	EnvMode                        = "ITERION_RELIABILITY_MODE"
+	EnvMode = "ITERION_RELIABILITY_MODE"
+	// EnvContextPolicyAlias is the narrower, pre-existing switch this rollout
+	// generalises. It stays readable so a deployment that already carries it
+	// keeps working, but EnvMode is AUTHORITATIVE: the documented rollback
+	// (EnvMode=legacy) has to take effect on exactly those hosts, and a lever
+	// the older variable can silently shadow is not an emergency lever.
+	EnvContextPolicyAlias          = "ITERION_EXECUTION_CONTEXT_POLICY"
 	EnvOutputCorrectionBudget      = "ITERION_OUTPUT_CORRECTION_BUDGET"
 	ModeLegacy                Mode = "legacy"
 	ModeReport                Mode = "report"
@@ -27,6 +33,45 @@ const (
 // default: old runs remain readable and no admission policy is inferred from
 // the new fields.
 type Mode string
+
+// ModeFromEnv resolves the ONE rollout mode every surface must agree on.
+// EnvMode decides whenever it is set — including to an unrecognised value,
+// which resolves to legacy, the safe end of the dial, rather than falling
+// through to a variable the operator did not just touch. EnvContextPolicyAlias
+// is consulted only when EnvMode is unset.
+func ModeFromEnv() Mode {
+	raw := strings.TrimSpace(os.Getenv(EnvMode))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv(EnvContextPolicyAlias))
+	}
+	switch mode := Mode(strings.ToLower(raw)); mode {
+	case ModeReport, ModeEnforce:
+		return mode
+	default:
+		return ModeLegacy
+	}
+}
+
+// ContextPolicyFromEnv is the single resolution the launch surfaces share —
+// runview.ExecutionContextPolicyFromEnv delegates here. One implementation is
+// what keeps a compatibility report from naming a policy the launches do not
+// actually apply.
+func ContextPolicyFromEnv() store.ContextPolicy {
+	return ModeFromEnv().ContextPolicy()
+}
+
+// ContextPolicy maps the rollout mode onto the persisted execution-context
+// policy. The two vocabularies are deliberately identical.
+func (m Mode) ContextPolicy() store.ContextPolicy {
+	switch m {
+	case ModeReport:
+		return store.ContextPolicyReport
+	case ModeEnforce:
+		return store.ContextPolicyEnforce
+	default:
+		return store.ContextPolicyLegacy
+	}
+}
 
 // Config is the operator-facing rollout configuration. The retry circuit's
 // threshold/cooldown are read by pkg/retrycoord; they are repeated here only
@@ -40,18 +85,7 @@ type Config struct {
 }
 
 func FromEnv() Config {
-	// Keep the report aligned with the launch surfaces. The staged reliability
-	// switch is authoritative when both variables are set, which makes its
-	// documented legacy rollback effective even on hosts with the older policy
-	// variable still configured.
-	rawMode := strings.TrimSpace(os.Getenv(EnvMode))
-	if rawMode == "" {
-		rawMode = os.Getenv("ITERION_EXECUTION_CONTEXT_POLICY")
-	}
-	mode := Mode(strings.TrimSpace(strings.ToLower(rawMode)))
-	if mode != ModeReport && mode != ModeEnforce {
-		mode = ModeLegacy
-	}
+	mode := ModeFromEnv()
 	budget := 2
 	if raw := strings.TrimSpace(os.Getenv(EnvOutputCorrectionBudget)); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
@@ -62,16 +96,7 @@ func FromEnv() Config {
 	return Config{Mode: mode, OutputCorrectionBudget: budget, RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown, WatcherCursorsEnabled: true}
 }
 
-func (c Config) ContextPolicy() store.ContextPolicy {
-	switch c.Mode {
-	case ModeReport:
-		return store.ContextPolicyReport
-	case ModeEnforce:
-		return store.ContextPolicyEnforce
-	default:
-		return store.ContextPolicyLegacy
-	}
-}
+func (c Config) ContextPolicy() store.ContextPolicy { return c.Mode.ContextPolicy() }
 
 // CompatibilityReport is a safe, read-only projection of one run's rollout
 // state. The booleans are deliberately explicit so an operator can decide to
@@ -180,8 +205,7 @@ func (c Config) Rollback() RollbackPlan {
 		DisableEnforcement: true,
 		PreserveEvidence:   true,
 		Actions: []string{
-			"set ITERION_RELIABILITY_MODE=legacy",
-			"set ITERION_EXECUTION_CONTEXT_POLICY=legacy for older launch surfaces",
+			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting)",
 			"set ITERION_OUTPUT_CORRECTION_BUDGET=0 for new launches if needed",
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},
