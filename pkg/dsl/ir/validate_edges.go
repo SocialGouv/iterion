@@ -264,7 +264,7 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorfAt(DiagLLMRouterConditionEdge, r.ID, edgeID(e.From, e.To),
+					c.errorfAtEdge(DiagLLMRouterConditionEdge, e,
 						"llm router %q edge to %q has a 'when' condition; LLM routers select targets directly",
 						r.ID, e.To)
 				}
@@ -298,7 +298,7 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorfAt(DiagFanOutEachEdges, r.ID, edgeID(e.From, e.To),
+					c.errorfAtEdge(DiagFanOutEachEdges, e,
 						"fan_out_each router %q edge to %q has a 'when' condition; the single template edge must be unconditional",
 						r.ID, e.To)
 				}

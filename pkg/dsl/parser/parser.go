@@ -38,6 +38,15 @@ func (p *parser) pos(t Token) ast.Pos {
 }
 
 func (p *parser) addError(code DiagCode, t Token, msg string) {
+	p.addErrorHint(code, t, msg, "")
+}
+
+// addErrorHint records a diagnostic with a site-specific fix line; an empty
+// hint falls back to the code's catalogued one.
+func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
+	if hint == "" {
+		hint = HintFor(code)
+	}
 	p.diags = append(p.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
@@ -45,7 +54,7 @@ func (p *parser) addError(code DiagCode, t Token, msg string) {
 		File:     p.file,
 		Line:     t.Line,
 		Column:   t.Column,
-		Hint:     HintFor(code),
+		Hint:     hint,
 	})
 }
 
@@ -55,7 +64,7 @@ func (p *parser) expect(tt TokenType) (Token, bool) {
 	if t.Type == tt {
 		return t, true
 	}
-	p.addError(DiagExpectedToken, t, "expected "+tt.String()+", got "+t.Type.String())
+	p.addErrorHint(DiagExpectedToken, t, "expected "+tt.String()+", got "+t.Type.String(), expectedTokenHint(tt, t.Type))
 	return t, false
 }
 

@@ -41,11 +41,6 @@ type DiagnosticDTO struct {
 	NodeID   string `json:"node_id,omitempty"`
 	EdgeID   string `json:"edge_id,omitempty"`
 	Hint     string `json:"hint,omitempty"`
-	// Source position of the named node or edge, when the compiler could
-	// attribute one (1-based; absent for a global diagnostic).
-	File   string `json:"file,omitempty"`
-	Line   int    `json:"line,omitempty"`
-	Column int    `json:"column,omitempty"`
 }
 
 func irDiagToDTO(d ir.Diagnostic) DiagnosticDTO {
@@ -60,9 +55,6 @@ func irDiagToDTO(d ir.Diagnostic) DiagnosticDTO {
 		NodeID:   d.NodeID,
 		EdgeID:   d.EdgeID,
 		Hint:     d.Hint,
-		File:     d.File,
-		Line:     d.Line,
-		Column:   d.Column,
 	}
 }
 

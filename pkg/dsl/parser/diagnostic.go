@@ -33,7 +33,7 @@ const (
 // there rather than repeating the message.
 var hints = map[DiagCode]string{
 	DiagUnexpectedToken:     "Inside a block every line is `key: value` (or `src -> dst` inside `workflow:`); check this line's indentation and that its block is still open.",
-	DiagExpectedToken:       "Quote string values (`backend: \"claw\"`), write lists inline as `[a, b]`, and open every declaration as `<kind> <name>:` above an indented block.",
+	DiagExpectedToken:       "Give this position the shape the parser wanted: a bare name for a prompt/schema/node reference, a quoted string for a value, an indented block under a header, an inline `[a, b]` list.",
 	DiagBadIndentation:      "Indent with spaces only, by the same width at every level, and align the line with an enclosing block.",
 	DiagUnterminatedStr:     "Close the quote, or use a backtick raw string / a `|` block scalar for multi-line content.",
 	DiagDuplicateDecl:       "Rename one of the two declarations.",
@@ -51,6 +51,41 @@ var hints = map[DiagCode]string{
 // catalogued.
 func HintFor(code DiagCode) string {
 	return hints[code]
+}
+
+// expectedTokenHint names the shape the parser wanted at a token, so an
+// "expected X, got Y" arrives with the remedy for THAT shape rather than the
+// generic E002 line. The most common miss is the inverse of the generic
+// advice: a quoted string where a bare reference name belongs
+// (`system: "Review the diff"` — the author meant to declare a prompt).
+func expectedTokenHint(want, got TokenType) string {
+	switch want {
+	case TokenIdent:
+		if got == TokenString {
+			return "This property takes a bare name — a declared `prompt`, `schema` or node — not a quoted string: declare `prompt my_prompt:` with the text, then write `system: my_prompt`."
+		}
+		return "This property takes a bare name (letters, digits, `_`), such as a declared prompt, schema or node."
+	case TokenString:
+		if got == TokenIdent || got == TokenInt || got == TokenFloat {
+			return "Quote this value (`backend: \"claw\"`, `timeout: \"20m\"`) — an unquoted word is read as an identifier."
+		}
+		return "This property takes a quoted string (or a backtick raw string, or a `|` block scalar)."
+	case TokenInt:
+		return "This property takes an unquoted integer literal."
+	case TokenIndent:
+		return "Open an indented block under this header: its properties (or edges) go on the following lines, indented by two spaces."
+	case TokenColon:
+		return "Write `key: value` — a colon right after the property name — or `src -> dst` for an edge."
+	case TokenLBrack:
+		return "This property takes an inline list on one line: `[a, b]`."
+	case TokenRBrack:
+		return "Close the list with `]`: comma-separated elements on ONE line, no `- item` lines."
+	case TokenArrow:
+		return "An edge is `src -> dst`, optionally followed by `when …`, `else`, `as name(N)` or `with { … }`."
+	case TokenNewline:
+		return "One property or edge per line; nothing may follow the value on the same line except a comment."
+	}
+	return ""
 }
 
 // Severity indicates the severity of a diagnostic.

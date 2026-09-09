@@ -83,6 +83,11 @@ func main() {
 	defer cancel()
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		// The command already wrote its diagnosis (a --json result with
+		// valid:false): exit non-zero without a second JSON document.
+		if errors.Is(err, cli.ErrReported) {
+			os.Exit(1)
+		}
 		if jsonOutput {
 			newPrinter().JSON(map[string]string{"error": err.Error()})
 		} else {

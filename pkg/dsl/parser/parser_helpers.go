@@ -166,7 +166,7 @@ func (p *parser) expectString() string {
 	if t.Type == TokenString {
 		return t.Value
 	}
-	p.addError(DiagExpectedToken, t, "expected string literal, got "+t.Type.String())
+	p.addErrorHint(DiagExpectedToken, t, "expected string literal, got "+t.Type.String(), expectedTokenHint(TokenString, t.Type))
 	return t.Value
 }
 
@@ -176,7 +176,7 @@ func (p *parser) expectIdent() string {
 	if id != "" {
 		return id
 	}
-	p.addError(DiagExpectedToken, t, "expected identifier, got "+t.Type.String())
+	p.addErrorHint(DiagExpectedToken, t, "expected identifier, got "+t.Type.String(), expectedTokenHint(TokenIdent, t.Type))
 	return t.Value
 }
 
@@ -190,7 +190,7 @@ func (p *parser) expectInt() int {
 		}
 		return v
 	}
-	p.addError(DiagExpectedToken, t, "expected integer, got "+t.Type.String())
+	p.addErrorHint(DiagExpectedToken, t, "expected integer, got "+t.Type.String(), expectedTokenHint(TokenInt, t.Type))
 	return 0
 }
 

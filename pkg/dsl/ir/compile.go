@@ -129,6 +129,10 @@ type compiler struct {
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 	mcp     map[string]*MCPServer
+	// edgeSpans remembers where each compiled edge was declared, so a
+	// diagnostic on an edge lands on ITS line even when another edge shares
+	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
+	edgeSpans map[*Edge]ast.Span
 
 	autoBackendOnce   sync.Once
 	autoBackendCached bool
@@ -146,63 +150,66 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 	return InteractionNone
 }
 
-func (c *compiler) errorf(code DiagCode, format string, args ...any) {
+// emit appends one diagnostic. Every emit helper below is a view over it, so
+// whatever attribution a site can offer — a node, an edge, a source span, a
+// site-specific fix line — travels the same way whichever helper it used,
+// and the catalogue fix line is the default hint for every code.
+func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, hint string, format string, args ...any) {
+	if hint == "" {
+		hint = HintFor(code)
+	}
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
-		Severity: SeverityError,
+		Severity: sev,
 		Message:  fmt.Sprintf(format, args...),
-		Hint:     HintFor(code),
+		NodeID:   nodeID,
+		EdgeID:   edgeID,
+		Hint:     hint,
+		File:     sp.Start.File,
+		Line:     sp.Start.Line,
+		Column:   sp.Start.Column,
 	})
 }
 
+func (c *compiler) errorf(code DiagCode, format string, args ...any) {
+	c.emit(SeverityError, code, "", "", ast.Span{}, "", format, args...)
+}
+
 func (c *compiler) warnf(code DiagCode, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityWarning,
-		Message:  fmt.Sprintf(format, args...),
-		Hint:     HintFor(code),
-	})
+	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", format, args...)
 }
 
 // errorfAt is a variant of errorf that attaches authoritative attribution
 // (nodeID and/or edgeID) so downstream tooling can render the diagnostic on
-// the precise node or edge instead of guessing from the message text.
+// the precise node or edge instead of guessing from the message text; the
+// source position is resolved from those ids by attachPositions.
 func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityError,
-		Message:  fmt.Sprintf(format, args...),
-		NodeID:   nodeID,
-		EdgeID:   edgeID,
-		Hint:     HintFor(code),
-	})
+	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", format, args...)
 }
 
 // warnfAt is the warning counterpart to errorfAt.
 func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityWarning,
-		Message:  fmt.Sprintf(format, args...),
-		NodeID:   nodeID,
-		EdgeID:   edgeID,
-		Hint:     HintFor(code),
-	})
+	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+}
+
+// errorfOnEdge attributes a diagnostic to one specific AST edge — its own
+// line, which is what tells two edges sharing endpoints apart — with the
+// canonical edge id alongside.
+func (c *compiler) errorfOnEdge(code DiagCode, ae *ast.Edge, format string, args ...any) {
+	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", format, args...)
+}
+
+// errorfAtEdge is errorfOnEdge for a compiled edge, through the span
+// compileEdges recorded for it.
+func (c *compiler) errorfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
+	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
 }
 
 // errorfAtSpan attributes a diagnostic to a source span directly — for a
 // declaration that is not a graph node (a prompt, a schema) and so has no
 // NodeID for attachPositions to look up.
 func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityError,
-		Message:  fmt.Sprintf(format, args...),
-		Hint:     HintFor(code),
-		File:     sp.Start.File,
-		Line:     sp.Start.Line,
-		Column:   sp.Start.Column,
-	})
+	c.emit(SeverityError, code, "", "", sp, "", format, args...)
 }
 
 // edgeID builds the canonical "<from>-><to>" identifier the studio uses so
@@ -1485,10 +1492,10 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 	for _, ae := range astEdges {
 		// Validate node references.
 		if _, ok := c.nodes[ae.From]; !ok {
-			c.errorfAt(DiagUnknownNode, "", edgeID(ae.From, ae.To), "edge source %q not found", ae.From)
+			c.errorfOnEdge(DiagUnknownNode, ae, "edge source %q not found", ae.From)
 		}
 		if _, ok := c.nodes[ae.To]; !ok {
-			c.errorfAt(DiagUnknownNode, "", edgeID(ae.From, ae.To), "edge target %q not found", ae.To)
+			c.errorfOnEdge(DiagUnknownNode, ae, "edge target %q not found", ae.To)
 		}
 
 		e := &Edge{
@@ -1496,6 +1503,10 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			To:     ae.To,
 			IsElse: ae.IsElse,
 		}
+		if c.edgeSpans == nil {
+			c.edgeSpans = map[*Edge]ast.Span{}
+		}
+		c.edgeSpans[e] = ae.Span
 
 		// Condition: either a simple field name (legacy) or a parsed expression.
 		if ae.When != nil {
@@ -1542,7 +1553,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				if ae.Loop.MaxIterationsExpr != "" {
 					refs, err := ParseRefs(ae.Loop.MaxIterationsExpr)
 					if err != nil {
-						c.errorfAt(DiagBadTemplateRef, "", edgeID(ae.From, ae.To),
+						c.errorfOnEdge(DiagBadTemplateRef, ae,
 							"loop %q: template cap %q: %v",
 							ae.Loop.Name, ae.Loop.MaxIterationsExpr, err)
 					}
@@ -1558,7 +1569,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 							loop.MaxIterations = n
 							loop.MaxIterationsExpr = ""
 						} else {
-							c.errorfAt(DiagBadTemplateRef, "", edgeID(ae.From, ae.To),
+							c.errorfOnEdge(DiagBadTemplateRef, ae,
 								"loop %q: cap %q has no template refs and is not an integer — a static non-numeric cap would silently limit the loop to 0 iterations",
 								ae.Loop.Name, ae.Loop.MaxIterationsExpr)
 						}
@@ -1583,7 +1594,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				}
 				refs, err := ParseRefs(ae.Foreach.Collection)
 				if err != nil {
-					c.errorfAt(DiagBadTemplateRef, "", edgeID(ae.From, ae.To), "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
+					c.errorfOnEdge(DiagBadTemplateRef, ae, "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
 				}
 				fe.CollectionRefs = refs
 				foreaches[ae.Foreach.Name] = fe
@@ -1596,7 +1607,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			for i, w := range ae.With {
 				refs, err := ParseRefs(w.Value)
 				if err != nil {
-					c.errorfAt(DiagBadTemplateRef, "", edgeID(ae.From, ae.To), "edge %s -> %s, with key %q: %v",
+					c.errorfOnEdge(DiagBadTemplateRef, ae, "edge %s -> %s, with key %q: %v",
 						ae.From, ae.To, w.Key, err)
 				}
 				e.With[i] = &DataMapping{
@@ -2235,7 +2246,7 @@ func refInQuotes(command string) []string {
 // being cleaned up. The fix is always the same — drop the author's quotes.
 func (c *compiler) checkQuotedCommandRefs(node, command string) {
 	for _, ref := range refInQuotes(command) {
-		c.warnf(DiagQuotedCommandRef,
+		c.warnfAt(DiagQuotedCommandRef, node, "",
 			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
 				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
 			node, ref)

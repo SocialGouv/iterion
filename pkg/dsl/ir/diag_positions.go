@@ -1,6 +1,10 @@
 package ir
 
-import "github.com/SocialGouv/iterion/pkg/dsl/ast"
+import (
+	"sort"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+)
 
 // attachPositions stamps a source position onto every diagnostic that names
 // a node or an edge: the declaration's own `<kind> <name>:` line for a node,
@@ -114,4 +118,33 @@ func (c *compiler) attachPositions() {
 			d.File, d.Line, d.Column = p.File, p.Line, p.Column
 		}
 	}
+
+	// Several validators walk maps, so two compilations of one file used to
+	// list the same findings in a different order. Positioned findings read
+	// in source order, the global ones (no position) first; a tie on the
+	// position is broken by code, node, edge and message — every field a
+	// finding has — so the order never depends on map iteration and a
+	// `--json` diff of two runs is quiet.
+	sort.SliceStable(c.diags, func(i, j int) bool {
+		a, b := c.diags[i], c.diags[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		if a.NodeID != b.NodeID {
+			return a.NodeID < b.NodeID
+		}
+		if a.EdgeID != b.EdgeID {
+			return a.EdgeID < b.EdgeID
+		}
+		return a.Message < b.Message
+	})
 }

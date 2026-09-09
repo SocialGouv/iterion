@@ -172,7 +172,7 @@ func RunValidate(path string, p *Printer) error {
 			printDiagnostics(p, result.Diagnostics)
 			p.Line("  result: INVALID (no workflow found)")
 		}
-		return fmt.Errorf("validation failed")
+		return validationFailed(p)
 	}
 
 	// Compile (includes static validation).
@@ -267,9 +267,19 @@ func RunValidate(path string, p *Printer) error {
 	}
 
 	if !result.Valid {
-		return fmt.Errorf("validation failed")
+		return validationFailed(p)
 	}
 	return nil
+}
+
+// validationFailed is the non-zero exit of an invalid workflow. In --json mode
+// the result already carries the verdict and every finding, so the error is
+// marked ErrReported and the CLI prints nothing more.
+func validationFailed(p *Printer) error {
+	if p.Format == OutputJSON {
+		return fmt.Errorf("validation failed: %w", ErrReported)
+	}
+	return fmt.Errorf("validation failed")
 }
 
 // scanBundleSkills reads a bundle's skills/*.md frontmatter (name +
