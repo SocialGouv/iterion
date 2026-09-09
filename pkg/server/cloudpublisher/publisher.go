@@ -2592,17 +2592,23 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 		return nil, fmt.Errorf("cloudpublisher: launch spec has no source and no file_path; cannot serialise IR")
 	}
 	// A prompt's {{include}} resolves beside the file the prompt came from.
-	// For a bundle launch that file is the snapshot's main.bot on THIS
-	// server, whatever path the client named; the parse is attributed to it
-	// so the includes find their files. An inline upload has no files beside
-	// its source at all — its includes cannot travel, and are refused below
-	// rather than looked up in the server's working directory.
+	// For a bundle launch that file is the snapshot's entry on THIS server,
+	// under the name the launch bot has (a bundle's main.bot; a loose
+	// catalog .bot keeps its own name), whatever directory the client named;
+	// the parse is attributed to it so the includes find their files. An
+	// inline upload has no files beside its source at all — its includes
+	// cannot travel, and are refused below rather than looked up in the
+	// server's working directory.
 	bundleDir := ""
 	if len(bundleDirs) > 0 {
 		bundleDir = bundleDirs[0]
 	}
 	if bundleDir != "" {
-		parserPath = filepath.Join(bundleDir, "main.bot")
+		entry := "main.bot"
+		if path != "" {
+			entry = filepath.Base(path)
+		}
+		parserPath = filepath.Join(bundleDir, entry)
 	}
 	pr := parser.Parse(parserPath, src)
 	for _, d := range pr.Diagnostics {

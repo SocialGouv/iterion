@@ -804,6 +804,9 @@ func (c *compiler) compilePrompts() {
 		var incErrs []error
 		if HasPromptInclude(body) && p.Span.Start.File == "" {
 			incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: the prompt has no source file (an inline or transported prompt must carry its includes resolved)")}
+			// One error per cause: the marker is not a template reference,
+			// and left in the body it would be reported a second time as one.
+			body = promptIncludeRe.ReplaceAllString(body, "")
 		} else {
 			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File))
 		}
