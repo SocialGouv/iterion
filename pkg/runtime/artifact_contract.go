@@ -183,6 +183,27 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
 			continue
 		}
+		// Identity, before anything derived from it. The contract exists to
+		// bind an output to its producer, and only non-emptiness was checked:
+		// the workflow node below is then resolved by the ARTIFACT-INDEX KEY,
+		// so a contract naming a different producer was validated against the
+		// wrong node's declaration and admitted. The loaded body's own
+		// identity was never compared to the one requested either, so a store
+		// that returned the wrong object — a key collision, a bad migration, a
+		// hand-edited artifact — went unnoticed.
+		//
+		// Deliberately outside the --force block below: a mismatched producer
+		// is corrupt data, not the edited source --force speaks for. The empty
+		// cases are tolerated because a store that does not echo an identity
+		// back cannot be said to contradict it.
+		if contract.ProducerNode != nodeID {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d names producer %q", nodeID, version, contract.ProducerNode))
+			continue
+		}
+		if (artifact.NodeID != "" && artifact.NodeID != nodeID) || (artifact.RunID != "" && artifact.RunID != run.ID) {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d loaded as %s/%s", nodeID, version, artifact.RunID, artifact.NodeID))
+			continue
+		}
 		// --force is the established acknowledgement that the operator wants
 		// to recover against deliberately edited workflow source. Publishing
 		// names, schemas, node presence and the producer revision all derive

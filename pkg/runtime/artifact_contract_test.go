@@ -443,3 +443,94 @@ func TestValidateArtifactContractsReportsViolationsInStableOrder(t *testing.T) {
 		t.Fatalf("violations are not in node order: %v", first)
 	}
 }
+
+// wrongArtifactStore answers every load with one fixed artifact, standing in
+// for a store that returns the wrong object — a key collision, a bad
+// migration, a hand-edited file.
+type wrongArtifactStore struct {
+	store.RunStore
+	artifact *store.Artifact
+}
+
+func (w wrongArtifactStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
+	return w.artifact, nil
+}
+
+// TestValidateArtifactContractsBindsOutputToItsProducer pins the promise the
+// contract is named for. Both mismatches below resolve the workflow node by
+// the artifact-index key, so without an identity check the artifact is
+// validated against the WRONG node's declaration — and passes whenever that
+// node happens to agree.
+func TestValidateArtifactContractsBindsOutputToItsProducer(t *testing.T) {
+	ctx := context.Background()
+	enforce := &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	// "writer" and "other" publish the same ref, so every source-derived check
+	// below agrees and only identity can separate them.
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+		"other":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "other"}, Publish: "report"},
+	}}
+
+	t.Run("a contract naming a different producer is refused", func(t *testing.T) {
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, "artifact-producer", "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ExecutionContext = enforce
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: "artifact-producer", NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{LogicalRef: "report", ProducerNode: "other", Version: 0},
+			Data:     map[string]any{"ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		run, err = s.LoadRun(ctx, "artifact-producer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ValidateArtifactContracts(ctx, s, run, wf, "", false)
+		if err == nil {
+			t.Fatal("an artifact whose contract names another producer was admitted")
+		}
+		if !strings.Contains(err.Error(), "names producer") {
+			t.Fatalf("refusal does not name the mismatch: %v", err)
+		}
+		// --force speaks for edited SOURCE; a mismatched producer is corrupt
+		// data, so the waiver must not reach it.
+		if err := ValidateArtifactContracts(ctx, s, run, wf, "", true); err == nil {
+			t.Fatal("--force waived a producer-identity mismatch")
+		}
+	})
+
+	t.Run("a store returning another run's artifact is refused", func(t *testing.T) {
+		base := tmpStore(t)
+		run, err := base.CreateRun(ctx, "artifact-identity", "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ArtifactIndex = map[string]int{"writer": 0}
+		run.ExecutionContext = enforce
+		if err := base.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		s := wrongArtifactStore{RunStore: base, artifact: &store.Artifact{
+			RunID: "some-other-run", NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{LogicalRef: "report", ProducerNode: "writer", Version: 0},
+			Data:     map[string]any{"ok": true},
+		}}
+		err = ValidateArtifactContracts(ctx, s, run, wf, "", false)
+		if err == nil {
+			t.Fatal("an artifact belonging to another run was admitted")
+		}
+		if !strings.Contains(err.Error(), "loaded as some-other-run") {
+			t.Fatalf("refusal does not name the foreign artifact: %v", err)
+		}
+	})
+}
