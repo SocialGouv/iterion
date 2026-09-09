@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -194,6 +196,43 @@ func TestSchemaFingerprintNamesTheFieldType(t *testing.T) {
 	}
 	if unknown := schemaFingerprint(wf, "Missing"); unknown != "" {
 		t.Fatalf("unresolvable schema fingerprinted as %q", unknown)
+	}
+}
+
+// An unreadable artifact is not a compatible one. A missing file stays
+// tolerated (a stale index carries no contract to check), but a corrupt or
+// unreachable one must refuse under enforce — otherwise a store blip makes
+// the whole gate admit everything for its duration.
+func TestValidateArtifactContractsFailsClosedOnUnreadableArtifact(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-unreadable", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+	})
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	fsStore, ok := s.(*store.FilesystemRunStore)
+	if !ok {
+		t.Fatalf("tmpStore is %T, expected a filesystem store", s)
+	}
+	path := filepath.Join(fsStore.Root(), "runs", run.ID, "artifacts", "writer", "0.json")
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+	}); err != nil {
+		t.Fatalf("index entry with no artifact behind it refused: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+	}); err == nil {
+		t.Fatal("undecodable artifact admitted under enforce")
 	}
 }
 

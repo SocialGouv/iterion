@@ -26,6 +26,15 @@ import (
 // wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
 var ErrRunNotFound = errors.New("store: run not found")
 
+// ErrArtifactNotFound is the artifact-level twin of ErrRunNotFound: every
+// LoadArtifact implementation wraps it when the requested version genuinely
+// is not there, and only then. A bare error means the store could not be
+// read — a decode failure, a permission error, an object-store outage — and
+// a caller must NOT read it as absence. The artifact-contract gate relies on
+// this: tolerating a missing artifact is a rollout concession, tolerating an
+// unreadable one would make an enforce run admit everything during a blip.
+var ErrArtifactNotFound = errors.New("store: artifact not found")
+
 // ErrRunConflict means the loaded version changed before a full-document save.
 // Reload and reapply the intended edit; never retry the stale document.
 var ErrRunConflict = errors.New("store: run changed since it was loaded")

@@ -69,7 +69,9 @@ func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version 
 	body, err := s.blob.GetArtifact(ctx, runID, nodeID, version)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
-			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found", runID, nodeID, version)
+			// Wrapped, not flattened: a caller must be able to tell this
+			// apart from an object-store outage (store.ErrArtifactNotFound).
+			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found: %w", runID, nodeID, version, store.ErrArtifactNotFound)
 		}
 		return nil, fmt.Errorf("store/mongo: blob get %s/%s/%d: %w", runID, nodeID, version, err)
 	}

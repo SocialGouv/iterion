@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -111,10 +112,19 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 			continue
 		}
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
-		if err != nil {
-			// A stale index is a legacy/cache condition. Do not turn it into a
-			// destructive rewind; the store's artifact reader remains the source
-			// of truth and the next write repairs the index.
+		switch {
+		case errors.Is(err, store.ErrArtifactNotFound):
+			// An index entry with no artifact behind it is a legacy/cache
+			// condition, and there is no contract to read: tolerated, and
+			// never turned into a destructive rewind.
+			continue
+		case err != nil:
+			// Anything else — a decode failure, a permission error, an
+			// object-store outage — means the contract could NOT be read,
+			// which is not the same as it being compatible. Admitting it
+			// would make an enforce run pass everything for the duration
+			// of a blip, the exact opposite of failing closed.
+			violations = append(violations, fmt.Sprintf("artifact %s/%d could not be read: %v", nodeID, version, err))
 			continue
 		}
 		if artifact == nil || artifact.Contract == nil {

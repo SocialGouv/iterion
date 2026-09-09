@@ -85,7 +85,9 @@ func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) err
 	return nil
 }
 
-// LoadArtifact reads a specific artifact version.
+// LoadArtifact reads a specific artifact version. A missing version wraps
+// ErrArtifactNotFound; every other failure stays a bare error, so a caller
+// can tell absence from an unreadable store.
 func (s *FilesystemRunStore) LoadArtifact(_ context.Context, runID, nodeID string, version int) (*Artifact, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
@@ -96,6 +98,9 @@ func (s *FilesystemRunStore) LoadArtifact(_ context.Context, runID, nodeID strin
 	p := filepath.Join(s.root, "runs", runID, "artifacts", nodeID, fmt.Sprintf("%d.json", version))
 	data, err := os.ReadFile(p)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("store: load artifact: %w: %w", ErrArtifactNotFound, err)
+		}
 		return nil, fmt.Errorf("store: load artifact: %w", err)
 	}
 	var a Artifact
