@@ -25,6 +25,26 @@ func TestReportForRunDistinguishesLegacyAndContractRuns(t *testing.T) {
 	}
 }
 
+func TestReportForRunComputesRollbackSafety(t *testing.T) {
+	if got := ReportForRun(nil); got.RollbackSafe {
+		t.Fatalf("nil run must not be rollback-safe: %+v", got)
+	}
+	for _, status := range []string{"active", "exhausted"} {
+		run := &store.Run{
+			ExecutionContext:  &store.ExecutionContext{Policy: store.ContextPolicyReport},
+			OutputCorrections: map[string]store.OutputCorrectionEpisode{"node": {Status: status}},
+		}
+		if got := ReportForRun(run); got.RollbackSafe {
+			t.Fatalf("%s correction episode must not be rollback-safe: %+v", status, got)
+		}
+	}
+	if got := ReportForRun(&store.Run{
+		ExecutionContext: &store.ExecutionContext{Policy: store.ContextPolicyEnforce},
+	}); got.RollbackSafe {
+		t.Fatalf("enforced run must not be rollback-safe: %+v", got)
+	}
+}
+
 func TestSummarizeAndRollback(t *testing.T) {
 	at := time.Now().Add(time.Hour)
 	b := Summarize([]*store.Run{
@@ -44,8 +64,10 @@ func TestSummarizeAndRollback(t *testing.T) {
 
 func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "")
+	t.Setenv("ITERION_RETRY_CIRCUIT_THRESHOLD", "7")
+	t.Setenv("ITERION_RETRY_CIRCUIT_COOLDOWN", "2m")
 	c := FromEnv()
-	if c.Mode != ModeLegacy || c.ContextPolicy() != store.ContextPolicyLegacy || !c.WatcherCursorsEnabled {
+	if c.Mode != ModeLegacy || c.ContextPolicy() != store.ContextPolicyLegacy || !c.WatcherCursorsEnabled || c.RetryCircuitThreshold != 7 || c.RetryCircuitCooldown != 2*time.Minute {
 		t.Fatalf("config = %+v", c)
 	}
 	t.Setenv(EnvMode, "enforce")
