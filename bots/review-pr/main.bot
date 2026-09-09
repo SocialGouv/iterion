@@ -672,8 +672,11 @@ prompt review_user_claude:
   Tracker token file — EXTERNAL TRACKER only (may be empty or an
   unresolved placeholder — then fetch without auth or report
   unverifiable): {{secrets.tracker_token}}
-  Forge token file — FORGE-NATIVE only, reads the forge's own issues
-  (same caveat): {{secrets.forge_token}}
+  Forge token file — FORGE-NATIVE only, to READ the forge's own issues
+  (same caveat). It can write, so it is bounded: issue GETs and the one
+  read-only GraphQL query, never a comment, label, state change or
+  review — publishing is a deterministic step you never touch. See the
+  skill's read-only section: {{secrets.forge_token}}
 
   ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
   {{vars.prior_pushback}}
@@ -701,8 +704,11 @@ prompt review_user_gpt:
   Tracker token file — EXTERNAL TRACKER only (may be empty or an
   unresolved placeholder — then fetch without auth or report
   unverifiable): {{secrets.tracker_token}}
-  Forge token file — FORGE-NATIVE only, reads the forge's own issues
-  (same caveat): {{secrets.forge_token}}
+  Forge token file — FORGE-NATIVE only, to READ the forge's own issues
+  (same caveat). It can write, so it is bounded: issue GETs and the one
+  read-only GraphQL query, never a comment, label, state change or
+  review — publishing is a deterministic step you never touch. See the
+  skill's read-only section: {{secrets.forge_token}}
 
   ALREADY ANSWERED (may be empty — then this PR has had no fixer pass):
   {{vars.prior_pushback}}

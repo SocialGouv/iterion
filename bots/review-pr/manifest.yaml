@@ -210,6 +210,12 @@ forge:
                              # write"; without it SetCommitStatus 403s
                              # "insufficient scope" and the gate silently
                              # advises instead of blocking)
+    issues: read             # read the issues a PR links, for the 0.9.0
+                             # forge-native ticket conformance. Without this
+                             # scope the no-config path is INERT: every fetch
+                             # 403s and every verdict degrades to
+                             # "unverifiable", which reads like "no ticket"
+                             # rather than "the token may not look".
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
