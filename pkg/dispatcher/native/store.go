@@ -78,6 +78,12 @@ type Store struct {
 	scanning int
 	dirty    map[string]bool
 
+	// scanEpoch is bumped by the locked rebuild (the panic-recovery path,
+	// which holds mu and so cannot wait on reconcileMu): an unlocked scan
+	// that started before the bump is older than the index and does not
+	// swap in.
+	scanEpoch uint64
+
 	// unreadableFP fingerprints the set of cards the last scan could not
 	// read, so the warning is written when the set CHANGES, not on every
 	// tick of a net that runs every two seconds.
@@ -255,6 +261,11 @@ func (s *Store) Close() error {
 	if late != nil && late != rescanner {
 		_ = late.Close()
 	}
+	// An overflow rebuild already scanning finishes under reconcileMu;
+	// wait for it so nothing of this store runs after Close returns. One
+	// asked for later returns at once: Reconcile refuses a closed store.
+	s.reconcileMu.Lock()
+	s.reconcileMu.Unlock() //nolint:staticcheck // an empty critical section is the wait
 	return err
 }
 
@@ -268,7 +279,7 @@ func (s *Store) populateIndex() error {
 		return err
 	}
 	for id, iss := range fresh {
-		s.index[id] = iss
+		s.setIndexLocked(id, iss)
 	}
 	if len(unreadable) > 0 && s.logger != nil {
 		for id, err := range unreadable {

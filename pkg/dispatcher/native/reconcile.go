@@ -71,14 +71,20 @@ var (
 	reconcileScanned  func(*Store)
 )
 
-// markDirtyLocked records an in-process write while a scan is in flight,
+// markDirtyLocked records a write to the index while a scan is in flight,
 // so the swap keeps the index's value for that id. Caller holds mu; every
-// mutator funnels through writeIssueLocked or Delete, which call it.
+// index write funnels through setIndexLocked or dropIndexLocked, which
+// call it.
 func (s *Store) markDirtyLocked(id string) {
 	if s.scanning > 0 {
 		s.dirty[id] = true
 	}
 }
+
+// rebuildPassEnding is a test seam, nil in production: called by the
+// overflow rebuild goroutine after its last scan and before it releases
+// the pending flag — the window in which a request used to be lost.
+var rebuildPassEnding func(*Store)
 
 // Reconcile rebuilds the index from the authoritative on-disk state.
 //
@@ -111,6 +117,13 @@ func (s *Store) Reconcile() error {
 	defer s.reconcileMu.Unlock()
 
 	s.mu.Lock()
+	if s.closed {
+		// A rebuild asked for before Close has nothing to serve; Close
+		// waits for the one in flight and no new one starts.
+		s.mu.Unlock()
+		return nil
+	}
+	epoch := s.scanEpoch
 	s.scanning++
 	if s.dirty == nil {
 		s.dirty = map[string]bool{}
@@ -131,6 +144,14 @@ func (s *Store) Reconcile() error {
 
 	s.mu.Lock()
 	s.scanning--
+	if s.scanEpoch != epoch {
+		// The panic-recovery rebuild swapped a NEWER snapshot in while this
+		// scan ran (it holds mu, so it cannot take reconcileMu); this
+		// older one must not land on top of it. The next tick scans again.
+		s.dirty = nil
+		s.mu.Unlock()
+		return nil
+	}
 	for id := range s.dirty {
 		if cur, ok := s.index[id]; ok {
 			fresh[id] = cur
@@ -157,6 +178,7 @@ func (s *Store) reconcileLocked() error {
 	if err != nil {
 		return err
 	}
+	s.scanEpoch++ // an unlocked scan in flight is now older than the index
 	if warn := s.swapIndexLocked(fresh, unreadable); warn != "" && s.logger != nil {
 		s.logger.Warn("%s", warn)
 	}
@@ -249,10 +271,21 @@ func (s *Store) rebuildAsync(what string) {
 		return // the running pass will see the rerun flag and go again
 	}
 	go func() {
-		defer s.rebuildPending.Store(false)
-		for s.rebuildRerun.CompareAndSwap(true, false) {
-			if err := s.Reconcile(); err != nil {
-				s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+		for {
+			for s.rebuildRerun.CompareAndSwap(true, false) {
+				if err := s.Reconcile(); err != nil {
+					s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+				}
+			}
+			if rebuildPassEnding != nil {
+				rebuildPassEnding(s)
+			}
+			s.rebuildPending.Store(false)
+			// A request that arrived between the last check above and this
+			// release failed its own claim on the pending flag and is
+			// relying on this goroutine: look once more, and re-claim.
+			if !s.rebuildRerun.Load() || !s.rebuildPending.CompareAndSwap(false, true) {
+				return
 			}
 		}
 	}()

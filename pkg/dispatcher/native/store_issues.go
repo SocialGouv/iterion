@@ -113,7 +113,7 @@ func (s *Store) createLocked(in Issue) (created *Issue, err error) {
 	if err := s.writeIssueLocked(&in); err != nil {
 		return nil, err
 	}
-	s.index[in.ID] = cloneIssue(&in)
+	s.setIndexLocked(in.ID, cloneIssue(&in))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueCreated,
 		IssueID: in.ID,
@@ -363,7 +363,7 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueUpdated,
 		IssueID: iss.ID,
@@ -508,7 +508,7 @@ func (s *Store) Reopen(id, toState string) (updated *Issue, err error) {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
@@ -600,7 +600,7 @@ func (s *Store) setStateReasonLocked(iss *Issue, newState, byMarker, reason stri
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
@@ -647,7 +647,7 @@ func (s *Store) ClaimForLaunch(id string) (claimed *Issue, won bool, err error) 
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, false, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
@@ -711,7 +711,7 @@ func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
 		if err := s.writeIssueLocked(next); err != nil {
 			return err
 		}
-		s.index[id] = cloneIssue(next)
+		s.setIndexLocked(id, cloneIssue(next))
 		if err := s.emitPostCommitEvent(Event{
 			Type:    EvtIssueUnblocked,
 			IssueID: id,
@@ -758,8 +758,7 @@ func (s *Store) Delete(id string) (err error) {
 	if err := os.Remove(s.issuePath(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("native store: remove issue: %w", err)
 	}
-	delete(s.index, id)
-	s.markDirtyLocked(id)
+	s.dropIndexLocked(id)
 	return s.emitPostCommitEvent(Event{Type: EvtIssueDeleted, IssueID: id})
 }
 
@@ -808,7 +807,6 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := store.WriteFileAtomic(p, data, filePerm); err != nil {
 		return fmt.Errorf("native store: write issue: %w", err)
 	}
-	s.markDirtyLocked(iss.ID)
 	return nil
 }
 

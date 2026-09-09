@@ -186,7 +186,7 @@ func (s *Store) applyLabelRewriteLocked(
 		if err := s.writeIssueLocked(next); err != nil {
 			return touched, fmt.Errorf("native store: write %s during %s: %w", id, eventType, err)
 		}
-		s.index[id] = next
+		s.setIndexLocked(id, next)
 		evtPayload := map[string]any{"issue_id": id}
 		for k, v := range payload {
 			evtPayload[k] = v
