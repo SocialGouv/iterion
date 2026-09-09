@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -331,6 +332,54 @@ func isPublicMarketplaceRead(method, path string) bool {
 	return false
 }
 
+// isStateChangingMethod reports whether the method can, by itself, change
+// server state. The complement is the CORS "safe method" set: a browser
+// sends those on plain navigation, so gating them would break ordinary
+// links, and they are not a CSRF primitive.
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return false
+	}
+	return true
+}
+
+// originGateAllows is the single CSRF boundary for the HTTP API. It returns
+// false (having written 403) when a state-changing /api/ request carries an
+// Origin the deployment does not recognise.
+//
+// It exists as ONE gate rather than a per-handler call because the per-handler
+// form (requireSafeOrigin) is opt-in, and opt-in drifts: it covered 70 of 247
+// state-changing routes, leaving the credential, secret, OAuth and org-admin
+// endpoints ungated. Those calls stay where they are as defence in depth; this
+// gate is what makes the guarantee hold for a route nobody remembered.
+//
+// Why a same-site cookie is not enough on its own: SameSite=Lax only filters
+// CROSS-site requests, and "site" is the registrable domain. A deployment
+// served from a shared parent (iterion's own iterion.fabrique.social.gouv.fr
+// under the gouv.fr public suffix, i.e. site social.gouv.fr) is same-site with
+// every sibling host, so Lax attaches the session cookie to their requests.
+// Nor does the CORS preflight cover it: a POST with a simple Content-Type
+// (text/plain) is not preflighted, and the JSON decoders here never inspect
+// Content-Type.
+//
+// An absent Origin still passes — that is a non-browser caller (the CLI,
+// runner pods, forge webhooks), which cannot be a CSRF vector because there is
+// no ambient credential to ride. Same-origin, loopback, the configured
+// PublicURL and the desktop wails origins pass via isAllowedOriginReq, so the
+// studio SPA, the desktop app and both public hosts are unaffected.
+//
+// ITERION_REQUIRE_ORIGIN=0 disables the gate for a rollback without a redeploy.
+func (s *Server) originGateAllows(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/api/") || !isStateChangingMethod(r.Method) {
+		return true
+	}
+	if os.Getenv("ITERION_REQUIRE_ORIGIN") == "0" {
+		return true
+	}
+	return s.requireSafeOrigin(w, r)
+}
+
 // authMiddleware is the umbrella middleware applied to every
 // request. It bypasses auth for public paths, otherwise dispatches
 // to a pre-built authenticated handler so the per-request hot path
@@ -338,6 +387,23 @@ func isPublicMarketplaceRead(method, path string) bool {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	authed := s.requireAuth(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Runs before the public-path bypass: login and password-reset are
+		// public but must not be cross-origin POST-able either (login CSRF
+		// forces a victim into an attacker's session).
+		if !s.originGateAllows(w, r) {
+			return
+		}
+		// CORS preflight. It carries no credentials and cannot reach a
+		// business handler: every production /api route declares its method,
+		// so an OPTIONS can only match the `OPTIONS /api/` responder in
+		// routes(). Gating it behind auth made that responder unreachable —
+		// the preflight answered 401 with no ACAO, which fails closed but
+		// also made the origin allowlist it implements inert, so a legitimate
+		// cross-origin client failed with an opaque 401 and no diagnostic.
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return

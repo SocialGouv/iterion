@@ -108,12 +108,41 @@ var upgrader = websocket.Upgrader{
 // different host and is rejected by the allowlist instead. Shared by the WS
 // upgrader (CheckOrigin) and the HTTP CORS path (isAllowedOriginReq) so both
 // transports treat the deployed/cloud studio identically.
+// It also refuses a plaintext Origin on a request that arrived over TLS: an
+// attacker who can MITM http://<same-host> (a first visit, before HSTS is
+// pinned) would otherwise be "same-origin" on a host match alone. The check is
+// deliberately one-sided — an https Origin is accepted whatever the request
+// scheme resolves to — because the scheme of an incoming request is only
+// knowable from X-Forwarded-Proto, and a TLS-terminating proxy that omits it
+// would otherwise start refusing every request from its own SPA.
 func sameOrigin(origin string, r *http.Request) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return strings.EqualFold(u.Host, r.Host)
+	if !strings.EqualFold(u.Host, r.Host) {
+		return false
+	}
+	return !strings.EqualFold(u.Scheme, "http") || requestScheme(r) != "https"
+}
+
+// requestScheme reports the scheme the CLIENT used. On a server-side request
+// r.URL.Scheme is empty, and behind a TLS-terminating proxy the connection
+// itself is plaintext, so X-Forwarded-Proto is the only witness. Unknown
+// resolves to "http", which keeps the sameOrigin check above permissive rather
+// than refusing a deployment whose proxy sets no forwarding header.
+func requestScheme(r *http.Request) string {
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		// A chain of proxies appends, so the client's own value is first.
+		if i := strings.IndexByte(p, ','); i >= 0 {
+			p = p[:i]
+		}
+		return strings.ToLower(strings.TrimSpace(p))
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // currentOriginCheck is set by Server.routes() to the same allowlist used

@@ -1,0 +1,274 @@
+package server
+
+import (
+	"bytes"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
+)
+
+// newSweepServer wires the credential + identity stack so routes() registers
+// the groups that are conditional on it — BYOK, org credentials, generic
+// secrets, OAuth forfaits, PATs, webhook configs. The bare newTestServer
+// registers 70 routes; those conditional groups are exactly the ones that had
+// no origin guard, so sweeping without them would miss the point.
+func newSweepServer(t *testing.T) *Server {
+	t.Helper()
+	key := bytes.Repeat([]byte{7}, 32)
+	signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(key), 15*time.Minute)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	svc, err := auth.NewService(auth.Config{
+		Store:      identity.NewMemoryStore(),
+		Sessions:   auth.NewMemorySessionStore(),
+		Signer:     signer,
+		SignupMode: auth.SignupOpen,
+		RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("auth service: %v", err)
+	}
+	sealer, err := secrets.NewAESGCMSealer(key)
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	return New(Config{
+		WorkDir:                 t.TempDir(),
+		Bind:                    "127.0.0.1",
+		SkipProjectRegistration: true,
+		AuthService:             svc,
+		AuthSigner:              signer,
+		PATs:                    pat.NewMemoryStore(),
+		ApiKeys:                 secrets.NewMemoryApiKeyStore(),
+		GenericSecrets:          secrets.NewMemoryGenericSecretStore(),
+		Sealer:                  sealer,
+		OAuthForfait:            secrets.NewMemoryOAuthStore(),
+		OAuthPending:            secrets.NewMemoryOAuthPendingStore(),
+		BotBindings:             secrets.NewMemoryBotSecretBindingStore(),
+		WebhookConfigs:          webhooks.NewMemoryConfigStore(),
+	}, iterlog.New(iterlog.LevelError, nil))
+}
+
+// foreignOrigin is a sibling host under the SAME registrable domain as the
+// deployment's historical public host (iterion.fabrique.social.gouv.fr, whose
+// site is social.gouv.fr because gouv.fr is a public suffix). That is the case
+// SameSite=Lax does NOT cover: the browser treats such a request as same-site
+// and attaches the session cookie, so only an Origin check can refuse it.
+const foreignOrigin = "https://evil.fabrique.social.gouv.fr"
+
+const sweepHost = "iterion.fabrique.social.gouv.fr"
+
+// concretePath turns a Go 1.22 ServeMux pattern into a requestable path by
+// filling every wildcard: "/api/orgs/{id}/oauth/{kind}" → "/api/orgs/x/oauth/x".
+func concretePath(pattern string) string {
+	var b strings.Builder
+	for {
+		open := strings.IndexByte(pattern, '{')
+		if open < 0 {
+			b.WriteString(pattern)
+			return b.String()
+		}
+		end := strings.IndexByte(pattern[open:], '}')
+		if end < 0 {
+			b.WriteString(pattern)
+			return b.String()
+		}
+		b.WriteString(pattern[:open])
+		b.WriteString("x")
+		pattern = pattern[open+end+1:]
+	}
+}
+
+// sweptRoutes returns every state-changing /api route in the LIVE routing
+// table. Reading the table (rather than a hand-kept list) is the whole point:
+// a route added tomorrow is swept tomorrow, with no edit here.
+func sweptRoutes(t *testing.T, srv *Server) []RouteInfo {
+	t.Helper()
+	var out []RouteInfo
+	for _, rt := range srv.mux.Routes() {
+		if !strings.HasPrefix(rt.Pattern, "/api/") {
+			continue
+		}
+		method := rt.Method
+		if method == "" {
+			// A method-less registration answers every method, POST included.
+			method = http.MethodPost
+		}
+		if !isStateChangingMethod(method) {
+			continue
+		}
+		out = append(out, RouteInfo{Method: method, Pattern: rt.Pattern})
+	}
+	return out
+}
+
+// TestEveryStateChangingAPIRouteRefusesForeignOrigin is the guard that keeps
+// the CSRF hole from growing back. It sweeps the live routing table and
+// requires a 403 from EVERY state-changing /api route when the request carries
+// a foreign Origin.
+//
+// It exists because the previous defence — a per-handler requireSafeOrigin
+// call — was opt-in, and opt-in drifted: 70 of 247 state-changing routes had
+// it, leaving the credential, secret, OAuth and org-admin endpoints reachable
+// by a same-site cross-origin POST. A per-handler fix would have drifted the
+// same way; this test is what makes the guarantee hold for the route nobody
+// remembered to guard.
+//
+// The request is shaped like the real attack: Content-Type text/plain makes it
+// a CORS "simple request", so the browser sends it with NO preflight, and the
+// JSON decoders here never inspect Content-Type.
+//
+// Running it through srv.handler (the composed chain) rather than the gate
+// alone is deliberate — it proves the gate is actually WIRED. It is also free
+// of side effects precisely because the gate refuses before any handler runs.
+func TestEveryStateChangingAPIRouteRefusesForeignOrigin(t *testing.T) {
+	srv := newSweepServer(t)
+
+	routes := sweptRoutes(t, srv)
+	// A sweep that matched nothing — or that quietly stopped registering the
+	// conditional groups — would pass while proving nothing.
+	if len(routes) < 150 {
+		t.Fatalf("swept only %d state-changing /api routes; expected 150+ — the sweep is not seeing the real routing table", len(routes))
+	}
+	// Name the routes this test exists for. A refactor that stops registering
+	// them must fail here rather than silently shrink the sweep.
+	seen := make(map[string]bool, len(routes))
+	for _, rt := range routes {
+		seen[rt.Method+" "+rt.Pattern] = true
+	}
+	for _, must := range []string{
+		"POST /api/me/api-keys",
+		"POST /api/me/secrets",
+		"POST /api/teams/{id}/api-keys",
+		"POST /api/teams/{id}/secrets",
+		"POST /api/orgs/{id}/api-keys",
+		"POST /api/auth/login",
+	} {
+		if !seen[must] {
+			t.Fatalf("%q is not in the swept set — the sweep no longer covers the endpoints it was written for", must)
+		}
+	}
+
+	for _, rt := range routes {
+		t.Run(rt.Method+" "+rt.Pattern, func(t *testing.T) {
+			r := httptest.NewRequest(rt.Method, concretePath(rt.Pattern), strings.NewReader("{}"))
+			r.Host = sweepHost
+			r.Header.Set("Origin", foreignOrigin)
+			r.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			srv.handler.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s: cross-origin status = %d; want 403 — this route is CSRF-reachable from any same-site sibling host",
+					rt.Method, rt.Pattern, w.Code)
+			}
+		})
+	}
+}
+
+// TestOriginGateAdmitsLegitimateCallers is the other half: the gate must not
+// refuse the callers the product depends on. Asserted against the gate itself
+// rather than the composed handler so no business handler executes (and so a
+// failure names the gate, not a downstream 500).
+func TestOriginGateAdmitsLegitimateCallers(t *testing.T) {
+	srv := newSweepServer(t)
+	routes := sweptRoutes(t, srv)
+
+	callers := []struct {
+		name   string
+		origin string
+		host   string
+	}{
+		// The studio SPA on either public host — same-origin, no config needed.
+		{"SPA on the canonical host", "https://iterion.cloud", "iterion.cloud"},
+		{"SPA on the historical host", "https://" + sweepHost, sweepHost},
+		// The CLI, runner pods and forge webhooks send no Origin at all.
+		{"non-browser caller (CLI, runner, webhook)", "", "iterion.cloud"},
+		// The desktop app's WebView origin.
+		{"desktop wails", "wails://wails", "localhost:4891"},
+	}
+
+	for _, c := range callers {
+		t.Run(c.name, func(t *testing.T) {
+			for _, rt := range routes {
+				r := httptest.NewRequest(rt.Method, concretePath(rt.Pattern), strings.NewReader("{}"))
+				r.Host = c.host
+				if c.origin != "" {
+					r.Header.Set("Origin", c.origin)
+				}
+				w := httptest.NewRecorder()
+				if !srv.originGateAllows(w, r) {
+					t.Fatalf("%s %s: gate refused %s (status=%d); this breaks a shipped client",
+						rt.Method, rt.Pattern, c.name, w.Code)
+				}
+			}
+		})
+	}
+}
+
+// TestOriginGateSweepBites falsifies the sweep above: with the kill switch on,
+// the very same request must stop being a 403. Without this, a sweep that
+// 403'd for some unrelated reason would look like a passing guard.
+func TestOriginGateSweepBites(t *testing.T) {
+	srv := newSweepServer(t)
+	const path = "/api/me/api-keys"
+
+	probe := func() int {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		r.Host = sweepHost
+		r.Header.Set("Origin", foreignOrigin)
+		r.Header.Set("Content-Type", "text/plain")
+		w := httptest.NewRecorder()
+		srv.handler.ServeHTTP(w, r)
+		return w.Code
+	}
+
+	if got := probe(); got != http.StatusForbidden {
+		t.Fatalf("gate armed: status = %d; want 403", got)
+	}
+	t.Setenv("ITERION_REQUIRE_ORIGIN", "0")
+	if got := probe(); got == http.StatusForbidden {
+		t.Fatal("kill switch set but the request is still 403 — the 403 does not come from the origin gate, so the sweep proves nothing")
+	}
+}
+
+// TestSafeMethodsAreNotGated keeps the gate off the read path: a GET carrying
+// a foreign Origin must still be routed (CORS already stops the attacker from
+// READING the response, and gating GET would break ordinary navigation).
+func TestSafeMethodsAreNotGated(t *testing.T) {
+	srv := newSweepServer(t)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+		r := httptest.NewRequest(method, "/api/runs", nil)
+		r.Host = sweepHost
+		r.Header.Set("Origin", foreignOrigin)
+		w := httptest.NewRecorder()
+		if !srv.originGateAllows(w, r) {
+			t.Errorf("%s was gated; safe methods must pass through", method)
+		}
+	}
+}
+
+// TestNonAPIPathsAreNotGated keeps the SPA itself reachable — the gate is an
+// API boundary, not a static-asset one.
+func TestNonAPIPathsAreNotGated(t *testing.T) {
+	srv := newSweepServer(t)
+	for _, path := range []string{"/", "/index.html", "/assets/index.js", "/board"} {
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		r.Host = sweepHost
+		r.Header.Set("Origin", foreignOrigin)
+		w := httptest.NewRecorder()
+		if !srv.originGateAllows(w, r) {
+			t.Errorf("%s was gated; the gate must only cover /api/", path)
+		}
+	}
+}
