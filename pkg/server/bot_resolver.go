@@ -591,20 +591,46 @@ func (s *Server) teamBotManifest(ctx context.Context, tenantID, slug string) *bu
 // hold no tenant at all (see the contract at the top of this file).
 func (s *Server) effectiveFindByNameForTeam(ctx context.Context, teamID, name string) (botregistry.EntryWithSchema, bool, error) {
 	if teamID != "" && s.botSources != nil && strings.TrimSpace(name) != "" {
-		bs, found, err := s.teamBotRow(ctx, teamID, name)
+		entry, found, err := s.storedBotEntry(ctx, teamID, name)
 		switch {
 		case err != nil:
-			// A store blip is not "this team authored no such bot": say so,
-			// then fall through to the tiers that can still answer.
-			s.logger.Warn("bot source %s/%s: %v — reading the metadata fell through to the platform tier", teamID, name, err)
+			// A store blip — or a bundle whose own metadata will not parse —
+			// is not "this team authored no such bot": say so, then fall
+			// through to the tiers that can still answer.
+			s.logger.Warn("%v — reading the metadata fell through to the platform tier", err)
 		case found:
-			if entries := s.materializeBotEntries([]botsource.BotSource{bs}); len(entries) == 1 {
-				return entries[0], true, nil
-			}
-			s.logger.Warn("bot source %s/%s: metadata could not be materialized — falling through to the platform tier", teamID, bs.Slug)
+			return entry, true, nil
 		}
 	}
 	return s.effectiveFindByName(name)
+}
+
+// storedBotEntry is the metadata of ONE stored row — the tenant and slug a
+// launch resolution actually chose — read STRICTLY: a store failure or a
+// bundle whose metadata will not materialize is an error, never another
+// tier's entry for the same name.
+//
+// The strictness is the point, and it is why this is the single
+// implementation rather than effectiveFindByNameForTeam's inner half. A
+// caller that pairs this metadata with THAT row's bundle (resolvePipelineBot)
+// cannot accept a fall-through: it would launch a fork while reading the
+// origin's `enabled` and name — the divergence the chokepoint exists to
+// close, only quieter for arriving through a helper. A caller that merely
+// wants the best available answer (effectiveFindByNameForTeam) keeps its
+// fall-through, warning above.
+func (s *Server) storedBotEntry(ctx context.Context, tenantID, slug string) (botregistry.EntryWithSchema, bool, error) {
+	bs, found, err := s.teamBotRow(ctx, tenantID, slug)
+	if err != nil {
+		return botregistry.EntryWithSchema{}, false, fmt.Errorf("bot source %s/%s: %w", tenantID, slug, err)
+	}
+	if !found {
+		return botregistry.EntryWithSchema{}, false, nil
+	}
+	if entries := s.materializeBotEntries([]botsource.BotSource{bs}); len(entries) == 1 {
+		return entries[0], true, nil
+	}
+	return botregistry.EntryWithSchema{}, false, fmt.Errorf(
+		"bot source %s/%s: metadata could not be materialized — discovery describes the row with nothing (no manifest.yaml alongside more than one workflow, or a manifest this build cannot parse)", tenantID, bs.Slug)
 }
 
 // effectiveFindByName returns the effective (platform-overlaid) entry for a
@@ -618,20 +644,48 @@ func (s *Server) effectiveFindByName(name string) (botregistry.EntryWithSchema, 
 	if err != nil {
 		return botregistry.EntryWithSchema{}, false, err
 	}
+	entry, found := findEntryByName(entries, name)
+	return entry, found, nil
+}
+
+// bakedFindByName is effectiveFindByName WITHOUT the platform overlay: the
+// baked catalog answering for itself, workspace overlay composed as always.
+//
+// It is for the caller that already knows which tier served — a launch that
+// resolved the baked bundle — and must not read the entry of an override
+// that did not. The overlay is a 30s cache invalidated only on the replica
+// that wrote, so for that window after an override is DELETED it still
+// describes a bundle the live store no longer has, and effectiveFindByName
+// would hand back its `enabled` and name for the baked twin now running.
+// Every OTHER reader wants the effective answer and keeps it.
+func (s *Server) bakedFindByName(name string) (botregistry.EntryWithSchema, bool, error) {
+	entries, err := botregistry.ListWithSchema(s.botListOptions())
+	if err != nil {
+		return botregistry.EntryWithSchema{}, false, err
+	}
+	entry, found := findEntryByName(entries, name)
+	return entry, found, nil
+}
+
+// findEntryByName is the launcher's name match, one implementation for every
+// entry set: an exact match first, then the NormalizeName-folded spelling
+// (review_pr → review-pr), because the launcher accepts both and a run's
+// persisted BotID may carry either.
+func findEntryByName(entries []botregistry.EntryWithSchema, name string) (botregistry.EntryWithSchema, bool) {
 	for _, e := range entries {
 		if e.Name == name {
-			return e, true, nil
+			return e, true
 		}
 	}
 	// Tolerant match: normalised comparison after the exact pass.
 	nn := botregistry.NormalizeName(name)
 	if nn == "" {
-		return botregistry.EntryWithSchema{}, false, nil
+		return botregistry.EntryWithSchema{}, false
 	}
 	for _, e := range entries {
 		if botregistry.NormalizeName(e.Name) == nn {
-			return e, true, nil
+			return e, true
 		}
 	}
-	return botregistry.EntryWithSchema{}, false, nil
+	return botregistry.EntryWithSchema{}, false
 }
