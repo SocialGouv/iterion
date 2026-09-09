@@ -12,6 +12,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -1045,8 +1046,38 @@ func TestRewind_SkipsContractsOfTheSubgraphItInvalidates(t *testing.T) {
 	// "implement" invalidates.
 	seedEnforcedContractArtifact(t, st, runID, "implement")
 
-	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+	ctx := context.Background()
+	if _, err := svc.Rewind(ctx, RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
 		t.Fatalf("Rewind refused for an artifact it was about to supersede: %v", err)
+	}
+
+	// The rewind is only half the recovery — the resume that follows has to
+	// accept the run it produced, and it runs with NO skip set. What carries
+	// it is the tombstone: writeArtifactTombstones supersedes the invalidated
+	// artifact with a marker carrying no Contract, which the validator skips
+	// as a legacy artifact. That nil is LOAD-BEARING, not mere tolerance for
+	// old data: hardening "no contract" into a violation would silently
+	// re-break the edit → rewind → resume loop, so both halves are pinned
+	// here.
+	after, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load rewound run: %v", err)
+	}
+	latest, err := st.LoadLatestArtifact(ctx, runID, "implement")
+	if err != nil {
+		t.Fatalf("load superseding artifact: %v", err)
+	}
+	if latest.Contract != nil {
+		t.Errorf("the rewind tombstone carries a contract (%+v); the resume then re-checks the output the rewind just discarded", latest.Contract)
+	}
+	wf, err := CompileWorkflow(after.FilePath)
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
+		Store: st, Run: after, Workflow: wf,
+	}); err != nil {
+		t.Fatalf("the resume after the rewind was refused: %v", err)
 	}
 }
 
