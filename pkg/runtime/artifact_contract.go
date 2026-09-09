@@ -76,7 +76,7 @@ func schemaFingerprint(wf *ir.Workflow, name string) string {
 // not baked into the validator's own error: the same function serves the
 // rewind, where "rewind to the producing node" is not advice, it is what the
 // caller is already doing.
-const ArtifactContractRemedy = "rewind to the producing node so it re-executes (iterion rewind --node <id>), or restore its publish/output declaration"
+const ArtifactContractRemedy = "rewind to the producing node so it re-executes (iterion rewind --run-id <run> --node <node>, then resume --force), or restore its publish/output declaration"
 
 // ArtifactContractCheck carries the inputs of ValidateArtifactContracts. A
 // struct rather than positional arguments because the caller set is
