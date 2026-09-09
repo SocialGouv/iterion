@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -65,14 +66,24 @@ func toCredentialUsageList(month string, rows []credusage.MonthlyUsage) credenti
 	return out
 }
 
-// tierOrPlatform reads the admin route's optional `?tier=`; the platform
-// tier is the default because it is the one no tenant view can show.
-func tierOrPlatform(raw string) string {
-	switch credusage.Tier(raw) {
-	case credusage.TierTeam, credusage.TierPool, credusage.TierPlatform:
-		return raw
+// tierOrPlatform reads the admin route's optional `?tier=`. An ABSENT
+// filter defaults to the platform tier, the one no tenant view can show.
+//
+// A value it does not know is an ERROR, not a default: silently answering
+// with the platform tier's numbers for `?tier=org` is a wrong answer, not a
+// missing feature — the caller asked what one key cost and got another's.
+// That is how TierOrg was missed here in the first place, the switch being
+// closed and its fallthrough silent.
+func tierOrPlatform(raw string) (credusage.Tier, error) {
+	if raw == "" {
+		return credusage.TierPlatform, nil
 	}
-	return string(credusage.TierPlatform)
+	switch t := credusage.Tier(raw); t {
+	case credusage.TierTeam, credusage.TierOrg, credusage.TierPool, credusage.TierPlatform:
+		return t, nil
+	default:
+		return "", fmt.Errorf("unknown tier %q (want team|org|pool|platform)", raw)
+	}
 }
 
 // handleTeamCredentialUsage lists what each credential cost THIS team this
@@ -117,7 +128,12 @@ func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Reque
 	} else {
 		// By TIER, not by tenant: a platform credential is metered under
 		// each tenant it served, so no single tenant holds its month.
-		rows, err = s.credUsage.ListByTier(r.Context(), now, credusage.Tier(tierOrPlatform(r.URL.Query().Get("tier"))))
+		tier, terr := tierOrPlatform(r.URL.Query().Get("tier"))
+		if terr != nil {
+			httpError(w, http.StatusBadRequest, "%s", terr.Error())
+			return
+		}
+		rows, err = s.credUsage.ListByTier(r.Context(), now, tier)
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
