@@ -1185,10 +1185,16 @@ tool ticket_fetch:
     explicit_refs = {{vars.ticket_refs}}
     source_branch = {{vars.source_branch}}
     steering = {{vars.scope_notes}}
+    review_tier = {{vars.review_tier}}
     token_ref = {{secrets.forge_token.path}}
 
-    MAX_TICKETS = 8     # bodies land in a reviewer prompt: cap what is ingested
-    MAX_BODY = 4000     # characters kept per ticket body
+    # Ticket bodies land in a reviewer's PROMPT, so the cap is an ingest
+    # budget, not a display limit. glance's whole lever is ingesting less
+    # (see review_system's REVIEW TIER section), so it gets a tighter one
+    # rather than being excluded from the check.
+    glance = (review_tier or "").strip() == "glance"
+    MAX_TICKETS = 3 if glance else 8   # references whose body is fetched
+    MAX_BODY = 1500 if glance else 4000 # characters kept per ticket body
     TIMEOUT = 12        # seconds per request
     MAX_REQUESTS = 24   # total: a slow forge never eats the review budget
 
@@ -1306,10 +1312,20 @@ tool ticket_fetch:
         found = {}
 
         def record(repo_slug, num, link, title=None, body=None, state=None, url=""):
+            # A forge that answers without a number, or with a slug we did not
+            # recognise, must cost its own ticket and nothing else: an
+            # exception here would sink the whole ticket context.
+            try:
+                num = int(num)
+            except Exception:
+                return None
+            repo_slug = s(repo_slug)
+            if not repo_slug or num <= 0:
+                return None
             ident = repo_slug + "#" + str(num)
             e = found.get(ident)
             if e is None:
-                e = {"ident": ident, "repo": repo_slug, "number": int(num), "link": link,
+                e = {"ident": ident, "repo": repo_slug, "number": num, "link": link,
                      "title": "", "body": "", "state": "", "url": url, "error": ""}
                 found[ident] = e
             if link == "closes":
@@ -1387,26 +1403,32 @@ tool ticket_fetch:
         def link_of(text, at):
             return "closes" if CLOSING.search(text[max(0, at - 24):at]) else "mentioned"
 
-        for text in (pr_title, pr_body, s(steering), s(source_branch), ""):
+        # The path of an issue URL is re-matched with the SAME segment shape a
+        # bare ref accepts: the text is attacker-written, and `.+?` would let
+        # `https://<host>/../../x/issues/1` become the repo of a request.
+        SLUG = r"[A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*)+"
+        ISSUE_PATH = re.compile(r"^(" + SLUG + r")/(?:-/)?issues/(\d+)$")
+
+        for text in (pr_title, pr_body, s(steering), s(source_branch)):
             if not text:
                 continue
             for m in QUAL.finditer(text):
-                record(m.group(1), int(m.group(2)), link_of(text, m.start()))
+                record(m.group(1), m.group(2), link_of(text, m.start()))
             for m in BARE.finditer(text):
-                record(slug, int(m.group(1)), link_of(text, m.start()))
+                record(slug, m.group(1), link_of(text, m.start()))
             for m in URLS.finditer(text):
                 pu = urllib.parse.urlsplit(m.group(0))
                 # Same host only: a link to another forge is not this forge's
                 # issue, and its number would be fetched from the wrong place.
                 if pu.netloc != host:
                     continue
-                im = re.match(r"^(.+?)/(?:-/)?issues/(\d+)$", pu.path.strip("/"))
+                im = ISSUE_PATH.match(pu.path.strip("/"))
                 if im:
-                    record(im.group(1), int(im.group(2)), link_of(text, m.start()))
+                    record(im.group(1), im.group(2), link_of(text, m.start()))
 
         # 3. Explicit refs win: the operator named them, so treat them as closing.
         for ref in s(explicit_refs).replace(",", " ").split():
-            m = QUAL.match(ref) or QUAL.match(" " + ref)
+            m = QUAL.match(ref)
             if m:
                 record(m.group(1), int(m.group(2)), "closes"); continue
             m = re.match(r"^#?(\d+)$", ref)

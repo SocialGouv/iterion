@@ -62,6 +62,7 @@ func TestReviewPRTicketFetch(t *testing.T) {
 			"{{vars.ticket_refs}}":         `""`,
 			"{{vars.source_branch}}":       `""`,
 			"{{vars.scope_notes}}":         `""`,
+			"{{vars.review_tier}}":         `"guard"`,
 			"{{secrets.forge_token.path}}": `""`,
 		}
 		for k, v := range refs {
@@ -265,6 +266,52 @@ func TestReviewPRTicketFetch(t *testing.T) {
 				}
 				if res.Note == "" {
 					t.Error("an inert mode must say why, or the reviewer cannot report it")
+				}
+			})
+		}
+	})
+
+	// The glance tier's lever is ingesting LESS (its reviewer is told to read
+	// only --stat and the hunks). A ticket body lands in that same prompt, so
+	// the tier has to bound it — otherwise the cheap tier quietly pays for 8
+	// full issue bodies on every PR.
+	t.Run("glance ingests less than guard", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/graphql":
+				w.WriteHeader(404) // no linked issues: the text scan is the source
+			case r.URL.Path == "/api/v3/repos/acme/widgets/pulls/7":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "batch", "body": "Fixes #1, fixes #2, fixes #3, fixes #4, fixes #5",
+				})
+			case strings.HasPrefix(r.URL.Path, "/api/v3/repos/acme/widgets/issues/"):
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "ticket", "body": strings.Repeat("x", 5000), "state": "open",
+				})
+			default:
+				w.WriteHeader(404)
+			}
+		}))
+		defer srv.Close()
+
+		for _, tc := range []struct {
+			tier      string
+			wantCount int
+			truncated string
+		}{
+			{"guard", 5, "truncated at 4000"},
+			{"glance", 3, "truncated at 1500"},
+		} {
+			t.Run(tc.tier, func(t *testing.T) {
+				res := run(t, map[string]string{
+					"{{vars.pr_url}}":      `"` + srv.URL + `/acme/widgets/pull/7"`,
+					"{{vars.review_tier}}": `"` + tc.tier + `"`,
+				})
+				if res.Count != tc.wantCount {
+					t.Errorf("count = %d, want %d on tier %s (note %q)", res.Count, tc.wantCount, tc.tier, res.Note)
+				}
+				if !strings.Contains(res.Tickets, tc.truncated) {
+					t.Errorf("tier %s must truncate bodies at its own budget (%s), got:\n%s", tc.tier, tc.truncated, res.Tickets[:200])
 				}
 			})
 		}
