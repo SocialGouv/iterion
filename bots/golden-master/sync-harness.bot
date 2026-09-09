@@ -1757,8 +1757,16 @@ tool sync_harness:
                     "not crashed")
                 head_c = base_c = None
             if head_c is not None and base_c is not None:
-                if {k: v for k, v in head_c.items() if k != "entries"} != \
-                        {k: v for k, v in base_c.items() if k != "entries"}:
+                # `duplicate_groups` is judged apart, not exempted. It is the one
+                # key outside `entries` an extension can be FORCED to touch: a lot
+                # whose new entry captures a reference byte-identical to an
+                # existing one must declare the separating mutant or the gate
+                # refuses the net it just extended — a gate refusing and naming a
+                # remedy another judge refuses, which is the shape this obligation
+                # exists to remove, relocated one layer up.
+                judged_apart = ("entries", "duplicate_groups")
+                if {k: v for k, v in head_c.items() if k not in judged_apart} != \
+                        {k: v for k, v in base_c.items() if k not in judged_apart}:
                     corpus_problems.append(
                         "corpus.json keys outside `entries` changed — an "
                         "extension adds entries and touches nothing else")
@@ -1827,6 +1835,90 @@ tool sync_harness:
                             "cleanup that picks the masking direction"
                             % (aid, other))
                     seen_new[key] = "added entry %r" % aid
+
+                # THE DECLARATION CHANNEL, constrained rather than frozen.
+                #
+                # A declaration is not inert prose: it DISCHARGES a refusal.
+                # Executed — a declaration naming two PRE-EXISTING entries, with no
+                # entry added at all, flips the gate from REFUSED to GREEN. So an
+                # actor free to write here could make an existing net greener
+                # without extending it, which is the additions-only authority this
+                # whole function holds. Four rules keep the channel to the case
+                # that forces it open:
+                #
+                #   1. every base declaration survives VERBATIM — re-opening a
+                #      settled identity claim is a re-anchor's job, not an
+                #      extension's;
+                #   2. an added declaration is well-formed, because the gate's
+                #      reader drops a malformed one in SILENCE and it would read as
+                #      no declaration at all — an unconstrained free write into the
+                #      key just unfrozen;
+                #   3. an added declaration names at least one entry THIS extension
+                #      added — the case that forces the channel open is exactly "my
+                #      new entry collides with an existing one", and a group of two
+                #      pre-existing entries means the base gate was already red,
+                #      which an extension does not get to settle;
+                #   4. no two declarations name the same group once one of them is
+                #      added — the reader keys a dict on the group, so the second
+                #      silently wins or loses an ordering nobody audits.
+                #
+                # The separator itself needs no rule: naming one that does not move
+                # part of the group is refused BY MEASUREMENT at the next gate,
+                # which is the point of declaring it as data.
+                #
+                # Compared RAW, never through duplicate_group_decls: that reader
+                # drops a malformed declaration silently, so comparing normalised
+                # forms would let a base declaration be rewritten into an
+                # unreadable one and still pass as "unchanged".
+                head_dg = head_c.get("duplicate_groups", [])
+                base_dg = base_c.get("duplicate_groups", [])
+                if not isinstance(head_dg, list):
+                    corpus_problems.append(
+                        "corpus.json `duplicate_groups` is not a list — refused, "
+                        "not crashed")
+                else:
+                    def _dg_ser(d):
+                        return json.dumps(d, sort_keys=True, ensure_ascii=False, default=str)
+
+                    head_ser = [_dg_ser(d) for d in head_dg]
+                    base_ser = [_dg_ser(d) for d in base_dg] \
+                        if isinstance(base_dg, list) else []
+                    gone = [s for s in base_ser if s not in head_ser]
+                    if gone:
+                        corpus_problems.append(
+                            "%d `duplicate_groups` declaration(s) REMOVED or "
+                            "MODIFIED: %s — a settled identity claim is re-opened "
+                            "by a re-anchor, not by an extension"
+                            % (len(gone), "; ".join(gone)))
+                    bearers = {}
+                    for decl, s in zip(head_dg, head_ser):
+                        added = s not in base_ser
+                        kv = duplicate_group_key(decl)
+                        if kv is None:
+                            if added:
+                                corpus_problems.append(
+                                    "added `duplicate_groups` declaration %s is "
+                                    "malformed (it needs at least two `ids` and a "
+                                    "non-empty `separated_by`) — the gate's reader "
+                                    "drops it in silence, so it would read as no "
+                                    "declaration at all" % s)
+                            continue
+                        bearers.setdefault(kv[0], []).append(added)
+                        if added and not (set(kv[0]) & added_ids):
+                            corpus_problems.append(
+                                "added `duplicate_groups` declaration for %s names "
+                                "no entry this extension added — a declaration "
+                                "DISCHARGES a gate refusal, so writing one about "
+                                "entries that already existed makes an existing "
+                                "net greener without extending it"
+                                % ", ".join(map(repr, kv[0])))
+                    for key, adds in sorted(bearers.items()):
+                        if len(adds) > 1 and any(adds):
+                            corpus_problems.append(
+                                "%d `duplicate_groups` declarations name the same "
+                                "group %s — the reader keys a dict on the group, "
+                                "so the second silently wins or loses an ordering "
+                                "nobody audits" % (len(adds), ", ".join(map(repr, key))))
             corpus_ok = not corpus_problems
 
         # An act already recorded in the ledger AT BASE was judged by the run
@@ -3374,6 +3466,27 @@ tool sync_harness:
         return sorted(i for i in ids if refs.get(i) != captured.get(i))
 
 
+    def duplicate_group_key(decl):
+        """One `duplicate_groups` declaration, normalised — or None if malformed.
+
+        Malformed is: not an object, fewer than two ids, or no separator named.
+
+        Per declaration rather than per corpus, because two readers need it and
+        they need different views: the gate collapses the declarations into a
+        by-group map, while the extension guard must see each one SEPARATELY (a
+        second declaration for one group disappears into that map). One shape rule
+        read by both, so a declaration the guard admits can never be one the gate
+        silently ignores.
+        """
+        if not isinstance(decl, dict):
+            return None
+        ids = decl.get("ids")
+        sep = decl.get("separated_by")
+        if not isinstance(ids, list) or len(ids) < 2 or not isinstance(sep, str) or not sep:
+            return None
+        return tuple(sorted(str(i) for i in ids)), sep
+
+
     def duplicate_group_decls(corpus):
         """The corpus's `duplicate_groups` declarations, normalised.
 
@@ -3392,13 +3505,9 @@ tool sync_harness:
         """
         out = {}
         for g in (corpus.get("duplicate_groups") or []):
-            if not isinstance(g, dict):
-                continue
-            ids = g.get("ids")
-            sep = g.get("separated_by")
-            if not isinstance(ids, list) or len(ids) < 2 or not isinstance(sep, str) or not sep:
-                continue
-            out[tuple(sorted(str(i) for i in ids))] = sep
+            kv = duplicate_group_key(g)
+            if kv is not None:
+                out[kv[0]] = kv[1]
         return out
 
 
@@ -4960,6 +5069,115 @@ tool sync_harness:
             xcommit()
             check("entree non revendiquee a cote d'une actee -> refusee",
                   xverdict(xbase)["acted"][0]["ok"], False)
+
+            # LE CANAL DE DECLARATION, dans les deux sens.
+            #
+            # `duplicate_groups` est la seule cle hors `entries` qu'une extension
+            # peut etre CONTRAINTE de toucher : un lot dont l'entree neuve capture
+            # une reference byte-identique a une existante doit declarer le mutant
+            # separateur, sinon la porte refuse le filet qu'il vient d'etendre. Gele
+            # en bloc, on retrouvait exactement la forme que cette obligation
+            # supprime — une porte qui refuse en nommant un remede qu'un autre juge
+            # refuse — remontee d'un cran.
+            #
+            # Mais une declaration n'est pas de la prose : elle ACQUITTE un refus.
+            # Mesure : une declaration portant sur deux entrees PREEXISTANTES, sans
+            # aucune entree ajoutee, fait passer la porte de REFUSE a VERT. D'ou
+            # quatre regles, falsifiees ici dans les deux sens.
+            dg_req = ('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                      ' "corpus_entries": [{"id": "2"}]}')
+            dg_act = ('{"id": "E-2", "lot": "L",'
+                      ' "recorded_paths": [".golden-master/corpus.json"]}')
+
+            def xdg(corpus, req=dg_req, act=dg_act):
+                """Un lot depose sa demande, puis l'acte avec CE corpus."""
+                xreset()
+                xrequest(req)
+                xledger(("request", req), ("act", act))
+                with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                    json.dump(corpus, f)
+                xcommit()
+                return xverdict(xbase)
+
+            # 1. Le cas legitime : l'entree ajoutee entre en collision, le lot la
+            #    declare. C'est la seule forme qui doit passer.
+            check("entree ajoutee + sa declaration necessaire -> ok",
+                  xdg({"entries": [base_entry, new_entry],
+                       "duplicate_groups": [{"ids": ["1", "2"],
+                                             "separated_by": "M-07"}]})["acted"][0]["ok"],
+                  True)
+            # 2. La declaration SEULE, sans aucune entree ajoutee : c'est le
+            #    depassement d'autorite — rendre vert un filet existant sans
+            #    l'etendre.
+            check("declaration seule, aucune entree ajoutee -> refusee",
+                  xdg({"entries": [base_entry],
+                       "duplicate_groups": [{"ids": ["1", "9"],
+                                             "separated_by": "M-07"}]})["acted"][0]["ok"],
+                  False)
+            # 3. Une declaration ajoutee qui ne nomme AUCUNE entree de cette
+            #    extension : meme depassement, deguise a cote d'un ajout reel.
+            check("declaration a cote d'un ajout, mais sur des entrees anciennes -> refusee",
+                  xdg({"entries": [base_entry, new_entry],
+                       "duplicate_groups": [{"ids": ["1", "77"],
+                                             "separated_by": "M-07"}]})["acted"][0]["ok"],
+                  False)
+            # 4. Deux declarations pour le MEME groupe : le lecteur en garde une,
+            #    au hasard d'un ordre que personne n'audite.
+            check("deux declarations pour un meme groupe -> refusee",
+                  xdg({"entries": [base_entry, new_entry],
+                       "duplicate_groups": [{"ids": ["1", "2"], "separated_by": "M-07"},
+                                            {"ids": ["2", "1"],
+                                             "separated_by": "M-99"}]})["acted"][0]["ok"],
+                  False)
+            # 5. Une declaration ajoutee MALFORMEE : le lecteur de la porte la
+            #    laisse tomber en silence, donc elle vaudrait « pas de declaration »
+            #    tout en ecrivant librement dans la cle qu'on vient de degeler.
+            check("declaration ajoutee malformee -> refusee",
+                  xdg({"entries": [base_entry, new_entry],
+                       "duplicate_groups": [{"ids": ["2"],
+                                             "separated_by": "M-07"}]})["acted"][0]["ok"],
+                  False)
+
+            # 6. Une declaration de BASE retiree ou retouchee : reouvrir une
+            #    identite tranchee est le travail d'un re-ancrage, pas d'une
+            #    extension. La base porte ici la declaration.
+            xreset()
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry],
+                           "duplicate_groups": [{"ids": ["1", "5"],
+                                                 "separated_by": "M-01"}]}, f)
+            fixture_git(xroot, "add", "-A")
+            fixture_git(xroot, "commit", "-qm", "base avec declaration")
+            xbase_dg = fixture_git(xroot, "rev-parse", "HEAD")
+
+            def xdg_from(corpus):
+                fixture_git(xroot, "reset", "-q", "--hard", xbase_dg)
+                fixture_git(xroot, "clean", "-qfd")
+                xrequest(dg_req)
+                xledger(("request", dg_req), ("act", dg_act))
+                with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                    json.dump(corpus, f)
+                xcommit()
+                return xverdict(xbase_dg)
+
+            check("une extension qui laisse la declaration de base intacte -> ok",
+                  xdg_from({"entries": [base_entry, new_entry],
+                            "duplicate_groups": [{"ids": ["1", "5"],
+                                                  "separated_by": "M-01"}]})["acted"][0]["ok"],
+                  True)
+            check("declaration de base retiree -> refusee",
+                  xdg_from({"entries": [base_entry, new_entry],
+                            "duplicate_groups": []})["acted"][0]["ok"], False)
+            check("separateur d'une declaration de base reecrit -> refuse",
+                  xdg_from({"entries": [base_entry, new_entry],
+                            "duplicate_groups": [{"ids": ["1", "5"],
+                                                  "separated_by": "M-99"}]})["acted"][0]["ok"],
+                  False)
+            # Et la cle hors `entries` qui reste GELEE : rien ne l'epinglait, donc
+            # degeler `duplicate_groups` pouvait emporter le reste sans bruit.
+            check("une AUTRE cle hors `entries` reste refusee",
+                  xdg({"entries": [base_entry, new_entry],
+                       "seed": 7})["acted"][0]["ok"], False)
 
             # Chemin hors surface : le canon est le territoire du juge.
             xreset()
