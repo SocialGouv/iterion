@@ -589,7 +589,15 @@ func (c *Coordinator) restoreCursor() {
 		return
 	}
 	run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
-	if err != nil || run == nil || run.WatcherCursors == nil {
+	if err != nil {
+		// Failing here is not benign: the coordinator then starts with a
+		// virgin cursor — no restored cooldown, no restored eval budget,
+		// no consumed-trigger proof — which is the whole guarantee, gone
+		// silently at exactly the restart it exists for.
+		c.warn("supervise[%s]: watcher cursor not restored on run %s: %v", c.spec.Name, c.runID, err)
+		return
+	}
+	if run == nil || run.WatcherCursors == nil {
 		return
 	}
 	if cursor, ok := run.WatcherCursors[c.cursorID]; ok {
