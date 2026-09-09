@@ -28,7 +28,7 @@ workflow w:
 `
 
 // The parse, compile and bundle stages are concatenated; the reader still
-// gets one list in source order, global findings first — a compile finding on
+// gets one list in source order, global findings last — a compile finding on
 // line 7 is listed before a parse finding on line 12.
 func TestValidate_DiagnosticsAreInSourceOrderAcrossStages(t *testing.T) {
 	dir := t.TempDir()

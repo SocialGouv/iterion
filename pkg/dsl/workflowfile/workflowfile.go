@@ -33,14 +33,17 @@ func IsWorkflowFile(path string) bool {
 // its strict-escape mode or its catalogue identity to a comment written the
 // other way.
 func CommentText(line string) (text string, ok bool) {
-	t := strings.TrimSpace(line)
+	// Only spaces may precede the hash: the lexer refuses a tab as
+	// indentation, and a reader that accepted one would give an
+	// unparseable file a catalogue identity.
+	t := strings.TrimLeft(line, " ")
 	if !strings.HasPrefix(t, "#") {
 		return "", false
 	}
 	t = strings.TrimPrefix(t, "#")
 	t = strings.TrimPrefix(t, "#")
 	t = strings.TrimPrefix(t, " ")
-	return t, true
+	return strings.TrimRight(t, " \t\r"), true
 }
 
 // FrontmatterFence is the text of the comment line that opens and closes a

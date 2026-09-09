@@ -75,6 +75,11 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
 
   tokenizer: {
     root: [
+      // Raw strings: a backtick opens a shell command or a literal that a
+      // `#` must not close — `echo "#1"` is a command, not a comment. Read
+      // before the comment rule so the hash inside stays string-coloured.
+      [/`/, { token: "string.quote", next: "@rawString" }],
+
       // Comments
       [/#.*$/, "comment"],
 
@@ -126,6 +131,16 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       [/[^"\\{$]+/, "string"],
       [/\\./, "string.escape"],
       [/"/, { token: "string.quote", next: "@pop" }],
+    ],
+
+    // A raw string has no escape and may span lines: only the closing
+    // backtick ends it. Templates and env refs keep their colour inside it.
+    rawString: [
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^`{$]+/, "string"],
+      [/[{$]/, "string"],
+      [/`/, { token: "string.quote", next: "@pop" }],
     ],
 
     stringTemplate: [

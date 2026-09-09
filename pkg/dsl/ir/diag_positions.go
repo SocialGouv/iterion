@@ -121,12 +121,17 @@ func (c *compiler) attachPositions() {
 
 	// Several validators walk maps, so two compilations of one file used to
 	// list the same findings in a different order. Positioned findings read
-	// in source order, the global ones (no position) first; a tie on the
-	// position is broken by code, node, edge and message — every field a
-	// finding has — so the order never depends on map iteration and a
-	// `--json` diff of two runs is quiet.
+	// in source order; the global ones (no position) go LAST, since they are
+	// usually consequences of a positioned one (`entry node not found`
+	// because the declaration above failed); a tie on the position is broken
+	// by code, node, edge and message — every field a finding has — so the
+	// order never depends on map iteration and a `--json` diff of two runs
+	// is quiet.
 	sort.SliceStable(c.diags, func(i, j int) bool {
 		a, b := c.diags[i], c.diags[j]
+		if (a.Line == 0) != (b.Line == 0) {
+			return a.Line != 0
+		}
 		if a.File != b.File {
 			return a.File < b.File
 		}

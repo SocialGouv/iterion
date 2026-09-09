@@ -40,6 +40,12 @@ func TestLexerCommentTextMatchesSharedDefinition(t *testing.T) {
 	if _, ok := workflowfile.CommentText("key: value"); ok {
 		t.Error("a property line is not a comment")
 	}
+	// The lexer refuses a tab as indentation, so a tab-indented `#` line is
+	// not a comment line for the shared definition either — otherwise a
+	// file the parser rejects would still be read for its frontmatter.
+	if _, ok := workflowfile.CommentText("\t# tabbed"); ok {
+		t.Error("a tab-indented hash line must not be a comment line")
+	}
 }
 
 // `## strict-escape: on` is read by a pre-scan of the leading comment lines.

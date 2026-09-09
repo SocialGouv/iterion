@@ -78,14 +78,20 @@ func formatDiagnostic(d ValidateDiagnostic) []string {
 }
 
 // sortValidateDiagnostics orders the findings the way a reader edits: by
-// source position — the global ones, which have none, first — then code,
-// node, edge and message. The compiler already orders its own list this
+// source position, then code, node, edge and message. A finding with no
+// position (a global compile check, a bundle check) goes LAST: it is
+// usually a consequence of a positioned one — `entry node "a" not found`
+// because a tab on line 2 broke the declaration — and must not be the first
+// line the operator reads. The compiler already orders its own list this
 // way; RunValidate concatenates the parse, compile and bundle stages, so the
 // same key is applied once more across them, otherwise a parse finding on
 // line 12 precedes a compile finding on line 7.
 func sortValidateDiagnostics(ds []ValidateDiagnostic) {
 	sort.SliceStable(ds, func(i, j int) bool {
 		a, b := ds[i], ds[j]
+		if (a.Line == 0) != (b.Line == 0) {
+			return a.Line != 0
+		}
 		if a.File != b.File {
 			return a.File < b.File
 		}
