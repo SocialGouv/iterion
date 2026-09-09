@@ -302,6 +302,25 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	return current, currentErr
 }
 
+// failValidationAfterCorrection classifies a validation failure that survived
+// the correction loop.
+//
+// That loop is the first thing in the post-exec pipeline that can BLOCK — it
+// calls out to the executor and waits — so the run can be torn down (operator
+// cancel, runner drain, wall-clock deadline) while the engine sits in it.
+// Validation used to be instantaneous, which is why the post-exec path never
+// needed the cause-aware routing the exec path has. When the RUN context is
+// done, that teardown is what happened: route it the same way, because a
+// generic fail stringifies the error and loses the sentinel — a drain would
+// surface as a spurious "run failed" instead of a silent auto-resume, and an
+// operator cancel would land failed_resumable and get redelivered-resumed.
+func (e *Engine) failValidationAfterCorrection(ctx context.Context, rs *runState, nodeID string, validationErr error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+	}
+	return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
+}
+
 // correctionContext bounds the correction loop by the run's remaining
 // wall-clock duration, exactly as execLoop bounds the primary node call. An
 // unbounded run (no max_duration) yields ctx unchanged and a nil cancel.

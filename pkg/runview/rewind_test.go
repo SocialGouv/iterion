@@ -506,7 +506,7 @@ func TestRewind_ReleasesSubbotChildPointers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	// Pointers shaped like the engine's subbotReattachKey: bare, loop-
+	// Pointers shaped like the engine's executionScopedKey: bare, loop-
 	// qualified, and fan-out-branch-qualified. Plus one belonging to an
 	// UPSTREAM node, which must survive.
 	run.SubbotChildren = map[string]string{

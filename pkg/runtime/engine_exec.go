@@ -637,17 +637,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// validates.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
 	if validationErr != nil {
-		// A correction is the first thing in the post-exec pipeline that can
-		// BLOCK, so the run can now be torn down — operator cancel, drain,
-		// wall-clock deadline — while we sit in it. Route that through the
-		// cause-aware handler exactly as the exec path does: a generic fail
-		// stringifies the error and loses the sentinel, so a drain surfaces as
-		// a spurious "run failed" instead of a silent auto-resume, and an
-		// operator cancel lands failed_resumable and gets redelivered-resumed.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
-		}
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
+		return "", e.failValidationAfterCorrection(ctx, rs, currentNodeID, validationErr)
 	}
 	output = validatedOutput
 	rs.outputs[currentNodeID] = output

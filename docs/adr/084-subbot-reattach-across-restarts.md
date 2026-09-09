@@ -47,7 +47,7 @@ make the runner re-use it.**
   never clobber each other.
 
 - **Execution key** = node id + loop-iteration path + fan-out branch id,
-  computed by the engine (`Engine.subbotReattachKey`) and handed to the runner
+  computed by the engine (`Engine.executionScopedKey`) and handed to the runner
   on `SubbotRequest.ReattachKey`. Loop-iteration path disambiguates loop
   iterations (no consumed-child re-use); branch id disambiguates concurrent
   fan-out branches (no fresh-run cross-branch collision). Both branch ids

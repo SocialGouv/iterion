@@ -653,7 +653,7 @@ func collectDroppedSessionRefs(cp *store.Checkpoint, dropped, invalidated []stri
 // afterwards, so the removal rides the same SaveRun as the rest of the
 // rewind rather than racing it through ClearSubbotChild.
 //
-// Key shape is the engine's (pkg/runtime/special_node.go:subbotReattachKey):
+// Key shape is the engine's (pkg/runtime/special_node.go:executionScopedKey):
 //
 //	sanitize(<node id>[@<loop=iter;…>][#<branch id>])
 //
