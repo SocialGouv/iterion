@@ -259,6 +259,69 @@ func TestPipelineBoardUpdateAcceptsATeamAuthoredBot(t *testing.T) {
 	}
 }
 
+// The MIDDLE tier the lane never reached either: a stored platform row has
+// no filesystem path, so before the tiered resolution a card bound to a
+// deployment-wide override compiled from an empty FilePath. This is the
+// same class as the team fork, one tier down.
+func TestPipelineBoardServesAPlatformOverride(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	env.seedRow(t, botsource.PlatformTenantID, "probe", strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1))
+
+	card := env.createCard(t, `{"bot":"probe","title":"override me"}`)
+	env.launchCard(t, card.ID)
+
+	spec := env.pub.only(t)
+	if !strings.Contains(spec.Source, "PLATFORM") {
+		t.Errorf("the launch ran a bundle that is not the deployment's override (source: %q)", spec.Source)
+	}
+	if spec.BotSourceTier != store.BotSourceTierPlatform {
+		t.Errorf("bot_source_tier = %q, want %q", spec.BotSourceTier, store.BotSourceTierPlatform)
+	}
+}
+
+// The metadata half must describe the artifact the LAUNCH selected. The
+// platform tier is where the two can be read through different mechanisms:
+// the launch reads the store live, while the catalog overlay is served from
+// a 30s cache invalidated only on the replica that wrote. Both cases below
+// warm that cache BEFORE the push, which is every other replica's state for
+// the window after `iterion remote admin bots push`.
+func TestPipelineBoardPlatformMetadataDescribesTheBundleThatRuns(t *testing.T) {
+	t.Run("a freshly pushed override is not a launchable bundle nothing describes", func(t *testing.T) {
+		env := newPipelineTierEnv(t)
+		// Warm the overlay while the platform tenant holds nothing.
+		if _, found, err := env.srv.effectiveFindByNameForTeam(context.Background(), "t1", "newbot"); err != nil || found {
+			t.Fatalf("precondition: found=%v err=%v, want a cold miss", found, err)
+		}
+		env.seedRow(t, botsource.PlatformTenantID, "newbot", strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1))
+
+		// Launchable on the live store; a stale overlay makes it uncardable.
+		card := env.createCard(t, `{"bot":"newbot","title":"pushed just now"}`)
+		env.launchCard(t, card.ID)
+		if spec := env.pub.only(t); !strings.Contains(spec.Source, "PLATFORM") {
+			t.Errorf("the launch ran %q, want the override that was just pushed", spec.Source)
+		}
+	})
+
+	t.Run("an override's own enabled flag wins over the baked twin it shadows", func(t *testing.T) {
+		env := newPipelineTierEnv(t)
+		// The card is created (and the overlay warmed) against the ENABLED
+		// baked `probe`; the override lands after.
+		card := env.createCard(t, `{"bot":"probe","title":"shadowed"}`)
+		env.seedRowWithManifest(t, botsource.PlatformTenantID, "probe",
+			strings.Replace(tierBakedBot, "BAKED", "PLATFORM", 1),
+			"name: probe\nversion: 2.0.0\nenabled: false\n")
+
+		r := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", "")
+		r.SetPathValue("id", card.ID)
+		w := httptest.NewRecorder()
+		env.srv.handlePipelineBoardTaskLaunch(w, r)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("launch = %d %s, want 409 — the bundle that would run is the DISABLED override, "+
+				"and reading `enabled` off the baked twin it shadows launches it anyway", w.Code, w.Body.String())
+		}
+	})
+}
+
 // Half 3 — the admission LOOP is local-only (pipelineAdmissionEnabled
 // refuses cloud), so its board carries no tenant: it must keep resolving
 // platform-over-baked with an empty team, and must never be handed some

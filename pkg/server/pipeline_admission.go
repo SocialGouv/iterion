@@ -531,11 +531,26 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	if lb == nil {
 		return pipelineBot{}, false, nil
 	}
-	// The metadata half of the SAME resolution: both reads go through
-	// teamBotRow, so they land on one row and the enabled flag describes
-	// the bundle that will actually run — not the origin a fork was made
-	// from.
-	entry, found, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	// The metadata half of the SAME resolution. It must describe the
+	// artifact the launch SELECTED, so a STORED tier answers for itself:
+	// the row that served, read by its own tenant and canonical slug, which
+	// is the same live teamBotRow read the launch made.
+	//
+	// The platform tier is why this is not just `teamID`. Its launch read is
+	// live (botSources.GetBySlug), while effectiveFindByName's overlay comes
+	// from the 30s platformBotSetCached set, invalidated only on the replica
+	// that served the write. Asking for the platform tenant by name lands on
+	// teamBotRow — live — instead, so the two halves cannot straddle that
+	// window: a freshly pushed override no longer reads as "a launchable
+	// bundle nothing describes" (a 500 on card create), and an override with
+	// its own `enabled:` no longer inherits the flag of the baked twin it
+	// shadows. Which is this chokepoint's whole point: metadata from one
+	// tier and a bundle from another is the divergence it exists to close.
+	metaTeam, metaName := teamID, botID
+	if lb.Ref != nil && lb.Ref.TenantID != "" {
+		metaTeam, metaName = lb.Ref.TenantID, lb.Ref.Slug
+	}
+	entry, found, err := s.effectiveFindByNameForTeam(ctx, metaTeam, metaName)
 	if err != nil {
 		lb.Cleanup()
 		return pipelineBot{}, false, err
