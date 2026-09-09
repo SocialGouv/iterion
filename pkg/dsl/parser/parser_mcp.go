@@ -20,13 +20,15 @@ func (p *parser) parseMCPServerDecl() *ast.MCPServerDecl {
 	}
 	p.expect(TokenColon)
 	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	md := &ast.MCPServerDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start)},
+	}
+	if p.bodyIsEmpty() {
+		return md
+	}
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
 	}
 
 	for {

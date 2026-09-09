@@ -44,7 +44,7 @@ var promptIncludeRe = regexp.MustCompile(`\{\{\s*include\s+"([^"]*)"\s*\}\}`)
 // path escaping the base (via ..) are rejected, and files larger than
 // maxPromptIncludeBytes are refused.
 func expandPromptIncludes(body, baseDir string) (string, []error) {
-	return expandPromptIncludesNested(body, baseDir, nil)
+	return expandPromptIncludesNested(body, baseDir, nil, &includeBudget{})
 }
 
 // maxPromptIncludeDepth bounds include nesting: an included file may include
@@ -52,20 +52,48 @@ func expandPromptIncludes(body, baseDir string) (string, []error) {
 // by the path stack before the depth is reached.
 const maxPromptIncludeDepth = 8
 
+// maxPromptIncludeTotalBytes bounds what ONE prompt's includes expand to,
+// all levels together, and maxPromptIncludeExpansions how many files are
+// read for it. Depth and the cycle check bound neither: a file may be
+// included again beside itself (a shared preamble), so a tree grows as
+// fan-out^depth — nine files of 659 bytes reached 1.3 MB in 5.7 s — and
+// the expansion runs in the server at cloud publish, over files a tenant
+// wrote.
+const (
+	maxPromptIncludeTotalBytes = 1 << 20
+	maxPromptIncludeExpansions = 256
+)
+
+// includeBudget is what one prompt's expansion has consumed so far.
+type includeBudget struct {
+	bytes      int64
+	expansions int
+}
+
 // expandPromptIncludesNested expands to a fixed point, so no marker
 // survives the expansion: a marker inside an included file used to be left
 // in the body, where the next compile — on a runner, with no source file
 // — resolved it against ITS working directory.
-func expandPromptIncludesNested(body, baseDir string, stack []string) (string, []error) {
+func expandPromptIncludesNested(body, baseDir string, stack []string, budget *includeBudget) (string, []error) {
 	if !strings.Contains(body, "{{") {
 		return body, nil
 	}
 	var errs []error
 	out := promptIncludeRe.ReplaceAllStringFunc(body, func(match string) string {
 		rel := promptIncludeRe.FindStringSubmatch(match)[1]
+		budget.expansions++
+		if budget.expansions > maxPromptIncludeExpansions {
+			errs = append(errs, fmt.Errorf("include %q: more than %d files expanded for one prompt (a nested include tree grows as fan-out^depth)", rel, maxPromptIncludeExpansions))
+			return ""
+		}
 		content, full, err := readPromptIncludeAt(baseDir, rel)
 		if err != nil {
 			errs = append(errs, err)
+			return ""
+		}
+		budget.bytes += int64(len(content))
+		if budget.bytes > maxPromptIncludeTotalBytes {
+			errs = append(errs, fmt.Errorf("include %q: the prompt's includes expand past %d bytes", rel, maxPromptIncludeTotalBytes))
 			return ""
 		}
 		if !HasPromptInclude(content) {
@@ -81,7 +109,7 @@ func expandPromptIncludesNested(body, baseDir string, stack []string) (string, [
 				return ""
 			}
 		}
-		nested, nestedErrs := expandPromptIncludesNested(content, filepath.Dir(full), append(stack, full))
+		nested, nestedErrs := expandPromptIncludesNested(content, filepath.Dir(full), append(stack, full), budget)
 		errs = append(errs, nestedErrs...)
 		return nested
 	})

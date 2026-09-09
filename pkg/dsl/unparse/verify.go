@@ -19,14 +19,6 @@ import (
 // on an error rather than write a file that means something else than the
 // document it came from.
 func Verify(f *ast.File, text string) error {
-	// A group with nothing in it has no written form: the syntax requires
-	// an indented body, and a comment does not open one. Say so by name
-	// instead of letting the re-parse fail on a header with no block.
-	for _, g := range f.Groups {
-		if len(g.Agents)+len(g.Judges)+len(g.Routers)+len(g.Humans)+len(g.Tools)+len(g.Computes)+len(g.Edges) == 0 {
-			return fmt.Errorf("group %q is empty: the .bot syntax cannot express a group with no node — add a node to it or remove it", g.Name)
-		}
-	}
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
 	// from the JSON transport has no source file: naming one here made the
@@ -69,15 +61,23 @@ func Verify(f *ast.File, text string) error {
 }
 
 // sourceFile is the file the document's prompts were read from, "" when it
-// came through the JSON transport (no spans). Includes are the only thing
-// a file name decides, and they live in prompts.
+// came through the JSON transport (no spans) — and "" too when the prompts
+// disagree (a bundle's prompts/*.md merged beside a main.bot's): one name
+// would resolve some prompt's include against the wrong directory, and
+// the refusal is the same on both sides. Includes are the only thing a
+// file name decides, and they live in prompts.
 func sourceFile(f *ast.File) string {
+	file := ""
 	for _, p := range f.Prompts {
-		if p.Span.Start.File != "" {
-			return p.Span.Start.File
+		switch {
+		case p.Span.Start.File == "":
+		case file == "":
+			file = p.Span.Start.File
+		case p.Span.Start.File != file:
+			return ""
 		}
 	}
-	return ""
+	return file
 }
 
 // withoutComments is a shallow copy of f with its comment list dropped.

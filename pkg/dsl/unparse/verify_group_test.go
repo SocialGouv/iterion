@@ -1,23 +1,40 @@
 package unparse
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
-// A group the canvas created and did not fill has no written form (a group
-// header needs an indented body, and a comment does not open one). The
-// guard refuses the save by name rather than with a parse error about an
-// INDENT, so the operator knows which group to fill or remove.
-func TestVerifyNamesAnEmptyGroup(t *testing.T) {
-	f := &ast.File{
-		Groups:    []*ast.GroupDecl{{Name: "later"}},
-		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "done"}},
+// A declaration the canvas created and did not fill in yet — a schema
+// with no field, a prompt with no line, an empty cursor, mcp_server,
+// supervisor or group — has a written form (the bare header) and reads
+// back as the same empty declaration, so the whole document stays
+// saveable while it is being authored.
+func TestVerifyAcceptsEmptyDeclarations(t *testing.T) {
+	cases := map[string]*ast.File{
+		"schema":     {Schemas: []*ast.SchemaDecl{{Name: "s"}}},
+		"prompt":     {Prompts: []*ast.PromptDecl{{Name: "p"}}},
+		"cursor":     {Cursors: []*ast.CursorDecl{{Name: "c"}}},
+		"mcp_server": {MCPServers: []*ast.MCPServerDecl{{Name: "m"}}},
+		"supervisor": {Supervisors: []*ast.SupervisorDecl{{Name: "v"}}},
+		"group":      {Groups: []*ast.GroupDecl{{Name: "g"}}},
+		"all, with a workflow": {
+			Schemas:     []*ast.SchemaDecl{{Name: "s"}},
+			Prompts:     []*ast.PromptDecl{{Name: "p"}},
+			Cursors:     []*ast.CursorDecl{{Name: "c"}},
+			MCPServers:  []*ast.MCPServerDecl{{Name: "m"}},
+			Supervisors: []*ast.SupervisorDecl{{Name: "v"}},
+			Groups:      []*ast.GroupDecl{{Name: "g"}},
+			Workflows:   []*ast.WorkflowDecl{{Name: "w", Entry: "done"}},
+		},
 	}
-	err := Verify(f, Unparse(f))
-	if err == nil || !strings.Contains(err.Error(), `group "later" is empty`) {
-		t.Fatalf("want a refusal naming the empty group, got %v", err)
+	for name, f := range cases {
+		t.Run(name, func(t *testing.T) {
+			text := Unparse(f)
+			if err := Verify(f, text); err != nil {
+				t.Fatalf("an empty %s does not round-trip: %v\n%s", name, err, text)
+			}
+		})
 	}
 }

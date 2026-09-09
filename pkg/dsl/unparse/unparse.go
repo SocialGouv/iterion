@@ -327,6 +327,11 @@ func (w *fileWriter) writePrompts(prompts []*ast.PromptDecl) {
 		// blank line that the lexer would re-read as an extra prompt
 		// line, breaking parse → unparse → re-parse round-trip stability.
 		body := strings.TrimRight(p.Body, "\n")
+		if body == "" {
+			// A bare header IS the empty prompt; an indented blank line
+			// would be neither a body nor a valid empty form.
+			continue
+		}
 		for _, line := range strings.Split(body, "\n") {
 			w.b.WriteString("  ")
 			w.b.WriteString(line)

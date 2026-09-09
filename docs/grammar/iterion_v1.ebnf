@@ -55,17 +55,23 @@ secret_prop = "value" ":" STRING_LIT NEWLINE
             | "hosts" ":" string_list NEWLINE
             | "description" ":" STRING_LIT NEWLINE ;
 
-prompt_decl = "prompt" IDENT ":" NEWLINE INDENT prompt_body DEDENT ;
+(* A prompt, schema, mcp_server, cursor, supervisor or group header may
+   stand with no body at all — followed by another declaration, or by the
+   end of the file — and declares an EMPTY one: the studio saves a
+   declaration the moment it is created. A header followed by a body at
+   the wrong indentation is still an error. *)
+
+prompt_decl = "prompt" IDENT ":" NEWLINE [ INDENT prompt_body DEDENT ] ;
 prompt_body = { PROMPT_TEXT_LINE } ;
 
-schema_decl = "schema" IDENT ":" NEWLINE INDENT { schema_field } DEDENT ;
+schema_decl = "schema" IDENT ":" NEWLINE [ INDENT { schema_field } DEDENT ] ;
 schema_field = IDENT ":" type_expr [ enum_constraint ] NEWLINE ;
 
 (* ---------- MCP ---------- *)
 
-mcp_server_decl = "mcp_server" IDENT ":" NEWLINE INDENT
+mcp_server_decl = "mcp_server" IDENT ":" NEWLINE [ INDENT
                     { mcp_server_prop }
-                  DEDENT ;
+                  DEDENT ] ;
 mcp_server_prop = "transport" ":" mcp_transport NEWLINE
                 | "command" ":" STRING_LIT NEWLINE
                 | "args" ":" string_list NEWLINE
@@ -89,7 +95,7 @@ mcp_config_prop = "autoload_project" ":" BOOL_LIT NEWLINE
 
 (* ---------- Cursors and supervisors ---------- *)
 
-cursor_decl = "cursor" IDENT ":" NEWLINE INDENT { cursor_prop } DEDENT ;
+cursor_decl = "cursor" IDENT ":" NEWLINE [ INDENT { cursor_prop } DEDENT ] ;
 cursor_prop = "description" ":" STRING_LIT NEWLINE
             | "values" ":" NEWLINE INDENT { cursor_value } DEDENT
             | "bands" ":" NEWLINE INDENT { cursor_band } DEDENT ;
@@ -100,9 +106,9 @@ cursors_block = "cursors" ":" NEWLINE INDENT { cursor_setting } DEDENT ;
 cursor_setting = IDENT ":" cursor_setting_value NEWLINE ;
 cursor_setting_value = IDENT | STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
 
-supervisor_decl = "supervisor" IDENT ":" NEWLINE INDENT
+supervisor_decl = "supervisor" IDENT ":" NEWLINE [ INDENT
                     { supervisor_prop }
-                  DEDENT ;
+                  DEDENT ] ;
 supervisor_prop = "watches" ":" ident_list NEWLINE
                 | "model" ":" STRING_LIT NEWLINE
                 | "system" ":" IDENT NEWLINE
@@ -306,7 +312,7 @@ subbot_prop = "description" ":" STRING_LIT NEWLINE
 (* ---------- Compile-time groups ---------- *)
 
 group_decl = "group" IDENT [ "(" [ IDENT { "," IDENT } ] ")" ] ":"
-             NEWLINE INDENT { group_member } DEDENT ;
+             NEWLINE [ INDENT { group_member } DEDENT ] ;
 group_member = agent_decl | judge_decl | router_decl | human_decl
              | tool_decl | compute_decl | edge ;
 

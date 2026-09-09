@@ -2604,6 +2604,12 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 		bundleDir = bundleDirs[0]
 	}
 	if bundleDir != "" {
+		// Absolute, whatever the caller's form: InlinePromptIncludes
+		// refuses a relative source path, which it would otherwise look
+		// up in the process working directory.
+		if abs, err := filepath.Abs(bundleDir); err == nil {
+			bundleDir = abs
+		}
 		entry := "main.bot"
 		if path != "" {
 			entry = filepath.Base(path)

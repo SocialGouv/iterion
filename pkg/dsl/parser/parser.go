@@ -139,20 +139,70 @@ func (p *parser) skipNewlines() {
 func (p *parser) skipToNextTopLevel() {
 	for {
 		t := p.peek()
-		switch t.Type {
-		case TokenEOF:
+		if t.Type == TokenEOF || isTopLevelKeyword(t.Type) {
 			return
-		case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
-			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
-			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
-			TokenTool, TokenCompute, TokenEmit, TokenWait, TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
-			return
-		case TokenDedent:
-			p.next()
-		default:
-			p.next()
 		}
+		p.next()
 	}
+}
+
+// isTopLevelKeyword reports whether tt opens a top-level declaration —
+// the one list parseFile's dispatch table, the error skip above and the
+// empty-declaration rule below all read.
+func isTopLevelKeyword(tt TokenType) bool {
+	switch tt {
+	case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
+		TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor, TokenSupervisor,
+		TokenAgent, TokenJudge, TokenRouter, TokenHuman,
+		TokenTool, TokenCompute, TokenEmit, TokenWait, TokenAwaitAnswers, TokenFail,
+		TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
+		return true
+	}
+	return false
+}
+
+// bodyIsEmpty reports, right after a declaration header's colon and the
+// newlines that follow it, that NO body follows: the next token starts
+// another top-level declaration, or the file ends. A header followed by
+// anything else (a property at the wrong indentation) is not empty — it
+// is the E002 with the indentation hint, as before.
+func (p *parser) bodyIsEmpty() bool {
+	t := p.peek()
+	return t.Type != TokenIndent && (t.Type == TokenEOF || isTopLevelKeyword(t.Type))
+}
+
+// headerState is what parseDeclHeaderOrEmpty found after a header.
+type headerState int
+
+const (
+	headerFailed headerState = iota // an error was reported; the declaration is discarded
+	headerBody                      // an indented body follows
+	headerEmpty                     // no body: an empty declaration
+)
+
+// parseDeclHeaderOrEmpty is parseDeclHeader for the declarations that may
+// be EMPTY — `prompt p:`, `schema s:` and the like with no indented body.
+// The studio saves a declaration the moment it is created, before it has
+// a field or a line, so the written form has to exist; the unparser
+// writes the bare header and this reads it back as the empty declaration.
+func (p *parser) parseDeclHeaderOrEmpty(kind string) (start Token, name string, state headerState) {
+	start = p.next() // consume the keyword token
+	nameT := p.next()
+	name = tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected "+kind+" name")
+		p.skipToNextTopLevel()
+		return start, "", headerFailed
+	}
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if p.bodyIsEmpty() {
+		return start, name, headerEmpty
+	}
+	if _, ok := p.expect(TokenIndent); !ok {
+		return start, name, headerFailed
+	}
+	return start, name, headerBody
 }
 
 // ---- file ----
