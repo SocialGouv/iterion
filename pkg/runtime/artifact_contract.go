@@ -2,8 +2,11 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -27,12 +30,14 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 	if logicalRef == "" {
 		return nil
 	}
+	schema := ir.NodeOutputSchema(node)
 	contract := &store.ArtifactContract{
 		LogicalRef:       logicalRef,
 		ProducerNode:     nodeID,
 		ProducerRevision: e.workflowHash,
 		Version:          version,
-		Schema:           ir.NodeOutputSchema(node),
+		Schema:           schema,
+		SchemaHash:       schemaFingerprint(e.workflow, schema),
 		Effects:          []string{"persist"},
 	}
 	if rs == nil {
@@ -54,6 +59,44 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 		})
 	}
 	return contract
+}
+
+// schemaFingerprint digests a schema DEFINITION so the contract binds an
+// artifact to its data SHAPE and not merely to the label the shape is
+// declared under. `Schema` alone is a reference NAME: editing a schema's
+// fields — removing or renaming a field a downstream node reads as
+// `outputs.x.field`, i.e. the change that genuinely invalidates a persisted
+// artifact — keeps that name, while renaming an unchanged schema changes no
+// shape at all, so a name comparison misses the first and refuses the second.
+//
+// Returns "" when the name is empty or the workflow does not resolve it; the
+// caller then falls back to comparing names, which is all a contract written
+// before this field ever recorded.
+//
+// Fields are sorted before hashing: an artifact is a JSON object keyed by
+// field name, so reordering a schema's declarations changes no shape. Enum
+// values are part of the digest — narrowing an enum can invalidate a
+// persisted value.
+func schemaFingerprint(wf *ir.Workflow, name string) string {
+	if wf == nil || name == "" {
+		return ""
+	}
+	schema := wf.Schemas[name]
+	if schema == nil {
+		return ""
+	}
+	fields := make([]string, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		if f == nil {
+			continue
+		}
+		enum := append([]string(nil), f.EnumValues...)
+		sort.Strings(enum)
+		fields = append(fields, fmt.Sprintf("%s\x00%s\x00%s", f.Name, f.Type, strings.Join(enum, "\x01")))
+	}
+	sort.Strings(fields)
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // consumedArtifactRefs mirrors buildNodeInputRS's selected-edge rules so a
@@ -144,7 +187,19 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if got := nodePublish(node); got != contract.LogicalRef {
 				violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
 			}
-			if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
+			// The SHAPE decides whenever both sides carry a fingerprint.
+			// Comparing the schema NAME alone admits the change that actually
+			// invalidates the artifact (editing the fields under a stable
+			// name) and refuses the one that does not (renaming a schema whose
+			// body is unchanged). Names stay the fallback for a contract
+			// written before SchemaHash existed, and for a node whose schema
+			// this workflow no longer resolves.
+			schema := ir.NodeOutputSchema(node)
+			if hash := schemaFingerprint(wf, schema); contract.SchemaHash != "" && hash != "" {
+				if hash != contract.SchemaHash {
+					violations = append(violations, fmt.Sprintf("artifact %q was produced against a different definition of schema %q", contract.LogicalRef, contract.Schema))
+				}
+			} else if schema != contract.Schema {
 				violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
 			}
 			if currentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != currentRevision {

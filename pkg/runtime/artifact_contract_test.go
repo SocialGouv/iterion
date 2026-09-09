@@ -280,3 +280,104 @@ func TestValidateArtifactContractsLoadsExactDependencyWhenIndexLags(t *testing.T
 		t.Fatalf("durable dependency was rejected because its index lagged: %v", err)
 	}
 }
+
+// seedSchemaContractRun persists one artifact whose contract was stamped
+// against `stamped` and returns the run plus the store, so a test only has to
+// supply the workflow the resume would run against.
+func seedSchemaContractRun(t *testing.T, id string, stamped *ir.Workflow) (store.RunStore, *store.Run) {
+	t.Helper()
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, id, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	schema := ir.NodeOutputSchema(stamped.Nodes["writer"])
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: id, NodeID: "writer", Version: 0,
+		Contract: &store.ArtifactContract{
+			LogicalRef: "report", ProducerNode: "writer", Version: 0,
+			Schema:     schema,
+			SchemaHash: schemaFingerprint(stamped, schema),
+		},
+		Data: map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return s, run
+}
+
+// schemaWorkflow is one publishing node plus the schema definition it declares.
+func schemaWorkflow(schemaName string, fields ...*ir.SchemaField) *ir.Workflow {
+	return &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"writer": &ir.ToolNode{
+				BaseNode:     ir.BaseNode{ID: "writer"},
+				SchemaFields: ir.SchemaFields{OutputSchema: schemaName},
+				Publish:      "report",
+			},
+		},
+		Schemas: map[string]*ir.Schema{schemaName: {Name: schemaName, Fields: fields}},
+	}
+}
+
+// TestValidateArtifactContractsComparesSchemaShapeNotName pins both halves of
+// the reason the contract records a fingerprint. `ir.NodeOutputSchema` returns
+// the schema's reference NAME, so comparing it admits exactly the edit that
+// invalidates a persisted artifact — a downstream node reads
+// `outputs.writer.<field>` and the field is gone — while refusing a rename
+// that changes no shape at all.
+func TestValidateArtifactContractsComparesSchemaShapeNotName(t *testing.T) {
+	ctx := context.Background()
+	summary := &ir.SchemaField{Name: "summary", Type: ir.FieldTypeString}
+	detail := &ir.SchemaField{Name: "detail", Type: ir.FieldTypeString}
+
+	t.Run("fields edited under a stable name are refused", func(t *testing.T) {
+		stamped := schemaWorkflow("report_out", summary, detail)
+		s, run := seedSchemaContractRun(t, "artifact-schema-edited", stamped)
+		// Same name, one field removed: a name comparison sees no change.
+		edited := schemaWorkflow("report_out", summary)
+		err := ValidateArtifactContracts(ctx, s, run, edited, "", false)
+		if err == nil {
+			t.Fatal("an artifact produced against a different schema definition was admitted")
+		}
+		if !strings.Contains(err.Error(), "different definition of schema") {
+			t.Fatalf("refusal does not name the shape change: %v", err)
+		}
+	})
+
+	t.Run("a rename with an identical body is accepted", func(t *testing.T) {
+		stamped := schemaWorkflow("report_out", summary, detail)
+		s, run := seedSchemaContractRun(t, "artifact-schema-renamed", stamped)
+		renamed := schemaWorkflow("report_output", summary, detail)
+		if err := ValidateArtifactContracts(ctx, s, run, renamed, "", false); err != nil {
+			t.Fatalf("renaming a schema whose body is unchanged was refused: %v", err)
+		}
+	})
+
+	t.Run("a contract with no fingerprint still compares names", func(t *testing.T) {
+		stamped := schemaWorkflow("report_out", summary)
+		s, run := seedSchemaContractRun(t, "artifact-schema-legacy", stamped)
+		// Simulate an artifact written before SchemaHash existed.
+		art, err := s.LoadArtifact(ctx, run.ID, "writer", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		art.Contract.SchemaHash = ""
+		if err := s.WriteArtifact(ctx, art); err != nil {
+			t.Fatal(err)
+		}
+		renamed := schemaWorkflow("report_output", summary)
+		if err := ValidateArtifactContracts(ctx, s, run, renamed, "", false); err == nil {
+			t.Fatal("a legacy contract lost its name comparison fallback")
+		}
+	})
+}
