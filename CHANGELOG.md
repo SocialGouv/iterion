@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.130.0](https://github.com/SocialGouv/iterion/compare/v3.129.2...v3.130.0) (2026-09-09)
+
+### Features
+
+* **review-pr:** read the issues a PR links, with no per-repo configuration ([#1017](https://github.com/SocialGouv/iterion/issues/1017)) ([7d95dc6](https://github.com/SocialGouv/iterion/commit/7d95dc61427a9855aad3fa66c788ae2c0d6e907e)), closes [#1014](https://github.com/SocialGouv/iterion/issues/1014), references [#123](https://github.com/SocialGouv/iterion/issues/123) [#1003](https://github.com/SocialGouv/iterion/issues/1003) [#997](https://github.com/SocialGouv/iterion/issues/997)
+
+    <details><summary>why</summary>
+
+    Ticket conformance shipped in 0.6.0 behind `tracker_api_base`, a var an operator had to pin per repo. Nobody did: across the 16 connected GitHub repos it is set on ZERO of them, so a PR saying 'Fixes #123' was reviewed without anyone reading #123. The check existed and never ran.
+
+    </details>
+
 ## [3.129.2](https://github.com/SocialGouv/iterion/compare/v3.129.1...v3.129.2) (2026-09-09)
 
 ### Bug Fixes
