@@ -328,8 +328,10 @@ the hours this one spent.
 - [docs/ticket-context.md](docs/ticket-context.md) — plugging tickets into
   a Revi review so it verifies the PR delivers what the ticket asks. Since
   0.9.0 the check runs BY DEFAULT with no configuration, on the forge's own
-  issues (`ticket_context: auto`), read by a deterministic node — no agent
-  ever holds the write-capable `forge_token`; `off` skips it. An EXTERNAL
+  issues (`ticket_context: auto`), read by a deterministic node — no agent is
+  asked to use the write-capable `forge_token` (residual: `as: file` secrets
+  are run-scoped, so its PATH is still in every agent prompt); `off` skips
+  it. An EXTERNAL
   tracker (Jira Cloud/DC) replaces that source and is what needs wiring:
   team secret → `tracker_token` binding with `allowed_hosts` → per-repo
   `tracker_api_base` launch_var, the one-credential-per-team limit, and

@@ -15,8 +15,11 @@ version: 0.9.0
 ## Forge-native reading is a DETERMINISTIC node (`ticket_fetch`), not a
 ## recipe the reviewer runs: the run's forge token is write-capable, and
 ## the reviewers ingest the diff plus every linked issue body — text an
-## outside contributor writes — so the credential stays out of every model
-## context and the agents receive ticket TEXT. That node asks the FORGE
+## outside contributor writes — so no agent is asked to use that credential
+## any more; they receive ticket TEXT. (Residual, stated in the node: `as:
+## file` secrets are mounted run-wide and the engine lists their paths in
+## every agent prompt, so what moved is the instruction to use it.)
+## That node asks the FORGE
 ## which issues the PR closes (GitLab `closes_issues`, GitHub
 ## `closingIssuesReferences`, paginated, each ticket keeping its own repo
 ## identity) rather than trusting a regex over prose, falls back to a text

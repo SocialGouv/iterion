@@ -47,13 +47,20 @@ absence of a reference is never a finding.
 It needs the `forge_token` the repo's provisioning already binds, and
 nothing else. Two properties are deliberate:
 
-- **No agent ever holds that token.** It is the connection's runtime
+- **No agent is asked to use that token.** It is the connection's runtime
   credential and it is write-capable, while a reviewer ingests the diff
   and every linked issue body — text an outside contributor writes. So
   the fetch is a deterministic node (`ticket_fetch`) and the reviewers
   receive ticket TEXT only. The external-tracker path keeps its
   agent-side `curl` recipes: `tracker_token` is a read-only credential
   an operator bound on purpose, egress-pinned to the tracker host.
+  *Residual:* `as: file` secrets are mounted run-wide and the engine
+  lists every mounted path in each agent's system prompt with its own
+  "do not read the contents" rule, so the file stays reachable by an
+  agent that defies both that rule and the bot's. What this buys is the
+  difference between an injected reviewer FOLLOWING its instructions and
+  one having to break them; closing the rest needs per-node secret
+  scoping in the engine.
 - **A GitHub Enterprise token stays on the enterprise.** The API base is
   derived from the PR URL — `https://<host>/api/v3` for REST and
   `https://<host>/api/graphql` for GraphQL, never `api.github.com`.

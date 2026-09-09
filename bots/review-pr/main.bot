@@ -75,8 +75,8 @@
 ## sources, resolved per run by the deterministic `ticket_fetch` node:
 ##   - FORGE-NATIVE (no configuration): the forge's OWN issues — the ones
 ##     it reports this PR closes, plus the refs written in its title/body.
-##     `ticket_fetch` reads them and hands the reviewers TEXT; the forge
-##     credential never enters a model's context (see that node).
+##     `ticket_fetch` reads them and hands the reviewers TEXT; no agent is
+##     ever asked to use the forge credential (see that node's RESIDUAL).
 ##   - EXTERNAL TRACKER: `tracker_api_base` + a bound read-only
 ##     `tracker_token` (Jira & co) — the reviewer fetches it itself, with
 ##     that operator-bound credential, per skills/ticket-context.md.
@@ -552,10 +552,12 @@ prompt review_system:
     1. Mode "off" or "none": skip this section entirely, leave
        `ticket_conformance` empty, and never open a finding about it.
     2. Mode "forge": the tickets are ALREADY IN YOUR USER MESSAGE. A
-       deterministic step read them from the forge — you hold NO forge
-       credential and you must not go looking for one, nor call the forge
-       API yourself. Judge against the ticket text you were given, and
-       copy the per-reference `unverifiable` lines verbatim.
+       deterministic step read them from the forge. You are given NO forge
+       credential to use: a `forge_token` may appear among your mounted
+       secret files, and it is not yours to open — do not read it, do not
+       authenticate with it, do not call the forge API yourself. Judge
+       against the ticket text you were given, and copy the per-reference
+       `unverifiable` lines verbatim.
     3. Mode "external": read
        `{{vars.workspace_dir}}/.claude/skills/ticket-context.md` and fetch
        each ticket from the tracker API base with the TRACKER token. That
@@ -1150,19 +1152,27 @@ compute tier_expand:
     effective_review_mode: "if(vars.review_mode == 'dual' || vars.review_tier == 'audit', 'dual', 'mono')"
 
 ## TICKET CONFORMANCE — forge-native fetch (v0.9.0). DETERMINISTIC, no LLM,
-## and that is the point: the credential that reads the forge's issues never
-## enters a model's context.
+## and that is the point: no agent is ever ASKED to use a forge credential.
 ##
 ## The reviewers ingest two attacker-writable sources — the PR diff, and now
 ## every linked issue's body, which on a public repo anyone can write. The
 ## run's `forge_token` is the connection's runtime token and it is
 ## WRITE-capable (contents / issues / pull_requests / repository_hooks —
-## pkg/forge/github/app_client.go RuntimeInstallationPermissions), so handing
-## its path to an agent that ingests those sources would put "post as the bot"
-## and "flip revi/review to success" one successful injection away. It is also
-## the posture this bot already states at the top of this file: no LLM agent
-## ever holds a forge credential. So the fetch happens HERE and the reviewers
-## receive ticket TEXT.
+## pkg/forge/github/app_client.go RuntimeInstallationPermissions), so telling
+## an agent that ingests those sources to authenticate with it would put
+## "post as the bot" and "flip revi/review to success" one successful
+## injection away. It is also the posture this bot already states at the top
+## of this file: no LLM agent ever holds a forge credential. So the fetch
+## happens HERE and the reviewers receive ticket TEXT.
+##
+## RESIDUAL, stated plainly: `as: file` secrets are mounted RUN-wide, and the
+## engine lists every mounted secret's PATH in each agent's system prompt
+## (delegate.secretFilesInstruction) with its own "do not read the contents"
+## rule. So the file remains reachable by a reviewer that defies both that
+## rule and this bot's "you hold no forge credential" instruction. What moved
+## here is the instruction to USE it — the difference between an injected
+## agent following its prompt and one having to break it. Closing the rest
+## needs per-node secret scoping in the engine, which the DSL has no seam for.
 ##
 ## Deterministic also buys the correctness the prose recipe could not have:
 ## the API base is derived from the PR URL per forge (a GitHub Enterprise
@@ -1523,7 +1533,7 @@ tool ticket_fetch:
                          str(MAX_TICKETS) + ")")
         out("forge", tickets="\n\n".join(blocks), status="\n".join(lines), count=count,
             note="forge-native on " + provider + " (" + api_base +
-                 "): read deterministically, the forge credential never entered a model context")
+                 "): read deterministically - you were given the text, not the credential")
 
     try:
         main()
