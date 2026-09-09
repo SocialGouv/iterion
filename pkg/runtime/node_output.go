@@ -180,7 +180,16 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			// candidate. Carry it back so every caller can charge it before
 			// surfacing the validation/correction error.
 			current = addCorrectionUsage(current, correctionUsage)
-			episode.Status = correctionStatusExhausted
+			// A context interruption consumes this paid attempt, but it does not
+			// consume attempts that were never started. Keep the episode active
+			// when budget remains so an operator can raise max_duration and resume
+			// instead of finding a permanently terminal ledger.
+			interrupted := correctionCtx.Err() != nil
+			if interrupted && episode.Attempts < episode.Budget {
+				episode.Status = correctionStatusActive
+			} else {
+				episode.Status = correctionStatusExhausted
+			}
 			if correctionErr != nil {
 				episode.LastError = correctionErr.Error()
 			} else {

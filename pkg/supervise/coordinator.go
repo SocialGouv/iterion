@@ -113,6 +113,11 @@ type Coordinator struct {
 	cursorWriter store.WatcherCursorStore
 	cursorID     string
 	cursor       store.WatcherCursor
+	// cursorReady turns false when the durable cursor cannot be restored.
+	// Evaluations and writes then fail closed: acting from a zero-value cursor
+	// could duplicate an intervention and overwrite the proof needed to stop
+	// the next replay too.
+	cursorReady bool
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -149,6 +154,7 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		cursorWriter:   cursorWriter,
 		cursorID:       cursorID,
 		cursor:         store.WatcherCursor{WatcherID: cursorID},
+		cursorReady:    true,
 		done:           make(chan struct{}),
 	}
 }
@@ -189,7 +195,10 @@ func (c *Coordinator) run() {
 		return
 	}
 	defer release()
-	c.restoreCursor()
+	if !c.restoreCursor() {
+		c.warn("supervise[%s]: watcher cursor is unavailable on run %s; supervision stopped before taking action", c.spec.Name, c.runID)
+		return
+	}
 
 	// One startup line so an operator (and a dogfood log) can tell a
 	// spawned-but-silent supervisor from one that never spawned.
@@ -483,6 +492,9 @@ const maxEvalFailures = 3
 // supervision). Returns suppressed=true iff the wake was skipped by the
 // cooldown — the one outcome the caller may defer and retry.
 func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed bool) {
+	if !c.cursorReady {
+		return false
+	}
 	if c.finished {
 		return false
 	}
@@ -624,13 +636,15 @@ func watcherProgressFingerprintWithData(evt *store.Event, dataJSON []byte) strin
 
 func timePtr(t time.Time) *time.Time { return &t }
 
-func (c *Coordinator) restoreCursor() {
+func (c *Coordinator) restoreCursor() bool {
 	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
-		return
+		c.cursorReady = true
+		return true
 	}
 	if c.cursorWriter == nil {
 		c.warn("supervise[%s]: store cannot persist watcher cursors on run %s; restart replay suppression is disabled", c.spec.Name, c.runID)
-		return
+		c.cursorReady = true
+		return true
 	}
 	loadCtx := c.ctx
 	if loadCtx == nil {
@@ -638,11 +652,13 @@ func (c *Coordinator) restoreCursor() {
 	}
 	run, err := c.cursorStore.LoadRun(loadCtx, c.runID)
 	if err != nil {
+		c.cursorReady = false
 		c.warn("supervise[%s]: watcher cursor load failed on run %s: %v", c.spec.Name, c.runID, err)
-		return
+		return false
 	}
+	c.cursorReady = true
 	if run == nil || run.WatcherCursors == nil {
-		return
+		return true
 	}
 	if cursor, ok := run.WatcherCursors[c.cursorID]; ok {
 		c.cursor = cursor
@@ -650,6 +666,7 @@ func (c *Coordinator) restoreCursor() {
 			c.lastEvalAt = *cursor.LastEvaluationAt
 		}
 	}
+	return true
 }
 
 func (c *Coordinator) persistCursor() {
@@ -664,6 +681,9 @@ func (c *Coordinator) persistCursor() {
 func (c *Coordinator) saveCursor() error {
 	if c.cursorWriter == nil || c.runID == "" || c.cursorID == "" {
 		return nil
+	}
+	if !c.cursorReady {
+		return errors.New("supervise: watcher cursor was not restored")
 	}
 	c.cursor.UpdatedAt = time.Now().UTC()
 	baseCtx := c.ctx

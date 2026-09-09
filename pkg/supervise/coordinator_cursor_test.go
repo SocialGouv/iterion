@@ -31,6 +31,19 @@ type cursorWriteStore struct {
 	failAt map[int]bool
 }
 
+type cursorLoadFailureStore struct {
+	*store.FilesystemRunStore
+	failLoads int
+}
+
+func (s *cursorLoadFailureStore) LoadRun(ctx context.Context, runID string) (*store.Run, error) {
+	if s.failLoads > 0 {
+		s.failLoads--
+		return nil, errors.New("transient cursor read failure")
+	}
+	return s.FilesystemRunStore.LoadRun(ctx, runID)
+}
+
 func (s *cursorWriteStore) SetWatcherCursor(ctx context.Context, runID, watcherID string, cursor store.WatcherCursor) error {
 	s.writes++
 	if s.failAt[s.writes] {
@@ -72,6 +85,47 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	c2.evaluate("turn_boundary", true)
 	if got := eval.calls(); got != 1 {
 		t.Fatalf("duplicate wake evaluated %d times after restart, want 1", got)
+	}
+}
+
+func TestCoordinatorCursorLoadFailureStopsActionsAndWrites(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.CreateRun(context.Background(), "cursor-load-run", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	eval := &scriptedEval{decisions: []*Decision{
+		{Intervene: true, Message: "repair"},
+		{Intervene: true, Message: "repair"},
+	}}
+	trigger := &store.Event{Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "stuck"}}
+	first := New(NewEventHub(), &StoreInjector{Store: base}, "cursor-load-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	first.ctx = context.Background()
+	first.ingest(trigger)
+	first.evaluate("monitor matched: "+RenderEvent(trigger), true)
+
+	flaky := &cursorLoadFailureStore{FilesystemRunStore: base, failLoads: 1}
+	restarted := New(NewEventHub(), &StoreInjector{Store: flaky}, "cursor-load-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	restarted.ctx = context.Background()
+	if restarted.restoreCursor() {
+		t.Fatal("cursor restoration unexpectedly succeeded")
+	}
+	restarted.ingest(trigger)
+	restarted.evaluate("monitor matched: "+RenderEvent(trigger), true)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("cursor-less restart evaluated %d times, want 1", got)
+	}
+	if err := restarted.saveCursor(); err == nil {
+		t.Fatal("cursor-less restart overwrote the durable cursor")
+	}
+	pending, err := base.LoadPendingQueuedMessages(context.Background(), "cursor-load-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("cursor read failure produced %d interventions, want 1", len(pending))
 	}
 }
 

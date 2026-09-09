@@ -450,6 +450,50 @@ func TestSchemaValidation_CorrectionHonorsRemainingDuration(t *testing.T) {
 	}
 }
 
+func TestSchemaValidation_DurationInterruptedCorrectionResumesUnusedAttempt(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-duration-resume", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	wf := validationWorkflow()
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		if exec.calls == 1 {
+			<-ctx.Done()
+			return nil, OutputCorrectionUsage{}, ctx.Err()
+		}
+		return map[string]any{"summary": "repaired", "score": 7}, OutputCorrectionUsage{}, nil
+	}
+	eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	invalid := map[string]any{"summary": "invalid", "score": "not-an-int"}
+
+	shortBudget := &runState{
+		ctx: ctx, runID: "run-val-duration-resume",
+		budget: newSharedBudget(&ir.Budget{MaxDuration: "20ms"}, nil),
+	}
+	if _, err := eng.correctAndValidateNodeOutput(ctx, shortBudget, "my_agent", wf.Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
+	}
+	run, err := st.LoadRun(ctx, "run-val-duration-resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode := run.OutputCorrections["my_agent"]
+	if episode.Status != correctionStatusActive || episode.Attempts != 1 {
+		t.Fatalf("interrupted episode = %+v, want active with one unused attempt", episode)
+	}
+
+	longBudget := &runState{
+		ctx: ctx, runID: "run-val-duration-resume",
+		budget: newSharedBudget(&ir.Budget{MaxDuration: "1s"}, nil),
+	}
+	out, err := eng.correctAndValidateNodeOutput(ctx, longBudget, "my_agent", wf.Nodes["my_agent"], invalid)
+	if err != nil || out["score"] != 7 || exec.calls != 2 {
+		t.Fatalf("resumed correction = (%+v, %v), calls=%d", out, err, exec.calls)
+	}
+}
+
 func TestCorrectionInvocationIdentitySeparatesLoopsAndBranches(t *testing.T) {
 	wf := validationWorkflow()
 	wf.Loops = map[string]*ir.Loop{
