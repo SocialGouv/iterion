@@ -76,9 +76,16 @@ capability method; other observers retain the existing in-memory behaviour.
 
 The rollout is deliberately reversible:
 
-1. Capture a baseline with `reliability.Summarize` (or the equivalent
-   operator report) for finished, failed, failed-resumable, paused and queued
-   runs, including retry-armed and ledger-use counts.
+1. Capture a baseline with `iterion reliability report` — finished, failed,
+   failed-resumable, paused and queued runs, plus retry-armed and ledger-use
+   counts, over the store the working directory resolves to (`--store-dir`
+   overrides it, `--json` makes it diffable). The same command with
+   `--run-id <id>` answers the per-run question instead: legacy or contract
+   context, admission recorded, how many nodes published, and whether the run
+   is rollback-safe. Both are strictly read-only — reporting on a legacy run
+   never upgrades its policy. The report's first lines are the RESOLVED mode
+   and context policy, so the baseline always states which of the two
+   variables below was in effect when it was taken.
 2. Start a pilot in `report` mode with `ITERION_RELIABILITY_MODE=report`.
    Admission decisions are recorded and surfaced, but legacy contexts remain
    runnable; correction and watcher ledgers are observational evidence that
@@ -87,7 +94,11 @@ The rollout is deliberately reversible:
    queued, resumed, nested and watcher paths show matching context and
    artifact contracts. The retry circuit stays bounded by
    `ITERION_RETRY_CIRCUIT_THRESHOLD` / `ITERION_RETRY_CIRCUIT_COOLDOWN`.
-4. Roll back by setting `ITERION_RELIABILITY_MODE=legacy`. Do not delete the
+4. Roll back by setting `ITERION_RELIABILITY_MODE=legacy`
+   (`iterion reliability rollback` prints the plan verbatim, including which
+   variable wins — it prints, it does not mutate: the variable is set where
+   the launch surfaces read it, in a pod spec or a service unit, not by a
+   one-shot CLI process). Do not delete the
    ledgers: they are the evidence needed to explain the pilot and make a later
    resume safe.
 
