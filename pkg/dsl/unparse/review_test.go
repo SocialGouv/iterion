@@ -207,6 +207,30 @@ func TestVerifyRefusesADroppedSandboxBlock(t *testing.T) {
 	}
 }
 
+// The tolerance that lets an EMPTY compaction/memory block go unwritten must
+// not extend one inch further: a block that held something and did not survive
+// is a lost setting, and the guard exists to catch exactly that. Fed the text
+// a lossy writer would produce, Verify has to refuse and name the block.
+func TestVerifyStillCatchesABlockThatHeldSomething(t *testing.T) {
+	scope := "team"
+	f := &ast.File{Agents: []*ast.AgentDecl{{
+		Name:    "a",
+		LLMDecl: ast.LLMDecl{Memory: &ast.MemoryBlock{Scope: &scope}},
+	}}}
+	// What the writer would emit if it dropped a populated block.
+	err := unparse.Verify(f, "agent a:\n  description: \"\"\n")
+	if err == nil {
+		t.Fatal("a populated memory block was dropped and the guard passed")
+	}
+	if !strings.Contains(err.Error(), "memory") {
+		t.Errorf("the refusal does not name the lost block: %v", err)
+	}
+	// And the real writer keeps it, of course.
+	if err := unparse.Verify(f, unparse.Unparse(f)); err != nil {
+		t.Errorf("Verify: %v\n%s", err, unparse.Unparse(f))
+	}
+}
+
 // A prompt with no text and a schema with no field have no written form at
 // all — any placeholder would BECOME content. They are refused by NAME, the
 // way an empty group already was: `expected INDENT, got EOF` about a file the
