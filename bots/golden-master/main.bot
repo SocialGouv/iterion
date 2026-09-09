@@ -3603,16 +3603,36 @@ tool oracle_run:
         return ids
 
 
-    def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False):
+    def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
+                                  withheld=(), deferred=None):
         """Which byte-identical groups are NOT discharged by a measured separator.
 
         Returns one record per group that fails, with the reason IN the record —
         the gate turns them into its refusal, and the selftest calls this same
         function, so what is tested is what runs.
+
+        `withheld` names separators whose verdict this pass reserves on purpose;
+        they land in the caller's `deferred` sink instead of the refusal.
         """
         decls = duplicate_group_decls(corpus)
         observed = {tuple(sorted(g)) for g in duplicate_refs}
         scored = {v.get("id"): v for v in verdicts if v.get("id")}
+        # WITHHELD is neither ABSENT nor PROVED, and both readings are wrong in a
+        # way the campaign pays for. Read as ABSENT, the refusal says "add the
+        # mutant to the set" about a mutant that IS in the set — a work item
+        # nobody can action. Read as PROVED, the group is discharged by a
+        # measurement that never happened.
+        #
+        # So: DEFERRED, in a sink the caller owns, never in `unproven`, which is
+        # the field the gate reads. At the final gate this path is unreachable —
+        # nothing is withheld there — so the obligation is unchanged where it
+        # decides.
+        #
+        # No sink, no deferral. Without somewhere to say it, the honest answer is
+        # the strict one: a caller that forgets the sink gets the HARSHER verdict,
+        # never the softer. A default that can only tighten is the only kind safe
+        # to add to a term of convergence.
+        withheld = set(withheld) if deferred is not None else set()
         unproven = []
         for g in sorted(observed):
             sep = decls.get(g)
@@ -3624,6 +3644,13 @@ tool oracle_run:
                 continue
             v = scored.get(sep)
             if v is None:
+                if sep in withheld:
+                    deferred.append({"ids": list(g), "separated_by": sep, "why":
+                                     "the declared separator belongs to the held-out set, whose "
+                                     "verdicts this pass reserves — not scored here, and not "
+                                     "scorable here. Neither proved nor refuted until the final "
+                                     "gate scores it."})
+                    continue
                 unproven.append({"ids": list(g), "separated_by": sep, "why":
                                  "the declared separator was not scored in this pass (absent "
                                  "from the mutant set%s)" %
@@ -6482,6 +6509,50 @@ tool oracle_run:
                     "undetected_targets": ["012", "013"], "collateral": []}])],
               [["012", "013"]])
 
+        # UN SEPARATEUR TENU A L'ECART N'EST NI ABSENT NI PROUVE. En selfcheck le
+        # jeu held-out n'est pas score PAR CONSTRUCTION, donc un separateur qui en
+        # vient se lirait « absent du jeu de mutants » : faux, et infixable par la
+        # campagne — le mutant EST dans le jeu, son verdict est reserve. Le lire
+        # comme PROUVE serait pire : decharger une classe que rien n'a mesuree.
+        corpus_h = {"entries": [], "duplicate_groups": D}
+        sink = []
+        check("separateur tenu a l'ecart : aucun refus",
+              [x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], corpus_h, [], False, ["sep-01"], sink)],
+              [])
+        check("... et il est DIFFERE, pas efface",
+              [x["ids"] for x in sink], [["012", "013"]])
+        # SANS PUITS, PAS DE REPORT : un appelant qui oublie le sink obtient le
+        # verdict le PLUS SEVERE, jamais le plus doux. Un defaut qui ne peut que
+        # resserrer est le seul qu'on ajoute sans danger a un terme de convergence.
+        check("sans puits, un separateur tenu a l'ecart redevient un refus",
+              [x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], corpus_h, [], False, ["sep-01"])],
+              [["012", "013"]])
+        # A LA PORTE FINALE RIEN N'EST TENU A L'ECART : la voie du report y est
+        # inatteignable, donc elle ne peut pas adoucir le verdict qui decide.
+        sink2 = []
+        check("porte finale : aucun report possible, le refus tient",
+              [[x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], corpus_h, [], False, (), sink2)], sink2],
+              [[["012", "013"]], []])
+        # ET LE VERDICT D'UN HELD-OUT SCORE VAUT PREUVE : il n'a rien de special
+        # une fois mesure.
+        #
+        # CE QUE CE BANC NE COUVRE PAS, ET IL FAUT LE DIRE : que l'APPELANT joigne
+        # bien `held` aux verdicts visibles. C'est pourtant la moitie la plus grave
+        # du correctif — sans elle un separateur scelle est INPROUVABLE A JAMAIS.
+        # Le verifier demanderait une porte de bout en bout (application, captures,
+        # references, mutants qui s'appliquent et se revertissent) ; la fixture du
+        # selftest est unitaire. Un banc absent qu'on nomme vaut mieux qu'un banc
+        # absent qu'un commentaire declare present.
+        check("un separateur held-out SCORE decharge le groupe",
+              [x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], corpus_h,
+                  [{"id": "sep-01", "valid": True, "targets_declared": ["013"],
+                    "undetected_targets": [], "collateral": []}])],
+              [])
+
         # UN VERDICT INVALIDE N'EST PAS UNE MESURE — et c'est la forme sous
         # laquelle un separateur meurt. Les chemins d'echec de probe_mutation
         # rendent la main AVANT que `undetected_targets` et `collateral` existent :
@@ -6728,6 +6799,10 @@ tool oracle_run:
                   "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
                   "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
                   "duplicate_groups_unproven": [],
+                  # Reported, never gated: a deferral is the absence of a verdict,
+                  # not a verdict. It exists so a selfcheck cannot read as PROVED
+                  # what it merely could not measure.
+                  "duplicate_groups_deferred": [],
                   "runner_replayable": False,
                   "holdout_reused": [],
                   "log_tail": ""}
@@ -7373,9 +7448,26 @@ tool oracle_run:
             # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
             # separator to a lot's re-anchoring — the mutant now moves both members,
             # and the pair proves nothing at all.
+            # `held` BELONGS IN THE EVIDENCE, and leaving it out made a declared
+            # held-out separator permanently unprovable: the final gate scores it
+            # into `held`, never into `verdicts`, so this predicate could not see
+            # the very measurement it demands. With the obligation wired to
+            # convergence, that is not a wrong message — it is a corpus the gate
+            # can never accept, whose only escape is to declare a VISIBLE
+            # separator, which is the opposite of what a sealed set is for.
+            #
+            # `withheld` covers the other half, and only in selfcheck, where `held`
+            # is empty BY CONSTRUCTION (the seal moves the files out and the loop
+            # above does not run). Nothing is withheld at the final gate, so the
+            # deferral path cannot soften the verdict that decides.
+            withheld_ids = ([m.get("id") for m in held_meta]
+                            if mode == "selfcheck" else [])
+            deferred = []
             unproven = unproven_duplicate_groups(
-                report["duplicate_refs"], corpus, verdicts, bool(only))
+                report["duplicate_refs"], corpus, list(verdicts) + list(held),
+                bool(only), withheld_ids, deferred)
             report["duplicate_groups_unproven"] = unproven
+            report["duplicate_groups_deferred"] = deferred
             if unproven:
                 problems.append(duplicate_groups_refusal(
                     unproven, report["duplicate_refs"],
