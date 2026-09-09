@@ -347,6 +347,14 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.outputs = result.outputs
 	local.artifacts = mergeOutputs(parent.artifacts, result.artifacts)
 	local.artifactRevisions = mergeArtifactRevisions(parent.artifactRevisions, result.artifactRevisions)
+	for name := range result.artifacts {
+		if _, exact := result.artifactRevisions[name]; !exact {
+			// A legacy branch checkpoint may carry the authoritative value but
+			// no physical revision. Never pair that value with provenance
+			// inherited from a same-named trunk artifact.
+			delete(local.artifactRevisions, name)
+		}
+	}
 	local.artifactVersions = result.artifactVersions
 	local.selectedIncoming = result.selectedIncoming
 	local.loopCounters = make(map[string]int)

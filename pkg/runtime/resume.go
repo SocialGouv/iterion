@@ -340,6 +340,14 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 	for _, name := range names {
 		revision := state.revisions[name]
 		key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+		if !required[key] {
+			// ArtifactVersions is only an allocation cursor. In a legacy
+			// parallel checkpoint it cannot prove which invocation supplied
+			// Outputs, so do not promote the guessed revision into the next
+			// checkpoint as exact provenance.
+			delete(state.revisions, name)
+			continue
+		}
 		artifact, ok := loaded[key]
 		if !ok {
 			var loadErr error
@@ -364,16 +372,10 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 			}
 			loaded[key] = artifact
 		}
-		// ArtifactVersions is an allocator cursor, not provenance. In legacy
-		// checkpoints without an explicit revision for this physical artifact,
-		// a parallel publisher may have completed out of order: versions-1 can
-		// therefore name a different branch invocation than the value captured
-		// in Outputs. Keep that checkpoint value authoritative. Exact persisted
-		// revisions (including aliases rebound during a forced migration) may
-		// safely restore their immutable artifact body.
-		if required[key] {
-			state.artifacts[name] = artifact.Data
-		}
+		// Exact persisted revisions (including aliases rebound during a forced
+		// migration) restore their immutable artifact body. Inferred legacy
+		// revisions were discarded above, leaving Outputs authoritative.
+		state.artifacts[name] = artifact.Data
 		if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
 			revision.ContractLogicalRef = artifact.Contract.LogicalRef
 			state.revisions[name] = revision

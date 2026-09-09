@@ -834,6 +834,46 @@ func TestPrepareResumeArtifactsKeepsLegacyParallelCheckpointValue(t *testing.T) 
 	if got := state.artifacts["result"]["item"]; got != "checkpoint-branch" {
 		t.Fatalf("legacy checkpoint value was replaced by inferred revision: %v", got)
 	}
+	if len(state.revisions) != 0 {
+		t.Fatalf("inferred legacy revision was promoted to exact provenance: %+v", state.revisions)
+	}
+	rs := eng.newRunState(runID, nil)
+	eng.restoreCheckpointState(rs, cp, state)
+	next := buildCheckpoint(rs, "retry")
+	second, err := eng.prepareResumeArtifacts(ctx, run, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.artifacts["result"]["item"]; got != "checkpoint-branch" {
+		t.Fatalf("second resume replaced legacy checkpoint value: %v", got)
+	}
+}
+
+func TestLegacyBranchArtifactDoesNotBorrowTrunkProvenance(t *testing.T) {
+	parent := &runState{
+		artifacts: map[string]map[string]any{"plan": {"value": "trunk"}},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "planner", Version: 0},
+		},
+	}
+	cp := &store.BranchCheckpoint{
+		Artifacts: map[string]map[string]any{"plan": {"value": "branch"}},
+		Outputs:   map[string]map[string]any{"worker": {"value": "branch"}},
+	}
+	result := initBranchResult(parent, "branch", cp)
+	local := newBranchRunState(parent, cp, result)
+	consumer := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "consumer"}, Publish: "report",
+		CommandRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{"consumer": consumer}}}
+	if got := local.artifacts["plan"]["value"]; got != "branch" {
+		t.Fatalf("legacy branch value = %v", got)
+	}
+	contract := eng.artifactContractFor("consumer", consumer, 0, local)
+	if len(contract.Dependencies) != 0 {
+		t.Fatalf("legacy branch value borrowed trunk provenance: %+v", contract.Dependencies)
+	}
 }
 
 func TestValidateArtifactContractsChecksTransitiveDependencies(t *testing.T) {
