@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ExecutionContextVersion is the wire/storage version of the execution
@@ -88,6 +89,21 @@ type ExecutionContext struct {
 	Workflow       WorkflowContext  `json:"workflow" bson:"workflow"`
 	Lineage        LineageContext   `json:"lineage" bson:"lineage"`
 	LaunchSurface  string           `json:"launch_surface,omitempty" bson:"launch_surface,omitempty"`
+}
+
+// AdmissionDecision is the durable result of the pre-execution admission
+// check. It is intentionally a small, append-only-shaped projection: a
+// watcher can explain why a run was allowed or refused without replaying
+// provider calls or guessing from free-form errors.
+type AdmissionDecision struct {
+	Decision         string        `json:"decision" bson:"decision"` // allowed | denied
+	Phase            string        `json:"phase,omitempty" bson:"phase,omitempty"`
+	Code             string        `json:"code,omitempty" bson:"code,omitempty"`
+	Reason           string        `json:"reason,omitempty" bson:"reason,omitempty"`
+	Policy           ContextPolicy `json:"policy,omitempty" bson:"policy,omitempty"`
+	ContextVersion   int           `json:"context_version,omitempty" bson:"context_version,omitempty"`
+	WorkflowRevision string        `json:"workflow_revision,omitempty" bson:"workflow_revision,omitempty"`
+	CheckedAt        time.Time     `json:"checked_at" bson:"checked_at"`
 }
 
 // StableContextID returns a non-secret, deterministic identifier for a

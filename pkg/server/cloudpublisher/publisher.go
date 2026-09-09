@@ -1795,6 +1795,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// and onto the published RunMessage below so the runner pod
 		// that claims this work knows its place in the shard set.
 		ParentRunID:        spec.ParentRunID,
+		ParentNodeID:       spec.ParentNodeID,
 		ShardIndex:         spec.ShardIndex,
 		ShardCount:         spec.ShardCount,
 		ShardLabel:         spec.ShardLabel,
@@ -1819,6 +1820,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// re-clamps against its own grant.
 		BudgetOverrides: runtime.RunBudgetOverridesOf(spec.Budget),
 	}
+	// Resolve the same versioned context the local launch authority stamps.
+	// It is persisted before the queued row is published so admission on the
+	// runner and diagnostics on the server read one contract.
+	r.ExecutionContext = runview.ResolveExecutionContext(ctx, p.store, runID, spec, wf, hash, store.ContextPolicyLegacy, "")
+	r.ExecutionContext.LaunchSurface = "cloudpublisher"
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
 	// runner's engine only stamps run.Source when it was given one, so a
@@ -1946,14 +1952,15 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	persisted = true
 
 	msg := &queue.RunMessage{
-		V:             queue.SchemaVersion,
-		Contributions: contributions,
-		RunID:         runID,
-		WorkflowName:  wf.Name,
-		WorkflowHash:  hash,
-		IRCompiled:    body,
-		Vars:          inputs,
-		SecretsRef:    creds.secretsRef,
+		V:                queue.SchemaVersion,
+		Contributions:    contributions,
+		RunID:            runID,
+		WorkflowName:     wf.Name,
+		WorkflowHash:     hash,
+		ExecutionContext: r.ExecutionContext.Clone(),
+		IRCompiled:       body,
+		Vars:             inputs,
+		SecretsRef:       creds.secretsRef,
 		// The stored-bundle ref THREADED from the launch surface's own
 		// resolution (never re-fetched here — a push racing the launch must
 		// not pair this compile's IR with newer resources). The runner
@@ -2237,12 +2244,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
 	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID)
 	msg := &queue.RunMessage{
-		V:             queue.SchemaVersion,
-		Contributions: contributions,
-		RunID:         spec.RunID,
-		WorkflowName:  wf.Name,
-		WorkflowHash:  hash,
-		IRCompiled:    body,
+		V:                queue.SchemaVersion,
+		Contributions:    contributions,
+		RunID:            spec.RunID,
+		WorkflowName:     wf.Name,
+		WorkflowHash:     hash,
+		ExecutionContext: prior.ExecutionContext.Clone(),
+		IRCompiled:       body,
 		Resume: &queue.ResumeSpec{
 			Answers: spec.Answers,
 			Force:   spec.Force,

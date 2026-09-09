@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // SchemaVersion is incremented at every breaking change to the wire
@@ -109,7 +111,10 @@ import (
 // later bump; the additive-intent rule above prevents repeating it.
 // v=13: BotBundle snapshots include sibling workflows and resources. An old
 // runner must reject them instead of silently attaching its own catalog.
-const SchemaVersion = 13
+// v=14: ExecutionContext carries the resolved run/workspace/workflow/lineage
+// contract to the claiming runner. Dropping it would make cloud admission
+// disagree with local admission, so the wire version is bumped.
+const SchemaVersion = 14
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v10 → v12 is additive from the new consumer's perspective: its custom
@@ -124,15 +129,19 @@ const MinSchemaVersion = 10
 //
 // Field order is stable to keep readable JSON diffs in tests.
 type RunMessage struct {
-	V            int             `json:"v"`
-	RunnerEpoch  uint64          `json:"runner_epoch,omitempty"`
-	RunID        string          `json:"run_id"`
-	WorkflowName string          `json:"workflow_name"`
-	WorkflowHash string          `json:"workflow_hash"`
-	IRCompiled   json.RawMessage `json:"ir_compiled,omitempty"`
-	IRRef        *IRRef          `json:"ir_ref,omitempty"`
-	RepoURL      string          `json:"repo_url,omitempty"`
-	RepoSHA      string          `json:"repo_sha,omitempty"`
+	V            int    `json:"v"`
+	RunnerEpoch  uint64 `json:"runner_epoch,omitempty"`
+	RunID        string `json:"run_id"`
+	WorkflowName string `json:"workflow_name"`
+	WorkflowHash string `json:"workflow_hash"`
+	// ExecutionContext is the launcher's resolved, versioned context
+	// contract. The queued run document also carries it; the wire copy lets a
+	// runner fail closed even when it has not yet loaded the document.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	IRCompiled       json.RawMessage         `json:"ir_compiled,omitempty"`
+	IRRef            *IRRef                  `json:"ir_ref,omitempty"`
+	RepoURL          string                  `json:"repo_url,omitempty"`
+	RepoSHA          string                  `json:"repo_sha,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`

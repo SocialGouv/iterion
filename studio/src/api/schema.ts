@@ -5617,6 +5617,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AdmissionDecision: {
+            /** Format: date-time */
+            checked_at: string;
+            code?: string;
+            context_version?: number;
+            decision: string;
+            phase?: string;
+            policy?: string;
+            reason?: string;
+            workflow_revision?: string;
+        };
         AuthMeResponse: {
             access_token?: string;
             active_org_id?: string;
@@ -6257,6 +6268,7 @@ export interface components {
         };
         RunHeader: {
             active_duration_ms: number;
+            admission?: components["schemas"]["AdmissionDecision"];
             auto_merge?: boolean;
             backends_used?: components["schemas"]["BackendUsage"][];
             bot_source_tenant?: string;

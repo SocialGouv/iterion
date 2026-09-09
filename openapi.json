@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "AdmissionDecision": {
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "context_version": {
+            "type": "integer"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "checked_at"
+        ],
+        "type": "object"
+      },
       "AuthMeResponse": {
         "properties": {
           "access_token": {
@@ -1978,6 +2012,9 @@
         "properties": {
           "active_duration_ms": {
             "type": "integer"
+          },
+          "admission": {
+            "$ref": "#/components/schemas/AdmissionDecision"
           },
           "auto_merge": {
             "type": "boolean"

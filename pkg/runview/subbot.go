@@ -156,6 +156,22 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			lastMu sync.Mutex
 			last   map[string]any
 		)
+		var childContextSeed *store.ExecutionContext
+		if parent, loadErr := s.store.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
+			childContextSeed = parent.ExecutionContext.Clone()
+			if childContextSeed != nil {
+				childContextSeed.Workflow = store.WorkflowContext{}
+				childContextSeed.Lineage = store.LineageContext{}
+			}
+		}
+		childContext := ResolveExecutionContext(ctx, s.store, childRunID, LaunchSpec{
+			FilePath:         childPath,
+			WorkDir:          req.WorkDir,
+			ParentRunID:      req.ParentRunID,
+			ParentNodeID:     req.NodeID,
+			ExecutionContext: childContextSeed,
+		}, childWf, hash, s.executionContextPolicy, s.workDir)
+		childContext.LaunchSurface = "runview-subbot"
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
 		// it swapped to one), not the service's repo root: that is the tree
@@ -166,6 +182,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithExecutionContext(childContext),
 			// The child executes in the parent's sandbox when the parent has
 			// one — the same tree, on every driver.
 			runtime.WithSharedSandbox(req.ParentSandbox),

@@ -63,6 +63,9 @@ type RunHeader struct {
 	// ExecutionContext is the resolved, versioned launch contract. It is
 	// absent on legacy runs created before context persistence was enabled.
 	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	// Admission is the durable pre-model launch decision, if one has been
+	// recorded for this run.
+	Admission *store.AdmissionDecision `json:"admission,omitempty"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -1498,6 +1501,7 @@ func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
 		ID:                   r.ID,
 		ExecutionContext:     r.ExecutionContext,
+		Admission:            r.Admission,
 		Name:                 r.Name,
 		WorkflowName:         r.WorkflowName,
 		WorkflowHash:         r.WorkflowHash,

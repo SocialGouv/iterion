@@ -331,6 +331,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	} else {
 		ctx = stamped
 	}
+	// The CLI is another launch authority, so it stamps the same context
+	// contract as the service/cloud paths before the engine can execute a
+	// node. The policy is opt-in through ITERION_EXECUTION_CONTEXT_POLICY.
+	cliContext := runview.ResolveExecutionContext(ctx, s, runID, runview.LaunchSpec{
+		FilePath: iterFile,
+		Source:   "",
+		WorkDir:  "",
+	}, wf, wfHash, runview.ExecutionContextPolicyFromEnv(), "")
+	cliContext.LaunchSurface = "cli"
+	engineOpts = append(engineOpts, runtime.WithExecutionContext(cliContext))
 	if c, ok := executor.(io.Closer); ok {
 		defer func() {
 			if cerr := c.Close(); cerr != nil {
@@ -607,9 +617,26 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			lastMu sync.Mutex
 			last   map[string]any
 		)
+		var childContextSeed *store.ExecutionContext
+		if parent, loadErr := s.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
+			childContextSeed = parent.ExecutionContext.Clone()
+			if childContextSeed != nil {
+				childContextSeed.Workflow = store.WorkflowContext{}
+				childContextSeed.Lineage = store.LineageContext{}
+			}
+		}
+		childContext := runview.ResolveExecutionContext(ctx, s, childRunID, runview.LaunchSpec{
+			FilePath:         childPath,
+			WorkDir:          req.WorkDir,
+			ParentRunID:      req.ParentRunID,
+			ParentNodeID:     req.NodeID,
+			ExecutionContext: childContextSeed,
+		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
+		childContext.LaunchSurface = "cli-subbot"
 		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithExecutionContext(childContext),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),

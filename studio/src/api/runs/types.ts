@@ -84,6 +84,16 @@ export interface ExecutionContext {
   launch_surface?: string;
 }
 
+export interface AdmissionDecision {
+  decision: string;
+  phase?: string;
+  code?: string;
+  reason?: string;
+  policy?: string;
+  context_version?: number;
+  workflow_revision?: string;
+  checked_at: string;
+}
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
@@ -291,6 +301,7 @@ export type RunCheckpoint = CheckpointBudget & {
 export interface RunHeader {
   id: string;
   execution_context?: ExecutionContext;
+  admission?: AdmissionDecision;
   // Deterministic, human-friendly run label. Empty for legacy runs
   // persisted before this field existed; UI falls back to workflow_name.
   name?: string;

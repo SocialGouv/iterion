@@ -154,9 +154,13 @@ type LaunchSpec struct {
 	// RunMessage so the runner pod that picks up the work knows it's
 	// part of a sharded set.
 	ParentRunID string
-	ShardIndex  int
-	ShardCount  int
-	ShardLabel  string
+	// ParentNodeID identifies the parent subbot node for nested launches.
+	// Shard children leave it empty; runtime still persists the legacy
+	// ParentNodeID field when the direct engine supplies it.
+	ParentNodeID string
+	ShardIndex   int
+	ShardCount   int
+	ShardLabel   string
 	// CallbackURL, when set, is an http/https endpoint the engine POSTs
 	// a run-completion webhook to when the run terminates (see
 	// pkg/notify). Lets a programmatic caller (chat adapter, CI bridge)
@@ -585,6 +589,10 @@ type Service struct {
 	// Resume reuses the same dispatcher rather than allocating a new
 	// recipes map + closure on the per-run hot path.
 	recoveryDispatch runtime.RecoveryDispatch
+	// executionContextPolicy is the service default for newly resolved
+	// contexts. Legacy is deliberately the default; operators can opt into
+	// report or enforce during the rollout.
+	executionContextPolicy store.ContextPolicy
 
 	// extraObservers are runtime EventObservers chained alongside
 	// the broker fan-out. Used to attach Prometheus / OTLP / custom
@@ -739,6 +747,18 @@ type ServiceOption func(*Service)
 func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
+	}
+}
+
+// WithExecutionContextPolicy selects the policy stamped on contexts that do
+// not provide an explicit policy. It is intentionally opt-in so upgrading a
+// server does not reject legacy launch callers unexpectedly.
+func WithExecutionContextPolicy(policy store.ContextPolicy) ServiceOption {
+	return func(s *Service) {
+		switch policy {
+		case store.ContextPolicyLegacy, store.ContextPolicyReport, store.ContextPolicyEnforce:
+			s.executionContextPolicy = policy
+		}
 	}
 }
 
@@ -929,14 +949,15 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	logger := iterlog.NewFromEnv(os.Stderr)
 
 	s := &Service{
-		storeDir:         storeDir,
-		logger:           logger,
-		broker:           NewEventBroker(),
-		manager:          NewManager(),
-		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
-		runLogs:          make(map[string]*RunLogBuffer),
-		runEngines:       make(map[string]*runtime.Engine),
-		runSteer:         make(map[string]chan *runtime.OverrideMsg),
+		storeDir:               storeDir,
+		logger:                 logger,
+		broker:                 NewEventBroker(),
+		manager:                NewManager(),
+		recoveryDispatch:       recovery.Dispatch(recovery.DefaultRecipes()),
+		executionContextPolicy: ExecutionContextPolicyFromEnv(),
+		runLogs:                make(map[string]*RunLogBuffer),
+		runEngines:             make(map[string]*runtime.Engine),
+		runSteer:               make(map[string]chan *runtime.OverrideMsg),
 	}
 	for _, opt := range opts {
 		opt(s)
