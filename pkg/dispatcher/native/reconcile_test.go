@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +151,72 @@ func TestReconcile_DoesNotRevertAWatcherUpdateThatRacedTheScan(t *testing.T) {
 	}
 	if _, err := s.Get(doomed.ID); err == nil {
 		t.Error("the swap resurrected a card the watcher had removed during the scan")
+	}
+}
+
+// TestRebuildAsync_DefersAnOverflowThatArrivesMidRebuild: coalescing must
+// collapse N requests into one SUBSEQUENT pass, not swallow the ones that
+// arrive mid-pass. The in-flight scan cannot cover them — its ReadDir
+// happened before they did — and the events an overflow dropped are never
+// resent, so a swallowed request leaves those cards stale until something
+// else touches them or the daemon restarts. Consecutive overflows inside
+// one ~4-19 ms scan are the expected shape of an issue import or a mass
+// label pass, not an exotic race.
+func TestRebuildAsync_DefersAnOverflowThatArrivesMidRebuild(t *testing.T) {
+	// No watcher and no ticker: every scan this store performs is one
+	// this test asked for, so the count below is exact.
+	refuseWatch(t)
+	setRescanInterval(t, 0)
+
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var scans atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(closeRelease)
+	setScanHooks(t, func(st *Store) {
+		if st != s {
+			return // a store another test leaked may still be ticking
+		}
+		if scans.Add(1) == 1 {
+			<-release // park the first rebuild inside its scan
+		}
+	}, nil)
+
+	s.rebuildAsync("first overflow")
+	deadline := time.Now().Add(fastPathBudget)
+	for scans.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if scans.Load() != 1 {
+		t.Fatal("test setup: the first rebuild never reached its scan")
+	}
+
+	// Two more overflows arrive while that rebuild is parked. They must
+	// collapse into one follow-up pass — not zero, and not two.
+	s.rebuildAsync("second overflow")
+	s.rebuildAsync("third overflow")
+	closeRelease()
+
+	deadline = time.Now().Add(fastPathBudget)
+	for s.rebuildInFlight() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if s.rebuildInFlight() {
+		t.Fatal("the rebuild goroutine never settled")
+	}
+
+	switch got := scans.Load(); got {
+	case 2:
+	case 1:
+		t.Fatal("both overflows that arrived during the rebuild were dropped: no follow-up scan ran, and the events they signalled are never resent")
+	default:
+		t.Fatalf("two overflows during one rebuild produced %d scans; want exactly 2 (one in flight + one coalesced follow-up)", got)
 	}
 }
 

@@ -339,7 +339,7 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		release()
-		for s.rebuildPending.Load() {
+		for s.rebuildInFlight() {
 			time.Sleep(time.Millisecond)
 		}
 		_ = s.Close()

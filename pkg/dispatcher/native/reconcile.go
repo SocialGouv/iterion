@@ -251,21 +251,65 @@ func (s *Store) scanIssues() (fresh map[string]*Issue, unreadable map[string]err
 	return fresh, unreadable, nil
 }
 
-// rebuildAsync runs one Reconcile on its own goroutine, coalescing the
-// requests that arrive while it runs. The watcher loop asks for it on a
-// kernel-queue overflow: fsnotify's event channel is unbuffered, so a
-// rebuild run ON the loop's goroutine would stop draining the very queue
-// that just overflowed for the whole of the scan.
+// rebuildAsync runs Reconcile on its own goroutine, coalescing the
+// requests that arrive while it runs into one FOLLOW-UP pass. The watcher
+// loop asks for it on a kernel-queue overflow: fsnotify's event channel
+// is unbuffered, so a rebuild run ON the loop's goroutine would stop
+// draining the very queue that just overflowed for the whole of the scan.
+//
+// Coalescing must DEFER a mid-flight request, not swallow it. A single
+// "pending" flag cleared after the scan does the latter, and the in-flight
+// scan cannot stand in for the dropped one: its ReadDir happened before
+// that overflow, so a file created after it is absent from the result and
+// a file it already read carries pre-overflow content. Consecutive
+// overflows inside one ~4-19 ms scan are the expected shape of a sustained
+// burst (an issue import, a mass label pass), and the events the second
+// overflow dropped are never resent — those cards would stay stale until
+// another event touched them or the daemon restarted.
+//
+// The again-flag is read and the running-flag cleared under one hold of
+// rebuildMu, which a requester must also take to set again: that is what
+// closes the lost-wakeup window a second atomic.Bool would leave between
+// the goroutine's final check and a caller's failed swap.
 func (s *Store) rebuildAsync(what string) {
-	if !s.rebuildPending.CompareAndSwap(false, true) {
+	s.rebuildMu.Lock()
+	if s.rebuildRunning {
+		s.rebuildAgain = true
+		s.rebuildMu.Unlock()
 		return
 	}
+	s.rebuildRunning = true
+	s.rebuildMu.Unlock()
+
 	go func() {
-		defer s.rebuildPending.Store(false)
-		if err := s.Reconcile(); err != nil {
-			s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+		for {
+			if err := s.Reconcile(); err != nil {
+				s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+			}
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+
+			s.rebuildMu.Lock()
+			// A store that closed while this ran owes nobody a further
+			// scan; without this the loop could outlive Close.
+			if !s.rebuildAgain || closed {
+				s.rebuildAgain = false
+				s.rebuildRunning = false
+				s.rebuildMu.Unlock()
+				return
+			}
+			s.rebuildAgain = false
+			s.rebuildMu.Unlock()
 		}
 	}()
+}
+
+// rebuildInFlight reports whether a rebuild goroutine is still running.
+func (s *Store) rebuildInFlight() bool {
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+	return s.rebuildRunning
 }
 
 // startFallbackRescan runs Reconcile on a ticker for a Store that has no

@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -86,9 +85,15 @@ type Store struct {
 	// closed is set by Close under mu; a watch lost after that arms no net.
 	closed bool
 
-	// rebuildPending coalesces the rebuilds a kernel-queue overflow asks
-	// for: one runs at a time, the next overflow waits for it.
-	rebuildPending atomic.Bool
+	// rebuildMu guards the coalescing state for the rebuilds a
+	// kernel-queue overflow asks for: one rebuild runs at a time, and
+	// every request that arrives while it runs collapses into exactly
+	// one FOLLOW-UP pass. rebuildAgain is what makes that a deferral
+	// rather than a drop — the in-flight scan's ReadDir predates any
+	// overflow that arrives after it, so it cannot cover one.
+	rebuildMu      sync.Mutex
+	rebuildRunning bool
+	rebuildAgain   bool
 
 	// reconcileMu serialises Reconcile callers (the rescan ticker, a
 	// kernel-queue overflow, an explicit call) so two scans cannot
