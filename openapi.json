@@ -767,6 +767,79 @@
         ],
         "type": "object"
       },
+      "DiagnosticEvidence": {
+        "properties": {
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "type"
+        ],
+        "type": "object"
+      },
+      "DiagnosticProjection": {
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticEvidence"
+            },
+            "type": "array"
+          },
+          "failure_code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "next_action": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "recoverable": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "status",
+          "outcome",
+          "recoverable",
+          "next_action"
+        ],
+        "type": "object"
+      },
       "ExecutionState": {
         "properties": {
           "branch_id": {
@@ -2089,6 +2162,9 @@
       },
       "RunSnapshot": {
         "properties": {
+          "diagnostic": {
+            "$ref": "#/components/schemas/DiagnosticProjection"
+          },
           "executions": {
             "items": {
               "$ref": "#/components/schemas/ExecutionState"
@@ -7066,6 +7142,37 @@
         {
           "in": "path",
           "name": "sha",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/diagnostic": {
+      "get": {
+        "operationId": "getRunsByIdDiagnostic",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticProjection"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/runs/{id}/diagnostic",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
           "required": true,
           "schema": {
             "type": "string"
