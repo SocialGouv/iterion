@@ -74,8 +74,15 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // threshold/cooldown are read by pkg/retrycoord; they are repeated here only
 // so a report can print one coherent pilot configuration.
 //
-// Every field here is a knob an operator can actually turn. The output
-// correction budget deliberately is NOT one: correction fires only for an
+// Mode and the retry-circuit pair are knobs an operator can actually turn.
+// WatcherCursorsEnabled is not one: FromEnv sets it to a constant, and whether
+// a coordinator persists its cursor is in fact decided per launch surface
+// (Coordinator.cursorStore) rather than by any deployment-wide setting — which
+// is why `iterion reliability report` answers that question per run, from the
+// cursors a run actually wrote, instead of printing this field.
+//
+// The output correction budget deliberately is not a field here at all:
+// correction fires only for an
 // engine built with runtime.WithOutputValidation AND an executor implementing
 // runtime.OutputCorrector, and neither exists on a production path today
 // (the sole corrector in the tree is a test double, and the production
