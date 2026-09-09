@@ -1,6 +1,7 @@
 package reliability
 
 import (
+	"context"
 	"regexp"
 	"testing"
 	"time"
@@ -23,6 +24,41 @@ func TestReportForRunDistinguishesLegacyAndContractRuns(t *testing.T) {
 	})
 	if contract.LegacyContext || contract.ContextVersion != 1 || contract.ContextPolicy != string(store.ContextPolicyReport) || contract.CorrectionEpisodeCount != 1 || contract.WatcherCursorCount != 1 {
 		t.Fatalf("contract report = %+v", contract)
+	}
+}
+
+// TestReportForRunCountsPublishingNodesNotArtifactVersions pins what the
+// artifact index can actually back. It builds the index through the REAL
+// store rather than by hand, because a hand-written map is exactly what let
+// the field be named published_artifact_count while holding a publisher
+// count: store.Run.ArtifactIndex keeps the LATEST version per node, so a node
+// that published three versions still contributes one entry.
+func TestReportForRunCountsPublishingNodesNotArtifactVersions(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if _, err := st.CreateRun(ctx, "run-artifacts", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	// Two publishing nodes, four artifact versions between them.
+	for _, a := range []store.Artifact{
+		{RunID: "run-artifacts", NodeID: "plan", Version: 0, Data: map[string]any{"n": 0}},
+		{RunID: "run-artifacts", NodeID: "plan", Version: 1, Data: map[string]any{"n": 1}},
+		{RunID: "run-artifacts", NodeID: "plan", Version: 2, Data: map[string]any{"n": 2}},
+		{RunID: "run-artifacts", NodeID: "verdict", Version: 0, Data: map[string]any{"n": 0}},
+	} {
+		if err := st.WriteArtifact(ctx, &a); err != nil {
+			t.Fatalf("WriteArtifact %s/%d: %v", a.NodeID, a.Version, err)
+		}
+	}
+	run, err := st.LoadRun(ctx, "run-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := ReportForRun(run).PublishingNodeCount; got != 2 {
+		t.Fatalf("PublishingNodeCount = %d, want 2 (distinct publishers, not the 4 versions written)", got)
 	}
 }
 
