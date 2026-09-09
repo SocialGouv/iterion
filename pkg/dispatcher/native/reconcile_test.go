@@ -163,53 +163,14 @@ func TestReconcile_DoesNotRevertAWatcherUpdateThatRacedTheScan(t *testing.T) {
 // one ~4-19 ms scan are the expected shape of an issue import or a mass
 // label pass, not an exotic race.
 func TestRebuildAsync_DefersAnOverflowThatArrivesMidRebuild(t *testing.T) {
-	// No watcher and no ticker: every scan this store performs is one
-	// this test asked for, so the count below is exact.
-	refuseWatch(t)
-	setRescanInterval(t, 0)
-
-	s, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	var scans atomic.Int32
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(closeRelease)
-	setScanHooks(t, func(st *Store) {
-		if st != s {
-			return // a store another test leaked may still be ticking
-		}
-		if scans.Add(1) == 1 {
-			<-release // park the first rebuild inside its scan
-		}
-	}, nil)
-
-	s.rebuildAsync("first overflow")
-	deadline := time.Now().Add(fastPathBudget)
-	for scans.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if scans.Load() != 1 {
-		t.Fatal("test setup: the first rebuild never reached its scan")
-	}
+	s, scans, release := parkedRebuild(t)
 
 	// Two more overflows arrive while that rebuild is parked. They must
 	// collapse into one follow-up pass — not zero, and not two.
 	s.rebuildAsync("second overflow")
 	s.rebuildAsync("third overflow")
-	closeRelease()
-
-	deadline = time.Now().Add(fastPathBudget)
-	for s.rebuildInFlight() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if s.rebuildInFlight() {
-		t.Fatal("the rebuild goroutine never settled")
-	}
+	release()
+	settleRebuild(t, s, "never settled")
 
 	switch got := scans.Load(); got {
 	case 2:
@@ -226,36 +187,7 @@ func TestRebuildAsync_DefersAnOverflowThatArrivesMidRebuild(t *testing.T) {
 // explicit reason to stop, or a request banked before Close would run a
 // scan on a store nobody owns any more.
 func TestRebuildAsync_StopsWhenTheStoreClosesMidRebuild(t *testing.T) {
-	refuseWatch(t)
-	setRescanInterval(t, 0)
-
-	s, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-
-	var scans atomic.Int32
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(closeRelease)
-	setScanHooks(t, func(st *Store) {
-		if st != s {
-			return
-		}
-		if scans.Add(1) == 1 {
-			<-release
-		}
-	}, nil)
-
-	s.rebuildAsync("overflow")
-	deadline := time.Now().Add(fastPathBudget)
-	for scans.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if scans.Load() != 1 {
-		t.Fatal("test setup: the rebuild never reached its scan")
-	}
+	s, scans, release := parkedRebuild(t)
 
 	// A second overflow banks a follow-up pass, then the store closes
 	// with that pass still owed. Close must win.
@@ -263,17 +195,66 @@ func TestRebuildAsync_StopsWhenTheStoreClosesMidRebuild(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	closeRelease()
+	release()
+	settleRebuild(t, s, "outlived Close")
 
-	deadline = time.Now().Add(fastPathBudget)
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("a pass banked before Close still ran: %d scans, want 1", got)
+	}
+}
+
+// parkedRebuild builds a store whose ONLY scans are the ones the test
+// asks for — no watcher, no rescan ticker, so the returned counter is
+// exact — fires one rebuild, and blocks it inside its scan. It returns
+// once that rebuild is parked. Calling release lets it finish; it is
+// also registered as a cleanup, so a failing test cannot wedge the
+// goroutine.
+func parkedRebuild(t *testing.T) (s *Store, scans *atomic.Int32, release func()) {
+	t.Helper()
+	refuseWatch(t)
+	setRescanInterval(t, 0)
+
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	scans = &atomic.Int32{}
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	setScanHooks(t, func(st *Store) {
+		if st != s {
+			return // a store another test leaked may still be ticking
+		}
+		if scans.Add(1) == 1 {
+			<-gate // park the first rebuild inside its scan
+		}
+	}, nil)
+
+	s.rebuildAsync("first overflow")
+	deadline := time.Now().Add(fastPathBudget)
+	for scans.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if scans.Load() != 1 {
+		t.Fatal("test setup: the rebuild never reached its scan")
+	}
+	return s, scans, release
+}
+
+// settleRebuild waits for the rebuild goroutine to finish, so the scan
+// count is read at quiescence rather than after a sleep.
+func settleRebuild(t *testing.T, s *Store, what string) {
+	t.Helper()
+	deadline := time.Now().Add(fastPathBudget)
 	for s.rebuildInFlight() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if s.rebuildInFlight() {
-		t.Fatal("the rebuild goroutine outlived Close")
-	}
-	if got := scans.Load(); got != 1 {
-		t.Fatalf("a pass banked before Close still ran: %d scans, want 1", got)
+		t.Fatalf("the rebuild goroutine %s", what)
 	}
 }
 
