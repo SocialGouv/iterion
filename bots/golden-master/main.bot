@@ -7536,11 +7536,16 @@ tool oracle_run:
             # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
             # separator to a lot's re-anchoring — the mutant now moves both members,
             # and the pair proves nothing at all.
+            #
             # verdicts + held. A declared separator may live in the held-out set —
-            # score_mutant pins its group unconditionally, so the deciding
-            # measurement really IS taken — but it lands in `held`, not `verdicts`.
-            # Passing only the latter made the gate report a separator it had just
-            # scored as never scored, and refuse the group on its own blind spot.
+            # score_mutant pins its group into the control sample there too, so the
+            # deciding measurement really IS taken — but it lands in `held`, not
+            # `verdicts`. Passing only the latter made the gate report a separator it
+            # had just scored as never scored, and refuse the group on its own blind
+            # spot. What that held measurement finds reaches the gate's own hygiene
+            # terms through `measurement_hygiene`, so a class cannot be discharged
+            # through a channel the gate is forbidden to look at.
+            #
             # Les ids TENUS A L'ECART quand leur resultat est reserve : en selfcheck
             # `held` est vide par construction, et un separateur qui en vient n'est
             # pas absent, il est retenu.
@@ -7554,8 +7559,7 @@ tool oracle_run:
             unproven = unproven_duplicate_groups(
                 report["duplicate_refs"], corpus, list(verdicts) + list(held),
                 bool(only), withheld_ids, in_the_set)
-            for shape in duplicate_groups_shape_problems(corpus):
-                problems.append(shape)
+            problems.extend(duplicate_groups_shape_problems(corpus))
             report["duplicate_groups_unproven"] = unproven
             if unproven:
                 problems.append(duplicate_groups_refusal(
