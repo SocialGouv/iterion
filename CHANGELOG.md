@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.129.1](https://github.com/SocialGouv/iterion/compare/v3.129.0...v3.129.1) (2026-09-09)
+
+### Bug Fixes
+
+* **forge:** a re-provision erased three fields it does not own ([#1046](https://github.com/SocialGouv/iterion/issues/1046)) ([22b660b](https://github.com/SocialGouv/iterion/commit/22b660bb218f497f02e54e6b77cde091ba1902d3))
+
+    <details><summary>why</summary>
+
+    Provision rebuilds RepoIntegration from the REQUEST and Updates it, and the update replaces the whole document. Any field the literal omits is therefore erased — silently, on a live repo, with a 200 in reply.
+
+    </details>
+
 ## [3.129.0](https://github.com/SocialGouv/iterion/compare/v3.128.0...v3.129.0) (2026-09-09)
 
 ### Features
