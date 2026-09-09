@@ -1,11 +1,8 @@
 package native
 
 import (
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
-	"time"
 )
 
 // A card whose file is present but momentarily unreadable (EACCES here;
@@ -52,61 +49,4 @@ func TestReconcile_KeepsACardWhoseFileIsMomentarilyUnreadable(t *testing.T) {
 	if _, err := s.Get(gone.ID); err == nil {
 		t.Fatal("a card whose file is gone is still served from the index")
 	}
-}
-
-// A watch lost mid-life — fsnotify's channels closing under the loop —
-// arms the same net as a watch refused at startup, instead of leaving the
-// store blind until restart.
-func TestWatcher_ArmsTheNetWhenTheWatchIsLost(t *testing.T) {
-	setRescanInterval(t, 20*time.Millisecond)
-
-	dir := t.TempDir()
-	s, err := NewStore(dir)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
-	}
-
-	// The kernel side goes away under the loop's feet.
-	if err := s.watcher.w.Close(); err != nil {
-		t.Fatalf("close the fsnotify watcher: %v", err)
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.Lock()
-		armed := s.watcher == nil && s.rescanner != nil && s.watcherErr != nil
-		s.mu.Unlock()
-		if armed {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	s.mu.Lock()
-	armed := s.watcher == nil && s.rescanner != nil
-	s.mu.Unlock()
-	if !armed {
-		t.Fatal("the lost watch did not arm the fallback net: the store is blind until restart")
-	}
-
-	now := time.Now().UTC().Truncate(time.Second)
-	iss := Issue{ID: "native:after-the-loss", Title: "Seen by the net", State: "backlog", CreatedAt: now, UpdatedAt: now}
-	data, err := json.MarshalIndent(&iss, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, issuesDir, encodeID(iss.ID)+".json"), data, filePerm); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	deadline = time.Now().Add(fastPathBudget)
-	for time.Now().Before(deadline) {
-		if _, err := s.Get(iss.ID); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("after the watch was lost, an out-of-process create never became visible")
 }

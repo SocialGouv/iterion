@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -68,12 +69,26 @@ type Store struct {
 	// was armed (the fast path needs no net) or when the net is off.
 	rescanner *indexRescanner
 
-	// writes counts the in-process mutations of issues/ (every file write
-	// through writeIssueLocked, every Delete), under mu. Reconcile scans
-	// the disk WITHOUT the mutex and compares this counter before it
-	// swaps the scan in: a write that landed during the scan makes the
-	// scan stale, and a stale swap would revert it.
-	writes uint64
+	// scanning is >0 while Reconcile's disk scan is in flight, and dirty
+	// collects the ids the process wrote meanwhile (every file write
+	// through writeIssueLocked, every Delete) — both under mu. The scan
+	// runs WITHOUT the mutex, so a write that lands during it is one the
+	// scan may or may not have seen; the swap takes the index's own value
+	// for those ids instead of the scan's, and never reverts one.
+	scanning int
+	dirty    map[string]bool
+
+	// unreadableFP fingerprints the set of cards the last scan could not
+	// read, so the warning is written when the set CHANGES, not on every
+	// tick of a net that runs every two seconds.
+	unreadableFP string
+
+	// closed is set by Close under mu; a watch lost after that arms no net.
+	closed bool
+
+	// rebuildPending coalesces the rebuilds a kernel-queue overflow asks
+	// for: one runs at a time, the next overflow waits for it.
+	rebuildPending atomic.Bool
 
 	// reconcileMu serialises Reconcile callers (the rescan ticker, a
 	// kernel-queue overflow, an explicit call) so two scans cannot
@@ -170,12 +185,16 @@ func NewStore(root string) (*Store, error) {
 	// store is blind until the daemon restarts". Record why, say so,
 	// and fall back to the reconciliation net so the store's promise
 	// survives a host that has no watch descriptor to give.
-	if w, err := startIndexWatcher(s); err == nil {
-		s.watcher = w
-	} else {
+	// startIndexWatcher publishes the watcher on the store itself, under
+	// the lock and before its loop runs.
+	if _, err := startIndexWatcher(s); err != nil {
+		s.mu.Lock()
 		s.watcherErr = err
-		if s.rescanner = startFallbackRescan(s); s.rescanner != nil {
-			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, s.rescanner.interval)
+		s.rescanner = startFallbackRescan(s)
+		r := s.rescanner
+		s.mu.Unlock()
+		if r != nil {
+			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, r.interval)
 		} else {
 			s.logger.Warn("native index watcher unavailable: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", err)
 		}
@@ -212,17 +231,28 @@ func (s *Store) Close() error {
 	}
 	// Snapshot under the lock — a watch lost mid-life swaps these from the
 	// watcher goroutine — and close outside it: closing the watcher waits
-	// for its loop, which may itself be waiting for the store mutex.
+	// for its loop, which may itself be waiting for the store mutex. The
+	// closed flag stops a loss detected after this point from arming a
+	// net; one that was armed between the snapshot and the watcher's exit
+	// is picked up by the second look.
 	s.mu.Lock()
+	s.closed = true
 	rescanner, watcher := s.rescanner, s.watcher
 	s.mu.Unlock()
 	if rescanner != nil {
 		_ = rescanner.Close()
 	}
+	var err error
 	if watcher != nil {
-		return watcher.Close()
+		err = watcher.Close()
 	}
-	return nil
+	s.mu.Lock()
+	late := s.rescanner
+	s.mu.Unlock()
+	if late != nil && late != rescanner {
+		_ = late.Close()
+	}
+	return err
 }
 
 // populateIndex loads every committed issue file into the index at
@@ -247,16 +277,20 @@ func (s *Store) populateIndex() error {
 }
 
 // errWatchLost is recorded on a store whose armed watch went away
-// mid-life: fsnotify closed its channels under the loop.
-var errWatchLost = errors.New("fsnotify watch lost mid-life (event channel closed)")
+// mid-life: the kernel dropped it (issues/ removed, renamed or unmounted
+// — fsnotify forgets the watch and says nothing), or fsnotify closed its
+// channels under the loop.
+var errWatchLost = errors.New("inotify watch on issues/ lost mid-life")
 
-// watchLost is called by the watcher loop when its channels close without
-// a Close: the fast path is gone, so the store arms the same net a watch
-// refused at startup gets, with the reason recorded, instead of serving
-// its last snapshot until restart.
+// watchLost is called by the watcher loop once it has established that
+// its watch is gone: the fast path is over, so the store arms the same
+// net a watch refused at startup gets, with the reason recorded, instead
+// of serving its last snapshot until restart. The fsnotify watcher is
+// closed here — its inotify descriptor is the scarce thing on the host
+// this happens on — and a store that is closing arms nothing.
 func (s *Store) watchLost(iw *indexWatcher) {
 	s.mu.Lock()
-	if s.watcher != iw {
+	if s.watcher != iw || s.closed {
 		s.mu.Unlock()
 		return
 	}
@@ -265,6 +299,7 @@ func (s *Store) watchLost(iw *indexWatcher) {
 	s.rescanner = startFallbackRescan(s)
 	r, logger := s.rescanner, s.logger
 	s.mu.Unlock()
+	_ = iw.w.Close()
 	switch {
 	case logger == nil:
 	case r != nil:
