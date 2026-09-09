@@ -291,6 +291,24 @@ the hours this one spent.
   `purpose: security_read`, which is what keeps the refresh worker from
   minting it a runtime token (that mint would 422 → degrade → withdraw the
   token it exists to supply) and keeps the publish resolver from picking it.
+- [docs/browser-security.md](docs/browser-security.md) — what protects the
+  studio from the BROWSER side: which cross-origin requests are accepted, what
+  makes a session cookie unforgeable, what the CSP allows. Read it before
+  touching `authMiddleware`, the auth cookies, the origin allowlist, or
+  anything that adds a response header. Its load-bearing fact is that the two
+  public hosts do NOT have the same properties: `gouv.fr` is a public suffix,
+  so `iterion.fabrique.social.gouv.fr` is same-site with ~47 sibling hosts and
+  `SameSite=Lax` buys nothing there — which is why the CSRF boundary is a
+  single **origin gate** in `authMiddleware` (state-changing `/api` + a
+  foreign `Origin` ⇒ 403; an absent Origin is the CLI/runner/webhook and
+  passes) rather than the per-handler `requireSafeOrigin` that had drifted to
+  70 of 247 routes. Covers the two things that do NOT protect a POST (a
+  `text/plain` body is never preflighted; withholding ACAO only stops the
+  attacker READING the response), the `__Host-` cookie prefix and why it is
+  conditional (a browser DISCARDS one whose terms are unmet, so emitting it on
+  a plaintext studio locks everyone out), the measured CSP (`script-src
+  'self'` holds; `style-src` needs `'unsafe-inline'` for the CSS-in-JS), why
+  HSTS is the ingress's job, and the no-CDN rule for the SPA.
 - [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
   (incl. natives) on a cloud instance WITHOUT an image rollout: the
   platform bot-override tier (`iterion remote admin bots push bots/<slug>`,
