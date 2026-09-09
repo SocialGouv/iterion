@@ -467,6 +467,77 @@ func TestCorrectionInvocationIdentitySeparatesLoopsAndBranches(t *testing.T) {
 	}
 }
 
+func TestSchemaValidation_CorrectionBudgetIsPerForeachItem(t *testing.T) {
+	wf := foreachWorkflow()
+	wf.Schemas = validationWorkflow().Schemas
+	wf.Nodes["proc"].(*ir.ToolNode).OutputSchema = "MySchema"
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+			map[string]any{"id": "c"},
+		}}, nil
+	})
+	exec.on("proc", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "invalid", "score": "not-an-int"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-foreach", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 3 {
+		t.Fatalf("correction calls = %d, want one per foreach item", exec.calls)
+	}
+
+	run, err := st.LoadRun(context.Background(), "run-val-foreach")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(run.OutputCorrections) != 3 {
+		t.Fatalf("correction episodes = %d, want 3: %#v", len(run.OutputCorrections), run.OutputCorrections)
+	}
+	for _, episode := range run.OutputCorrections {
+		if episode.NodeID != "proc" || episode.Status != correctionStatusSucceeded || episode.Attempts != 1 {
+			t.Fatalf("correction episode = %#v, want proc succeeded/1", episode)
+		}
+		if !strings.Contains(episode.InvocationID, "foreach/scan=") {
+			t.Fatalf("invocation identity %q does not contain foreach index", episode.InvocationID)
+		}
+	}
+}
+
+func TestCorrectionInvocationIdentityIncludesForeachBodyNodes(t *testing.T) {
+	wf := validationWorkflow()
+	wf.Nodes["foreach_start"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_start"}}
+	wf.Nodes["foreach_middle"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_middle"}}
+	wf.Nodes["foreach_end"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_end"}}
+	wf.Edges = []*ir.Edge{
+		{From: "foreach_start", To: "foreach_middle"},
+		{From: "foreach_middle", To: "foreach_end"},
+		{From: "foreach_end", To: "foreach_start", ForeachName: "scan"},
+		{From: "foreach_end", To: "done"},
+	}
+	wf.Foreaches = map[string]*ir.Foreach{"scan": {Name: "scan"}}
+
+	eng := New(wf, nil, newStubExecutor())
+	firstKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 0}}, "foreach_middle")
+	secondKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 1}}, "foreach_middle")
+	outsideKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 1}}, "done")
+	if firstKey == secondKey {
+		t.Fatalf("foreach body invocation keys are not distinct: first=%q second=%q", firstKey, secondKey)
+	}
+	if outsideKey != "done" {
+		t.Fatalf("outside node ledger key = %q, want historical root key", outsideKey)
+	}
+}
+
 func TestDefaultOutputCorrectionBudgetTrimsWhitespace(t *testing.T) {
 	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
 	if got := defaultOutputCorrectionBudget(); got != 0 {

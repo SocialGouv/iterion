@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -372,13 +373,14 @@ func correctionSemanticFingerprint(output map[string]any) string {
 
 // correctionInvocationIdentity returns a durable per-invocation ledger key.
 // A root, non-loop node keeps its historical node-id key for compatibility;
-// loop iterations, fan-out branches, and Mongo-unsafe node IDs use a stable
-// hash so distinct executions cannot reset or share one another's budget.
+// loop/foreach iterations, fan-out branches, and Mongo-unsafe node IDs use a
+// stable hash so distinct executions cannot reset or share one another's
+// budget.
 func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledgerKey, invocationID string) {
 	iterationPath := ""
 	scope := ""
 	if rs != nil {
-		iterationPath = e.currentLoopIterationPath(nodeID, runStateIterationCounters(rs))
+		iterationPath = e.currentCorrectionIterationPath(nodeID, runStateIterationCounters(rs))
 		scope = rs.correctionScope
 	}
 	invocationID = fmt.Sprintf("node=%s;branch=%s;loops=%s", nodeID, scope, iterationPath)
@@ -386,6 +388,109 @@ func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledg
 		return nodeID, invocationID
 	}
 	return "inv_" + correctionFingerprint(invocationID), invocationID
+}
+
+// currentCorrectionIterationPath extends the historical loop path with every
+// foreach whose body contains nodeID. Foreach counters live under a namespaced
+// key in runState, so a loop and a foreach may safely share the same DSL name.
+// Keeping the loop portion byte-for-byte identical preserves existing durable
+// ledger identities for workflows that do not use foreach.
+func (e *Engine) currentCorrectionIterationPath(nodeID string, iterationCounters map[string]int) string {
+	parts := make([]string, 0, 2)
+	if loopPath := e.currentLoopIterationPath(nodeID, iterationCounters); loopPath != "" {
+		parts = append(parts, loopPath)
+	}
+	if foreachPath := e.currentForeachIterationPath(nodeID, iterationCounters); foreachPath != "" {
+		parts = append(parts, foreachPath)
+	}
+	return strings.Join(parts, ";")
+}
+
+// currentForeachIterationPath returns the stable, namespaced counters of all
+// foreach bodies containing nodeID. Foreach does not retain a compiled Body
+// set in the IR, so membership is reconstructed from the same graph property
+// used for loops: a body node is reachable from a back-edge target and can
+// reach a back-edge source without crossing another bounded-iteration edge.
+// Endpoints are always included, which also supports hand-written/legacy IRs.
+func (e *Engine) currentForeachIterationPath(nodeID string, iterationCounters map[string]int) string {
+	if e == nil || e.workflow == nil || len(e.workflow.Foreaches) == 0 {
+		return ""
+	}
+
+	forwardAdj := make(map[string][]string, len(e.workflow.Nodes))
+	reverseAdj := make(map[string][]string, len(e.workflow.Nodes))
+	for _, edge := range e.workflow.Edges {
+		if edge == nil || edge.IsBoundedIteration() {
+			continue
+		}
+		forwardAdj[edge.From] = append(forwardAdj[edge.From], edge.To)
+		reverseAdj[edge.To] = append(reverseAdj[edge.To], edge.From)
+	}
+
+	reachable := func(seeds []string, adjacency map[string][]string) map[string]bool {
+		visited := make(map[string]bool, len(seeds))
+		queue := make([]string, 0, len(seeds))
+		for _, seed := range seeds {
+			if !visited[seed] {
+				visited[seed] = true
+				queue = append(queue, seed)
+			}
+		}
+		for len(queue) > 0 {
+			current := queue[0]
+			queue = queue[1:]
+			for _, next := range adjacency[current] {
+				if !visited[next] {
+					visited[next] = true
+					queue = append(queue, next)
+				}
+			}
+		}
+		return visited
+	}
+
+	names := make([]string, 0, len(e.workflow.Foreaches))
+	for name, foreach := range e.workflow.Foreaches {
+		if foreach == nil {
+			continue
+		}
+		var sources, targets []string
+		member := false
+		for _, edge := range e.workflow.Edges {
+			if edge == nil || edge.ForeachName != name {
+				continue
+			}
+			sources = append(sources, edge.From)
+			targets = append(targets, edge.To)
+			if edge.From == nodeID || edge.To == nodeID {
+				member = true
+			}
+		}
+		if len(sources) == 0 {
+			continue
+		}
+		if !member {
+			forward := reachable(targets, forwardAdj)
+			if forward[nodeID] {
+				reverse := reachable(sources, reverseAdj)
+				member = reverse[nodeID]
+			}
+		}
+		if member {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		counterKey := foreachCounterKey(name)
+		parts = append(parts, fmt.Sprintf("%s=%d", counterKey, iterationCounters[counterKey]))
+	}
+	return strings.Join(parts, ";")
 }
 
 func (e *Engine) outputCorrectionContext(ctx context.Context, rs *runState, nodeID string) (context.Context, context.CancelFunc, bool, error) {
