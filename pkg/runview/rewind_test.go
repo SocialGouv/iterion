@@ -1102,6 +1102,12 @@ func TestRewind_RefusesIncompatibleSurvivingArtifact(t *testing.T) {
 	if !strings.Contains(err.Error(), "survey-report") {
 		t.Fatalf("error does not name the offending artifact: %v", err)
 	}
+	// The remedy is reachable but not obvious, and the bare violation list
+	// reads like a dead end: rewinding further back puts the offending node
+	// inside the invalidated subgraph, where it is superseded, not checked.
+	if !strings.Contains(err.Error(), "rewind further back") {
+		t.Errorf("refusal offers no way forward: %v", err)
+	}
 	// The refusal must be non-destructive: the run keeps its resumable status.
 	run, lerr := st.LoadRun(context.Background(), runID)
 	if lerr != nil {

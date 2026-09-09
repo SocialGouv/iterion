@@ -394,7 +394,12 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
 		Store: s.store, Run: run, Workflow: wf, Skip: invalidatedSet, Logger: s.logger,
 	}); err != nil {
-		return nil, err
+		// The remedy for a SURVIVING artifact is always reachable and never
+		// obvious: rewind further back, so the offending node falls inside the
+		// invalidated subgraph and its output is superseded rather than
+		// re-validated. Say so — the bare violation list reads like a dead end.
+		return nil, fmt.Errorf("%w — rewind further back so the offending node is itself re-executed "+
+			"(everything from the pivot onward is superseded, and only what survives is checked)", err)
 	}
 
 	// Claim the run BEFORE touching anything, the workspace included. The
