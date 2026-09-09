@@ -282,6 +282,7 @@ workflow tickets:
   plan -> dispatch
   dispatch -> run_ticket
   run_ticket -> collect when validated   # collect declares await: best_effort
+  run_ticket -> escalate else            # a rejected ticket reaches a human (C012 without it)
   collect -> done
 ```
 
