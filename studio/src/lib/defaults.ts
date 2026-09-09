@@ -77,12 +77,18 @@ export function defaultSubbot(name: string): SubbotDecl {
   return { name, source: "" };
 }
 
+// A schema with no field and a prompt with no text have no .bot form — a
+// schema's body IS its fields, a prompt's IS its text, so there is no
+// placeholder property that would not become content. The save guard
+// (pkg/dsl/unparse.Verify) refuses such a document by name, which would make
+// "add a prompt, save" fail on the whole file. Seed one editable line so the
+// created declaration is expressible from the first keystroke.
 export function defaultSchema(name: string): SchemaDecl {
-  return { name, fields: [] };
+  return { name, fields: [{ name: "result", type: "string" as const }] };
 }
 
 export function defaultPrompt(name: string): PromptDecl {
-  return { name, body: "" };
+  return { name, body: "Describe what this prompt should say." };
 }
 
 export function getAllSchemaNames(doc: IterDocument): Set<string> {
