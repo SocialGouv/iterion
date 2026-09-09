@@ -663,6 +663,94 @@ func TestResumeUsesPreclaimArtifactSnapshotWithoutSecondRead(t *testing.T) {
 	}
 }
 
+func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-prevalidated"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := base.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "exact"},
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "writer", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "checkpoint"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0, ContractLogicalRef: "plan"},
+		},
+	}
+	if err := base.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 1}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	eng := New(
+		artifactResumeWorkflow("plan"), flaky, exec,
+		WithArtifactContractsPrevalidated(true),
+		WithWorkDir(t.TempDir()), WithSandboxOverride("none"),
+	)
+	if err := eng.Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("prevalidated resume re-read artifact contracts: %v", err)
+	}
+	if flaky.loads != 1 {
+		t.Fatalf("artifact loads = %d, want only the reconstruction read", flaky.loads)
+	}
+}
+
+func TestArtifactContractPreflightDoesNotDuplicateReportEvent(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-report-preflight", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{LogicalRef: "old", ProducerNode: "writer", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new"},
+	}}
+	if err := ValidateArtifactContractsPreflight(ctx, s, run, wf, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateArtifactContracts(ctx, s, run, wf, "", false); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.LoadEvents(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Type == store.EventArtifactContractViolation {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("artifact contract violation events = %d, want one", count)
+	}
+}
+
 func TestResumeLegacyCheckpointOnlyForkWithoutArtifactBlobs(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

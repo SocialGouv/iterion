@@ -407,6 +407,15 @@ func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
 }
 
+// WithArtifactContractsPrevalidated avoids re-running the contract-only gate
+// when an in-process launch authority has just validated the same immutable
+// artifact set synchronously. Exact checkpoint bodies are still loaded and
+// identity-checked by Resume because they are required to rebuild execution
+// state. Do not carry this option across a process or queue boundary.
+func WithArtifactContractsPrevalidated(prevalidated bool) EngineOption {
+	return func(e *Engine) { e.artifactContractsChecked = prevalidated }
+}
+
 // WithWorkDir sets the working directory used for backend subprocesses and
 // for resolving the `${PROJECT_DIR}` placeholder in workflow var defaults.
 // When unset, defaults to os.Getwd() at Run() time. With worktree: auto on

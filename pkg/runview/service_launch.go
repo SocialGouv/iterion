@@ -408,7 +408,7 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := runtime.ValidateCheckpointArtifactAvailability(parent, s.store, r); err != nil {
 		return err
 	}
-	return runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash, spec.Force)
+	return runtime.ValidateArtifactContractsPreflight(parent, s.store, r, wf, hash, spec.Force)
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -507,7 +507,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := runtime.ValidateCheckpointArtifactAvailability(parent, s.store, r); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateArtifactContracts(parent, s.store, r, wf, hash, spec.Force); err != nil {
+	inProcessResume := s.publisher == nil && !detachedEnabled()
+	validateContracts := runtime.ValidateArtifactContractsPreflight
+	if inProcessResume {
+		// This exact workflow is handed to an engine in this process. Emit any
+		// report-mode violation here, then let that engine reuse the verdict.
+		// Queued/detached engines repeat the emitting pass at their own boundary.
+		validateContracts = runtime.ValidateArtifactContracts
+	}
+	if err := validateContracts(parent, s.store, r, wf, hash, spec.Force); err != nil {
 		return nil, err
 	}
 
@@ -621,7 +629,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{
+			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			artifactContractsPrevalidated: inProcessResume,
+		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -956,6 +967,9 @@ type launchExtras struct {
 	// executionContext is the resolved, versioned launch contract persisted
 	// by the engine before the first node executes.
 	executionContext *store.ExecutionContext
+	// artifactContractsPrevalidated is confined to a synchronous same-process
+	// resume. It must never cross a detached process or queue boundary.
+	artifactContractsPrevalidated bool
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -1016,6 +1030,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.executionContext != nil {
 		opts = append(opts, runtime.WithExecutionContext(ex.executionContext))
+	}
+	if ex.artifactContractsPrevalidated {
+		opts = append(opts, runtime.WithArtifactContractsPrevalidated(true))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /

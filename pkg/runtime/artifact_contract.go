@@ -152,7 +152,15 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 // are accepted; report/legacy context policies record the mismatch through
 // the caller while enforce refuses it nondestructively.
 func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, true)
+}
+
+// ValidateArtifactContractsPreflight applies the synchronous compatibility
+// gate without emitting report-mode telemetry. Use it before a detached or
+// queued handoff: Engine.Resume repeats the authoritative check and emits the
+// single event for that execution attempt.
+func ValidateArtifactContractsPreflight(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false)
 }
 
 // ValidateArtifactContractsExcept applies the resume/rewind contract guard
@@ -160,7 +168,7 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 // It is used by rewind after it has computed the exact downstream set: an
 // obsolete artifact must not prevent the operation that removes it.
 func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes, true)
 }
 
 // ValidateCheckpointArtifactAvailability verifies that every exact physical
@@ -242,7 +250,7 @@ func loadCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, r
 	return loaded, nil
 }
 
-func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
+func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool, emitReport bool) error {
 	if run == nil || s == nil || wf == nil {
 		return nil
 	}
@@ -382,14 +390,16 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		return nil
 	}
 	if policy == store.ContextPolicyReport {
-		_, _ = s.AppendEvent(context.WithoutCancel(ctx), run.ID, store.Event{
-			Type:  store.EventArtifactContractViolation,
-			RunID: run.ID,
-			Data: map[string]any{
-				"policy":     string(policy),
-				"violations": append([]string(nil), violations...),
-			},
-		})
+		if emitReport {
+			_, _ = s.AppendEvent(context.WithoutCancel(ctx), run.ID, store.Event{
+				Type:  store.EventArtifactContractViolation,
+				RunID: run.ID,
+				Data: map[string]any{
+					"policy":     string(policy),
+					"violations": append([]string(nil), violations...),
+				},
+			})
+		}
 		return nil
 	}
 	if policy != store.ContextPolicyEnforce {

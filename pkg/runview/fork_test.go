@@ -254,6 +254,47 @@ func TestCopyForkArtifactsWritesEachNodeInVersionOrder(t *testing.T) {
 	}
 }
 
+func TestCopyForkArtifactsResolvesLogicalOnlyDependency(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-logical-parent", "fork-logical-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "planner", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "planner", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "writer", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "report", ProducerNode: "writer", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "plan", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"plan":   {NodeID: "planner", Version: 0},
+		"report": {NodeID: "writer", Version: 0},
+	}}
+	exact, inferred := forkArtifactRevisions(cp)
+	if err := copyForkArtifacts(ctx, st, parentID, childID, exact, inferred); err != nil {
+		t.Fatalf("logical-only dependency was not resolved: %v", err)
+	}
+	if _, err := st.LoadArtifact(ctx, childID, "planner", 0); err != nil {
+		t.Fatalf("dependency was not copied to child: %v", err)
+	}
+}
+
 func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())

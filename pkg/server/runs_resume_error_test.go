@@ -126,6 +126,45 @@ func TestWriteResumeError_SourceChangedCarriesStableCode(t *testing.T) {
 	}
 }
 
+func TestWriteResumeError_ArtifactContractClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		status    int
+		errorCode string
+	}{
+		{
+			name:   "unavailable is retryable infrastructure failure",
+			err:    fmt.Errorf("preflight: %w", runtime.ErrArtifactContractUnavailable),
+			status: http.StatusServiceUnavailable, errorCode: artifactContractUnavailableErrorCode,
+		},
+		{
+			name:   "incompatible is an operator request error",
+			err:    fmt.Errorf("preflight: %w", runtime.ErrArtifactContractIncompatible),
+			status: http.StatusBadRequest, errorCode: artifactContractIncompatibleErrorCode,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/runs/r1/resume", nil)
+			(&Server{}).writeResumeError(rec, req, tt.err)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.status)
+			}
+			var body struct {
+				ErrorCode string `json:"error_code"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.ErrorCode != tt.errorCode {
+				t.Fatalf("error_code = %q, want %q", body.ErrorCode, tt.errorCode)
+			}
+		})
+	}
+}
+
 func TestWriteResumeError_UnrelatedFailureHasNoSourceChangedCode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/runs/r1/resume", nil)

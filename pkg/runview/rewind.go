@@ -387,10 +387,18 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	for _, id := range invalidated {
 		ignoredArtifacts[id] = true
 	}
-	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, run, ignoredArtifacts); err != nil {
+	// applyRewind always discards the in-flight parallel invocation. Validate
+	// the checkpoint that will actually survive, otherwise a branch removed by
+	// the edited workflow can block the operation on provenance that is about
+	// to be deleted. Retained trunk revisions remain fail-closed.
+	validationRun := *run
+	validationCheckpoint := *cp
+	validationCheckpoint.Parallel = nil
+	validationRun.Checkpoint = &validationCheckpoint
+	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, &validationRun, ignoredArtifacts); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, currentRevision, spec.Force, ignoredArtifacts); err != nil {
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, &validationRun, wf, currentRevision, spec.Force, ignoredArtifacts); err != nil {
 		return nil, err
 	}
 

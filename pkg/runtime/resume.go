@@ -98,16 +98,18 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err != nil {
 		return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 	}
-	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
-		// Refuse before claiming the checkpoint or touching the workspace.
-		if errors.Is(err, ErrArtifactContractUnavailable) {
-			return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
-		}
-		return &RuntimeError{
-			Code:    store.FailureResumeInvalid,
-			Message: "persisted artifact contract is incompatible with this workflow",
-			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract",
-			Cause:   err,
+	if !e.artifactContractsChecked {
+		if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
+			// Refuse before claiming the checkpoint or touching the workspace.
+			if errors.Is(err, ErrArtifactContractUnavailable) {
+				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
+			}
+			return &RuntimeError{
+				Code:    store.FailureResumeInvalid,
+				Message: "persisted artifact contract is incompatible with this workflow",
+				Hint:    "resume with --force to accept a deliberate publish, schema or workflow-revision edit; producer-identity and dependency violations are not waivable",
+				Cause:   err,
+			}
 		}
 	}
 	// Reconstructing {{artifacts.*}} must use the checkpoint's physical

@@ -460,6 +460,35 @@ func TestRewind_InvalidatesArtifactRevisionWithoutCurrentOutput(t *testing.T) {
 	}
 }
 
+func TestRewindDoesNotValidateDiscardedParallelArtifactRevisions(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:                 "verify",
+		Outputs:                outputsOf("survey", "plan", "implement", "verify"),
+		ArtifactRevisionsKnown: true,
+		Parallel: &store.ParallelCheckpoint{Branches: map[string]*store.BranchCheckpoint{
+			"obsolete": {
+				Outputs: map[string]map[string]any{"removed_branch": {"value": "old"}},
+				ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"removed": {NodeID: "removed_branch", Version: 0},
+				},
+			},
+		}},
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	if _, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", KeepFiles: true,
+	}); err != nil {
+		t.Fatalf("discarded parallel artifact blocked rewind: %v", err)
+	}
+	persisted, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Checkpoint.Parallel != nil {
+		t.Fatal("rewind retained the obsolete parallel invocation")
+	}
+}
+
 // TestRewind_LoopKeepsCycleAncestor is the reason downstreamOf subtracts
 // ancestors. `verify` is forward-reachable from `implement` yet also
 // reaches it back through the fix() loop, and `implement` reads its

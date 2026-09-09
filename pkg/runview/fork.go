@@ -357,7 +357,10 @@ func forkArtifactRevisions(cp *store.Checkpoint) (exact, inferred []store.Artifa
 		return nil, nil
 	}
 	represented := make(map[string]bool, len(cp.ArtifactRevisions))
-	for _, revision := range cp.ArtifactRevisions {
+	for logicalRef, revision := range cp.ArtifactRevisions {
+		if revision.ContractLogicalRef == "" {
+			revision.ContractLogicalRef = logicalRef
+		}
 		exact = append(exact, revision)
 		represented[revision.NodeID] = true
 	}
@@ -385,6 +388,12 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 	}
 	seen := make(map[revisionKey]bool)
 	artifacts := make(map[revisionKey]*store.Artifact)
+	logicalProducers := make(map[string]string, len(exact)+len(inferred))
+	for _, revision := range append(append([]store.ArtifactRevisionRef(nil), exact...), inferred...) {
+		if revision.ContractLogicalRef != "" && revision.NodeID != "" {
+			logicalProducers[revision.ContractLogicalRef] = revision.NodeID
+		}
+	}
 	var collectOne func(revisionKey, bool) error
 	collectOne = func(key revisionKey, optionalRoot bool) error {
 		if key.nodeID == "" {
@@ -410,13 +419,19 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)
 		}
 		if artifact.Contract != nil {
+			if artifact.Contract.LogicalRef != "" {
+				logicalProducers[artifact.Contract.LogicalRef] = key.nodeID
+			}
 			for _, dependency := range artifact.Contract.Dependencies {
 				if !dependency.Required || dependency.LogicalRef == "" {
 					continue
 				}
 				depNode := dependency.NodeID
 				if depNode == "" {
-					depNode = dependency.LogicalRef
+					depNode = logicalProducers[dependency.LogicalRef]
+				}
+				if depNode == "" {
+					return fmt.Errorf("artifact %s/%d requires logical artifact %q whose producer is absent from the retained checkpoint", key.nodeID, key.version, dependency.LogicalRef)
 				}
 				if err := collectOne(revisionKey{nodeID: depNode, version: dependency.Version}, false); err != nil {
 					return err
