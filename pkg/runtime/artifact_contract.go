@@ -151,11 +151,21 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if policy == store.ContextPolicyLegacy {
 		return nil
 	}
-	var violations []string
-	for nodeID, version := range run.ArtifactIndex {
-		if ignoredNodes[nodeID] {
-			continue
+	// Walk the index in sorted order. Ranging a map hands the operator a
+	// differently-ordered violation list on every attempt — the same broken
+	// run reads as a different refusal each time it is retried, the report
+	// event's `violations` array cannot be diffed between two passes, and a
+	// test asserting on more than one violation is flaky by construction.
+	nodeIDs := make([]string, 0, len(run.ArtifactIndex))
+	for nodeID := range run.ArtifactIndex {
+		if !ignoredNodes[nodeID] {
+			nodeIDs = append(nodeIDs, nodeID)
 		}
+	}
+	sort.Strings(nodeIDs)
+	var violations []string
+	for _, nodeID := range nodeIDs {
+		version := run.ArtifactIndex[nodeID]
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
 			msg := fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err)

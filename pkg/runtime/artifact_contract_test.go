@@ -381,3 +381,65 @@ func TestValidateArtifactContractsComparesSchemaShapeNotName(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateArtifactContractsReportsViolationsInStableOrder pins the order
+// of the refusal an operator reads. The index is a map, so ranging it hands
+// back a differently-ordered list every attempt: the same broken run would
+// read as a different refusal each retry, and the report event's array could
+// not be diffed between two passes.
+func TestValidateArtifactContractsReportsViolationsInStableOrder(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-order", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	// Save the policy before writing artifacts: WriteArtifact advances the
+	// run document (it is what maintains ArtifactIndex), so a SaveRun after
+	// it would collide on the CAS version.
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	nodes := map[string]ir.Node{}
+	for _, id := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
+		// Every node's publish name has moved, so every one contributes a
+		// violation and the whole list is ordered.
+		nodes[id] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: id}, Publish: id + "-now"}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: "artifact-order", NodeID: id, Version: 0,
+			Contract: &store.ArtifactContract{LogicalRef: id + "-was", ProducerNode: id, Version: 0},
+			Data:     map[string]any{"ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err = s.LoadRun(ctx, "artifact-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.ArtifactIndex) != len(nodes) {
+		t.Fatalf("artifact index = %v, want one entry per node", run.ArtifactIndex)
+	}
+	wf := &ir.Workflow{Nodes: nodes}
+
+	first := ValidateArtifactContracts(ctx, s, run, wf, "", false)
+	if first == nil {
+		t.Fatal("moved publish names were accepted under enforce")
+	}
+	for i := 0; i < 8; i++ {
+		again := ValidateArtifactContracts(ctx, s, run, wf, "", false)
+		if again == nil || again.Error() != first.Error() {
+			t.Fatalf("refusal is not stable across attempts:\n first: %v\n again: %v", first, again)
+		}
+	}
+	if !strings.Contains(first.Error(), `"alpha-was"`) || !strings.Contains(first.Error(), `"echo-was"`) {
+		t.Fatalf("refusal does not list every offending artifact: %v", first)
+	}
+	if strings.Index(first.Error(), "alpha-was") > strings.Index(first.Error(), "echo-was") {
+		t.Fatalf("violations are not in node order: %v", first)
+	}
+}
