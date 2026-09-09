@@ -305,7 +305,7 @@ tool run_tests:
   output: test_result        # schema: passed: bool, log: string
 ```
 
-(`printf` with a JSON-quoted payload is the portable idiom; `python3 -c "…json.dumps…"` reads well but assumes `python3` in the sandbox image — declare it in the bot's `devbox.json` if you rely on it.) Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
+(`printf` with a JSON-quoted payload is the portable idiom; `python3 -c "…json.dumps…"` reads well but assumes `python3` in the sandbox image — declare it in the bot's `devbox.json` if you rely on it.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
 
 Verified Actions add a deterministic outcome check and bounded recovery:
 

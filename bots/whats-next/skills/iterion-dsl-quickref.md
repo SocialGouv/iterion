@@ -382,9 +382,10 @@ tool commit_changes:
   await:   wait_all               # only when the node has multiple incoming edges
 ```
 
-A tool node has ONE `command:` string (or a `script:` + `language:`), run
-through `sh -c` (POSIX — assume dash). There is no `args:` list and no
-`readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
+A tool node has ONE `command:` string (or a `script:` + `language:`). A
+`command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
+interpreter its `language:` names (`sh` is dash on Debian-derived images —
+keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
 runtime — never wrap it in quotes of your own (C137). **A tool that declares
 `output:` must print a JSON object matching that schema on stdout**; anything
 else fails the node. A `json`-typed input renders as one JSON token; an
