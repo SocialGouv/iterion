@@ -6107,6 +6107,22 @@ export interface components {
             personal?: boolean;
             teams: components["schemas"]["MembershipView"][];
         };
+        OutputCorrectionEpisode: {
+            attempts?: number;
+            budget?: number;
+            episode_id?: string;
+            input_fingerprint?: string;
+            invocation_id?: string;
+            last_error?: string;
+            last_output_fingerprint?: string;
+            last_violation_fingerprint?: string;
+            node_id?: string;
+            /** Format: date-time */
+            started_at?: string;
+            status?: string;
+            /** Format: date-time */
+            updated_at?: string;
+        };
         ParallelCheckpoint: {
             artifact_allocations?: {
                 [key: string]: number;
@@ -6316,6 +6332,9 @@ export interface components {
                 [key: string]: components["schemas"]["NodeServed"];
             };
             outcome_seq?: number;
+            output_corrections?: {
+                [key: string]: components["schemas"]["OutputCorrectionEpisode"];
+            };
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
@@ -6332,6 +6351,9 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];
+            watcher_cursors?: {
+                [key: string]: components["schemas"]["WatcherCursor"];
+            };
             work_dir?: string;
             workflow_hash?: string;
             workflow_name: string;
@@ -6436,6 +6458,22 @@ export interface components {
             is_super_admin: boolean;
             name?: string;
             status: string;
+        };
+        WatcherCursor: {
+            consecutive_no_progress?: number;
+            last_action?: string;
+            last_action_fingerprint?: string;
+            /** Format: date-time */
+            last_evaluation_at?: string;
+            /** Format: date-time */
+            last_progress_at?: string;
+            last_progress_fingerprint?: string;
+            last_trigger_fingerprint?: string;
+            /** Format: date-time */
+            next_evaluation_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+            watcher_id?: string;
         };
         WireEdge: {
             condition?: string;

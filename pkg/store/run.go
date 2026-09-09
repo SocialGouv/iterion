@@ -464,6 +464,22 @@ type OutputCorrectionEpisode struct {
 	UpdatedAt                time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
 }
 
+// WatcherCursor is the durable anti-loop cursor for a supervisor/watch
+// instance. It records the last progress sample and evaluation/action window
+// so a watcher restart cannot immediately re-evaluate the same unchanged
+// evidence and enqueue the same correction again.
+type WatcherCursor struct {
+	WatcherID               string     `json:"watcher_id,omitempty" bson:"watcher_id,omitempty"`
+	LastProgressFingerprint string     `json:"last_progress_fingerprint,omitempty" bson:"last_progress_fingerprint,omitempty"`
+	LastProgressAt          time.Time  `json:"last_progress_at,omitempty" bson:"last_progress_at,omitempty"`
+	LastEvaluationAt        *time.Time `json:"last_evaluation_at,omitempty" bson:"last_evaluation_at,omitempty"`
+	LastAction              string     `json:"last_action,omitempty" bson:"last_action,omitempty"`
+	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
+	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`
+	ConsecutiveNoProgress   int        `json:"consecutive_no_progress,omitempty" bson:"consecutive_no_progress,omitempty"`
+	UpdatedAt               time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+}
+
 // RunCredStamp is what one credential resolution leaves on the run
 // document: the audit identities of the credentials it sealed, and when the
 // earliest credential it passed over reopens. Written as a unit — at launch
@@ -645,6 +661,11 @@ type Run struct {
 	// runs keep their existing fail-fast behaviour unless their executor opts
 	// into correction through the runtime option.
 	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`
+	// WatcherCursors is keyed by supervisor/watch identity. It is deliberately
+	// separate from run events: a watcher may restart without replaying the
+	// entire event stream, while its cooldown and last-action proof remain
+	// durable.
+	WatcherCursors map[string]WatcherCursor `json:"watcher_cursors,omitempty" bson:"watcher_cursors,omitempty"`
 	// DeletedAt is the Mongo-side durable tombstone (the filesystem
 	// twin is the .deleted marker file): DeleteRun strips the run's
 	// data and leaves a skeleton doc carrying this stamp, so a late

@@ -176,20 +176,35 @@ func (s *Service) QueueMessage(ctx context.Context, runID, text string, opts ...
 		opt(&cfg)
 	}
 	msg := store.QueuedUserMessage{
-		ID:            newQueuedMessageID(),
+		ID:            cfg.messageID,
 		Text:          text,
 		TenantID:      r.TenantID,
 		NodeID:        cfg.nodeID,
 		SkillRefs:     cfg.skillRefs,
 		InteractionID: cfg.interactionID,
 	}
-	if err := s.store.AppendQueuedMessage(ctx, runID, msg); err != nil {
+	if msg.ID == "" {
+		msg.ID = newQueuedMessageID()
+	}
+	inserted := true
+	if cfg.insertOnce {
+		onceStore := store.AsQueuedMessageInsertOnceStore(s.store)
+		if onceStore == nil {
+			return nil, errors.New("runview: store does not support idempotent queued messages")
+		}
+		inserted, err = onceStore.AppendQueuedMessageOnce(ctx, runID, msg)
+	} else {
+		err = s.store.AppendQueuedMessage(ctx, runID, msg)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("append queued message: %w", err)
 	}
 	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return nil, err
 	}
-	store.PublishInboxEvent(ctx, s.store, s.brokerPublish(), store.EventUserMessageQueued, runID, msg)
+	if inserted {
+		store.PublishInboxEvent(ctx, s.store, s.brokerPublish(), store.EventUserMessageQueued, runID, msg)
+	}
 	return &msg, nil
 }
 
@@ -201,6 +216,8 @@ type queueMessageConfig struct {
 	skillRefs     []string
 	nodeID        string
 	interactionID string
+	messageID     string
+	insertOnce    bool
 }
 
 // QueueMessageOption is the functional-option form of QueueMessage's
@@ -234,6 +251,13 @@ func WithMessageNode(nodeID string) QueueMessageOption {
 // this typed field.
 func WithMessageInteraction(interactionID string) QueueMessageOption {
 	return func(c *queueMessageConfig) { c.interactionID = interactionID }
+}
+
+func withMessageIDOnce(messageID string) QueueMessageOption {
+	return func(c *queueMessageConfig) {
+		c.messageID = messageID
+		c.insertOnce = true
+	}
 }
 
 // CancelQueuedMessage marks a queued (not-yet-delivered) message as
