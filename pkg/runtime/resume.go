@@ -101,6 +101,16 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			Cause:   err,
 		}
 	}
+	// Reconstructing {{artifacts.*}} must use the checkpoint's physical
+	// revisions, not the producer's latest output. Do this before any resume
+	// claim so a missing exact blob leaves the run safely resumable.
+	if r.Checkpoint != nil {
+		outputs := copyOutputs(r.Checkpoint.Outputs)
+		revisions := e.rebuildArtifactRevisions(outputs, r.Checkpoint.ArtifactVersions, r.Checkpoint.ArtifactRevisions)
+		if _, err := e.rebuildArtifactsWithRevisions(ctx, r.ID, outputs, revisions); err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
+	}
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
@@ -231,19 +241,45 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 		if !ok || nodePublish(node) == "" || versions[nodeID] <= 0 {
 			continue
 		}
-		revisions[nodePublish(node)] = store.ArtifactRevisionRef{NodeID: nodeID, Version: versions[nodeID] - 1}
+		logicalRef := nodePublish(node)
+		if _, authoritative := revisions[logicalRef]; authoritative {
+			continue
+		}
+		revisions[logicalRef] = store.ArtifactRevisionRef{NodeID: nodeID, Version: versions[nodeID] - 1}
 	}
 	return revisions
 }
 
-func (e *Engine) rebuildArtifactsWithRevisions(outputs map[string]map[string]any, revisions map[string]store.ArtifactRevisionRef) map[string]map[string]any {
+func (e *Engine) rebuildArtifactsWithRevisions(ctx context.Context, runID string, outputs map[string]map[string]any, revisions map[string]store.ArtifactRevisionRef) (map[string]map[string]any, error) {
 	artifacts := e.rebuildArtifacts(outputs)
-	for name, revision := range revisions {
-		if output, ok := outputs[revision.NodeID]; ok {
-			artifacts[name] = output
-		}
+	type revisionKey struct {
+		nodeID  string
+		version int
 	}
-	return artifacts
+	loaded := make(map[revisionKey]map[string]any)
+	names := make([]string, 0, len(revisions))
+	for name := range revisions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		revision := revisions[name]
+		key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+		data, ok := loaded[key]
+		if !ok {
+			artifact, err := e.store.LoadArtifact(ctx, runID, revision.NodeID, revision.Version)
+			if err != nil {
+				return nil, fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version, err)
+			}
+			if artifact == nil || artifact.RunID != runID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+				return nil, fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version)
+			}
+			data = artifact.Data
+			loaded[key] = data
+		}
+		artifacts[name] = data
+	}
+	return artifacts, nil
 }
 
 // resumeFromPause resumes a paused run by recording human answers and
@@ -341,7 +377,11 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
 	artifactVersions := cloneMap(cp.ArtifactVersions)
 	artifactRevisions := e.rebuildArtifactRevisions(cp.Outputs, artifactVersions, cp.ArtifactRevisions)
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, e.rebuildArtifactsWithRevisions(cp.Outputs, artifactRevisions), artifactRevisions, cp.SelectedIncoming)
+	artifacts, err := e.rebuildArtifactsWithRevisions(ctx, runID, cp.Outputs, artifactRevisions)
+	if err != nil {
+		return err
+	}
+	artifactVersions, err = e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp.SelectedIncoming)
 	if err != nil {
 		return err
 	}
@@ -770,6 +810,13 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int, artifactRevisions map[string]store.ArtifactRevisionRef) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
+	if artifactRevisions == nil {
+		artifactRevisions = e.rebuildArtifactRevisions(outputs, artifactVersions, cp.ArtifactRevisions)
+	}
+	artifacts, err := e.rebuildArtifactsWithRevisions(ctx, runID, outputs, artifactRevisions)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Clone (not alias) the counter maps: the engine mutates them in place
 	// during the resumed run, so aliasing r.Checkpoint's maps would race a
@@ -841,11 +888,8 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// startSandbox, so attachmentPath reads the settled sandbox state.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	rs.outputs = outputs
-	if artifactRevisions == nil {
-		artifactRevisions = e.rebuildArtifactRevisions(outputs, artifactVersions, cp.ArtifactRevisions)
-	}
 	rs.artifactRevisions = artifactRevisions
-	rs.artifacts = e.rebuildArtifactsWithRevisions(outputs, artifactRevisions)
+	rs.artifacts = artifacts
 	rs.loopCounters = loopCounters
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
@@ -1059,7 +1103,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// {{attachments.<name>}} reference silently resolves to nothing for
 	// the rest of a resumed run.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
-	e.restoreCheckpointState(rs, cp)
+	if err := e.restoreCheckpointState(ctx, rs, cp); err != nil {
+		return err
+	}
 	e.adoptCheckpointSessions(rs)
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
@@ -1151,9 +1197,9 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 // rehydration pin. A nil cp is a no-op — rs keeps the empty maps from
 // newRunState (same state shape as a fresh launch; only the run_id is
 // preserved so the studio's snapshot continuity stays intact).
-func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
+func (e *Engine) restoreCheckpointState(ctx context.Context, rs *runState, cp *store.Checkpoint) error {
 	if cp == nil {
-		return
+		return nil
 	}
 	// Deep-copy outputs so subsequent writes on rs.outputs don't
 	// retroactively mutate r.Checkpoint (which any HTTP read still
@@ -1164,7 +1210,11 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 		rs.outputs = make(map[string]map[string]any)
 	}
 	rs.artifactRevisions = e.rebuildArtifactRevisions(rs.outputs, cp.ArtifactVersions, cp.ArtifactRevisions)
-	rs.artifacts = e.rebuildArtifactsWithRevisions(rs.outputs, rs.artifactRevisions)
+	artifacts, err := e.rebuildArtifactsWithRevisions(ctx, rs.runID, rs.outputs, rs.artifactRevisions)
+	if err != nil {
+		return err
+	}
+	rs.artifacts = artifacts
 	// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
 	// mutate loopCounters/roundRobinCounters and artifactVersions in
 	// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
@@ -1196,6 +1246,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	if cp.Parallel != nil {
 		rs.parallel = newParallelExecutionState(cp.Parallel)
 	}
+	return nil
 }
 
 // pinBackendRehydration pins a checkpoint's backend conversation (claw) or

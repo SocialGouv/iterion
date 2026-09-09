@@ -110,15 +110,24 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		return nil
 	}
 	var violations []string
-	for _, revision := range artifactRevisionsForValidation(run) {
+	type validationKey struct {
+		logicalRef string
+		nodeID     string
+		version    int
+	}
+	visited := make(map[validationKey]bool)
+	var validateRevision func(artifactValidationRevision) error
+	validateRevision = func(revision artifactValidationRevision) error {
 		nodeID, version := revision.NodeID, revision.Version
 		if nodeID == "" {
 			violations = append(violations, fmt.Sprintf("artifact %q has no persisted producer identity", revision.LogicalRef))
-			continue
+			return nil
 		}
-		if ignoredNodes[nodeID] {
-			continue
+		key := validationKey{logicalRef: revision.LogicalRef, nodeID: nodeID, version: version}
+		if visited[key] {
+			return nil
 		}
+		visited[key] = true
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
 			msg := fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err)
@@ -126,24 +135,24 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 				return fmt.Errorf("%w: %s", ErrArtifactContractUnavailable, msg)
 			}
 			violations = append(violations, msg)
-			continue
+			return nil
 		}
 		if artifact == nil {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d returned no persisted body", nodeID, version))
-			continue
+			return nil
 		}
 		if artifact.Contract == nil {
-			continue
+			return nil
 		}
 		contract := artifact.Contract
 		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version ||
 			contract.LogicalRef == "" || contract.ProducerNode != nodeID || contract.Version != version {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
-			continue
+			return nil
 		}
 		if revision.LogicalRef != "" && revision.LogicalRef != contract.LogicalRef {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d is recorded as %q but its contract publishes %q", nodeID, version, revision.LogicalRef, contract.LogicalRef))
-			continue
+			return nil
 		}
 		// --force is the established acknowledgement that the operator wants
 		// to recover against deliberately edited workflow source. Publishing
@@ -154,13 +163,13 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			node, ok := wf.Nodes[nodeID]
 			if !ok {
 				violations = append(violations, fmt.Sprintf("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID))
-				continue
-			}
-			if got := nodePublish(node); got != contract.LogicalRef {
-				violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
-			}
-			if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
-				violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
+			} else {
+				if got := nodePublish(node); got != contract.LogicalRef {
+					violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
+				}
+				if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
+					violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
+				}
 			}
 			if currentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != currentRevision {
 				violations = append(violations, fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q", contract.LogicalRef, contract.ProducerRevision, currentRevision))
@@ -174,16 +183,18 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if depNode == "" {
 				depNode = dep.LogicalRef
 			}
-			persisted, err := s.LoadArtifact(ctx, run.ID, depNode, dep.Version)
-			if err != nil {
-				msg := fmt.Sprintf("artifact %q requires %s v%d, which could not be loaded: %v", contract.LogicalRef, dep.LogicalRef, dep.Version, err)
-				if policy == store.ContextPolicyEnforce {
-					return fmt.Errorf("%w: %s", ErrArtifactContractUnavailable, msg)
-				}
-				violations = append(violations, msg)
-			} else if persisted == nil || persisted.NodeID != depNode || persisted.Version != dep.Version {
-				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, but the stored revision identity does not match", contract.LogicalRef, dep.LogicalRef, dep.Version))
+			if err := validateRevision(artifactValidationRevision{LogicalRef: dep.LogicalRef, NodeID: depNode, Version: dep.Version}); err != nil {
+				return fmt.Errorf("artifact %q requires %s v%d: %w", contract.LogicalRef, dep.LogicalRef, dep.Version, err)
 			}
+		}
+		return nil
+	}
+	for _, revision := range artifactRevisionsForValidation(run) {
+		if ignoredNodes[revision.NodeID] {
+			continue
+		}
+		if err := validateRevision(revision); err != nil {
+			return err
 		}
 	}
 	if len(violations) == 0 {

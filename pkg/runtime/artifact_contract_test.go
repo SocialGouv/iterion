@@ -375,10 +375,11 @@ func TestRebuildArtifactRevisionsDoesNotAliasPersistedProducerAfterRename(t *tes
 	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
 		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new-name"},
 		"legacy": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "legacy"}, Publish: "legacy-name"},
+		"other":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "other"}, Publish: "old-name"},
 	}}, nil, newStubExecutor())
 	revisions := eng.rebuildArtifactRevisions(
-		map[string]map[string]any{"writer": {"ok": true}, "legacy": {"ok": true}},
-		map[string]int{"writer": 2, "legacy": 1},
+		map[string]map[string]any{"writer": {"ok": true}, "legacy": {"ok": true}, "other": {"ok": true}},
+		map[string]int{"writer": 2, "legacy": 1, "other": 1},
 		map[string]store.ArtifactRevisionRef{"old-name": {NodeID: "writer", Version: 1}},
 	)
 	if got := revisions["old-name"]; got.NodeID != "writer" || got.Version != 1 {
@@ -389,5 +390,97 @@ func TestRebuildArtifactRevisionsDoesNotAliasPersistedProducerAfterRename(t *tes
 	}
 	if got := revisions["legacy-name"]; got.NodeID != "legacy" || got.Version != 0 {
 		t.Fatalf("partial legacy revision was not inferred: %+v", revisions)
+	}
+}
+
+func TestRebuildArtifactsLoadsRecordedPhysicalVersions(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "artifact-exact-data", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	for version := 0; version < 2; version++ {
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: "artifact-exact-data", NodeID: "writer", Version: version,
+			Data: map[string]any{"version": version},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new"},
+	}}, s, newStubExecutor())
+	artifacts, err := eng.rebuildArtifactsWithRevisions(
+		ctx, "artifact-exact-data",
+		map[string]map[string]any{"writer": {"version": 1}},
+		map[string]store.ArtifactRevisionRef{
+			"old": {NodeID: "writer", Version: 0},
+			"new": {NodeID: "writer", Version: 1},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts["old"]["version"] != float64(0) || artifacts["new"]["version"] != float64(1) {
+		t.Fatalf("rebuilt artifacts = %+v", artifacts)
+	}
+}
+
+func TestNodeArtifactRefsIncludesPostconditionAndReviewURL(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"tool": &ir.ToolNode{
+			BaseNode: ir.BaseNode{ID: "tool"}, Publish: "tool-result",
+			PostcondRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+		},
+		"review": &ir.HumanNode{
+			BaseNode: ir.BaseNode{ID: "review"}, Publish: "verdict",
+			ReviewURLRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"environment"}}},
+		},
+	}}
+	if got := ir.NodeArtifactRefs(wf, "tool"); len(got) != 1 || got[0] != "plan" {
+		t.Fatalf("tool artifact refs = %v", got)
+	}
+	if got := ir.NodeArtifactRefs(wf, "review"); len(got) != 1 || got[0] != "environment" {
+		t.Fatalf("review artifact refs = %v", got)
+	}
+}
+
+func TestValidateArtifactContractsChecksTransitiveDependencies(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-transitive", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "b", Version: 0, Data: map[string]any{"value": "b"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "b", ProducerNode: "b", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "c", NodeID: "c", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "a", Version: 0, Data: map[string]any{"value": "a"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "a", ProducerNode: "a", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "b", NodeID: "b", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run.Checkpoint = &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"a": {NodeID: "a", Version: 0},
+	}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "a"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "b"},
+		"c": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "c"}, Publish: "c"},
+	}}
+	err = ValidateArtifactContracts(ctx, s, run, wf, "", false)
+	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) {
+		t.Fatalf("missing transitive dependency was accepted: %v", err)
 	}
 }

@@ -784,6 +784,22 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 		}
 		seen[rc.Ref.Path[0]] = struct{}{}
 	}
+	// These runtime-rendered fields deliberately sit outside collectAllRefs'
+	// compiler diagnostics today, but they consume the same artifact values
+	// and therefore belong in the producer's durable dependency contract.
+	addArtifactRefs := func(refs []*Ref) {
+		for _, ref := range refs {
+			if ref != nil && ref.Kind == RefArtifacts && len(ref.Path) > 0 {
+				seen[ref.Path[0]] = struct{}{}
+			}
+		}
+	}
+	switch node := w.Nodes[nodeID].(type) {
+	case *ToolNode:
+		addArtifactRefs(node.PostcondRefs)
+	case *HumanNode:
+		addArtifactRefs(node.ReviewURLRefs)
+	}
 	for _, edge := range w.Edges {
 		if edge == nil || edge.To != nodeID || (includeIncoming != nil && !includeIncoming(edge)) {
 			continue
