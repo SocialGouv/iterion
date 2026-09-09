@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.127.2](https://github.com/SocialGouv/iterion/compare/v3.127.1...v3.127.2) (2026-09-09)
+
+### Bug Fixes
+
+* **forge:** a deployment that moved could never repair its own hooks ([#1032](https://github.com/SocialGouv/iterion/issues/1032)) ([206a010](https://github.com/SocialGouv/iterion/commit/206a0101ef527e7b99121866be43061e8451d0d3))
+
+    <details><summary>why</summary>
+
+    Provisioning short-circuits when the bot set and the event set already match, and that test never looked at the address the forge is actually calling. But the hook URL is not a property of the request: it moves when the deployment's public URL moves, and when a connection starts or stops pinning a base of its own.
+
+    </details>
+* **runtime:** a node that failed still spent, and the run never booked it ([#916](https://github.com/SocialGouv/iterion/issues/916)) ([de5bf14](https://github.com/SocialGouv/iterion/commit/de5bf140cc14ee5b2ca5d6986f932decc790f93c))
+
+    <details><summary>why</summary>
+
+    `recordBudget` runs on the success path only. A node that failed returned its result beside the error — with the pass's cost stamped on it, which is what the delegate has always done and what two fixes today made reliable — and nothing read it. So the run's totals, the daily spend cap and a lending donor's ledger all missed whatever the failing node burned. On a long agent node that is a whole session, and the runs that fail are exactly the ones that burned the most.
+
+    </details>
+
 ## [3.127.1](https://github.com/SocialGouv/iterion/compare/v3.127.0...v3.127.1) (2026-09-09)
 
 ### Bug Fixes
