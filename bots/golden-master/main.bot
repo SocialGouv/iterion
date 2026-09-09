@@ -3656,7 +3656,7 @@ tool oracle_run:
 
 
     def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
-                                  withheld=()):
+                                  withheld=(), in_the_set=()):
         """Which byte-identical classes are NOT discharged by measured separators.
 
         `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
@@ -3712,14 +3712,29 @@ tool oracle_run:
             if missing and all(m in set(withheld) for m in missing):
                 continue
             if missing:
-                unproven.append({"ids": list(g), "separated_by": list(seps), "why":
-                                 "declared separator(s) %s %s" %
-                                 (", ".join(sorted(missing)),
-                                  "ran but came back INVALID — a separator that stops applying "
-                                  "is exactly how this class loses its proof"
-                                  if all(m in seen_ids for m in missing) else
-                                  ("were not scored in this pass (absent from the mutant set%s)"
-                                   % (", or excluded by GM_MUTANTS" if restricted else "")))})
+                # THREE reasons, and they send the campaign to three different
+                # places. It RAN and came back invalid — the separator is broken,
+                # fix it. It is IN the mutant set but was not reached — scoring
+                # stopped before it, or GM_MUTANTS excluded it; nothing here is the
+                # campaign's to fix, the class is simply not proved yet. It is
+                # genuinely ABSENT — the declaration names a mutant that does not
+                # exist. Collapsing the middle one into "absent from the mutant set"
+                # is a refusal nothing the campaign does can lift, which is the same
+                # dead end WITHHELD-is-not-ABSENT removed one commit earlier.
+                if all(m in seen_ids for m in missing):
+                    why = ("ran but came back INVALID — a separator that stops applying "
+                           "is exactly how this class loses its proof")
+                elif all(m in set(in_the_set) for m in missing):
+                    why = ("are IN the mutant set but were not scored in this pass — "
+                           "scoring stopped before them%s. The class is not proved yet; "
+                           "nothing in the corpus is wrong" %
+                           (", or GM_MUTANTS excluded them" if restricted else ""))
+                else:
+                    why = ("were not scored in this pass (absent from the mutant set%s)"
+                           % (", or excluded by GM_MUTANTS" if restricted else ""))
+                unproven.append({"ids": list(g), "separated_by": list(seps),
+                                 "why": "declared separator(s) %s %s"
+                                        % (", ".join(sorted(missing)), why)})
                 continue
             # One signature per member: which of the declared separators move it.
             # Pairwise-distinct signatures IS "the references are distinguishable";
@@ -6496,6 +6511,29 @@ tool oracle_run:
         check("mais un separateur simplement ABSENT en produit un",
               [x["ids"] for x in unproven_duplicate_groups(
                   [["012", "013"]], _wd, [], False, [])], [["012", "013"]])
+        # Et le TROISIEME cas, celui qui restait confondu avec le second : un
+        # separateur que le scan n'a pas ATTEINT (arret apres un revert sale,
+        # GM_MUTANTS restreint) existe bel et bien. Le refus doit rester — rien n'est
+        # prouve — mais dire « absent du jeu de mutants » envoyait la campagne
+        # corriger une absence qui n'en est pas une, exactement le cul-de-sac que
+        # RETENU-n'est-pas-ABSENT venait de retirer.
+        check("un separateur NON ATTEINT refuse en le disant, pas en criant l'absence",
+              [x["why"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], _wd, [], False, [], ["held-sep"])],
+              ["declared separator(s) held-sep are IN the mutant set but were not "
+               "scored in this pass — scoring stopped before them. The class is not "
+               "proved yet; nothing in the corpus is wrong"])
+        check("et un separateur vraiment absent garde son motif",
+              [("absent from the mutant set" in x["why"])
+               for x in unproven_duplicate_groups(
+                   [["012", "013"]], _wd, [], False, [], ["un-autre"])], [True])
+        # Un separateur qui a TOURNE et qui est invalide garde le sien : le fait
+        # d'etre dans le jeu ne doit pas masquer qu'il a echoue.
+        check("un separateur INVALIDE reste un INVALIDE meme s'il est dans le jeu",
+              [("INVALID" in x["why"]) for x in unproven_duplicate_groups(
+                  [["012", "013"]], _wd,
+                  [{"id": "held-sep", "valid": False, "reason": "apply.sh a echoue"}],
+                  False, [], ["held-sep"])], [True])
 
         D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
         check("separateur qui deplace UN membre : preuve acquittee",
@@ -7334,9 +7372,14 @@ tool oracle_run:
             # pas absent, il est retenu.
             withheld_ids = ([m.get("id") for m in held_meta]
                             if (mode == "selfcheck" and not held) else [])
+            # Ce que le JEU DE MUTANTS contient, score ou non. Un separateur que le
+            # scan n'a pas atteint — l'arret apres un revert sale, un GM_MUTANTS
+            # restreint — n'est pas absent : il existe, il n'a pas tourne. Le dire
+            # « absent du jeu » envoyait corriger une absence qui n'en est pas une.
+            in_the_set = [m.get("id") for m in visible + held_meta]
             unproven = unproven_duplicate_groups(
                 report["duplicate_refs"], corpus, list(verdicts) + list(held),
-                bool(only), withheld_ids)
+                bool(only), withheld_ids, in_the_set)
             for shape in duplicate_groups_shape_problems(corpus):
                 problems.append(shape)
             report["duplicate_groups_unproven"] = unproven
