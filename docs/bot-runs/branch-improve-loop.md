@@ -1,82 +1,49 @@
 # Billy — branch-improvement validation
 
-## 2026-09-09 — #1028: a one-finding pass, measured rather than asserted (run 01a08605)
+## 2026-09-09 — #1028: lazy cloud home, bank recovered after quota stop
 
-- Status: **validated**. Narrow by construction: the operator scoped the pass
-  to Revi's single finding and disabled auto-merge for its duration, so this
-  exercises the scoped-pass path rather than a full campaign.
-- Versions: bot `branch-improve-loop` · iterion `82f881938` (the branch head
-  the review was anchored to). Backend claude_code.
-- Method: `/billy` on PR #1028 (`codex/cloud-home-redesign`, the cloud-home
-  redesign) after Revi run `01a085f9-871b-7aa9-85d6-e8724258c04c` left one
-  medium finding. Operator note narrowed the pass to `R8a91d4` only and
-  ruled the four open design questions out of scope. A plan phase ran and
-  was critiqued by a cross-model peer.
-- Result: converged in one pass, two commits, no loop. `f0c723e59` makes the
-  marketing page a lazy chunk; `54a2c24d3` adds the regression test.
-- Finding ledger: **R8a91d4 fixed**. `CloudLanding.tsx` is one of App.tsx's
-  few eager view imports — `PublicTopBar` lives in the same module and
-  renders on `/marketplace`, outside the lazy route tree — so the redesign's
-  static `import CloudHome` put the anonymous-only product page in the entry
-  chunk every authenticated operator downloads on first paint. `lazy()` plus
-  a `BootLoading` Suspense boundary (the same fallback as the ancestor
-  boundary, so the anonymous first paint is unchanged) moves it out.
-- Measured, not asserted: entry JS 461.25 → 289.78 kB (gzip 127.43 → 88.30),
-  entry CSS 119.68 → 98.21 kB (gzip 21.62 → 17.03). The page ships as its own
-  `CloudHome-*.js` (70.4 kB) + `CloudHome-*.css` (21.5 kB), and `index.html`
-  preloads neither. The check that mattered was the second one: none of the
-  54 chunks the entry HTML references still carries a `@lobehub` brand-icon
-  module, so the payload genuinely left the eager graph instead of moving
-  into a preloaded sibling — a chunk-size delta alone would not have
-  distinguished those two outcomes.
-- Value: a regression invisible to every gate the repo runs. A static import
-  of an anonymous-only page compiles, typechecks, passes 1351 tests and only
-  shows up as bytes in the entry chunk. Revi caught it by reading the import
-  convention, not by measuring.
-- Ratchet: the acceptance gate was content-based on purpose (unique page
-  strings absent from the entry JS, `.ch-orbit` absent from the entry CSS) —
-  rolldown chunk names are not a contract, and a filename assertion would
-  have been the fragile half. That gate lives in the run, so the durable
-  guard is `studio/src/views/CloudLanding.test.tsx`: CloudLanding must
-  suspend on first paint rather than mount the page synchronously. It was
-  **falsified before landing** — restoring the static import fails it with
-  `expected <main></main> to be null` — so it cannot pass on the code it
-  exists to reject. One case on purpose: `lazy()` memoises its resolved
-  module, so a sibling case that awaited the chunk first would leave this one
-  blind to the pending state and the guard would pass on test order alone.
-- Friction worth knowing: the real `CloudHome` cannot be mounted under
-  vitest at all — `@lobehub/icons` resolves through `@lobehub/ui` to a
-  malformed `es/node_modules/@base-ui/react/merge-props` path that the
-  runner's ESM externalization rejects, though the vite build resolves it
-  fine. The test mocks the far side of the boundary, which is sound here
-  (the split is what is under test), but a future spec that needs the real
-  page rendered will have to inline that dep in the vitest config first.
-- Surfaced, not fixed — a real behavioural regression outside the pass's
-  scope: `studio/src/views/CloudHome/index.tsx:94-108`. The new one-button
-  theme control derives its action from `resolved` and calls
-  `setMode(resolved === "dark" ? "light" : "dark")`, so it can only ever
-  write `"light"` or `"dark"`. `ThemeMode` is `"system" | "light" | "dark"`,
-  `"system"` is the default, `setMode` persists to localStorage, and
-  `initializeTheme()`'s `matchMedia` listener only fires while
-  `mode === "system"`. One click therefore severs OS-theme-following
-  permanently, with no way to restore it from this public page. The shared
-  `ThemeToggle` is a three-state radiogroup whose doc comment names this
-  exact surface, and the store already ships `cycleMode()`. Left alone
-  because both candidate fixes change an operator-approved nav appearance,
-  which this pass was explicitly told to preserve; it needs its own change
-  and an appearance decision. It is a defect, not one of the four settled
-  design questions.
-- Validation: `task studio:check` green — eslint 0 errors (563 warnings,
-  unchanged from the branch baseline), `tsc -b`, and vitest 152 files /
-  1352 tests, up from the 151 / 1351 baseline by exactly the new case.
-  `vite build` exit 0. Three files changed: `CloudLanding.tsx`, its new
-  test, and this bilan — the plan predicted two, before the ratchet test was
-  added. **No CI or merge result is claimed for the changed head; neither
-  had happened when this was written.**
-- Lessons for next run: when a finding is about payload rather than
-  behaviour, make the acceptance gate answer "did it leave the eager graph",
-  not "did the number go down" — the two come apart exactly when a bundler
-  reshuffles chunks, which is the case worth catching.
+- Status: **bank recovered; delivery review interrupted by provider quota**.
+  This was not a completed end-to-end Billy run.
+- Method: `/billy` on PR #1028, scoped to Revi finding `R8a91d4` after
+  review `01a085f9-871b-7aa9-85d6-e8724258c04c`. Run
+  `01a08605-1dd6-7907-9baa-86fae51f3e0b` started at 11:54:37Z from
+  `82f881938`; auto-merge was disabled during the pass. The owner made no
+  concurrent edits to its branch.
+- Result: `f0c723e59` defers CloudHome with React.lazy and the existing
+  BootLoading fallback while keeping PublicTopBar eager; `54a2c24d3` adds
+  a regression test; `8fe07161f` records the initial bilan. The approved
+  page content, appearance, local login fallback and marketplace flag stay
+  intact. **R8a91d4 is fixed.**
+- Evidence: the bot measured entry JS 461.25 → 289.78 kB (gzip 127.43 →
+  88.30) and entry CSS 119.68 → 98.21 kB (gzip 21.62 → 17.03). Neither
+  CloudHome nor its brand-icon payload remained in the eager preload graph.
+  The new test was falsified by temporarily restoring the static import.
+  Studio lint had zero errors, TypeScript and Vite passed, and all 1,352
+  tests in 152 files passed. The generated delivery script also passed,
+  including the OpenAPI/client drift check.
+- Stop and recovery: the final `review` node hit the Claude five-hour limit
+  at 12:41:07Z (`USAGE_LIMIT_BLOCKED`, reset advertised for 13:50Z), before
+  publishing a ledger or pushing the PR. The owner cancelled the parked run
+  and confirmed `cancelled`, with no running execution, before recovering
+  checkpoint `iterion/run-01a08605-1dd6-7907-9baa-86fae51f3e0b-checkpoint`.
+  FETCH_HEAD matched the recorded `8fe07161f6a92587a3dc34c3bb6bf155365ccd06`;
+  its three commits were preserved by fast-forward rather than replaying
+  the completed campaign after the reset.
+- Recovery validation: the owner reran Studio lint (0 errors), TypeScript,
+  all 1,352 tests and the production build successfully. Browser checks on
+  the built SPA confirm that `/login` neither requests nor preloads the
+  CloudHome JS/CSS, while `/` loads both and still navigates to login. Local
+  bundle sizes match the measurements above. GitHub CI and Revi must validate
+  the published head before queue entry.
+- Frictions: planning and peer review took about 25 minutes for one
+  import-boundary correction. A 30-second shell timeout cut off the peer's
+  baseline lint; the owner supplied the already-green baseline and advised
+  a longer timeout. Vitest cannot resolve the real page's lobehub UI import
+  in this environment, so the boundary test mocks its far side; the
+  production bundle check covers the actual dependency graph. Soft usage
+  readings (`stopped=false`, including 0%) did not predict the hard denial.
+- Lesson: validate the eager dependency graph, not just a chunk-size drop,
+  and preserve banked work when the delivery review cannot obtain a model.
 
 ## 2026-09-08 — #964: quota stop after useful fixes, bank delivered locally
 
