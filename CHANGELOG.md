@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.125.1](https://github.com/SocialGouv/iterion/compare/v3.125.0...v3.125.1) (2026-09-09)
+
+### Bug Fixes
+
+* **cost:** an OpenAI turn was priced as if it had cost nothing to send ([#1034](https://github.com/SocialGouv/iterion/issues/1034)) ([6bb10e3](https://github.com/SocialGouv/iterion/commit/6bb10e370341f836288b46d75eb6124519baf022)), references [#992](https://github.com/SocialGouv/iterion/issues/992) [#992](https://github.com/SocialGouv/iterion/issues/992)
+
+    <details><summary>why</summary>
+
+    Every OpenAI-family call through claw reported ZERO input tokens. Both endpoints reported the count and both translations dropped it: the chat-completions path parsed `prompt_tokens` and never read it, and /v1/responses sends `message_start` bare and built its usage from the output half alone. Sweeping claw for any assignment of input tokens returned two hits — the Anthropic SSE client and bedrock.
+
+    </details>
+
 ## [3.125.0](https://github.com/SocialGouv/iterion/compare/v3.124.0...v3.125.0) (2026-09-09)
 
 ### Features
