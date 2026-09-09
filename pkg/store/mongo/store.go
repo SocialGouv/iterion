@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -470,12 +471,26 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// retry_circuits: one tenant-scoped document per workflow/revision key.
 	// The unique key makes concurrent runner pods converge on one durable
 	// breaker rather than keeping independent in-memory counters.
-	_, err = s.retryCircuits.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
-		Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
+	//
+	// The TTL is the collection's ONLY retention path: the breaker is
+	// workflow-scoped, so DeleteRun deliberately does not sweep it and no
+	// write ever deletes a document. It is deliberately NOT gated on
+	// eventsTTLDays — that knob retains derived observability streams an
+	// operator may legitimately want kept forever, while this is control
+	// state whose lifecycle bound cannot be optional. retrycircuitRetention
+	// carries the argument for why reaping an idle breaker is a no-op.
+	_, err = s.retryCircuits.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
+		},
+		{
+			Keys:    bson.D{{Key: "updated_at", Value: 1}},
+			Options: options.Index().SetName("retry_circuits_ttl").SetExpireAfterSeconds(int32(retrycircuitRetention / time.Second)),
+		},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
-		return fmt.Errorf("store/mongo: ensure retry_circuits index: %w", err)
+		return fmt.Errorf("store/mongo: ensure retry_circuits indexes: %w", err)
 	}
 
 	return nil

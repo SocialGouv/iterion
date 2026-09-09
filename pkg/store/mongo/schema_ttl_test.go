@@ -3,6 +3,7 @@ package mongo
 import (
 	"os"
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
@@ -139,5 +140,33 @@ func TestEnsureSchema_RunTurnsTTLDisabled(t *testing.T) {
 	s := newTTLTestStore(t, 0)
 	if _, ok := ttlSeconds(t, s.runTurns, "run_turns_ttl"); ok {
 		t.Errorf("run_turns_ttl present with EventsTTLDays=0; TTL should be disabled")
+	}
+}
+
+// TestEnsureSchema_RetryCircuitsTTL pins the retry breaker's ONLY retention
+// path. Unlike every other collection here it is neither run-scoped (so
+// DeleteRun cannot sweep it — parity_test.go opts it out on purpose) nor
+// ever deleted by a write, and its key is a workflow HASH, so each `.bot`
+// edit orphans one more document forever. The TTL is what bounds that.
+//
+// It is deliberately checked at EventsTTLDays==0, the shape that would have
+// exposed the mistake of hanging it off the observability knob: retention of
+// derived streams is an operator's choice, the breaker's lifecycle is not.
+func TestEnsureSchema_RetryCircuitsTTL(t *testing.T) {
+	s := newTTLTestStore(t, 0)
+
+	got, ok := ttlSeconds(t, s.retryCircuits, "retry_circuits_ttl")
+	if !ok {
+		t.Fatalf("retry_circuits has no retry_circuits_ttl index after EnsureSchema (unbounded growth: nothing else ever deletes one)")
+	}
+	if want := int32(retrycircuitRetention / time.Second); got != want {
+		t.Errorf("retry_circuits_ttl expireAfterSeconds = %d, want %d", got, want)
+	}
+	// The margin is the safety argument: reaping is only a no-op because an
+	// idle document is already semantically absent, which needs the TTL to
+	// sit far above the cooldown that decays the streak.
+	if retrycircuitRetention <= retrycircuitDefaultCooldown {
+		t.Errorf("retention %s must exceed the cooldown %s, or the TTL could close a breaker that is still open",
+			retrycircuitRetention, retrycircuitDefaultCooldown)
 	}
 }

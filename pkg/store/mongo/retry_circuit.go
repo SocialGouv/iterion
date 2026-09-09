@@ -23,6 +23,27 @@ const (
 	retrycircuitDefaultCooldown  = 15 * time.Minute
 )
 
+// retrycircuitRetention bounds how long an IDLE breaker document survives —
+// the TTL index EnsureSchema puts on updated_at.
+//
+// It needs one because nothing else reaps it. The document is keyed by
+// tenant + workflow revision, not by run, so DeleteRun deliberately skips it
+// (a sibling run still shares the breaker) and RecordRetrySuccess zeroes the
+// streak without removing the document. Keys are workflow HASHES, so every
+// edit to a `.bot` mints a new one and orphans the old — unbounded growth,
+// one document per revision that ever hit a usage window, forever.
+//
+// Reaping an idle document decides nothing differently, which is what makes
+// a TTL the right shape rather than a policy change: after one cooldown of
+// silence RecordRetryFailure restarts the streak at 1 anyway, and
+// RetryCircuitOpen already reports an elapsed open_until as closed — so a
+// document untouched for a month is ALREADY semantically absent, and
+// deleting it just stops paying for the fact. The month is the margin: it is
+// two orders of magnitude above the 15-minute default cooldown, so a
+// deployment would have to configure a cooldown in WEEKS before the TTL
+// could cut short a breaker that is still open.
+const retrycircuitRetention = 30 * 24 * time.Hour
+
 // RecordRetryFailure advances the tenant/workflow circuit's failure streak
 // and opens the breaker once the streak reaches threshold, in ONE atomic
 // document write.
