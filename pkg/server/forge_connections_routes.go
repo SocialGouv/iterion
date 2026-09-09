@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -408,6 +410,12 @@ type forgeConnectionPatchReq struct {
 	// SecurityReadEnabled toggles the org-wide Dependabot-alerts token flow
 	// for this github_app connection (see forge.SecurityReadSecretName).
 	SecurityReadEnabled *bool `json:"security_read_enabled,omitempty"`
+	// WebhookBaseURL pins the base this connection's inbound hook URLs are
+	// built from, for a forge that cannot reach the deployment's public URL
+	// (see forge.Connection.WebhookBaseURL). An explicit "" clears it and
+	// hands the connection back to the public URL — which is why it is a
+	// pointer: absent and "cleared" are different intents.
+	WebhookBaseURL *string `json:"webhook_base_url,omitempty"`
 }
 
 // handlePatchForgeConnection updates a connection's operator-tunable flags.
@@ -435,12 +443,51 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.SecurityReadEnabled == nil {
-		httpError(w, http.StatusBadRequest, "nothing to update: security_read_enabled is the only patchable field")
+	if req.SecurityReadEnabled == nil && req.WebhookBaseURL == nil {
+		httpError(w, http.StatusBadRequest, "nothing to update: patchable fields are security_read_enabled and webhook_base_url")
+		return
+	}
+	// Refused rather than half-applied. The two fields are unrelated
+	// operations against different systems — one pins a URL, the other mints
+	// or withdraws a live org token on GitHub — and there is no transaction
+	// spanning them. Accepting both would mean that when the security-read
+	// half fails (wrong kind, an org clash, a mint that 502s), the URL change
+	// is dropped while the error names only security-read: the caller reads a
+	// single failure and cannot tell that half its intent was discarded.
+	if req.SecurityReadEnabled != nil && req.WebhookBaseURL != nil {
+		httpError(w, http.StatusBadRequest, "send security_read_enabled and webhook_base_url in separate requests: they are independent operations and nothing makes them atomic, so a failure of one would silently drop the other")
+		return
+	}
+	ctx := store.WithTenant(r.Context(), teamID)
+	// Its own path, reached only when the request carries this field alone:
+	// pinning a hook base mints and withdraws nothing, and must not walk a
+	// token path at all.
+	if req.WebhookBaseURL != nil {
+		base, err := canonicalWebhookBaseURL(*req.WebhookBaseURL)
+		if err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%v", err)
+			return
+		}
+		// A non-loopback http base means the forge delivers the payload AND
+		// the signature header in the clear. Warned rather than refused: an
+		// internal-network endpoint is a legitimate thing to pin, and the
+		// operator is the one who knows the network.
+		if u, perr := url.Parse(base); perr == nil && u.Scheme == "http" && !httpdial.IsLoopbackBind(u.Hostname()) && s.logger != nil {
+			s.logger.Warn("forge: connection %s pins a plaintext webhook base (%s) — the forge will deliver payloads and the signature header unencrypted", conn.ID, base)
+		}
+		conn.WebhookBaseURL = base
+		conn.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(ctx, conn); err != nil {
+			httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+			return
+		}
+		s.auditTenant(r, teamID, "forge.connection.webhook_base_url", "forge_connection", conn.ID, map[string]any{
+			"webhook_base_url": conn.WebhookBaseURL,
+		})
+		writeJSON(w, conn)
 		return
 	}
 	enable := *req.SecurityReadEnabled
-	ctx := store.WithTenant(r.Context(), teamID)
 	if enable {
 		if conn.Kind != forge.KindGitHubApp {
 			httpError(w, http.StatusUnprocessableEntity, "security-read requires a github_app connection (this one is %s); a non-App deployment can set the %q team secret by hand instead", conn.Kind, forge.SecurityReadSecretName)

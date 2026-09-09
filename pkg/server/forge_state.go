@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -150,4 +151,42 @@ func canonicalForgeBaseURL(raw string, provider forge.Provider) string {
 	}
 	s = strings.TrimRight(s, "/")
 	return s
+}
+
+// canonicalWebhookBaseURL normalises the base a connection's inbound hook
+// URLs are built from. Empty means "clear the pin", handing the connection
+// back to the deployment's public URL.
+//
+// Unlike canonicalForgeBaseURL it REFUSES what it cannot make sense of
+// rather than guessing: this value is handed to a forge as the address to
+// deliver to, so a wrong one does not fail here — it fails much later, as
+// hooks that were registered successfully and never arrive. A scheme is
+// required for the same reason (assuming https for a host that only speaks
+// http would produce exactly that silent shape), and a path is refused
+// because the route is appended to it.
+func canonicalWebhookBaseURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("webhook_base_url is not a URL: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("webhook_base_url must be an absolute http(s) URL (got %q) — the forge dials this address, so the scheme cannot be inferred", s)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("webhook_base_url has no host: %q", s)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("webhook_base_url must not carry credentials")
+	}
+	if p := strings.Trim(u.Path, "/"); p != "" {
+		return "", fmt.Errorf("webhook_base_url must be scheme+host only (got path %q) — the /api/webhooks/... route is appended to it", u.Path)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("webhook_base_url must not carry a query or fragment: %q", s)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }

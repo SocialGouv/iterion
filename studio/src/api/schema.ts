@@ -5830,6 +5830,7 @@ export interface components {
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+            webhook_base_url?: string;
         };
         DependencyGraphEdge: {
             from: string;
