@@ -26,8 +26,13 @@ type RetryCircuitStore interface {
 	// circuit once threshold is reached. The returned OpenUntil is the earliest
 	// instant at which another retry wave may be admitted.
 	RecordRetryFailure(ctx context.Context, key, runID string, now time.Time, threshold int, cooldown time.Duration) (*RetryCircuitState, error)
-	// RetryCircuitOpen returns the current state. An open circuit is one whose
-	// OpenUntil is after now; a closed/expired circuit admits a retry wave.
+	// RetryCircuitOpen reports whether the breaker is open AT NOW: the state
+	// when it is, nil when it is not. Nil is the contract — a caller reads it
+	// as `if state != nil { blocked }` — so a circuit that never opened, one
+	// still below the threshold, and one whose cooldown has already expired
+	// all report nil, even though the last two still have a durable document.
+	// It is the independent read of what RecordRetryFailure wrote: use it to
+	// observe another pod's breaker, not to re-read your own return value.
 	RetryCircuitOpen(ctx context.Context, key string, now time.Time) (*RetryCircuitState, error)
 	// RecordRetrySuccess clears the failure streak after a run completes, so a
 	// recovered provider does not keep a stale breaker open forever.

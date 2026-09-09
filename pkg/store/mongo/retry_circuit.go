@@ -64,8 +64,16 @@ func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now t
 	return &state, nil
 }
 
-// RetryCircuitOpen reads the durable breaker state. Missing state means the
-// circuit is closed and is represented by a nil pointer.
+// RetryCircuitOpen reports whether the breaker is OPEN at now, returning its
+// state when it is and nil when it is not.
+//
+// Nil IS the contract: the caller reads this as `if state != nil { the wave
+// is blocked }`, so every not-open shape has to collapse to nil — a missing
+// document (never opened), a document whose streak has not reached the
+// threshold (no open_until at all), and a document whose cooldown has
+// EXPIRED. That last one is the trap: the document outlives its own cooldown
+// (RecordRetrySuccess is the only thing that removes open_until), so
+// returning it non-nil would read a recovered provider as blocked forever.
 func (s *Store) RetryCircuitOpen(ctx context.Context, key string, now time.Time) (*store.RetryCircuitState, error) {
 	if key == "" {
 		return nil, nil
@@ -79,7 +87,7 @@ func (s *Store) RetryCircuitOpen(ctx context.Context, key string, now time.Time)
 		return nil, err
 	}
 	if state.OpenUntil == nil || !state.OpenUntil.After(now.UTC()) {
-		return &state, nil
+		return nil, nil
 	}
 	return &state, nil
 }

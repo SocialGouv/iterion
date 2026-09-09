@@ -70,14 +70,15 @@ func RecordFailure(ctx context.Context, s store.RunStore, key, runID string, now
 	return c.RecordRetryFailure(ctx, key, runID, now, cfg.Threshold, cfg.Cooldown)
 }
 
-func Open(ctx context.Context, s store.RunStore, key string, now time.Time) (*store.RetryCircuitState, error) {
-	c := store.AsRetryCircuitStore(s)
-	if c == nil || key == "" {
-		return nil, nil
-	}
-	return c.RetryCircuitOpen(ctx, key, now)
-}
-
+// RecordSuccess clears the streak once a run of this workflow revision has
+// completed, so a recovered provider does not keep a stale breaker armed.
+// Same nil-store degradation as RecordFailure.
+//
+// There is deliberately no Open() wrapper here: nothing in the runner GATES
+// on the breaker, it only lets the cooldown push a wake-up later (see
+// armUsageWindowRetry). Reading the breaker to refuse admission would be a
+// different contract, and the wrapper for it belongs to the change that
+// needs it — store.RetryCircuitStore already exposes RetryCircuitOpen.
 func RecordSuccess(ctx context.Context, s store.RunStore, key string, now time.Time) error {
 	c := store.AsRetryCircuitStore(s)
 	if c == nil || key == "" {
