@@ -54,6 +54,11 @@ func TestDelayRunRetryDoesNotConsumeAttempt(t *testing.T) {
 	if scheduled, attempt, err := s.ScheduleRunRetry(ctx, "run-delay", original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled || attempt != 1 {
 		t.Fatalf("ScheduleRunRetry = (%v, %d, %v), want (true, 1, nil)", scheduled, attempt, err)
 	}
+	armed, err := s.LoadRun(ctx, "run-delay")
+	if err != nil || armed.RetryState == nil || armed.RetryState.ScheduledAt == nil {
+		t.Fatalf("LoadRun after arm = (%+v, %v), want scheduled_at", armed, err)
+	}
+	scheduledAt := *armed.RetryState.ScheduledAt
 	delayedUntil := original.Add(time.Hour)
 	delayed, err := s.DelayRunRetry(ctx, "run-delay", original, delayedUntil)
 	if err != nil || !delayed {
@@ -65,5 +70,8 @@ func TestDelayRunRetryDoesNotConsumeAttempt(t *testing.T) {
 	}
 	if run.RetryState == nil || run.RetryState.Attempts != 1 || run.RetryState.RetryAfter == nil || !run.RetryState.RetryAfter.Equal(delayedUntil) {
 		t.Fatalf("retry state after delay = %+v, want attempt 1 at %v", run.RetryState, delayedUntil)
+	}
+	if run.RetryState.ScheduledAt == nil || !run.RetryState.ScheduledAt.Equal(scheduledAt) {
+		t.Fatalf("scheduled_at after delay = %v, want preserved %v", run.RetryState.ScheduledAt, scheduledAt)
 	}
 }

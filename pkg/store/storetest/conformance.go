@@ -89,6 +89,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
+	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -96,6 +97,52 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testOutputCorrectionStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	corrections := store.AsOutputCorrectionStore(s)
+	if corrections == nil {
+		t.Skip("backend does not implement OutputCorrectionStore")
+	}
+	ctx := testCtx()
+	const runID = "run_output_correction"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, "schema mismatch", store.FailureSchemaValidation); err != nil {
+		t.Fatalf("park run: %v", err)
+	}
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "writer"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	before, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun before: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	want := store.OutputCorrectionEpisode{
+		EpisodeID: "writer/root", InvocationID: "writer", NodeID: "writer",
+		Budget: 2, Attempts: 1, Status: "active", InputFingerprint: "input",
+		LastOutputFingerprint: "output", LastViolationFingerprint: "violation",
+		StartedAt: now, UpdatedAt: now,
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, runID, "writer_root", want); err != nil {
+		t.Fatalf("SetRunOutputCorrection: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after: %v", err)
+	}
+	if episode, ok := got.OutputCorrections["writer_root"]; !ok || episode.EpisodeID != want.EpisodeID || episode.Attempts != 1 || episode.Status != "active" || !episode.StartedAt.Equal(now) {
+		t.Fatalf("output correction round-trip = %+v, present=%t", episode, ok)
+	}
+	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error || got.Checkpoint == nil || got.Checkpoint.NodeID != "writer" {
+		t.Fatalf("granular correction write replaced peer fields: before=%+v after=%+v", before, got)
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, "missing-output-correction", "writer_root", want); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("missing run error = %v, want ErrRunNotFound", err)
+	}
 }
 
 func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
@@ -106,9 +153,10 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	cp := &store.Checkpoint{
-		NodeID:        "dispatch",
-		InteractionID: "interaction-1",
-		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		NodeID:            "dispatch",
+		InteractionID:     "interaction-1",
+		FiredEvents:       map[string]map[string]any{"ready": {"value": "ok"}},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 2}},
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -126,6 +174,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					Outputs:            map[string]map[string]any{"work": {"result": "ok"}},
 					Artifacts:          map[string]map[string]any{"report": {"path": "report.md"}},
 					ArtifactVersions:   map[string]int{"work": 2},
+					ArtifactRevisions:  map[string]store.ArtifactRevisionRef{"report": {NodeID: "work", Version: 1}},
 					LoopCounters:       map[string]int{"retry": 1},
 					LoopPreviousOutput: map[string]map[string]any{"retry": {"result": "before"}},
 					LoopCurrentOutput:  map[string]map[string]any{"retry": {"result": "after"}},
@@ -153,6 +202,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
 		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
 	}
+	if revision := r.Checkpoint.ArtifactRevisions["plan"]; revision.NodeID != "planner" || revision.Version != 2 {
+		t.Fatalf("artifact revision after round-trip = %+v", revision)
+	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]
 	if got.InvocationKey != "dispatch@outer=2" || got.PendingNodeID != "gate" || got.NextArtifactVersion["gate"] != 4 {
@@ -160,6 +212,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
 		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
+	}
+	if revision := branch.ArtifactRevisions["report"]; revision.NodeID != "work" || revision.Version != 1 {
+		t.Fatalf("branch artifact revision after round-trip = %+v", revision)
 	}
 	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
 		t.Fatalf("branch nested state after round-trip = %+v", branch)

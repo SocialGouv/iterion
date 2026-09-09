@@ -62,9 +62,10 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	})
 	update := bson.M{
 		"$set": bson.M{
-			retryPath("retry_after"): at.UTC(),
-			retryPath("reason"):      reason,
-			retryPath("code"):        code,
+			retryPath("retry_after"):  at.UTC(),
+			retryPath("scheduled_at"): now,
+			retryPath("reason"):       reason,
+			retryPath("code"):         code,
 			// Arming IS the promotion: continuation_state must only say
 			// retry_armed once a retry actually exists (the block point
 			// stamps unknown), and this write is the one that creates it.

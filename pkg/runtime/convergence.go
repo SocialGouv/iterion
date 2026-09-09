@@ -109,6 +109,11 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					convergenceNodeID, name)
 			}
 			rs.artifacts[name] = output
+			if revision, ok := r.artifactRevisions[name]; ok {
+				rs.artifactRevisions[name] = revision
+			} else {
+				delete(rs.artifactRevisions, name)
+			}
 		}
 		for nodeID, version := range r.artifactVersions {
 			// Max-merge (not last-write-wins): every branch copies the full
@@ -161,6 +166,11 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 		}
 		for name, output := range r.artifacts {
 			rs.artifacts[name] = output
+			if revision, ok := r.artifactRevisions[name]; ok {
+				rs.artifactRevisions[name] = revision
+			} else {
+				delete(rs.artifactRevisions, name)
+			}
 		}
 		for nodeID, version := range r.artifactVersions {
 			// Max-merge (not last-write-wins): every branch copies the full
