@@ -46,6 +46,18 @@ const (
 	// enough that a wedged store cannot hold the delivery past its ack
 	// deadline.
 	usageRetryStoreTimeout = 10 * time.Second
+	// usageRetryCircuitTimeout is the slice of that budget the OPTIONAL
+	// cross-pod circuit update may spend. It needs its own bound because it
+	// runs BEFORE the write that actually matters: without one it shares the
+	// arming's single deadline, and a wedged circuit collection — which is
+	// how a store outage usually presents, as latency rather than a prompt
+	// error — would drain all ten seconds, leave ScheduleRunRetry an expired
+	// context, and fall the run back to redelivery. That is the pod storm the
+	// whole usage-window carve-out exists to prevent, caused by the breaker
+	// meant to damp it. Bounding it here is what makes "a circuit-store
+	// outage must not drop a durable per-run retry" true for a SLOW store and
+	// not only for a fast-failing one.
+	usageRetryCircuitTimeout = 3 * time.Second
 	// usageWindowBlindWait is the fallback when the provider told us a
 	// window is exhausted but nothing in the text parses as a reset time.
 	// Deliberately bounded and short-ish: one wasted pod an hour beats
@@ -382,7 +394,9 @@ func (r *Runner) armUsageWindowRetry(
 	// ledger remains authoritative for the attempt bound; the shared circuit
 	// only moves the next wake-up out of a provider-wide failure storm.
 	if key := retrycoord.Key(runMeta); key != "" {
-		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, now, retrycoord.FromEnv())
+		circuitCtx, circuitCancel := context.WithTimeout(ctx, usageRetryCircuitTimeout)
+		circuitState, circuitErr := retrycoord.RecordFailure(circuitCtx, r.cfg.Store, key, runID, now, retrycoord.FromEnv())
+		circuitCancel()
 		if circuitErr != nil {
 			// A circuit-store outage must not drop a durable per-run retry. The
 			// existing ScheduleRunRetry below still provides the safe fallback.

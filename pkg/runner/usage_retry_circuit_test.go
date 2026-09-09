@@ -20,6 +20,9 @@ type circuitStore struct {
 	*cancelAwareStore
 	openUntil *time.Time
 	recordErr error
+	// hang makes RecordRetryFailure wait for its context instead of
+	// returning, the way a wedged Mongo primary does.
+	hang bool
 
 	failures  int
 	successes int
@@ -27,9 +30,13 @@ type circuitStore struct {
 	lastEvent store.Event
 }
 
-func (c *circuitStore) RecordRetryFailure(_ context.Context, key, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+func (c *circuitStore) RecordRetryFailure(ctx context.Context, key, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
 	c.failures++
 	c.lastKey = key
+	if c.hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if c.recordErr != nil {
 		return nil, c.recordErr
 	}
@@ -142,6 +149,36 @@ func TestArmUsageWindowRetry_CircuitOutageStillArms(t *testing.T) {
 	}
 	if !st.armed {
 		t.Error("no retry persisted after a circuit-store outage")
+	}
+}
+
+// TestArmUsageWindowRetry_SlowCircuitStillArms is the other half of that
+// degradation, and the one the error path does not cover: a store outage
+// usually presents as LATENCY, not as a prompt error. The circuit update
+// runs before ScheduleRunRetry and used to share the arming's single 10s
+// deadline, so a wedged circuit collection drained the whole budget and left
+// the essential write an expired context — falling the run back to
+// redelivery, which is the pod storm the carve-out exists to prevent, caused
+// by the breaker meant to damp it.
+func TestArmUsageWindowRetry_SlowCircuitStillArms(t *testing.T) {
+	st := newCircuitStore(t, nil, nil)
+	st.hang = true
+	r := &Runner{cfg: Config{Store: st}}
+
+	start := time.Now()
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), "run-circuit", iterlog.New(iterlog.LevelError, io.Discard))
+	elapsed := time.Since(start)
+
+	if got != usageRetryArmed {
+		t.Fatalf("outcome = %v, want usageRetryArmed — a hung circuit store cost the run its durable retry", got)
+	}
+	if !st.armed {
+		t.Error("no retry persisted: the circuit update consumed the arming's store budget")
+	}
+	// It must give up on its own slice, well before the arming's own bound.
+	if elapsed >= usageRetryStoreTimeout {
+		t.Errorf("arming took %s, at or past the whole store budget (%s) — the circuit call is not separately bounded",
+			elapsed, usageRetryStoreTimeout)
 	}
 }
 
