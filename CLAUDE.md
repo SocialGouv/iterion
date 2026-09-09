@@ -325,11 +325,14 @@ the hours this one spent.
   `iterion remote forge integrations sync <id>` / `sync_issues_enabled` — not
   `iterion issue import`, which writes to a local store the instance never
   reads.
-- [docs/ticket-context.md](docs/ticket-context.md) — plugging tracker
-  tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
-  verifies the PR delivers what the ticket asks: the team wiring (team
-  secret → `tracker_token` binding with `allowed_hosts` → per-repo
-  `tracker_api_base` launch_var), the one-credential-per-team limit, and
+- [docs/ticket-context.md](docs/ticket-context.md) — plugging tickets into
+  a Revi review so it verifies the PR delivers what the ticket asks. Since
+  0.9.0 the check runs BY DEFAULT with no configuration, on the forge's own
+  issues (`ticket_context: auto`), read by a deterministic node — no agent
+  ever holds the write-capable `forge_token`; `off` skips it. An EXTERNAL
+  tracker (Jira Cloud/DC) replaces that source and is what needs wiring:
+  team secret → `tracker_token` binding with `allowed_hosts` → per-repo
+  `tracker_api_base` launch_var, the one-credential-per-team limit, and
   the org governance layer (provisioning approval queue +
   org-admin-delegated per-team caps). Read it when a team asks "can the
   reviewer check the code against our tickets?" or when a provisioning

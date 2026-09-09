@@ -1,32 +1,69 @@
-# Ticket conformance — plugging tracker tickets into a review
+# Ticket conformance — checking a PR against the ticket it claims
 
-Revi (`bots/review-pr` ≥ 0.6.0) can verify that a PR actually delivers
-what its tracker ticket(s) ask for: it fetches the referenced tickets
-(Jira Cloud, Jira Server/DC, GitHub or GitLab issues), checks the diff
+Revi (`bots/review-pr` ≥ 0.6.0) verifies that a PR actually delivers
+what its ticket(s) ask for: it reads the referenced tickets (the forge's
+own issues, or Jira Cloud / Server-DC), checks the diff
 against the demand and acceptance criteria, posts a per-ticket verdict
 (covered / partial / not covered / unverifiable) in the review summary
 and the markdown report, and files genuine gaps as findings of category
 `requirements` — which gate the merge like any other finding, per the
 repo's `gate_severity`.
 
-The feature is **dormant by default**: without a `tracker_api_base` var
-the bot behaves exactly as before. Tracker specifics live in
+**Since 0.9.0 the check is ON by default and needs no configuration.**
+`ticket_context` (`auto` | `off`, default `auto`) picks the source:
+
+| what is configured | source | who fetches |
+|---|---|---|
+| `tracker_api_base` set | that external tracker (Jira & co) | the reviewer, with the bound `tracker_token` |
+| nothing (the common case) | the FORGE's own issues, derived from `pr_url` | the deterministic `ticket_fetch` node, with the run's `forge_token` |
+| `--var ticket_context=off` | none — the section is skipped | — |
+
+Everything below the next section is about the **external tracker**
+wiring; forge-native mode needs none of it. Tracker specifics live in
 [bots/review-pr/skills/ticket-context.md](../bots/review-pr/skills/ticket-context.md)
 (universal-bots doctrine — no tracker enum in the DSL).
 
 ## How the reviewers find the tickets
 
-- Explicit: `--var ticket_refs="PROJ-123 PROJ-456"`.
-- Extracted (the webhook default): from the PR title/body (they arrive
-  as `scope_notes`) and the source branch name — Jira keys
-  (`PROJ-123`), `#N` refs, pasted ticket URLs.
+In order:
+
+1. Explicit: `--var ticket_refs="PROJ-123 PROJ-456"` (or `#12`).
+2. Forge-native only — **what the forge says this PR closes**: GitHub's
+   `closingIssuesReferences`, GitLab's `closes_issues`. A formal link
+   beats any regex over prose, and it is the only source that can carry
+   a blocking `requirements` finding, along with (1).
+3. Scanned from the PR title/body and the source branch name — Jira
+   keys (`PROJ-123`), `#N` and `owner/repo#N` refs, pasted ticket URLs.
+   A reference the text merely *mentions* is context for the review, not
+   a promise to deliver: it never becomes a blocking finding.
 
 A fetch failure or zero extractable refs yields an explicit
 `unverifiable — <reason>` verdict; it never fails the review and never
-silently disappears.
+silently disappears. **A PR that references no ticket is normal** — the
+absence of a reference is never a finding.
 
-## Wiring a team (cloud instance)
+### Forge-native mode — what it needs, and what it never does
 
+It needs the `forge_token` the repo's provisioning already binds, and
+nothing else. Two properties are deliberate:
+
+- **No agent ever holds that token.** It is the connection's runtime
+  credential and it is write-capable, while a reviewer ingests the diff
+  and every linked issue body — text an outside contributor writes. So
+  the fetch is a deterministic node (`ticket_fetch`) and the reviewers
+  receive ticket TEXT only. The external-tracker path keeps its
+  agent-side `curl` recipes: `tracker_token` is a read-only credential
+  an operator bound on purpose, egress-pinned to the tracker host.
+- **A GitHub Enterprise token stays on the enterprise.** The API base is
+  derived from the PR URL — `https://<host>/api/v3` for REST and
+  `https://<host>/api/graphql` for GraphQL, never `api.github.com`.
+
+Without a bound `forge_token` the node reads anonymously: public issues
+still work, private ones come back `unverifiable`.
+
+## Wiring a team to an EXTERNAL tracker (cloud instance)
+
+Only for Jira & co — forge-native mode needs none of these steps.
 Everything is team-scoped; a team admin can do all of it self-service
 in the studio, or an org admin / SRE does it for them.
 
@@ -54,8 +91,9 @@ in the studio, or an org admin / SRE does it for them.
    - `tracker_user`: the service account email — Jira Cloud only;
      leave unset for Bearer-token trackers.
 
-Repos/teams without the binding are untouched: the secret is
-`optional: true` and the vars default empty.
+Repos/teams without the binding keep the forge-native behaviour: the
+secret is `optional: true` and `tracker_api_base` defaults empty, which
+is exactly what selects the forge's own issues.
 
 For a local CLI run: `iterion secret set tracker_token`, then
 `iterion run bots/review-pr/main.bot --var pr_url=… --var
@@ -96,9 +134,15 @@ waiting for exactly that move).
   `review-pr`, hence one tracker credential per team. Different Jira
   tokens per repo ⇒ use one service account with access to all the
   relevant projects, or split the repos across teams.
-- The reviewers read the token as a FILE path and never print its
-  value; layers 0–2 of [secrets.md](secrets.md) apply. Ticket content
-  is treated as untrusted data (anti-injection clause in the skill).
+- The reviewers read the tracker token as a FILE path and never print
+  its value; layers 0–2 of [secrets.md](secrets.md) apply. Ticket
+  content is treated as untrusted data (anti-injection clause in the
+  skill) — and in forge-native mode the fetch happens outside any model
+  context, so an injected ticket has no credential to reach for.
+- Setting `tracker_api_base` **replaces** forge-native mode for that
+  repo (the external tracker is the more specific answer). The two are
+  exclusive today: a repo that tracks work in Jira does not also get its
+  forge issues checked on the same PR.
 
 ## Isolation & org layout (who manages what)
 
