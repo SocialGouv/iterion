@@ -3540,6 +3540,38 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
     return unproven
 
 
+def duplicate_groups_refusal(unproven, duplicate_refs, corpus_distinct, corpus_total):
+    """The gate's refusal, phrased over the TWO populations it actually has.
+
+    An OBSERVED byte-identical class that is not discharged is "N of M"; a STALE
+    declaration is unproved precisely BECAUSE its references are no longer
+    identical, so it is not one of the M and can never be. Counted into one
+    ratio the line read "4 reference group(s) are not proved (out of 1
+    byte-identical …)", which is arithmetic nobody can act on — on a gate whose
+    whole point is precise adjudication, a headline that cannot be read is
+    itself the defect.
+
+    Named rather than inline in main() so the self-test drives THIS text and not
+    a re-implementation of it.
+    """
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    stale = [u for u in unproven if tuple(sorted(u["ids"])) not in observed]
+    head = []
+    if len(unproven) - len(stale):
+        head.append("%d of %d byte-identical reference group(s) across DIFFERENT entries "
+                    "are not proved (the corpus is %d observations wide, not %d)"
+                    % (len(unproven) - len(stale), len(duplicate_refs),
+                       corpus_distinct, corpus_total))
+    if stale:
+        head.append("%d `duplicate_groups` declaration(s) no longer describe a "
+                    "byte-identical class, so the claim has nothing left to justify"
+                    % len(stale))
+    return ("%s. A group may legitimately repeat — a refusal lane's second entry is a "
+            "control — but the claim is discharged by a mutant that moves part of the "
+            "group and leaves the rest still, declared in `duplicate_groups` and checked "
+            "here: %s" % ("; ".join(head), json.dumps(unproven, ensure_ascii=False)))
+
+
 def control_ids(corpus, targets, seed):
     """Deterministic sample of non-target entries, to measure collateral."""
     pool = [e["id"] for e in corpus["entries"] if e["id"] not in targets]
@@ -6338,6 +6370,27 @@ def _selftest():
               [{"id": "held-sep", "valid": False, "reason": "apply.sh a echoue"}],
               False, [], ["held-sep"])], [True])
 
+    # LE TITRE, et il porte sur DEUX populations. Une classe OBSERVEE non
+    # acquittee se compte « N sur M » ; une declaration CADUQUE est non prouvee
+    # justement parce que ses references ne sont plus identiques, donc elle
+    # n'est pas l'un des M et ne peut pas l'etre. Comptees dans un seul rapport,
+    # la ligne annoncait « 4 reference group(s) are not proved (out of 1
+    # byte-identical …) » — une arithmetique sur laquelle personne n'agit.
+    _mixed = [{"ids": ["012", "013"], "why": "x"},
+              {"ids": ["019", "077"], "why": "caduque"},
+              {"ids": ["080", "081"], "why": "caduque aussi"}]
+    _head = duplicate_groups_refusal(_mixed, [["012", "013"]], 11, 14)
+    check("le titre separe les classes observees des declarations caduques",
+          [("1 of 1 byte-identical" in _head),
+           ("2 `duplicate_groups` declaration(s) no longer describe" in _head)],
+          [True, True])
+    check("et une seule population ne fait pas parler de l'autre",
+          [("no longer describe" in duplicate_groups_refusal(
+              [{"ids": ["012", "013"], "why": "x"}], [["012", "013"]], 11, 14)),
+           ("byte-identical reference group(s)" in duplicate_groups_refusal(
+               [{"ids": ["019", "077"], "why": "caduque"}], [], 14, 14))],
+          [False, False])
+
     D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
     check("separateur qui deplace UN membre : preuve acquittee",
           whys(["012", "013"], D, {"sep-01": {"013"}}), [])
@@ -7187,22 +7240,9 @@ def main():
             problems.append(shape)
         report["duplicate_groups_unproven"] = unproven
         if unproven:
-            # The headline counts what the payload lists. Interpolating the
-            # OBSERVED total while listing only the unproved ones told the
-            # operator "5 groups are not proved" beside a list of one — and the
-            # two do not even range over the same set: a stale declaration is
-            # unproved while its references are, by definition, no longer
-            # identical. On a gate whose whole point is precise adjudication,
-            # that gap is the defect.
-            problems.append("%d reference group(s) are not proved (out of %d byte-identical "
-                            "across DIFFERENT entries; the corpus is %d observations wide, "
-                            "not %d). A group may legitimately repeat — a refusal lane's "
-                            "second entry is a control — but the claim is discharged by a "
-                            "mutant that moves part of the group and leaves the rest still, "
-                            "declared in `duplicate_groups` and checked here: %s"
-                            % (len(unproven), len(report["duplicate_refs"]),
-                               report["corpus_distinct"], report["corpus_total"],
-                               json.dumps(unproven, ensure_ascii=False)))
+            problems.append(duplicate_groups_refusal(
+                unproven, report["duplicate_refs"],
+                report["corpus_distinct"], report["corpus_total"]))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
                          "its result is withheld on purpose. Only the final gate scores "
