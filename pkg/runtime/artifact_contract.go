@@ -2,11 +2,21 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+var (
+	// ErrArtifactContractIncompatible is a durable compatibility refusal. It
+	// lets HTTP and resume callers classify an operator-actionable conflict.
+	ErrArtifactContractIncompatible = errors.New("artifact contract incompatible")
+	// ErrArtifactContractUnavailable means validation could not read the
+	// durable evidence. It is an infrastructure error, not a source mismatch.
+	ErrArtifactContractUnavailable = errors.New("artifact contract validation unavailable")
 )
 
 // artifactContractFor derives the immutable portion of an artifact contract
@@ -28,35 +38,45 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 	if rs == nil {
 		return contract
 	}
-	for _, consumedRef := range ir.NodeArtifactRefs(e.workflow, nodeID) {
+	for _, consumedRef := range e.consumedArtifactRefs(nodeID, rs) {
 		if _, present := rs.artifacts[consumedRef]; !present {
 			continue
 		}
-		producerID := e.artifactProducer(consumedRef)
-		nextVersion, present := rs.artifactVersions[producerID]
-		if producerID == "" || !present || nextVersion <= 0 {
+		revision, present := rs.artifactRevisions[consumedRef]
+		if !present || revision.NodeID == "" {
 			continue
 		}
 		contract.Dependencies = append(contract.Dependencies, store.ArtifactDependency{
 			LogicalRef: consumedRef,
-			NodeID:     producerID,
-			Version:    nextVersion - 1,
+			NodeID:     revision.NodeID,
+			Version:    revision.Version,
 			Required:   true,
 		})
 	}
 	return contract
 }
 
-func (e *Engine) artifactProducer(logicalRef string) string {
+// consumedArtifactRefs mirrors buildNodeInputRS's selected-edge rules so a
+// contract includes artifact references that reached the node through `with:`
+// without binding it to an unselected sibling mapping.
+func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 	if e.workflow == nil {
-		return ""
+		return nil
 	}
-	for nodeID, node := range e.workflow.Nodes {
-		if nodePublish(node) == logicalRef {
-			return nodeID
+	selected, tracked := incomingFor(nodeID, resolveScope{rs: rs})
+	if tracked && !incomingMatchesWorkflow(nodeID, selected, e.workflow.Edges) {
+		tracked = false
+	}
+	overlayForward := tracked && incomingOnlyBounded(selected)
+	return ir.NodeArtifactRefsForEdges(e.workflow, nodeID, func(edge *ir.Edge) bool {
+		if _, ok := rs.outputs[edge.From]; !ok && edge.From != "" {
+			return false
 		}
-	}
-	return ""
+		if !tracked || (overlayForward && !edge.IsBoundedIteration()) {
+			return true
+		}
+		return edgeInIncoming(edge, selected)
+	})
 }
 
 // ValidateArtifactContracts checks persisted artifact metadata before a
@@ -83,6 +103,11 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
 		policy = run.ExecutionContext.Policy
 	}
+	// Legacy cannot produce a refusal or report event. Avoid N full artifact
+	// reads (S3 GETs for the cloud store) on the default compatibility path.
+	if policy == store.ContextPolicyLegacy {
+		return nil
+	}
 	var violations []string
 	for nodeID, version := range run.ArtifactIndex {
 		if ignoredNodes[nodeID] {
@@ -90,12 +115,11 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		}
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
-			// Legacy documents historically treated the index as a cache. Once a
-			// run opts into report/enforce, however, an unreadable indexed artifact
-			// means validation could not be completed and must be visible.
-			if policy != store.ContextPolicyLegacy {
-				violations = append(violations, fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err))
+			msg := fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err)
+			if policy == store.ContextPolicyEnforce {
+				return fmt.Errorf("%w: %s", ErrArtifactContractUnavailable, msg)
 			}
+			violations = append(violations, msg)
 			continue
 		}
 		if artifact == nil || artifact.Contract == nil {
@@ -135,11 +159,15 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if depNode == "" {
 				depNode = dep.LogicalRef
 			}
-			depVersion, present := run.ArtifactIndex[depNode]
-			if !present {
-				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, which is absent from the run", contract.LogicalRef, dep.LogicalRef, dep.Version))
-			} else if depVersion < dep.Version {
-				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion))
+			persisted, err := s.LoadArtifact(ctx, run.ID, depNode, dep.Version)
+			if err != nil {
+				msg := fmt.Sprintf("artifact %q requires %s v%d, which could not be loaded: %v", contract.LogicalRef, dep.LogicalRef, dep.Version, err)
+				if policy == store.ContextPolicyEnforce {
+					return fmt.Errorf("%w: %s", ErrArtifactContractUnavailable, msg)
+				}
+				violations = append(violations, msg)
+			} else if persisted == nil || persisted.NodeID != depNode || persisted.Version != dep.Version {
+				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, but the stored revision identity does not match", contract.LogicalRef, dep.LogicalRef, dep.Version))
 			}
 		}
 	}
@@ -160,5 +188,5 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if policy != store.ContextPolicyEnforce {
 		return nil
 	}
-	return fmt.Errorf("artifact contract incompatible: %s", strings.Join(violations, "; "))
+	return fmt.Errorf("%w: %s", ErrArtifactContractIncompatible, strings.Join(violations, "; "))
 }

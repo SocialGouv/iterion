@@ -24,6 +24,11 @@ type usageCorrectingExecutor struct {
 	calls   int
 }
 
+// runStoreOnly mirrors decorators that embed the base RunStore interface: the
+// concrete store may support granular correction writes, but the decorator
+// intentionally does not expose that optional capability.
+type runStoreOnly struct{ store.RunStore }
+
 func (e *usageCorrectingExecutor) CorrectOutputWithUsage(ctx context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, OutputCorrectionUsage, error) {
 	e.calls++
 	if e.correct == nil {
@@ -143,6 +148,26 @@ func TestSchemaValidation_BoundedCorrectionPersistsSuccess(t *testing.T) {
 	ep, ok := run.OutputCorrections["my_agent"]
 	if !ok || ep.Status != correctionStatusSucceeded || ep.Attempts != 1 {
 		t.Fatalf("correction episode = %#v, want succeeded/1", ep)
+	}
+}
+
+func TestSchemaValidation_StoreWithoutCorrectionCapabilityKeepsTypedFailure(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	base := tmpStore(t)
+	if _, err := base.CreateRun(context.Background(), "run-val-base-store", "validation", nil); err != nil {
+		t.Fatal(err)
+	}
+	eng := New(validationWorkflow(), runStoreOnly{RunStore: base}, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	rs := eng.newRunState("run-val-base-store", nil)
+	_, err := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", eng.workflow.Nodes["my_agent"], map[string]any{
+		"summary": "invalid", "score": "not-a-number",
+	})
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeSchemaValidation {
+		t.Fatalf("error = %v, want typed schema validation", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("corrector calls = %d, want 0 without durable ledger capability", exec.calls)
 	}
 }
 

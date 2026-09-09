@@ -99,8 +99,9 @@ func TestArtifactContractRecordsConsumedArtifactVersion(t *testing.T) {
 		"writer":  consumer,
 	}}, workflowHash: "rev"}
 	rs := &runState{
-		artifacts:        map[string]map[string]any{"plan": {"ok": true}},
-		artifactVersions: map[string]int{"planner": 2},
+		artifacts:         map[string]map[string]any{"plan": {"ok": true}},
+		artifactVersions:  map[string]int{"planner": 2},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 1}},
 	}
 	contract := eng.artifactContractFor("writer", consumer, 0, rs)
 	if contract == nil || len(contract.Dependencies) != 1 {
@@ -190,10 +191,92 @@ func TestValidateArtifactContractsRejectsMissingVersionZeroDependency(t *testing
 		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
 	}}
 	err = ValidateArtifactContracts(ctx, s, run, wf, "rev", false)
-	if err == nil || !strings.Contains(err.Error(), "absent from the run") {
+	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) {
 		t.Fatalf("missing version-zero dependency error = %v", err)
 	}
-	if err = ValidateArtifactContracts(ctx, s, run, wf, "rev", true); err == nil || !strings.Contains(err.Error(), "absent from the run") {
+	if err = ValidateArtifactContracts(ctx, s, run, wf, "rev", true); err == nil || !errors.Is(err, ErrArtifactContractUnavailable) {
 		t.Fatalf("force waived persisted dependency integrity: %v", err)
+	}
+}
+
+func TestArtifactContractUsesExecutedPublisherProvenance(t *testing.T) {
+	consumer := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report",
+		CommandRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner_a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner_a"}, Publish: "plan"},
+		"planner_b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner_b"}, Publish: "plan"},
+		"writer":    consumer,
+	}}}
+	rs := &runState{
+		artifacts:         map[string]map[string]any{"plan": {"selected": "b"}},
+		artifactVersions:  map[string]int{"planner_a": 5, "planner_b": 1},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner_b", Version: 0}},
+	}
+	contract := eng.artifactContractFor("writer", consumer, 0, rs)
+	if len(contract.Dependencies) != 1 || contract.Dependencies[0].NodeID != "planner_b" || contract.Dependencies[0].Version != 0 {
+		t.Fatalf("dependency did not follow the consumed value: %+v", contract.Dependencies)
+	}
+}
+
+func TestArtifactContractIncludesSelectedIncomingMapping(t *testing.T) {
+	producer := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"}
+	consumer := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"}
+	edge := &ir.Edge{From: "router", To: "writer", With: []*ir.DataMapping{{
+		Key: "validated_plan", Raw: "{{artifacts.plan}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}}}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": producer,
+		"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}},
+		"writer":  consumer,
+	}, Edges: []*ir.Edge{edge}}}
+	rs := &runState{
+		outputs:           map[string]map[string]any{"router": {"ok": true}},
+		artifacts:         map[string]map[string]any{"plan": {"ok": true}},
+		artifactVersions:  map[string]int{"planner": 1},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 0}},
+		selectedIncoming:  map[string][]store.IncomingEdge{"writer": {incomingFromEdge(edge)}},
+	}
+	contract := eng.artifactContractFor("writer", consumer, 0, rs)
+	if len(contract.Dependencies) != 1 || contract.Dependencies[0].LogicalRef != "plan" {
+		t.Fatalf("incoming mapping dependency = %+v", contract.Dependencies)
+	}
+}
+
+func TestValidateArtifactContractsLoadsExactDependencyWhenIndexLags(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-lagging-index", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{RunID: run.ID, NodeID: "planner", Version: 0, Data: map[string]any{"ok": false}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{RunID: run.ID, NodeID: "planner", Version: 1, Data: map[string]any{"ok": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "plan", NodeID: "planner", Version: 1, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the Mongo best-effort cache lagging behind the durable blob.
+	run.ArtifactIndex = map[string]int{"writer": 0, "planner": 0}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	if err := ValidateArtifactContracts(ctx, s, run, wf, "rev", false); err != nil {
+		t.Fatalf("durable dependency was rejected because its index lagged: %v", err)
 	}
 }

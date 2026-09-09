@@ -108,9 +108,10 @@ type Coordinator struct {
 	// cursor is the durable anti-loop proof for this supervisor instance. It
 	// is written at evaluation boundaries, not on every event, so a busy tool
 	// stream does not turn supervision into a run-document write storm.
-	cursorStore store.RunStore
-	cursorID    string
-	cursor      store.WatcherCursor
+	cursorStore  store.RunStore
+	cursorWriter store.WatcherCursorStore
+	cursorID     string
+	cursor       store.WatcherCursor
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -131,6 +132,7 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 	} else if p, ok := obs.(WatcherProgressStoreProvider); ok {
 		cursorStore = p.WatcherProgressStore()
 	}
+	cursorWriter := store.AsWatcherCursorStore(cursorStore)
 	cursorID := watcherCursorID(spec)
 	return &Coordinator{
 		obs:            obs,
@@ -143,6 +145,7 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		monitors:       append([]Monitor(nil), spec.Monitors...),
 		seedCount:      len(spec.Monitors),
 		cursorStore:    cursorStore,
+		cursorWriter:   cursorWriter,
 		cursorID:       cursorID,
 		cursor:         store.WatcherCursor{WatcherID: cursorID},
 		done:           make(chan struct{}),
@@ -389,13 +392,13 @@ func (c *Coordinator) ingest(evt *store.Event) {
 			c.rescanLastWatchedActive()
 		}
 	}
-	rendered := RenderEvent(evt)
+	rendered, dataJSON := renderEvent(evt)
 	c.recent = append(c.recent, rendered)
 	progressAt := evt.Timestamp
 	if progressAt.IsZero() {
 		progressAt = time.Now()
 	}
-	progressFP := supervisorFingerprint(rendered)
+	progressFP := watcherProgressFingerprintWithData(evt, dataJSON)
 	if c.cursor.LastProgressFingerprint == progressFP {
 		c.cursor.ConsecutiveNoProgress++
 	} else {
@@ -476,7 +479,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		}
 		return false
 	}
-	triggerFP := supervisorFingerprint(reason + "|" + c.cursor.LastProgressFingerprint)
+	triggerReason := reason
+	if strings.HasPrefix(reason, "monitor matched: ") {
+		// The human-readable reason includes RenderEvent's delivery sequence.
+		// Use the semantic progress fingerprint for replay suppression instead:
+		// redelivery gets a new seq, but it is not new evidence.
+		triggerReason = "monitor_matched"
+	}
+	triggerFP := supervisorFingerprint(triggerReason + "|" + c.cursor.LastProgressFingerprint)
 	// A redelivered event or a watcher restart must not re-run the same
 	// correction merely because a high-signal monitor bypasses the ordinary
 	// cooldown. New progress produces a different fingerprint and remains
@@ -489,12 +499,13 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	}
 
 	in := EvalInput{
-		Spec:         c.spec,
-		ActiveNode:   c.lastWatchedActive,
-		WakeReason:   reason,
-		RecentEvents: append([]string(nil), c.recent...),
-		Monitors:     append([]Monitor(nil), c.monitors...),
-		Last:         c.last,
+		Spec:                  c.spec,
+		ActiveNode:            c.lastWatchedActive,
+		WakeReason:            reason,
+		RecentEvents:          append([]string(nil), c.recent...),
+		Monitors:              append([]Monitor(nil), c.monitors...),
+		Last:                  c.last,
+		ConsecutiveNoProgress: c.cursor.ConsecutiveNoProgress,
 	}
 	dec, usage, err := c.eval.Evaluate(c.ctx, in)
 	c.lastEvalAt = time.Now()
@@ -557,7 +568,6 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	} else {
 		c.cursor.LastAction = "observe"
 	}
-	c.cursor.LastActionFingerprint = supervisorFingerprint(c.cursor.LastAction + "|" + reason)
 	return false
 }
 
@@ -566,12 +576,37 @@ func watcherCursorID(spec Spec) string {
 	if name == "" {
 		name = "default"
 	}
-	return "supervisor:" + name + ":" + supervisorFingerprint(strings.Join(spec.Watches, ","))[:12]
+	// Mongo persists cursors through a dotted update path. Hash all
+	// user-controlled identity material so dots and dollar signs in a free-form
+	// supervisor name can never alter that path.
+	return "supervisor:" + supervisorFingerprint(name + "\x00" + strings.Join(spec.Watches, "\x00"))[:24]
 }
 
 func supervisorFingerprint(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// watcherProgressFingerprint identifies evidence independently of transport
+// metadata. Seq, timestamp, tenant and log offsets change when the same event
+// is replayed; type, branch, node and payload describe the actual progress.
+func watcherProgressFingerprint(evt *store.Event) string {
+	if evt == nil {
+		return supervisorFingerprint("")
+	}
+	_, dataJSON := renderEvent(evt)
+	return watcherProgressFingerprintWithData(evt, dataJSON)
+}
+
+func watcherProgressFingerprintWithData(evt *store.Event, dataJSON []byte) string {
+	if evt == nil {
+		return supervisorFingerprint("")
+	}
+	// JSON escapes NUL in payload strings, while event identifiers cannot
+	// contain it, making it an unambiguous field separator without a second
+	// serialization pass.
+	semantic := string(evt.Type) + "\x00" + evt.BranchID + "\x00" + evt.NodeID + "\x00" + string(dataJSON)
+	return supervisorFingerprint(semantic)
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
@@ -580,8 +615,20 @@ func (c *Coordinator) restoreCursor() {
 	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
 		return
 	}
-	run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
-	if err != nil || run == nil || run.WatcherCursors == nil {
+	if c.cursorWriter == nil {
+		c.warn("supervise[%s]: store cannot persist watcher cursors on run %s; restart replay suppression is disabled", c.spec.Name, c.runID)
+		return
+	}
+	loadCtx := c.ctx
+	if loadCtx == nil {
+		loadCtx = context.Background()
+	}
+	run, err := c.cursorStore.LoadRun(loadCtx, c.runID)
+	if err != nil {
+		c.warn("supervise[%s]: watcher cursor load failed on run %s: %v", c.spec.Name, c.runID, err)
+		return
+	}
+	if run == nil || run.WatcherCursors == nil {
 		return
 	}
 	if cursor, ok := run.WatcherCursors[c.cursorID]; ok {
@@ -593,12 +640,19 @@ func (c *Coordinator) restoreCursor() {
 }
 
 func (c *Coordinator) persistCursor() {
-	cursorStore := store.AsWatcherCursorStore(c.cursorStore)
-	if cursorStore == nil || c.runID == "" || c.cursorID == "" {
+	if c.cursorWriter == nil || c.runID == "" || c.cursorID == "" {
 		return
 	}
 	c.cursor.UpdatedAt = time.Now().UTC()
-	if err := cursorStore.SetWatcherCursor(c.ctx, c.runID, c.cursorID, c.cursor); err != nil {
+	baseCtx := c.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	// Evaluation is commonly cancelled because the run just ended. Cursor
+	// persistence is teardown bookkeeping and needs its own small window.
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), 5*time.Second)
+	defer cancel()
+	if err := c.cursorWriter.SetWatcherCursor(saveCtx, c.runID, c.cursorID, c.cursor); err != nil {
 		c.warn("supervise[%s]: watcher cursor save failed on run %s: %v", c.spec.Name, c.runID, err)
 	}
 }

@@ -104,6 +104,9 @@ func TestRunRetry_ArmsFirstAttemptWithNoPriorState(t *testing.T) {
 	if !r.RetryState.RetryAfter.Equal(at) {
 		t.Errorf("retry_after = %v, want %v", r.RetryState.RetryAfter, at)
 	}
+	if r.RetryState.ScheduledAt == nil || r.RetryState.ScheduledAt.After(time.Now().UTC()) {
+		t.Errorf("scheduled_at = %v, want the persisted arm time", r.RetryState.ScheduledAt)
+	}
 	if r.RetryState.Code != "USAGE_LIMIT_BLOCKED" || r.RetryState.Reason != "usage_window" {
 		t.Errorf("reason/code = %q/%q, want usage_window/USAGE_LIMIT_BLOCKED", r.RetryState.Reason, r.RetryState.Code)
 	}

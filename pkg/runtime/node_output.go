@@ -70,7 +70,8 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	corrector, hasPlainCorrector := e.executor.(OutputCorrector)
 	usageCorrector, hasUsageCorrector := e.executor.(OutputCorrectorWithUsage)
-	if (!hasPlainCorrector && !hasUsageCorrector) || e.outputCorrectionBudget <= 0 || e.store == nil {
+	correctionStore := store.AsOutputCorrectionStore(e.store)
+	if (!hasPlainCorrector && !hasUsageCorrector) || e.outputCorrectionBudget <= 0 || correctionStore == nil {
 		return output, validationErr
 	}
 
