@@ -68,6 +68,11 @@ type Spec struct {
 	Cooldown time.Duration
 	// MaxEvals caps total LLM evaluations for the run. Zero =>
 	// DefaultMaxEvals. Once exhausted the coordinator stops evaluating.
+	// The count rides the durable watcher cursor, so a coordinator
+	// restart (a resumed run, a redeployed pod) continues spending the
+	// same budget rather than being handed a fresh one. An observer with
+	// no run store behind it — the raw `claude` session attach — has no
+	// cursor and falls back to a per-process cap.
 	MaxEvals int
 }
 

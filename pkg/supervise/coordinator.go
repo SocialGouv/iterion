@@ -522,6 +522,11 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	}
 	c.evalFailures = 0
 	c.evalCount++
+	// The eval budget is a SPEND guard, and the cursor is what carries it
+	// across a process. Without this a restart hands the supervisor a fresh
+	// MaxEvals, so repeated pod restarts make model spend unbounded by the
+	// very limit Spec.MaxEvals documents as capping the RUN.
+	c.cursor.EvalCount = c.evalCount
 	// A silent verdict is the common (and desired) case — log it anyway
 	// so an operator can tell "evaluated and chose silence" from "never
 	// woke", and see the eval budget drain.
@@ -592,6 +597,12 @@ func (c *Coordinator) restoreCursor() {
 		if cursor.LastEvaluationAt != nil {
 			c.lastEvalAt = *cursor.LastEvaluationAt
 		}
+		// The eval budget is spend, so it must NOT reset with the process.
+		// evalFailures and the bot's Done flag deliberately do reset: a
+		// restart is exactly when a previously-unreachable model deserves
+		// another try, and a freshly-started watched node re-arms Done
+		// anyway.
+		c.evalCount = cursor.EvalCount
 	}
 }
 

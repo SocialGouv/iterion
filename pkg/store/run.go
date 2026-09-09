@@ -469,6 +469,10 @@ type WatcherCursor struct {
 	LastProgressAt          time.Time  `json:"last_progress_at,omitempty" bson:"last_progress_at,omitempty"`
 	LastEvaluationAt        *time.Time `json:"last_evaluation_at,omitempty" bson:"last_evaluation_at,omitempty"`
 	LastAction              string     `json:"last_action,omitempty" bson:"last_action,omitempty"`
+	// EvalCount is the run's COMPLETED supervisor evaluations, carried
+	// here so Spec.MaxEvals caps the run and not one process: an eval
+	// budget that resets on every restart bounds no spend at all.
+	EvalCount int `json:"eval_count,omitempty" bson:"eval_count,omitempty"`
 	// LastTriggerFingerprint is the dedup key — fingerprint(wake reason +
 	// last progress sample) — and the ONLY field the coordinator reads
 	// back. The rest are the operator-legible audit trail: what the

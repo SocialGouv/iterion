@@ -40,6 +40,39 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	}
 }
 
+func TestEvalBudgetIsSpentPerRunNotPerProcess(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if _, err := st.CreateRun(context.Background(), "cursor-run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	eval := &scriptedEval{decisions: []*Decision{{}}}
+	inj := &StoreInjector{Store: st}
+	spec := Spec{Name: "watch", Cooldown: time.Minute, MaxEvals: 1}
+
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, inj, "cursor-run", spec, eval, nil)
+	c.ctx = context.Background()
+	c.ingest(&store.Event{RunID: "cursor-run", Type: store.EventNodeStarted, NodeID: "agent", Seq: 1, Timestamp: time.Now().UTC()})
+	c.evaluate("turn_boundary", true)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("first coordinator made %d evaluations, want 1", got)
+	}
+
+	c2 := New(&fakeObserver{ch: make(chan *store.Event)}, inj, "cursor-run", spec, eval, nil)
+	c2.ctx = context.Background()
+	c2.restoreCursor()
+	// A DIFFERENT event, so the progress fingerprint (and therefore the
+	// trigger fingerprint) is fresh: what must stop this evaluation is the
+	// restored budget, not the duplicate-wake dedup.
+	c2.ingest(&store.Event{RunID: "cursor-run", Type: store.EventNodeStarted, NodeID: "agent", Seq: 2, Timestamp: time.Now().UTC()})
+	c2.evaluate("turn_boundary", true)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("restart granted a fresh eval budget: %d evaluations against MaxEvals=1", got)
+	}
+}
+
 func TestWatcherCursorIDIsStableAcrossWatchOrder(t *testing.T) {
 	base := watcherCursorID(Spec{Name: "persy", Watches: []string{"implement", "campaign"}})
 	for _, spec := range []Spec{
