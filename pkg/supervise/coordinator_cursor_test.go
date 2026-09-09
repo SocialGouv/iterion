@@ -1,12 +1,48 @@
 package supervise
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// unreachableSaveStore refuses every SaveRun. A lost cursor write silently
+// degrades supervision back to the in-memory cooldown, so it has to leave an
+// operator signal — otherwise it can only be inferred from a supervisor that
+// re-steers after a restart.
+type unreachableSaveStore struct{ store.RunStore }
+
+func (unreachableSaveStore) SaveRun(context.Context, *store.Run) error {
+	return errors.New("store unreachable")
+}
+
+func TestALostCursorWriteIsReported(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if _, err := st.CreateRun(context.Background(), "cursor-run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	var logs bytes.Buffer
+	inj := &StoreInjector{Store: unreachableSaveStore{RunStore: st}}
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, inj, "cursor-run",
+		Spec{Name: "watch", Cooldown: time.Minute}, &scriptedEval{decisions: []*Decision{{}}},
+		iterlog.New(iterlog.LevelWarn, &logs))
+	c.ctx = context.Background()
+	c.ingest(&store.Event{RunID: "cursor-run", Type: store.EventNodeStarted, NodeID: "agent", Seq: 1, Timestamp: time.Now().UTC()})
+	c.evaluate("turn_boundary", true)
+
+	if !strings.Contains(logs.String(), "watcher cursor save failed") {
+		t.Fatalf("a lost cursor write left no operator signal; log = %q", logs.String())
+	}
+}
 
 func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	st, err := store.New(t.TempDir())

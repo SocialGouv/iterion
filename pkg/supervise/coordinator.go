@@ -476,6 +476,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	// cooldown. New progress produces a different fingerprint and remains
 	// eligible immediately.
 	if c.cursor.LastTriggerFingerprint == triggerFP {
+		// Deliberately NOT `suppressed`: a deduped wake must not be deferred
+		// and retried, it would re-present the same fingerprint forever. But
+		// say it out loud — the seeded-monitor lane exists precisely so a
+		// once-only give-up marker is never lost, so an operator who sees no
+		// evaluation is owed the difference between "already handled this
+		// evidence" and "the supervisor is dead".
+		c.info("supervise[%s]: wake ignored on run %s — this evidence was already evaluated (wake=%s)",
+			c.spec.Name, c.runID, reason)
 		return false
 	}
 	if !bypassCooldown && !c.lastEvalAt.IsZero() && time.Since(c.lastEvalAt) < c.spec.Cooldown {
