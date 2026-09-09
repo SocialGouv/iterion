@@ -336,12 +336,25 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, fmt.Errorf("forge: bots %v declare no forge events to subscribe to", desiredBots)
 	}
 
-	// Idempotent no-op: same bots + same events already provisioned. Still
-	// reconcile the per-bot token bindings before returning — an integration
-	// provisioned before the binding fix landed has none, so the board-launch
-	// path can't authenticate until a re-provision backfills them. Cheap and
-	// idempotent (ensureBotBinding no-ops when the binding already matches).
-	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) {
+	// The address the forge SHOULD be calling, which is not a property of the
+	// request: it moves when the deployment's public URL moves, or when a
+	// connection starts (or stops) pinning its own base. Comparing it here is
+	// what makes the no-op below an actual reconcile — a hook left on the old
+	// host is a repo whose deliveries stop, and re-running provisioning is the
+	// gesture an operator reaches for to repair exactly that.
+	desiredHookURL := ""
+	if hasExisting {
+		desiredHookURL = o.inboundURL(conn, existing.WebhookID)
+	}
+
+	// Idempotent no-op: same bots, same events AND the hook already points
+	// where it should. Still reconcile the per-bot token bindings before
+	// returning — an integration provisioned before the binding fix landed
+	// has none, so the board-launch path can't authenticate until a
+	// re-provision backfills them. Cheap and idempotent (ensureBotBinding
+	// no-ops when the binding already matches).
+	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
+		existing.HookURL == desiredHookURL {
 		for _, b := range desiredBots {
 			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
