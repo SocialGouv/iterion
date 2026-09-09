@@ -1,12 +1,20 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/Button";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import BootLoading from "@/components/shared/BootLoading";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { SignInCard } from "./Login";
-import CloudHome from "./CloudHome";
+
+// This module is one of App.tsx's few EAGER view imports, because
+// PublicTopBar (below) renders on /marketplace outside the lazy route tree.
+// So the product page — its own stylesheet plus ~50 icon modules — is
+// lazy()'d here rather than statically imported: it is shown to anonymous
+// visitors only, and a static import would put it in the entry chunk every
+// authenticated operator downloads on first paint.
+const CloudHome = lazy(() => import("./CloudHome"));
 
 // PublicTopBar is the slim header shown above the public Marketplace view
 // when an anonymous visitor browses it (that route lives outside the
@@ -49,5 +57,9 @@ export default function CloudLanding() {
       </div>
     );
   }
-  return <CloudHome marketplaceEnabled={serverInfo.marketplace_enabled} />;
+  return (
+    <Suspense fallback={<BootLoading />}>
+      <CloudHome marketplaceEnabled={serverInfo.marketplace_enabled} />
+    </Suspense>
+  );
 }
