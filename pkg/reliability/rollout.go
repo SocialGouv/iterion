@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,7 +50,8 @@ func FromEnv() Config {
 			budget = n
 		}
 	}
-	return Config{Mode: mode, OutputCorrectionBudget: budget, RetryCircuitThreshold: 3, RetryCircuitCooldown: 15 * time.Minute, WatcherCursorsEnabled: true}
+	circuit := retrycoord.FromEnv()
+	return Config{Mode: mode, OutputCorrectionBudget: budget, RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown, WatcherCursorsEnabled: true}
 }
 
 func (c Config) ContextPolicy() store.ContextPolicy {
@@ -80,10 +82,11 @@ type CompatibilityReport struct {
 }
 
 func ReportForRun(run *store.Run) CompatibilityReport {
-	r := CompatibilityReport{RollbackSafe: true, ContextPolicy: string(store.ContextPolicyLegacy)}
+	r := CompatibilityReport{ContextPolicy: string(store.ContextPolicyLegacy)}
 	if run == nil {
 		return r
 	}
+	r.RollbackSafe = true
 	r.RunID = run.ID
 	r.WorkflowHash = run.WorkflowHash
 	r.AdmissionRecorded = run.Admission != nil
@@ -95,6 +98,15 @@ func ReportForRun(run *store.Run) CompatibilityReport {
 	} else {
 		r.ContextVersion = run.ExecutionContext.Version
 		r.ContextPolicy = string(run.ExecutionContext.Policy)
+		if run.ExecutionContext.Policy == store.ContextPolicyEnforce {
+			r.RollbackSafe = false
+		}
+	}
+	for _, episode := range run.OutputCorrections {
+		if episode.Status == "active" || episode.Status == "exhausted" {
+			r.RollbackSafe = false
+			break
+		}
 	}
 	return r
 }

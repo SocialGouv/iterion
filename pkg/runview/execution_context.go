@@ -15,7 +15,14 @@ import (
 // surfaces that do not construct a runview.Service (notably the CLI runner).
 // Invalid or unset values intentionally fall back to legacy compatibility.
 func ExecutionContextPolicyFromEnv() store.ContextPolicy {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_EXECUTION_CONTEXT_POLICY"))) {
+	raw := strings.TrimSpace(os.Getenv("ITERION_EXECUTION_CONTEXT_POLICY"))
+	// The staged reliability rollout exposes one operator-facing switch. Keep
+	// the older, more specific variable authoritative when both are present so
+	// existing deployments can roll out independently.
+	if raw == "" {
+		raw = os.Getenv("ITERION_RELIABILITY_MODE")
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case string(store.ContextPolicyReport):
 		return store.ContextPolicyReport
 	case string(store.ContextPolicyEnforce):
