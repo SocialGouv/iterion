@@ -112,14 +112,17 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 		"status":                 string(store.RunStatusFailedResumable),
 		retryPath("retry_after"): expectedAfter.UTC(),
 	})
-	update := bson.M{
-		"$set": bson.M{
-			retryPath("retry_after"): delayedUntil.UTC(),
-			"updated_at":             now,
-		},
-		"$unset": bson.M{retryPath("claimed_at"): ""},
-		"$inc":   bson.M{"version": 1},
-	}
+	// Runs armed by versions predating ScheduledAt need a fixed anchor on the
+	// first deferral. Use the CAS-protected old retry_after as the best durable
+	// origin and preserve it on every later delay.
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		retryPath("retry_after"): delayedUntil.UTC(),
+		retryPath("scheduled_at"): bson.M{"$ifNull": bson.A{
+			"$" + retryPath("scheduled_at"), expectedAfter.UTC(),
+		}},
+		retryPath("claimed_at"): "$$REMOVE",
+		"updated_at":            now,
+	}}}}
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)

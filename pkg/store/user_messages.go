@@ -131,6 +131,19 @@ func (s *FilesystemRunStore) AppendQueuedMessageOnce(ctx context.Context, runID 
 	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return false, fmt.Errorf("store: mkdir user_messages: %w", err)
 	}
+	// s.mu protects one handle only. Supervisors may run in separate
+	// processes against the same local store, so the existence check and append
+	// also need a short cross-process critical section. This is intentionally
+	// not the run's execution lock: the engine holds that for the whole run.
+	lock, err := acquireFileLockRetry(
+		filepath.Join(filepath.Dir(path), ".user_messages_insert_once.lock"),
+		fmt.Sprintf("insert-once inbox of run %s", runID),
+		2*time.Second,
+	)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Unlock() }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	latest, err := loadLatestQueuedMessages(path)

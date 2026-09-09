@@ -195,6 +195,7 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		runInputs:                   parent.runInputs,
 		vars:                        parent.vars,
 		outputs:                     parent.outputs,
+		inheritedOutputs:            parent.inheritedOutputs,
 		artifacts:                   parent.artifacts,
 		artifactRevisions:           parent.artifactRevisions,
 		loopCounters:                parent.loopCounters,

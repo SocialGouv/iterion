@@ -456,6 +456,32 @@ func TestArtifactContractIncludesSelectedIncomingMapping(t *testing.T) {
 	}
 }
 
+func TestBranchArtifactContractIncludesParentEdgeDependency(t *testing.T) {
+	edge := &ir.Edge{From: "router", To: "writer", With: []*ir.DataMapping{{
+		Key: "plan", Raw: "{{artifacts.plan}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}}}
+	consumer := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}},
+		"writer":  consumer,
+	}, Edges: []*ir.Edge{edge}}}
+	parent := &runState{
+		outputs:   map[string]map[string]any{"router": {"ok": true}},
+		artifacts: map[string]map[string]any{"plan": {"value": "parent"}},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "planner", Version: 2},
+		},
+	}
+	result := initBranchResult(parent, "branch-a", nil)
+	local := newBranchRunState(parent, nil, result)
+	contract := eng.artifactContractFor("writer", consumer, 0, local)
+	if len(contract.Dependencies) != 1 || contract.Dependencies[0].NodeID != "planner" || contract.Dependencies[0].Version != 2 {
+		t.Fatalf("branch contract omitted parent-visible dependency: %+v", contract.Dependencies)
+	}
+}
+
 func TestValidateArtifactContractsLoadsExactDependencyWhenIndexLags(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

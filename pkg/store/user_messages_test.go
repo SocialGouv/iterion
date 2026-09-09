@@ -1,12 +1,76 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestAppendQueuedMessageOnceIsAtomicAcrossStoreHandles(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	const runID = "run-insert-once-cross-handle"
+	seed, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 24
+	start := make(chan struct{})
+	results := make(chan bool, writers)
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for range writers {
+		handle, err := New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(s *FilesystemRunStore) {
+			defer wg.Done()
+			<-start
+			inserted, err := s.AppendQueuedMessageOnce(ctx, runID, QueuedUserMessage{ID: "stable", Text: "repair"})
+			results <- inserted
+			errs <- err
+		}(handle)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("AppendQueuedMessageOnce: %v", err)
+		}
+	}
+	inserted := 0
+	for ok := range results {
+		if ok {
+			inserted++
+		}
+	}
+	if inserted != 1 {
+		t.Fatalf("successful insertions = %d, want exactly 1", inserted)
+	}
+	path, err := seed.userMessagesPath(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := bytes.Count(body, []byte{'\n'}); records != 1 {
+		t.Fatalf("physical inbox records = %d, want 1", records)
+	}
+}
 
 // Node-scoped delivery: a message tagged for node "B" must NOT be
 // drained while node "A" is active, but a run-scoped (untagged) message

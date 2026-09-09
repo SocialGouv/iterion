@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -704,8 +705,16 @@ func (c *Coordinator) inject(text, triggerFP string) error {
 	}
 	var err error
 	if inj, ok := c.inj.(IdempotentInjector); ok {
-		deliveryID := "msg_supervisor_" + supervisorFingerprint(c.cursorID+"|"+triggerFP)
+		// A semantic trigger can legitimately recur after other progress. The
+		// sequence makes that a new delivery while remaining crash-safe: it is
+		// advanced only after insertion, then persisted by evaluate's deferred
+		// cursor write. A crash in between reuses the same next sequence and ID.
+		nextSequence := c.cursor.InterventionSequence + 1
+		deliveryID := "msg_supervisor_" + supervisorFingerprint(c.cursorID+"|"+strconv.Itoa(nextSequence)+"|"+triggerFP)
 		err = inj.InjectOnce(c.ctx, c.runID, scopeNode, body, deliveryID)
+		if err == nil {
+			c.cursor.InterventionSequence = nextSequence
+		}
 	} else {
 		err = c.inj.Inject(c.ctx, c.runID, scopeNode, body)
 	}

@@ -344,6 +344,7 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 
 func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *branchResult) *runState {
 	local := cloneRunStateForBranch(parent)
+	local.inheritedOutputs = mergeOutputs(parent.inheritedOutputs, parent.outputs)
 	local.outputs = result.outputs
 	local.artifacts = mergeOutputs(parent.artifacts, result.artifacts)
 	local.artifactRevisions = mergeArtifactRevisions(parent.artifactRevisions, result.artifactRevisions)

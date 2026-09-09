@@ -2432,6 +2432,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 					r.cfg.Logger.Warn("runner: run %s: retry circuit reset failed: %v", msg.RunID, resetErr)
 				}
 			}
+		} else {
+			r.cfg.Logger.Warn("runner: run %s: retry circuit reset skipped, cannot read run metadata: %v", msg.RunID, loadErr)
 		}
 		resetCancel()
 	}

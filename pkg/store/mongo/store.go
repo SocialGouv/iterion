@@ -470,10 +470,19 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// retry_circuits: one tenant-scoped document per workflow/revision key.
 	// The unique key makes concurrent runner pods converge on one durable
 	// breaker rather than keeping independent in-memory counters.
-	_, err = s.retryCircuits.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
-		Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
-	})
+	retryCircuitIdx := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
+		},
+		{
+			// A circuit is ephemeral coordination state keyed by workflow hash.
+			// Reclaim inactive revisions well after the maximum normal cooldown.
+			Keys:    bson.D{{Key: "updated_at", Value: 1}},
+			Options: options.Index().SetName("retry_circuit_updated_at_ttl").SetExpireAfterSeconds(30 * 24 * 60 * 60),
+		},
+	}
+	_, err = s.retryCircuits.Indexes().CreateMany(ctx, retryCircuitIdx)
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure retry_circuits index: %w", err)
 	}

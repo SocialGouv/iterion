@@ -5628,6 +5628,11 @@ export interface components {
             reason?: string;
             workflow_revision?: string;
         };
+        ArtifactRevisionRef: {
+            contract_logical_ref?: string;
+            node_id: string;
+            version: number;
+        };
         AuthMeResponse: {
             access_token?: string;
             active_org_id?: string;
@@ -5698,6 +5703,9 @@ export interface components {
             prefix: string;
         };
         BranchCheckpoint: {
+            artifact_revisions?: {
+                [key: string]: components["schemas"]["ArtifactRevisionRef"];
+            };
             artifact_versions?: {
                 [key: string]: number;
             };
@@ -5746,6 +5754,10 @@ export interface components {
             terminated_at_done?: boolean;
         };
         Checkpoint: {
+            artifact_revisions?: {
+                [key: string]: components["schemas"]["ArtifactRevisionRef"];
+            };
+            artifact_revisions_known?: boolean;
             artifact_versions: {
                 [key: string]: number;
             };
@@ -6461,8 +6473,8 @@ export interface components {
         };
         WatcherCursor: {
             consecutive_no_progress?: number;
+            intervention_sequence?: number;
             last_action?: string;
-            last_action_fingerprint?: string;
             /** Format: date-time */
             last_evaluation_at?: string;
             /** Format: date-time */

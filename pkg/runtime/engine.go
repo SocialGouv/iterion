@@ -354,7 +354,11 @@ type runState struct {
 	runInputs map[string]any
 	vars      map[string]any
 	outputs   map[string]map[string]any
-	artifacts map[string]map[string]any // publish name → output
+	// inheritedOutputs is the immutable outer/trunk output snapshot visible
+	// to a branch. Branch-local outputs remain in outputs; contract dependency
+	// collection consults both to mirror the scope used to build node input.
+	inheritedOutputs map[string]map[string]any
+	artifacts        map[string]map[string]any // publish name → output
 	// artifactRevisions is the physical producer/version of the value in
 	// artifacts. It must travel with that value through branches and checkpoints:
 	// publish names are not unique and version counters are allocator cursors.

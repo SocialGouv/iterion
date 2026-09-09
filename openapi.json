@@ -35,6 +35,24 @@
         ],
         "type": "object"
       },
+      "ArtifactRevisionRef": {
+        "properties": {
+          "contract_logical_ref": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "version"
+        ],
+        "type": "object"
+      },
       "AuthMeResponse": {
         "properties": {
           "access_token": {
@@ -277,6 +295,12 @@
       },
       "BranchCheckpoint": {
         "properties": {
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
           "artifact_versions": {
             "additionalProperties": {
               "type": "integer"
@@ -375,6 +399,15 @@
       },
       "Checkpoint": {
         "properties": {
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
+          "artifact_revisions_known": {
+            "type": "boolean"
+          },
           "artifact_versions": {
             "additionalProperties": {
               "type": "integer"
@@ -2597,10 +2630,10 @@
           "consecutive_no_progress": {
             "type": "integer"
           },
-          "last_action": {
-            "type": "string"
+          "intervention_sequence": {
+            "type": "integer"
           },
-          "last_action_fingerprint": {
+          "last_action": {
             "type": "string"
           },
           "last_evaluation_at": {

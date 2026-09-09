@@ -153,6 +153,38 @@ func TestCoordinatorDoesNotSuppressNewMonitorEvidence(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDeliversRecurringEvidenceAfterAnotherEpisode(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(context.Background(), "recurring-run", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	eval := &scriptedEval{decisions: []*Decision{
+		{Intervene: true, Message: "repair first occurrence"},
+		{Intervene: true, Message: "repair different occurrence"},
+		{Intervene: true, Message: "repair later recurrence"},
+	}}
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, &StoreInjector{Store: st}, "recurring-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	c.ctx = context.Background()
+	for seq, failure := range []string{"same", "different", "same"} {
+		evt := &store.Event{Seq: int64(seq + 1), Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": failure}}
+		c.ingest(evt)
+		c.evaluate("monitor matched: "+RenderEvent(evt), true)
+	}
+	pending, err := st.LoadPendingQueuedMessages(context.Background(), "recurring-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 3 {
+		t.Fatalf("recurring evidence produced %d interventions, want 3", len(pending))
+	}
+	if c.cursor.InterventionSequence != 3 {
+		t.Fatalf("intervention sequence = %d, want 3", c.cursor.InterventionSequence)
+	}
+}
+
 func TestWatcherCursorIDIsSafeForMongoUpdatePaths(t *testing.T) {
 	id := watcherCursorID(Spec{Name: "review.$where", Watches: []string{"node.with.dot", "$node"}})
 	if strings.ContainsAny(id, ".$") {

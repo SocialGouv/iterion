@@ -55,8 +55,18 @@ func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now t
 		bson.D{{Key: "$set", Value: bson.M{"open_until": openExpr}}},
 	}
 	var state store.RetryCircuitState
-	if err := s.retryCircuits.FindOneAndUpdate(ctx, filter, update,
-		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&state); err != nil {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		err = s.retryCircuits.FindOneAndUpdate(ctx, filter, update,
+			options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&state)
+		if attempt == 0 && mongo.IsDuplicateKeyError(err) {
+			// Concurrent first writers can race on the unique tenant/key index.
+			// The winner has created the row, so one retry becomes a plain update.
+			continue
+		}
+		break
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &state, nil

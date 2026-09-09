@@ -199,38 +199,42 @@ func TestSchemaValidation_UnchangedCorrectionStopsImmediately(t *testing.T) {
 }
 
 func TestSchemaValidation_PreseededTerminalEpisodeIsNotReinvoked(t *testing.T) {
-	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
-	exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
-		return map[string]any{"summary": "would be repaired", "score": 1}, nil
-	}
-	st := tmpStore(t)
-	if _, err := st.CreateRun(context.Background(), "run-val-preseed", "validation_test", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
-	}
-	run, err := st.LoadRun(context.Background(), "run-val-preseed")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
-		"my_agent": {
-			EpisodeID:        "episode-1",
-			NodeID:           "my_agent",
-			Budget:           5,
-			Attempts:         1,
-			Status:           correctionStatusUnchanged,
-			InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
-		},
-	}
-	if err := st.SaveRun(context.Background(), run); err != nil {
-		t.Fatalf("SaveRun: %v", err)
-	}
-	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5))
-	rs := &runState{ctx: context.Background(), runID: "run-val-preseed"}
-	// A changed replay payload is still the same durable invocation and must
-	// not reset a terminal correction budget.
-	_, validationErr := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "different", "score": "still-bad"})
-	if validationErr == nil || exec.calls != 0 {
-		t.Fatalf("preseeded terminal episode invoked corrector: calls=%d err=%v", exec.calls, validationErr)
+	for _, status := range []string{correctionStatusUnchanged, correctionStatusExhausted} {
+		t.Run(status, func(t *testing.T) {
+			exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+			exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
+				return map[string]any{"summary": "would be repaired", "score": 1}, nil
+			}
+			st := tmpStore(t)
+			if _, err := st.CreateRun(context.Background(), "run-val-preseed", "validation_test", nil); err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			run, err := st.LoadRun(context.Background(), "run-val-preseed")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+				"my_agent": {
+					EpisodeID:        "episode-1",
+					NodeID:           "my_agent",
+					Budget:           5,
+					Attempts:         1,
+					Status:           status,
+					InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
+				},
+			}
+			if err := st.SaveRun(context.Background(), run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5))
+			rs := &runState{ctx: context.Background(), runID: "run-val-preseed"}
+			// A changed replay payload is still the same durable invocation and
+			// must not reset either terminal correction budget.
+			_, validationErr := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "different", "score": "still-bad"})
+			if validationErr == nil || exec.calls != 0 {
+				t.Fatalf("preseeded %s episode invoked corrector: calls=%d err=%v", status, exec.calls, validationErr)
+			}
+		})
 	}
 }
 

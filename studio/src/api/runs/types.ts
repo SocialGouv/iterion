@@ -119,6 +119,7 @@ export interface WatcherCursor {
   last_trigger_fingerprint?: string;
   next_evaluation_at?: string;
   consecutive_no_progress?: number;
+  intervention_sequence?: number;
   updated_at?: string;
 }
 

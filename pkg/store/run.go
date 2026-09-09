@@ -477,7 +477,11 @@ type WatcherCursor struct {
 	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
 	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`
 	ConsecutiveNoProgress   int        `json:"consecutive_no_progress,omitempty" bson:"consecutive_no_progress,omitempty"`
-	UpdatedAt               time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	// InterventionSequence advances only after a steering message is accepted.
+	// It scopes delivery deduplication to one progress episode while remaining
+	// stable across a crash between inbox insertion and cursor persistence.
+	InterventionSequence int       `json:"intervention_sequence,omitempty" bson:"intervention_sequence,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
 }
 
 // RunCredStamp is what one credential resolution leaves on the run

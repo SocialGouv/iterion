@@ -137,8 +137,12 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 	}
 	overlayForward := tracked && incomingOnlyBounded(selected)
 	return ir.NodeArtifactRefsForEdges(e.workflow, nodeID, func(edge *ir.Edge) bool {
-		if _, ok := rs.outputs[edge.From]; !ok && edge.From != "" {
-			return false
+		if edge.From != "" {
+			if _, local := rs.outputs[edge.From]; !local {
+				if _, inherited := rs.inheritedOutputs[edge.From]; !inherited {
+					return false
+				}
+			}
 		}
 		if !tracked || (overlayForward && !edge.IsBoundedIteration()) {
 			return true
