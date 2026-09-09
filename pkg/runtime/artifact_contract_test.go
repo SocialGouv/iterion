@@ -236,6 +236,34 @@ func TestValidateArtifactContractsFailsClosedOnUnreadableArtifact(t *testing.T) 
 	}
 }
 
+// Artifact versions are 0-based, so a required dependency at v0 whose
+// producing node never wrote anything must not read as "persisted v0".
+func TestValidateArtifactContractsRefusesAbsentRequiredDependency(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-dep", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+		Dependencies: []store.ArtifactDependency{
+			{LogicalRef: "plan", NodeID: "planner", Version: 0, Required: true},
+		},
+	})
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+	}); err == nil {
+		t.Fatal("required dependency absent from the run accepted")
+	}
+
+	// Present at the required version: admitted.
+	run.ArtifactIndex["planner"] = 0
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+	}); err != nil {
+		t.Fatalf("satisfied dependency refused: %v", err)
+	}
+}
+
 func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

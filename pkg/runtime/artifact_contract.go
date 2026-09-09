@@ -175,8 +175,16 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 			if depNode == "" {
 				depNode = dep.LogicalRef
 			}
-			depVersion := run.ArtifactIndex[depNode]
-			if depVersion < dep.Version {
+			// Comma-ok, not the single-value form: artifact versions are
+			// 0-based, so a producing node entirely absent from the index
+			// would read as v0 and satisfy a `Version: 0` requirement —
+			// silently admitting exactly the missing revision this contract
+			// exists to catch.
+			depVersion, present := run.ArtifactIndex[depNode]
+			switch {
+			case !present:
+				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, which is absent from the run", contract.LogicalRef, dep.LogicalRef, dep.Version))
+			case depVersion < dep.Version:
 				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion))
 			}
 		}
