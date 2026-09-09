@@ -123,6 +123,9 @@ func TestReliabilityReportRejectsAnUnknownRun(t *testing.T) {
 }
 
 func TestReliabilityReportRejectsAnInaccessibleStore(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses a 000 directory; the inaccessible case cannot be staged")
+	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/runs", 0o755); err != nil {
 		t.Fatal(err)
@@ -142,6 +145,36 @@ func TestReliabilityReportRejectsAnInaccessibleStore(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("an inaccessible store must not report a successful empty baseline")
+	}
+}
+
+func TestReliabilityReportNamesAnInaccessibleRunDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses a 000 directory; the inaccessible case cannot be staged")
+	}
+	dir := seedReliabilityStore(t)
+	runDir := dir + "/runs/unreadable-run"
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runDir+"/run.json", []byte(`{"id":"unreadable-run","status":"failed_resumable"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(runDir, 0o755); err != nil {
+			t.Errorf("restore run permissions: %v", err)
+		}
+	})
+
+	got := reliabilityJSON(t, ReliabilityOptions{StoreDir: dir})
+	if len(got.Unreadable) != 1 || got.Unreadable[0] != "unreadable-run" {
+		t.Fatalf("unreadable runs = %v, want [unreadable-run]", got.Unreadable)
+	}
+	if got.Baseline == nil || got.Baseline.Total != 2 {
+		t.Fatalf("baseline = %+v, want the two readable runs only", got.Baseline)
 	}
 }
 

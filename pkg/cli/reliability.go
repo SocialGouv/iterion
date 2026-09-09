@@ -100,7 +100,10 @@ func RunReliabilityReport(opts ReliabilityOptions, p *Printer) error {
 		return emitReliabilityReport(out, p)
 	}
 
-	ids, err := s.ListRuns(ctx)
+	// ListRunDirs is intentional: ListRuns filters entries whose run.json
+	// cannot be statted. A baseline must retain those candidates so the load
+	// below can name them in Unreadable instead of silently under-counting.
+	ids, err := s.ListRunDirs(ctx)
 	if err != nil {
 		return fmt.Errorf("list runs: %w", err)
 	}
