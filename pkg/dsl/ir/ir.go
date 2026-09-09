@@ -51,12 +51,21 @@ type Workflow struct {
 	// RepoDevbox switches provisioning of the TARGET REPO's devbox.json —
 	// the toolchain that repo pins to build ITSELF: on|off ("" = unset →
 	// ITERION_REPO_DEVBOX → on). The BOT's own devbox.json is unaffected.
-	RepoDevbox      string
-	Permission      string       // permission gate mode: off|ask|deny ("" = unset → off)
-	PermissionAllow []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
-	PermissionAsk   []string     // ask rules
-	PermissionDeny  []string     // deny rules
-	Sandbox         *SandboxSpec // workflow-level sandbox spec (nil = inherit global / no sandbox)
+	RepoDevbox string
+	// WorkspaceCheckpoint switches the mid-run preservation of a copy-based
+	// sandbox's workspace — the periodic commit-and-push of the pod's tree
+	// to `iterion/run-<id>-checkpoint` on the run's OWN remote: on|off
+	// ("" = unset → ITERION_WORKSPACE_CHECKPOINT → on).
+	//
+	// Off is for the run that produces no commit for the repo it reads: the
+	// net would hold nothing, and it writes a branch to a repository the
+	// operator may only have meant to read.
+	WorkspaceCheckpoint string
+	Permission          string       // permission gate mode: off|ask|deny ("" = unset → off)
+	PermissionAllow     []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
+	PermissionAsk       []string     // ask rules
+	PermissionDeny      []string     // deny rules
+	Sandbox             *SandboxSpec // workflow-level sandbox spec (nil = inherit global / no sandbox)
 	// Cursors map of cursor name → resolved definition. Populated from
 	// top-level `cursor NAME:` declarations. Agent/judge `cursors:`
 	// invocations are resolved against this map at runtime.

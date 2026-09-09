@@ -1507,6 +1507,18 @@ workflow review_pr:
   ## Override per run with `--repo-devbox on`.
   repo_devbox: off
 
+  ## The same fact, applied to the safety net: a review writes no commit
+  ## for the repo it reads, so the mid-run workspace checkpoint has
+  ## nothing of this run's to preserve — while its push would put an
+  ## `iterion/run-<id>-checkpoint` BRANCH on that repo, carrying whatever
+  ## the tree holds. This bot's own `.review-pr/` scratch is untracked and
+  ## nothing ignores it, so `git add -A` sweeps the findings file in:
+  ## measured 2026-09-08, an internal review whose board posting was
+  ## deliberately off was published to a public repository that way.
+  ## The findings a reader needs live in node outputs, which are durable
+  ## in the store on their own.
+  workspace_checkpoint: off
+
   budget:
     ## Two read-only reviewer branches run in parallel; emit runs alone
     ## afterwards.

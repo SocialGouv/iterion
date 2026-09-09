@@ -126,6 +126,8 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagInvalidLoopBudgetGuard: {"Invalid loop_budget_guard value", "Use `on` or `off`, or drop the field to inherit."},
 	DiagInvalidRepoDevbox:      {"Invalid repo_devbox value", "Use `on` or `off`, or drop the field to inherit."},
 
+	DiagInvalidWorkspaceCheckpoint: {"Invalid workspace_checkpoint value", "Use `on` or `off`, or drop the field to inherit. The default is `on`, so a typo keeps pushing the run's tree to the repository it was pointed at."},
+
 	// Verified actions (ADR-044).
 	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
 	DiagRecoveryNoPostcond:   {"Recovery without postcondition", "Add a `postcondition:` (the deterministic oracle) or drop the recovery."},

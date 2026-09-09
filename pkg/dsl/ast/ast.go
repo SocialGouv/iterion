@@ -802,13 +802,18 @@ type WorkflowDecl struct {
 	// on|off ("" = unset → ITERION_REPO_DEVBOX → on). The BOT's own
 	// devbox.json is never affected — a bot's declared tools are its own.
 	RepoDevbox string
-	Permission string        // permission gate mode: off|ask|deny ("" = unset → off)
-	Allow      []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
-	Ask        []string      // permission ask rules
-	Deny       []string      // permission deny rules
-	Sandbox    *SandboxBlock // sandbox: short or block form (nil = inherit global default)
-	Edges      []*Edge       // directed edges between nodes
-	Span       Span
+	// WorkspaceCheckpoint switches the mid-run preservation of a copy-based
+	// sandbox's workspace: on|off ("" = unset → ITERION_WORKSPACE_CHECKPOINT
+	// → on). Off for a run that does not commit to the repo it is pointed
+	// at — the net has nothing to hold there, and it pushes a branch.
+	WorkspaceCheckpoint string
+	Permission          string        // permission gate mode: off|ask|deny ("" = unset → off)
+	Allow               []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
+	Ask                 []string      // permission ask rules
+	Deny                []string      // permission deny rules
+	Sandbox             *SandboxBlock // sandbox: short or block form (nil = inherit global default)
+	Edges               []*Edge       // directed edges between nodes
+	Span                Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

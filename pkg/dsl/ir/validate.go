@@ -53,6 +53,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateAutoMemory(w)
 	c.validateLoopBudgetGuard(w)
 	c.validateRepoDevbox(w)
+	c.validateWorkspaceCheckpoint(w)
 	c.validateResources(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)

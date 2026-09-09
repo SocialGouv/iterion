@@ -271,6 +271,10 @@ workflow revi_converse:
   ## cold Nix realise this run has no use for.
   repo_devbox: off
 
+  ## Nor does it commit: the mid-run workspace checkpoint would preserve
+  ## nothing of this run's and would push a branch to the repo it reads.
+  workspace_checkpoint: off
+
   budget:
     ## One short LLM step + a deterministic gate. Conversations
     ## must feel snappy.

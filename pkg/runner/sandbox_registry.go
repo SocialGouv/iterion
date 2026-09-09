@@ -66,7 +66,9 @@ type sandboxObserverOpts struct {
 	// secretRefs are the run's refreshable file secrets (empty = none).
 	secretRefs map[string]string
 	// checkpoint preserves the sandbox workspace mid-run. True only for
-	// the run that OWNS the pod.
+	// the run that OWNS the pod AND whose workflow did not decline the net
+	// (`workspace_checkpoint: off` — a run that writes no commit for the
+	// repository it reads, resolved at the launch site).
 	checkpoint bool
 }
 

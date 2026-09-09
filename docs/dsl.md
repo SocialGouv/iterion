@@ -854,6 +854,48 @@ workflow review_pr:
   repo_devbox: off    # this run reads the repo, it does not build it
 ```
 
+### The mid-run safety net — `workspace_checkpoint:`
+
+On a copy-based driver (kubernetes) the workspace is a tar copy inside the
+pod, so nothing a run produces leaves it until teardown — and a pod that
+dies hard takes the run with it. The **workspace checkpoint** closes that
+window: every ten minutes the runner reads the pod's tree into a temporary
+index, commits it without touching the run's own history, and force-pushes
+it as `iterion/run-<id>-checkpoint`. Details:
+[pkg/runner/loop_checkpoint.go](../pkg/runner/loop_checkpoint.go).
+
+`workspace_checkpoint:` is the same statement as `repo_devbox:`, one step
+further: not "does this run build the repo" but **"does this run write
+commits FOR it"**. If it does not, the net holds nothing of the run's —
+and it still pushes. Two consequences an author should weigh:
+
+- the push lands **on the run's own remote**, which is the repository the
+  bot was pointed at. A branch appears there, on every run;
+- the tree is read with `git add -A`, so a bot's scratch directory goes
+  with it — untracked, and nothing ignores it. Measured 2026-09-08: a
+  review bot's `.review-pr/findings.md`, an internal artifact whose board
+  posting had been deliberately disabled, reached a public repository that
+  way and stayed 29 hours.
+
+For a reviewer or an auditor that is pure downside: its conclusions live in
+node outputs, durable in the store without any push. The shipped read-only
+bots (`review-pr`, `revi-converse`, `sec-audit-source`, `sec-audit-deps`)
+therefore decline it, guarded both ways by
+[bots/workspace_checkpoint_test.go](../bots/workspace_checkpoint_test.go) —
+which also asserts the committing bots keep theirs.
+
+Default **on**: most bots exist to produce the commits this protects.
+Resolved `workspace_checkpoint:` → `ITERION_WORKSPACE_CHECKPOINT` → `on`;
+an invalid value is diagnostic **C139**, not a silent fall back. There is
+no per-run override yet, so a bot's `off` is final for that bot — declaring
+it is a statement about what the bot *is*, not a per-run cost dial.
+
+```iter fragment
+workflow sec_audit_source:
+  entry: inventory
+  workspace_checkpoint: off   # reads the repo; writes findings, not commits
+```
+
 ### Edge forms
 
 ```iter fragment:edges
