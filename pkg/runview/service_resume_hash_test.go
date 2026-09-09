@@ -55,6 +55,12 @@ type resumeHashPublisher struct {
 	resumeCalls int
 }
 
+type unavailableResumeArtifactStore struct{ store.RunStore }
+
+func (unavailableResumeArtifactStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
+	return nil, errors.New("artifact backend unavailable")
+}
+
 func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, string) (int, error) {
 	return 1, nil
 }
@@ -364,5 +370,52 @@ workflow preflight:
 	spec.Force = true
 	if err := svc.PreflightResume(ctx, spec); err != nil {
 		t.Errorf("preflight rejected the force retry: %v", err)
+	}
+}
+
+func TestPreflightResumeRejectsUnreadableExactArtifactForLegacyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "preflight-artifact.bot")
+	const src = `prompt ask_ok:
+  Is this ok?
+
+human gate:
+  instructions: ask_ok
+
+workflow preflight_artifact:
+  entry: gate
+  gate -> done
+`
+	if err := os.WriteFile(botPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-preflight-unreadable-artifact"
+	run, err := base.CreateRun(context.Background(), runID, "preflight_artifact", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusPausedWaitingHuman
+	run.Checkpoint = &store.Checkpoint{
+		NodeID: "gate",
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "planner", Version: 0},
+		},
+	}
+	if err := base.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService("", WithStore(unavailableResumeArtifactStore{base}), WithWorkDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = svc.PreflightResume(context.Background(), ResumeSpec{
+		RunID: runID, FilePath: botPath, Source: src, Answers: map[string]any{"ok": true},
+	})
+	if err == nil || !errors.Is(err, runtime.ErrArtifactContractUnavailable) || !strings.Contains(err.Error(), "artifact backend unavailable") {
+		t.Fatalf("preflight artifact availability error = %v", err)
 	}
 }

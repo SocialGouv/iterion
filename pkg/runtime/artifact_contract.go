@@ -100,6 +100,67 @@ func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run 
 	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes)
 }
 
+// ValidateCheckpointArtifactAvailability verifies that every exact physical
+// revision named by the checkpoint can still be read. Unlike contract-policy
+// validation, this is an execution prerequisite for every policy: the engine
+// rebuilds {{artifacts.*}} from these immutable bodies before claiming a
+// resume, and a preflight must make the same check before callers consume
+// staged inputs.
+func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run) error {
+	if run == nil || run.Checkpoint == nil || s == nil {
+		return nil
+	}
+	type revisionKey struct {
+		nodeID  string
+		version int
+	}
+	revisions := make(map[revisionKey]string)
+	add := func(exact map[string]store.ArtifactRevisionRef) error {
+		for logicalRef, revision := range exact {
+			if revision.NodeID == "" {
+				return fmt.Errorf("%w: artifact %q has no persisted producer identity", ErrArtifactContractUnavailable, logicalRef)
+			}
+			key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+			if _, present := revisions[key]; !present {
+				revisions[key] = logicalRef
+			}
+		}
+		return nil
+	}
+	if err := add(run.Checkpoint.ArtifactRevisions); err != nil {
+		return err
+	}
+	if run.Checkpoint.Parallel != nil {
+		for _, branch := range run.Checkpoint.Parallel.Branches {
+			if branch != nil {
+				if err := add(branch.ArtifactRevisions); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	keys := make([]revisionKey, 0, len(revisions))
+	for key := range revisions {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].nodeID != keys[j].nodeID {
+			return keys[i].nodeID < keys[j].nodeID
+		}
+		return keys[i].version < keys[j].version
+	})
+	for _, key := range keys {
+		artifact, err := s.LoadArtifact(ctx, run.ID, key.nodeID, key.version)
+		if err != nil {
+			return fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version, err)
+		}
+		if artifact == nil || artifact.RunID != run.ID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
+			return fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version)
+		}
+	}
+	return nil
+}
+
 func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
 	if run == nil || s == nil || wf == nil {
 		return nil

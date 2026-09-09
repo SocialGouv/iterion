@@ -778,20 +778,37 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 		return nil
 	}
 	seen := make(map[string]struct{})
+	addArtifactRef := func(ref *Ref) {
+		if ref == nil || ref.Kind != RefArtifacts {
+			return
+		}
+		if len(ref.Path) > 0 {
+			seen[ref.Path[0]] = struct{}{}
+			return
+		}
+		// Expressions may index the namespace dynamically (`artifacts[name]`)
+		// or consume it wholesale. The exact key is then a runtime value, so
+		// conservatively bind the produced artifact revisions that are present
+		// when the node executes. artifactContractFor applies that presence
+		// filter; enumerating names here keeps the immutable contract complete.
+		for _, producer := range w.Nodes {
+			if name := NodePublish(producer); name != "" {
+				seen[name] = struct{}{}
+			}
+		}
+	}
 	for _, rc := range collectAllRefs(w) {
-		if rc.NodeID != nodeID || rc.EdgeTo != "" || rc.Ref == nil || rc.Ref.Kind != RefArtifacts || len(rc.Ref.Path) == 0 {
+		if rc.NodeID != nodeID || rc.EdgeTo != "" {
 			continue
 		}
-		seen[rc.Ref.Path[0]] = struct{}{}
+		addArtifactRef(rc.Ref)
 	}
 	// These runtime-rendered fields deliberately sit outside collectAllRefs'
 	// compiler diagnostics today, but they consume the same artifact values
 	// and therefore belong in the producer's durable dependency contract.
 	addArtifactRefs := func(refs []*Ref) {
 		for _, ref := range refs {
-			if ref != nil && ref.Kind == RefArtifacts && len(ref.Path) > 0 {
-				seen[ref.Path[0]] = struct{}{}
-			}
+			addArtifactRef(ref)
 		}
 	}
 	switch node := w.Nodes[nodeID].(type) {
@@ -806,9 +823,7 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 		}
 		for _, mapping := range edge.With {
 			for _, ref := range mapping.Refs {
-				if ref != nil && ref.Kind == RefArtifacts && len(ref.Path) > 0 {
-					seen[ref.Path[0]] = struct{}{}
-				}
+				addArtifactRef(ref)
 			}
 		}
 	}

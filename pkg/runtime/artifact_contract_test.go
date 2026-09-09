@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -110,6 +111,55 @@ func TestArtifactContractRecordsConsumedArtifactVersion(t *testing.T) {
 	dep := contract.Dependencies[0]
 	if dep.LogicalRef != "plan" || dep.NodeID != "planner" || dep.Version != 1 || !dep.Required {
 		t.Fatalf("dependency = %+v", dep)
+	}
+}
+
+func TestArtifactContractConservativelyTracksDynamicArtifactIndex(t *testing.T) {
+	indexed, err := expr.Parse(`artifacts[vars.name]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := &ir.ComputeNode{
+		BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report",
+		Exprs: []*ir.ComputeExpr{{Key: "selected", AST: indexed}},
+	}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"notes":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "notes"}, Publish: "notes"},
+		"writer":  consumer,
+	}}}
+	rs := &runState{
+		artifacts: map[string]map[string]any{
+			"plan": {"ok": true}, "notes": {"ok": true},
+		},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":  {NodeID: "planner", Version: 2},
+			"notes": {NodeID: "notes", Version: 4},
+		},
+	}
+	contract := eng.artifactContractFor("writer", consumer, 0, rs)
+	if contract == nil || len(contract.Dependencies) != 2 {
+		t.Fatalf("dynamic artifact dependencies = %+v", contract)
+	}
+	if contract.Dependencies[0].LogicalRef != "notes" || contract.Dependencies[1].LogicalRef != "plan" {
+		t.Fatalf("dynamic artifact dependencies are incomplete or unstable: %+v", contract.Dependencies)
+	}
+}
+
+func TestValidateCheckpointArtifactAvailabilityIgnoresPolicy(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	run, err := base.CreateRun(ctx, "artifact-availability", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Checkpoint = &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"plan": {NodeID: "planner", Version: 0},
+	}}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyLegacy}
+	err = ValidateCheckpointArtifactAvailability(ctx, artifactReadErrorStore{base}, run)
+	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) || !strings.Contains(err.Error(), "blob unavailable") {
+		t.Fatalf("legacy-policy availability error = %v", err)
 	}
 }
 
