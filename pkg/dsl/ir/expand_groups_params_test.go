@@ -30,12 +30,10 @@ workflow w:
 `
 
 // expandedCommand compiles src and returns the command of the expanded
-// group node `name`, reading the AST the compiler instantiated (the
-// substitution's own output, independent of any downstream diagnostic the
-// residual text may raise).
-// expandedCommand reads the expanded tool from the COMPILED workflow: the
-// compiler does not touch the caller's file, so the expansion is only
-// observable in its output.
+// group node `name`, read from the COMPILED workflow — the substitution's
+// own output, independent of any downstream diagnostic the residual text
+// may raise. It has to be read there: the compiler does not touch the
+// caller's file, so the expansion is observable nowhere else.
 func expandedCommand(t *testing.T, src, name string) string {
 	t.Helper()
 	file := parseFile(t, src)
