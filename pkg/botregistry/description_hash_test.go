@@ -12,3 +12,25 @@ func TestLeadingCommentDescription_SingleHashComments(t *testing.T) {
 		t.Fatalf("description = %q, want the two comment lines joined", got)
 	}
 }
+
+// The description is the LEADING comment paragraph, before the first line of
+// code. A file with no header comment has no description: a `# shell comment`
+// inside a `command: |` block, or a prompt body's `# Heading` (text for the
+// lexer), must never be published as the bot's catalogue description.
+func TestLeadingCommentDescription_StopsAtTheFirstLineOfCode(t *testing.T) {
+	cases := map[string]string{
+		"shell comment in a block scalar": "tool t:\n  command: |\n    # shell comment\n    echo hi\nworkflow w:\n  entry: t\n  t -> done\n",
+		"heading in a prompt body":        "prompt p:\n  # Internal reviewer notes — do not ship\n  You are a reviewer.\n",
+		"comment after the first decl":    "agent a:\n  model: \"m\"\n\n# Not a description: it follows code.\n",
+	}
+	for name, raw := range cases {
+		if got := leadingCommentDescription([]byte(raw), "x.bot"); got != "" {
+			t.Errorf("%s: description = %q, want none", name, got)
+		}
+	}
+	// A blank line between the frontmatter and the paragraph is still fine.
+	raw := "## ---\n## name: Alpha\n## ---\n\n## A simple bot.\n\nagent a:\n"
+	if got := leadingCommentDescription([]byte(raw), "x.bot"); got != "A simple bot." {
+		t.Errorf("description = %q, want the paragraph after the frontmatter", got)
+	}
+}

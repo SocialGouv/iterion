@@ -9,8 +9,9 @@ const (
 	// Structural errors
 	DiagUnexpectedToken DiagCode = "E001" // unexpected token
 	DiagExpectedToken   DiagCode = "E002" // expected specific token
-	DiagBadIndentation  DiagCode = "E003" // indentation mismatch
+	DiagBadIndentation  DiagCode = "E003" // indentation mismatch (tabs, misaligned dedent, nesting depth)
 	DiagUnterminatedStr DiagCode = "E004" // unterminated string literal
+	DiagBadEscape       DiagCode = "E005" // unknown escape sequence in a quoted string (strict-escape mode)
 
 	// Declaration errors
 	DiagDuplicateDecl   DiagCode = "E010" // duplicate declaration name
@@ -36,6 +37,7 @@ var hints = map[DiagCode]string{
 	DiagExpectedToken:       "Give this position the shape the parser wanted: a bare name for a prompt/schema/node reference, a quoted string for a value, an indented block under a header, an inline `[a, b]` list.",
 	DiagBadIndentation:      "Indent with spaces only, by the same width at every level, and align the line with an enclosing block.",
 	DiagUnterminatedStr:     "Close the quote, or use a backtick raw string / a `|` block scalar for multi-line content.",
+	DiagBadEscape:           "In strict-escape mode a backslash only escapes `\\\"`, `\\\\`, `\\n`, `\\t`, `\\r` and `\\0`: double the backslash for a literal one, or move the text to a backtick raw string / a `|` block scalar.",
 	DiagDuplicateDecl:       "Rename one of the two declarations.",
 	DiagReservedName:        "`done` and `fail` are the reserved terminal targets; pick another name.",
 	DiagUnknownProperty:     "Check the property table for this node kind in docs/references/dsl-grammar.md — a property another kind accepts is not accepted here.",

@@ -493,9 +493,10 @@ func parseBotFile(path string) (*Entry, error) {
 	return e, nil
 }
 
-// leadingCommentDescription returns the first paragraph of `## ` lines
-// at the top of the file (excluding any `## ---` framing). Stops at the
-// first blank line or non-comment line. Decoration-only lines (banner
+// leadingCommentDescription returns the first paragraph of comment lines
+// (`#` or `##`) at the top of the file (excluding any `## ---` framing),
+// before the first line of code. Stops at the first blank line after the
+// paragraph or at the first non-comment line. Decoration-only lines (banner
 // rules like `## ────`) and a header line repeating the file's own name
 // are skipped — they are framing, not description.
 func leadingCommentDescription(raw []byte, filename string) string {
@@ -515,10 +516,17 @@ func leadingCommentDescription(raw []byte, filename string) string {
 			continue
 		}
 		if !isComment {
-			if len(out) > 0 {
-				break
+			// A blank line ends a paragraph already collected and is
+			// skipped before one; the first line of CODE ends the scan —
+			// a `# shell comment` inside a `command: |` or a prompt
+			// body's `# Heading` is text of the bot, not its description.
+			if strings.TrimSpace(ln) == "" {
+				if len(out) > 0 {
+					break
+				}
+				continue
 			}
-			continue
+			break
 		}
 		body := strings.TrimSpace(text)
 		if body == "" || isDecorationLine(body) || body == filename {

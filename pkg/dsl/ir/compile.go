@@ -205,11 +205,23 @@ func (c *compiler) errorfAtEdge(code DiagCode, e *Edge, format string, args ...a
 	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
 }
 
+// warnfAtEdge is the warning counterpart to errorfAtEdge.
+func (c *compiler) warnfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
+	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+}
+
 // errorfAtSpan attributes a diagnostic to a source span directly — for a
 // declaration that is not a graph node (a prompt, a schema) and so has no
 // NodeID for attachPositions to look up.
 func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
 	c.emit(SeverityError, code, "", "", sp, "", format, args...)
+}
+
+// errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
+// for a node that has more than one declaration, where the id alone would
+// resolve to the first one while the line to edit is the other.
+func (c *compiler) errorfAtNodeSpan(code DiagCode, nodeID string, sp ast.Span, format string, args ...any) {
+	c.emit(SeverityError, code, nodeID, "", sp, "", format, args...)
 }
 
 // edgeID builds the canonical "<from>-><to>" identifier the studio uses so
@@ -342,33 +354,34 @@ func (c *compiler) validateNodeNames() {
 	type decl struct {
 		kind string
 		name string
+		span ast.Span
 	}
 	all := make([]decl, 0,
 		len(c.file.Agents)+len(c.file.Judges)+len(c.file.Routers)+
 			len(c.file.Humans)+len(c.file.Tools)+len(c.file.Computes))
 	for _, d := range c.file.Agents {
-		all = append(all, decl{"agent", d.Name})
+		all = append(all, decl{"agent", d.Name, d.Span})
 	}
 	for _, d := range c.file.Judges {
-		all = append(all, decl{"judge", d.Name})
+		all = append(all, decl{"judge", d.Name, d.Span})
 	}
 	for _, d := range c.file.Routers {
-		all = append(all, decl{"router", d.Name})
+		all = append(all, decl{"router", d.Name, d.Span})
 	}
 	for _, d := range c.file.Humans {
-		all = append(all, decl{"human", d.Name})
+		all = append(all, decl{"human", d.Name, d.Span})
 	}
 	for _, d := range c.file.Tools {
-		all = append(all, decl{"tool", d.Name})
+		all = append(all, decl{"tool", d.Name, d.Span})
 	}
 	for _, d := range c.file.Computes {
-		all = append(all, decl{"compute", d.Name})
+		all = append(all, decl{"compute", d.Name, d.Span})
 	}
 	for _, d := range c.file.Subbots {
-		all = append(all, decl{"subbot", d.Name})
+		all = append(all, decl{"subbot", d.Name, d.Span})
 	}
 	for _, d := range c.file.Fails {
-		all = append(all, decl{"fail", d.Name})
+		all = append(all, decl{"fail", d.Name, d.Span})
 	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
@@ -384,7 +397,9 @@ func (c *compiler) validateNodeNames() {
 			continue
 		}
 		if firstKind, dup := seen[d.name]; dup {
-			c.errorfAt(DiagDuplicateNodeID, d.name, "",
+			// Point at the REDECLARATION — the line to delete — not at the
+			// first declaration the node id alone would resolve to.
+			c.errorfAtNodeSpan(DiagDuplicateNodeID, d.name, d.span,
 				"duplicate node ID %q: already declared as %s, redeclared as %s — node IDs must be unique across all kinds",
 				d.name, firstKind, d.kind)
 			continue

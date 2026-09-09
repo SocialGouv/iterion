@@ -28,7 +28,8 @@ import (
 // The fence's info string carries the policy, after the language tag:
 //
 //	```iter                     standalone — must parse AND compile clean
-//	```iter fragment            top-level declarations — must parse
+//	```iter fragment            top-level declarations — must parse, and compile
+//	                            except for what it may omit (see fragmentElsewhereCodes)
 //	```iter fragment:edges      edge lines — wrapped in a workflow, must parse
 //	```iter fragment:workflow   workflow members — wrapped, must parse
 //	```iter fragment:<kind>     node properties — wrapped in `<kind> _:`, must parse
@@ -46,6 +47,39 @@ import (
 // with a space in it (```iter fragment edges) is reported instead of being
 // silently dropped.
 var fenceOpenRe = regexp.MustCompile("^(\\s*)```iter\\b(.*)$")
+
+// fragmentElsewhereCodes are the compile errors a `fragment` fence may raise
+// only because it omits what it references — declared elsewhere on the page:
+// an unknown node, schema, prompt, var, artifact, attachment, secret, cursor
+// or group; no workflow, no entry; a node the missing workflow cannot reach;
+// a history ref whose loop is outside. Every OTHER compile error is a shape
+// error of the fragment itself (a conditional edge with no fallback, an
+// undeclared cycle, a bad expression) and fails the guard: with 79 of the
+// 108 fences tagged `fragment`, a parse-only policy would leave most of the
+// documentation semantically unchecked — and did, until the headline pattern
+// of groups-iteration-subbots.md was found to fail C012.
+var fragmentElsewhereCodes = map[DiagCode]bool{
+	DiagUnknownNode: true, DiagUnknownSchema: true, DiagUnknownPrompt: true,
+	DiagNoWorkflow: true, DiagMissingEntry: true, DiagUnreachableNode: true,
+	DiagHistoryRefNotInLoop: true, DiagUnknownRefNode: true, DiagUndeclaredVar: true,
+	DiagUnknownArtifact: true, DiagRefNodeNotReachable: true, DiagUnknownAttachment: true,
+	DiagUnknownSecret: true, DiagUnknownCursor: true, DiagUseUnknownGroup: true,
+}
+
+var diagCodeRe = regexp.MustCompile(`\[(C\d{3})\]`)
+
+// fragmentShapeErrors keeps the compile errors a fragment cannot excuse.
+func fragmentShapeErrors(compileErrs []string) []string {
+	var out []string
+	for _, e := range compileErrs {
+		m := diagCodeRe.FindStringSubmatch(e)
+		if m != nil && fragmentElsewhereCodes[DiagCode(m[1])] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
 
 // snippetFragmentKinds are the declaration kinds a `fragment:<kind>` fence
 // may be wrapped in.
@@ -256,7 +290,13 @@ func TestDocsIterFencesCompile(t *testing.T) {
 				} else if len(compileErrs) > 0 {
 					t.Errorf("%s: does not compile:\n      %s\n    (declare what it references, or tag it `iter fragment` if it is deliberately partial)", where, firstN(compileErrs, 3))
 				}
-			default: // fragment*
+			case s.tag == "fragment":
+				if len(parseErrs) > 0 {
+					t.Errorf("%s: does not parse:\n      %s", where, firstN(parseErrs, 3))
+				} else if shape := fragmentShapeErrors(compileErrs); len(shape) > 0 {
+					t.Errorf("%s: has a shape error a fragment cannot excuse:\n      %s\n    (a fragment may omit what it references; it may not be wrong about what it shows)", where, firstN(shape, 3))
+				}
+			default: // fragment:edges, fragment:workflow, fragment:<kind> — wrapped, parse only
 				if len(parseErrs) > 0 {
 					t.Errorf("%s: does not parse:\n      %s", where, firstN(parseErrs, 3))
 				}

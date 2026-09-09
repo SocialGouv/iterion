@@ -503,7 +503,12 @@ var keywords = map[string]TokenType{
 // Token is a single lexical token produced by the lexer.
 type Token struct {
 	Type   TokenType
-	Value  string // raw text of the token
+	Value  string // raw text of the token; for TokenError, the lexer's diagnosis
 	Line   int    // 1-based
 	Column int    // 1-based
+	// Code is set on a TokenError only: the diagnostic code of the lexer's
+	// diagnosis (a tab, an unterminated string, a bad escape), so the parser
+	// reports THAT — never "expected X, got Error" with a token-shape hint
+	// about a cause that is a character.
+	Code DiagCode
 }

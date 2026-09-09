@@ -341,6 +341,7 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			continue
 		}
 		counts := make(map[string]int)
+		second := make(map[string]*Edge) // the first REPEAT of a target: the edge to remove
 		var order []string
 		for _, e := range w.Edges {
 			if e.From != r.ID {
@@ -348,6 +349,8 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			}
 			if counts[e.To] == 0 {
 				order = append(order, e.To)
+			} else if second[e.To] == nil {
+				second[e.To] = e
 			}
 			counts[e.To]++
 		}
@@ -355,7 +358,7 @@ func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
 			if counts[target] < 2 {
 				continue
 			}
-			c.warnfAt(DiagDuplicateFanOutTarget, r.ID, edgeID(r.ID, target),
+			c.warnfAtEdge(DiagDuplicateFanOutTarget, second[target],
 				"%s declares %d edges to %q; every branch is identified by branch_<router>_<target>, so those executions share one branch id, one output slot and one durable checkpoint — a resume can restart one at the other's position (C249). %s",
 				describeBranchRouter(r), counts[target], target, duplicateFanOutRemedy(r))
 		}

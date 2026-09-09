@@ -53,7 +53,7 @@ type Lexer struct {
 func NewLexer(filename, src string) *Lexer {
 	if len(src) > maxSourceSize {
 		l := &Lexer{file: filename, line: 1, col: 1}
-		l.tokens = []Token{{Type: TokenError, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
+		l.tokens = []Token{{Type: TokenError, Code: DiagUnexpectedToken, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
 		return l
 	}
 	// Normalize the source before tokenising:
@@ -181,7 +181,7 @@ func (l *Lexer) handleLineStart() {
 	// scalar mode (heredocs preserve tab content verbatim) and in
 	// prompt body lines (handled below the dispatch).
 	if !l.blockScalarMode && !l.promptMode && l.pos < len(l.src) && l.src[l.pos] == '\t' {
-		l.emit(TokenError, "tabs are not allowed for indentation; use spaces", startLine, spaces+1)
+		l.emitError(DiagBadIndentation, "tabs are not allowed for indentation; use spaces", startLine, spaces+1)
 		// Consume the rest of the line so we don't loop on the same tab.
 		for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 			l.advance()
@@ -240,7 +240,7 @@ func (l *Lexer) handleLineStart() {
 	currentLevel := l.indentStack[len(l.indentStack)-1]
 	if spaces > currentLevel {
 		if len(l.indentStack) >= maxNestingDepth {
-			l.emit(TokenError, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
+			l.emitError(DiagBadIndentation, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
 			return
 		}
 		l.indentStack = append(l.indentStack, spaces)
@@ -260,7 +260,7 @@ func (l *Lexer) handleLineStart() {
 		}
 		// Verify alignment
 		if l.indentStack[len(l.indentStack)-1] != spaces {
-			l.emit(TokenError, "indentation does not match any outer level", startLine, 1)
+			l.emitError(DiagBadIndentation, "indentation does not match any outer level", startLine, 1)
 		}
 	}
 
@@ -452,7 +452,7 @@ func (l *Lexer) scanToken() {
 			l.scanBlockScalar(startLine, startCol)
 		} else {
 			l.advance()
-			l.emit(TokenError, string(ch), startLine, startCol)
+			l.emitError(DiagUnexpectedToken, "unexpected '|': a block scalar opener is only valid right after `key:`", startLine, startCol)
 		}
 
 	case unicode.IsDigit(ch):
@@ -463,7 +463,7 @@ func (l *Lexer) scanToken() {
 
 	default:
 		l.advance()
-		l.emit(TokenError, string(ch), startLine, startCol)
+		l.emitError(DiagUnexpectedToken, fmt.Sprintf("unexpected character %q", string(ch)), startLine, startCol)
 	}
 }
 
@@ -488,7 +488,11 @@ func (l *Lexer) scanString(startLine, startCol int) {
 				case '0':
 					buf = append(buf, 0)
 				default:
-					l.emit(TokenError, fmt.Sprintf("unknown escape sequence \\%c in strict-escape mode", next), startLine, startCol)
+					l.emitError(DiagBadEscape, fmt.Sprintf("unknown escape sequence \\%c in strict-escape mode", next), startLine, startCol)
+					// Consume the rest of the literal: one bad escape is one
+					// diagnostic, not one plus an "unexpected character" for
+					// every byte the string still holds.
+					l.skipRestOfString()
 					return
 				}
 				l.advance()
@@ -501,7 +505,7 @@ func (l *Lexer) scanString(startLine, startCol int) {
 			continue
 		}
 		if l.src[l.pos] == '\n' {
-			l.emit(TokenError, "unterminated string literal", startLine, startCol)
+			l.emitError(DiagUnterminatedStr, "unterminated string literal", startLine, startCol)
 			return
 		}
 		buf = append(buf, l.src[l.pos])
@@ -510,7 +514,7 @@ func (l *Lexer) scanString(startLine, startCol int) {
 	if l.pos < len(l.src) {
 		l.advance() // skip closing "
 	} else {
-		l.emit(TokenError, "unterminated string literal", startLine, startCol)
+		l.emitError(DiagUnterminatedStr, "unterminated string literal", startLine, startCol)
 		return
 	}
 	l.emit(TokenString, string(buf), startLine, startCol)
@@ -532,7 +536,7 @@ func (l *Lexer) scanRawString(startLine, startCol int) {
 		l.advance()
 	}
 	if l.pos >= len(l.src) {
-		l.emit(TokenError, "unterminated raw string literal (missing closing backtick)", startLine, startCol)
+		l.emitError(DiagUnterminatedStr, "unterminated raw string literal (missing closing backtick)", startLine, startCol)
 		return
 	}
 	l.advance() // skip closing `
@@ -582,7 +586,7 @@ func (l *Lexer) scanBlockScalar(startLine, startCol int) {
 		}
 	}
 	if l.pos < len(l.src) && l.src[l.pos] != '\n' {
-		l.emit(TokenError, "expected newline after '|' (block scalar opener)", startLine, startCol)
+		l.emitError(DiagExpectedToken, "expected newline after '|' (block scalar opener)", startLine, startCol)
 		return
 	}
 	if l.pos < len(l.src) {
@@ -663,7 +667,7 @@ func (l *Lexer) handleIndentation(spaces, startLine int) {
 	currentLevel := l.indentStack[len(l.indentStack)-1]
 	if spaces > currentLevel {
 		if len(l.indentStack) >= maxNestingDepth {
-			l.emit(TokenError, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
+			l.emitError(DiagBadIndentation, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
 			return
 		}
 		l.indentStack = append(l.indentStack, spaces)
@@ -674,7 +678,7 @@ func (l *Lexer) handleIndentation(spaces, startLine int) {
 			l.emit(TokenDedent, "", startLine, 1)
 		}
 		if l.indentStack[len(l.indentStack)-1] != spaces {
-			l.emit(TokenError, "indentation does not match any outer level", startLine, 1)
+			l.emitError(DiagBadIndentation, "indentation does not match any outer level", startLine, 1)
 		}
 	}
 	l.atLineStart = false
@@ -736,6 +740,30 @@ func (l *Lexer) advance() {
 
 func (l *Lexer) emit(tt TokenType, value string, line, col int) {
 	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col})
+}
+
+// skipRestOfString advances past the remainder of a quoted literal after an
+// error inside it — through the closing quote, or to the end of the line —
+// so the error is reported once instead of cascading.
+func (l *Lexer) skipRestOfString() {
+	for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+		ch := l.src[l.pos]
+		l.advance()
+		if ch == '\\' && l.pos < len(l.src) && l.src[l.pos] != '\n' {
+			l.advance()
+			continue
+		}
+		if ch == '"' {
+			return
+		}
+	}
+}
+
+// emitError records a lexer diagnosis as an error token that carries its
+// own diagnostic code, so the parser can report the cause wherever the token
+// surfaces — inside a block as well as at the top level.
+func (l *Lexer) emitError(code DiagCode, msg string, line, col int) {
+	l.tokens = append(l.tokens, Token{Type: TokenError, Code: code, Value: msg, Line: line, Column: col})
 }
 
 func isIdentStart(r rune) bool {

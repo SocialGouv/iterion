@@ -75,6 +75,24 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
 
   tokenizer: {
     root: [
+      // A prompt declaration: its body is TEXT on the following lines,
+      // where `# Heading` is a heading, not a comment (the lexer keeps it as
+      // prompt text). The header's indentation rides on the state name so
+      // the body ends at the first line indented no deeper than the header —
+      // a prompt inside a `group` is handled like a top-level one.
+      [/^(\s*)(prompt)(\s+)([A-Za-z_]\w*)(\s*:)/, [
+        "white", "keyword", "white", "identifier",
+        { token: "delimiter", next: "@promptHeader.$1" },
+      ]],
+
+      // A block scalar (`command: |`): its body is a script on the following
+      // lines, where `# note` is a shell comment inside the value.
+      [/^(\s*)([A-Za-z_]\w*)(\s*:\s*)(\|[-+]?)(\s*)$/, [
+        "white", "keyword", "delimiter",
+        { token: "delimiter", next: "@blockScalar.$1" },
+        "white",
+      ]],
+
       // Raw strings: a backtick opens a shell command or a literal that a
       // `#` must not close — `echo "#1"` is a command, not a comment. Read
       // before the comment rule so the hash inside stays string-coloured.
@@ -131,6 +149,54 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       [/[^"\\{$]+/, "string"],
       [/\\./, "string.escape"],
       [/"/, { token: "string.quote", next: "@pop" }],
+    ],
+
+    // The rest of a `prompt <name>:` header line. On the following lines a
+    // column-0 line or a line at the header's own indentation ($S2) ends the
+    // declaration; a deeper line opens the body.
+    promptHeader: [
+      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1==$S2": { token: "@rematch", next: "@pop" },
+          "@default": { token: "white", switchTo: "@promptBody.$S2" },
+        },
+      }],
+      [/#.*$/, "comment"],
+      [/\s+/, "white"],
+      [/./, "white"],
+    ],
+
+    // A prompt body: text, with templates and env refs coloured, until a
+    // line indented no deeper than the header.
+    promptBody: [
+      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1==$S2": { token: "@rematch", next: "@pop" },
+          "@default": "white",
+        },
+      }],
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^{$]+/, "string"],
+      [/[{$]/, "string"],
+    ],
+
+    // A block scalar body: the same shape as a prompt body, ended by a line
+    // indented no deeper than its key.
+    blockScalar: [
+      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
+      [/^(\s*)(?=\S)/, {
+        cases: {
+          "$1==$S2": { token: "@rematch", next: "@pop" },
+          "@default": "white",
+        },
+      }],
+      [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
+      [/\$\{[^}]+\}/, "variable"],
+      [/[^{$]+/, "string"],
+      [/[{$]/, "string"],
     ],
 
     // A raw string has no escape and may span lines: only the closing
