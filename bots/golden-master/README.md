@@ -75,6 +75,16 @@ The agent writes the mutants too, so the harness constrains them mechanically:
    set; fingerprints, not names, prevent laundering a published mutant through a rename.
 5. **A width and replayability floor.** `min_corpus` applies to distinct reference hashes, not raw
    entry count, and the gate refuses a runner or harness that is absent or gitignored.
+6. **Byte-identical references are proved, not excused.** Two entries may legitimately capture the
+   same bytes — on a refusal lane the second is a control showing a mutant moved only the first —
+   but the claim is data, not a note: `corpus.json` declares
+   `duplicate_groups: [{"ids": [...], "separated_by": "<mutant-id>"}]`, and the gate DISCHARGES each
+   declaration by measurement, requiring that mutant to move a strict, non-empty subset of the group
+   (every member is pinned into its control sample so the answer exists). An undeclared group, a
+   separator that moves all of them or none, an invalid separator, and a declaration whose
+   references have since diverged all land in `duplicate_groups_unproven`. It goes red by itself the
+   day a separator dies, which is what a waiver could never do — measured: two pairs whose notes
+   still read "settled, and proved" had lost their mutant to a lot's re-anchoring.
 
 The same gate checks **collateral** (a mutant must not move what it does not declare),
 **`uncontrolled`** (a mutant declaring the whole corpus leaves no control), a whole-corpus null
@@ -87,10 +97,20 @@ loudly because mutant reverts restore `HEAD` and would otherwise judge a tree th
 converged = stable ∧ noop_silent ∧ revert_clean ∧ collateral == 0
           ∧ unstable_controls == []
           ∧ uncontrolled == [] ∧ blind_lanes == [] ∧ missing_archetypes == []
-          ∧ corpus_distinct ≥ min_corpus ∧ runner_replayable
+          ∧ corpus_distinct ≥ min_corpus ∧ duplicate_groups_unproven == []
+          ∧ runner_replayable
           ∧ holdout_reused == [] ∧ score_pct ≥ floor
           ∧ holdout_detected == holdout_total
 ```
+
+Most of these terms are restated in the emitted `verify-oracle.sh`, which is what CI and humans
+actually run — `duplicate_groups_unproven` among them, because a term the graph gate has and the
+standalone entry point lacks makes the entry point that IS invoked the weaker of the two. Three are
+**not** restated there today and remain the graph's alone: `unstable_controls`,
+`corpus_distinct ≥ min_corpus` and `score_pct ≥ floor`. The first and the third are still printed
+as problems in the report the wrapper dumps, so a human reading it sees them; the width floor is
+applied only by the graph, since the harness states facts and the graph decides. Only the wrapper's
+**exit code** ignores all three.
 
 An aggregate would let a lane at 100 % average away a lane at 0 %. Measured on the reference
 implementation: a correct oracle and a deliberately vacuous one **both scored 100 %**. Only
