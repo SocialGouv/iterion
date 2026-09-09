@@ -395,13 +395,7 @@ func (c *Coordinator) ingest(evt *store.Event) {
 	if progressAt.IsZero() {
 		progressAt = time.Now()
 	}
-	progressFP := supervisorFingerprint(rendered)
-	if c.cursor.LastProgressFingerprint == progressFP {
-		c.cursor.ConsecutiveNoProgress++
-	} else {
-		c.cursor.ConsecutiveNoProgress = 0
-	}
-	c.cursor.LastProgressFingerprint = progressFP
+	c.cursor.LastProgressFingerprint = supervisorFingerprint(rendered)
 	c.cursor.LastProgressAt = progressAt
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
@@ -556,7 +550,6 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	} else {
 		c.cursor.LastAction = "observe"
 	}
-	c.cursor.LastActionFingerprint = supervisorFingerprint(c.cursor.LastAction + "|" + reason)
 	return false
 }
 
