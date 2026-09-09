@@ -27,6 +27,10 @@ type RunRetryStore interface {
 	// exhausted budget are ordinary outcomes, not failures. The returned
 	// attempt is the 1-based number of the retry just armed.
 	ScheduleRunRetry(ctx context.Context, runID string, at time.Time, reason, code string, maxAttempts int) (scheduled bool, attempt int, err error)
+	// DelayRunRetry moves an already-armed retry without consuming another
+	// attempt. expectedAfter is a CAS guard against an operator or another
+	// sweeper changing the intent concurrently.
+	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (delayed bool, err error)
 	// ClaimRunRetry LEASES an armed retry, conditioning on expectedAfter
 	// matching what the caller read and on no live lease existing. The
 	// winner sees won=true; every loser sees won=false. The retry stays

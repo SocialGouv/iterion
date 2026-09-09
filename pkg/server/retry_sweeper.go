@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -130,7 +132,8 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// path must NOT replay it (the DLQ notice has no dedup of its own).
 	// The read is a guard, not a gate: a store that cannot answer leaves
 	// the retry row as the authority, loudly.
-	if run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID); lerr != nil {
+	run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID)
+	if lerr != nil {
 		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
 		s.disarmRetry(runCtx, retryStore, ref.TenantID, ref.ID,
@@ -152,6 +155,30 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		}
 		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
 		return
+	}
+
+	// Admission comes before the provider circuit: a permanently denied run
+	// must be abandoned now, and a retry re-armed for another transient reason
+	// must not be held behind an unrelated provider window.
+	if key := retrycoord.Key(run); key != "" {
+		decisionNow := time.Now().UTC()
+		circuit, circuitErr := retrycoord.Open(runCtx, s.cfg.Store, key, decisionNow)
+		if circuitErr != nil {
+			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
+		} else if delayedUntil, shouldDelay := circuitRetryDelayAt(ref, run, circuit, decisionNow); shouldDelay {
+			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil)
+			if delayErr != nil {
+				adm.rollback(s.logger)
+				s.warnf("retry sweeper: run %s: cannot delay retry behind open circuit: %v", ref.ID, delayErr)
+				return
+			}
+			if delayed {
+				s.auditRetry(ref, "run.retry.circuit_delayed", map[string]any{"retry_after": delayedUntil})
+				s.infof("retry sweeper: run %s delayed behind workflow circuit until %s", ref.ID, delayedUntil.Format(time.RFC3339))
+			}
+			adm.rollback(s.logger)
+			return
+		}
 	}
 
 	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "")
@@ -220,6 +247,48 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	})
 	s.infof("retry sweeper: run %s (tenant %s) resumed after its provider quota window reopened (attempt %d)",
 		ref.ID, ref.TenantID, retryAttempts(ref))
+}
+
+// circuitRetryDelayAt spreads a circuit-delayed cohort while preserving the
+// per-run max_wait horizon across repeated sweeper passes. Once that horizon
+// has elapsed the circuit becomes advisory and the already-due retry proceeds.
+func circuitRetryDelayAt(ref mongostore.RetryDueRef, run *store.Run, circuit *store.RetryCircuitState, now time.Time) (time.Time, bool) {
+	if circuit == nil || circuit.OpenUntil == nil || !circuit.OpenUntil.After(now) {
+		return time.Time{}, false
+	}
+	pol := retryPolicyForSweeper(run)
+	delayedUntil := circuit.OpenUntil.UTC()
+	if jitter := pol.JitterDuration(); jitter > 0 {
+		delayedUntil = delayedUntil.Add(rand.N(jitter))
+	}
+	anchor := ref.RetryAfter().UTC()
+	if ref.RetryState != nil && ref.RetryState.ScheduledAt != nil {
+		anchor = ref.RetryState.ScheduledAt.UTC()
+	}
+	if run != nil && run.RetryState != nil && run.RetryState.ScheduledAt != nil {
+		anchor = run.RetryState.ScheduledAt.UTC()
+	}
+	ceiling := anchor.Add(pol.MaxWaitDuration())
+	if !ceiling.After(now) {
+		return time.Time{}, false
+	}
+	if delayedUntil.After(ceiling) {
+		delayedUntil = ceiling
+	}
+	return delayedUntil, delayedUntil.After(now)
+}
+
+func retryPolicyForSweeper(run *store.Run) retrypolicy.Policy {
+	var pol retrypolicy.Policy
+	if run != nil && run.RetryPolicy != nil {
+		pol = retrypolicy.Policy{
+			UsageWindow: run.RetryPolicy.UsageWindow,
+			MaxAttempts: run.RetryPolicy.MaxAttempts,
+			MaxWait:     run.RetryPolicy.MaxWait,
+			Jitter:      run.RetryPolicy.Jitter,
+		}
+	}
+	return retrypolicy.Clamp(retrypolicy.Normalize(pol), retrypolicy.CeilingFromEnv(), nil)
 }
 
 // retryDenialIsTransient reports whether an admission denial is expected to

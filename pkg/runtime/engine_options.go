@@ -463,6 +463,19 @@ func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
 }
 
+// WithOutputCorrectionBudget bounds the number of optional correction calls
+// made after a schema-invalid node output. A zero budget disables correction;
+// negative values are treated as zero. The budget is per node episode and is
+// persisted on the run so a resume cannot reset the bound.
+func WithOutputCorrectionBudget(budget int) EngineOption {
+	return func(e *Engine) {
+		if budget < 0 {
+			budget = 0
+		}
+		e.outputCorrectionBudget = budget
+	}
+}
+
 // WithPauseSignal wires an external pause request channel into the
 // engine. When a caller closes the channel (or sends a non-blocking
 // send-and-don't-care signal), the engine pauses at the next safe

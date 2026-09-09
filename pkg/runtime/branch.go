@@ -251,7 +251,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			}
 		} else {
 			e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)
-			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
+			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
 		}
 		if done {
 			// A deferred gate never emitted node_started. A real pause keeps its
@@ -364,6 +364,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.loopStaleness = make(map[string]int)
 	local.loopBudgetMarks = make(map[string]loopBudgetMark)
 	local.branchLocal = true
+	local.correctionScope = result.branchID
 	local.enclosingLoopCounters = branchIterationCounters(parent)
 	local.enclosingLoopPreviousOutput = enclosingLoopPreviousOutputFrom(parent)
 	local.parallel = nil
@@ -665,7 +666,7 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 // flag: done=true (with result.err set) when execution or validation failed.
 // On an execution error it emits node_finished with the error so the event
 // log stays paired.
-func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, iter int, result *branchResult, slot *branchSlot) (map[string]any, bool) {
+func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, iter int, result *branchResult, slot *branchSlot) (map[string]any, bool) {
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
 	branchScope := resolveScope{
@@ -743,12 +744,18 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		output = mergeRouterPassThrough(nodeInput, output)
 	}
 
-	result.outputs[currentNodeID] = output
-
-	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-		return nil, true
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(execCtx, rs, currentNodeID, node, output)
+	output = validatedOutput
+	if validationErr != nil {
+		// Charge both the original call and any correction call before the
+		// branch exits. Invalid output is deliberately not published.
+		if e.recordBranchUsage(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, &result.costUSD, result) {
+			return output, true
+		}
+		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, validationErr)
+		return output, true
 	}
+	result.outputs[currentNodeID] = output
 	return output, false
 }
 

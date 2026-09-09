@@ -1679,6 +1679,7 @@ iterion rewind --run-id <id> [--auto | --node <id>] [--file] [--restore-scope no
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
 iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in /pipelines Todo.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
+iterion reliability report [--run-id] [--store-dir] | rollback  # Read-only operator surface for the workflow-reliability rollout: the RESOLVED mode/context policy (ITERION_RELIABILITY_MODE, falling back to ITERION_EXECUTION_CONTEXT_POLICY), a fleet baseline or one run's compatibility report, and the rollback plan (see docs/workflow-reliability-1006.md)
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker (import mirrors a forge repo's issues, one-way + idempotent)
