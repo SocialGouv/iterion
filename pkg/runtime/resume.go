@@ -88,7 +88,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		return &RuntimeError{
 			Code:    store.FailureResumeInvalid,
 			Message: "persisted artifact contract is incompatible with this workflow",
-			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract before resuming",
+			Hint:    "restore the producing workflow revision, explicitly migrate the artifact contract, or resume with --force after reviewing the source change",
 			Cause:   err,
 		}
 	}

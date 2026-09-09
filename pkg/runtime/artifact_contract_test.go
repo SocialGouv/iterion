@@ -35,13 +35,17 @@ func TestValidateArtifactContractsRefusesIncompatibleRevisionInEnforce(t *testin
 		t.Fatal(err)
 	}
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{
-		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+		"writer": &ir.ToolNode{
+			BaseNode:     ir.BaseNode{ID: "writer"},
+			SchemaFields: ir.SchemaFields{OutputSchema: "new-schema"},
+			Publish:      "renamed-report",
+		},
 	}}
 	if err := ValidateArtifactContracts(ctx, s, run, wf, "rev-new", false); err == nil {
-		t.Fatal("incompatible artifact revision accepted")
+		t.Fatal("source-derived artifact contract changes accepted")
 	}
 	if err := ValidateArtifactContracts(ctx, s, run, wf, "rev-new", true); err != nil {
-		t.Fatalf("forced source-change resume rejected: %v", err)
+		t.Fatalf("forced source-change resume rejected publish/schema/revision edit: %v", err)
 	}
 	run.ExecutionContext.Policy = store.ContextPolicyReport
 	if err := ValidateArtifactContracts(ctx, s, run, wf, "rev-new", false); err != nil {
@@ -96,5 +100,8 @@ func TestValidateArtifactContractsRejectsMissingVersionZeroDependency(t *testing
 	err = ValidateArtifactContracts(ctx, s, run, wf, "rev", false)
 	if err == nil || !strings.Contains(err.Error(), "absent from the run") {
 		t.Fatalf("missing version-zero dependency error = %v", err)
+	}
+	if err = ValidateArtifactContracts(ctx, s, run, wf, "rev", true); err == nil || !strings.Contains(err.Error(), "absent from the run") {
+		t.Fatalf("force waived persisted dependency integrity: %v", err)
 	}
 }
