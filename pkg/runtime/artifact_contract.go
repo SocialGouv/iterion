@@ -116,6 +116,21 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
 		return nil
 	}
+	// Resolve the policy BEFORE reading anything. `legacy` — the default
+	// until ITERION_EXECUTION_CONTEXT_POLICY says otherwise, and what a run
+	// predating execution contexts resolves to — means this regime does not
+	// apply to the run, so the loop below would read every latest artifact
+	// body (an S3 GET per published node on cloud, on every resume and every
+	// usage-window retry) to reach a verdict nobody acts on. A deployment
+	// that wants to see the verdict without acting on it has a tier for
+	// that: `report`.
+	policy := store.ContextPolicyLegacy
+	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
+		policy = run.ExecutionContext.Policy
+	}
+	if policy == store.ContextPolicyLegacy {
+		return nil
+	}
 	var violations, advisories []string
 	for nodeID, version := range run.ArtifactIndex {
 		if check.Skip[nodeID] {
@@ -239,10 +254,6 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 	}
 	if len(violations) == 0 {
 		return nil
-	}
-	policy := store.ContextPolicyLegacy
-	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
-		policy = run.ExecutionContext.Policy
 	}
 	if policy != store.ContextPolicyEnforce {
 		// The point of the report tier is to show what enforce WOULD refuse

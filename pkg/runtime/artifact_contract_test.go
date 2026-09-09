@@ -316,6 +316,10 @@ func TestValidateArtifactContractsReportsWhatEnforceWouldRefuse(t *testing.T) {
 	}
 }
 
+// An artifact carrying NO contract at all is accepted. Deliberately under
+// the enforce policy: a run with no execution context returns before reading
+// anything, so a legacy-policy fixture would pass this without ever
+// exercising the no-contract path it exists to cover.
 func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)
@@ -324,6 +328,10 @@ func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
 	if err := s.SaveRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
@@ -476,5 +484,29 @@ func TestValidateArtifactContractsSeparatesCancellationFromIncompatibility(t *te
 	})
 	if err == nil || !strings.Contains(err.Error(), "artifact contract incompatible") {
 		t.Fatalf("unreadable artifact = %v, want the enforce refusal", err)
+	}
+}
+
+// The legacy policy — the default until ITERION_EXECUTION_CONTEXT_POLICY says
+// otherwise — means the regime does not apply, so the gate must not read a
+// single artifact: that is an S3 GET per published node on cloud, on every
+// resume and every usage-window retry, for a verdict nobody acts on.
+func TestValidateArtifactContractsReadsNothingUnderLegacyPolicy(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-legacy-policy", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+	})
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "summary"},
+	}}
+	// A store that fails every read: reaching it at all is the failure.
+	failing := loadFailingStore{RunStore: s, err: errors.New("read should not happen under the legacy policy")}
+	for _, ec := range []*store.ExecutionContext{nil, {Version: 1, Policy: store.ContextPolicyLegacy}} {
+		run.ExecutionContext = ec
+		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+			Store: failing, Run: run, Workflow: wf, Revision: "rev-new",
+		}); err != nil {
+			t.Fatalf("execution context %+v: %v", ec, err)
+		}
 	}
 }
