@@ -117,18 +117,26 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			if !ok {
 				return
 			}
-			// fsnotify error channel drains rare kernel queue-full
-			// signals. Don't spam: log once per session, keep the
-			// watcher alive — a missed event simply means the
-			// daemon's view stays stale until the next event for
-			// that file forces a refresh, or the next restart
-			// repopulates from disk. Wrap the flag in a tiny mutex
-			// because the events + errors selects run on the same
-			// goroutine but the linter cannot prove that.
+			// fsnotify's error channel carries the kernel queue-full
+			// signal: events were DROPPED, and nothing will resend
+			// them. The watcher stays alive and the index is rebuilt
+			// from disk — the second lossy carrier gets the same net
+			// as a refused watch. Log once per session so a host that
+			// overflows every second does not flood the log. Wrap the
+			// flag in a tiny mutex because the events + errors selects
+			// run on the same goroutine but the linter cannot prove that.
 			mu.Lock()
 			first := !seenErr
 			seenErr = true
 			mu.Unlock()
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				if rerr := s.Reconcile(); rerr != nil {
+					s.getLogger().Error("native index watcher: kernel event queue overflowed and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", rerr)
+				} else if first {
+					s.getLogger().Warn("native index watcher: kernel event queue overflowed; index rebuilt from disk (further overflows rebuild silently this session)")
+				}
+				continue
+			}
 			if first {
 				s.getLogger().Error("native index watcher: fsnotify error: %v — board index may serve stale reads until the next write event or restart (further watcher errors suppressed this session)", err)
 			}

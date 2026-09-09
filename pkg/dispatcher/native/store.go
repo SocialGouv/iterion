@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -68,6 +67,13 @@ type Store struct {
 	// NewStore snapshot for the life of the process. nil when a watch
 	// was armed (the fast path needs no net) or when the net is off.
 	rescanner *indexRescanner
+
+	// writes counts the in-process mutations of issues/ (every file write
+	// through writeIssueLocked, every Delete), under mu. Reconcile scans
+	// the disk WITHOUT the mutex and compares this counter before it
+	// swaps the scan in: a write that landed during the scan makes the
+	// scan stale, and a stale swap would revert it.
+	writes uint64
 
 	// pendingEvents buffers events whose appendEventLocked call
 	// returned an error (transient fsync failure, NFS hiccup). Every
@@ -163,7 +169,7 @@ func NewStore(root string) (*Store, error) {
 	} else {
 		s.watcherErr = err
 		if s.rescanner = startFallbackRescan(s); s.rescanner != nil {
-			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, fallbackRescanInterval)
+			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, s.rescanner.interval)
 		} else {
 			s.logger.Warn("native index watcher unavailable: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", err)
 		}
@@ -202,23 +208,15 @@ func (s *Store) Close() error {
 	return s.watcher.Close()
 }
 
+// populateIndex loads every committed issue file into the index at
+// NewStore. It adds to the index rather than replacing it; the full
+// rebuild that also drops vanished files is Reconcile.
 func (s *Store) populateIndex() error {
-	entries, err := os.ReadDir(filepath.Join(s.root, issuesDir))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	fresh, err := s.scanIssues()
 	if err != nil {
-		return fmt.Errorf("native store: scan issues: %w", err)
+		return err
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".tmp") {
-			continue
-		}
-		id := decodeID(strings.TrimSuffix(e.Name(), ".json"))
-		iss, err := s.readIssueFromDisk(id)
-		if err != nil {
-			continue
-		}
+	for id, iss := range fresh {
 		s.index[id] = iss
 	}
 	return nil

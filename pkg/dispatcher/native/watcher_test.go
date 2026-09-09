@@ -319,9 +319,7 @@ func TestApplyEvent_DropsEntryWhenFileVanished(t *testing.T) {
 	// Isolate applyEvent: no live watcher and no rescan may touch the
 	// index, or they would do the dropping this test is here to check.
 	refuseWatch(t)
-	prev := fallbackRescanInterval
-	fallbackRescanInterval = 0
-	t.Cleanup(func() { fallbackRescanInterval = prev })
+	setRescanInterval(t, 0)
 
 	dir := t.TempDir()
 	s, err := NewStore(dir)
@@ -354,9 +352,7 @@ func TestApplyEvent_DropsEntryWhenFileVanished(t *testing.T) {
 // store the host would not give a watch must still converge on its own,
 // instead of serving its NewStore snapshot until the daemon restarts.
 func TestStore_FallbackRescanWhenWatchRefused(t *testing.T) {
-	prev := fallbackRescanInterval
-	fallbackRescanInterval = 20 * time.Millisecond
-	t.Cleanup(func() { fallbackRescanInterval = prev })
+	setRescanInterval(t, 20*time.Millisecond)
 
 	refuseWatch(t)
 
