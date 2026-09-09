@@ -3,6 +3,7 @@ package runview
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -110,6 +111,66 @@ func TestMergeBundlePrompts_DiagnosticsPointAtThePromptFile(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a C033 on the undeclared var, got %v", res.Diagnostics)
+	}
+}
+
+// An `{{include}}` inside a bundle prompt resolves next to THAT file —
+// inside prompts/ — and never against the process working directory, which
+// on a server is nobody's: a merged prompt used to carry no span, so the
+// include base fell back to "." and slurped whatever the cwd held.
+func TestMergeBundlePrompts_IncludesResolveNextToThePromptFile(t *testing.T) {
+	dir := t.TempDir()
+	promptsDir := filepath.Join(dir, "prompts")
+	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptsDir, "helper.md"), []byte("Helper.\n{{include \"sibling.md\"}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptsDir, "sibling.md"), []byte("FROM-PROMPTS-DIR"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A decoy in the working directory must not be what the include reads.
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "sibling.md"), []byte("FROM-CWD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+
+	src := "schema out:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: out\n  system: helper\n\nworkflow w:\n  entry: a\n  a -> done\n"
+	pr := parser.Parse(filepath.Join(dir, "main.bot"), src)
+	if err := MergeBundlePrompts(pr.File, &bundle.Bundle{PromptsDir: promptsDir}); err != nil {
+		t.Fatal(err)
+	}
+	res := ir.Compile(pr.File)
+	for _, d := range res.Diagnostics {
+		if d.Severity == ir.SeverityError {
+			t.Fatalf("unexpected compile error: %s", d.Error())
+		}
+	}
+	body := res.Workflow.Prompts["helper"].Body
+	if !strings.Contains(body, "FROM-PROMPTS-DIR") || strings.Contains(body, "FROM-CWD") {
+		t.Errorf("include resolved against the wrong directory: body = %q", body)
+	}
+
+	// With the sibling only in the cwd, the include fails loudly rather
+	// than reading the cwd.
+	if err := os.Remove(filepath.Join(promptsDir, "sibling.md")); err != nil {
+		t.Fatal(err)
+	}
+	pr = parser.Parse(filepath.Join(dir, "main.bot"), src)
+	if err := MergeBundlePrompts(pr.File, &bundle.Bundle{PromptsDir: promptsDir}); err != nil {
+		t.Fatal(err)
+	}
+	res = ir.Compile(pr.File)
+	var refused bool
+	for _, d := range res.Diagnostics {
+		if d.Code == ir.DiagBadPromptInclude {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Errorf("a sibling present only in the cwd was accepted: %v", res.Diagnostics)
 	}
 }
 

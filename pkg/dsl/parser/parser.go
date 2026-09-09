@@ -51,8 +51,18 @@ func (p *parser) addError(code DiagCode, t Token, msg string) {
 // through, so no site can report "expected X, got Error" or read the
 // diagnosis as a property name.
 func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
-	if t.Type == TokenError && code != lexerCode(t) {
+	if t.Type == TokenError {
+		// Unconditional — a lexer diagnosis may share a parser code (the
+		// block-scalar opener is E002), and lexerError passes exactly
+		// this pair, so the replacement is idempotent for it.
 		code, msg, hint = lexerCode(t), t.Value, ""
+	}
+	if t.Type == TokenIndent && (code == DiagUnexpectedToken || code == DiagUnknownProperty) {
+		// "unexpected token ''" / "unknown property ''": an indent token
+		// has no text, and what the author sees is a line indented where
+		// no member or property can be — at the top level, in a workflow,
+		// in a node body alike.
+		code, msg, hint = DiagBadIndentation, indentOutsideBlockMsg, ""
 	}
 	if hint == "" {
 		hint = HintFor(code)
@@ -91,6 +101,11 @@ func (p *parser) expectFailed(t Token, want TokenType, msg string) {
 func (p *parser) lexerError(t Token) {
 	p.addError(lexerCode(t), t, t.Value)
 }
+
+// indentOutsideBlockMsg names an indented line where no member or property
+// can be. Phrased for both causes: it may be the consequence of a header
+// that failed to open (then an error precedes it) or a plain mistake.
+const indentOutsideBlockMsg = "indented line where none can be: it is indented deeper than the block it is in, or the header above it did not open (see the error before this one, if any)"
 
 // lexerCode is the diagnostic code an error token carries (E001 when the
 // lexer did not classify it).
@@ -332,11 +347,9 @@ func (p *parser) parseFile() *ast.File {
 			p.next()
 
 		case TokenIndent:
-			// An indented line with no block open above it: the header
-			// before it failed to open (the previous diagnostic says why),
-			// or the line is indented by mistake. "unexpected token ''"
-			// — an indent token has no text — said neither.
-			p.addError(DiagBadIndentation, t, "indented line outside any block: the header above it did not open (see the previous error), or the line is indented by mistake")
+			// An indented line with no block open above it (the same
+			// message addErrorHint substitutes inside a block).
+			p.addError(DiagBadIndentation, t, indentOutsideBlockMsg)
 			p.next()
 			p.skipToNextTopLevel()
 

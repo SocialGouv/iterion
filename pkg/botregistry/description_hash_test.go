@@ -33,4 +33,16 @@ func TestLeadingCommentDescription_StopsAtTheFirstLineOfCode(t *testing.T) {
 	if got := leadingCommentDescription([]byte(raw), "x.bot"); got != "A simple bot." {
 		t.Errorf("description = %q, want the paragraph after the frontmatter", got)
 	}
+	// A BOM is not a line of code (the lexer strips it too), and CR / CRLF
+	// line endings terminate lines — neither may cost the description or
+	// leak the code that follows it.
+	for name, raw := range map[string]string{
+		"BOM":     "\ufeff## A simple bot.\n## Does one thing.\n\nagent a:\n",
+		"CRLF":    "## A simple bot.\r\n## Does one thing.\r\n\r\nagent a:\r\n",
+		"lone CR": "## A simple bot.\r## Does one thing.\ragent a:\r",
+	} {
+		if got := leadingCommentDescription([]byte(raw), "x.bot"); got != "A simple bot. Does one thing." {
+			t.Errorf("%s: description = %q, want the two comment lines joined", name, got)
+		}
+	}
 }

@@ -66,6 +66,37 @@ describe("iter tokenizer", () => {
     expect(typeAt(lines[4], 2)).toContain("keyword"); // `output` — the scalar ended
   });
 
+  it("ends a block scalar whose key sits deeper than its block's siblings", () => {
+    // `command: |` under `recovery: / repair:` — the next property is
+    // shallower than the key but deeper than column 0.
+    const lines = paint([
+      "agent a:",
+      "  recovery:",
+      "    repair:",
+      "      command: |",
+      "        echo hi",
+      "    policy: retry",
+      '  model: "m"',
+    ]);
+    expect(typeAt(lines[4], 8)).toContain("string");
+    expect(typeAt(lines[5], 4)).toContain("identifier"); // `policy` — the scalar ended
+    expect(typeAt(lines[6], 2)).toContain("keyword"); // `model`
+  });
+
+  it("ends a block scalar inside a group at the group's next member", () => {
+    const lines = paint([
+      "group g:",
+      "  tool t:",
+      "    command: |",
+      "      echo hi",
+      "  agent a:",
+      '    model: "m"',
+    ]);
+    expect(typeAt(lines[3], 6)).toContain("string");
+    expect(typeAt(lines[4], 2)).toContain("keyword"); // `agent`
+    expect(typeAt(lines[5], 4)).toContain("keyword"); // `model`
+  });
+
   it("comments open on a single hash", () => {
     expect(iterLanguageConfig.comments?.lineComment).toBe("#");
   });

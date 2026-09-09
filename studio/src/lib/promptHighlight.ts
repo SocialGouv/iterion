@@ -10,7 +10,7 @@
  * visual styling.
  */
 
-export type HighlightKind = "text" | "ref" | "envvar" | "comment";
+export type HighlightKind = "text" | "ref" | "envvar";
 
 export interface HighlightChunk {
   kind: HighlightKind;
@@ -39,15 +39,9 @@ export function highlightPromptBody(src: string): HighlightChunk[] {
   while (i < src.length) {
     const ch = src[i];
 
-    // Line comments (## ... up to newline). Mirrors iterLanguage.ts.
-    if (ch === "#" && src[i + 1] === "#") {
-      flushText();
-      const nl = src.indexOf("\n", i);
-      const end = nl === -1 ? src.length : nl;
-      out.push({ kind: "comment", text: src.slice(i, end) });
-      i = end;
-      continue;
-    }
+    // No comment rule: a prompt body has no comments. The lexer keeps every
+    // line of it as text (`# Heading` and `## Section` are markdown), and
+    // the references on such a line are resolved like any other.
 
     // Template references {{ ... }}.
     if (ch === "{" && src[i + 1] === "{") {

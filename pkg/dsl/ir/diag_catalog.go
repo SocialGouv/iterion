@@ -75,7 +75,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagArtifactLabelsNoPublish:  {"Artifact labels without publish", "Add `publish: <name>` so the labels have an artifact to attach to, or remove `artifact_labels:`."},
 	DiagMemoryInvalidVisibility:  {"Invalid memory visibility", "Use one of `bot`, `project`, `cross_project`, `user`, `org`, `global`."},
 	DiagMemoryVisibilityConflict: {"Memory visibility conflict", "Use `visibility:` alone; drop the legacy `project_root:`."},
-	DiagBadPromptInclude:         {"Bad prompt include", "Point `{{include \"...\"}}` at an existing file inside the .bot's directory, under 256 KiB, with a relative path."},
+	DiagBadPromptInclude:         {"Bad prompt include", "Point `{{include \"...\"}}` at an existing file, with a path relative to the file that contains the include (the `.bot`'s directory for a prompt declared in it, a bundle's `prompts/` for a `prompts/*.md`), never escaping it, under 256 KiB."},
 
 	// Attachments.
 	DiagDuplicateAttachment:       {"Duplicate attachment", "Rename or merge the duplicate `attachments:` entry."},

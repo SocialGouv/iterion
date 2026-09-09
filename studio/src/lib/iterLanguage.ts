@@ -151,15 +151,16 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
       [/"/, { token: "string.quote", next: "@pop" }],
     ],
 
-    // The rest of a `prompt <name>:` header line. On the following lines a
-    // column-0 line or a line at the header's own indentation ($S2) ends the
-    // declaration; a deeper line opens the body.
+    // The rest of a `prompt <name>:` header line. On the following lines,
+    // only a line indented STRICTLY deeper than the header ($S2 followed by
+    // at least one more space) belongs to the body; any other non-blank line
+    // — at the header's indent, shallower, or at column 0 — ends the
+    // declaration and is re-read by the block grammar.
     promptHeader: [
-      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
       [/^(\s*)(?=\S)/, {
         cases: {
-          "$1==$S2": { token: "@rematch", next: "@pop" },
-          "@default": { token: "white", switchTo: "@promptBody.$S2" },
+          "$1~$S2\\s+": { token: "white", switchTo: "@promptBody.$S2" },
+          "@default": { token: "@rematch", next: "@pop" },
         },
       }],
       [/#.*$/, "comment"],
@@ -170,11 +171,10 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     // A prompt body: text, with templates and env refs coloured, until a
     // line indented no deeper than the header.
     promptBody: [
-      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
       [/^(\s*)(?=\S)/, {
         cases: {
-          "$1==$S2": { token: "@rematch", next: "@pop" },
-          "@default": "white",
+          "$1~$S2\\s+": "white",
+          "@default": { token: "@rematch", next: "@pop" },
         },
       }],
       [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],
@@ -184,13 +184,14 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     ],
 
     // A block scalar body: the same shape as a prompt body, ended by a line
-    // indented no deeper than its key.
+    // indented no deeper than its key — the key may sit deeper than its
+    // block's siblings (`recovery: / repair: / command: |`), so "shallower
+    // than the key" must end it, not only "exactly the key's indent".
     blockScalar: [
-      [/^(?=\S)/, { token: "@rematch", next: "@pop" }],
       [/^(\s*)(?=\S)/, {
         cases: {
-          "$1==$S2": { token: "@rematch", next: "@pop" },
-          "@default": "white",
+          "$1~$S2\\s+": "white",
+          "@default": { token: "@rematch", next: "@pop" },
         },
       }],
       [/\{\{/, { token: "delimiter.template", next: "@stringTemplate" }],

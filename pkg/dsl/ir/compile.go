@@ -766,9 +766,11 @@ func (c *compiler) compilePrompts() {
 		// Expand {{include "..."}} markers once, at compile time, before
 		// ParseRefs sees the body — the injected file content becomes part
 		// of the resolved prompt (auditable, no runtime file reads).
-		// Resolve relative to the .bot source directory, carried on the
-		// declaration's span (like MergeBundlePrompts reads bundle files
-		// relative to the bundle dir).
+		// Resolve relative to the directory of the file that declares the
+		// prompt, carried on the declaration's span: the .bot source, or
+		// the bundle's prompts/ for a merged prompts/*.md. A prompt with no
+		// span would resolve against the process working directory — on a
+		// server, nobody's — so every constructor stamps one.
 		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)

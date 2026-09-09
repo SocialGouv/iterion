@@ -64,6 +64,11 @@ var fragmentElsewhereCodes = map[DiagCode]bool{
 	DiagHistoryRefNotInLoop: true, DiagUnknownRefNode: true, DiagUndeclaredVar: true,
 	DiagUnknownArtifact: true, DiagRefNodeNotReachable: true, DiagUnknownAttachment: true,
 	DiagUnknownSecret: true, DiagUnknownCursor: true, DiagUseUnknownGroup: true,
+	// A router's edge-count checks and a node's resource lease read the
+	// workflow's edges and `resources:` block — the part a node-only
+	// fragment omits (the synthetic workflow appended for it has neither).
+	DiagRoundRobinTooFewEdges: true, DiagLLMRouterTooFewEdges: true,
+	DiagFanOutEachEdges: true, DiagUnknownResourceInNeeds: true,
 }
 
 var diagCodeRe = regexp.MustCompile(`\[(C\d{3})\]`)
@@ -178,6 +183,26 @@ func extractDocSnippets(t *testing.T, path string) []docSnippet {
 	return out
 }
 
+// withSyntheticWorkflow appends a minimal workflow to a fragment that declares
+// nodes but no workflow, so the compiler runs its node-level passes on them.
+// Without it the compiler returns at "no workflow" (C006) before expanding
+// groups, resolving prompts or checking any node — 52 of the 79 `fragment`
+// fences — and the "compile" half of the fragment policy checked nothing.
+// The synthetic workflow only names an entry: the nodes stay unreachable
+// (C016, excused) and unwired (excused), which is what a fragment is.
+var firstNodeDeclRe = regexp.MustCompile(`(?m)^(?:agent|judge|router|human|tool|compute|subbot|emit|wait|await_answers|fail)\s+([A-Za-z_]\w*)\s*:`)
+
+func withSyntheticWorkflow(body string) string {
+	if regexp.MustCompile(`(?m)^workflow\s`).MatchString(body) {
+		return body
+	}
+	m := firstNodeDeclRe.FindStringSubmatch(body)
+	if m == nil {
+		return body
+	}
+	return body + "\nworkflow _snippet:\n  entry: " + m[1] + "\n"
+}
+
 // indentSnippet nests a fragment under a synthetic declaration header.
 func indentSnippet(header, body string) string {
 	var b strings.Builder
@@ -216,7 +241,9 @@ func compileSnippet(s docSnippet) (parseErrs, compileErrs []string, err error) {
 	src := s.body
 	tag := s.tag
 	switch {
-	case tag == "" || tag == "fragment" || tag == "invalid" || strings.HasPrefix(tag, "invalid:"):
+	case tag == "" || tag == "invalid" || strings.HasPrefix(tag, "invalid:"):
+	case tag == "fragment":
+		src = withSyntheticWorkflow(s.body)
 	case tag == "fragment:edges":
 		src = indentSnippet("workflow _snippet:\n  entry: "+firstEdgeSource(s.body), s.body)
 	case tag == "fragment:workflow":

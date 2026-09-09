@@ -500,7 +500,12 @@ func parseBotFile(path string) (*Entry, error) {
 // rules like `## ────`) and a header line repeating the file's own name
 // are skipped — they are framing, not description.
 func leadingCommentDescription(raw []byte, filename string) string {
-	lines := strings.Split(string(raw), "\n")
+	// The same normalisation the lexer applies before it reads the file:
+	// a BOM is not a line of code, and a CR or CRLF terminates a line.
+	src := strings.TrimPrefix(string(raw), "\ufeff")
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = strings.ReplaceAll(src, "\r", "\n")
+	lines := strings.Split(src, "\n")
 	var out []string
 	skippingFM := false
 	for _, ln := range lines {

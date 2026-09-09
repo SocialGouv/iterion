@@ -167,6 +167,9 @@ func (p *parser) expectString() string {
 		return t.Value
 	}
 	p.expectFailed(t, TokenString, "expected string literal, got "+t.Type.String())
+	if t.Type == TokenError {
+		return "" // the lexer's diagnosis is not a value
+	}
 	return t.Value
 }
 
@@ -177,6 +180,9 @@ func (p *parser) expectIdent() string {
 		return id
 	}
 	p.expectFailed(t, TokenIdent, "expected identifier, got "+t.Type.String())
+	if t.Type == TokenError {
+		return "" // the lexer's diagnosis is not a name
+	}
 	return t.Value
 }
 
@@ -210,10 +216,14 @@ func (p *parser) expectNumber() float64 {
 	}
 }
 
+// skipToNewline drops the rest of the current line after an error. A
+// trailing comment ends the line too: the lexer emits the comment token in
+// place of that line's newline, so running past it would eat the NEXT line
+// (a `bogus: 1 # note` used to swallow the `expr:` below it).
 func (p *parser) skipToNewline() {
 	for {
 		t := p.peek()
-		if t.Type == TokenNewline || t.Type == TokenEOF || t.Type == TokenDedent {
+		if t.Type == TokenNewline || t.Type == TokenComment || t.Type == TokenEOF || t.Type == TokenDedent {
 			return
 		}
 		p.next()

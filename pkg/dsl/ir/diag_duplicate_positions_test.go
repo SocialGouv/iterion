@@ -55,3 +55,39 @@ func TestDuplicateFindingsPointAtTheRepeat(t *testing.T) {
 		t.Errorf("C249 at lines %v, want [24] (the repeated edge)\n%v", got, res.Diagnostics)
 	}
 }
+
+// Two `use` blocks with one prefix expand to the same node ids. The finding
+// points at the repeated `use` line — the line to change — not at the group
+// body both instances are copied from, and it is reported once.
+func TestDuplicateUsePrefixPointsAtTheRepeatedUse(t *testing.T) {
+	lines := []string{
+		/* 1 */ "schema pout:",
+		/* 2 */ "  ok: bool",
+		/* 3 */ "",
+		/* 4 */ "group gate_block(label):",
+		/* 5 */ "  tool gate:",
+		/* 6 */ "    command: `printf '{\"ok\":true}'`",
+		/* 7 */ "    output: pout",
+		/* 8 */ "",
+		/* 9 */ "use gate_block as r1 with { label: \"A\" }",
+		/* 10 */ "use gate_block as r1 with { label: \"B\" }",
+		/* 11 */ "",
+		/* 12 */ "workflow w:",
+		/* 13 */ "  entry: r1.gate",
+		/* 14 */ "  r1.gate -> done",
+	}
+	pr := parser.Parse("use.bot", strings.Join(lines, "\n")+"\n")
+	for _, d := range pr.Diagnostics {
+		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
+	}
+	res := Compile(pr.File)
+	var got []int
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagDuplicateNodeID {
+			got = append(got, d.Line)
+		}
+	}
+	if len(got) != 1 || got[0] != 10 {
+		t.Errorf("C041 at lines %v, want [10] (the repeated use)\n%v", got, res.Diagnostics)
+	}
+}
