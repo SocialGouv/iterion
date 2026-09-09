@@ -5,6 +5,8 @@ package ast
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -1485,7 +1487,71 @@ func UnmarshalFile(data []byte) (*File, error) {
 	if err := json.Unmarshal(data, &jf); err != nil {
 		return nil, fmt.Errorf("astjson: %w", err)
 	}
+	if err := rejectNilElements(reflect.ValueOf(&jf), "document"); err != nil {
+		return nil, err
+	}
 	return fromJSON(&jf)
+}
+
+// rejectNilElements refuses a document with a null where a declaration is
+// expected. Every array and map of the document holds objects; a null
+// element would reach a converter as a nil pointer and panic the server
+// (a 500 per request from `/api/dsl/*` and `/api/files/save`) where the
+// caller deserves a 400 naming the slot. Done once here, by walking the
+// decoded mirror, so no converter — present or future — has to guard.
+func rejectNilElements(v reflect.Value, path string) error {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		return rejectNilElements(v.Elem(), path)
+	case reflect.Struct:
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			f := t.Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			if err := rejectNilElements(v.Field(i), path+"."+jsonFieldName(f)); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			e := v.Index(i)
+			at := fmt.Sprintf("%s[%d]", path, i)
+			if e.Kind() == reflect.Pointer && e.IsNil() {
+				return fmt.Errorf("astjson: %s is null — every element of that list is an object", at)
+			}
+			if err := rejectNilElements(e, at); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			at := fmt.Sprintf("%s[%v]", path, iter.Key())
+			val := iter.Value()
+			if val.Kind() == reflect.Pointer && val.IsNil() {
+				return fmt.Errorf("astjson: %s is null", at)
+			}
+			if err := rejectNilElements(val, at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// jsonFieldName is the key a mirror field is written under.
+func jsonFieldName(f reflect.StructField) string {
+	if tag := f.Tag.Get("json"); tag != "" {
+		if name := strings.Split(tag, ",")[0]; name != "" {
+			return name
+		}
+	}
+	return f.Name
 }
 
 func fromJSON(jf *jsonFile) (*File, error) {

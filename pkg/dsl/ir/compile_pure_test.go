@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,21 +36,24 @@ func TestCompileDoesNotMutateItsInput(t *testing.T) {
 		"  r1.check -> r2.gate",
 		"  r2.check -> done",
 	}
-	pr := parser.Parse("pure.bot", strings.Join(lines, "\n")+"\n")
+	src := strings.Join(lines, "\n") + "\n"
+	pr := parser.Parse("pure.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Fatalf("unexpected parse diagnostic: %s", d.Error())
 	}
-	tools, edges := len(pr.File.Tools), len(pr.File.Workflows[0].Edges)
+	// The oracle is a second, untouched parse of the same source: after
+	// Compile, the compiled input must still equal it field for field — not
+	// only in the lengths of the slices the expansion appends to (a mutant
+	// that scaled a shared resource capacity passed that weaker check).
+	fresh := parser.Parse("pure.bot", src).File
 
 	first := Compile(pr.File)
 	if first.HasErrors() {
 		t.Fatalf("first compile: %v", first.Diagnostics)
 	}
-	if got := len(pr.File.Tools); got != tools {
-		t.Errorf("Compile appended %d expanded tool(s) onto the caller's file", got-tools)
-	}
-	if got := len(pr.File.Workflows[0].Edges); got != edges {
-		t.Errorf("Compile appended %d expanded edge(s) onto the caller's workflow", got-edges)
+	if !reflect.DeepEqual(pr.File, fresh) {
+		t.Errorf("Compile changed its input: %d tools (was %d), %d edges (was %d)",
+			len(pr.File.Tools), len(fresh.Tools), len(pr.File.Workflows[0].Edges), len(fresh.Workflows[0].Edges))
 	}
 
 	second := Compile(pr.File)

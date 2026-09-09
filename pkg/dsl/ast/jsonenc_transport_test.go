@@ -123,6 +123,109 @@ func TestTransportCarriesGroupsUsesForeachAndPools(t *testing.T) {
 	}
 }
 
+// A group body exercising every node kind and every internal-edge clause —
+// the corpus has one group file and no foreach or resources, so this fixture
+// is the transport's real guard for the constructs a group can hold. Two
+// of its references are out of scope for the transport and expected as
+// diagnostics on both sides (a group cannot yet reference its own members,
+// #1049); the oracle compares them like any other code.
+const fullKindGroupFixture = `schema pout:
+  ok: bool
+  items: string[]
+
+schema vout:
+  verdict: string
+  ok: bool
+
+prompt sys_judge:
+  Judge the work for {{params.label}}.
+
+prompt sys_agent:
+  Work on {{params.label}} up to {{params.limit}}.
+
+prompt ask_instr:
+  Please check {{params.label}} and answer.
+
+group blk(label, limit):
+  tool gate:
+    description: "gate {{params.label}}"
+    command: ` + "`printf '{\"ok\":true,\"items\":[\"a\"]}'`" + `
+    output: pout
+    needs: slot
+    compress: off
+    permission: deny
+    artifact_labels: [plan]
+    parallel_safe: true
+
+  compute calc:
+    output: pout
+    expr:
+      ok: "true"
+      items: "outputs.gate.items"
+
+  router pick:
+    mode: condition
+    description: "pick {{params.label}}"
+
+  human ask:
+    instructions: ask_instr
+    output: vout
+    interaction: human
+
+  judge rate:
+    system: sys_judge
+    output: vout
+    model: "anthropic/claude-opus-5"
+
+  agent work:
+    system: sys_agent
+    output: pout
+    tools: [bash]
+    backend: "claw"
+
+  gate -> calc with { note: "{{params.label}}" }
+  calc -> pick
+  pick -> work when ok
+  pick -> ask else
+  ask -> work
+  work -> rate
+  rate -> work as spin(3)
+
+use blk as r1 with { label: "A", limit: "2" }
+use blk as r2 with { label: "B", limit: "5" }
+
+workflow w:
+  entry: r1.gate
+  resources:
+    slot: ["s1", "s2"]
+    cpu: 3
+  r1.rate -> r2.gate
+  r2.rate -> done when ok
+  r2.rate -> fail
+`
+
+func TestTransportCarriesAFullKindGroup(t *testing.T) {
+	direct, viaJSON := compileBothWays(t, "fullgroup.bot", fullKindGroupFixture)
+	dsltest.AssertSameProgram(t, "fullgroup.bot", direct, viaJSON)
+	pr := parser.Parse("fullgroup.bot", fullKindGroupFixture)
+	raw, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := ast.UnmarshalFile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := restored.Groups[0]
+	if len(g.Agents)+len(g.Judges)+len(g.Routers)+len(g.Humans)+len(g.Tools)+len(g.Computes) != 6 || len(g.Edges) != 7 {
+		t.Errorf("group body did not survive whole: %+v", g)
+	}
+	with := g.Edges[0].With
+	if len(with) != 1 || with[0].Key != "note" || with[0].Value != "{{params.label}}" || g.Edges[6].Loop == nil || g.Edges[6].Loop.MaxIterations != 3 || !g.Edges[3].IsElse {
+		t.Errorf("internal edge clauses did not survive: with=%+v loop=%+v else=%v", with, g.Edges[6].Loop, g.Edges[3].IsElse)
+	}
+}
+
 // Every workflow in the repository must compile identically through the
 // transport — the guarantee the cloud launch and the studio save rely on.
 // Files with a prompt `{{include}}` are excluded: the include resolves from

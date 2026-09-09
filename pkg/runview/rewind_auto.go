@@ -217,11 +217,10 @@ func declFingerprints(f *ast.File) map[string]string {
 		put("group", d.Name, &ast.File{Groups: []*ast.GroupDecl{d}})
 	}
 	for _, d := range f.Uses {
-		// A use declares no body, so there is nothing encodable to
-		// fingerprint — fold everything that can change into the KEY
-		// instead, as edgeKey already does for edge mappings. Retuning a
-		// `with { … }` binding then surfaces as removed+added rather than
-		// vanishing.
+		// The bindings ride in the KEY as well as in the encoded value, as
+		// edgeKey does for edge mappings: retuning a `with { … }` binding
+		// then surfaces as removed+added — the instance is a different
+		// program — rather than as an edit of the same declaration.
 		key := d.Group + " as " + d.Prefix
 		for _, w := range d.With {
 			if w != nil {

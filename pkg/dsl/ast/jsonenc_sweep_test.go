@@ -1,6 +1,9 @@
 package ast
 
 import (
+	goast "go/ast"
+	goparser "go/parser"
+	"go/token"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,6 +65,33 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 		{AttachmentsBlock{}, jsonAttachmentsBlock{}, nil},
 		{AttachmentField{}, jsonAttachmentField{}, nil},
 		{Literal{}, jsonLiteral{}, nil},
+		{Comment{}, jsonComment{}, nil},
+		{Preset{}, jsonPreset{}, nil},
+		{PresetValue{}, jsonPresetValue{}, nil},
+		{CursorEnumValue{}, jsonCursorEnumValue{}, nil},
+		{CursorBand{}, jsonCursorBand{}, nil},
+		{CursorSetting{}, jsonCursorSetting{}, nil},
+	}
+	// The list above is kept complete by construction: every exported
+	// struct type declared in ast.go must appear in it, or in the explicit
+	// exclusions — an AST type nobody paired is exactly the hole the sweep
+	// exists to close (a mutant field on an unlisted type passed unseen).
+	listed := map[string]bool{}
+	for _, p := range pairs {
+		listed[reflect.TypeOf(p.ast).Name()] = true
+	}
+	excluded := map[string]string{
+		"LLMDecl":        "embedded in AgentDecl and JudgeDecl, whose mirrors are flat",
+		"ResourcesBlock": "mirrored across two workflow fields (TestResourcesBlockIsFullyMirrored)",
+		"Span":           "source positions never travel",
+		"Pos":            "source positions never travel",
+	}
+	for _, name := range exportedStructTypes(t, "ast.go") {
+		if !listed[name] {
+			if _, ok := excluded[name]; !ok {
+				t.Errorf("ast.%s has no entry in the sweep's pair list (nor an exclusion) — a field added to it can be dropped by the transport unseen", name)
+			}
+		}
 	}
 	for _, p := range pairs {
 		at, jt := reflect.TypeOf(p.ast), reflect.TypeOf(p.json)
@@ -79,6 +109,35 @@ func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
 			}
 		}
 	}
+}
+
+// exportedStructTypes reads the exported struct type names declared in a
+// source file of this package, through go/parser — the one enumeration a
+// running test cannot get from reflection.
+func exportedStructTypes(t *testing.T, file string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	parsed, err := goparser.ParseFile(fset, file, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+	var names []string
+	for _, decl := range parsed.Decls {
+		gd, ok := decl.(*goast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*goast.TypeSpec)
+			if !ok || !ts.Name.IsExported() {
+				continue
+			}
+			if _, isStruct := ts.Type.(*goast.StructType); isStruct {
+				names = append(names, ts.Name.Name)
+			}
+		}
+	}
+	return names
 }
 
 // exportedFields lists a struct's exported fields, flattening embedded
