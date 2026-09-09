@@ -510,6 +510,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		reasonOpenOrder []string
 		stopReason      = "end_turn"
 		outputTokens    int
+		inputTokens     int
 		reasoningTokens int
 	)
 
@@ -791,6 +792,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				inputTokens = ev.Response.Usage.InputTokens
 				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			// Reconcile any function_call accumulator that landed
@@ -840,6 +842,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// a successful empty turn.
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				inputTokens = ev.Response.Usage.InputTokens
 				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			reason := "unknown"
@@ -899,7 +902,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		}
 	}
 
-	usage := api.UsageDelta{OutputTokens: outputTokens}
+	usage := api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens}
 	usage.OutputTokensDetails.ThinkingTokens = reasoningTokens
 	if !send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
