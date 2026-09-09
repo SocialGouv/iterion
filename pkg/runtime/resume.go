@@ -89,6 +89,15 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err := e.checkWorkflowHash(r); err != nil {
 		return err
 	}
+	// Engine.Resume is also a public execution boundary (the CLI calls it
+	// directly), so it must enforce the same policy-independent physical guard
+	// as runview's synchronous preflight. This includes exact revisions held by
+	// in-flight parallel branches, which prepareResumeArtifacts does not fold
+	// into the trunk artifact namespace.
+	checkpointArtifacts, err := loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
+	if err != nil {
+		return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+	}
 	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
 		// Refuse before claiming the checkpoint or touching the workspace.
 		if errors.Is(err, ErrArtifactContractUnavailable) {
@@ -108,7 +117,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	// and otherwise strand the run in `running` with no executor.
 	var preparedArtifacts *resumeArtifactState
 	if r.Checkpoint != nil {
-		preparedArtifacts, err = e.prepareResumeArtifacts(ctx, r, r.Checkpoint)
+		preparedArtifacts, err = e.prepareResumeArtifactsWithLoaded(ctx, r, r.Checkpoint, checkpointArtifacts)
 		if err != nil {
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
@@ -250,14 +259,24 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 			continue
 		}
 		logicalRef := nodePublish(node)
-		if _, authoritative := revisions[logicalRef]; authoritative {
-			continue
-		}
 		if revision, ok := persistedByNode[nodeID]; ok {
+			if current, occupied := revisions[logicalRef]; occupied {
+				// An unchanged publisher owns the authoritative persisted alias,
+				// including workflows where several nodes intentionally publish the
+				// same name. It only yields when that producer itself moved away:
+				// this is what makes swapping two existing aliases rebind both names
+				// instead of silently preserving the old producers.
+				if currentNode, exists := e.workflow.Nodes[current.NodeID]; exists && nodePublish(currentNode) == logicalRef {
+					continue
+				}
+			}
 			// Expose the new workflow alias, but keep the immutable contract
 			// name so a downstream artifact records a dependency that the
 			// validator can resolve after this forced migration.
 			revisions[logicalRef] = revision
+			continue
+		}
+		if _, authoritative := revisions[logicalRef]; authoritative {
 			continue
 		}
 		if versions[nodeID] <= 0 {
@@ -286,6 +305,10 @@ type artifactRevisionKey struct {
 // when an old fork has no copied blobs, and the speculative revision is
 // removed so newly published contracts cannot point at a nonexistent body.
 func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *store.Checkpoint) (*resumeArtifactState, error) {
+	return e.prepareResumeArtifactsWithLoaded(ctx, r, cp, nil)
+}
+
+func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.Run, cp *store.Checkpoint, preloaded map[artifactRevisionKey]*store.Artifact) (*resumeArtifactState, error) {
 	state := &resumeArtifactState{
 		artifacts: make(map[string]map[string]any),
 		revisions: make(map[string]store.ArtifactRevisionRef),
@@ -305,7 +328,10 @@ func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *s
 	for _, revision := range cp.ArtifactRevisions {
 		required[artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}] = true
 	}
-	loaded := make(map[artifactRevisionKey]*store.Artifact)
+	loaded := make(map[artifactRevisionKey]*store.Artifact, len(preloaded))
+	for key, artifact := range preloaded {
+		loaded[key] = artifact
+	}
 	names := make([]string, 0, len(state.revisions))
 	for name := range state.revisions {
 		names = append(names, name)

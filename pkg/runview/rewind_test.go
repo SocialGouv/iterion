@@ -367,6 +367,28 @@ func TestRewind_ArtifactContractSourceChanges(t *testing.T) {
 			t.Fatalf("forced rewind rejected source-derived retained contract change: %v", err)
 		}
 	})
+
+	t.Run("persisted forced migration remains accepted", func(t *testing.T) {
+		svc, st, runID := seedArtifact(t, "plan", "plan_old")
+		run, err := st.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, currentRevision, err := CompileWorkflowWithHash(run.FilePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.WorkflowHash = currentRevision
+		run.ArtifactCompatibilityRevision = currentRevision
+		if err := st.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Rewind(context.Background(), RewindSpec{
+			RunID: runID, NodeID: "implement", KeepFiles: true,
+		}); err != nil {
+			t.Fatalf("rewind demanded --force again for an accepted migration: %v", err)
+		}
+	})
 }
 
 func TestRewind_RejectsUnreadableRetainedExactArtifactBeforeMutation(t *testing.T) {

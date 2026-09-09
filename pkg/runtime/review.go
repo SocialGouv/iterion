@@ -116,6 +116,10 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
+	// A review interaction may itself be resumed against edited source. Keep
+	// rewind auto-targeting and any forced artifact migration acknowledgement
+	// aligned with every other resume path before the gate can re-pause.
+	e.restampWorkflowSource(ctx, r)
 
 	outputs := copyOutputs(cp.Outputs)
 	if outputs == nil {

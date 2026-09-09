@@ -107,7 +107,8 @@ func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run 
 // resume, and a preflight must make the same check before callers consume
 // staged inputs.
 func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run) error {
-	return validateCheckpointArtifactAvailability(ctx, s, run, nil)
+	_, err := loadCheckpointArtifactAvailability(ctx, s, run, nil)
+	return err
 }
 
 // ValidateCheckpointArtifactAvailabilityExcept applies the unconditional
@@ -115,18 +116,18 @@ func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStor
 // invalidate. Only revisions that survive the mutation need to remain
 // executable.
 func ValidateCheckpointArtifactAvailabilityExcept(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) error {
-	return validateCheckpointArtifactAvailability(ctx, s, run, ignoredNodes)
+	_, err := loadCheckpointArtifactAvailability(ctx, s, run, ignoredNodes)
+	return err
 }
 
-func validateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) error {
+// loadCheckpointArtifactAvailability returns the bodies it verified so a
+// direct Engine.Resume can reuse the trunk revisions during reconstruction
+// instead of issuing a second pre-claim S3 GET for the same immutable data.
+func loadCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) (map[artifactRevisionKey]*store.Artifact, error) {
 	if run == nil || run.Checkpoint == nil || s == nil {
-		return nil
+		return nil, nil
 	}
-	type revisionKey struct {
-		nodeID  string
-		version int
-	}
-	revisions := make(map[revisionKey]string)
+	revisions := make(map[artifactRevisionKey]string)
 	add := func(exact map[string]store.ArtifactRevisionRef) error {
 		for logicalRef, revision := range exact {
 			if ignoredNodes[revision.NodeID] {
@@ -135,7 +136,7 @@ func validateCheckpointArtifactAvailability(ctx context.Context, s store.RunStor
 			if revision.NodeID == "" {
 				return fmt.Errorf("%w: artifact %q has no persisted producer identity", ErrArtifactContractUnavailable, logicalRef)
 			}
-			key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+			key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
 			if _, present := revisions[key]; !present {
 				revisions[key] = logicalRef
 			}
@@ -143,18 +144,18 @@ func validateCheckpointArtifactAvailability(ctx context.Context, s store.RunStor
 		return nil
 	}
 	if err := add(run.Checkpoint.ArtifactRevisions); err != nil {
-		return err
+		return nil, err
 	}
 	if run.Checkpoint.Parallel != nil {
 		for _, branch := range run.Checkpoint.Parallel.Branches {
 			if branch != nil {
 				if err := add(branch.ArtifactRevisions); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	keys := make([]revisionKey, 0, len(revisions))
+	keys := make([]artifactRevisionKey, 0, len(revisions))
 	for key := range revisions {
 		keys = append(keys, key)
 	}
@@ -164,16 +165,18 @@ func validateCheckpointArtifactAvailability(ctx context.Context, s store.RunStor
 		}
 		return keys[i].version < keys[j].version
 	})
+	loaded := make(map[artifactRevisionKey]*store.Artifact, len(keys))
 	for _, key := range keys {
 		artifact, err := s.LoadArtifact(ctx, run.ID, key.nodeID, key.version)
 		if err != nil {
-			return fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version, err)
+			return nil, fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version, err)
 		}
 		if artifact == nil || artifact.RunID != run.ID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
-			return fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version)
+			return nil, fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, revisions[key], key.nodeID, key.version)
 		}
+		loaded[key] = artifact
 	}
-	return nil
+	return loaded, nil
 }
 
 func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {

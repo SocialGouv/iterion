@@ -247,6 +247,41 @@ func TestValidateCheckpointArtifactAvailabilityExceptSkipsInvalidatedProducer(t 
 	}
 }
 
+func TestResumeRejectsUnavailableExactParallelArtifactBeforeClaim(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	run, err := base.CreateRun(ctx, "artifact-parallel-unavailable", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID: "router",
+		Parallel: &store.ParallelCheckpoint{
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch": {ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"plan": {NodeID: "planner", Version: 0},
+				}},
+			},
+		},
+	}
+	if err := base.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	s := artifactNodeReadErrorStore{RunStore: base, nodeID: "planner"}
+	err = New(&ir.Workflow{}, s, newStubExecutor()).Resume(ctx, run.ID, nil)
+	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) {
+		t.Fatalf("resume with unavailable branch artifact error = %v", err)
+	}
+	persisted, loadErr := base.LoadRun(ctx, run.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if persisted.Status != store.RunStatusFailedResumable {
+		t.Fatalf("availability failure claimed the run: status=%s", persisted.Status)
+	}
+}
+
 func TestResumeReportsSourceChangeBeforeDerivativeArtifactMismatch(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)
@@ -537,6 +572,27 @@ func TestRebuildArtifactRevisionsAliasesPersistedProducerWithCanonicalContractNa
 	}
 	if got := revisions["legacy-name"]; got.NodeID != "legacy" || got.Version != 0 {
 		t.Fatalf("partial legacy revision was not inferred: %+v", revisions)
+	}
+}
+
+func TestRebuildArtifactRevisionsRebindsSwappedPublishAliases(t *testing.T) {
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "second"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "first"},
+	}}, nil, newStubExecutor())
+	revisions := eng.rebuildArtifactRevisions(
+		map[string]map[string]any{"a": {"producer": "a"}, "b": {"producer": "b"}},
+		nil,
+		map[string]store.ArtifactRevisionRef{
+			"first":  {NodeID: "a", Version: 1},
+			"second": {NodeID: "b", Version: 2},
+		},
+	)
+	if got := revisions["first"]; got.NodeID != "b" || got.Version != 2 || got.ContractLogicalRef != "second" {
+		t.Fatalf("first alias was not rebound to b's immutable revision: %+v", revisions)
+	}
+	if got := revisions["second"]; got.NodeID != "a" || got.Version != 1 || got.ContractLogicalRef != "first" {
+		t.Fatalf("second alias was not rebound to a's immutable revision: %+v", revisions)
 	}
 }
 

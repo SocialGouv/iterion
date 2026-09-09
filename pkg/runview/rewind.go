@@ -300,7 +300,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if sourcePath == "" {
 		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
 	}
-	wf, err := CompileWorkflow(sourcePath)
+	wf, currentRevision, err := CompileWorkflowWithHash(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
@@ -390,7 +390,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, run, ignoredArtifacts); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, "", spec.Force, ignoredArtifacts); err != nil {
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, currentRevision, spec.Force, ignoredArtifacts); err != nil {
 		return nil, err
 	}
 
