@@ -130,9 +130,22 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		if artifact == nil || artifact.Contract == nil {
 			continue
 		}
+		// The identity fields are redundant on purpose, so they are checked
+		// against the identity the artifact was ADDRESSED by — the index
+		// key and version handed to the loader — not against the copy the
+		// same blob reports about itself, which would partly compare a
+		// value to itself and let a misbound contract through claiming
+		// another producer or version.
 		contract := artifact.Contract
-		if contract.LogicalRef == "" || contract.ProducerNode == "" || contract.Version != artifact.Version {
+		switch {
+		case contract.LogicalRef == "" || contract.ProducerNode == "":
 			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
+			continue
+		case contract.ProducerNode != nodeID || artifact.NodeID != nodeID:
+			violations = append(violations, fmt.Sprintf("artifact %s/%d carries the contract of node %q", nodeID, version, contract.ProducerNode))
+			continue
+		case contract.Version != version || artifact.Version != version:
+			violations = append(violations, fmt.Sprintf("artifact %s/%d carries a contract for version %d", nodeID, version, contract.Version))
 			continue
 		}
 		node, ok := wf.Nodes[nodeID]

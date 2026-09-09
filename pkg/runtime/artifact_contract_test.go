@@ -264,6 +264,29 @@ func TestValidateArtifactContractsRefusesAbsentRequiredDependency(t *testing.T) 
 	}
 }
 
+// A contract claiming another producer or another version is a misbinding,
+// and is only visible when the redundant fields are compared to the identity
+// the artifact was addressed by rather than to the blob's own copy.
+func TestValidateArtifactContractsRefusesMisboundIdentity(t *testing.T) {
+	ctx := context.Background()
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	for name, contract := range map[string]*store.ArtifactContract{
+		"another producer": {LogicalRef: "report", ProducerNode: "planner", Version: 0},
+		"another version":  {LogicalRef: "report", ProducerNode: "writer", Version: 7},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, run := seedContractRun(t, "artifact-misbound", contract)
+			if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+				Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+			}); err == nil {
+				t.Fatalf("contract claiming %s accepted", name)
+			}
+		})
+	}
+}
+
 func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)
