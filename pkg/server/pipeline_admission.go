@@ -573,7 +573,7 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	// through a helper instead of a tier choice. Here it is an error naming
 	// the row the operator has to fix. (A hand-broken manifest is NOT on that
 	// list: botsource.Validate decodes it at write time.)
-	entry, found, err := s.pipelineBotEntry(ctx, teamID, botID, lb)
+	entry, found, err := s.pipelineBotEntry(ctx, botID, lb)
 	if err != nil {
 		lb.Cleanup()
 		return pipelineBot{}, false, err
@@ -606,7 +606,10 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 // deleted override's `enabled` and name: a disabled override making an
 // enabled bot unlaunchable, or worse the reverse. Each tier answering for
 // itself is the whole shape of this chokepoint; this is its third leg.
-func (s *Server) pipelineBotEntry(ctx context.Context, teamID, botID string, lb *launchBot) (botregistry.EntryWithSchema, bool, error) {
+//
+// It takes no team: `lb` already names the tier that won, and a team id here
+// could only be used to consult a tier that did not.
+func (s *Server) pipelineBotEntry(ctx context.Context, botID string, lb *launchBot) (botregistry.EntryWithSchema, bool, error) {
 	if lb.Ref != nil && lb.Ref.TenantID != "" {
 		return s.storedBotEntry(ctx, lb.Ref.TenantID, lb.Ref.Slug)
 	}
