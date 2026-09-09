@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +32,23 @@ import (
 // global tracer is a no-op until cmd/iterion configures a provider, so
 // instrumentation here costs nothing in local mode and unit tests.
 const tracerName = "github.com/SocialGouv/iterion/pkg/runtime"
+
+// EnvOutputCorrectionBudget is the process-wide default for bounded schema
+// correction. Launch surfaces can still override it with the engine option.
+const EnvOutputCorrectionBudget = "ITERION_OUTPUT_CORRECTION_BUDGET"
+
+func defaultOutputCorrectionBudget() int {
+	const fallback = 2
+	raw := os.Getenv(EnvOutputCorrectionBudget)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
 
 // ErrRunPaused is returned by Run or Resume when execution is suspended
 // at a human node. This is not a failure — the run can be resumed via
@@ -105,6 +124,22 @@ type NodeExecutor interface {
 // succeeds.
 type OutputCorrector interface {
 	CorrectOutput(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, error)
+}
+
+// OutputCorrectionUsage is optional accounting returned by a corrector that
+// performs its own model call. The runtime folds it into the node's normal
+// `_tokens`/`_cost_usd` metadata before budget enforcement.
+type OutputCorrectionUsage struct {
+	Tokens  int
+	CostUSD float64
+}
+
+// OutputCorrectorWithUsage extends OutputCorrector for executors that can
+// report the correction call's spend. Executors may implement either
+// interface; the plain capability remains source-compatible and still keeps
+// existing underscore metadata intact.
+type OutputCorrectorWithUsage interface {
+	CorrectOutputWithUsage(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, OutputCorrectionUsage, error)
 }
 
 // The following minimal interfaces are optional extensions to NodeExecutor:
@@ -259,7 +294,7 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: 2}
+	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -274,7 +309,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: 2}
+	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget()}
 	for _, opt := range opts {
 		opt(e)
 	}
