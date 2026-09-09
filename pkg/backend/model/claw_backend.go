@@ -536,10 +536,31 @@ func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (d
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return delegate.Result{}, ctx.Err()
+			// The retry never happens, so the attempt waiting in `result` is
+			// the last one and what it burned is the node's final bill.
+			// Zeroing it here dropped exactly the spend the loop had just
+			// finished metering (the cancel-during-backoff case the engine
+			// books at its own frame).
+			return result, ctx.Err()
 		}
 
+		prev := result
 		result, err = fn()
+		// The attempt that just failed was BILLED — that is what the
+		// metered-failure results above are for — and overwriting it here
+		// dropped exactly the figure this loop's own cancel arm goes to the
+		// trouble of keeping. The shape that loses the most is the common
+		// one: a tool loop that ran to its step limit and then hit a 429,
+		// retried into an instant auth failure that billed nothing, reporting
+		// the free attempt as the node's whole bill.
+		//
+		// SUMMED, never folded at a MAX: claw opens a fresh conversation per
+		// attempt (it never reads SessionID — it replays from the run's own
+		// store), so no attempt's figure contains another's, and
+		// cost.Annotate prices each from its own tokens. `false` states that
+		// invariant at the call site rather than inferring it. The frame
+		// above applies the same rule (retryDelegateLoop).
+		result = foldSpend(prev, result, false)
 	}
 	return result, err
 }
@@ -587,6 +608,53 @@ func askUserResult(err error) (delegate.Result, bool) {
 	}, true
 }
 
+// meteredFailure renders what an ABANDONED generation already burned, in the
+// shape the engine books from (`_tokens` / `_cost_usd` on the output map).
+//
+// claw is an in-process client, not a CLI: nothing outside this package sees
+// its usage unless a delegate.Result carries it. GenerateTextDirect
+// deliberately returns a partial TextResult beside its error — every step
+// before the failing one was a real, billed request — and returning a bare
+// delegate.Result{} threw that away, so a tool loop that died on its
+// twentieth step reported the same zero as one that never reached the
+// provider. The engine books a failed node's spend from this map, so an
+// empty one is silently free work.
+//
+// Zero usage yields the zero Result: an empty output map with a `_tokens: 0`
+// stamp would read as an output rather than as a bill, and the engine's own
+// guard already skips a spendless failure.
+func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		return delegate.Result{}
+	}
+	output := map[string]any{}
+	tokens := cost.Annotate(output, task.Model, usage.InputTokens, usage.OutputTokens)
+	return delegate.Result{
+		Output:         output,
+		Tokens:         tokens,
+		BackendName:    delegate.BackendClaw,
+		ThinkingTokens: usage.ReasoningTokens,
+		ThinkingMs:     usage.ThinkingMs,
+	}
+}
+
+// partialUsage reads the usage off a best-effort partial result, tolerating
+// the nil an early failure returns.
+func partialUsage(r *TextResult) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.TotalUsage
+}
+
+// objectUsage is partialUsage for a structured generation.
+func objectUsage[T any](r *ObjectResult[T]) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.TotalUsage
+}
+
 func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	// Set the explicit schema for structured output.
 	genOpts := opts
@@ -597,7 +665,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: structured generation: %w", err)
+		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 
 	output := result.Object
@@ -630,7 +698,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
+		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
 	output := map[string]any{"text": result.Text}
@@ -727,7 +795,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation: %w", err)
+		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
 	}
 
 	// A tool-equipped reviewer/judge that ended the loop WITHOUT calling a
@@ -774,7 +842,12 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				return r, nil
 			}
 			if isRetryable(reErr) {
-				return delegate.Result{}, fmt.Errorf("claw backend: nudge re-run: %w", reErr)
+				// The tool loop AND the nudge were both billed before this
+				// gave up; the outer retryLoop re-issues the whole turn, and
+				// if that one fails too this is the figure the node reports.
+				abandoned := result.TotalUsage
+				accumulateUsage(&abandoned, partialUsage(reRun))
+				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
 		}
 	}
@@ -841,22 +914,37 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}, nil
 	}
 
+	// BOTH exits below are past the recovery pass, and both owe its bill: it
+	// is a separate, fully-billed provider call, and its usage reaches here
+	// only because GenerateObjectDirect hands back a partial beside its error
+	// (a bare nil made a billed call indistinguishable from one that never
+	// left the process). The success path above sums the two for the same
+	// reason. ONE figure for both exits — deriving it twice is how the
+	// text-bearing one came to be priced from the tool loop alone.
+	billed := result.TotalUsage
+	if obj != nil {
+		accumulateUsage(&billed, obj.TotalUsage)
+	}
+
 	// Last-ditch: surface whatever text we got as a parse-fallback so
 	// the runtime's existing structured-output retry path can decide
 	// what to do. The error from the recovery pass is logged for
 	// post-mortem.
 	if text == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
+		// The most expensive failure claw has: a whole agentic tool loop ran
+		// (possibly to MaxSteps) and the schema-forced recovery pass ran on
+		// top of it, and the node has nothing to show for either.
+		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
 		BackendName:    delegate.BackendClaw,
 		ParseFallback:  true,
-		ThinkingTokens: result.TotalUsage.ReasoningTokens,
-		ThinkingMs:     result.TotalUsage.ThinkingMs,
+		ThinkingTokens: billed.ReasoningTokens,
+		ThinkingMs:     billed.ThinkingMs,
 	}, nil
 }
 

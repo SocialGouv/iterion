@@ -223,7 +223,13 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
 		e.newElementBuilder(node.ID, backendName, backend, assemble))
 	if err != nil {
-		return nil, err
+		// The other seam that spends: an LLM router is a model call, and a
+		// router that burned a fallback chain's worth of routes before
+		// failing owes the run's budget the same figure an agent node does
+		// (runtime.recordFailedNodeSpend states the reach). Hand it up
+		// beside the error, exactly as executeBackend does — the engine is
+		// the only caller that reads it.
+		return meteredFailureOutput(out, backendName), err
 	}
 	result := out.Result
 
@@ -237,14 +243,20 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
 				output = parsed
 			} else {
-				return nil, fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
+				// Same bill as the dispatch failure above, and a surer
+				// one: the generation SUCCEEDED and was paid for — only
+				// its shape is unusable. Metered from out.Result rather
+				// than the local `output`, which this very block may
+				// already have replaced with a fresh `parsed` map that
+				// never carried the delegate's stamps.
+				return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
 			}
 		}
 	}
 
 	// Strict validation against the router schema.
 	if err := ValidateOutput(output, schema); err != nil {
-		return nil, fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
+		return meteredFailureOutput(out, backendName), fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
 	}
 
 	// Attach metadata.
