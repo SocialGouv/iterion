@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.127.0](https://github.com/SocialGouv/iterion/compare/v3.126.0...v3.127.0) (2026-09-09)
+
+### Features
+
+* admit runs before execution with context contract ([#1019](https://github.com/SocialGouv/iterion/issues/1019)) ([4c360b1](https://github.com/SocialGouv/iterion/commit/4c360b14cec900888f82d178cf0574bad0a5c21d))
+
 ## [3.126.0](https://github.com/SocialGouv/iterion/compare/v3.125.1...v3.126.0) (2026-09-09)
 
 ### Features
