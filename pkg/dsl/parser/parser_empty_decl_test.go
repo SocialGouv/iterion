@@ -6,11 +6,12 @@ import (
 )
 
 // A prompt, schema, cursor, mcp_server, supervisor or group header with
-// no indented body — followed by another declaration, or by the end of the
-// file — declares an EMPTY one. The studio saves a declaration the moment
-// it is created; the bare header is its written form.
+// no indented body — followed by a blank line and another declaration, or
+// by the end of the file — declares an EMPTY one. The studio saves a
+// declaration the moment it is created; the bare header is its written
+// form, and the unparser writes a blank line between declarations.
 func TestEmptyDeclarationsParse(t *testing.T) {
-	src := "schema s:\n\nprompt p:\ncursor c:\n## a comment between two empty headers\nmcp_server m:\nsupervisor v:\ngroup g:\n\nworkflow w:\n  entry: done\n"
+	src := "schema s:\n\nprompt p:\n\ncursor c:\n\n## a comment after the blank line is fine\nmcp_server m:\n\nsupervisor v:\n\ngroup g:\n\nworkflow w:\n  entry: done\n"
 	pr := Parse("empty.bot", src)
 	for _, d := range pr.Diagnostics {
 		t.Errorf("unexpected diagnostic: %s", d.Error())
@@ -50,18 +51,40 @@ func TestEmptyDeclarationAtEndOfFile(t *testing.T) {
 	}
 }
 
+func indentError(pr *ParseResult) bool {
+	for _, d := range pr.Diagnostics {
+		if strings.Contains(d.Message, "INDENT") {
+			return true
+		}
+	}
+	return false
+}
+
 // A body at the wrong indentation is still the indentation error with its
 // hint, not an empty declaration followed by a stray line.
 func TestUnindentedBodyIsStillTheIndentError(t *testing.T) {
 	pr := Parse("bad.bot", "schema s:\ncode: string\n")
-	var indentErr bool
-	for _, d := range pr.Diagnostics {
-		if strings.Contains(d.Message, "INDENT") {
-			indentErr = true
-		}
-	}
-	if !indentErr {
+	if !indentError(pr) {
 		t.Fatalf("want the E002 indentation error, got %v", pr.Diagnostics)
+	}
+}
+
+// A group's members are top-level keywords themselves: without the blank
+// line rule an unindented group body would parse as an empty group plus
+// top-level nodes, with no diagnostic anywhere.
+func TestUnindentedGroupBodyIsStillTheIndentError(t *testing.T) {
+	src := "group review:\nagent linter:\n  description: \"lint\"\nagent tester:\n  description: \"test\"\n\nworkflow w:\n  entry: linter\n  linter -> tester\n  tester -> done\n"
+	pr := Parse("bad.bot", src)
+	if !indentError(pr) {
+		t.Fatalf("an unindented group body parsed without the indentation error: %v", pr.Diagnostics)
+	}
+}
+
+// An indented comment alone is not a body, and not a blank line either.
+func TestCommentOnlyBodyIsStillTheIndentError(t *testing.T) {
+	pr := Parse("bad.bot", "schema verdict:\n  ## nothing yet\nagent a:\n  output: verdict\n")
+	if !indentError(pr) {
+		t.Fatalf("a comment-only body parsed without the indentation error: %v", pr.Diagnostics)
 	}
 }
 

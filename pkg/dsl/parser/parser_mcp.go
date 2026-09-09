@@ -18,13 +18,13 @@ func (p *parser) parseMCPServerDecl() *ast.MCPServerDecl {
 		p.skipToNextTopLevel()
 		return nil
 	}
-	p.expect(TokenColon)
-	p.skipNewlines()
+	colon, _ := p.expect(TokenColon)
+	blank := p.skipNewlinesFrom(colon.Line)
 	md := &ast.MCPServerDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start)},
 	}
-	if p.bodyIsEmpty() {
+	if p.bodyIsEmpty(blank) {
 		return md
 	}
 	if _, ok := p.expect(TokenIndent); !ok {

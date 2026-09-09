@@ -862,9 +862,8 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 		p.expect(TokenRParen)
 	}
 
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if p.bodyIsEmpty() {
+	colon, _ := p.expect(TokenColon)
+	if p.bodyIsEmpty(p.skipNewlinesFrom(colon.Line)) {
 		return gd
 	}
 	if _, ok := p.expect(TokenIndent); !ok {

@@ -29,7 +29,7 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor` or `group` header with no indented body — followed by another declaration or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); node declarations keep needing a body. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
+Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor` or `group` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191). `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
 
 ## Inputs and reusable values
 

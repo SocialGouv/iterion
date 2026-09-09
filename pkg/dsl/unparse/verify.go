@@ -61,23 +61,19 @@ func Verify(f *ast.File, text string) error {
 }
 
 // sourceFile is the file the document's prompts were read from, "" when it
-// came through the JSON transport (no spans) — and "" too when the prompts
-// disagree (a bundle's prompts/*.md merged beside a main.bot's): one name
-// would resolve some prompt's include against the wrong directory, and
-// the refusal is the same on both sides. Includes are the only thing a
-// file name decides, and they live in prompts.
+// came through the JSON transport (no spans) — which is every production
+// caller: both save handlers build the document with ast.UnmarshalFile.
+// Includes are the only thing a file name decides, and they live in
+// prompts, so the first prompt's file is the document's; a document whose
+// prompts came from several files (a bundle's prompts/*.md merged beside
+// a main.bot's) never reaches Verify.
 func sourceFile(f *ast.File) string {
-	file := ""
 	for _, p := range f.Prompts {
-		switch {
-		case p.Span.Start.File == "":
-		case file == "":
-			file = p.Span.Start.File
-		case p.Span.Start.File != file:
-			return ""
+		if p.Span.Start.File != "" {
+			return p.Span.Start.File
 		}
 	}
-	return file
+	return ""
 }
 
 // withoutComments is a shallow copy of f with its comment list dropped.

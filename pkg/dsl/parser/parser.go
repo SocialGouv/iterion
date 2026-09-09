@@ -161,14 +161,41 @@ func isTopLevelKeyword(tt TokenType) bool {
 	return false
 }
 
+// skipNewlinesFrom is skipNewlines that also reports whether a BLANK line
+// separates the header (whose colon sits on line) from what follows. The
+// lexer emits no token for a blank line, so it shows as a jump of more
+// than one between the lines of consecutive tokens; a comment line is a
+// token and is not a blank line.
+func (p *parser) skipNewlinesFrom(line int) (blank bool) {
+	for {
+		t := p.peek()
+		if t.Line > line+1 {
+			blank = true
+		}
+		if t.Type == TokenNewline || t.Type == TokenComment {
+			line = t.Line
+			p.next()
+			continue
+		}
+		return blank
+	}
+}
+
 // bodyIsEmpty reports, right after a declaration header's colon and the
-// newlines that follow it, that NO body follows: the next token starts
-// another top-level declaration, or the file ends. A header followed by
-// anything else (a property at the wrong indentation) is not empty — it
-// is the E002 with the indentation hint, as before.
-func (p *parser) bodyIsEmpty() bool {
+// newlines that follow it, that NO body follows: the file ends, or a
+// blank line and then another top-level declaration. The blank line is
+// what tells an empty declaration from a body at the wrong indentation —
+// a group's members are themselves top-level keywords (`agent`, `tool`),
+// so without it an unindented group body would read as an empty group
+// followed by top-level nodes, silently. A header followed by anything
+// else is not empty — it is the E002 with the indentation hint, as
+// before; an indented comment alone is not a body either.
+func (p *parser) bodyIsEmpty(blank bool) bool {
 	t := p.peek()
-	return t.Type != TokenIndent && (t.Type == TokenEOF || isTopLevelKeyword(t.Type))
+	if t.Type == TokenIndent {
+		return false
+	}
+	return t.Type == TokenEOF || (blank && isTopLevelKeyword(t.Type))
 }
 
 // headerState is what parseDeclHeaderOrEmpty found after a header.
@@ -194,9 +221,8 @@ func (p *parser) parseDeclHeaderOrEmpty(kind string) (start Token, name string, 
 		p.skipToNextTopLevel()
 		return start, "", headerFailed
 	}
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if p.bodyIsEmpty() {
+	colon, _ := p.expect(TokenColon)
+	if p.bodyIsEmpty(p.skipNewlinesFrom(colon.Line)) {
 		return start, name, headerEmpty
 	}
 	if _, ok := p.expect(TokenIndent); !ok {

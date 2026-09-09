@@ -2607,9 +2607,11 @@ func marshalIRFromSpec(path, source string, bundleDirs ...string) (json.RawMessa
 		// Absolute, whatever the caller's form: InlinePromptIncludes
 		// refuses a relative source path, which it would otherwise look
 		// up in the process working directory.
-		if abs, err := filepath.Abs(bundleDir); err == nil {
-			bundleDir = abs
+		abs, err := filepath.Abs(bundleDir)
+		if err != nil {
+			return nil, fmt.Errorf("cloudpublisher: resolve snapshot directory %q: %w", bundleDir, err)
 		}
+		bundleDir = abs
 		entry := "main.bot"
 		if path != "" {
 			entry = filepath.Base(path)

@@ -781,6 +781,7 @@ func (c *compiler) canAutoResolveBackend() bool {
 
 func (c *compiler) compilePrompts() {
 	seen := make(map[string]bool, len(c.file.Prompts))
+	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
 		if seen[p.Name] {
 			// Mirror compileSchemas: a second `prompt foo:` used to
@@ -808,7 +809,7 @@ func (c *compiler) compilePrompts() {
 			// and left in the body it would be reported a second time as one.
 			body = promptIncludeRe.ReplaceAllString(body, "")
 		} else {
-			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File))
+			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File), budget)
 		}
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
@@ -2096,8 +2097,16 @@ func (c *compiler) validateSchemaRef(node, prop, ref string) {
 	if ref == "" {
 		return
 	}
-	if _, ok := c.schemas[ref]; !ok {
+	s, ok := c.schemas[ref]
+	if !ok {
 		c.errorfAt(DiagUnknownSchema, node, "", "node %q property %q references unknown schema %q", node, prop, ref)
+		return
+	}
+	if len(s.Fields) == 0 {
+		// An empty schema is a legal declaration (the studio creates one
+		// before it has a field), not a legal contract for a node: a model
+		// asked for an object with no properties has nothing to fill.
+		c.warnfAt(DiagEmptySchema, node, "", "node %q property %q references schema %q, which has no field — the node's %s will always be empty", node, prop, ref, prop)
 	}
 }
 

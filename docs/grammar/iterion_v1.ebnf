@@ -56,10 +56,11 @@ secret_prop = "value" ":" STRING_LIT NEWLINE
             | "description" ":" STRING_LIT NEWLINE ;
 
 (* A prompt, schema, mcp_server, cursor, supervisor or group header may
-   stand with no body at all — followed by another declaration, or by the
-   end of the file — and declares an EMPTY one: the studio saves a
-   declaration the moment it is created. A header followed by a body at
-   the wrong indentation is still an error. *)
+   stand with no body at all — followed by a BLANK LINE and another
+   declaration, or by the end of the file — and declares an EMPTY one: the
+   studio saves a declaration the moment it is created. The blank line is
+   the discriminant: a header followed directly by an unindented line (a
+   body at the wrong indentation) is still an error. *)
 
 prompt_decl = "prompt" IDENT ":" NEWLINE [ INDENT prompt_body DEDENT ] ;
 prompt_body = { PROMPT_TEXT_LINE } ;
