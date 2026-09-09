@@ -3465,13 +3465,43 @@ tool sync_harness:
         re-anchored their mutant, silently, while the notes still claimed the pair
         was controlled.
         """
-        out = {}
+        # A class declared TWICE is REFUSED, not resolved. `out[key] = ...` let the
+        # later declaration win an ordering nobody audits: ["a","b"] and ["b","a"]
+        # normalise to one key, and which adjudication decided the class was decided
+        # by position in a JSON list. The second-order harm is worse than the
+        # overwrite — separator_group_ids reads THIS map, so the discarded
+        # declaration's separator never gets its group pinned into a control sample
+        # and the measurement that would decide the class is not taken at all.
+        #
+        # Dropping the key is FAIL-CLOSED: the class then reads as declared by
+        # nobody and the gate refuses it, with unproven_duplicate_groups naming the
+        # collision rather than an absence. A class declared twice with the SAME
+        # separators is merely repetitious, not ambiguous — order there decides
+        # nothing, so it is kept.
+        return {k: v[0] for k, v in duplicate_group_index(corpus).items()
+                if len({frozenset(s) for s in v}) == 1}
+
+
+    def duplicate_group_index(corpus):
+        """Every well-formed declaration, grouped by the class it keys.
+
+        `{class_key: [separator tuples, one per declaration that named it]}` — the
+        shape that makes a collision VISIBLE instead of resolving it silently.
+        """
+        seen = {}
         for g in duplicate_group_raw(corpus):
             norm = duplicate_group_decl(g)
             if norm is None:
                 continue
-            out[norm[0]] = norm[1]
-        return out
+            seen.setdefault(norm[0], []).append(norm[1])
+        return seen
+
+
+    def duplicate_group_conflicts(corpus):
+        """Classes with two declarations that do NOT say the same thing."""
+        return {k: [list(s) for s in v]
+                for k, v in duplicate_group_index(corpus).items()
+                if len({frozenset(s) for s in v}) > 1}
 
 
     def duplicate_group_raw(corpus):
@@ -3535,13 +3565,21 @@ tool sync_harness:
             return ["`duplicate_groups` is %s, not a list — it is ignored whole, and "
                     "every declared group then reads as undeclared"
                     % type(raw).__name__]
+        out = []
         bad = [repr(g)[:80] for g in raw if duplicate_group_decl(g) is None]
         if bad:
-            return ["%d `duplicate_groups` entr%s malformed and silently ignored — "
-                    "each needs at least two `ids` and a non-empty `separated_by` "
-                    "(a string, or a list of them): %s"
-                    % (len(bad), "y is" if len(bad) == 1 else "ies are", "; ".join(bad))]
-        return []
+            out.append("%d `duplicate_groups` entr%s malformed and silently ignored — "
+                       "each needs at least two `ids` and a non-empty `separated_by` "
+                       "(a string, or a list of them): %s"
+                       % (len(bad), "y is" if len(bad) == 1 else "ies are", "; ".join(bad)))
+        for key, seps in sorted(duplicate_group_conflicts(corpus).items()):
+            out.append(
+                "class %s is declared TWICE with different separators (%s) — the ids "
+                "are normalised, so ['a','b'] and ['b','a'] are ONE class and nothing "
+                "here can say which adjudication is meant. Both are dropped, and the "
+                "class is refused until one declaration remains."
+                % (json.dumps(list(key)), " vs ".join(json.dumps(s) for s in seps)))
+        return out
 
 
     def separator_group_ids(corpus, mutant_id):
@@ -3574,6 +3612,7 @@ tool sync_harness:
         so what is tested is what runs.
         """
         decls = duplicate_group_decls(corpus)
+        conflicts = duplicate_group_conflicts(corpus)
         observed = {tuple(sorted(g)) for g in duplicate_refs}
         # VALID only. A failed or inert verdict carries `targets_declared` but
         # never `undetected_targets` nor `collateral` — score_mutant returns before
@@ -3587,6 +3626,15 @@ tool sync_harness:
         for g in sorted(observed):
             seps = decls.get(g)
             if not seps:
+                # Declared twice is not declared once, but it is not UNDECLARED
+                # either — and sending the campaign to write a declaration it has
+                # already written twice is the dead end this file keeps removing.
+                if g in conflicts:
+                    unproven.append({"ids": list(g), "conflicting": conflicts[g], "why":
+                                     "this class is declared TWICE with different separators, and "
+                                     "the ids normalise to ONE key — nothing here can say which "
+                                     "adjudication is meant, so neither is used. Keep one."})
+                    continue
                 unproven.append({"ids": list(g), "why":
                                  "no `duplicate_groups` entry declares this class. Either a "
                                  "member is redundant — drop it — or the identity is a control, "
@@ -6345,6 +6393,35 @@ tool sync_harness:
               len(duplicate_group_decls({"duplicate_groups": _shapes})), 1)
         check("le refus de forme nomme exactement les autres",
               len(duplicate_groups_shape_problems({"duplicate_groups": _shapes})), 1)
+
+        # DEUX declarations pour UNE classe : refusees, pas departagees. Les ids sont
+        # normalises, donc ["a","b"] et ["b","a"] sont la MEME classe et c'est la
+        # POSITION dans la liste qui tranchait. Le mal du second ordre est pire que
+        # l'ecrasement : separator_group_ids lit cette meme carte, donc le separateur
+        # perdant n'epingle jamais son groupe dans son echantillon de temoins — la
+        # mesure qui deciderait la classe n'est pas prise du tout.
+        _clash = {"duplicate_groups": [{"ids": ["a", "b"], "separated_by": "first"},
+                                       {"ids": ["b", "a"], "separated_by": "second"}]}
+        check("une classe declaree deux fois n'est pas departagee par l'ordre",
+              duplicate_group_decls(_clash), {})
+        check("et le perdant n'epingle plus rien en silence",
+              [separator_group_ids(_clash, "first"), separator_group_ids(_clash, "second")],
+              [set(), set()])
+        check("la collision est REFUSEE nommement",
+              [("declared TWICE" in p) for p in duplicate_groups_shape_problems(_clash)],
+              [True])
+        # Et le refus dit la collision, pas une absence : envoyer ecrire une
+        # declaration deja ecrite deux fois est le cul-de-sac que ce fichier retire.
+        check("le motif nomme la collision, pas une declaration manquante",
+              [[("declared TWICE" in x["why"]), x.get("conflicting")]
+               for x in unproven_duplicate_groups([["a", "b"]], _clash, [])],
+              [[True, [["first"], ["second"]]]])
+        # Repeter la MEME adjudication n'est pas ambigu : l'ordre n'y decide rien.
+        check("la meme adjudication ecrite deux fois reste lisible",
+              duplicate_group_decls({"duplicate_groups": [
+                  {"ids": ["a", "b"], "separated_by": ["s1", "s2"]},
+                  {"ids": ["b", "a"], "separated_by": ["s2", "s1"]}]}),
+              {("a", "b"): ("s1", "s2")})
 
         # R8bcd2c : RETENU n'est pas ABSENT. En selfcheck le jeu tenu a l'ecart
         # n'est pas score, donc un separateur qui en vient est retenu, pas manquant
