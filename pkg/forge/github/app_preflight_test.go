@@ -57,3 +57,54 @@ func TestMintInstallationToken_ForgeRefusalIsNotMarkedLocal(t *testing.T) {
 		t.Fatalf("a forge 5xx was marked as iterion's own (%v) — the same inversion, reversed", err)
 	}
 }
+
+// The handlers this marker exists for never call MintInstallationToken: they
+// hold an *AppClient and reach the mint through rest (ListRepos, ListHooks…)
+// or scopedREST (GetPullRequest, the issue profiles), each of which returns
+// the mint error as it received it. That unwrapped return is the whole load
+// of the fix — one fmt.Errorf("mint: %v", err) at either site would flatten
+// the sentinel and put the 502 inversion back with every other test in this
+// suite still green. Pinned here, at the two functions where such a re-wrap
+// would be written.
+func TestAppClientMintChain_PreservesLocalPreflight(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(context.Context, *AppClient) error
+	}{
+		{"rest", func(ctx context.Context, a *AppClient) error {
+			_, err := a.rest(ctx)
+			return err
+		}},
+		{"scopedREST", func(ctx context.Context, a *AppClient) error {
+			_, err := a.scopedREST(ctx, map[string]string{"pull_requests": "read"})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reached := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusTeapot)
+			}))
+			defer srv.Close()
+
+			a := &AppClient{
+				HTTP: srv.Client(), WebBaseURL: srv.URL,
+				Cfg:            AppConfig{AppID: 42, PrivateKeyPEM: "-----BEGIN RSA PRIVATE KEY-----\nnot base64\n-----END RSA PRIVATE KEY-----", AppSlug: "iterion"},
+				InstallationID: 99,
+				Now:            func() time.Time { return time.Unix(1700000000, 0).UTC() },
+			}
+			err := tc.call(context.Background(), a)
+			if err == nil {
+				t.Fatalf("%s served a client for a key that cannot be read", tc.name)
+			}
+			if reached {
+				t.Fatalf("%s opened a socket with a key it could not read", tc.name)
+			}
+			if !errors.Is(err, forge.ErrLocalPreflight) {
+				t.Fatalf("%s returned %v with no forge.ErrLocalPreflight — the mint marks it, and this is where the mark is dropped; the route above answers 502 for a key iterion stored", tc.name, err)
+			}
+		})
+	}
+}
