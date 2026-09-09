@@ -77,6 +77,11 @@ func TestOutputCorrectionBudgetReadsEnvironmentDefault(t *testing.T) {
 	if eng.outputCorrectionBudget != 0 {
 		t.Fatalf("environment budget = %d, want 0", eng.outputCorrectionBudget)
 	}
+	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
+	eng = New(validationWorkflow(), tmpStore(t), newStubExecutor())
+	if eng.outputCorrectionBudget != 0 {
+		t.Fatalf("spaced environment budget = %d, want 0", eng.outputCorrectionBudget)
+	}
 	t.Setenv(EnvOutputCorrectionBudget, "not-a-number")
 	eng = New(validationWorkflow(), tmpStore(t), newStubExecutor())
 	if eng.outputCorrectionBudget != 2 {

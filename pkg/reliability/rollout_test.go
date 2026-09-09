@@ -29,7 +29,7 @@ func TestReportForRunComputesRollbackSafety(t *testing.T) {
 	if got := ReportForRun(nil); got.RollbackSafe {
 		t.Fatalf("nil run must not be rollback-safe: %+v", got)
 	}
-	for _, status := range []string{"active", "exhausted"} {
+	for _, status := range []string{"active", "exhausted", "unchanged"} {
 		run := &store.Run{
 			ExecutionContext:  &store.ExecutionContext{Policy: store.ContextPolicyReport},
 			OutputCorrections: map[string]store.OutputCorrectionEpisode{"node": {Status: status}},
@@ -82,5 +82,9 @@ func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "")
 	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyReport {
 		t.Fatalf("older policy fallback = %s", got)
+	}
+	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
+	if got := FromEnv().OutputCorrectionBudget; got != 0 {
+		t.Fatalf("spaced correction budget = %d, want 0", got)
 	}
 }

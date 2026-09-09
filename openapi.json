@@ -1496,6 +1496,9 @@
           "input_fingerprint": {
             "type": "string"
           },
+          "invocation_id": {
+            "type": "string"
+          },
           "last_error": {
             "type": "string"
           },

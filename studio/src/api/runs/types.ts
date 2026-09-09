@@ -96,6 +96,7 @@ export interface AdmissionDecision {
 }
 export interface OutputCorrectionEpisode {
   episode_id?: string;
+  invocation_id?: string;
   node_id?: string;
   budget?: number;
   attempts?: number;

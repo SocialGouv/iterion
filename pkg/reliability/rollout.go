@@ -111,7 +111,7 @@ func ReportForRun(run *store.Run) CompatibilityReport {
 		}
 	}
 	for _, episode := range run.OutputCorrections {
-		if episode.Status == "active" || episode.Status == "exhausted" {
+		if episode.Status == "active" || episode.Status == "exhausted" || episode.Status == "unchanged" {
 			r.RollbackSafe = false
 			break
 		}

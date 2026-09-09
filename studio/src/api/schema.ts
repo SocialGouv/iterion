@@ -6112,6 +6112,7 @@ export interface components {
             budget?: number;
             episode_id?: string;
             input_fingerprint?: string;
+            invocation_id?: string;
             last_error?: string;
             last_output_fingerprint?: string;
             last_violation_fingerprint?: string;
