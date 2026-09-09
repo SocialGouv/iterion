@@ -284,6 +284,17 @@ type Config struct {
 	// wiring — one instance, so the admin PUT's Invalidate reaches the
 	// same replica's expansions immediately. Nil builds a private one.
 	BotVarsResolver *platformcfg.Resolver[platformcfg.BotVars]
+	// PlatformCredentialsSettings is the audience family for the PLATFORM
+	// credential tier: which tenants may draw on the deployment's own keys.
+	// Nil, or a record that does not enforce, admits every tenant — the
+	// behaviour before the family existed.
+	PlatformCredentialsSettings platformcfg.Store[platformcfg.PlatformCredentials]
+	// PlatformCredentialsResolver, when non-nil, is the SHARED TTL resolver
+	// over it, also handed to the cloud publisher. It matters more here than
+	// for its siblings: the publisher is the ONLY consumer, so a private
+	// resolver on the server would make the admin PUT's Invalidate reach
+	// nothing at all and the flip land only after the TTL.
+	PlatformCredentialsResolver *platformcfg.Resolver[platformcfg.PlatformCredentials]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

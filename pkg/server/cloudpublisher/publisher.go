@@ -41,6 +41,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -109,6 +110,11 @@ type Config struct {
 	// whose window is CLOSED, which is what lets the run fall through to
 	// the next credential tier instead of parking for a reset.
 	UsageCaps usagecap.Store
+	// PlatformCredentialAudience, when non-nil, gates who may draw on the
+	// PLATFORM credential tier. A nil resolver — or a deployment that never
+	// wrote the record — admits every tenant, which is the behaviour before
+	// the family existed.
+	PlatformCredentialAudience *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	// CapPolicy, when non-nil, is the operator's usage-cap posture
 	// (pkg/usagecap PolicySource). The walk consults it over the SAME
 	// readings as the refusal skip: a credential the runner's pre-flight
@@ -150,9 +156,11 @@ type Config struct {
 }
 
 // TeamResolver is the slice of the identity store the publisher needs
-// for org spend attribution.
+// for org spend attribution and for the ORG credential tier, whose
+// audience lives on the Org document.
 type TeamResolver interface {
 	GetTeam(ctx context.Context, id string) (identity.Team, error)
+	GetOrg(ctx context.Context, id string) (identity.Org, error)
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -183,6 +191,7 @@ type Publisher struct {
 	credPool             *credpool.Broker
 	usageCaps            usagecap.Store
 	capPolicy            usagecap.PolicySource
+	platformAudience     *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	trust                usagecap.Trust
 	usageProbe           UsageProbe
 	identity             TeamResolver
@@ -280,6 +289,7 @@ func New(cfg Config) (*Publisher, error) {
 		credPool:             cfg.CredPool,
 		usageCaps:            cfg.UsageCaps,
 		capPolicy:            cfg.CapPolicy,
+		platformAudience:     cfg.PlatformCredentialAudience,
 		trust:                cfg.UsageCapTrust.Normalized(),
 		usageProbe:           cfg.UsageProbe,
 		identity:             cfg.Identity,
@@ -583,7 +593,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// tier (a second forfait, the pool) could have served it
 				// immediately. Skipping it here is what makes the tiers a
 				// FALLBACK CHAIN rather than a fixed first choice.
-				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec, payload); !until.IsZero() {
+				meterScope := usagecap.ScopePlatform
+				if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
+					meterScope = usagecap.TenantScope(tenantID)
+				}
+				if until, why := p.forfaitWindowClosed(ctx, meterScope, ownerKey, rec, payload); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 					skips.note(until)
@@ -601,14 +615,29 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 		}
 		addOAuth(ownerID, "user")
-		addOAuth(secrets.OrgOwnerKey(tenantID), "org")
+		// Labelled "team", not "org": OrgOwnerKey's argument is a TENANT
+		// id, so this record is the team's shared forfait. The genuine
+		// org tier is step 4 below.
+		addOAuth(secrets.OrgOwnerKey(tenantID), "team")
 	}
 
-	// 4. Mutualised pool — the LAST resort, and only for a run that has no
+	// 4. ORG tier — the parent org's own shared credentials, lent to the
+	//    teams its CredentialAudience admits. It sits here, below
+	//    everything the team resolved and above the pool, because that is
+	//    what "shared inside the org" means: a team that brought its own
+	//    key spends it, a team the org lends to spends the org's, and
+	//    neither takes a stranger's donation while either is available.
+	//    Fills per WIRE FAMILY like the platform tier, so an org key can
+	//    never shadow a credential the team already holds in another shape.
+	p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+
+	// 5. Mutualised pool — the LAST resort, and only for a run that has no
 	//    credential of its own at all. Spending a contributor's lent
 	//    subscription while the tenant holds a usable key of its own would
 	//    be taking a donation nobody needed; "the tenant is out of
-	//    credentials" is the condition the pool exists for.
+	//    credentials" is the condition the pool exists for. An org-funded
+	//    run therefore never reaches it — by construction, since the fill
+	//    above left the bundle non-empty.
 	res := credResolution{}
 	if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
 		if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, wf, modelOverrides, runFallbacks); grant != nil {
@@ -645,7 +674,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 	}
 
-	// 5. Platform tier — the deployment's own DB-backed credentials, the
+	// 6. Platform tier — the deployment's own DB-backed credentials, the
 	//    last stop before the runner's env fallback (which stays: an empty
 	//    platform store keeps today's behaviour byte-identical). Fills only
 	//    the slots tiers 1–4 left empty, per WIRE FAMILY, so a platform key
@@ -655,7 +684,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
+		p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
 	}
 	res.skippedReopensAt = skips.earliest
 
@@ -685,6 +714,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			if sk.platform {
 				bundle.PlatformSourced[string(prov)] = true
 			}
+			if sk.org {
+				bundle.OrgSourced[string(prov)] = true
+			}
 			taken[secrets.WireFamily(string(prov))] = true
 			p.logger.Info("cloudpublisher: refused api-key RESTORED for run=%s provider=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, prov)
 		}
@@ -694,13 +726,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			}
 			bundle.OAuthCredentials[kind] = sf.payload
 			setOAuthFingerprint(&bundle, kind, sf.fp)
+			if sf.org {
+				bundle.OrgSourced[kind] = true
+			}
 			taken[secrets.WireFamily(kind)] = true
 			p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
 		}
 	}
 
 	// Record which review families the resolved credentials back — every
-	// tier included (BYOK, oauth-forfait, pool grant, platform). This is
+	// tier included (BYOK, oauth-forfait, org, pool grant, platform). This is
 	// what lets SubmitLaunch resolve the credential-derived topology vars
 	// (review_mode / plan_review / llm_families) for a queued run, where
 	// no host detection report applies. Empty when nothing resolved: the
@@ -755,7 +790,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// silence it exactly where it matters.
 	noLLMCred := len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0
 	if noLLMCred && (wf == nil || wf.UsesLLM()) {
-		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, pool, platform; the runner falls back to its env or fails at the first LLM call",
+		p.logger.Warn("cloudpublisher: no credential resolved for run=%s tenant=%s — tiers consulted: byok, oauth-forfait, org, pool, platform; the runner falls back to its env or fails at the first LLM call",
 			runID, tenantID)
 	}
 	// The deployment may REFUSE what the Warn only reports. Per route, on
@@ -957,8 +992,11 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
+		return
+	}
+	if !p.platformAudienceAllows(ctx, runID, orgID, tenantID) {
 		return
 	}
 	taken := map[string]bool{}
@@ -1105,6 +1143,9 @@ var poolWantOrder = func() []credpool.Credential {
 type skippedForfait struct {
 	payload []byte
 	fp      string
+	// org marks a forfait the ORG tier passed over, so a restore re-stamps
+	// the provenance the metering scope depends on.
+	org bool
 }
 
 // skippedAPIKey is a provider's refused-but-only key, held back by the
@@ -1116,6 +1157,10 @@ type skippedAPIKey struct {
 	keyID       string
 	fingerprint string
 	platform    bool
+	// org marks a key the ORG tier passed over — same role as platform:
+	// a restored credential must carry the provenance its meter keys on,
+	// or one org subscription is charged once per borrowing team.
+	org bool
 }
 
 // providersWithoutKey returns the subset of provs that filled no API-key
@@ -1161,11 +1206,19 @@ const usageCapLookupTimeout = 5 * time.Second
 //   - a STALE reading ⇒ usable (Fresh already encodes "past its own
 //     reset", so a window that reopened stops blocking by itself);
 //   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
-func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
+//
+// meterScope is the usage-cap ledger this credential's readings live in.
+// It is a PARAMETER and no longer derived from the tenant id, because the
+// derivation could only express two of the three answers: a reserved scope
+// wrapped in TenantScope produces a key nothing ever writes
+// ("tenant:orgtier:<org>" while the runner meters "org:<org>"), so the
+// window-skip read a ledger that was always empty and never skipped an
+// exhausted credential — the precise failure the skip exists to prevent.
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
 	backend := usageBackendForKind(rec.Kind)
-	scope := usagecap.ScopePlatform
-	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
-		scope = usagecap.TenantScope(tenantID)
+	scope := meterScope
+	if scope == "" {
+		scope = usagecap.ScopePlatform
 	}
 	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
 	if !until.IsZero() || p.usageProbe == nil || backend == "" || rec.Fingerprint == "" || len(payload) == 0 {
@@ -1631,15 +1684,15 @@ func pledgeSkipSummary(skips []credpool.PledgeSkip) string {
 // (a grant used to be silent — #659 pt 1), and the answer an operator
 // needed to `grep run=<id>` for instead of `/proc/<pid>/environ` inside
 // a pod (measured, 2026-09-03). The line carries the credential's
-// TIER (byok / oauth-forfait / pool / platform), the slot name
+// TIER (byok / oauth-forfait / org / pool / platform), the slot name
 // (provider or oauth kind), and the FINGERPRINT — never plaintext.
 func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, grant *credpool.Grant) {
 	if logger == nil {
 		return
 	}
 	parts := make([]string, 0, len(bundle.APIKeys)+len(bundle.OAuthCredentials))
-	// API keys — the PlatformSourced map tells apart platform-tier
-	// grants (deployment-wide fallback keys) from tenant BYOK.
+	// API keys — the provenance maps tell apart the shared tiers
+	// (deployment-wide fallback keys, the org's lent key) from tenant BYOK.
 	for _, prov := range allKnownProviders {
 		if _, ok := bundle.APIKeys[prov]; !ok {
 			continue
@@ -1650,6 +1703,8 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 			tier = "pool"
 		case bundle.PlatformSourced[string(prov)]:
 			tier = "platform"
+		case bundle.OrgSourced[string(prov)]:
+			tier = "org"
 		}
 		fp := apiKeyFPs[prov]
 		if fp == "" {
@@ -1658,17 +1713,21 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 		parts = append(parts, fmt.Sprintf("%s(api_key:%s fp=%s)", tier, prov, fp))
 	}
 	// OAuth-forfait — grant != nil means a donor's subscription came in
-	// via the pool tier; the platform sentinel marks the deployment's
-	// own fallback forfait; otherwise it is a user-or-org connect.
+	// via the pool tier; the platform sentinel marks the deployment's own
+	// fallback forfait, the org one the parent org's lent forfait;
+	// otherwise it is a user-or-team connect.
 	for _, kind := range []string{string(secrets.OAuthKindClaudeCode), string(secrets.OAuthKindCodex)} {
 		if _, ok := bundle.OAuthCredentials[kind]; !ok {
 			continue
 		}
 		tier := "oauth-forfait"
-		if grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth {
+		switch {
+		case grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth:
 			tier = "pool"
-		} else if bundle.PlatformSourced[kind] {
+		case bundle.PlatformSourced[kind]:
 			tier = "platform"
+		case bundle.OrgSourced[kind]:
+			tier = "org"
 		}
 		fp := bundle.OAuthFingerprints[kind]
 		if fp == "" {

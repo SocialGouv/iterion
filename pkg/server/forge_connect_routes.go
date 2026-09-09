@@ -126,6 +126,16 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 			return
 		}
 		if !writeForgeUpstreamError(w, err, "could not reach %s: %v", provider, err) {
+			// Safe default, and this one IS clean — traced, not assumed.
+			// The client is a plain bearer built above from the pasted
+			// token (forgeAdminForToken, which has its own 400 arm), so
+			// there is no seal to open and no App JWT to sign lazily on
+			// the first call — the way an App client fails locally inside
+			// what looks like a round-trip (see newIterionFault's doc).
+			// WhoAmI is therefore the only thing that can fail here, and
+			// it must succeed BEFORE any store write. An error the
+			// classifier does not name yet is still an unreachable forge
+			// — never iterion's own state — so 502 is the true code.
 			httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
 		}
 		return
