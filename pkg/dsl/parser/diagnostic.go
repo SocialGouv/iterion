@@ -62,7 +62,7 @@ func expectedTokenHint(want, got TokenType) string {
 	switch want {
 	case TokenIdent:
 		if got == TokenString {
-			return "This property takes a bare name — a declared `prompt`, `schema` or node — not a quoted string: declare `prompt my_prompt:` with the text, then write `system: my_prompt`."
+			return "This property takes a bare name — a declared `prompt`, `schema` or node — not a quoted string: remove the quotes (`entry: a`, `output: my_schema`); for `system:`/`user:` the name is a `prompt` declared with the text."
 		}
 		return "This property takes a bare name (letters, digits, `_`), such as a declared prompt, schema or node."
 	case TokenString:

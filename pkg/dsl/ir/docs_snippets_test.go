@@ -32,19 +32,20 @@ import (
 //	```iter fragment:edges      edge lines — wrapped in a workflow, must parse
 //	```iter fragment:workflow   workflow members — wrapped, must parse
 //	```iter fragment:<kind>     node properties — wrapped in `<kind> _:`, must parse
-//	```iter invalid             a documented anti-example — must NOT be clean
+//	```iter invalid:C019        a documented anti-example — must fail with THAT code
+//	```iter invalid             an anti-example — must not be clean (any error)
 //
 // Markdown renderers read only the first word, so the tags are invisible
 // to readers and only this test sees them.
 
 // A fence may be indented (inside a list item); the same indentation is
-// stripped from its body. The info string after `iter` is captured whole so a
-// tag with a space in it (```iter fragment edges) is reported instead of
-// being silently dropped.
-var (
-	fenceOpenRe = regexp.MustCompile("^(\\s*)```iter\\b(.*)$")
-	fenceEndRe  = regexp.MustCompile("^\\s*```\\s*$")
-)
+// stripped from its body, its closing fence must sit at exactly that indent
+// (a deeper ``` is body text — a prompt teaching an agent to emit a code
+// fence), and a body line indented less than the fence is reported rather
+// than silently kept. The info string after `iter` is captured whole so a tag
+// with a space in it (```iter fragment edges) is reported instead of being
+// silently dropped.
+var fenceOpenRe = regexp.MustCompile("^(\\s*)```iter\\b(.*)$")
 
 // snippetFragmentKinds are the declaration kinds a `fragment:<kind>` fence
 // may be wrapped in.
@@ -56,10 +57,11 @@ var snippetFragmentKinds = map[string]bool{
 }
 
 type docSnippet struct {
-	file string
-	line int // line of the opening fence, 1-based
-	tag  string
-	body string
+	file      string
+	line      int // line of the opening fence, 1-based
+	tag       string
+	body      string
+	malformed string // non-empty when the fence's own shape is wrong (a body line less indented than the fence)
 }
 
 // docSnippetFiles lists the markdown a reader may take DSL from: the docs
@@ -122,11 +124,14 @@ func extractDocSnippets(t *testing.T, path string) []docSnippet {
 			}
 			continue
 		}
-		if fenceEndRe.MatchString(line) {
+		if strings.TrimRight(line, " \t") == indent+"```" {
 			cur.body = strings.Join(body, "\n") + "\n"
 			out = append(out, *cur)
 			cur = nil
 			continue
+		}
+		if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, indent) && cur.malformed == "" {
+			cur.malformed = fmt.Sprintf("line %d is indented less than its fence", lineNo)
 		}
 		body = append(body, strings.TrimPrefix(line, indent))
 	}
@@ -177,7 +182,7 @@ func compileSnippet(s docSnippet) (parseErrs, compileErrs []string, err error) {
 	src := s.body
 	tag := s.tag
 	switch {
-	case tag == "" || tag == "fragment" || tag == "invalid":
+	case tag == "" || tag == "fragment" || tag == "invalid" || strings.HasPrefix(tag, "invalid:"):
 	case tag == "fragment:edges":
 		src = indentSnippet("workflow _snippet:\n  entry: "+firstEdgeSource(s.body), s.body)
 	case tag == "fragment:workflow":
@@ -225,17 +230,27 @@ func TestDocsIterFencesCompile(t *testing.T) {
 			total++
 			rel := strings.TrimPrefix(s.file, filepath.Join("..", "..", "..")+string(filepath.Separator))
 			where := fmt.Sprintf("%s:%d fence `iter %s`", rel, s.line, s.tag)
+			if s.malformed != "" {
+				t.Errorf("%s: %s", where, s.malformed)
+				continue
+			}
 			parseErrs, compileErrs, err := compileSnippet(s)
 			if err != nil {
 				t.Errorf("%s: %v", where, err)
 				continue
 			}
-			switch s.tag {
-			case "invalid":
+			switch {
+			case strings.HasPrefix(s.tag, "invalid:"):
+				code := strings.TrimPrefix(s.tag, "invalid:")
+				all := strings.Join(append(parseErrs, compileErrs...), "\n")
+				if !strings.Contains(all, "["+code+"]") {
+					t.Errorf("%s: is tagged as the %s anti-example but does not fail with it:\n      %s", where, code, firstN(append(parseErrs, compileErrs...), 3))
+				}
+			case s.tag == "invalid":
 				if len(parseErrs)+len(compileErrs) == 0 {
 					t.Errorf("%s: is tagged as an anti-example but compiles clean — drop the tag or make it invalid again", where)
 				}
-			case "":
+			case s.tag == "":
 				if len(parseErrs) > 0 {
 					t.Errorf("%s: does not parse:\n      %s\n    (a standalone fence must parse and compile; tag it `iter fragment…` if it is deliberately partial)", where, firstN(parseErrs, 3))
 				} else if len(compileErrs) > 0 {

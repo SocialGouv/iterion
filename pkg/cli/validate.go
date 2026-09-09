@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -74,6 +75,37 @@ func formatDiagnostic(d ValidateDiagnostic) []string {
 		lines = append(lines, "    fix: "+d.Hint)
 	}
 	return lines
+}
+
+// sortValidateDiagnostics orders the findings the way a reader edits: by
+// source position — the global ones, which have none, first — then code,
+// node, edge and message. The compiler already orders its own list this
+// way; RunValidate concatenates the parse, compile and bundle stages, so the
+// same key is applied once more across them, otherwise a parse finding on
+// line 12 precedes a compile finding on line 7.
+func sortValidateDiagnostics(ds []ValidateDiagnostic) {
+	sort.SliceStable(ds, func(i, j int) bool {
+		a, b := ds[i], ds[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		if a.NodeID != b.NodeID {
+			return a.NodeID < b.NodeID
+		}
+		if a.EdgeID != b.EdgeID {
+			return a.EdgeID < b.EdgeID
+		}
+		return a.Message < b.Message
+	})
 }
 
 // printDiagnostics writes the structured findings under a heading.
@@ -165,6 +197,7 @@ func RunValidate(path string, p *Printer) error {
 
 	if pr.File == nil || len(pr.File.Workflows) == 0 {
 		result.Valid = false
+		sortValidateDiagnostics(result.Diagnostics)
 		if p.Format == OutputJSON {
 			p.JSON(result)
 		} else {
@@ -245,6 +278,7 @@ func RunValidate(path string, p *Printer) error {
 		}
 	}
 
+	sortValidateDiagnostics(result.Diagnostics)
 	if p.Format == OutputJSON {
 		p.JSON(result)
 	} else {

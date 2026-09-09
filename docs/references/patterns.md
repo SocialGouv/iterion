@@ -356,7 +356,7 @@ schema fix_output:
 tool run_ci:
   ## The exit code becomes a field: a failing suite is a RESULT the judge
   ## reads, not a node failure — and stdout is the JSON the schema declares.
-  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; printf '{"passed":%s,"logs":%s}' "$ok" "$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[-20000:]))' </tmp/ci.log)"`
+  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, logs: .}' </tmp/ci.log`
   output: ci_result
 
 judge verify:

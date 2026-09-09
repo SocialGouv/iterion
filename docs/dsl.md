@@ -301,11 +301,11 @@ tool run_tests:
 
 ```iter fragment
 tool run_tests:
-  command: `if make test >/tmp/test.log 2>&1; then ok=true; else ok=false; fi; printf '{"passed":%s,"log":%s}' "$ok" "$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[-20000:]))' </tmp/test.log)"`
+  command: `if make test >/tmp/test.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, log: .}' </tmp/test.log`
   output: test_result        # schema: passed: bool, log: string
 ```
 
-(`printf` with a JSON-quoted payload is the portable idiom; `python3 -c "…json.dumps…"` reads well but assumes `python3` in the sandbox image — declare it in the bot's `devbox.json` if you rely on it.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
+(`jq -Rs` reads the whole log as one JSON string and ships in the default sandbox image; a `python3 -c "…json.dumps…"` wrapper reads well but `python3` is NOT in that image, and a missing interpreter turns the payload into invalid JSON that the runtime then wraps as `{"result": …}` in silence — declare any interpreter you rely on in the bot's `devbox.json`.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
 
 Verified Actions add a deterministic outcome check and bounded recovery:
 

@@ -27,6 +27,35 @@ workflow w:
   b -> a
 `
 
+// The parse, compile and bundle stages are concatenated; the reader still
+// gets one list in source order, global findings first — a compile finding on
+// line 7 is listed before a parse finding on line 12.
+func TestValidate_DiagnosticsAreInSourceOrderAcrossStages(t *testing.T) {
+	dir := t.TempDir()
+	src := "schema out:\n  ok: bool\n\nagent a:\n  model: \"m\"\n  output: out\n\nworkflow w:\n  entry: a\n  a -> zzz\n\nagent b:\n  model: \"m\"\n  temperature: 0.2\n"
+	path := writeFixture(t, dir, "order.bot", src)
+	p, buf := newTestPrinter(cli.OutputJSON)
+	_ = cli.RunValidate(path, p)
+	var result cli.ValidateResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("cannot parse JSON output: %v\n%s", err, buf.String())
+	}
+	var lines []int
+	for _, d := range result.Diagnostics {
+		if d.Severity == "error" {
+			lines = append(lines, d.Line)
+		}
+	}
+	for i := 1; i < len(lines); i++ {
+		if lines[i] < lines[i-1] {
+			t.Fatalf("diagnostics not in source order: lines %v\n%+v", lines, result.Diagnostics)
+		}
+	}
+	if len(lines) < 2 {
+		t.Fatalf("expected a compile finding (line 10) and a parse finding (line 14), got %+v", result.Diagnostics)
+	}
+}
+
 // TestValidate_DiagnosticsCarryPositionAndFix checks what an author (or an
 // agent in a validate loop) receives: in --json, one structured object per
 // finding with its stage, code, source position and fix line; in the human

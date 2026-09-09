@@ -3,6 +3,7 @@ package ir
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,41 @@ func TestDocSnippetExtractorSeesIndentedFencesAndBadTags(t *testing.T) {
 	// The de-indented fragment wraps and parses like a column-0 one.
 	if pe, _, err := compileSnippet(snips[0]); err != nil || len(pe) > 0 {
 		t.Errorf("indented fragment:workflow should parse once de-indented: err=%v parseErrs=%v", err, pe)
+	}
+}
+
+// A closing fence sits at exactly the opening indent: a deeper ``` inside the
+// body is text (a prompt teaching an agent to emit a code block), and a body
+// line indented less than the fence is reported rather than silently kept.
+func TestDocSnippetExtractorClosesOnlyAtTheFenceIndent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	md := "- item:\n" +
+		"  ```iter fragment\n" +
+		"  prompt p:\n" +
+		"    Reply inside a code block:\n" +
+		"    ```\n" +
+		"    text\n" +
+		"    ```\n" +
+		"  ```\n\n" +
+		"  ```iter fragment\n" +
+		"  schema out:\n" +
+		" ok: bool\n" +
+		"  ```\n"
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snips := extractDocSnippets(t, path)
+	if len(snips) != 2 {
+		t.Fatalf("expected 2 fences, got %d: %+v", len(snips), snips)
+	}
+	if !strings.Contains(snips[0].body, "  ```\n  text\n  ```\n") {
+		t.Errorf("the deeper ``` lines must stay in the body, got %q", snips[0].body)
+	}
+	if snips[0].malformed != "" {
+		t.Errorf("first fence wrongly reported malformed: %s", snips[0].malformed)
+	}
+	if snips[1].malformed == "" {
+		t.Errorf("a body line indented less than its fence must be reported, got body %q", snips[1].body)
 	}
 }

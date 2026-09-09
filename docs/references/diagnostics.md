@@ -210,7 +210,7 @@ phrasing template and are all warnings, so a skill gap never fails validation.
 **"I get C019 (undeclared cycle)"**
 Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. This is the shape that fails:
 
-```iter invalid
+```iter invalid:C019
 schema verdict:
   approved: bool
 
