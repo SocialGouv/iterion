@@ -102,16 +102,25 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		// may wait out, a grant it will never get — instead of one 502 for
 		// every cause.
 		if !writeForgeUpstreamError(w, err, "read pull request %s#%d: %v", repo, number, err) {
-			// Default, and NOT a clean one for a github_app connection.
-			// This route reads and nothing else, so no post-forge store
-			// write can mix in the way the avatar route's does (#969) —
-			// but the read itself is not purely upstream: an App's
-			// GetPullRequest goes through scopedREST, which mints an
-			// installation token and signs the App JWT locally FIRST, so
-			// a stored key that is not parseable PEM fails before any
-			// socket and answers 502 here. The same inversion, still open
-			// on this arm; the fix belongs in the mint chain, which alone
-			// knows which step failed. Residual on #969.
+			// Default, and a clean one. This route reads and nothing
+			// else, so no post-forge store write can mix in the way the
+			// avatar route's does — and the read's own local half is
+			// covered: an App's GetPullRequest goes through scopedREST,
+			// which mints an installation token and signs the App JWT
+			// before opening a socket, and those failures carry
+			// forge.ErrLocalPreflight, which writeForgeUpstreamError
+			// answers 500. What reaches here is an unclassified failure
+			// of a round trip that did happen.
+			//
+			// This ARM, not the route: `forge client:` above still
+			// answers 502 for a gateClientFor failure, which touches no
+			// network at all — an App config that did not resolve, a
+			// token that will not unseal. The sibling list-repos route
+			// answers 500 for the identical failure, and board_forge /
+			// forge_publish answer 502 like this one. Nothing marks
+			// those and no marker would reach them (the arms never ask
+			// the junction), so aligning them is its own change across
+			// four routes. Residual on #969.
 			httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
 		}
 		return

@@ -387,4 +387,16 @@ var (
 	// instance has no avatar endpoint at all (GitLab before 17.0, Gitea before
 	// 1.20): the operator's only path is the forge's own profile page.
 	ErrAvatarUnsupported = errors.New("forge: this instance has no avatar API")
+	// ErrLocalPreflight marks a failure that happened while PREPARING a forge
+	// call, before any byte reached the network: a stored App key that is not
+	// parseable PEM, a payload that will not marshal, a base URL that will not
+	// parse. The forge never saw the request and cannot be blamed for it.
+	//
+	// It exists because a client method is not the same thing as a round
+	// trip. AppClient.rest and every security-read mint sign an App JWT from
+	// a stored key first, so a key iterion cannot read fails inside what
+	// reads like a pure remote call — and the handlers that default to 502
+	// then report a third party as broken. Callers in pkg/server ask
+	// isIterionFault, which reads this sentinel and answers 500.
+	ErrLocalPreflight = errors.New("forge: the request never left iterion")
 )
