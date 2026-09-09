@@ -734,6 +734,16 @@ type Service struct {
 	pipelineReservedInvalidate func()
 }
 
+// WatcherProgressStore exposes the service's run store to the optional
+// supervisor cursor. The coordinator uses a capability assertion, so this
+// does not widen the Observer/Injector contracts used by other callers.
+func (s *Service) WatcherProgressStore() store.RunStore {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 // ServiceOption configures a Service at construction time.
 type ServiceOption func(*Service)
 

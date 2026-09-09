@@ -2,6 +2,8 @@ package supervise
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -36,6 +38,13 @@ type Observer interface {
 // studio inbox event come for free.
 type Injector interface {
 	Inject(ctx context.Context, runID, nodeID, text string) error
+}
+
+// WatcherProgressStoreProvider is an optional seam implemented by launch
+// surfaces that can persist watcher cursors. Keeping it out of Injector and
+// Observer preserves compatibility with external implementations.
+type WatcherProgressStoreProvider interface {
+	WatcherProgressStore() store.RunStore
 }
 
 // Coordinator watches one supervised run and drives one supervisor bot.
@@ -89,6 +98,12 @@ type Coordinator struct {
 	outTokens    int
 	lastEvalAt   time.Time
 	finished     bool // bot signalled Done; re-armed by a bot-registered monitor match
+	// cursor is the durable anti-loop proof for this supervisor instance. It
+	// is written at evaluation boundaries, not on every event, so a busy tool
+	// stream does not turn supervision into a run-document write storm.
+	cursorStore store.RunStore
+	cursorID    string
+	cursor      store.WatcherCursor
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -103,6 +118,13 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 	if eval == nil {
 		eval = NewLLMEvaluator()
 	}
+	var cursorStore store.RunStore
+	if p, ok := inj.(WatcherProgressStoreProvider); ok {
+		cursorStore = p.WatcherProgressStore()
+	} else if p, ok := obs.(WatcherProgressStoreProvider); ok {
+		cursorStore = p.WatcherProgressStore()
+	}
+	cursorID := watcherCursorID(spec)
 	return &Coordinator{
 		obs:            obs,
 		inj:            inj,
@@ -113,6 +135,9 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		activeByBranch: make(map[string]string),
 		monitors:       append([]Monitor(nil), spec.Monitors...),
 		seedCount:      len(spec.Monitors),
+		cursorStore:    cursorStore,
+		cursorID:       cursorID,
+		cursor:         store.WatcherCursor{WatcherID: cursorID},
 		done:           make(chan struct{}),
 	}
 }
@@ -153,6 +178,7 @@ func (c *Coordinator) run() {
 		return
 	}
 	defer release()
+	c.restoreCursor()
 
 	// One startup line so an operator (and a dogfood log) can tell a
 	// spawned-but-silent supervisor from one that never spawned.
@@ -326,6 +352,9 @@ func isInboxEvent(t store.EventType) bool {
 // ingest folds an event into the coordinator's view: tracks the set of
 // active nodes and keeps a bounded ring of rendered recent events.
 func (c *Coordinator) ingest(evt *store.Event) {
+	if evt == nil {
+		return
+	}
 	switch evt.Type {
 	case store.EventNodeStarted:
 		if evt.NodeID != "" {
@@ -354,6 +383,17 @@ func (c *Coordinator) ingest(evt *store.Event) {
 		}
 	}
 	c.recent = append(c.recent, RenderEvent(evt))
+	if evt.Timestamp.IsZero() {
+		evt.Timestamp = time.Now()
+	}
+	progressFP := supervisorFingerprint(RenderEvent(evt))
+	if c.cursor.LastProgressFingerprint == progressFP {
+		c.cursor.ConsecutiveNoProgress++
+	} else {
+		c.cursor.ConsecutiveNoProgress = 0
+	}
+	c.cursor.LastProgressFingerprint = progressFP
+	c.cursor.LastProgressAt = evt.Timestamp
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
 	}
@@ -427,6 +467,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		}
 		return false
 	}
+	triggerFP := supervisorFingerprint(reason + "|" + c.cursor.LastProgressFingerprint)
+	// A redelivered event or a watcher restart must not re-run the same
+	// correction merely because a high-signal monitor bypasses the ordinary
+	// cooldown. New progress produces a different fingerprint and remains
+	// eligible immediately.
+	if c.cursor.LastTriggerFingerprint == triggerFP {
+		return false
+	}
 	if !bypassCooldown && !c.lastEvalAt.IsZero() && time.Since(c.lastEvalAt) < c.spec.Cooldown {
 		return true
 	}
@@ -441,6 +489,11 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	}
 	dec, usage, err := c.eval.Evaluate(c.ctx, in)
 	c.lastEvalAt = time.Now()
+	now := c.lastEvalAt
+	c.cursor.LastEvaluationAt = &now
+	c.cursor.NextEvaluationAt = timePtr(now.Add(c.spec.Cooldown))
+	c.cursor.LastTriggerFingerprint = triggerFP
+	defer c.persistCursor()
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
 	if err != nil {
@@ -450,9 +503,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		if c.ctx != nil && c.ctx.Err() != nil &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			c.info("supervise[%s]: evaluation cancelled at run end (wake=%s)", c.spec.Name, reason)
+			c.cursor.LastTriggerFingerprint = ""
 			return false
 		}
 		c.evalFailures++
+		// A failed evaluation did not consume the signal. Leave the trigger
+		// eligible so a later retry can recover the evaluator, while the
+		// consecutive-failure cap still bounds the loop.
+		c.cursor.LastTriggerFingerprint = ""
 		c.warn("supervise[%s]: evaluation failed on run %s (wake=%s): %v", c.spec.Name, c.runID, reason, err)
 		if c.evalFailures >= maxEvalFailures {
 			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
@@ -468,7 +526,68 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
 	c.applyDecision(dec)
+	if dec.Intervene {
+		c.cursor.LastAction = "intervene"
+	} else if dec.Done {
+		c.cursor.LastAction = "done"
+	} else {
+		c.cursor.LastAction = "observe"
+	}
+	c.cursor.LastActionFingerprint = supervisorFingerprint(c.cursor.LastAction + "|" + reason)
 	return false
+}
+
+func watcherCursorID(spec Spec) string {
+	name := spec.Name
+	if name == "" {
+		name = "default"
+	}
+	return "supervisor:" + name + ":" + supervisorFingerprint(strings.Join(spec.Watches, ","))[:12]
+}
+
+func supervisorFingerprint(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+func (c *Coordinator) restoreCursor() {
+	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
+		return
+	}
+	run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
+	if err != nil || run == nil || run.WatcherCursors == nil {
+		return
+	}
+	if cursor, ok := run.WatcherCursors[c.cursorID]; ok {
+		c.cursor = cursor
+		if cursor.LastEvaluationAt != nil {
+			c.lastEvalAt = *cursor.LastEvaluationAt
+		}
+	}
+}
+
+func (c *Coordinator) persistCursor() {
+	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
+		return
+	}
+	c.cursor.UpdatedAt = time.Now().UTC()
+	for attempt := 0; attempt < 4; attempt++ {
+		run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
+		if err != nil || run == nil {
+			return
+		}
+		if run.WatcherCursors == nil {
+			run.WatcherCursors = make(map[string]store.WatcherCursor)
+		}
+		run.WatcherCursors[c.cursorID] = c.cursor
+		if err := c.cursorStore.SaveRun(c.ctx, run); err == nil {
+			return
+		} else if !errors.Is(err, store.ErrRunConflict) {
+			return
+		}
+	}
 }
 
 // applyDecision registers any new monitors and enqueues the steering

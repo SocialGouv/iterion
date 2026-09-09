@@ -66,6 +66,17 @@ type StoreInjector struct {
 	Publish func(store.Event) // optional broker fan-out; nil persists only
 }
 
+// WatcherProgressStore exposes the same durable run store to the coordinator
+// for its optional anti-loop cursor. It is intentionally a capability method;
+// callers using another Injector remain source-compatible and simply run with
+// the in-memory cooldown.
+func (i *StoreInjector) WatcherProgressStore() store.RunStore {
+	if i == nil {
+		return nil
+	}
+	return i.Store
+}
+
 // Inject implements the Injector seam: append a queued message tagged
 // with nodeID (so the engine's drain delivers it only while that node is
 // active), and emit user_message_queued so the run console reflects it.

@@ -60,3 +60,14 @@ capability; local/filesystem stores keep their existing retry behaviour, and a
 circuit-store outage falls back to the durable per-run retry rather than
 dropping work. Threshold and cooldown are controlled by
 `ITERION_RETRY_CIRCUIT_THRESHOLD` and `ITERION_RETRY_CIRCUIT_COOLDOWN`.
+
+## Progress-sensitive watchers (tranche F)
+
+Supervisors keep a durable cursor per `(run, supervisor, watched-node set)`.
+The cursor stores the last progress fingerprint, evaluation/action trigger and
+next evaluation time. A repeated event therefore cannot bypass the cooldown
+by being redelivered, and a process restart restores the same suppression
+window before it can enqueue another corrective message. Failed evaluator
+calls clear only the trigger fingerprint and remain bounded by the existing
+consecutive-failure cap. Launch surfaces that expose a run store opt in via the
+capability method; other observers retain the existing in-memory behaviour.
