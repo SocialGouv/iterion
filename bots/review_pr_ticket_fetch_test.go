@@ -316,7 +316,7 @@ func TestReviewPRTicketFetch(t *testing.T) {
 					t.Errorf("count = %d, want %d on tier %s (note %q)", res.Count, tc.wantCount, tc.tier, res.Note)
 				}
 				if !strings.Contains(res.Tickets, tc.truncated) {
-					t.Errorf("tier %s must truncate bodies at its own budget (%s), got:\n%s", tc.tier, tc.truncated, res.Tickets[:200])
+					t.Errorf("tier %s must truncate bodies at its own budget (%s), got:\n%s", tc.tier, tc.truncated, head(res.Tickets, 200))
 				}
 			})
 		}
@@ -388,13 +388,20 @@ func TestReviewPRTicketFetch(t *testing.T) {
 		// The real terminator is the LAST line and carries the tag the opener
 		// announced; the forged one does not, so it cannot end the block.
 		lines := strings.Split(strings.TrimSpace(res.Tickets), "\n")
+		fields := strings.Fields(lines[0])
+		if len(fields) < 4 {
+			t.Fatalf("opening marker has no tag field: %q", lines[0])
+		}
 		last := lines[len(lines)-1]
-		tag := strings.Fields(lines[0])[3] // --- TICKET <ident> <tag> (...
+		tag := fields[3] // --- TICKET <ident> <tag> (...
 		if len(tag) < 8 || !strings.Contains(last, tag) {
 			t.Errorf("the closing marker must carry the opener's random tag: opener %q, last line %q", lines[0], last)
 		}
-		if strings.Contains(forged, tag) {
-			t.Error("the tag is guessable from the body")
+		// The tag must be FRESH per run — a constant baked into the bot would
+		// be as forgeable as the fixed marker it replaced.
+		second := run(t, map[string]string{"{{vars.pr_url}}": `"` + srv.URL + `/acme/widgets/pull/7"`})
+		if strings.Contains(second.Tickets, tag) {
+			t.Errorf("the delimiter tag repeats across runs, so an author can learn it: %q", tag)
 		}
 	})
 
@@ -421,6 +428,144 @@ func TestReviewPRTicketFetch(t *testing.T) {
 		}
 	})
 
+	// The repo a reference names comes from PR text — which the PR's author
+	// writes — while the run's token spans the team's whole provisioned repo
+	// set. Reading `other/private#42` because a body asked would republish that
+	// issue's body in a review posted on a public PR.
+	t.Run("PR text cannot make the node read another repo", func(t *testing.T) {
+		var paths []string
+		var selfURL string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			switch r.URL.Path {
+			case "/api/v3/repos/acme/widgets/pulls/7":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "t",
+					"body":  "Fixes secret-org/private#42 and " + selfURL + "/secret-org/private/issues/43",
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "PRIVATE: rotate the prod signing key", "body": "internal only", "state": "open",
+				})
+			}
+		}))
+		defer srv.Close()
+		selfURL = srv.URL // the URL-form ref must be same-host to be in scope
+
+		res := run(t, map[string]string{
+			"{{vars.pr_url}}":              `"` + srv.URL + `/acme/widgets/pull/7"`,
+			"{{vars.scope_notes}}":         `"Fixes secret-org/private#42"`,
+			"{{secrets.forge_token.path}}": `"` + tokenFile(t) + `"`,
+		})
+		for _, p := range paths {
+			if strings.Contains(p, "secret-org") {
+				t.Errorf("the node fetched %q — a repo named in attacker-written PR text", p)
+			}
+		}
+		if strings.Contains(res.Tickets, "PRIVATE") {
+			t.Errorf("another repo's issue body reached the reviewer:\n%s", head(res.Tickets, 300))
+		}
+		if !strings.Contains(res.Status, "secret-org/private#42: unverifiable") ||
+			!strings.Contains(res.Status, "cross-repo reference written in the PR text") {
+			t.Errorf("the skipped cross-repo ref must be reported, not dropped: %q", res.Status)
+		}
+	})
+
+	// A PR body can name more decoy refs than the tier's cap. Sorting by number
+	// alone let them evict the ticket the FORGE reported — the review then looks
+	// complete while judging nothing that matters.
+	t.Run("decoys cannot evict the forge-reported ticket", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/graphql":
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+					"pullRequest": map[string]any{"closingIssuesReferences": map[string]any{
+						"pageInfo": map[string]any{"hasNextPage": false},
+						"nodes": []any{map[string]any{
+							"number": 900, "title": "THE REAL TICKET", "body": "the demand", "state": "OPEN",
+							"repository": map[string]any{"nameWithOwner": "acme/widgets"},
+						}},
+					}},
+				}}})
+			case "/api/v3/repos/acme/widgets/pulls/7":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "t",
+					"body":  "fixes #1 fixes #2 fixes #3 fixes #4 fixes #5 fixes #6 fixes #7 fixes #8 fixes #9",
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"title": "decoy", "body": "noise", "state": "open"})
+			}
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{"{{vars.pr_url}}": `"` + srv.URL + `/acme/widgets/pull/7"`})
+		if !strings.Contains(res.Tickets, "THE REAL TICKET") {
+			t.Errorf("nine decoy refs evicted the forge-reported ticket:\n%s", head(res.Tickets, 300))
+		}
+		if !strings.Contains(res.Status, "acme/widgets#900: fetched (closes via forge link") {
+			t.Errorf("the forge-vouched link must be reported as such: %q", res.Status)
+		}
+	})
+
+	// "the earlier hotfix #99" is not a promise to deliver #99, and only a
+	// closing link can become a merge-blocking requirements finding.
+	t.Run("a keyword inside a word is not a closing link", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v3/repos/acme/widgets/pulls/7":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"title": "t", "body": "Context: see the earlier hotfix #99. Closes #100.",
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"title": "t", "body": "b", "state": "open"})
+			}
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{"{{vars.pr_url}}": `"` + srv.URL + `/acme/widgets/pull/7"`})
+		if !strings.Contains(res.Status, "acme/widgets#99: fetched (mentioned") {
+			t.Errorf("#99 after \"hotfix\" must stay `mentioned`: %q", res.Status)
+		}
+		if !strings.Contains(res.Status, "acme/widgets#100: fetched (closes") {
+			t.Errorf("#100 after \"Closes\" must be a closing link: %q", res.Status)
+		}
+	})
+
+	// "no ticket reference found" and "we never read the PR" are different
+	// answers, and only one of them is reassuring.
+	t.Run("an unreadable PR is not a PR without a ticket", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(404)
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{"{{vars.pr_url}}": `"` + srv.URL + `/acme/widgets/pull/7"`})
+		if strings.Contains(res.Status, "no ticket reference found") {
+			t.Errorf("a failed PR read must not be reported as a PR with no ticket: %q", res.Status)
+		}
+		if !strings.Contains(res.Status, "(ticket context): unverifiable") ||
+			!strings.Contains(res.Status, "could not be read from the forge") {
+			t.Errorf("status = %q, want an explicit unreadable-PR verdict", res.Status)
+		}
+	})
+
+	// An operator ref this mode cannot resolve (a Jira key with no tracker
+	// configured) must be reported, not silently dropped.
+	t.Run("an unresolvable explicit ref is reported", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"title": "t", "body": "no refs"})
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{
+			"{{vars.pr_url}}":      `"` + srv.URL + `/acme/widgets/pull/7"`,
+			"{{vars.ticket_refs}}": `"PROJ-123"`,
+		})
+		if !strings.Contains(res.Status, "PROJ-123: unverifiable - not a forge issue reference") {
+			t.Errorf("status = %q, want the unresolvable operator ref reported", res.Status)
+		}
+	})
+
 	// An unreachable forge degrades to `unverifiable`; it must never crash the
 	// node, because a crashed node is a review that never posts its gate.
 	t.Run("unreachable forge degrades, never crashes", func(t *testing.T) {
@@ -444,4 +589,13 @@ func TestReviewPRTicketFetch(t *testing.T) {
 			t.Errorf("an unreachable forge must produce an explicit unverifiable line, got %q", res.Status)
 		}
 	})
+}
+
+// head truncates without panicking on a short string — a failure message must
+// not become a slice-bounds panic in exactly the case it exists to report.
+func head(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

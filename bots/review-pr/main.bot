@@ -573,11 +573,16 @@ prompt review_system:
        finding: category "requirements", severity judged like any other
        finding (core functionality missing = high). Cosmetic or
        out-of-scope-for-this-PR mismatches are questions, not findings.
-       Judge conformance ONLY against a ticket the PR CLOSES (marked
-       `closes` — a formal forge link, or an explicit ref the operator
-       named). A ticket merely `mentioned` in the body is context: it may
-       inform a question or the summary, never a requirements finding —
-       "see also #99" is not a promise to deliver #99.
+       Judge conformance ONLY against a ticket the PR CLOSES. One merely
+       `mentioned` is context: it may inform a question or the summary,
+       never a requirements finding — "see also #99" is not a promise to
+       deliver #99. Each ticket also names WHO vouches for the link: `via
+       forge link` (the forge itself reports this PR closes it — the
+       strongest, and the only one the PR's author cannot write), `via
+       operator ref` (named at launch), `via PR text` (the PR's body says
+       so). A gap against a `via PR text` link is the same finding when the
+       claim is unambiguous, and a question rather than a finding when the
+       reference reads incidental.
     6. Report a per-ticket verdict in `ticket_conformance` (one line per
        ticket): `<REF>: covered | partial | not covered | unverifiable —
        <one-line reason>`. A failed fetch or zero extractable refs is
@@ -1190,7 +1195,7 @@ tool ticket_fetch:
   output: ticket_fetch_output
   language: py
   script: |
-    import json, os, re, urllib.parse, urllib.request, urllib.error
+    import json, os, re, time, urllib.parse, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
 
     ticket_mode = {{vars.ticket_context}}
@@ -1209,11 +1214,16 @@ tool ticket_fetch:
     glance = (review_tier or "").strip() == "glance"
     MAX_TICKETS = 3 if glance else 8   # references whose body is fetched
     MAX_BODY = 1500 if glance else 4000 # characters kept per ticket body
-    TIMEOUT = 12        # seconds per request
-    MAX_REQUESTS = 24   # total: a slow forge never eats the review budget
+    TIMEOUT = 12        # seconds per SOCKET operation
+    MAX_REQUESTS = 24   # total requests
+    MAX_SECONDS = 120   # wall clock: `timeout=` bounds each recv, not the
+                        # request, so a forge that trickles bytes could hold
+                        # 24 sockets open with neither bound firing. This node
+                        # sits on the trunk, ahead of both reviewers.
 
     token = ""
     budget = [MAX_REQUESTS]
+    deadline = time.monotonic() + MAX_SECONDS
     notes = []
 
     def s(x):
@@ -1251,6 +1261,8 @@ tool ticket_fetch:
     def api(url, headers, payload=None):
         if budget[0] <= 0:
             return None, "request budget exhausted"
+        if time.monotonic() > deadline:
+            return None, "forge read deadline exceeded"
         budget[0] -= 1
         data = None
         hdrs = dict(headers)
@@ -1345,7 +1357,12 @@ tool ticket_fetch:
 
         found = {}
 
-        def record(repo_slug, num, link, title=None, body=None, state=None, url=""):
+        # Provenance ranks: what VOUCHES for a reference. The forge's own link
+        # query is the only source that cannot be written by a PR author.
+        SRC_RANK = {"forge": 0, "operator": 1, "text": 2}
+        SRC_LABEL = {"forge": "forge link", "operator": "operator ref", "text": "PR text"}
+
+        def record(repo_slug, num, link, title=None, body=None, state=None, url="", src="text"):
             # A forge that answers without a number, or with a slug we did not
             # recognise, must cost its own ticket and nothing else: an
             # exception here would sink the whole ticket context.
@@ -1360,10 +1377,12 @@ tool ticket_fetch:
             e = found.get(ident)
             if e is None:
                 e = {"ident": ident, "repo": repo_slug, "number": num, "link": link,
-                     "title": "", "body": "", "state": "", "url": url, "error": ""}
+                     "src": src, "title": "", "body": "", "state": "", "url": url, "error": ""}
                 found[ident] = e
             if link == "closes":
                 e["link"] = "closes"   # a formal link always outranks a mention
+            if SRC_RANK.get(src, 9) < SRC_RANK.get(e["src"], 9):
+                e["src"] = src         # keep the strongest voucher seen
             if title is not None:
                 e["title"] = s(title); e["body"] = body or ""
                 # GraphQL answers CLOSED where REST answers closed: normalise,
@@ -1396,7 +1415,8 @@ tool ticket_fetch:
                     # `other/repo#123` must never be fetched from this one, and
                     # two 123s from different repos must not collapse.
                     record(s(dig(n, "repository", "nameWithOwner")) or slug, n.get("number"),
-                           "closes", n.get("title"), n.get("body"), n.get("state"), s(n.get("url")))
+                           "closes", n.get("title"), n.get("body"), n.get("state"), s(n.get("url")),
+                           src="forge")
                 page = refs.get("pageInfo") or {}
                 if not page.get("hasNextPage"):
                     break
@@ -1417,29 +1437,50 @@ tool ticket_fetch:
                     full = s(dig(it, "references", "full"))
                     repo_slug = full.split("#")[0] if "#" in full else slug
                     record(repo_slug, it.get("iid") or it.get("id"), "closes", it.get("title"),
-                           it.get("description"), it.get("state"), s(it.get("web_url")))
+                           it.get("description"), it.get("state"), s(it.get("web_url")), src="forge")
                 if len(res) < 100:
                     break
 
         # 2. Scan the text for references the forge did not report. The PR's own
         #    title/body come from the API (the operator steering may be empty on a
         #    CLI run, and truncated on a webhook one).
-        pr_title = ""; pr_body = ""
+        pr_title = ""; pr_body = ""; pr_err = ""
         if provider == "gitlab":
-            res, _ = api(api_base + "/projects/" + urllib.parse.quote(slug, safe="") +
-                         "/merge_requests/" + str(number), headers())
+            res, pr_err = api(api_base + "/projects/" + urllib.parse.quote(slug, safe="") +
+                              "/merge_requests/" + str(number), headers())
             pr_title = s(dig(res, "title")); pr_body = s(dig(res, "description"))
         else:
-            res, _ = api(api_base + "/repos/" + slug + "/pulls/" + str(number), headers())
+            res, pr_err = api(api_base + "/repos/" + slug + "/pulls/" + str(number), headers())
             pr_title = s(dig(res, "title")); pr_body = s(dig(res, "body"))
+        if not isinstance(res, dict):
+            # Keep it: "no reference found" and "we never read the PR" are
+            # different answers, and only one of them is reassuring.
+            notes.append("could not read the PR from the forge (" + (pr_err or "unexpected shape") + ")")
 
-        CLOSING = re.compile(r"(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\W{0,3}$", re.I)
+        # The lookbehind is load-bearing: without it `fix` matches inside
+        # "hotfix", so "see the earlier hotfix #99" reads as a CLOSING link —
+        # and a closing link is the only kind that can block a merge.
+        CLOSING = re.compile(r"(?<![A-Za-z])(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\W{0,3}$", re.I)
         QUAL = re.compile(r"(?<![\w./-])([A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*)+)#(\d+)")
         BARE = re.compile(r"(?<![\w./#-])#(\d+)")
         URLS = re.compile(r"https?://[^\s)>\],]+")
 
         def link_of(text, at):
             return "closes" if CLOSING.search(text[max(0, at - 24):at]) else "mentioned"
+
+        def note_cross_repo(ref_slug, num, text, at):
+            # A repository named in ATTACKER-WRITTEN text is not one this review
+            # may read. The run's token spans the team's whole provisioned repo
+            # set (and an org on a PAT connection), so a PR body saying
+            # `other/private#42` would otherwise pull that issue's title and
+            # body into a review PUBLISHED ON THE PR. Only the forge's own link
+            # query — which the author cannot write — may name another repo.
+            if s(ref_slug) == slug:
+                record(slug, num, link_of(text, at), src="text")
+                return
+            e = record(ref_slug, num, "mentioned", src="text")
+            if e is not None and not e["title"] and not e["error"]:
+                e["error"] = "cross-repo reference written in the PR text - not read"
 
         # The path of an issue URL is re-matched with the SAME segment shape a
         # bare ref accepts: the text is attacker-written, and `.+?` would let
@@ -1451,9 +1492,9 @@ tool ticket_fetch:
             if not text:
                 continue
             for m in QUAL.finditer(text):
-                record(m.group(1), m.group(2), link_of(text, m.start()))
+                note_cross_repo(m.group(1), m.group(2), text, m.start())
             for m in BARE.finditer(text):
-                record(slug, m.group(1), link_of(text, m.start()))
+                record(slug, m.group(1), link_of(text, m.start()), src="text")
             for m in URLS.finditer(text):
                 pu = urllib.parse.urlsplit(m.group(0))
                 # Same host only: a link to another forge is not this forge's
@@ -1462,29 +1503,49 @@ tool ticket_fetch:
                     continue
                 im = ISSUE_PATH.match(pu.path.strip("/"))
                 if im:
-                    record(im.group(1), im.group(2), link_of(text, m.start()))
+                    note_cross_repo(im.group(1), im.group(2), text, m.start())
 
-        # 3. Explicit refs win: the operator named them, so treat them as closing.
+        # 3. Explicit refs win: the operator named them, so treat them as
+        #    closing — and, unlike PR text, an operator MAY name another repo.
+        unparsed = []
         for ref in s(explicit_refs).replace(",", " ").split():
             m = QUAL.match(ref)
             if m:
-                record(m.group(1), int(m.group(2)), "closes"); continue
+                record(m.group(1), m.group(2), "closes", src="operator"); continue
             m = re.match(r"^#?(\d+)$", ref)
             if m:
-                record(slug, int(m.group(1)), "closes")
+                record(slug, m.group(1), "closes", src="operator"); continue
+            # A Jira-shaped key in forge mode: the operator asked for something
+            # this mode cannot read. Say so instead of dropping it, or the run
+            # reports "no ticket reference found" about a ref they named.
+            unparsed.append(s(ref))
+
+        unparsed_lines = [r + ": unverifiable - not a forge issue reference (this repo reads "
+                          "the forge's own issues; an external tracker needs tracker_api_base)"
+                          for r in unparsed]
 
         if not found:
             # Emit the verdict LINE too, not just a note: a PR with no ticket
             # is the commonest case, and leaving the reviewer to phrase it
             # itself is how the same situation gets three different wordings —
             # or, worse, a "requirements" finding for a reference nobody owed.
-            out("forge", status="(no ticket refs): unverifiable - no ticket reference found on this PR",
-                note="forge-native on " + provider + " (" + api_base +
-                "): no ticket reference found on this PR - a normal PR, not a defect")
+            # But say WHICH of the two happened: a PR we could not read is not
+            # a PR without a ticket.
+            line = "(no ticket refs): unverifiable - no ticket reference found on this PR"
+            tail = "no ticket reference found on this PR - a normal PR, not a defect"
+            if not isinstance(res, dict):
+                line = ("(ticket context): unverifiable - the PR could not be read from the forge (" +
+                        (pr_err or "unexpected shape") + "), so no reference could be found")
+                tail = "the PR itself could not be read: this is NOT evidence that it closes no ticket"
+            out("forge", status="\n".join(unparsed_lines + [line]),
+                note="forge-native on " + provider + " (" + api_base + "): " + tail)
 
         # 4. Fetch what the link query did not already return, closing links
         #    first: what a PR CLAIMS to close is what conformance is judged on.
-        order = sorted(found.values(), key=lambda e: (e["link"] != "closes", e["number"]))
+        # Provenance FIRST: a PR body can name eight decoy issues, and sorting
+        # by number alone let them evict the ticket the forge itself reported.
+        order = sorted(found.values(),
+                       key=lambda e: (SRC_RANK.get(e["src"], 9), e["link"] != "closes", e["number"]))
         truncated = len(order) - MAX_TICKETS
         order = order[:MAX_TICKETS]
         for e in order:
@@ -1528,25 +1589,33 @@ tool ticket_fetch:
             body = (e["body"] or "").strip()
             if len(body) > MAX_BODY:
                 body = body[:MAX_BODY] + "\n[...truncated at " + str(MAX_BODY) + " characters]"
-            blocks.append("--- TICKET " + e["ident"] + " " + nonce + " (" + e["link"] + ", state=" +
+            blocks.append("--- TICKET " + e["ident"] + " " + nonce + " (" + e["link"] + " via " +
+                          SRC_LABEL.get(e["src"], "PR text") + ", state=" +
                           (e["state"] or "unknown") + ") ---\n" +
                           "title: " + e["title"] + "\n" +
                           "url: " + (e["url"] or "") + "\n" +
                           "body:\n" + (body or "(empty)") + "\n" +
                           "--- END TICKET " + e["ident"] + " " + nonce + " ---")
-            lines.append(e["ident"] + ": fetched (" + e["link"] + ", " +
+            lines.append(e["ident"] + ": fetched (" + e["link"] + " via " +
+                         SRC_LABEL.get(e["src"], "PR text") + ", " +
                          (e["state"] or "unknown") + ") - judge the diff against it")
         if truncated > 0:
             notes.append(str(truncated) + " further reference(s) not fetched (cap " +
                          str(MAX_TICKETS) + ")")
-        out("forge", tickets="\n\n".join(blocks), status="\n".join(lines), count=count,
+        out("forge", tickets="\n\n".join(blocks), status="\n".join(unparsed_lines + lines), count=count,
             note="forge-native on " + provider + " (" + api_base +
                  "): read deterministically - you were given the text, not the credential")
 
     try:
         main()
     except Exception as exc:
-        print(json.dumps({"mode": "none", "tickets": "", "status": "", "count": 0,
+        # NOT mode "none": the reviewer is told to SKIP the section on "none",
+        # and this bot promises a fetch failure degrades to an explicit
+        # `unverifiable`, never a silent skip. So: forge mode, no tickets, and
+        # a verdict line that says the read failed.
+        print(json.dumps({"mode": "forge", "tickets": "", "count": 0,
+                          "status": "(ticket context): unverifiable - the ticket fetch failed (" +
+                                    redact(type(exc).__name__) + ")",
                           "note": "ticket_fetch degraded: " + redact(repr(exc))[:300]}))
 
 ## Topology gate. A `condition` router picks a SINGLE target, which is
