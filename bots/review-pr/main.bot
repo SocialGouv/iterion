@@ -1452,8 +1452,13 @@ tool ticket_fetch:
                 record(slug, int(m.group(1)), "closes")
 
         if not found:
-            out("forge", note="forge-native on " + provider + " (" + api_base +
-                "): no ticket reference found on this PR — a normal PR, not a defect")
+            # Emit the verdict LINE too, not just a note: a PR with no ticket
+            # is the commonest case, and leaving the reviewer to phrase it
+            # itself is how the same situation gets three different wordings —
+            # or, worse, a "requirements" finding for a reference nobody owed.
+            out("forge", status="(no ticket refs): unverifiable - no ticket reference found on this PR",
+                note="forge-native on " + provider + " (" + api_base +
+                "): no ticket reference found on this PR - a normal PR, not a defect")
 
         # 4. Fetch what the link query did not already return, closing links
         #    first: what a PR CLAIMS to close is what conformance is judged on.

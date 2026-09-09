@@ -355,6 +355,29 @@ func TestReviewPRTicketFetch(t *testing.T) {
 		}
 	})
 
+	// A PR that closes nothing is the commonest case of all: it must produce a
+	// verdict LINE, not leave the reviewer to phrase one (or invent a finding).
+	t.Run("a PR with no ticket gets its own verdict line", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v3/repos/acme/widgets/pulls/7" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"title": "chore: tidy", "body": "no refs here"})
+				return
+			}
+			w.WriteHeader(404)
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{
+			"{{vars.pr_url}}": `"` + srv.URL + `/acme/widgets/pull/7"`,
+		})
+		if !strings.Contains(res.Status, "(no ticket refs): unverifiable") {
+			t.Errorf("status = %q, want the no-refs verdict line", res.Status)
+		}
+		if res.Count != 0 || res.Tickets != "" {
+			t.Errorf("nothing should have been fetched: count=%d tickets=%q", res.Count, res.Tickets)
+		}
+	})
+
 	// An unreachable forge degrades to `unverifiable`; it must never crash the
 	// node, because a crashed node is a review that never posts its gate.
 	t.Run("unreachable forge degrades, never crashes", func(t *testing.T) {
