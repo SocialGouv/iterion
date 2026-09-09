@@ -510,3 +510,88 @@ func TestValidateArtifactContractsReadsNothingUnderLegacyPolicy(t *testing.T) {
 		}
 	}
 }
+
+// The stamping half and the gate are written against the same fields, which
+// is exactly why they can agree in a unit test and disagree on a real run —
+// a version read one side of an increment, a schema resolved from a
+// different workflow copy. So drive both through the engine: publish under
+// an enforce context, fail, and resume. If the pair ever diverges, an
+// operator's enforce run stops resuming on artifacts iterion wrote itself,
+// and that is the failure this pins.
+func TestEnforceContextResumesOnTheArtifactsItWrote(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	const runID = "enforce-roundtrip"
+	run, err := s.CreateRun(ctx, runID, "contract_roundtrip", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowHash = "rev-e2e"
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+		Workflow: store.WorkflowContext{WorkflowRevision: "rev-e2e"},
+	}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	wf := &ir.Workflow{
+		Name:  "contract_roundtrip",
+		Entry: "survey",
+		Nodes: map[string]ir.Node{
+			"survey": &ir.ToolNode{
+				BaseNode:     ir.BaseNode{ID: "survey"},
+				SchemaFields: ir.SchemaFields{OutputSchema: "Note"},
+				Command:      "noop",
+				Publish:      "survey_report",
+			},
+			"flaky": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "flaky"}, Command: "noop"},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "survey", To: "flaky"}, {From: "flaky", To: "done"}},
+		Schemas: map[string]*ir.Schema{
+			"Note": {Name: "Note", Fields: []*ir.SchemaField{{Name: "msg", Type: ir.FieldTypeString}}},
+		},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	failFirst := true
+	exec := newStubExecutor()
+	exec.on("survey", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"msg": "surveyed"}, nil
+	})
+	exec.on("flaky", func(_ map[string]any) (map[string]any, error) {
+		if failFirst {
+			failFirst = false
+			return nil, errors.New("transient boom")
+		}
+		return map[string]any{"msg": "recovered"}, nil
+	})
+
+	if err := New(wf, s, exec, WithWorkflowHash("rev-e2e")).Run(ctx, runID, nil); err == nil {
+		t.Fatal("the seeded node failure did not fail the run")
+	}
+	parked, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable so the resume path is the one under test", parked.Status)
+	}
+	if _, ok := parked.ArtifactIndex["survey"]; !ok {
+		t.Fatal("the published artifact never reached the index, so the gate would have nothing to read")
+	}
+
+	if err := New(wf, s, exec, WithWorkflowHash("rev-e2e")).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("enforce resume refused the artifacts the same engine wrote: %v", err)
+	}
+	finished, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want finished", finished.Status)
+	}
+}
