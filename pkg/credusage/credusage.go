@@ -64,6 +64,10 @@ const (
 	TierPool Tier = "pool"
 	// TierPlatform is the deployment's own DB-backed fallback.
 	TierPlatform Tier = "platform"
+	// TierOrg is the parent org's own shared credential, lent to the teams
+	// its CredentialAudience admits: the spend is the ORG's, charged to a
+	// team that did not bring the key.
+	TierOrg Tier = "org"
 )
 
 // Key identifies one credential's meter for one tenant.

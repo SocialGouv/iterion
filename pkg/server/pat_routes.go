@@ -120,9 +120,17 @@ func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 	// A team-pinned token binds the caller's future org scope too — the
 	// server owns the team→org fact, so state it in the response instead
 	// of leaving clients to re-derive it from the org tree.
+	// The token is already minted and its plaintext exists only in the
+	// response below, so a failed lookup here cannot abort the request
+	// without stranding a token the caller will never see. It reports the
+	// scope it could not resolve instead of letting an empty org_id read
+	// as "this token has no org".
 	orgID := ""
 	if req.TeamID != "" {
-		if team, terr := s.authStore().GetTeam(r.Context(), req.TeamID); terr == nil {
+		team, terr := s.authStore().GetTeam(r.Context(), req.TeamID)
+		if terr != nil {
+			s.logger.Warn("pat create: token %s is pinned to team %s but its org is unresolved (%v) — org_id omitted from the response", t.ID, req.TeamID, terr)
+		} else {
 			orgID = team.OrgID
 		}
 	}
@@ -207,11 +215,17 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 		}
 		role = mb.Role
 		// The parent org, which the browser path carries on the JWT. A PAT
-		// identity without it silently fails every org-scoped lookup that
-		// has no team fallback of its own.
-		if t, err := st.GetTeam(ctx, teamID); err == nil {
-			orgID = t.OrgID
+		// identity is FIXED for the token's whole life — there is no
+		// session to switch scope on — so an org dropped because the read
+		// failed is a lie the token then carries everywhere, silently
+		// failing every org-scoped lookup that has no team fallback. Refuse
+		// like the membership read above rather than mint a narrower
+		// identity than the token was granted.
+		team, err := st.GetTeam(ctx, teamID)
+		if err != nil {
+			return auth.Identity{}, fmt.Errorf("token org scope unavailable: %w", err)
 		}
+		orgID = team.OrgID
 	}
 	// last_used_at is observability — detached write off the hot path.
 	tokenID := t.ID

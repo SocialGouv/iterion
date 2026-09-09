@@ -253,6 +253,7 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 type rewindRunRequest struct {
 	NodeID string `json:"node_id"`
 	Auto   bool   `json:"auto,omitempty"`
+	Force  bool   `json:"force,omitempty"`
 	// KeepFiles is the legacy spelling of RestoreScope "none".
 	KeepFiles bool `json:"keep_files,omitempty"`
 	// RestoreScope is "none" | "produced" | "full". Omitted means "let
@@ -321,6 +322,7 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		RunID:        id,
 		NodeID:       req.NodeID,
 		Auto:         req.Auto,
+		Force:        req.Force,
 		KeepFiles:    req.KeepFiles,
 		RestoreScope: restoreScope,
 		SourcePath:   sourcePath,

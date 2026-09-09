@@ -13,13 +13,13 @@ import (
 // SetRunOutputCorrection updates one node's episode with a targeted Mongo
 // $set. The run status, checkpoint, steering and cancel fields are untouched
 // even when another authority writes them concurrently.
-func (s *Store) SetRunOutputCorrection(ctx context.Context, id, nodeID string, episode store.OutputCorrectionEpisode) error {
-	if nodeID == "" {
-		return fmt.Errorf("store/mongo: output correction node id is empty")
+func (s *Store) SetRunOutputCorrection(ctx context.Context, id, ledgerKey string, episode store.OutputCorrectionEpisode) error {
+	if ledgerKey == "" {
+		return fmt.Errorf("store/mongo: output correction ledger key is empty")
 	}
 	update := bson.M{"$set": bson.M{
-		"output_corrections." + nodeID: episode,
-		"updated_at":                   time.Now().UTC(),
+		"output_corrections." + ledgerKey: episode,
+		"updated_at":                      time.Now().UTC(),
 	}}
 	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), versionRunUpdate(update))
 	if err != nil {

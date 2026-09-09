@@ -122,6 +122,10 @@ type RewindSpec struct {
 	// Requires the run to carry Run.WorkflowSource (captured at launch).
 	// An explicit NodeID always wins.
 	Auto bool
+	// Force acknowledges that retained artifacts may have source-derived
+	// contract metadata from the workflow revision being repaired. Persisted
+	// version and dependency integrity are still enforced.
+	Force bool
 	// KeepFiles opts OUT of restoring the workspace.
 	//
 	// Deprecated: it is exactly RestoreScope == RestoreScopeNone, and is
@@ -301,12 +305,6 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
 	}
-	// Refuse an incompatible persisted artifact before claiming the run or
-	// mutating its checkpoint/workspace. Legacy/report contexts remain
-	// compatible during rollout; enforce contexts fail closed.
-	if err := runtime.ValidateArtifactContracts(ctx, s.store, run, wf, "", false); err != nil {
-		return nil, err
-	}
 	// Nodes this run actually executed — the search space for --auto and
 	// the validity domain for an explicit --node.
 	executed := map[string]bool{}
@@ -379,6 +377,19 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
+
+	// Validate only the artifacts that survive this rewind. Checking the
+	// pivot/downstream artifacts would make a changed publish name or schema
+	// block the very recovery operation that tombstones them. Retained
+	// artifacts still fail closed under enforce unless the operator supplied
+	// the explicit source-change override.
+	ignoredArtifacts := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		ignoredArtifacts[id] = true
+	}
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, "", spec.Force, ignoredArtifacts); err != nil {
+		return nil, err
+	}
 
 	// Claim the run BEFORE touching anything, the workspace included. The
 	// CAS exists to make a concurrent resume safe; reverting first defeats

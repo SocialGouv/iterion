@@ -87,10 +87,11 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		OAuthCredentialFiles: map[string]string{},
 		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
 		// Slot names (not values) — safe to keep past cleanup. The
-		// usage-cap scope check reads them to meter platform-tier
-		// credentials on the shared platform key.
+		// usage-cap scope check reads them to meter a shared-tier
+		// credential on the meter of whoever actually owns it.
 		PlatformSourced: bundle.PlatformSourced,
 		PoolSourced:     bundle.PoolSourced,
+		OrgSourced:      bundle.OrgSourced,
 		Fingerprints:    fingerprints,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))

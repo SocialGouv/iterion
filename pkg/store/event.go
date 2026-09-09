@@ -47,6 +47,11 @@ const (
 	EventToolCalled      EventType = "tool_called"
 	EventToolError       EventType = "tool_error"
 	EventArtifactWritten EventType = "artifact_written"
+	// EventArtifactContractViolation records mismatches observed under the
+	// report-only rollout policy. Execution continues, but the pilot remains
+	// distinguishable from a successful contract validation.
+	// Data: {policy, violations}
+	EventArtifactContractViolation EventType = "artifact_contract_violation"
 	// EventPlanWritten marks a new persisted plan snapshot (an agent's
 	// TodoWrite/todo_write living TODO list, captured to runs/<id>/plans/).
 	// Best-effort + additive; the studio Plans panel refreshes on it.
