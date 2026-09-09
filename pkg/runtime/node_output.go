@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -67,26 +68,28 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		return output, nil
 	}
 
-	corrector, ok := e.executor.(OutputCorrector)
-	if !ok || e.outputCorrectionBudget <= 0 || e.store == nil {
+	corrector, hasPlainCorrector := e.executor.(OutputCorrector)
+	usageCorrector, hasUsageCorrector := e.executor.(OutputCorrectorWithUsage)
+	if (!hasPlainCorrector && !hasUsageCorrector) || e.outputCorrectionBudget <= 0 || e.store == nil {
 		return output, validationErr
 	}
 
-	inputFingerprint := correctionFingerprint(output)
+	ledgerKey, invocationID := e.correctionInvocationIdentity(rs, nodeID)
+	inputFingerprint := correctionSemanticFingerprint(output)
 	violationFingerprint := correctionFingerprint(validationErr.Error())
-	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, ledgerKey)
 	if loadErr != nil {
 		// A transient read failure must not look like an empty ledger and
 		// reset an already-consumed correction budget.
 		return output, fmt.Errorf("output correction ledger read: %w (original validation: %v)", loadErr, validationErr)
 	}
-	// InputFingerprint identifies the episode. The violation can legitimately
-	// change while a corrector improves a payload, so comparing it here would
-	// accidentally reset an exhausted episode on resume.
-	if !found || episode.InputFingerprint != inputFingerprint {
+	// The durable invocation identity identifies the episode. Output can change
+	// across a retry/resume and therefore must never reset a consumed budget.
+	if !found {
 		now := time.Now().UTC()
 		episode = store.OutputCorrectionEpisode{
-			EpisodeID:                fmt.Sprintf("%s-%d", inputFingerprint[:minInt(16, len(inputFingerprint))], now.UnixNano()),
+			EpisodeID:                ledgerKey,
+			InvocationID:             invocationID,
 			NodeID:                   nodeID,
 			Budget:                   e.outputCorrectionBudget,
 			Status:                   correctionStatusActive,
@@ -111,15 +114,20 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	current := output
 	currentErr := validationErr
+	correctionCtx, cancelCorrection, budgetDeadline, deadlineErr := e.outputCorrectionContext(ctx, rs, nodeID)
+	if deadlineErr != nil {
+		return current, deadlineErr
+	}
+	defer cancelCorrection()
 	for episode.Attempts < episode.Budget {
 		episode.Status = correctionStatusActive
 		episode.Attempts++
-		episode.LastOutputFingerprint = correctionFingerprint(current)
+		episode.LastOutputFingerprint = correctionSemanticFingerprint(current)
 		episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
 		episode.LastError = currentErr.Error()
 		episode.UpdatedAt = time.Now().UTC()
 		e.emitOutputCorrectionEvent(rs, nodeID, episode, "attempt")
-		if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+		if err := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); err != nil {
 			// Losing the durable ledger is safer than pretending an unbounded
 			// correction is allowed: surface the original validation failure and
 			// let the normal run lifecycle mark it resumable/failed.
@@ -129,12 +137,16 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		var candidate map[string]any
 		var correctionUsage OutputCorrectionUsage
 		var correctionErr error
-		if usageCorrector, usageOK := e.executor.(OutputCorrectorWithUsage); usageOK {
-			candidate, correctionUsage, correctionErr = usageCorrector.CorrectOutputWithUsage(ctx, node, current, currentErr)
+		if hasUsageCorrector {
+			candidate, correctionUsage, correctionErr = usageCorrector.CorrectOutputWithUsage(correctionCtx, node, current, currentErr)
 		} else {
-			candidate, correctionErr = corrector.CorrectOutput(ctx, node, current, currentErr)
+			candidate, correctionErr = corrector.CorrectOutput(correctionCtx, node, current, currentErr)
 		}
 		if correctionErr != nil || candidate == nil {
+			// Usage is spend even when the correction call fails or returns no
+			// candidate. Carry it back so every caller can charge it before
+			// surfacing the validation/correction error.
+			current = addCorrectionUsage(current, correctionUsage)
 			episode.Status = correctionStatusExhausted
 			if correctionErr != nil {
 				episode.LastError = correctionErr.Error()
@@ -143,15 +155,18 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			}
 			episode.UpdatedAt = time.Now().UTC()
 			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return current, fmt.Errorf("output correction failed: %v; ledger: %w", episode.LastError, persistErr)
+			}
+			if budgetDeadline && errors.Is(correctionCtx.Err(), context.DeadlineExceeded) {
+				return current, outputCorrectionDurationError(nodeID)
 			}
 			return current, currentErr
 		}
 		candidate = preserveCorrectionMetadata(current, candidate, correctionUsage)
 
 		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
-		candidateFP := correctionFingerprint(candidate)
+		candidateFP := correctionSemanticFingerprint(candidate)
 		candidateViolationFP := ""
 		if candidateErr != nil {
 			candidateViolationFP = correctionFingerprint(candidateErr.Error())
@@ -163,7 +178,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			episode.LastError = ""
 			episode.UpdatedAt = time.Now().UTC()
 			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return candidate, fmt.Errorf("output correction succeeded but ledger could not be persisted: %w", persistErr)
 			}
 			return candidate, nil
@@ -171,14 +186,14 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 		// A corrector that returns the exact same invalid payload is a
 		// no-progress loop. Stop immediately, even when budget remains.
-		if candidateFP == correctionFingerprint(current) && candidateViolationFP == correctionFingerprint(currentErr.Error()) {
+		if candidateFP == correctionSemanticFingerprint(current) && candidateViolationFP == correctionFingerprint(currentErr.Error()) {
 			episode.Status = correctionStatusUnchanged
 			episode.LastOutputFingerprint = candidateFP
 			episode.LastViolationFingerprint = candidateViolationFP
 			episode.LastError = candidateErr.Error()
 			episode.UpdatedAt = time.Now().UTC()
 			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return candidate, fmt.Errorf("unchanged output correction; ledger: %w", persistErr)
 			}
 			return candidate, candidateErr
@@ -194,7 +209,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	episode.Status = correctionStatusExhausted
 	episode.UpdatedAt = time.Now().UTC()
 	e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
-	if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+	if err := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); err != nil {
 		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
 	}
 	return current, currentErr
@@ -247,6 +262,92 @@ func preserveCorrectionMetadata(original, candidate map[string]any, usage Output
 	return out
 }
 
+func addCorrectionUsage(output map[string]any, usage OutputCorrectionUsage) map[string]any {
+	if usage.Tokens <= 0 && usage.CostUSD <= 0 {
+		return output
+	}
+	out := make(map[string]any, len(output)+2)
+	for key, value := range output {
+		out[key] = value
+	}
+	previousTokens, previousCost := extractUsage(output)
+	if usage.Tokens > 0 {
+		out["_tokens"] = previousTokens + usage.Tokens
+	}
+	if usage.CostUSD > 0 {
+		out["_cost_usd"] = previousCost + usage.CostUSD
+	}
+	return out
+}
+
+// correctionSemanticFingerprint ignores runtime metadata. Accounting fields
+// change after every model call and must not disguise an unchanged invalid
+// payload as progress.
+func correctionSemanticFingerprint(output map[string]any) string {
+	semantic := make(map[string]any, len(output))
+	for key, value := range output {
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		semantic[key] = value
+	}
+	return correctionFingerprint(semantic)
+}
+
+// correctionInvocationIdentity returns a durable per-invocation ledger key.
+// A root, non-loop node keeps its historical node-id key for compatibility;
+// loop iterations, fan-out branches, and Mongo-unsafe node IDs use a stable
+// hash so distinct executions cannot reset or share one another's budget.
+func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledgerKey, invocationID string) {
+	iterationPath := ""
+	scope := ""
+	if rs != nil {
+		iterationPath = e.currentLoopIterationPath(nodeID, runStateIterationCounters(rs))
+		scope = rs.correctionScope
+	}
+	invocationID = fmt.Sprintf("node=%s;branch=%s;loops=%s", nodeID, scope, iterationPath)
+	if scope == "" && iterationPath == "" && !strings.Contains(nodeID, ".") && !strings.HasPrefix(nodeID, "$") {
+		return nodeID, invocationID
+	}
+	return "inv_" + correctionFingerprint(invocationID), invocationID
+}
+
+func (e *Engine) outputCorrectionContext(ctx context.Context, rs *runState, nodeID string) (context.Context, context.CancelFunc, bool, error) {
+	noop := func() {}
+	if rs == nil || rs.budget == nil {
+		return ctx, noop, false, nil
+	}
+	remaining, bounded := rs.budget.RemainingDuration()
+	if !bounded {
+		return ctx, noop, false, nil
+	}
+	if remaining <= 0 {
+		if _, allowed := e.withinBudgetGrace(rs); allowed {
+			remaining, _ = rs.budget.GracedRemainingDuration(budgetExitGraceRatio())
+		}
+	}
+	if remaining <= 0 {
+		return ctx, noop, false, outputCorrectionDurationError(nodeID)
+	}
+	deadline := time.Now().Add(remaining)
+	budgetDeadline := true
+	if parentDeadline, ok := ctx.Deadline(); ok && !deadline.Before(parentDeadline) {
+		budgetDeadline = false
+	}
+	boundedCtx, cancel := context.WithDeadline(ctx, deadline)
+	return boundedCtx, cancel, budgetDeadline, nil
+}
+
+func outputCorrectionDurationError(nodeID string) error {
+	return &RuntimeError{
+		Code:    ErrCodeBudgetExceeded,
+		Message: fmt.Sprintf("output correction for node %q exhausted the run duration budget", nodeID),
+		NodeID:  nodeID,
+		Hint:    "increase max_duration or reduce output-correction work",
+		Cause:   ErrBudgetExceeded,
+	}
+}
+
 func correctionFingerprint(value any) string {
 	b, err := json.Marshal(value)
 	if err != nil {
@@ -256,14 +357,7 @@ func correctionFingerprint(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string) (store.OutputCorrectionEpisode, bool, error) {
+func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, ledgerKey string) (store.OutputCorrectionEpisode, bool, error) {
 	if e.store == nil {
 		return store.OutputCorrectionEpisode{}, false, nil
 	}
@@ -274,16 +368,16 @@ func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string
 	if r == nil || r.OutputCorrections == nil {
 		return store.OutputCorrectionEpisode{}, false, nil
 	}
-	ep, ok := r.OutputCorrections[nodeID]
+	ep, ok := r.OutputCorrections[ledgerKey]
 	return ep, ok, nil
 }
 
-func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
+func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, ledgerKey string, episode store.OutputCorrectionEpisode) error {
 	correctionStore := store.AsOutputCorrectionStore(e.store)
 	if correctionStore == nil {
 		return fmt.Errorf("store does not implement granular output-correction persistence")
 	}
-	return correctionStore.SetRunOutputCorrection(ctx, runID, nodeID, episode)
+	return correctionStore.SetRunOutputCorrection(ctx, runID, ledgerKey, episode)
 }
 
 // ---------------------------------------------------------------------------

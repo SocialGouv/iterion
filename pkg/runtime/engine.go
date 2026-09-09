@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +40,7 @@ const EnvOutputCorrectionBudget = "ITERION_OUTPUT_CORRECTION_BUDGET"
 
 func defaultOutputCorrectionBudget() int {
 	const fallback = 2
-	raw := os.Getenv(EnvOutputCorrectionBudget)
+	raw := strings.TrimSpace(os.Getenv(EnvOutputCorrectionBudget))
 	if raw == "" {
 		return fallback
 	}
@@ -395,6 +396,10 @@ type runState struct {
 	// budget. Concurrent sibling spend cannot price one branch's iteration;
 	// the shared 90% pre-exec and hard limits remain authoritative.
 	branchLocal bool
+	// correctionScope distinguishes otherwise-identical node invocations in
+	// concurrent fan-out branches. It is immutable for a branch runState and
+	// empty on the trunk.
+	correctionScope string
 	// enclosingLoopCounters is the immutable trunk loop path at fan-out
 	// entry. Branch-local counters remain private in loopCounters; execution
 	// identity and model iteration compose both maps.

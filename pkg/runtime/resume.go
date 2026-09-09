@@ -1266,14 +1266,14 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	// budget usage so repaired metadata and optional correction usage are
 	// included in the node's accounting.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
-	if validationErr != nil {
-		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
-	}
 	output = validatedOutput
-	rs.outputs[nodeID] = output
 	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
 		return false, err
 	}
+	if validationErr != nil {
+		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
+	}
+	rs.outputs[nodeID] = output
 
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
@@ -1906,10 +1906,13 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Validate/correct before committing session state, so a discarded invalid
 	// payload cannot leave a durable slot that describes it.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	output = validatedOutput
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return err
+	}
 	if validationErr != nil {
 		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
-	output = validatedOutput
 
 	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
 		return err
@@ -1920,11 +1923,6 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 
 	// Store the output and continue execution normally.
 	rs.outputs[nodeID] = output
-
-	// Record budget.
-	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
-		return err
-	}
 
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
