@@ -27,6 +27,18 @@ func waitForIndex(t *testing.T, s *Store, cond func() bool, label string) {
 	t.Fatalf("watcher: %s did not propagate within deadline", label)
 }
 
+// requireIndexWatcher keeps these behavioural tests honest on hosts where
+// fsnotify cannot allocate another watcher (for example a busy CI runner that
+// reached its inotify limit). NewStore deliberately degrades to a usable store
+// in that situation, so lack of host support is a skip; a watcher that did
+// start but fails to propagate still reaches waitForIndex's hard failure.
+func requireIndexWatcher(t *testing.T, s *Store) {
+	t.Helper()
+	if s.watcher == nil {
+		t.Skip("fsnotify watcher unavailable on this host")
+	}
+}
+
 // TestWatcher_PicksUpExternalCreate is the bug-fix regression guard:
 // a sibling process (whats-next's `iterion __mcp-board` MCP subprocess
 // in production, an os.WriteFile here) drops an issue JSON file in
@@ -39,6 +51,7 @@ func TestWatcher_PicksUpExternalCreate(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	requireIndexWatcher(t, s)
 
 	now := time.Now().UTC().Truncate(time.Second)
 	iss := Issue{
@@ -81,6 +94,7 @@ func TestWatcher_PicksUpExternalRemove(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	requireIndexWatcher(t, s)
 
 	created, err := s.Create(Issue{
 		Title: "Will be deleted externally",
@@ -111,6 +125,7 @@ func TestWatcher_PicksUpExternalUpdate(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	requireIndexWatcher(t, s)
 
 	created, err := s.Create(Issue{
 		Title: "Pre-update title",
