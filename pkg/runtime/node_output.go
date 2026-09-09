@@ -234,7 +234,13 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		// input, and `_duration_ms`, which the report renders. A key the
 		// corrector set itself always wins, so it can fold its OWN spend into
 		// `_tokens`/`_cost_usd` (the only accounting channel it has).
-		mergeEngineMetadata(candidate, output)
+		//
+		// Merged from `current`, not from the node's original `output`: on the
+		// second and later attempts `current` is the previous candidate, which
+		// already carries the merge — so a corrector that reported its spend on
+		// attempt 1 and stays silent on attempt 2 keeps that figure instead of
+		// having it reset to the node's original usage.
+		mergeEngineMetadata(candidate, current)
 		if correctionErr != nil || candidate == nil {
 			episode.Status = correctionStatusExhausted
 			if correctionErr != nil {

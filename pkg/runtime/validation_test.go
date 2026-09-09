@@ -604,6 +604,38 @@ func TestSchemaValidation_LedgerWriteExhaustedFailsClosed(t *testing.T) {
 	}
 }
 
+// A corrector that reports its own spend on one attempt and stays silent on
+// the next must keep the accumulated figure — the merge carries forward from
+// the previous candidate, not from the node's original output.
+func TestSchemaValidation_CorrectorUsageAccumulatesAcrossAttempts(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "nope", "_tokens": 100}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		if exec.calls == 1 {
+			// Attempt 1 reports node usage + its own, and still fails schema.
+			return map[string]any{"summary": "half", "score": "still-nope", "_tokens": 150}, nil
+		}
+		// Attempt 2 repairs the payload but reports no usage of its own.
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	var finished map[string]any
+	if err := New(validationWorkflow(), tmpStore(t), exec,
+		WithOutputValidation(true), WithOutputCorrectionBudget(3),
+		WithOnNodeFinished(func(_, _ string, out map[string]any) { finished = out }),
+	).Run(context.Background(), "run-val-usage-accum", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 2 {
+		t.Fatalf("correction calls = %d, want 2", exec.calls)
+	}
+	if finished["_tokens"] != 150 {
+		t.Fatalf("_tokens = %v, want 150 — the second attempt reset the accumulated spend", finished["_tokens"])
+	}
+}
+
 // singleCorrectionEpisode asserts the ledger holds exactly one episode and
 // returns it — the key is an execution identity, not a bare node id, so tests
 // must not hardcode it.
