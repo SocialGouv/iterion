@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -21,6 +22,20 @@ import (
 func newWebhookTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newOrgTestServer(t)
+	// The tenant every webhook fixture below is stamped with. A webhook
+	// whose team does not exist is REFUSED at intake (a config outliving
+	// its team must not keep launching), so the tests seed the team they
+	// have always implied.
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t1", Name: "t1", Slug: "webhook-t1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t2", Name: "t2", Slug: "webhook-t2", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
 	s.webhookDeliveries = webhooks.NewMemoryDeliveryStore()
 	s.webhookCounter = webhooks.NewMemoryCounter()

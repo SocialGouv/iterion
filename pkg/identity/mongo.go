@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -204,6 +205,46 @@ func (s *MongoStore) UpdateTeam(ctx context.Context, t Team) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.teams, bson.M{"_id": t.ID}, t, ErrSlugAlreadyTaken, ErrNotFound, "identity: update team")
 }
 
+// PatchTeam $sets only the named fields, so a rename and a suspension
+// landing together cannot undo each other.
+func (s *MongoStore) PatchTeam(ctx context.Context, id string, p TeamPatch) (Team, error) {
+	if p.Empty() {
+		return s.GetTeam(ctx, id)
+	}
+	set := bson.M{"updated_at": time.Now().UTC()}
+	if p.Name != nil {
+		set["name"] = *p.Name
+	}
+	if p.Slug != nil {
+		set["slug"] = *p.Slug
+	}
+	if p.Status != nil {
+		set["status"] = string(*p.Status)
+		if *p.Status == TeamStatusSuspended {
+			set["suspended_at"] = time.Now().UTC()
+			set["suspended_by"] = p.SuspendedBy
+			set["suspend_reason"] = p.SuspendReason
+		} else {
+			set["suspended_at"] = nil
+			set["suspended_by"] = ""
+			set["suspend_reason"] = ""
+		}
+	}
+	var out Team
+	err := s.teams.FindOneAndUpdate(ctx, bson.M{"_id": id}, bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Team{}, ErrNotFound
+		}
+		if mongoutil.IsDuplicateKey(err) {
+			return Team{}, ErrSlugAlreadyTaken
+		}
+		return Team{}, fmt.Errorf("identity: patch team: %w", err)
+	}
+	return out, nil
+}
+
 func (s *MongoStore) DeleteTeam(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.teams, bson.M{"_id": id}, ErrNotFound, "identity: delete team")
 }
@@ -246,6 +287,45 @@ func (s *MongoStore) GetOrgsByIDs(ctx context.Context, ids []string) (map[string
 
 func (s *MongoStore) UpdateOrg(ctx context.Context, o Org) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.orgs, bson.M{"_id": o.ID}, o, ErrOrgSlugAlreadyTaken, ErrNotFound, "identity: update org")
+}
+
+// PatchOrg is PatchTeam's twin: the org settings, the credential audience
+// and the super-admin plan fields are three independent editors of one
+// document, and a whole-document replace made each one able to revert the
+// others.
+func (s *MongoStore) PatchOrg(ctx context.Context, id string, p OrgPatch) (Org, error) {
+	if p.Empty() {
+		return s.GetOrg(ctx, id)
+	}
+	set := bson.M{"updated_at": time.Now().UTC()}
+	if p.Name != nil {
+		set["name"] = *p.Name
+	}
+	if p.Slug != nil {
+		set["slug"] = *p.Slug
+	}
+	if p.RequireProvisionApproval != nil {
+		set["require_provision_approval"] = *p.RequireProvisionApproval
+	}
+	if p.ProvisionApprovalScope != nil {
+		set["provision_approval_scope"] = string(*p.ProvisionApprovalScope)
+	}
+	if p.CredentialAudience != nil {
+		set["credential_audience"] = *p.CredentialAudience
+	}
+	var out Org
+	err := s.orgs.FindOneAndUpdate(ctx, bson.M{"_id": id}, bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Org{}, ErrNotFound
+		}
+		if mongoutil.IsDuplicateKey(err) {
+			return Org{}, ErrOrgSlugAlreadyTaken
+		}
+		return Org{}, fmt.Errorf("identity: patch org: %w", err)
+	}
+	return out, nil
 }
 
 func (s *MongoStore) DeleteOrg(ctx context.Context, id string) error {

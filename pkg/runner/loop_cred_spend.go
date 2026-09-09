@@ -108,6 +108,8 @@ func credentialTier(creds secrets.Credentials, slot string) credusage.Tier {
 		return credusage.TierPool
 	case creds.IsPlatformSourced(slot):
 		return credusage.TierPlatform
+	case creds.IsOrgSourced(slot):
+		return credusage.TierOrg
 	default:
 		return credusage.TierTeam
 	}
