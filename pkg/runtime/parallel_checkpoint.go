@@ -384,6 +384,35 @@ func (p *parallelExecutionState) branch(branchID string) *store.BranchCheckpoint
 	return cloneBranchCheckpoint(p.cp.Branches[branchID])
 }
 
+// raiseBranchCostUSD moves ONE branch's durable cost cursor and nothing else.
+//
+// It exists for the accounting-only write (persistBranchSpend): the branch's
+// in-memory cumulative is what the daily-cap ledger was told, and a resume
+// re-seeds a branch from this field — so leaving it behind hands the resumed
+// branch a cursor lower than the ledger's monotonic-max entry, and every
+// contribution it makes afterwards is silently discarded until the recomputed
+// cumulative overtakes the figure the failed attempt already wrote.
+// Rebuilding the whole entry instead would persist linear cursor, output and
+// loop progress that no branch boundary blessed.
+//
+// Monotonic for the same reason store.AddSpend is: a cursor may only rise.
+func (p *parallelExecutionState) raiseBranchCostUSD(branchID string, costUSD float64) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retired || p.cp == nil {
+		return false
+	}
+	branch := p.cp.Branches[branchID]
+	if branch == nil || costUSD <= branch.CostUSD {
+		return false
+	}
+	branch.CostUSD = costUSD
+	return true
+}
+
 // updateBranch commits one branch cursor. Durable writes also copy the pending
 // interaction metadata, so siblings may checkpoint cancellation-boundary
 // progress without erasing the pause that owns the parent run.

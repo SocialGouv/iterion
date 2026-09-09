@@ -313,7 +313,7 @@ func TestLaunchTicketNow_RefusesAClaimedTicket(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 	s := newSweepTestServer()
-	_, err = s.launchTicketNow(nil, board, iss)
+	_, err = s.launchTicketNow(context.Background(), "", nil, board, iss)
 	if err == nil {
 		t.Fatal("launchTicketNow accepted a ticket held under a live claim — a second run was minted while its launcher was mid-launch")
 	}
@@ -414,7 +414,7 @@ func TestLaunchTicketNow_ParkedClaimWithALapsedLeaseStaysRelaunchable(t *testing
 	}
 
 	s := newSweepTestServer()
-	_, err = s.launchTicketNow(nil, board2, cur)
+	_, err = s.launchTicketNow(context.Background(), "", nil, board2, cur)
 	if err != nil && strings.Contains(err.Error(), "claimed by") {
 		t.Fatalf("the operator's relaunch of a parked, claim-retained card is refused: %v — nothing else ever frees that claim", err)
 	}
@@ -472,7 +472,7 @@ func TestLaunchTicketNow_LegacyUnleasedClaimIsRelaunchable(t *testing.T) {
 	}
 
 	s := newSweepTestServer()
-	_, err = s.launchTicketNow(nil, board2, cur)
+	_, err = s.launchTicketNow(context.Background(), "", nil, board2, cur)
 	if err != nil && strings.Contains(err.Error(), "claimed by") {
 		t.Fatalf("a legacy no-lease claim was refused by the guard: %v — no lease will ever lapse and no watchdog lists this card", err)
 	}
@@ -570,7 +570,7 @@ func TestLaunchTicketNow_LeaseIsMeasuredWithTheBoardClock(t *testing.T) {
 	cb := clockedBoard{BoardStore: board2, now: time.Now().UTC().Add(-30 * time.Minute)}
 
 	s := newSweepTestServer()
-	_, lerr := s.launchTicketNow(nil, cb, func() *native.Issue { c, _ := board2.Get(iss.ID); return c }())
+	_, lerr := s.launchTicketNow(context.Background(), "", nil, cb, func() *native.Issue { c, _ := board2.Get(iss.ID); return c }())
 	if lerr == nil || !strings.Contains(lerr.Error(), "claimed by") {
 		t.Fatalf("a lease LIVE on the board's clock was admitted because the pod's clock ran fast: err=%v", lerr)
 	}
@@ -671,7 +671,7 @@ func TestLaunchTicketNow_MovesANonReadyTicket(t *testing.T) {
 
 	// The launch itself may fail (no backend credential here); what is
 	// under test is the board move that precedes it.
-	_, _ = s.launchTicketNow(svc, board, iss)
+	_, _ = s.launchTicketNow(context.Background(), "", svc, board, iss)
 
 	var moved bool
 	if err := board.ScanEvents(func(e *native.Event) bool {
@@ -716,7 +716,7 @@ func TestLaunchTicketNow_RefusesConcurrentDrift(t *testing.T) {
 	}
 	drifting := &driftingBoard{BoardStore: board, onceTo: native.StateReady, id: iss.ID}
 
-	_, err = s.launchTicketNow(svc, drifting, iss)
+	_, err = s.launchTicketNow(context.Background(), "", svc, drifting, iss)
 	if err == nil {
 		t.Fatal("a ticket that moved under the CAS was accepted — the silent no-op reports success for a card that never moved")
 	}

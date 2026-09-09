@@ -901,6 +901,12 @@ workflow sec_audit_deps:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
 
+  ## A dependency audit reads lockfiles and writes a report; it commits
+  ## nothing for the repository it reads. The mid-run workspace checkpoint
+  ## would preserve none of this run's work and would force-push a branch
+  ## carrying its findings onto that repository — public ones included.
+  workspace_checkpoint: off
+
   budget:
     max_parallel_branches: 4
     max_duration: "2h"

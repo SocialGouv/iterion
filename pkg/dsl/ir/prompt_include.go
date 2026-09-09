@@ -26,7 +26,9 @@ var promptIncludeRe = regexp.MustCompile(`\{\{\s*include\s+"([^"]*)"\s*\}\}`)
 
 // expandPromptIncludes replaces every {{include "..."}} marker in a
 // prompt body with the verbatim contents of the referenced file,
-// resolved relative to baseDir (the directory of the .bot source).
+// resolved relative to baseDir — the directory of the file that declares
+// the prompt: the .bot source, or a bundle's prompts/ for a prompts/*.md
+// (never the process working directory, which on a server is nobody's).
 //
 // Expansion happens at compile time, once, before ParseRefs runs — so
 // the injected text becomes part of the resolved prompt body in the IR
@@ -63,7 +65,7 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 		return "", fmt.Errorf("include: empty path")
 	}
 	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("include %q: absolute paths are not allowed (use a path relative to the .bot file)", rel)
+		return "", fmt.Errorf("include %q: absolute paths are not allowed (use a path relative to the file that contains the include)", rel)
 	}
 	if baseDir == "" {
 		baseDir = "."

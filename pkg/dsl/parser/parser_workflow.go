@@ -84,6 +84,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.RepoDevbox = p.expectIdent()
 			p.skipNewlines()
 
+		case TokenWorkspaceCheckpoint:
+			p.next() // consume "workspace_checkpoint"
+			p.expect(TokenColon)
+			wd.WorkspaceCheckpoint = p.expectIdent()
+			p.skipNewlines()
+
 		case TokenPermission:
 			p.next() // consume "permission"
 			p.expect(TokenColon)

@@ -493,31 +493,47 @@ func parseBotFile(path string) (*Entry, error) {
 	return e, nil
 }
 
-// leadingCommentDescription returns the first paragraph of `## ` lines
-// at the top of the file (excluding any `## ---` framing). Stops at the
-// first blank line or non-comment line. Decoration-only lines (banner
+// leadingCommentDescription returns the first paragraph of comment lines
+// (`#` or `##`) at the top of the file (excluding any `## ---` framing),
+// before the first line of code. Stops at the first blank line after the
+// paragraph or at the first non-comment line. Decoration-only lines (banner
 // rules like `## ────`) and a header line repeating the file's own name
 // are skipped — they are framing, not description.
 func leadingCommentDescription(raw []byte, filename string) string {
-	lines := strings.Split(string(raw), "\n")
+	// The same normalisation the lexer applies before it reads the file:
+	// a BOM is not a line of code, and a CR or CRLF terminates a line.
+	src := strings.TrimPrefix(string(raw), "\ufeff")
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = strings.ReplaceAll(src, "\r", "\n")
+	lines := strings.Split(src, "\n")
 	var out []string
 	skippingFM := false
 	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		if trim == "## ---" {
+		// A comment line is `#` or `##`, the lexer's own rule
+		// (workflowfile.CommentText); the frontmatter fence is the `---`
+		// comment whichever hash count it uses.
+		text, isComment := workflowfile.CommentText(ln)
+		if isComment && strings.TrimSpace(text) == workflowfile.FrontmatterFence {
 			skippingFM = !skippingFM
 			continue
 		}
 		if skippingFM {
 			continue
 		}
-		if !strings.HasPrefix(trim, "##") {
-			if len(out) > 0 {
-				break
+		if !isComment {
+			// A blank line ends a paragraph already collected and is
+			// skipped before one; the first line of CODE ends the scan —
+			// a `# shell comment` inside a `command: |` or a prompt
+			// body's `# Heading` is text of the bot, not its description.
+			if strings.TrimSpace(ln) == "" {
+				if len(out) > 0 {
+					break
+				}
+				continue
 			}
-			continue
+			break
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trim, "##"), " "))
+		body := strings.TrimSpace(text)
 		if body == "" || isDecorationLine(body) || body == filename {
 			if len(out) > 0 {
 				break

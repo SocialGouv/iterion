@@ -181,11 +181,14 @@ type sessionMeta struct {
 	//     `_session_id`, and gates packLiveSession, so without it the one
 	//     path written to persist a session across a human gate persisted
 	//     nothing;
-	//   - a stream that DIED, where it is reporting only. The executor
-	//     discards a failed Result (executeBackend returns `nil, err`) and
-	//     the failure checkpoint has no field for a backend session, so
-	//     nothing above the delegate resumes a dead node's session today —
-	//     naming it is what makes wiring that possible, not the wiring.
+	//   - a stream that DIED, where it is reporting only. The id now
+	//     travels up on the failure output (`_session_id`, stamped beside
+	//     the spend), but nothing on the failure path reads it:
+	//     commitPersistSlot — the one writer of a node's session slot — is
+	//     called only after a node SUCCEEDS, so the failure checkpoint
+	//     still records no backend session and nothing above the delegate
+	//     resumes a dead node's. Naming it is what makes wiring that
+	//     possible, not the wiring.
 	sessionID string
 	// sessionIDFromInit records that sessionID came from `system/init`,
 	// the CLI's own announcement of this session. A value taken from any

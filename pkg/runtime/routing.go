@@ -145,6 +145,14 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	output, err := e.executor.Execute(execCtx, node, routerInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
+		// A router that FAILED still spent, and this exit is terminal for
+		// the attempt: the caller turns this error into
+		// failRunErrWithCheckpoint, so the booking has to happen HERE to
+		// ride the checkpoint a resume reads its budget carry from. Same
+		// contract as the standard node path — accounting only, never a
+		// verdict. (A router is special-dispatched, so it never reaches
+		// execLoopRunNode's own booking.)
+		e.recordFailedNodeSpend(rs, routerNodeID, output)
 		return "", fmt.Errorf("llm router %q: %w", routerNodeID, err)
 	}
 

@@ -55,7 +55,9 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C244, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C249, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+
+Every finding is printed with its source position when the stage could attribute one — `file:line:column: error [C019]: …`, the node's or edge's own line for a compile diagnostic — and a `fix:` line beneath it, the one-line remedy from the compiler's catalogue. `--json` carries the same findings as `diagnostics`, one object each: `source` (`parse` | `compile` | `bundle`), `code`, `severity`, `file` / `line` / `column`, `message`, `hint`, `node_id`, `edge_id`. The older `parse_diagnostics` / `compile_diagnostics` / `bundle_diagnostics` string lists remain. The MCP `local_validate` tool returns this same JSON, so an agent's write → validate → fix loop reads positions and fixes, not prose.
 
 ### `iterion diagram`
 

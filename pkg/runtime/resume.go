@@ -1513,6 +1513,13 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		// human half — the same pause the LLM produces when it declines to
 		// answer. Cancellation still propagates: a run being stopped is not
 		// a helper failure.
+		//
+		// Either way the attempt is over and its spend is final — the human
+		// half answers next, and a human reports no tokens — so book before
+		// BOTH exits below write (failRunWithCheckpoint, persistPause):
+		// after either, the checkpoint a resume reads its carry from is
+		// already on disk without this pass.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		if ctx.Err() != nil {
 			return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
 		}
@@ -2030,6 +2037,11 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 	fields := interactionFields(node)
 	answers, _, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
+		// The auto-answer is a billed model call of its own, and on this
+		// exit `answers` carries its spend rather than answers. Terminal for
+		// the attempt, so book before failRunWithCheckpoint writes the
+		// checkpoint a resume reads its carry from.
+		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}
@@ -2050,6 +2062,9 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 	fields := interactionFields(node)
 	answers, needsHuman, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
+		// Same as handleInteractionLLM: `answers` is the failed call's spend
+		// on this exit, and this is the last frame that holds it.
+		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}
@@ -2184,8 +2199,18 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		// exhaustion.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(err, &needsInput) {
+			// Still not booked: the call parks again and the NEXT
+			// re-invocation reports the session, exactly as the first one
+			// deferred to this one.
 			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput, depth+1)
 		}
+		// Terminal, and the end of the chain the main loop's interaction exit
+		// defers to: the call that raised ErrNeedsInteraction was deliberately
+		// not booked because "its spend is the resumed call's to report" —
+		// this IS the resumed call, so dropping the figure here loses both
+		// sessions, not one. Booked before failRunWithCheckpoint, which
+		// writes the checkpoint a resume reads its budget carry from.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
 	}

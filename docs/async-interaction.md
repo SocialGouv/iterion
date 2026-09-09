@@ -11,7 +11,7 @@ LLM's discretion (the `await_answers` tool).
 
 ## DSL
 
-```iter
+```iter fragment
 agent draft:
   interaction: async        # grants ask_user_async + await_answers (+ blocking ask_user)
   system: draft_sys

@@ -2,6 +2,8 @@
 
 All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`ir.Validate`), plus the bundle-consistency codes (`C2xx`) that `iterion validate` reports for a packaged bot. Diagnostics are either **errors** (block execution) or **warnings** (informational).
 
+The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog.go`](../../pkg/dsl/ir/diag_catalog.go)): `iterion validate` prints it as the `fix:` line under every finding, the studio shows it in the diagnostic badge, and the MCP `local_validate` result carries it as `hint`. A code the compiler can emit that has no catalogue entry fails `TestDiagCatalogCoversEveryCode`, so a finding never arrives without a next step. Parse-stage codes (`E0xx`, [`pkg/dsl/parser/diagnostic.go`](../../pkg/dsl/parser/diagnostic.go)) carry a fix line the same way.
+
 ## Compilation Diagnostics
 
 | Code | Severity | Description | Cause | Fix |
@@ -30,7 +32,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | Code | Severity | Description | Cause | Fix |
 |------|----------|-------------|-------|-----|
 | **C009** | error | Session at convergence point | A node with `await:` (or multiple incoming sources) uses `session: inherit` or `session: fork` | Change to `session: fresh`, `session: artifacts_only`, or `session: persist` |
-| **C010** | error | Multiple unconditional edges | A non-router node has more than one unconditional outgoing edge | Keep only one default edge, or use a router for fan-out |
+| **C010** | error | Multiple unconditional edges | A non-router node has more than one unconditional outgoing edge. A loop back-edge (`as name(N)`) does not count: `src -> body as name(N)` next to a bare `src -> exit` is the **loop-exhaustion exit** — the bare edge fires once the loop has spent its iterations — and is the one allowed shape with two unconditional edges from a node | Keep only one default edge (plus a loop back-edge and its exhaustion exit), or use a router for fan-out |
 | **C011** | error | Ambiguous conditions | Same condition field appears twice with same polarity from the same source | Remove the duplicate edge or use different conditions |
 | **C012** | error | Missing fallback | A node has conditional edges but no unconditional fallback and conditions aren't exhaustive | Add `when not X` to complement `when X`, or add an unconditional edge |
 | **C013** | error | Condition field not boolean | A `when` clause references a field that isn't `bool` in the source output schema | Change the schema field to `bool` |
@@ -83,7 +85,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C091** | error | Secret / var name collision | A secret name collides with a declared `vars:` entry | Rename one — secrets and vars share a template namespace |
 | **C092** | error | Invalid secret host | A secret's egress host scoping (Layer 2 `hosts:`) is ill-formed | Use valid host entries (hostnames / domains) |
 | **C093** | error | Unknown secret reference | `{{secrets.X}}` references a secret not declared in the `secrets:` block | Declare the secret, or fix the name |
-| **C094** | error | Malformed file secret | An `as: file` secret declaration is malformed | Provide a valid `value:`/`env:` and file-mount form |
+| **C094** | error | Malformed file secret | An `as: file` secret declaration is malformed (a bad `mount_path:`, an `env:` that is not an identifier) | Fix the offending property. A bare `as: file` (optionally `optional: true`) is complete on its own — it resolves the stored secret by name and mounts it; `value:`/`env:`/`mount_path:` are additions, not requirements |
 | **C095** | error | Unsupported secret sub-field | `{{secrets.X.<subfield>}}` uses a sub-field the runtime does not expose | Drop the sub-field, or reference `{{secrets.X}}` directly |
 | **C097** | error | Unbounded loop without fuel | An `as name(unbounded)` loop has no fuel ceiling (neither a per-loop `unbounded <N>` nor a workflow `budget.max_iterations`) — the "no silent infinity" invariant | Add a per-loop fuel (`as name(unbounded 200)`) or a workflow `budget.max_iterations` |
 | **C098** | warning | Unbounded loop without exit | An `unbounded` loop's body has no edge leaving the loop — only fuel/liveness can stop it | Add a `when`-exit (convergence condition) so the loop terminates by its own logic |
@@ -126,6 +128,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C136** | warning | Gated backend needs a host-side run | Two shapes on a workflow that has not opted out of the sandbox: (1) a node routes `permission: ask\|deny` to `grok` or `kimi` (primary or fallback) — those two enforce the gate through a **host-side** `PreToolUse` hook the sandbox cannot reach; (2) a node routes an **ask-capable** policy (mode `ask`, or any explicit `ask:` rule, which outranks mode `deny`) to `claw` — sandboxed claw enforces deny-shaped policies in-container (the policy crosses the IPC pre-task), but an Ask decision cannot pause the parent run from inside the container. Either way the node is refused at execution time, and the shipped default `sandbox: auto` hits this on the common shape (no `sandbox:` block) | Declare `sandbox: none` on the workflow (or the node), launch with `--sandbox none` / `ITERION_SANDBOX_DEFAULT=none`, or (claw shape) drop the ask rules / use `deny`. A warning rather than an error because those run-time overrides make the workflow legal without it saying anything |
 | **C137** | warning | Tool command quotes a ref the runtime already quotes | A tool `command:` wraps a `{{ref}}` in **single quotes of its own** (`BASE_REF='{{vars.base_ref}}'`, `--out '{{input.dir}}/f.json'`, `STD='--flag {{input.x}}'`). The runtime shell-escapes every ref by wrapping the value in single quotes, so the author's quote CLOSES it instead of nesting: the value lands as bare shell **syntax**, and on a forge-controlled var (a fork PR's branch name, a title) that is command execution. A warning rather than an error because the shape is inert for values without shell metacharacters, so a repo full of them keeps running while it is cleaned up. Double quotes are reported too, for a different reason: the runtime's single quotes survive as DATA (`X="{{ref}}"` with `main` hands the interpreter `'main'`) and a value carrying `"` closes the author's span and injects | Remove the surrounding quotes — the runtime adds them. For an optional flag, build it with `${VAR:+--flag "$VAR"}` from a bare `VAR={{ref}}` assignment |
 | **C138** | error | Builtin call the evaluator cannot satisfy | A `compute` expression or a quoted `when "..."` calls a builtin with an argument count outside the range that builtin accepts (`length(a, b)`, `slice(a, b)`, `max()`). The NAME is caught by C040 at parse; the ARITY is not visible there, so such a call used to compile clean and die mid-run — which on a cloud launch costs a sandbox, a clone and a plan phase before it is discovered. The most common cause is a bot authored against a NEWER engine, whose builtin accepts a shape this one does not (`min`/`max` gained their variadic form) | Fix the call, or run it on an engine whose evaluator accepts that shape. Accepted counts: `length`/`unique`/`sort`/`keys`/`values`/`sum`/`flatten`/`floor`/`round` take 1; `contains`/`join`/`tail` take 2; `if`/`slice` take 3; `concat`/`min`/`max` take 1 or more |
+| **C139** | error | Invalid workspace_checkpoint value | The workflow's `workspace_checkpoint:` is not one of `on`, `off` — a typo would silently read as "inherit", i.e. the default `on`, and the run would keep force-pushing its whole sandbox tree as an `iterion/run-<id>-checkpoint` branch onto the repository it was pointed at, which is exactly what an author writing this field is stopping | Use `on` or `off`, or drop the field to inherit `ITERION_WORKSPACE_CHECKPOINT` then the default |
 | **C170** | error | Invalid memory visibility | `memory: visibility:` has an unknown value | Use a known visibility (`bot`/`project`/`cross_project`/`user`/`org`/`global`) |
 | **C171** | error | Memory visibility conflict | `memory: visibility:` is combined with the legacy `project_root:` | Use `visibility:` alone — drop the legacy `project_root:` |
 | **C172** | warning | Malformed provider step | A `provider:` chain element of the `provider:model` form has an empty provider or model part | Provide both parts, e.g. `anthropic:claude-sonnet-4-6` |
@@ -206,9 +209,30 @@ phrasing template and are all warnings, so a skill gap never fails validation.
 ## Quick Troubleshooting
 
 **"I get C019 (undeclared cycle)"**
-Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. Example:
-```iter
-judge -> agent when not approved as retry(3) with { ... }
+Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. This is the shape that fails:
+
+```iter invalid:C019
+schema verdict:
+  approved: bool
+
+agent worker:
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
+
+judge evaluator:
+  model: "anthropic/claude-sonnet-4-6"
+  output: verdict
+
+workflow w:
+  entry: worker
+  worker -> evaluator
+  evaluator -> done when approved
+  evaluator -> worker when not approved     # C019: a cycle with no declared loop
+```
+
+And the fix, on the back-edge:
+```iter fragment:edges
+evaluator -> worker when not approved as retry(3) with { feedback: "{{outputs.evaluator.summary}}" }
 ```
 
 **"I get C009 (session at convergence)"**

@@ -68,11 +68,27 @@ iterion remote forge connections webhook-base <conn-id> \
 iterion remote forge connections webhook-base <conn-id> --url ""   # clear
 ```
 
-It takes effect at the next provision, and the value must be scheme+host
-(the `/api/webhooks/<provider>/<id>` route is appended to it). An
-unparseable or path-carrying value is refused with 422 at the PATCH, on
-purpose: a wrong base does not fail when it is set — it fails as hooks that
-register successfully and never arrive.
+It takes effect at the next provision of each repo on that connection, and
+the value must be scheme+host (the `/api/webhooks/<provider>/<id>` route is
+appended to it). An unparseable or path-carrying value is refused with 422 at
+the PATCH, on purpose: a wrong base does not fail when it is set — it fails
+as hooks that register successfully and never arrive.
+
+Re-provisioning a repo is the gesture that applies it, and it is a
+**reconcile**: `POST /api/teams/{id}/forge/repo-bots` with the repo's current
+`bot_ids` and nothing else (`launch_vars`, `overlap`,
+`auto_fix_on_gate_failure` and `hold_labels` all mean "leave the stored one
+alone" when omitted, so re-sending them is a chance to mistype
+`gate_context`, not a safety). It compares the address the forge *should* be
+calling against the one it is, and rewrites the hook in place when they
+differ — same hook id, same webhook id, and the fresh `iwh_` reaches both
+ends together. Where nothing has moved it touches the forge not at all, so
+it is safe to re-run across a whole fleet.
+
+That comparison is what makes a public-URL change reachable at all: the
+idempotence test used to look at bots and events only, so an instance that
+moved could never repair its own hooks — provisioning answered 200, changed
+nothing, and the deliveries kept going to an address it no longer served.
 
 Two more properties of that endpoint worth knowing:
 

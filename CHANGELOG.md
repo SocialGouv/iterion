@@ -3,6 +3,84 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.129.0](https://github.com/SocialGouv/iterion/compare/v3.128.0...v3.129.0) (2026-09-09)
+
+### Features
+
+* **runner:** let a read-only bot decline the workspace checkpoint ([#1042](https://github.com/SocialGouv/iterion/issues/1042)) ([a7db190](https://github.com/SocialGouv/iterion/commit/a7db190e7ff9b5bf4c5fde8d08396ee4b70e2aa7))
+
+    <details><summary>why</summary>
+
+    The mid-run workspace checkpoint force-pushes the pod's tree as `iterion/run-<id>-checkpoint` on the run's OWN remote — the repository the bot was pointed at — and reads that tree with `git add -A`, so a bot's scratch directory rides along: untracked, and nothing ignores it.
+
+    </details>
+
+### Bug Fixes
+
+* **forge,server:** a key iterion cannot read is not the forge being down ([#1030](https://github.com/SocialGouv/iterion/issues/1030)) ([daf30e7](https://github.com/SocialGouv/iterion/commit/daf30e798e954de6cda1e00de7dd400107f90f58)), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    The App-token mint signs its JWT from a stored private key BEFORE it opens a socket, so a key that is not parseable PEM fails inside what reads like a pure remote call. Three handlers default to 502 for anything the classifier does not recognise — a sound default, since an unclassified failure on a forge round trip really is the forge's — and they were reporting GitHub as broken for iterion's own stored key.
+
+    </details>
+* **golden-master:** a duplicate reference group is proved by a mutant, not by a note ([#1009](https://github.com/SocialGouv/iterion/issues/1009)) ([28af2c2](https://github.com/SocialGouv/iterion/commit/28af2c2cb54ce69900a0a9da83227bb70884a681))
+
+    <details><summary>why</summary>
+
+    The gate refused on ANY two byte-identical references, unconditionally. Its own message said the refusal is not always right — "on a refusal lane two entries legitimately capture the same 302, and the second is a control proving a mutant moved only the first" — and then offered no way to say so. The corpus answered in `note`, which is prose, and the gate reads data. So a net whose duplicates were every one of them justified could never converge.
+
+    </details>
+
+## [3.128.0](https://github.com/SocialGouv/iterion/compare/v3.127.2...v3.128.0) (2026-09-09)
+
+### Features
+
+* **dsl:** authoring lot 0 — `#` comments, positioned diagnostics with fix lines, every doc fence compiled ([#1010](https://github.com/SocialGouv/iterion/issues/1010)) ([#1039](https://github.com/SocialGouv/iterion/issues/1039)) ([b2067fd](https://github.com/SocialGouv/iterion/commit/b2067fd670c6b6a3a629bea06aef752740b215c6)), references [#936](https://github.com/SocialGouv/iterion/issues/936) [#1012](https://github.com/SocialGouv/iterion/issues/1012)
+
+    <details><summary>why</summary>
+
+    Outside a string, a prompt body or a `|` block scalar a `#` never meant anything in the language; it was a lexer error the parser then reported as an unknown property named '#'. Measured on the repository's own documentation on 2026-09-09: of the 48 ```iter fences that failed to parse, 25 failed on exactly that — the maintainers reach for `# note` as naturally as any model does, and the DSL quickref skill taught it in its canonical examples.
+
+    </details>
+
+## [3.127.2](https://github.com/SocialGouv/iterion/compare/v3.127.1...v3.127.2) (2026-09-09)
+
+### Bug Fixes
+
+* **forge:** a deployment that moved could never repair its own hooks ([#1032](https://github.com/SocialGouv/iterion/issues/1032)) ([206a010](https://github.com/SocialGouv/iterion/commit/206a0101ef527e7b99121866be43061e8451d0d3))
+
+    <details><summary>why</summary>
+
+    Provisioning short-circuits when the bot set and the event set already match, and that test never looked at the address the forge is actually calling. But the hook URL is not a property of the request: it moves when the deployment's public URL moves, and when a connection starts or stops pinning a base of its own.
+
+    </details>
+* **runtime:** a node that failed still spent, and the run never booked it ([#916](https://github.com/SocialGouv/iterion/issues/916)) ([de5bf14](https://github.com/SocialGouv/iterion/commit/de5bf140cc14ee5b2ca5d6986f932decc790f93c))
+
+    <details><summary>why</summary>
+
+    `recordBudget` runs on the success path only. A node that failed returned its result beside the error — with the pass's cost stamped on it, which is what the delegate has always done and what two fixes today made reliable — and nothing read it. So the run's totals, the daily spend cap and a lending donor's ledger all missed whatever the failing node burned. On a long agent node that is a whole session, and the runs that fail are exactly the ones that burned the most.
+
+    </details>
+
+## [3.127.1](https://github.com/SocialGouv/iterion/compare/v3.127.0...v3.127.1) (2026-09-09)
+
+### Bug Fixes
+
+* **pipelines:** the control center served a team the origin of its own fork ([#1031](https://github.com/SocialGouv/iterion/issues/1031)) ([a99fec7](https://github.com/SocialGouv/iterion/commit/a99fec7f05fc2c4e47e0b8e29e967c85fcc4510e)), references [#871](https://github.com/SocialGouv/iterion/issues/871)
+
+    <details><summary>why</summary>
+
+    The pipelines board is selected per team in cloud (cloudBoardResolve), but its bot was resolved tenant-free and launched by filesystem path — the fifth surface of the #871 class, and the last one still outside the tiered resolver. Two silent consequences: a team that forked a catalog bot got the CATALOG bundle on its own cards, and a bot only that team authored could not be carded at all (a stored row's Path is blanked, so MainFile() had nothing to launch).
+
+    </details>
+
+## [3.127.0](https://github.com/SocialGouv/iterion/compare/v3.126.0...v3.127.0) (2026-09-09)
+
+### Features
+
+* admit runs before execution with context contract ([#1019](https://github.com/SocialGouv/iterion/issues/1019)) ([4c360b1](https://github.com/SocialGouv/iterion/commit/4c360b14cec900888f82d178cf0574bad0a5c21d))
+
 ## [3.126.0](https://github.com/SocialGouv/iterion/compare/v3.125.1...v3.126.0) (2026-09-09)
 
 ### Features

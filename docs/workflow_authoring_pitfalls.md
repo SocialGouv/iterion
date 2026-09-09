@@ -556,13 +556,17 @@ Sharper prompts up front would have cut that in half.
 
 ## Shell portability for tool nodes
 
-`.bot` `tool` nodes execute their `command:` string via
-`exec.Command("sh", "-c", …)` (see `pkg/backend/model/executor.go`,
-`executeToolNodeShell`). The crucial detail: **`sh` resolves to whatever
-binary `sh` points at in the runtime PATH.** It is *not* a fixed
-interpreter.
+A `.bot` `tool` node's `command:` string runs via `bash -c`
+(`pkg/backend/model/executor_tool.go`, `toolNodeCommand`), on the host and
+inside a sandbox alike — bash is pinned precisely because `/bin/sh` is dash
+on Debian-derived images. A `script:` node is different: it runs the
+interpreter its `language:` names, and `language: sh` (the default) is
+whatever binary `sh` points at in the runtime PATH — *not* a fixed
+interpreter. The rules below bind every `script:` in `sh`, and every
+`command:` that may also run where bash is absent (a minimal image: install
+bash via `post_create`, or write POSIX).
 
-This means the same workflow can behave differently across hosts:
+A `sh` script can therefore behave differently across hosts:
 
 | Environment              | What `sh` actually is |
 | ------------------------ | --------------------- |
@@ -581,9 +585,10 @@ echo {"count":3,"done":false}
 ```
 
 This worked under devbox (bash interpreting). On a Linux Mint host the
-same workflow piped through `sh -c` ran under dash — *which has no
-brace expansion*. The output landed unchanged, JSON parsed, run
-succeeded.
+same workflow piped through `sh -c` (what the executor invoked at the
+time; a `command:` now runs `bash -c`, and a `language: sh` script still
+hits exactly this) ran under dash — *which has no brace expansion*. The
+output landed unchanged, JSON parsed, run succeeded.
 
 But on a host where the user's `sh` *was* bash (e.g. Ubuntu with
 `dash` reconfigured to `bash`, or any rebuilt image where bash is
@@ -616,7 +621,7 @@ echo \{\"count\":$(wc -c < /tmp/counter),\"done\":false\}
 
 Every `{`, `}`, and `"` is backslash-escaped. The braces are escaped
 to defeat brace expansion under bash; the quotes are escaped to
-survive the outer YAML/`.bot` string-literal layer plus `sh -c`.
+survive the outer YAML/`.bot` string-literal layer plus `bash -c`.
 
 Alternative: produce JSON via `printf '{"count":%d,"done":false}\n' N`.
 `printf` is POSIX, has no brace expansion semantics, and reads as
@@ -667,21 +672,20 @@ If a downstream node fails with "expected object, got string" or
 
 1. Run the command manually under `dash` *and* under `bash` — they
    should produce identical output.
-2. Run it under devbox (`devbox run -- sh -c '…'`) since that's what
-   the engine inherits from PATH.
+2. Run it under devbox (`devbox run -- bash -c '…'` for a `command:`,
+   `devbox run -- sh -c '…'` for a `language: sh` script) since that's
+   the PATH the engine inherits.
 3. Inspect the run's `events.jsonl` for the `tool_called` event — it
    records the resolved command string and raw stdout.
 
-### Why the engine doesn't pin `bash`
+### Why `command:` pins `bash` and `script:` does not
 
-We stayed with `sh` because:
-
-- Alpine / busybox images don't ship bash by default; pinning to
-  `bash` would break minimal containers.
-- macOS bash is 3.2 (GPL-3 avoidance); pinning would silently invoke
-  a 17-year-old bash with different defaults.
-- POSIX is a small, well-documented target. Authoring to it scales.
-
-**If you genuinely need bash**, invoke it explicitly:
-`bash -c '…bash-only syntax…'`. That's a contract the workflow
-declares, not an assumption.
+A `command:` is a one-line recipe that authors reach for with bash
+idioms (`[[ ]]`, arrays, `pipefail`), and `/bin/sh` is dash on the
+Debian-derived images the sandbox ships — so the executor runs `bash -c`
+and treats a missing bash as the image's problem (install it via
+`post_create`, or rewrite the body in POSIX). A `script:` names its own
+interpreter through `language:`, which is the contract to reach for when
+the shell matters: `language: bash` for bash-only syntax, `language: sh`
+when the script must also run on Alpine/busybox or macOS's bash 3.2 — a
+small, well-documented POSIX target that authoring to scales.

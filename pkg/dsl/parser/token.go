@@ -170,6 +170,8 @@ const (
 	TokenLoopBudgetGuard
 	// RepoDevbox target-repo devbox.json provisioning switch: on|off
 	TokenRepoDevbox
+	// WorkspaceCheckpoint mid-run workspace preservation switch: on|off
+	TokenWorkspaceCheckpoint
 	// Permission gate: scalar mode + allow/ask/deny rule lists
 	TokenPermission
 	TokenAllow
@@ -322,36 +324,37 @@ var tokenNames = map[TokenType]string{
 	TokenMaxIterations:       "max_iterations",
 	TokenWarnTokens:          "warn_tokens",
 
-	TokenCompaction:       "compaction",
-	TokenThreshold:        "threshold",
-	TokenPreserveRecent:   "preserve_recent",
-	TokenMemory:           "memory",
-	TokenEnabled:          "enabled",
-	TokenScope:            "scope",
-	TokenAutoload:         "autoload",
-	TokenRead:             "read",
-	TokenWrite:            "write",
-	TokenPreCompactInject: "pre_compact_inject",
-	TokenProjectRoot:      "project_root",
-	TokenVisibility:       "visibility",
-	TokenWorktree:         "worktree",
-	TokenCompress:         "compress",
-	TokenAutoMemory:       "auto_memory",
-	TokenLoopBudgetGuard:  "loop_budget_guard",
-	TokenRepoDevbox:       "repo_devbox",
-	TokenPermission:       "permission",
-	TokenAllow:            "allow",
-	TokenAsk:              "ask",
-	TokenDeny:             "deny",
-	TokenSandbox:          "sandbox",
-	TokenCursor:           "cursor",
-	TokenGroup:            "group",
-	TokenUse:              "use",
-	TokenSubbot:           "subbot",
-	TokenSupervisor:       "supervisor",
-	TokenCursors:          "cursors",
-	TokenValues:           "values",
-	TokenBands:            "bands",
+	TokenCompaction:          "compaction",
+	TokenThreshold:           "threshold",
+	TokenPreserveRecent:      "preserve_recent",
+	TokenMemory:              "memory",
+	TokenEnabled:             "enabled",
+	TokenScope:               "scope",
+	TokenAutoload:            "autoload",
+	TokenRead:                "read",
+	TokenWrite:               "write",
+	TokenPreCompactInject:    "pre_compact_inject",
+	TokenProjectRoot:         "project_root",
+	TokenVisibility:          "visibility",
+	TokenWorktree:            "worktree",
+	TokenCompress:            "compress",
+	TokenAutoMemory:          "auto_memory",
+	TokenLoopBudgetGuard:     "loop_budget_guard",
+	TokenRepoDevbox:          "repo_devbox",
+	TokenWorkspaceCheckpoint: "workspace_checkpoint",
+	TokenPermission:          "permission",
+	TokenAllow:               "allow",
+	TokenAsk:                 "ask",
+	TokenDeny:                "deny",
+	TokenSandbox:             "sandbox",
+	TokenCursor:              "cursor",
+	TokenGroup:               "group",
+	TokenUse:                 "use",
+	TokenSubbot:              "subbot",
+	TokenSupervisor:          "supervisor",
+	TokenCursors:             "cursors",
+	TokenValues:              "values",
+	TokenBands:               "bands",
 
 	TokenDone: "done",
 	TokenFail: "fail",
@@ -483,6 +486,7 @@ var keywords = map[string]TokenType{
 	"auto_memory":           TokenAutoMemory,
 	"loop_budget_guard":     TokenLoopBudgetGuard,
 	"repo_devbox":           TokenRepoDevbox,
+	"workspace_checkpoint":  TokenWorkspaceCheckpoint,
 	"permission":            TokenPermission,
 	"allow":                 TokenAllow,
 	"ask":                   TokenAsk,
@@ -503,7 +507,12 @@ var keywords = map[string]TokenType{
 // Token is a single lexical token produced by the lexer.
 type Token struct {
 	Type   TokenType
-	Value  string // raw text of the token
+	Value  string // raw text of the token; for TokenError, the lexer's diagnosis
 	Line   int    // 1-based
 	Column int    // 1-based
+	// Code is set on a TokenError only: the diagnostic code of the lexer's
+	// diagnosis (a tab, an unterminated string, a bad escape), so the parser
+	// reports THAT — never "expected X, got Error" with a token-shape hint
+	// about a cause that is a character.
+	Code DiagCode
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -686,7 +687,11 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	runID, err := s.launchTicketNow(runs, boardStore, issue)
+	// The bot resolves for the team the board itself was selected from
+	// (cloudBoardResolve), so a team's fork — or a bot only it authored —
+	// serves its own cards.
+	caller, _ := auth.FromContext(r.Context())
+	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, runs, boardStore, issue)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board launch: %v", err)
 		return

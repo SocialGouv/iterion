@@ -2303,11 +2303,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	sbObsCtx, stopSbObs := context.WithCancel(ctx)
 	defer stopSbObs()
 	defer r.unregisterSandboxRun(msg.RunID)
+	// A workflow that declares `workspace_checkpoint: off` is telling the
+	// engine it writes no commit for the repository it was pointed at — so
+	// the net would hold nothing, and its push would put a branch on that
+	// repository anyway. Said once, because a net silently not laid is
+	// indistinguishable from one that had nothing to preserve.
+	checkpointOn := runtime.WorkspaceCheckpointEnabled(wf)
+	if !checkpointOn {
+		r.cfg.Logger.Info("runner: run %s: workspace_checkpoint is off — the sandbox tree is NOT preserved mid-run and no checkpoint branch is pushed to the run's remote; node outputs remain durable in the store", msg.RunID)
+	}
 	engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(
 		r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
 			runID: msg.RunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
 			secretRefs: r.sandboxFileSecretRefs(ctx, wf),
-			checkpoint: true,
+			checkpoint: checkpointOn,
 		})))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND

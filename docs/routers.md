@@ -22,14 +22,14 @@ flowchart LR
 
 ## Syntax
 
-```iter
+```text
 router <name>:
   mode: fan_out_all | fan_out_each | condition | round_robin | llm
 ```
 
 LLM routers accept additional properties:
 
-```iter
+```iter fragment
 router fix_router:
   mode: llm
   model: "anthropic/claude-sonnet-4-6"   # or backend: "claude_code"
@@ -54,7 +54,7 @@ router uses its built-in fallback model.
 
 This is the default mode. The router sends execution to **every** outgoing edge simultaneously. Each target runs in its own branch, and branches converge at a downstream node that declares `await: wait_all` or `await: best_effort` — executed once, after every branch has settled (see [Convergence with `await`](#convergence-with-await)).
 
-```iter
+```iter fragment
 router review_fanout:
   mode: fan_out_all
 
@@ -64,7 +64,7 @@ agent synthesize_reviews:
   await: wait_all
 
 workflow example:
-  ...
+  # …
   review_fanout -> claude_review
   review_fanout -> gpt_review
   claude_review -> synthesize_reviews
@@ -86,7 +86,7 @@ An `llm multi: true` router is checked more tightly than the other two. `fan_out
 
 `fan_out_each` resolves `over:` to an array at runtime and replays its single outgoing template branch once per item. The current item is exposed on the router output under the binding named by `as:` (default `item`).
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -116,7 +116,7 @@ The router must have exactly one unconditional outgoing edge: it is the head of 
 
 Optional `key:` and `depends_on:` fields turn the array into a dependency DAG. `key` names the unique-id field on each item; `depends_on` names an array field containing prerequisite ids. Independent items run concurrently, dependants wait, failed prerequisites skip their dependants, and a dependency cycle fails the run.
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -141,12 +141,12 @@ When item paths reconverge into one collector, declare `await: wait_all` or `awa
 
 A condition router picks a single target based on boolean fields in the upstream node's output. The routing logic is expressed on the edges, not in the router itself.
 
-```iter
+```iter fragment
 router decision:
   mode: condition
 
 workflow example:
-  ...
+  # …
   judge -> decision
   decision -> fix_agent when not approved
   decision -> done when approved
@@ -162,12 +162,12 @@ When the `judge` node produces `{ "approved": true }`, the edge `decision -> don
 
 Each time the router is traversed, it selects the **next** outgoing edge in declaration order, wrapping around after the last one.
 
-```iter
+```iter fragment
 router refine_selector:
   mode: round_robin
 
 workflow example:
-  ...
+  # …
   val_judge -> refine_selector when not ready as refine_loop(4)
   refine_selector -> claude_refine
   refine_selector -> gpt_refine
@@ -199,7 +199,7 @@ An LLM reads the workflow context and decides which route to take. This is the o
 
 ### Single route example
 
-```iter
+```iter fragment
 prompt routing_prompt:
   Based on the review findings, decide whether
   the code, the docs, or the tests need fixing.
@@ -210,7 +210,7 @@ router fix_router:
   system: routing_prompt
 
 workflow example:
-  ...
+  # …
   fix_router -> fix_code
   fix_router -> fix_docs
   fix_router -> fix_tests
@@ -220,7 +220,7 @@ workflow example:
 
 With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies use the same branch-local bounded-loop semantics as `fan_out_all`; on restart the persisted route selection and branch cursors are reused instead of asking the model to route again.
 
-```iter
+```iter fragment
 router fix_router:
   mode: llm
   backend: "claude_code"
@@ -228,7 +228,7 @@ router fix_router:
   multi: true
 
 workflow example:
-  ...
+  # …
   fix_router -> fix_code
   fix_router -> fix_docs
   fix_router -> fix_tests

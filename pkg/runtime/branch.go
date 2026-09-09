@@ -45,6 +45,13 @@ type branchResult struct {
 	// seeded from the durable branch cursor so a resumed pass keeps
 	// growing the same monotonic-max daily-cap ledger entry.
 	costUSD float64
+	// spendUncheckpointed marks spend booked into the shared run budget that
+	// no checkpoint has carried yet. Every booking sets it; the next snapshot
+	// that carries the budget clears it. What makes it necessary is that a
+	// branch does not checkpoint on linear edges, so an exit taken between two
+	// boundaries — a failed node, a fail node, an unresolvable edge — would
+	// leave the booking in memory alone. See persistBranchSpend.
+	spendUncheckpointed bool
 }
 
 func mergeArtifactRevisions(base, overlay map[string]store.ArtifactRevisionRef) map[string]store.ArtifactRevisionRef {
@@ -138,6 +145,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	if branchCP != nil && branchCP.CurrentNodeID != "" {
 		currentNodeID = branchCP.CurrentNodeID
 	}
+	// Registered before the cursor defer so it runs after it: a checkpoint
+	// written on the way out clears the flag, and this then has nothing to do.
+	// Every branch exit passes here, including the ones that return straight
+	// out of the loop (fail node, unresolvable edge, exceeded budget).
+	defer e.persistBranchSpend(rs, parallel, result)
 	defer func() {
 		// A sibling pause cancels the invocation after its interaction is
 		// durable. Persist this branch's current in-memory cursor once at that
@@ -472,8 +484,17 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 		cp.InteractionID = ps.PendingInteractionID
 		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
 	}
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil {
+		// The clear belongs to a write that LANDED, not to one that was
+		// merely logged: hanging it off `err != nil && e.logger != nil`
+		// made a nil logger read as success and drop the branch's booking.
+		if e.logger != nil {
+			e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+		}
+	} else {
+		// This snapshot carries the run budget, so any spend booked before it
+		// is now durable and persistBranchSpend has nothing left to write.
+		result.spendUncheckpointed = false
 	}
 	if barrier != nil {
 		close(barrier)
@@ -728,6 +749,13 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
+		// The delegate stamps what the attempt burned on the result it
+		// returns beside the error, and this is the last frame that can see
+		// it: the branch ends here (nothing retries it in place) and the
+		// trunk aggregates the failure without the output. Booked under the
+		// SAME ledger key the branch's successes use, so a fan-out's spend
+		// stays one monotonic entry.
+		e.recordFailedBranchSpend(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, &result.costUSD, result)
 		if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]any{
 			"error": err.Error(),
 		}); emitErr != nil {
@@ -768,28 +796,8 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // across iterations; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
 func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) bool {
-	tokens, costUSD := extractUsage(output)
-
-	if e.dailyCap != nil && costUSD > 0 {
-		*branchCostUSD += costUSD
-		if _, err := e.dailyCap.Record(ctx, ledgerKey, *branchCostUSD); err != nil {
-			e.logger.Warn("branch %s: daily spend cap record failed: %v", branchID, err)
-		}
-	}
-
-	if rs.budget == nil {
-		return false
-	}
-	checks := rs.budget.RecordUsage(tokens, costUSD)
-
-	for _, w := range findWarnings(checks) {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
-			e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
-			result.eventErrors++
-		}
-	}
-
-	if exc := findExceeded(checks); exc != nil {
+	exc := e.recordBranchSpend(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, branchCostUSD, result)
+	if exc != nil {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,
@@ -802,6 +810,139 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 		return true
 	}
 	return false
+}
+
+// recordBranchSpend is the RECORDING half of recordBranchUsage — the ledger
+// entry under the branch key, the shared run budget, the warnings — returning
+// the exceeded axis (nil when none) instead of acting on it. Split out so a
+// booking that must not speak for the run can reuse every line of it:
+// recordBranchUsage is this plus the verdict, recordFailedBranchSpend is this
+// alone.
+func (e *Engine) recordBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) *budgetCheckResult {
+	tokens, costUSD := extractUsage(output)
+
+	if e.dailyCap != nil && costUSD > 0 {
+		*branchCostUSD += costUSD
+		// The branch's DURABLE cost cursor just moved — the figure a resume
+		// re-seeds from, and the one the ledger's monotonic-max entry is
+		// now at. Arm the flush for it as well as for the run budget below:
+		// a workflow with no `budget:` block still has this axis, and it is
+		// the axis a stale checkpoint silently discards spend against.
+		result.spendUncheckpointed = true
+		if _, err := e.dailyCap.Record(ctx, ledgerKey, *branchCostUSD); err != nil {
+			e.logger.Warn("branch %s: daily spend cap record failed: %v", branchID, err)
+		}
+	}
+
+	if rs.budget == nil {
+		return nil
+	}
+	checks := rs.budget.RecordUsage(tokens, costUSD)
+	if tokens > 0 || costUSD > 0 {
+		// The run budget just moved in memory. Every exit of this branch that
+		// writes no checkpoint would leave it there: a failed node, a fail
+		// node, an edge that cannot resolve, an exceeded budget. The flag is
+		// cleared by the next snapshot that carries the budget, and flushed by
+		// persistBranchSpend on the way out.
+		result.spendUncheckpointed = true
+	}
+
+	for _, w := range findWarnings(checks) {
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
+			e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
+			result.eventErrors++
+		}
+	}
+	return findExceeded(checks)
+}
+
+// recordFailedBranchSpend books what a branch node burned before it failed —
+// the trunk's recordFailedNodeSpend, in branch coordinates (the branch's own
+// daily-cap ledger key and event stream).
+//
+// A fan-out branch never reaches execLoopRunNode, so the trunk's booking
+// cannot cover it, and a failing branch node is terminal for its branch: no
+// retry continues its session, and the trunk's aggregation fails the run
+// without ever seeing the output. Whatever it burned is therefore final here
+// or lost — and a fan-out branch is where the most expensive agent work in a
+// run tends to happen.
+//
+// Accounting only, never a verdict: the exceeded axis is DISCARDED rather
+// than turned into result.err, because the branch already has its own cause
+// and a budget error would replace it with a generic one. On a context
+// detached from the branch's, so a teardown mid-branch cannot refuse the
+// ledger write it is the last chance to make.
+func (e *Engine) recordFailedBranchSpend(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) {
+	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+		return
+	}
+	bookCtx, cancel := detachedBookingCtx(ctx)
+	defer cancel()
+	// The flush is armed by whichever DURABLE axis the booking moved — the
+	// shared run budget or the branch's own cost cursor, both inside
+	// recordBranchSpend. Arming it here as well would order a full
+	// SaveCheckpoint for a failure map that carried nothing either axis
+	// could take: a node whose only spend is unpriceable, on a workflow
+	// with no `budget:` block.
+	_ = e.recordBranchSpend(bookCtx, rs, runID, branchID, ledgerKey, currentNodeID, output, branchCostUSD, result)
+}
+
+// persistBranchSpend makes a failing branch's booking durable. The booking
+// itself only reaches the shared budget in MEMORY, and this branch writes no
+// checkpoint of its own: execBranch returns as soon as the node fails. Whether
+// the spend survives would otherwise depend on a sibling happening to
+// checkpoint afterwards — so the same run loses a whole failed session's spend
+// or keeps it, by scheduling. A resume reads its budget carry from the last
+// checkpoint, and is handed back an allowance the run has already burned.
+//
+// Cursors are deliberately untouched: this is an accounting write. It
+// snapshots the parallel state as it stands, so a restart still finds every
+// branch exactly where its own boundary left it, and the failed node's restart
+// position stays the retry logic's to decide.
+func (e *Engine) persistBranchSpend(parent *runState, parallel *parallelExecutionState, result *branchResult) {
+	if parent == nil || parallel == nil || result == nil || !result.spendUncheckpointed {
+		return
+	}
+	result.spendUncheckpointed = false
+	parallel.saveMu.Lock()
+	defer parallel.saveMu.Unlock()
+	if parallel.isRetired() {
+		return
+	}
+	// The one cursor an accounting write DOES owe: the branch's cumulative
+	// cost is what the daily-cap ledger was told, and a resume re-seeds the
+	// branch from this field. Left stale, the resumed branch starts below a
+	// monotonic-max ledger entry the failed attempt already raised, and its
+	// next contributions are dropped one after another until they overtake
+	// it — several calls, not one. Only this field is touched; everything
+	// else stays where its own boundary left it.
+	parallel.raiseBranchCostUSD(result.branchID, result.costUSD)
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	if ps.PendingInteractionID != "" {
+		// A sibling parked on a human gate owns this run's pause pointer, and
+		// resume reads it from cp.InteractionID. An accounting write that
+		// omitted it would answer "no interaction pending" for a run that has
+		// one — checkpointBranchState carries it for the same reason.
+		cp.InteractionID = ps.PendingInteractionID
+		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
+	}
+	// Detached for the reason the booking was: the branch's context is the
+	// one that just died, and this is the last frame that can write.
+	writeCtx, cancel := detachedBookingCtx(parent.ctx)
+	defer cancel()
+	// No `&& e.logger != nil`: the logger is nil-receiver-safe, and folding
+	// the two into one condition is exactly what turned the sibling write in
+	// checkpointBranchState into a durability bug. Nothing is steered on the
+	// error here — this is already the last chance to write — but the idiom
+	// should not be left around to be copied back.
+	if err := e.store.SaveCheckpoint(writeCtx, parent.runID, cp); err != nil {
+		e.logger.Error("failed to persist branch %s spend: %v", result.branchID, err)
+	}
 }
 
 // publishBranchArtifact persists the node's output as a versioned artifact

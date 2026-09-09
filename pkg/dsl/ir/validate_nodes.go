@@ -251,6 +251,21 @@ func (c *compiler) validateRepoDevbox(w *Workflow) {
 		w.Name, w.RepoDevbox)
 }
 
+// validateWorkspaceCheckpoint enforces that workspace_checkpoint is one of
+// the accepted barewords. The stakes are the reverse of the two above: the
+// default is ON, so a mistyped `off` reads as "inherit" and keeps pushing a
+// branch to the repository the bot was pointed at — the very thing an author
+// writing this field is trying to stop.
+func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
+	switch strings.ToLower(strings.TrimSpace(w.WorkspaceCheckpoint)) {
+	case "", "on", "off":
+		return
+	}
+	c.errorf(DiagInvalidWorkspaceCheckpoint,
+		"workflow %q has invalid workspace_checkpoint %q; valid values are on, off",
+		w.Name, w.WorkspaceCheckpoint)
+}
+
 // validateAutoMemory enforces that every auto_memory value (workflow-level +
 // every agent/judge node) is one of the accepted barewords, and warns when a
 // node asks for it on a backend that cannot deliver it. A typo would silently

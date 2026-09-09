@@ -82,6 +82,15 @@ type Diagnostic struct {
 	NodeID   string
 	EdgeID   string
 	Hint     string
+	// File, Line and Column locate the declaration the diagnostic is
+	// attributed to — the node named by NodeID, or the edge named by
+	// EdgeID — in the source that was compiled. Best-effort: a global
+	// diagnostic (no workflow, duplicate loop) has no position and keeps
+	// the zero values, and a group-expanded node points at the group
+	// member it was cloned from.
+	File   string
+	Line   int // 1-based; 0 = no position
+	Column int // 1-based
 }
 
 func (d Diagnostic) Error() string {
@@ -120,6 +129,10 @@ type compiler struct {
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 	mcp     map[string]*MCPServer
+	// edgeSpans remembers where each compiled edge was declared, so a
+	// diagnostic on an edge lands on ITS line even when another edge shares
+	// its endpoints (the canonical "<from>-><to>" id cannot tell them apart).
+	edgeSpans map[*Edge]ast.Span
 
 	autoBackendOnce   sync.Once
 	autoBackendCached bool
@@ -137,44 +150,78 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 	return InteractionNone
 }
 
-func (c *compiler) errorf(code DiagCode, format string, args ...any) {
+// emit appends one diagnostic. Every emit helper below is a view over it, so
+// whatever attribution a site can offer — a node, an edge, a source span, a
+// site-specific fix line — travels the same way whichever helper it used,
+// and the catalogue fix line is the default hint for every code.
+func (c *compiler) emit(sev Severity, code DiagCode, nodeID, edgeID string, sp ast.Span, hint string, format string, args ...any) {
+	if hint == "" {
+		hint = HintFor(code)
+	}
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
-		Severity: SeverityError,
+		Severity: sev,
 		Message:  fmt.Sprintf(format, args...),
+		NodeID:   nodeID,
+		EdgeID:   edgeID,
+		Hint:     hint,
+		File:     sp.Start.File,
+		Line:     sp.Start.Line,
+		Column:   sp.Start.Column,
 	})
 }
 
+func (c *compiler) errorf(code DiagCode, format string, args ...any) {
+	c.emit(SeverityError, code, "", "", ast.Span{}, "", format, args...)
+}
+
 func (c *compiler) warnf(code DiagCode, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityWarning,
-		Message:  fmt.Sprintf(format, args...),
-	})
+	c.emit(SeverityWarning, code, "", "", ast.Span{}, "", format, args...)
 }
 
 // errorfAt is a variant of errorf that attaches authoritative attribution
 // (nodeID and/or edgeID) so downstream tooling can render the diagnostic on
-// the precise node or edge instead of guessing from the message text.
+// the precise node or edge instead of guessing from the message text; the
+// source position is resolved from those ids by attachPositions.
 func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityError,
-		Message:  fmt.Sprintf(format, args...),
-		NodeID:   nodeID,
-		EdgeID:   edgeID,
-	})
+	c.emit(SeverityError, code, nodeID, edgeID, ast.Span{}, "", format, args...)
 }
 
 // warnfAt is the warning counterpart to errorfAt.
 func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
-	c.diags = append(c.diags, Diagnostic{
-		Code:     code,
-		Severity: SeverityWarning,
-		Message:  fmt.Sprintf(format, args...),
-		NodeID:   nodeID,
-		EdgeID:   edgeID,
-	})
+	c.emit(SeverityWarning, code, nodeID, edgeID, ast.Span{}, "", format, args...)
+}
+
+// errorfOnEdge attributes a diagnostic to one specific AST edge — its own
+// line, which is what tells two edges sharing endpoints apart — with the
+// canonical edge id alongside.
+func (c *compiler) errorfOnEdge(code DiagCode, ae *ast.Edge, format string, args ...any) {
+	c.emit(SeverityError, code, "", edgeID(ae.From, ae.To), ae.Span, "", format, args...)
+}
+
+// errorfAtEdge is errorfOnEdge for a compiled edge, through the span
+// compileEdges recorded for it.
+func (c *compiler) errorfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
+	c.emit(SeverityError, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+}
+
+// warnfAtEdge is the warning counterpart to errorfAtEdge.
+func (c *compiler) warnfAtEdge(code DiagCode, e *Edge, format string, args ...any) {
+	c.emit(SeverityWarning, code, e.From, edgeID(e.From, e.To), c.edgeSpans[e], "", format, args...)
+}
+
+// errorfAtSpan attributes a diagnostic to a source span directly — for a
+// declaration that is not a graph node (a prompt, a schema) and so has no
+// NodeID for attachPositions to look up.
+func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
+	c.emit(SeverityError, code, "", "", sp, "", format, args...)
+}
+
+// errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
+// for a node that has more than one declaration, where the id alone would
+// resolve to the first one while the line to edit is the other.
+func (c *compiler) errorfAtNodeSpan(code DiagCode, nodeID string, sp ast.Span, format string, args ...any) {
+	c.emit(SeverityError, code, nodeID, "", sp, "", format, args...)
 }
 
 // edgeID builds the canonical "<from>-><to>" identifier the studio uses so
@@ -307,33 +354,34 @@ func (c *compiler) validateNodeNames() {
 	type decl struct {
 		kind string
 		name string
+		span ast.Span
 	}
 	all := make([]decl, 0,
 		len(c.file.Agents)+len(c.file.Judges)+len(c.file.Routers)+
 			len(c.file.Humans)+len(c.file.Tools)+len(c.file.Computes))
 	for _, d := range c.file.Agents {
-		all = append(all, decl{"agent", d.Name})
+		all = append(all, decl{"agent", d.Name, d.Span})
 	}
 	for _, d := range c.file.Judges {
-		all = append(all, decl{"judge", d.Name})
+		all = append(all, decl{"judge", d.Name, d.Span})
 	}
 	for _, d := range c.file.Routers {
-		all = append(all, decl{"router", d.Name})
+		all = append(all, decl{"router", d.Name, d.Span})
 	}
 	for _, d := range c.file.Humans {
-		all = append(all, decl{"human", d.Name})
+		all = append(all, decl{"human", d.Name, d.Span})
 	}
 	for _, d := range c.file.Tools {
-		all = append(all, decl{"tool", d.Name})
+		all = append(all, decl{"tool", d.Name, d.Span})
 	}
 	for _, d := range c.file.Computes {
-		all = append(all, decl{"compute", d.Name})
+		all = append(all, decl{"compute", d.Name, d.Span})
 	}
 	for _, d := range c.file.Subbots {
-		all = append(all, decl{"subbot", d.Name})
+		all = append(all, decl{"subbot", d.Name, d.Span})
 	}
 	for _, d := range c.file.Fails {
-		all = append(all, decl{"fail", d.Name})
+		all = append(all, decl{"fail", d.Name, d.Span})
 	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
@@ -349,7 +397,9 @@ func (c *compiler) validateNodeNames() {
 			continue
 		}
 		if firstKind, dup := seen[d.name]; dup {
-			c.errorfAt(DiagDuplicateNodeID, d.name, "",
+			// Point at the REDECLARATION — the line to delete — not at the
+			// first declaration the node id alone would resolve to.
+			c.errorfAtNodeSpan(DiagDuplicateNodeID, d.name, d.span,
 				"duplicate node ID %q: already declared as %s, redeclared as %s — node IDs must be unique across all kinds",
 				d.name, firstKind, d.kind)
 			continue
@@ -369,6 +419,7 @@ func Compile(file *ast.File) *CompileResult {
 		mcp:     make(map[string]*MCPServer),
 	}
 	w := c.compile()
+	c.attachPositions()
 	return &CompileResult{
 		Workflow:    w,
 		Diagnostics: c.diags,
@@ -480,41 +531,42 @@ func (c *compiler) compile() *Workflow {
 	}
 
 	w := &Workflow{
-		Name:            wf.Name,
-		Entry:           wf.Entry,
-		DefaultBackend:  wf.DefaultBackend,
-		ToolPolicy:      wf.ToolPolicy,
-		Capabilities:    wf.Capabilities,
-		Skills:          wf.Skills,
-		Nodes:           c.nodes,
-		Edges:           edges,
-		Schemas:         c.schemas,
-		Prompts:         c.prompts,
-		Vars:            vars,
-		Secrets:         secrets,
-		Presets:         presets,
-		Attachments:     attachments,
-		Loops:           loops,
-		Foreaches:       foreaches,
-		Budget:          budget,
-		Resources:       resources,
-		ResourceMembers: resourceMembers,
-		Compaction:      compaction,
-		MCP:             convertMCPConfig(wf.MCP),
-		MCPServers:      c.mcp,
-		Cursors:         cursors,
-		Supervisors:     supervisors,
-		Interaction:     interaction,
-		Worktree:        defaultWorktreeMode(wf.Worktree),
-		Compress:        wf.Compress,
-		AutoMemory:      wf.AutoMemory,
-		LoopBudgetGuard: wf.LoopBudgetGuard,
-		RepoDevbox:      wf.RepoDevbox,
-		Permission:      wf.Permission,
-		PermissionAllow: wf.Allow,
-		PermissionAsk:   wf.Ask,
-		PermissionDeny:  wf.Deny,
-		Sandbox:         c.compileSandboxBlock(wf.Sandbox, "workflow", wf.Name),
+		Name:                wf.Name,
+		Entry:               wf.Entry,
+		DefaultBackend:      wf.DefaultBackend,
+		ToolPolicy:          wf.ToolPolicy,
+		Capabilities:        wf.Capabilities,
+		Skills:              wf.Skills,
+		Nodes:               c.nodes,
+		Edges:               edges,
+		Schemas:             c.schemas,
+		Prompts:             c.prompts,
+		Vars:                vars,
+		Secrets:             secrets,
+		Presets:             presets,
+		Attachments:         attachments,
+		Loops:               loops,
+		Foreaches:           foreaches,
+		Budget:              budget,
+		Resources:           resources,
+		ResourceMembers:     resourceMembers,
+		Compaction:          compaction,
+		MCP:                 convertMCPConfig(wf.MCP),
+		MCPServers:          c.mcp,
+		Cursors:             cursors,
+		Supervisors:         supervisors,
+		Interaction:         interaction,
+		Worktree:            defaultWorktreeMode(wf.Worktree),
+		Compress:            wf.Compress,
+		AutoMemory:          wf.AutoMemory,
+		LoopBudgetGuard:     wf.LoopBudgetGuard,
+		RepoDevbox:          wf.RepoDevbox,
+		WorkspaceCheckpoint: wf.WorkspaceCheckpoint,
+		Permission:          wf.Permission,
+		PermissionAllow:     wf.Allow,
+		PermissionAsk:       wf.Ask,
+		PermissionDeny:      wf.Deny,
+		Sandbox:             c.compileSandboxBlock(wf.Sandbox, "workflow", wf.Name),
 	}
 
 	// Compute each loop's body — the set of nodes that participate in
@@ -611,7 +663,7 @@ func (c *compiler) compileSchemas() {
 			// validation then only saw the survivor, so an attacker
 			// could slip an unaudited schema past a review pipeline
 			// that inspected only the first occurrence.
-			c.errorf(DiagDuplicateNodeID,
+			c.errorfAtSpan(DiagDuplicateNodeID, s.Span,
 				"duplicate schema name %q: schemas must be unique within a file", s.Name)
 			continue
 		}
@@ -707,7 +759,7 @@ func (c *compiler) compilePrompts() {
 			// Mirror compileSchemas: a second `prompt foo:` used to
 			// silently overwrite the first in c.prompts, leaving the
 			// audit-relevant earlier body invisible.
-			c.errorf(DiagDuplicateNodeID,
+			c.errorfAtSpan(DiagDuplicateNodeID, p.Span,
 				"duplicate prompt name %q: prompts must be unique within a file", p.Name)
 			continue
 		}
@@ -715,16 +767,18 @@ func (c *compiler) compilePrompts() {
 		// Expand {{include "..."}} markers once, at compile time, before
 		// ParseRefs sees the body — the injected file content becomes part
 		// of the resolved prompt (auditable, no runtime file reads).
-		// Resolve relative to the .bot source directory, carried on the
-		// declaration's span (like MergeBundlePrompts reads bundle files
-		// relative to the bundle dir).
+		// Resolve relative to the directory of the file that declares the
+		// prompt, carried on the declaration's span: the .bot source, or
+		// the bundle's prompts/ for a merged prompts/*.md. A prompt with no
+		// span would resolve against the process working directory — on a
+		// server, nobody's — so every constructor stamps one.
 		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
 		for _, e := range incErrs {
-			c.errorf(DiagBadPromptInclude, "prompt %q: %v", p.Name, e)
+			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
 		}
 		refs, err := ParseRefs(body)
 		if err != nil {
-			c.errorf(DiagBadTemplateRef, "prompt %q: %v", p.Name, err)
+			c.errorfAtSpan(DiagBadTemplateRef, p.Span, "prompt %q: %v", p.Name, err)
 		}
 		c.prompts[p.Name] = &Prompt{
 			Name:         p.Name,
@@ -1024,10 +1078,10 @@ func (c *compiler) compileHumans() {
 				model = h.Model
 			}
 			if model == "" {
-				c.errorf(DiagMissingModelOrBackend, "human %q with interaction %s must set 'model' or 'interaction_model'", h.Name, interaction)
+				c.errorfAt(DiagMissingModelOrBackend, h.Name, "", "human %q with interaction %s must set 'model' or 'interaction_model'", h.Name, interaction)
 			}
 			if h.Output == "" {
-				c.errorf(DiagMissingModelOrBackend, "human %q with interaction %s must set 'output'", h.Name, interaction)
+				c.errorfAt(DiagMissingModelOrBackend, h.Name, "", "human %q with interaction %s must set 'output'", h.Name, interaction)
 			}
 			node.Model = h.Model
 			if h.InteractionModel != "" {
@@ -1061,7 +1115,7 @@ func (c *compiler) compileHumans() {
 			if h.ReviewURL != "" {
 				refs, err := ParseRefs(h.ReviewURL)
 				if err != nil {
-					c.errorf(DiagBadTemplateRef, "human %q review_url: %v", h.Name, err)
+					c.errorfAt(DiagBadTemplateRef, h.Name, "", "human %q review_url: %v", h.Name, err)
 				} else {
 					node.ReviewURLRefs = refs
 				}
@@ -1092,18 +1146,18 @@ func (c *compiler) compileTools() {
 		// command and script are mutually exclusive; exactly one must be set.
 		switch {
 		case t.Command == "" && t.Script == "":
-			c.errorf(DiagBadTemplateRef, "tool %q: must declare either `command:` or `script:`", t.Name)
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: must declare either `command:` or `script:`", t.Name)
 		case t.Command != "" && t.Script != "":
-			c.errorf(DiagBadTemplateRef, "tool %q: `command:` and `script:` are mutually exclusive", t.Name)
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `command:` and `script:` are mutually exclusive", t.Name)
 		case t.Script == "" && t.Language != "":
 			// language without script makes no sense.
-			c.errorf(DiagBadTemplateRef, "tool %q: `language:` is only valid alongside `script:`", t.Name)
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `language:` is only valid alongside `script:`", t.Name)
 		}
 
 		var cmdRefs []*Ref
 		if t.Command != "" {
 			if refs, err := ParseRefs(t.Command); err != nil {
-				c.errorf(DiagBadTemplateRef, "tool %q command: %v", t.Name, err)
+				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q command: %v", t.Name, err)
 			} else {
 				cmdRefs = refs
 			}
@@ -1113,7 +1167,7 @@ func (c *compiler) compileTools() {
 		var scriptRefs []*Ref
 		if t.Script != "" {
 			if refs, err := ParseRefs(t.Script); err != nil {
-				c.errorf(DiagBadTemplateRef, "tool %q script: %v", t.Name, err)
+				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q script: %v", t.Name, err)
 			} else {
 				scriptRefs = refs
 			}
@@ -1125,7 +1179,7 @@ func (c *compiler) compileTools() {
 			case "js", "node", "py", "python", "python3", "sh", "bash":
 				// known
 			default:
-				c.errorf(DiagBadTemplateRef, "tool %q: unsupported language %q (want one of: js, node, py, python, python3, sh, bash)", t.Name, t.Language)
+				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: unsupported language %q (want one of: js, node, py, python, python3, sh, bash)", t.Name, t.Language)
 			}
 		}
 
@@ -1135,7 +1189,7 @@ func (c *compiler) compileTools() {
 		var postcondRefs []*Ref
 		if t.Postcondition != "" {
 			if refs, err := ParseRefs(t.Postcondition); err != nil {
-				c.errorf(DiagBadTemplateRef, "tool %q postcondition: %v", t.Name, err)
+				c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q postcondition: %v", t.Name, err)
 			} else {
 				postcondRefs = refs
 			}
@@ -1456,10 +1510,10 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 	for _, ae := range astEdges {
 		// Validate node references.
 		if _, ok := c.nodes[ae.From]; !ok {
-			c.errorf(DiagUnknownNode, "edge source %q not found", ae.From)
+			c.errorfOnEdge(DiagUnknownNode, ae, "edge source %q not found", ae.From)
 		}
 		if _, ok := c.nodes[ae.To]; !ok {
-			c.errorf(DiagUnknownNode, "edge target %q not found", ae.To)
+			c.errorfOnEdge(DiagUnknownNode, ae, "edge target %q not found", ae.To)
 		}
 
 		e := &Edge{
@@ -1467,6 +1521,10 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			To:     ae.To,
 			IsElse: ae.IsElse,
 		}
+		if c.edgeSpans == nil {
+			c.edgeSpans = map[*Edge]ast.Span{}
+		}
+		c.edgeSpans[e] = ae.Span
 
 		// Condition: either a simple field name (legacy) or a parsed expression.
 		if ae.When != nil {
@@ -1513,7 +1571,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				if ae.Loop.MaxIterationsExpr != "" {
 					refs, err := ParseRefs(ae.Loop.MaxIterationsExpr)
 					if err != nil {
-						c.errorf(DiagBadTemplateRef,
+						c.errorfOnEdge(DiagBadTemplateRef, ae,
 							"loop %q: template cap %q: %v",
 							ae.Loop.Name, ae.Loop.MaxIterationsExpr, err)
 					}
@@ -1529,7 +1587,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 							loop.MaxIterations = n
 							loop.MaxIterationsExpr = ""
 						} else {
-							c.errorf(DiagBadTemplateRef,
+							c.errorfOnEdge(DiagBadTemplateRef, ae,
 								"loop %q: cap %q has no template refs and is not an integer — a static non-numeric cap would silently limit the loop to 0 iterations",
 								ae.Loop.Name, ae.Loop.MaxIterationsExpr)
 						}
@@ -1554,7 +1612,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				}
 				refs, err := ParseRefs(ae.Foreach.Collection)
 				if err != nil {
-					c.errorf(DiagBadTemplateRef, "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
+					c.errorfOnEdge(DiagBadTemplateRef, ae, "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
 				}
 				fe.CollectionRefs = refs
 				foreaches[ae.Foreach.Name] = fe
@@ -1567,7 +1625,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			for i, w := range ae.With {
 				refs, err := ParseRefs(w.Value)
 				if err != nil {
-					c.errorf(DiagBadTemplateRef, "edge %s -> %s, with key %q: %v",
+					c.errorfOnEdge(DiagBadTemplateRef, ae, "edge %s -> %s, with key %q: %v",
 						ae.From, ae.To, w.Key, err)
 				}
 				e.With[i] = &DataMapping{
@@ -2002,7 +2060,7 @@ func (c *compiler) validateSchemaRef(node, prop, ref string) {
 		return
 	}
 	if _, ok := c.schemas[ref]; !ok {
-		c.errorf(DiagUnknownSchema, "node %q property %q references unknown schema %q", node, prop, ref)
+		c.errorfAt(DiagUnknownSchema, node, "", "node %q property %q references unknown schema %q", node, prop, ref)
 	}
 }
 
@@ -2011,7 +2069,7 @@ func (c *compiler) validatePromptRef(node, prop, ref string) {
 		return
 	}
 	if _, ok := c.prompts[ref]; !ok {
-		c.errorf(DiagUnknownPrompt, "node %q property %q references unknown prompt %q", node, prop, ref)
+		c.errorfAt(DiagUnknownPrompt, node, "", "node %q property %q references unknown prompt %q", node, prop, ref)
 	}
 }
 
@@ -2206,7 +2264,7 @@ func refInQuotes(command string) []string {
 // being cleaned up. The fix is always the same — drop the author's quotes.
 func (c *compiler) checkQuotedCommandRefs(node, command string) {
 	for _, ref := range refInQuotes(command) {
-		c.warnf(DiagQuotedCommandRef,
+		c.warnfAt(DiagQuotedCommandRef, node, "",
 			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
 				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
 			node, ref)

@@ -2,7 +2,7 @@
 
 This is the readable inventory of the syntax accepted by the current parser. The machine-oriented counterpart is [`grammar/iterion_v1.ebnf`](../grammar/iterion_v1.ebnf). Parsing success is only the first stage: the IR compiler then checks declarations, types, references, graph structure, mode-specific properties, loops, resources, and capabilities.
 
-Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `##` comments and blank lines are ignored between constructs.
+Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `#` comments (`##` is the same comment) and blank lines are ignored between constructs.
 
 ## File declarations
 
@@ -12,7 +12,7 @@ file = { top_level_decl } ;
 top_level_decl = vars | presets | attachments | secrets | mcp_server
                | prompt | schema | cursor | supervisor
                | agent | judge | router | human | tool | compute
-               | emit | wait | await_answers | subbot | group | use | workflow ;
+               | emit | wait | await_answers | fail | subbot | group | use | workflow ;
 ```
 
 At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is retained. Named declarations may repeat only when their names remain unique after compilation.
@@ -21,7 +21,7 @@ At most one top-level `vars`, `presets`, `attachments`, and `secrets` block is r
 
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*`; quote kebab-case skill names and other values containing punctuation. A DSL string can use:
 
-```iter
+```text
 key: "escaped string"
 key: `raw string: $SHELL and "quotes" stay literal`
 key: |
@@ -29,7 +29,7 @@ key: |
   with preserved newlines
 ```
 
-Raw strings have no backtick escape. `## strict-escape: on` in the leading file comments opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
+Raw strings have no backtick escape. A `# strict-escape: on` line (or `## strict-escape: on`) among the leading comment lines of the file opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
 
 Scalar declaration literals are strings, integers, floats, or booleans. JSON and `string[]` defaults/preset values therefore use a quoted JSON representation.
 
@@ -296,7 +296,7 @@ Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cos
 
 Resources are either counting semaphores or named-member pools:
 
-```iter
+```iter fragment:workflow
 resources:
   browser: 2
   worktree: ["slot-a", "slot-b"]
@@ -308,7 +308,7 @@ Nodes acquire them with `needs: browser` or `needs: [browser, worktree]`.
 
 Short form:
 
-```iter
+```iter fragment:workflow
 sandbox: auto   # or none / inline
 ```
 

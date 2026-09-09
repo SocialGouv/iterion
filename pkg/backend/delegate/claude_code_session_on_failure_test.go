@@ -19,11 +19,14 @@ func sessionFailureBackend() *ClaudeCodeBackend {
 // announced on `system/init` — the id was logged and dropped.
 //
 // Scope, so the next reader does not over-read this: naming it is a
-// REPORTING fix on this path. The executor discards a failed Result
-// (executeBackend returns `nil, err`) and the failure checkpoint carries
-// no backend session, so nothing above the delegate resumes a dead node's
-// session today. What is pinned here is the id's provenance and its
-// precedence — the prerequisite for wiring that, not the wiring.
+// REPORTING fix on this path. The id does reach the engine now — the
+// executor hands a failed Result's metered output up rather than a bare
+// nil, `_session_id` stamped on it — but nothing on the failure path reads
+// it: commitPersistSlot, the only writer of a node's session slot, runs
+// after a node SUCCEEDS. So the failure checkpoint still carries no backend
+// session and nothing above the delegate resumes a dead node's. What is
+// pinned here is the id's provenance and its precedence — the prerequisite
+// for wiring that, not the wiring.
 func TestStreamFailureNamesTheSessionTheCLIAnnounced(t *testing.T) {
 	task := Task{NodeID: "n", Iteration: 1, Model: "claude-opus-5"}
 	b := sessionFailureBackend()

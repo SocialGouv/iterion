@@ -29,13 +29,13 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-Declarations may appear in any order subject to validation. `##` starts a comment. Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
+Declarations may appear in any order subject to validation. `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
 
 ## Inputs and reusable values
 
 ### Variables and presets
 
-```iter
+```iter fragment
 vars:
   project: string
   mode: string [enum: "autonomous", "interview"] = "autonomous"
@@ -57,7 +57,7 @@ A workflow may declare an additional `vars:` block. Top-level and workflow varia
 
 ### Attachments
 
-```iter
+```iter fragment
 attachments:
   specification: file
     description: "Product specification"
@@ -70,7 +70,7 @@ Attachments are uploaded/persisted inputs, not scalar vars. They are available a
 
 ### Secrets
 
-```iter
+```iter fragment
 secrets:
   forge_token: "${FORGE_TOKEN}"
   deploy_key:
@@ -89,7 +89,7 @@ Value secrets render as opaque placeholders and are materialised only at executi
 
 ### Prompts
 
-```iter
+```iter fragment
 prompt review_system:
   You are a reviewer for {{vars.project}}.
 
@@ -99,11 +99,11 @@ prompt review_user:
   Previous result: {{outputs.prior.summary}}
 ```
 
-`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the `.bot`, may not escape its directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
+`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
 
 ### Schemas
 
-```iter
+```iter fragment
 schema review_request:
   code: string
 
@@ -136,17 +136,19 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | `{{run.max_duration_seconds}}` / `.max_cost_usd` / `.max_tokens` / `.max_iterations` | The run's **effective** budget caps. |
 | `{{params.name}}` | `group` parameter during compile-time expansion. |
 
+`{{outputs.<node>.<field>}}` is readable from **any** node that runs after the producer — in a prompt, a command, an expression or a fail message — with no `with` threading; `{{input.<field>}}` only carries what the node's own `input:` schema declares and the incoming edge `with` mapped. Thread through `with` when a value must travel under a chosen name (a loop feedback field, a fan-out item); read `outputs.*` directly otherwise.
+
 `fan_out_each` also exposes the current item as `{{outputs.<router>.<as-name>}}`. Environment expressions use `${NAME}` (and supported default forms) before execution. In a tool `command` or `script`, `{{!input.field}}` is the explicit raw-substitution form; ordinary `{{input.field}}` is shell-escaped. Use the raw form only when the value is intentionally executable shell syntax, because it crosses the command-injection boundary.
 
 **Inside a fan-out branch**, every namespace above resolves exactly as it does on the trunk — a node renders the same whether it was reached by a plain edge or by a `fan_out_all` / `fan_out_each` router. `{{outputs.*}}` resolves against the BRANCH's own view: its upstream trunk outputs plus what this branch has produced, plus the per-item binding a `fan_out_each` stamped. Sibling branches are invisible to each other, which is what makes the render deterministic; their outputs only become readable at the convergence node. `{{run.*}}` is the run's, not the branch's — the whole run's consumption and caps, shared by every branch.
 
-A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}` and `{{outputs.<node>.<field>}}` — the last from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `sh -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
+A tool `command:` / `script:` / `postcondition:` resolves `{{input.*}}`, `{{vars.*}}`, `{{secrets.*}}`, `{{run.*}}` and `{{outputs.<node>.<field>}}` — the last from the same template snapshot a prompt renders from, on the trunk and in a branch alike (inside a branch, the branch's own view, per-item binding included). An output is substituted exactly like an input: shell-escaped as one word in a `command:` / `postcondition:`, as a JSON literal in a `script:`; the `{{!outputs.…}}` raw form crosses the command-injection boundary like `{{!input.…}}` does. An output the referenced node has not produced yet takes the missing-input rule too — the `{{…}}` placeholder stays in a shell body so `bash -c` fails on it visibly, and renders as `null` in a script body. The output arrives with the shape its producer gave it: a `json`-declared **input** field is pre-encoded into one JSON token for the shell, an output referenced directly is not, so a list of strings space-joins into several words. To keep the pre-encoding, thread the value through an edge `with` mapping into a `json` input field and read `{{input.<key>}}`.
 
 ## LLM nodes: `agent` and `judge`
 
 `agent` performs work; `judge` is the semantically evaluative twin. They accept the same properties.
 
-```iter
+```iter fragment
 agent reviewer:
   description: "Read-only branch reviewer"
   backend: "claude_code"
@@ -187,7 +189,7 @@ Important property groups:
 
 Node-level nested blocks include:
 
-```iter
+```iter fragment
 agent worker:
   # ...model/prompts...
   compaction:
@@ -200,7 +202,6 @@ agent worker:
     read: true
     write: true
     pre_compact_inject: true
-    project_root: true
     visibility: "bot"
   cursors:
     enabled: true
@@ -217,7 +218,7 @@ See [memory and knowledge](memory-and-knowledge.md), [cursors](cursors.md), [per
 
 Iterion has five router modes:
 
-```iter
+```iter fragment
 router all_reviews:
   mode: fan_out_all
 
@@ -249,7 +250,7 @@ router smart:
 
 Parallel branches converge at an `agent`, `judge`, `human`, `tool`, or `compute` node:
 
-```iter
+```iter fragment
 compute collect:
   output: collection_result
   await: wait_all       # or best_effort
@@ -263,7 +264,7 @@ Routers are fan-out sources and never declare `await`. See [routers](routers.md)
 
 ## Human interaction
 
-```iter
+```iter fragment
 human approval:
   description: "Release approval"
   input: approval_request
@@ -283,7 +284,7 @@ Resume a pause with `iterion resume --run-id <id> --file workflow.bot --answer k
 
 A tool executes either a shell command or a script; it does not call an LLM.
 
-```iter
+```iter fragment
 tool run_tests:
   description: "Run the repository test suite"
   command: `make test`
@@ -295,9 +296,19 @@ tool run_tests:
 
 `command` and `script` are mutually exclusive. A script adds `language: js|py|sh|bash` (default `sh`). Tools also accept `input`, `output`, `publish`, `artifact_labels`, `await`, `sandbox`, `compress`, `permission`, and `needs`.
 
+**The output contract.** A tool node's **stdout is its output**: the runtime parses it as a JSON object, and that object is what `{{outputs.<tool>.<field>}}`, an edge `when`, and the declared `output:` schema see. Stdout that is not a JSON object is wrapped as `{"result": "<text>"}` — a downstream `{{outputs.run_tests.passed}}` then finds nothing. A non-zero exit code **fails the node** (resumable), stdout and stderr attached; when the failure is a *result* rather than an error — a test suite that fails, a scanner that finds something — wrap the command so it exits 0 and reports the verdict as a field:
+
+```iter fragment
+tool run_tests:
+  command: `if make test >/tmp/test.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, log: .[-20000:]}' </tmp/test.log`
+  output: test_result        # schema: passed: bool, log: string
+```
+
+(`jq -Rs` reads the whole log as one JSON string and ships in the default sandbox image; the `.[-20000:]` tail bounds what reaches the schema field — and every downstream prompt that reads it — because nothing else does: a 50 MB log would land in the judge's context whole; a `python3 -c "…json.dumps…"` wrapper reads well but `python3` is NOT in that image, and a missing interpreter turns the payload into invalid JSON that the runtime then wraps as `{"result": …}` in silence — declare any interpreter you rely on in the bot's `devbox.json`.) A `command:` runs through **`bash -c`**, on the host and inside a sandbox alike ([`executor_tool.go`](../pkg/backend/model/executor_tool.go), `toolNodeCommand`); a `script:` runs the interpreter its `language:` names, and `language: sh` is whatever `sh` is on PATH — dash on Debian-derived images, so keep scripts POSIX. Every `{{ref}}` in a `command:` is shell-escaped as one word; do not wrap it in quotes of your own ([C137](references/diagnostics.md)).
+
 Verified Actions add a deterministic outcome check and bounded recovery:
 
-```iter
+```iter fragment
 tool deploy:
   command: `./deploy.sh`
   goal: "The service is deployed and healthy"
@@ -316,7 +327,7 @@ tool deploy:
 
 `compute` evaluates bounded expressions without an LLM or shell:
 
-```iter
+```iter fragment
 schema stats:
   count: int
   ready: bool
@@ -333,7 +344,7 @@ Expressions support field/index access, arithmetic/comparison/boolean operators,
 
 **The output is typed by its schema.** A compute output is conformed to the declared field types where it is produced, on the trunk and inside a fan-out branch alike: an integral number under `int` is stored as the integer it reads as, an integer under `float` as a float, and a value that cannot be conformed fails the node with the field named — a fractional float under `int` (`10.58` from a division), a string under `bool`, a number under `string`. The engine never picks a rounding for you: write it, with `floor(x)` (towards negative infinity) or `round(x)` (half away from zero), both of which return an integer.
 
-```iter
+```iter fragment
 schema gauge:
   used_pct: int
 
@@ -385,7 +396,7 @@ value. In an expression it is nil — the same silence as
 `vars.<unknown>` — and comparing it is what fails, loudly, at the node.
 In a rendered body it takes the missing-ref rule every namespace
 follows: the `{{…}}` placeholder stays in a prompt and in a shell
-`command:` / `postcondition:`, so `sh -c` fails on visible braces
+`command:` / `postcondition:`, so `bash -c` fails on visible braces
 instead of running one argument short, and it renders as `null` in a
 `script:` body so the interpreter still parses.
 
@@ -403,7 +414,7 @@ to the `_tokens` / `_cost_usd` keys the backends write — the per-node
 timing counterpart, stamped by the engine so tool and compute nodes get
 it too.
 
-```iter
+```iter fragment
 schema gauge:
   used_pct: int
   exhausted: bool
@@ -424,7 +435,7 @@ float with an integer's label.
 
 These nodes coordinate concurrent branches through immutable run-scoped events:
 
-```iter
+```iter fragment
 emit publish_ready:
   event: "ready"
   with {
@@ -449,7 +460,7 @@ operator sees whichever of a bot's refusals fired.
 A workflow that refuses for a **reason** declares a named fail node
 instead. One per reason; the bare `fail` keeps its untyped behaviour.
 
-```iter
+```iter fragment
 fail plan_exhausted:
   description: "the plan phase outgrew its share of the budget"
   code: PLAN_BUDGET_EXHAUSTED
@@ -507,6 +518,9 @@ naming the node. Put a guard whose refusal must be resumable on the trunk.
 Groups are compile-time macros containing agents, judges, routers, humans, tools, computes, and internal edges. Each use prefixes cloned node ids and substitutes `{{params.*}}`.
 
 ```iter
+prompt inspect_prompt:
+  Inspect the change and report material defects only.
+
 group check(rule):
   agent inspect:
     model: "anthropic/claude-sonnet-4-6"
@@ -525,7 +539,7 @@ External workflow edges address expanded nodes as `<prefix>.<node>`.
 
 ### `subbot`
 
-```iter
+```iter fragment
 subbot run_ticket:
   description: "Implement one planned ticket"
   source: "child.bot"
@@ -545,7 +559,7 @@ See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) fo
 
 A cursor declares reusable prompt calibration; a supervisor is a concurrent watcher, not a graph node:
 
-```iter
+```iter fragment
 cursor rigor:
   description: "Review strictness"
   values:
@@ -564,7 +578,7 @@ Cursor declarations use either `values:` or numeric `bands:`, never both. Superv
 
 ## MCP servers
 
-```iter
+```iter fragment
 mcp_server code_tools:
   transport: stdio
   command: "npx"
@@ -596,7 +610,7 @@ connects declared servers, claw registers in-process tools.)
 
 A workflow selects the entry node, configures run-wide controls, and declares edges:
 
-```iter
+```iter fragment
 workflow review:
   entry: prepare
   default_backend: "claude_code"
@@ -667,10 +681,10 @@ same threshold then refuses. The run instead leaves through its own exit
 path with room to walk it — for the campaign shape below, the
 `gate -> publish` fall-through that also serves loop exhaustion.
 
-```iter
-  gate -> publish when converged
-  gate -> work as passes(4)
-  gate -> publish            # exhausted, or unaffordable: ship what is banked
+```iter fragment:edges
+gate -> publish when converged
+gate -> work as passes(4)
+gate -> publish            # exhausted, or unaffordable: ship what is banked
 ```
 
 This matters for any loop that banks work as it goes (commits in stride, a
@@ -759,7 +773,7 @@ ever apply. The counter-intuitive consequence is real — a run refused at
 its terminal node. Raise the cap and resume for the former; the latter is
 the case the grace was built for.
 
-```iter
+```iter fragment
 workflow campaign:
   entry: work
   loop_budget_guard: off    # this loop must burn its cap, not stop short
@@ -834,15 +848,57 @@ needs is the *workflow's* declaration, which rides the `.bot` itself. So a
 bot's `repo_devbox: off` holds in cloud, while `--repo-devbox` is a local
 run's override.
 
-```iter
+```iter fragment
 workflow review_pr:
   entry: review
   repo_devbox: off    # this run reads the repo, it does not build it
 ```
 
+### The mid-run safety net — `workspace_checkpoint:`
+
+On a copy-based driver (kubernetes) the workspace is a tar copy inside the
+pod, so nothing a run produces leaves it until teardown — and a pod that
+dies hard takes the run with it. The **workspace checkpoint** closes that
+window: every ten minutes the runner reads the pod's tree into a temporary
+index, commits it without touching the run's own history, and force-pushes
+it as `iterion/run-<id>-checkpoint`. Details:
+[pkg/runner/loop_checkpoint.go](../pkg/runner/loop_checkpoint.go).
+
+`workspace_checkpoint:` is the same statement as `repo_devbox:`, one step
+further: not "does this run build the repo" but **"does this run write
+commits FOR it"**. If it does not, the net holds nothing of the run's —
+and it still pushes. Two consequences an author should weigh:
+
+- the push lands **on the run's own remote**, which is the repository the
+  bot was pointed at. A branch appears there, on every run;
+- the tree is read with `git add -A`, so a bot's scratch directory goes
+  with it — untracked, and nothing ignores it. Measured 2026-09-08: a
+  review bot's `.review-pr/findings.md`, an internal artifact whose board
+  posting had been deliberately disabled, reached a public repository that
+  way and stayed 29 hours.
+
+For a reviewer or an auditor that is pure downside: its conclusions live in
+node outputs, durable in the store without any push. The shipped read-only
+bots (`review-pr`, `revi-converse`, `sec-audit-source`, `sec-audit-deps`)
+therefore decline it, guarded both ways by
+[bots/workspace_checkpoint_test.go](../bots/workspace_checkpoint_test.go) —
+which also asserts the committing bots keep theirs.
+
+Default **on**: most bots exist to produce the commits this protects.
+Resolved `workspace_checkpoint:` → `ITERION_WORKSPACE_CHECKPOINT` → `on`;
+an invalid value is diagnostic **C139**, not a silent fall back. There is
+no per-run override yet, so a bot's `off` is final for that bot — declaring
+it is a statement about what the bot *is*, not a per-run cost dial.
+
+```iter fragment
+workflow sec_audit_source:
+  entry: inventory
+  workspace_checkpoint: off   # reads the repo; writes findings, not commits
+```
+
 ### Edge forms
 
-```iter
+```iter fragment:edges
 src -> dst
 src -> dst when approved
 src -> dst when not approved
@@ -864,6 +920,15 @@ Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once e
 Quoted `when` expressions are evaluated in parallel branch bodies as well as on the trunk, against that branch's private outputs, artifacts, loop state, and shared run variables. Migration note: older runtimes skipped expression-form edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branches, so an existing workflow may now take a guarded route that previously fell through to `else` or an unconditional edge.
 
 Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
+
+**Leaving an exhausted loop.** Once a bounded loop has spent its iterations the back-edge is declined (the log says `edge to "…" skipped — loop "…" exhausted`), and a node left with no other edge ends the run with `NO_OUTGOING_EDGE`. The exit is written as a second, bare edge from the same node — the **loop-exhaustion exit**:
+
+```iter fragment:edges
+fixer -> run_tests as fix_passes(3)   # the back-edge, taken while iterations remain
+fixer -> fix_passes_exhausted         # fires once they are spent (or when the budget cannot fund another)
+```
+
+A loop back-edge does not count toward [C010](references/diagnostics.md) (one unconditional edge per node), so this pair is the one legal shape with two unconditional edges; the bare edge also serves a conditional back-edge (`… when not approved as fix(3)`) once its cap is reached. Route it to a typed `fail <name>:` when exhaustion is a refusal, or onward when the work banked so far should still be delivered.
 
 A bounded loop or foreach may live wholly inside one `fan_out_all`, `fan_out_each`, or `llm` `multi: true` branch. Every branch/item owns independent counters, loop snapshots, outputs, artifact allocations, and a durable cursor; siblings may therefore finish after different numbers of iterations, and a restart or human pause resumes the same local scope without replaying completed iterations. The collector becomes ready only after those local lifecycles terminate, under the existing `wait_all` / `best_effort` policy.
 

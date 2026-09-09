@@ -27,12 +27,24 @@ func (c *compiler) expandGroups() {
 	if len(c.file.Workflows) > 0 {
 		wf = c.file.Workflows[0]
 	}
+	prefixes := make(map[string]bool, len(c.file.Uses))
 	for _, use := range c.file.Uses {
 		g, ok := groups[use.Group]
 		if !ok {
 			c.errorf(DiagUseUnknownGroup, "use references unknown group %q", use.Group)
 			continue
 		}
+		// Two `use` blocks with one prefix would expand to the same node
+		// ids; reported HERE, on the repeated `use` line — the line to
+		// change — rather than as duplicate ids positioned on the group
+		// body, which both instances share and which is not the mistake.
+		if prefixes[use.Prefix] {
+			c.errorfAtSpan(DiagDuplicateNodeID, use.Span,
+				"use %q as %q: prefix %q is already used by an earlier `use` — every instantiation needs its own prefix",
+				use.Group, use.Prefix, use.Prefix)
+			continue
+		}
+		prefixes[use.Prefix] = true
 		binds := c.bindGroupParams(g, use)
 		c.instantiateGroup(g, names[use.Group], use.Prefix, binds, wf)
 	}

@@ -26,7 +26,7 @@ The shortest path to a sandboxed run:
 1. Add (or reuse) a `.devcontainer/devcontainer.json` in your repo.
 2. Set `sandbox: auto` on your workflow:
 
-   ```iter
+   ```iter fragment
    workflow review:
      worktree: auto
      sandbox: auto
@@ -363,7 +363,7 @@ Blocked requests surface to the run as a `network_blocked` event in
 
 The DSL accepts both short-form modes and block-form inline specs:
 
-```iter
+```iter fragment
 workflow x:
   # Short form: read .devcontainer/devcontainer.json, or fall back to
   # the default image when no devcontainer is present.
@@ -414,7 +414,7 @@ and auto-mode fallback cases.
 Per-node overrides accept the same short or block form on `agent`,
 `judge`, and `tool`:
 
-```iter
+```iter fragment
 agent shell_helper:
   sandbox: none      # this node runs on the host even though the
                      # workflow has sandbox: auto
@@ -664,7 +664,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `kimi` / `grok` | **fully sandboxed** (CLI runs inside the container) |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
-| Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
+| Tool nodes    | **fully sandboxed** (`bash -c` runs inside the container) |
 | MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
 
 ### Claw backend in sandbox
@@ -1181,7 +1181,7 @@ service is deployed; the resulting image lands in the local Docker
 image store and the sibling container of the run consumes it via
 `docker run` like any pre-built ref.
 
-```iter
+```iter fragment:workflow
 sandbox:
   build:
     dockerfile: "examples/sandbox_build.dockerfile"
@@ -1227,7 +1227,7 @@ already cover via CI:
 - Build the workflow's image in CI (GitHub Actions, GitLab CI…),
   push to a registry, pin by digest.
 - Reference the digest from the workflow:
-  ```iter
+  ```iter fragment:workflow
   sandbox:
     image: "ghcr.io/myorg/myimage@sha256:<digest>"
   ```

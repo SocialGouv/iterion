@@ -65,17 +65,13 @@ describe("highlightPromptBody", () => {
     expect(out).toEqual([{ kind: "text", text: "value=${UNTERMINATED" }]);
   });
 
-  it("recognises ## line comments", () => {
-    const out = highlightPromptBody("## a note\nbody");
+  it("keeps a hash line as text — a prompt body has no comments, and its refs resolve", () => {
+    const out = highlightPromptBody("## Section with {{vars.x}}\n# solo");
     expect(out).toEqual([
-      { kind: "comment", text: "## a note" },
-      { kind: "text", text: "\nbody" },
+      { kind: "text", text: "## Section with " },
+      { kind: "ref", text: "{{vars.x}}" },
+      { kind: "text", text: "\n# solo" },
     ]);
-  });
-
-  it("only treats ## as comment, not # alone", () => {
-    const out = highlightPromptBody("#solo not a comment");
-    expect(out).toEqual([{ kind: "text", text: "#solo not a comment" }]);
   });
 
   it("preserves the input when concatenated across complex inputs", () => {

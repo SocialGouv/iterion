@@ -20,7 +20,7 @@ local / desktop / cloud, the upload protocol, and the security model.
 
 ## DSL
 
-```iter
+```iter fragment
 attachments:
   logo: image
   spec: file
