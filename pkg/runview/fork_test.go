@@ -32,7 +32,11 @@ func TestFork_HappyPath(t *testing.T) {
 		t.Fatalf("load parent: %v", err)
 	}
 	parent.Checkpoint = &store.Checkpoint{
-		NodeID: "step2",
+		NodeID:           "step2",
+		ArtifactVersions: map[string]int{"source": 1, "step1": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"analysis": {NodeID: "step1", Version: 0},
+		},
 		Outputs: map[string]map[string]any{
 			"step1": {"value": "alpha"},
 		},
@@ -57,6 +61,20 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if err := st.SaveRun(context.Background(), parent); err != nil {
 		t.Fatalf("save parent: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "source", Version: 0, Data: map[string]any{"seed": true},
+	}); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "step1", Version: 0, Data: map[string]any{"value": "alpha"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "analysis", ProducerNode: "step1", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "source", NodeID: "source", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatalf("write parent artifact: %v", err)
 	}
 	// Write a turn checkpoint that the Fork resolver picks up.
 	turnCP := &store.TurnCheckpoint{
@@ -159,6 +177,15 @@ func TestFork_HappyPath(t *testing.T) {
 	// step1's upstream output is preserved.
 	if v := child.Checkpoint.Outputs["step1"]["value"]; v != "alpha" {
 		t.Errorf("child upstream output step1.value = %v, want alpha", v)
+	}
+	for _, revision := range []store.ArtifactRevisionRef{{NodeID: "step1", Version: 0}, {NodeID: "source", Version: 0}} {
+		artifact, err := st.LoadArtifact(context.Background(), child.ID, revision.NodeID, revision.Version)
+		if err != nil {
+			t.Fatalf("load copied child artifact %s/%d: %v", revision.NodeID, revision.Version, err)
+		}
+		if artifact.RunID != child.ID {
+			t.Fatalf("copied artifact run id = %q, want %q", artifact.RunID, child.ID)
+		}
 	}
 }
 

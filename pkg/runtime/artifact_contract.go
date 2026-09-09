@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -96,7 +97,7 @@ func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run 
 }
 
 func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
-	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
+	if run == nil || s == nil || wf == nil {
 		return nil
 	}
 	policy := store.ContextPolicyLegacy
@@ -109,7 +110,12 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		return nil
 	}
 	var violations []string
-	for nodeID, version := range run.ArtifactIndex {
+	for _, revision := range artifactRevisionsForValidation(run) {
+		nodeID, version := revision.NodeID, revision.Version
+		if nodeID == "" {
+			violations = append(violations, fmt.Sprintf("artifact %q has no persisted producer identity", revision.LogicalRef))
+			continue
+		}
 		if ignoredNodes[nodeID] {
 			continue
 		}
@@ -122,12 +128,21 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			violations = append(violations, msg)
 			continue
 		}
-		if artifact == nil || artifact.Contract == nil {
+		if artifact == nil {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d returned no persisted body", nodeID, version))
+			continue
+		}
+		if artifact.Contract == nil {
 			continue
 		}
 		contract := artifact.Contract
-		if contract.LogicalRef == "" || contract.ProducerNode == "" || contract.Version != artifact.Version {
+		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version ||
+			contract.LogicalRef == "" || contract.ProducerNode != nodeID || contract.Version != version {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
+			continue
+		}
+		if revision.LogicalRef != "" && revision.LogicalRef != contract.LogicalRef {
+			violations = append(violations, fmt.Sprintf("artifact %s/%d is recorded as %q but its contract publishes %q", nodeID, version, revision.LogicalRef, contract.LogicalRef))
 			continue
 		}
 		// --force is the established acknowledgement that the operator wants
@@ -189,4 +204,62 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrArtifactContractIncompatible, strings.Join(violations, "; "))
+}
+
+type artifactValidationRevision struct {
+	LogicalRef string
+	NodeID     string
+	Version    int
+}
+
+// artifactRevisionsForValidation follows the checkpoint because it is the
+// authoritative resume snapshot. ArtifactIndex is only a best-effort lookup
+// cache in Mongo and may lag a completed write; it remains the fallback for
+// legacy/no-checkpoint runs that predate exact logical provenance.
+func artifactRevisionsForValidation(run *store.Run) []artifactValidationRevision {
+	if run == nil {
+		return nil
+	}
+	byKey := make(map[string]artifactValidationRevision)
+	authoritative := false
+	add := func(revisions map[string]store.ArtifactRevisionRef) {
+		if len(revisions) == 0 {
+			return
+		}
+		authoritative = true
+		for logicalRef, revision := range revisions {
+			key := fmt.Sprintf("%s\x00%d\x00%s", revision.NodeID, revision.Version, logicalRef)
+			byKey[key] = artifactValidationRevision{LogicalRef: logicalRef, NodeID: revision.NodeID, Version: revision.Version}
+		}
+	}
+	if run.Checkpoint != nil {
+		add(run.Checkpoint.ArtifactRevisions)
+		if run.Checkpoint.Parallel != nil {
+			for _, branch := range run.Checkpoint.Parallel.Branches {
+				if branch != nil {
+					add(branch.ArtifactRevisions)
+				}
+			}
+		}
+	}
+	if !authoritative {
+		for nodeID, version := range run.ArtifactIndex {
+			key := fmt.Sprintf("%s\x00%d", nodeID, version)
+			byKey[key] = artifactValidationRevision{NodeID: nodeID, Version: version}
+		}
+	}
+	out := make([]artifactValidationRevision, 0, len(byKey))
+	for _, revision := range byKey {
+		out = append(out, revision)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		if out[i].Version != out[j].Version {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].LogicalRef < out[j].LogicalRef
+	})
+	return out
 }

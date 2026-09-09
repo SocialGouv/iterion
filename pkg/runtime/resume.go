@@ -332,7 +332,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
 	artifactVersions := cloneMap(cp.ArtifactVersions)
 	artifactRevisions := e.rebuildArtifactRevisions(cp.Outputs, artifactVersions, cp.ArtifactRevisions)
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, e.rebuildArtifactsWithRevisions(cp.Outputs, artifactRevisions), artifactRevisions)
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, e.rebuildArtifactsWithRevisions(cp.Outputs, artifactRevisions), artifactRevisions, cp.SelectedIncoming)
 	if err != nil {
 		return err
 	}
@@ -601,7 +601,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, selectedIncoming map[string][]store.IncomingEdge) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
@@ -612,7 +612,10 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if artifactRevisions == nil {
 		artifactRevisions = make(map[string]store.ArtifactRevisionRef)
 	}
-	contractState := &runState{artifacts: artifacts, artifactVersions: artifactVersions, artifactRevisions: artifactRevisions}
+	contractState := &runState{
+		outputs: outputs, artifacts: artifacts, artifactVersions: artifactVersions,
+		artifactRevisions: artifactRevisions, selectedIncoming: cloneIncoming(selectedIncoming),
+	}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{

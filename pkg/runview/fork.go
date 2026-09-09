@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -225,6 +226,26 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// Drop the forked node's existing output so re-execution starts
 	// fresh (preserves topological ordering for downstream refs).
 	delete(child.Checkpoint.Outputs, spec.NodeID)
+	for logicalRef, revision := range child.Checkpoint.ArtifactRevisions {
+		if revision.NodeID == spec.NodeID {
+			delete(child.Checkpoint.ArtifactRevisions, logicalRef)
+		}
+	}
+	// Provenance is useful only while it remains resolvable in the child's
+	// run namespace. Copy every retained exact revision and its transitive
+	// contract dependencies before the child is parked for resume.
+	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, child.Checkpoint.ArtifactRevisions); err != nil {
+		return nil, fmt.Errorf("copy retained artifacts: %w", err)
+	}
+	// WriteArtifact maintains the child run's artifact index and advances its
+	// CAS version. Refresh both fields before the full-document save so the
+	// fork cannot overwrite that index or conflict with its own artifact copy.
+	persistedChild, err := s.store.LoadRun(ctx, child.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reload child after copying retained artifacts: %w", err)
+	}
+	child.CASVersion = persistedChild.CASVersion
+	child.ArtifactIndex = maps.Clone(persistedChild.ArtifactIndex)
 	// Park the child as "cancelled" so the existing resumeFromFailure
 	// dispatch picks it up unchanged. Caller posts /resume separately.
 	child.Status = store.RunStatusCancelled
@@ -322,6 +343,70 @@ func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisi
 		return out
 	}
 	return map[string]store.ArtifactRevisionRef{}
+}
+
+func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, revisions map[string]store.ArtifactRevisionRef) error {
+	if runStore == nil || len(revisions) == 0 {
+		return nil
+	}
+	type revisionKey struct {
+		nodeID  string
+		version int
+	}
+	seen := make(map[revisionKey]bool)
+	var copyOne func(revisionKey) error
+	copyOne = func(key revisionKey) error {
+		if key.nodeID == "" {
+			return errors.New("artifact revision has no producer node")
+		}
+		if seen[key] {
+			return nil
+		}
+		seen[key] = true
+		artifact, err := runStore.LoadArtifact(ctx, parentRunID, key.nodeID, key.version)
+		if err != nil {
+			return fmt.Errorf("load %s/%d from parent: %w", key.nodeID, key.version, err)
+		}
+		if artifact == nil || artifact.NodeID != key.nodeID || artifact.Version != key.version {
+			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)
+		}
+		if artifact.Contract != nil {
+			for _, dependency := range artifact.Contract.Dependencies {
+				if !dependency.Required || dependency.LogicalRef == "" {
+					continue
+				}
+				depNode := dependency.NodeID
+				if depNode == "" {
+					depNode = dependency.LogicalRef
+				}
+				if err := copyOne(revisionKey{nodeID: depNode, version: dependency.Version}); err != nil {
+					return err
+				}
+			}
+		}
+		clone := *artifact
+		clone.RunID = childRunID
+		if err := runStore.WriteArtifact(ctx, &clone); err != nil {
+			return fmt.Errorf("write %s/%d to child: %w", key.nodeID, key.version, err)
+		}
+		return nil
+	}
+	keys := make([]revisionKey, 0, len(revisions))
+	for _, revision := range revisions {
+		keys = append(keys, revisionKey{nodeID: revision.NodeID, version: revision.Version})
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].nodeID != keys[j].nodeID {
+			return keys[i].nodeID < keys[j].nodeID
+		}
+		return keys[i].version < keys[j].version
+	})
+	for _, key := range keys {
+		if err := copyOne(key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyVars(cp *store.Checkpoint) map[string]any {

@@ -280,3 +280,93 @@ func TestValidateArtifactContractsLoadsExactDependencyWhenIndexLags(t *testing.T
 		t.Fatalf("durable dependency was rejected because its index lagged: %v", err)
 	}
 }
+
+func TestValidateArtifactContractsUsesCheckpointRevisionWhenIndexLags(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-checkpoint-wins", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	for version := 0; version < 2; version++ {
+		contract := &store.ArtifactContract{LogicalRef: "report", ProducerNode: "writer", Version: version}
+		if version == 1 {
+			contract.Dependencies = []store.ArtifactDependency{{LogicalRef: "plan", NodeID: "missing", Version: 0, Required: true}}
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: run.ID, NodeID: "writer", Version: version,
+			Data: map[string]any{"version": version}, Contract: contract,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The checkpoint is authoritative at writer/v1 while the Mongo cache is
+	// simulated as lagging at writer/v0.
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.Checkpoint = &store.Checkpoint{
+		NodeID: "next",
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"report": {NodeID: "writer", Version: 1},
+		},
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	err = ValidateArtifactContracts(ctx, s, run, wf, "", false)
+	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) {
+		t.Fatalf("checkpoint-selected invalid revision was accepted: %v", err)
+	}
+}
+
+func TestArtifactRevisionsForValidationIncludesParallelBranches(t *testing.T) {
+	run := &store.Run{
+		ArtifactIndex: map[string]int{"stale": 9},
+		Checkpoint: &store.Checkpoint{
+			ArtifactRevisions: map[string]store.ArtifactRevisionRef{"root": {NodeID: "root-node", Version: 1}},
+			Parallel: &store.ParallelCheckpoint{Branches: map[string]*store.BranchCheckpoint{
+				"branch": {ArtifactRevisions: map[string]store.ArtifactRevisionRef{"branch": {NodeID: "branch-node", Version: 2}}},
+			}},
+		},
+	}
+	got := artifactRevisionsForValidation(run)
+	if len(got) != 2 || got[0].NodeID != "branch-node" || got[1].NodeID != "root-node" {
+		t.Fatalf("checkpoint validation revisions = %+v", got)
+	}
+}
+
+func TestMaterializeHumanArtifactKeepsIncomingArtifactDependency(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "human-contract", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	human := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "approve"}, Publish: "approval"}
+	edge := &ir.Edge{From: "planner", To: "approve", With: []*ir.DataMapping{{
+		Key: "plan", Raw: "{{artifacts.plan}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}}}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"approve": human,
+	}, Edges: []*ir.Edge{edge}}, s, newStubExecutor())
+	revisions := map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 0}}
+	_, err := eng.materializeHumanArtifact(
+		ctx, "human-contract", "approve", map[string]any{"approved": true},
+		map[string]int{"planner": 1},
+		map[string]map[string]any{"planner": {"ok": true}},
+		map[string]map[string]any{"plan": {"ok": true}},
+		revisions,
+		map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := s.LoadArtifact(ctx, "human-contract", "approve", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Contract == nil || len(artifact.Contract.Dependencies) != 1 || artifact.Contract.Dependencies[0].NodeID != "planner" {
+		t.Fatalf("human artifact dependencies = %+v", artifact.Contract)
+	}
+}
