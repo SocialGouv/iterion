@@ -317,6 +317,49 @@ func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
 	}
 }
 
+func TestForkArtifactCopyFailureRollsBackProvisionalChild(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID = "fork-copy-failure-parent"
+	parent, err := st.CreateRun(ctx, parentID, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.Status = store.RunStatusCancelled
+	parent.Checkpoint = &store.Checkpoint{
+		NodeID:  "retry",
+		Outputs: map[string]map[string]any{"producer": {"ok": true}},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "producer", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	if err := st.SaveRun(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{RunID: parent.ID, NodeID: "retry", Backend: "claw"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Fork(ctx, ForkSpec{RunID: parent.ID, NodeID: "retry", TurnIndex: 0}); err == nil {
+		t.Fatal("fork unexpectedly succeeded without its exact retained artifact")
+	}
+	runIDs, err := st.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runIDs) != 1 || runIDs[0] != parent.ID {
+		t.Fatalf("failed fork left a visible provisional child: %v", runIDs)
+	}
+}
+
 func TestCopyForkArtifactsDoesNotCacheFailedOptionalRoot(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())

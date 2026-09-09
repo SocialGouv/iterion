@@ -265,10 +265,16 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 			if current, occupied := revisions[logicalRef]; occupied {
 				// An unchanged publisher owns the authoritative persisted alias,
 				// including workflows where several nodes intentionally publish the
-				// same name. It only yields when that producer itself moved away:
-				// this is what makes swapping two existing aliases rebind both names
-				// instead of silently preserving the old producers.
-				if currentNode, exists := e.workflow.Nodes[current.NodeID]; exists && nodePublish(currentNode) == logicalRef {
+				// same name. It only yields when that producer itself moved away.
+				// The one exception is another alias retained for THIS producer:
+				// restoring an older publish name must expose the producer's newest
+				// retained revision, not silently resurrect the pre-rename body.
+				// This also keeps swapped aliases bound to their current producers.
+				if current.NodeID != nodeID {
+					if currentNode, exists := e.workflow.Nodes[current.NodeID]; exists && nodePublish(currentNode) == logicalRef {
+						continue
+					}
+				} else if current.Version >= revision.Version {
 					continue
 				}
 			}

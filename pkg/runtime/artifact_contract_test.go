@@ -389,6 +389,48 @@ func TestArtifactContractUsesExecutedPublisherProvenance(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactContractsUsesCheckpointProducerForLogicalDependency(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-checkpoint-producer", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	for _, artifact := range []*store.Artifact{
+		{
+			RunID: run.ID, NodeID: "z_selected", Version: 0,
+			Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "z_selected", Version: 0},
+		},
+		{
+			RunID: run.ID, NodeID: "consumer", Version: 0,
+			Contract: &store.ArtifactContract{
+				LogicalRef: "result", ProducerNode: "consumer", Version: 0,
+				Dependencies: []store.ArtifactDependency{{LogicalRef: "plan", Version: 0, Required: true}},
+			},
+		},
+	} {
+		if err := s.WriteArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Checkpoint = &store.Checkpoint{
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":   {NodeID: "z_selected", Version: 0},
+			"result": {NodeID: "consumer", Version: 0},
+		},
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a_unselected": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a_unselected"}, Publish: "plan"},
+		"z_selected":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "z_selected"}, Publish: "plan"},
+		"consumer":     &ir.ToolNode{BaseNode: ir.BaseNode{ID: "consumer"}, Publish: "result"},
+	}}
+	if err := ValidateArtifactContracts(ctx, s, run, wf, "", false); err != nil {
+		t.Fatalf("valid logical dependency rejected despite exact checkpoint producer: %v", err)
+	}
+}
+
 func TestArtifactContractIncludesSelectedIncomingMapping(t *testing.T) {
 	producer := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"}
 	consumer := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"}
@@ -593,6 +635,23 @@ func TestRebuildArtifactRevisionsRebindsSwappedPublishAliases(t *testing.T) {
 	}
 	if got := revisions["second"]; got.NodeID != "a" || got.Version != 1 || got.ContractLogicalRef != "first" {
 		t.Fatalf("second alias was not rebound to a's immutable revision: %+v", revisions)
+	}
+}
+
+func TestRebuildArtifactRevisionsRestoredAliasUsesLatestProducerRevision(t *testing.T) {
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"producer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "producer"}, Publish: "original"},
+	}}, nil, newStubExecutor())
+	revisions := eng.rebuildArtifactRevisions(
+		map[string]map[string]any{"producer": {"value": "latest"}},
+		nil,
+		map[string]store.ArtifactRevisionRef{
+			"original": {NodeID: "producer", Version: 0, ContractLogicalRef: "original"},
+			"renamed":  {NodeID: "producer", Version: 1, ContractLogicalRef: "renamed"},
+		},
+	)
+	if got := revisions["original"]; got.NodeID != "producer" || got.Version != 1 || got.ContractLogicalRef != "renamed" {
+		t.Fatalf("restored alias did not follow latest retained producer revision: %+v", revisions)
 	}
 }
 

@@ -271,6 +271,23 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	sourceChangeAccepted := forceSourceChange ||
 		(currentRevision != "" && run.ArtifactCompatibilityRevision == currentRevision)
 	var violations []string
+	type dependencyKey struct {
+		logicalRef string
+		version    int
+	}
+	// Contracts written by early versions may omit dependency.NodeID. The
+	// checkpoint is the authoritative record of which producer supplied a
+	// logical value, so prefer it over an arbitrary current workflow publisher.
+	persistedProducers := make(map[dependencyKey]string)
+	for _, revision := range artifactRevisionsForValidation(run) {
+		if revision.LogicalRef == "" || revision.NodeID == "" {
+			continue
+		}
+		key := dependencyKey{logicalRef: revision.LogicalRef, version: revision.Version}
+		if _, exists := persistedProducers[key]; !exists {
+			persistedProducers[key] = revision.NodeID
+		}
+	}
 	type validationKey struct {
 		logicalRef string
 		nodeID     string
@@ -366,7 +383,10 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			// compatibility violation it is.
 			depNode := dep.NodeID
 			if depNode == "" {
-				depNode = nodePublishingRef(wf, dep.LogicalRef)
+				depNode = persistedProducers[dependencyKey{logicalRef: dep.LogicalRef, version: dep.Version}]
+				if depNode == "" {
+					depNode = nodePublishingRef(wf, dep.LogicalRef)
+				}
 			}
 			if depNode == "" {
 				violations = append(violations, fmt.Sprintf("artifact %q requires %s, which no node of this workflow publishes", contract.LogicalRef, dep.LogicalRef))

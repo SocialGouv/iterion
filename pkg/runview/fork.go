@@ -111,6 +111,26 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("create child run: %w", err)
 	}
+	// From this point on, every error must undo the provisional child. Fork's
+	// public contract is atomic: callers receive no child id on failure, so a
+	// running run or linked worktree left behind would be unreachable garbage.
+	// DeleteRun is deliberately called at the store layer because this is an
+	// internal rollback of a not-yet-published run, not an operator deletion.
+	forkComplete := false
+	defer func() {
+		if forkComplete {
+			return
+		}
+		cleanupCtx := context.WithoutCancel(ctx)
+		if child.Worktree && child.WorkDir != "" && child.RepoRoot != "" {
+			wtCtx, cancel := context.WithTimeout(cleanupCtx, 30*time.Second)
+			cmd := exec.CommandContext(wtCtx, "git", "-C", child.RepoRoot, "worktree", "remove", "--force", child.WorkDir)
+			cmd.Env = gitlib.SanitizeEnv(os.Environ())
+			_, _ = cmd.CombinedOutput()
+			cancel()
+		}
+		_ = s.store.DeleteRun(cleanupCtx, child.ID)
+	}()
 	// Mirror the parent's launch-time metadata so resume can pick up
 	// the workflow source + bundle without re-supplying.
 	child.FilePath = parent.FilePath
@@ -261,6 +281,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err := s.store.SaveCheckpoint(ctx, child.ID, child.Checkpoint); err != nil {
 		return nil, fmt.Errorf("save child checkpoint: %w", err)
 	}
+	forkComplete = true
 	return &ForkResult{
 		NewRunID:    child.ID,
 		ParentRunID: parent.ID,
