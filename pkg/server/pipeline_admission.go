@@ -622,13 +622,24 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)
 		return "", fmt.Errorf("resolve bot %q: %w", iss.Bot, err)
 	}
-	// The materialized bundle dir belongs to this call: the launch consumes
-	// it while compiling, and nothing downstream reads it afterwards. The
-	// defer sits ABOVE the skip so a DISABLED bot's bundle is reclaimed too
-	// — a resolution that FOUND the bot materialized it (and in cloud
-	// snapshotted the whole collection to a second temp dir), and nothing
-	// ever comes back for it. Cleanup is nil-safe, so the not-found branch
-	// costs nothing.
+	// The materialized bundle dir belongs to this call: Launch compiles from
+	// it synchronously (compileForLaunch, on both the cloud-publisher and
+	// the in-process path) before returning, and nothing downstream reads
+	// it. The defer sits ABOVE the skip so a DISABLED bot's bundle is
+	// reclaimed too — a resolution that FOUND the bot materialized it (and
+	// in cloud snapshotted the whole collection to a second temp dir), and
+	// nothing ever comes back for it. Cleanup is nil-safe, so the not-found
+	// branch costs nothing.
+	//
+	// The one path where "synchronously" does not hold is runview's LOCAL
+	// pipeline-concurrency queue: over the cap, admitOrEnqueue keeps the
+	// whole LaunchSpec and startQueuedRun compiles from it later, after this
+	// defer has run. That borrow predates this lane (every caller of
+	// Launch defers Cleanup the same way) and the fix belongs to the queue,
+	// which must own what it retains — not here, where the alternative is
+	// leaking the dir forever. Cloud is unaffected: the publisher path
+	// returns before the queue branch, and s.pipelineQueue is nil whenever
+	// a publisher is wired.
 	defer bot.Launch.Cleanup()
 	if !found || !bot.Enabled {
 		// Unknown/disabled bot: leave the ticket in Ready, surfaced as-is.
@@ -637,7 +648,15 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		// current workspace's catalog no longer resolves, and a silent
 		// skip reads as a stuck pipeline.
 		s.warnAdmissionSkipOnce(iss.ID, iss.Bot, found)
-		return "", fmt.Errorf("bot %q is not in this workspace's catalog (or is disabled)", iss.Bot)
+		// The two cases are not the same fix, and this string is what the
+		// operator reads: launch-now returns it over HTTP. It must also name
+		// the tiers the resolution actually covers now — "this workspace's
+		// catalog" describes the loop's local board, but a cloud card that
+		// resolves nowhere failed on its TEAM's bots too.
+		if !found {
+			return "", fmt.Errorf("bot %q resolves on none of the tiers this card can launch from — the team's own bots, a platform override, or the baked catalog", iss.Bot)
+		}
+		return "", fmt.Errorf("bot %q is disabled", iss.Bot)
 	}
 	// Leave the launch column BEFORE launching so the next tick won't
 	// re-pick this ticket while Launch is in flight. StateInProgress is not
