@@ -90,6 +90,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
 	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
+	t.Run("WatcherCursorStore", func(t *testing.T) { testWatcherCursorStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -97,6 +98,57 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testWatcherCursorStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	cursors := store.AsWatcherCursorStore(s)
+	if cursors == nil {
+		t.Skip("backend does not implement WatcherCursorStore")
+	}
+	ctx := testCtx()
+	const runID = "run_watcher_cursor"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, "waiting", store.FailureNetworkTransient); err != nil {
+		t.Fatalf("park run: %v", err)
+	}
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "agent"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	before, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun before: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	next := now.Add(time.Minute)
+	want := store.WatcherCursor{
+		WatcherID: "supervisor:conformance", LastProgressFingerprint: "progress",
+		LastProgressAt: now, LastEvaluationAt: &now,
+		LastAction: "observe", LastTriggerFingerprint: "trigger", NextEvaluationAt: &next,
+		ConsecutiveNoProgress: 2, UpdatedAt: now,
+	}
+	if err := cursors.SetWatcherCursor(ctx, runID, want.WatcherID, want); err != nil {
+		t.Fatalf("SetWatcherCursor: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after: %v", err)
+	}
+	cursor, ok := got.WatcherCursors[want.WatcherID]
+	if !ok || cursor.WatcherID != want.WatcherID || cursor.LastProgressFingerprint != "progress" ||
+		cursor.LastEvaluationAt == nil || !cursor.LastEvaluationAt.Equal(now) || cursor.NextEvaluationAt == nil ||
+		!cursor.NextEvaluationAt.Equal(next) || cursor.ConsecutiveNoProgress != 2 {
+		t.Fatalf("watcher cursor round-trip = %+v, present=%t", cursor, ok)
+	}
+	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error ||
+		got.Checkpoint == nil || got.Checkpoint.NodeID != "agent" {
+		t.Fatalf("granular watcher write replaced peer fields: before=%+v after=%+v", before, got)
+	}
+	if err := cursors.SetWatcherCursor(ctx, "missing-watcher-cursor", want.WatcherID, want); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("missing run error = %v, want ErrRunNotFound", err)
+	}
 }
 
 func testOutputCorrectionStore(t *testing.T, s store.RunStore) {

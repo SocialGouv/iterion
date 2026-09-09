@@ -201,8 +201,15 @@ func numField(data map[string]any, key string) (float64, bool) {
 // RenderEvent produces a compact one-line rendering of an event for the
 // supervisor prompt and for TextContains matching. Stable and cheap.
 func RenderEvent(evt *store.Event) string {
+	rendered, _ := renderEvent(evt)
+	return rendered
+}
+
+// renderEvent also returns the canonical JSON payload so callers that need a
+// semantic fingerprint do not marshal the hot-path event data a second time.
+func renderEvent(evt *store.Event) (string, []byte) {
 	if evt == nil {
-		return ""
+		return "", nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "#%d %s", evt.Seq, evt.Type)
@@ -213,9 +220,10 @@ func RenderEvent(evt *store.Event) string {
 		if data, err := json.Marshal(evt.Data); err == nil {
 			b.WriteString(" ")
 			b.Write(data)
+			return b.String(), data
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // IsTurnBoundary reports whether an event marks a point where a watched

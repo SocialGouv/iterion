@@ -473,7 +473,6 @@ type WatcherCursor struct {
 	LastProgressFingerprint string     `json:"last_progress_fingerprint,omitempty" bson:"last_progress_fingerprint,omitempty"`
 	LastProgressAt          time.Time  `json:"last_progress_at,omitempty" bson:"last_progress_at,omitempty"`
 	LastEvaluationAt        *time.Time `json:"last_evaluation_at,omitempty" bson:"last_evaluation_at,omitempty"`
-	LastActionFingerprint   string     `json:"last_action_fingerprint,omitempty" bson:"last_action_fingerprint,omitempty"`
 	LastAction              string     `json:"last_action,omitempty" bson:"last_action,omitempty"`
 	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
 	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`

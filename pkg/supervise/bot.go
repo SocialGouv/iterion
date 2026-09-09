@@ -79,12 +79,13 @@ const decisionSchema = `{
 
 // EvalInput is everything the bot sees for one evaluation.
 type EvalInput struct {
-	Spec         Spec
-	ActiveNode   string    // the node currently armed (being supervised)
-	WakeReason   string    // "turn_boundary" or a monitor description
-	RecentEvents []string  // rendered recent events (oldest first)
-	Monitors     []Monitor // currently-registered monitors
-	Last         *Decision // the previous decision, for monotonic context
+	Spec                  Spec
+	ActiveNode            string    // the node currently armed (being supervised)
+	WakeReason            string    // "turn_boundary" or a monitor description
+	RecentEvents          []string  // rendered recent events (oldest first)
+	Monitors              []Monitor // currently-registered monitors
+	Last                  *Decision // the previous decision, for monotonic context
+	ConsecutiveNoProgress int       // repeated deliveries of identical semantic evidence
 }
 
 // Evaluator decides what (if anything) the supervisor should do for one
@@ -279,6 +280,9 @@ func buildUserPrompt(in EvalInput) string {
 	fmt.Fprintf(&b, "Wake reason: %s\n", in.WakeReason)
 	if in.ActiveNode != "" {
 		fmt.Fprintf(&b, "Supervised node: %s\n", in.ActiveNode)
+	}
+	if in.ConsecutiveNoProgress > 0 {
+		fmt.Fprintf(&b, "Repeated unchanged evidence: %d consecutive event(s)\n", in.ConsecutiveNoProgress)
 	}
 	if len(in.Monitors) > 0 {
 		if data, err := json.Marshal(in.Monitors); err == nil {

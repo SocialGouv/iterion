@@ -107,9 +107,13 @@ func (i *StoreInjector) inject(ctx context.Context, runID, nodeID, text, message
 	if once {
 		onceStore := store.AsQueuedMessageInsertOnceStore(i.Store)
 		if onceStore == nil {
-			return fmt.Errorf("supervise: store does not support idempotent queued messages")
+			// A RunStore decorator can hide the optional atomic capability. The
+			// durable watcher cursor still suppresses ordinary replays, so degrade
+			// to at-least-once delivery instead of dropping the intervention.
+			err = i.Store.AppendQueuedMessage(ctx, runID, msg)
+		} else {
+			inserted, err = onceStore.AppendQueuedMessageOnce(ctx, runID, msg)
 		}
-		inserted, err = onceStore.AppendQueuedMessageOnce(ctx, runID, msg)
 	} else {
 		err = i.Store.AppendQueuedMessage(ctx, runID, msg)
 	}
