@@ -187,7 +187,8 @@ to check the shape, and only then run. From Claude Code the MCP
 `local_validate` tool returns the same JSON. Validate with the build the bot
 will run on (the `requires.iterion` floor in its manifest): a builtin or a
 property a newer engine added compiles on that engine and dies on an older
-one at its first evaluation (C138).
+one at validation or at its first evaluation — an unknown builtin name is
+C040, an argument count the older evaluator cannot satisfy is C138.
 
 ## Prefer deterministic controls
 
