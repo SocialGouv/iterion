@@ -70,24 +70,25 @@ func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now t
 	// PRE-stage document, so stage 2 could not see the streak stage 1 just
 	// wrote. $setOnInsert has no pipeline equivalent either — key/tenant_id
 	// are the document's identity, so re-setting them every time is a no-op.
-	identity := bson.M{"key": key}
+	streak := bson.M{
+		"consecutive_failures": bson.M{"$cond": bson.A{
+			// $ifNull guards the first failure and the post-success document
+			// alike: with no last_failure_at, `now < now-cooldown` is false
+			// and the else arm starts the streak at 1.
+			bson.M{"$lt": bson.A{bson.M{"$ifNull": bson.A{"$last_failure_at", now}}, decayBefore}},
+			1,
+			bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$consecutive_failures", 0}}, 1}},
+		}},
+		"last_failure_at":     now,
+		"last_failure_run_id": runID,
+		"updated_at":          now,
+		"key":                 key,
+	}
 	if tenant, ok := store.TenantFromContext(ctx); ok && tenant != "" {
-		identity["tenant_id"] = tenant
+		streak["tenant_id"] = tenant
 	}
 	pipeline := []bson.M{
-		{"$set": mergeBSON(identity, bson.M{
-			"consecutive_failures": bson.M{"$cond": bson.A{
-				// $ifNull guards the first failure and the post-success
-				// document alike: with no last_failure_at, `now < now-cooldown`
-				// is false and the else arm starts the streak at 1.
-				bson.M{"$lt": bson.A{bson.M{"$ifNull": bson.A{"$last_failure_at", now}}, decayBefore}},
-				1,
-				bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$consecutive_failures", 0}}, 1}},
-			}},
-			"last_failure_at":     now,
-			"last_failure_run_id": runID,
-			"updated_at":          now,
-		})},
+		{"$set": streak},
 		{"$set": bson.M{
 			"open_until": bson.M{"$cond": bson.A{
 				bson.M{"$gte": bson.A{"$consecutive_failures", threshold}},
@@ -118,19 +119,6 @@ func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now t
 		return nil, err
 	}
 	return &state, nil
-}
-
-// mergeBSON returns the union of two documents; later keys win. Used to keep
-// the pipeline stage readable without mutating either input.
-func mergeBSON(a, b bson.M) bson.M {
-	out := make(bson.M, len(a)+len(b))
-	for k, v := range a {
-		out[k] = v
-	}
-	for k, v := range b {
-		out[k] = v
-	}
-	return out
 }
 
 // RetryCircuitOpen reports whether the breaker is OPEN at now, returning its
