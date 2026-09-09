@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.123.1](https://github.com/SocialGouv/iterion/compare/v3.123.0...v3.123.1) (2026-09-09)
+
+### Bug Fixes
+
+* **bots:** a campaign verify node refuses a dirty tree instead of judging it ([#995](https://github.com/SocialGouv/iterion/issues/995)) ([9b0e19b](https://github.com/SocialGouv/iterion/commit/9b0e19bda2df4c0df976e7cb4c4aca4883899760)), references [#807](https://github.com/SocialGouv/iterion/issues/807) [#807](https://github.com/SocialGouv/iterion/issues/807) [#799](https://github.com/SocialGouv/iterion/issues/799)
+
+    <details><summary>why</summary>
+
+    A tool node whose whole contract is "judge HEAD" was judging whatever the previous attempt left on disk. Measured once: a golden-master gate ran 7,676 s until the pod's exec stream broke, the engine classified the failure NETWORK_TRANSIENT and re-executed the node on the same tree — where a mutant the harness had applied was still there. The second attempt judged a mutated program and called it the lot's; the run finished not-converged with hours of budget left.
+
+    </details>
+* **server:** an avatar recorded after a failed store write is iterion's fault, not the forge's ([#993](https://github.com/SocialGouv/iterion/issues/993)) ([cf69634](https://github.com/SocialGouv/iterion/commit/cf696343ad917c8ba5390ca602816851060634ae)), references [#969](https://github.com/SocialGouv/iterion/issues/969) [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    forgeUpstreamStatus returns 0 to mean "NOT an answer from the forge", and its own doc says the caller then answers with its fault status — "Only that arm may be a 500." The avatar route rendered that arm 502 Bad Gateway, so a persist failure AFTER an upload that had already landed on the forge was reported as a forge outage: the exact inversion the classifier was written to end, running the other way. Sentry, alerts and any client retrying on 502 were told a third party broke when iterion's own…
+
+    </details>
+
 ## [3.123.0](https://github.com/SocialGouv/iterion/compare/v3.122.3...v3.123.0) (2026-09-09)
 
 ### Features
