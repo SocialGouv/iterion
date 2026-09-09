@@ -1596,11 +1596,38 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
                 "not crashed")
             head_c = base_c = None
         if head_c is not None and base_c is not None:
-            if {k: v for k, v in head_c.items() if k != "entries"} != \
-                    {k: v for k, v in base_c.items() if k != "entries"}:
+            # `duplicate_groups` is the ONE key outside `entries` an extension
+            # may write, and the reason is not convenience: every other key here
+            # is frozen because it is TRUSTED, while this one is VERIFIED. A
+            # group declaration is discharged at the gate by a mutant that must
+            # really move part of the group and leave the rest still, so a lot
+            # gains nothing by writing one — a bogus separator refuses, and
+            # deleting a declaration turns its group back into an undeclared
+            # duplicate, which also refuses.
+            #
+            # Without this the gate named a remedy another judge forbade: the
+            # lot that ADDS an entry is the very lot that can create a new
+            # byte-identical pair, and it would have been told to declare a
+            # separator in a key it is refused permission to touch.
+            FREE_KEYS = {"entries", "duplicate_groups"}
+            if {k: v for k, v in head_c.items() if k not in FREE_KEYS} != \
+                    {k: v for k, v in base_c.items() if k not in FREE_KEYS}:
                 corpus_problems.append(
                     "corpus.json keys outside `entries` changed — an "
                     "extension adds entries and touches nothing else")
+            # Structure is judged HERE, truth at the gate. A malformed
+            # declaration would otherwise be dropped in silence by
+            # duplicate_group_decls and read as "no declaration at all".
+            for g in (head_c.get("duplicate_groups") or []):
+                if not isinstance(g, dict) or not isinstance(g.get("ids"), list) \
+                        or len(g.get("ids") or []) < 2 \
+                        or not isinstance(g.get("separated_by"), str) \
+                        or not g.get("separated_by"):
+                    corpus_problems.append(
+                        "a `duplicate_groups` entry is malformed (%r) — it needs "
+                        "at least two `ids` and a non-empty `separated_by`, or it "
+                        "is dropped in silence and reads as no declaration at all"
+                        % (g,))
             # An id names ONE observation. Duplicated ids collapse in every
             # by-id index (this one, the capture map, the refs map), so the
             # equality check would read the surviving twin while the capture
@@ -3261,7 +3288,14 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
     """
     decls = duplicate_group_decls(corpus)
     observed = {tuple(sorted(g)) for g in duplicate_refs}
-    scored = {v.get("id"): v for v in verdicts if v.get("id")}
+    # VALID only. A failed or inert verdict carries `targets_declared` but
+    # never `undetected_targets` nor `collateral` — score_mutant returns before
+    # they are set — so crediting it would read "moved every declared target"
+    # from a measurement that never ran. And that is exactly how a separator
+    # dies when a lot re-anchors it: its apply.sh stops working. The group would
+    # have been reported PROVED by the failure it exists to catch.
+    scored = {v.get("id"): v for v in verdicts if v.get("id") and v.get("valid")}
+    seen_ids = {v.get("id") for v in verdicts if v.get("id")}
     unproven = []
     for g in sorted(observed):
         sep = decls.get(g)
@@ -3274,9 +3308,13 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
         v = scored.get(sep)
         if v is None:
             unproven.append({"ids": list(g), "separated_by": sep, "why":
-                             "the declared separator was not scored in this pass (absent "
-                             "from the mutant set%s)" %
-                             (", or excluded by GM_MUTANTS" if restricted else "")})
+                             ("the declared separator ran but came back INVALID — it proves "
+                              "nothing, and a separator that stops applying is exactly how "
+                              "this group loses its proof")
+                             if sep in seen_ids else
+                             ("the declared separator was not scored in this pass (absent "
+                              "from the mutant set%s)" %
+                              (", or excluded by GM_MUTANTS" if restricted else ""))})
             continue
         moved = ((set(v.get("targets_declared") or [])
                   - set(v.get("undetected_targets") or []))
@@ -4869,6 +4907,49 @@ def _selftest():
         check("ref ajoutee non declaree par la demande -> refusee",
               xverdict(xbase)["acted"][0]["ok"], False)
 
+        # LE CANAL DE DECLARATION : le lot qui AJOUTE une entree est celui qui
+        # peut creer une nouvelle paire byte-identique, donc celui a qui la
+        # porte demande de declarer son separateur. Si le juge d'extension gelait
+        # cette cle, la porte nommerait un remede qu'un autre juge refuse — le
+        # defaut que le canal existe pour supprimer, simplement deplace.
+        xreset()
+        dup_entry = dict(base_entry, id="7", path="/dup")
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1", "7"],
+                                             "separated_by": "sep-x"}]}, f)
+        xcommit()
+        _vd = xverdict(xbase)["acted"][0]
+        check("declarer un groupe de doublons n'est PAS un gel viole",
+              [pb for pb in _vd["problems"] if "keys outside" in pb], [])
+        # Et le gel tient pour tout le reste : une cle voisine refuse toujours.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry], "baseline": "reecrite"}, f)
+        xcommit()
+        check("mais toute AUTRE cle hors `entries` reste gelee",
+              any("keys outside" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Une declaration malformee est refusee ICI plutot que jetee en silence
+        # par le lecteur, ou elle se lirait comme « aucune declaration ».
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1"], "separated_by": ""}]}, f)
+        xcommit()
+        check("une declaration malformee est refusee, pas ignoree",
+              any("malformed" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+
         # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
         xreset()
         xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "1"}]}'),
@@ -5774,7 +5855,7 @@ def _selftest():
     # rougit avec lui.
     def whys(group, decls, moved_by):
         corpus_ = {"entries": [], "duplicate_groups": decls}
-        verdicts_ = [{"id": mid, "targets_declared": sorted(mv),
+        verdicts_ = [{"id": mid, "valid": True, "targets_declared": sorted(mv),
                       "undetected_targets": [], "collateral": []}
                      for mid, mv in moved_by.items()]
         out = unproven_duplicate_groups([sorted(group)], corpus_, verdicts_)
@@ -5793,6 +5874,29 @@ def _selftest():
                     dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
     check("aucun epinglage pour un mutant qui ne separe rien",
           v_nopin["collateral"], [])
+
+    # Un separateur INVALIDE ne prouve rien. Son verdict porte
+    # `targets_declared` mais jamais `undetected_targets` ni `collateral`, donc
+    # le crediter revient a lire « toutes les cibles ont bouge » d'une mesure
+    # qui n'a pas eu lieu — et c'est precisement ainsi qu'un separateur meurt.
+    check("un separateur INVALIDE ne prouve pas le groupe",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+              [{"id": "sep-01", "valid": False,
+                "targets_declared": ["013"], "reason": "apply.sh a echoue"}])],
+          [["012", "013"]])
+    # Le motif, lu sans indexer a l'aveugle : si le groupe repassait "prouve",
+    # un `[0]` planterait au lieu de RAPPORTER, et un banc qui plante dit qu'il
+    # s'est passe quelque chose sans dire quoi.
+    _inv = unproven_duplicate_groups(
+        [["012", "013"]],
+        {"entries": [], "duplicate_groups": [
+            {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+        [{"id": "sep-01", "valid": False, "targets_declared": ["013"]}])
+    check("et le motif dit qu'il a tourne, pas qu'il est absent",
+          [("INVALID" in x["why"]) for x in _inv], [True])
 
     D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
     check("separateur qui deplace UN membre : preuve acquittee",
@@ -5814,7 +5918,7 @@ def _selftest():
           [x["ids"] for x in unproven_duplicate_groups(
               [["012", "013"]],
               {"entries": [], "duplicate_groups": D},
-              [{"id": "sep-01", "targets_declared": ["013"],
+              [{"id": "sep-01", "valid": True, "targets_declared": ["013"],
                 "undetected_targets": [], "collateral": ["012"]}])],
           [["012", "013"]])
     # Et une cible DECLAREE qui n'a pas bouge ne compte pas comme deplacee.
@@ -5822,7 +5926,7 @@ def _selftest():
           [x["ids"] for x in unproven_duplicate_groups(
               [["012", "013"]],
               {"entries": [], "duplicate_groups": D},
-              [{"id": "sep-01", "targets_declared": ["012", "013"],
+              [{"id": "sep-01", "valid": True, "targets_declared": ["012", "013"],
                 "undetected_targets": ["012", "013"], "collateral": []}])],
           [["012", "013"]])
 
@@ -6628,14 +6732,21 @@ def main():
             report["duplicate_refs"], corpus, verdicts, bool(only))
         report["duplicate_groups_unproven"] = unproven
         if unproven:
-            problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
-                            "so the corpus is %d observations wide, not %d — and their identity "
-                            "is NOT proved. A group may legitimately repeat (a refusal lane's "
-                            "second entry is a control), but the claim is discharged by a mutant "
-                            "that moves part of the group and leaves the rest still, declared in "
-                            "`duplicate_groups` and checked here. Unproved: %s"
-                            % (len(report["duplicate_refs"]), report["corpus_distinct"],
-                               report["corpus_total"],
+            # The headline counts what the payload lists. Interpolating the
+            # OBSERVED total while listing only the unproved ones told the
+            # operator "5 groups are not proved" beside a list of one — and the
+            # two do not even range over the same set: a stale declaration is
+            # unproved while its references are, by definition, no longer
+            # identical. On a gate whose whole point is precise adjudication,
+            # that gap is the defect.
+            problems.append("%d reference group(s) are not proved (out of %d byte-identical "
+                            "across DIFFERENT entries; the corpus is %d observations wide, "
+                            "not %d). A group may legitimately repeat — a refusal lane's "
+                            "second entry is a control — but the claim is discharged by a "
+                            "mutant that moves part of the group and leaves the rest still, "
+                            "declared in `duplicate_groups` and checked here: %s"
+                            % (len(unproven), len(report["duplicate_refs"]),
+                               report["corpus_distinct"], report["corpus_total"],
                                json.dumps(unproven, ensure_ascii=False)))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
