@@ -43,8 +43,8 @@ var promptIncludeRe = regexp.MustCompile(`\{\{\s*include\s+"([^"]*)"\s*\}\}`)
 // Paths are constrained to baseDir's subtree: absolute paths and any
 // path escaping the base (via ..) are rejected, and files larger than
 // maxPromptIncludeBytes are refused.
-func expandPromptIncludes(body, baseDir string) (string, []error) {
-	return expandPromptIncludesNested(body, baseDir, nil)
+func expandPromptIncludes(body, baseDir string, budget *includeBudget) (string, []error) {
+	return expandPromptIncludesNested(body, baseDir, nil, budget)
 }
 
 // maxPromptIncludeDepth bounds include nesting: an included file may include
@@ -52,20 +52,82 @@ func expandPromptIncludes(body, baseDir string) (string, []error) {
 // by the path stack before the depth is reached.
 const maxPromptIncludeDepth = 8
 
+// maxPromptIncludeTotalBytes and maxPromptIncludeCount bound one WHOLE
+// expansion operation — a compile, or one InlinePromptIncludes over a file's
+// prompts. Neither the per-file cap nor the depth limit bounds the total: the
+// path stack only refuses a file that repeats along the CURRENT path, so a
+// graph where each of d levels includes the next k times expands k^d times,
+// every expansion under the per-file cap and under the depth limit. Measured
+// on 9 files totalling 659 bytes: 1.3 MB in 5.7 s at fan-out 4, and never
+// returning at fan-out 20. This runs in the server process on the cloud
+// publish path over bundle files a tenant controls, so the total is the only
+// bound that keeps one tenant from pinning a shared pod.
+const (
+	maxPromptIncludeTotalBytes = 8 * maxPromptIncludeBytes // 2 MiB inlined per operation
+	maxPromptIncludeCount      = 1024                      // files inlined per operation
+)
+
+// includeBudget is the charge an expansion operation carries: the bytes and
+// the file count still available to inline. It is created ONCE per operation
+// — per compile, per InlinePromptIncludes — never per prompt, since a tenant
+// with N prompts would otherwise multiply a per-prompt cap by N.
+type includeBudget struct {
+	remainingBytes int64
+	remainingFiles int
+	// exhausted stops the walk at the first refusal: a body whose markers
+	// all fail would otherwise collect one error per marker, and the marker
+	// count is itself attacker-controlled.
+	exhausted bool
+}
+
+func newIncludeBudget() *includeBudget {
+	return &includeBudget{remainingBytes: maxPromptIncludeTotalBytes, remainingFiles: maxPromptIncludeCount}
+}
+
+// charge books one inlined file against the budget, returning the error that
+// refuses the expansion once either axis runs out. The first refusal is the
+// only one reported.
+func (b *includeBudget) charge(rel string, n int) error {
+	if b.exhausted {
+		return errIncludeBudgetSpent
+	}
+	b.remainingBytes -= int64(n)
+	b.remainingFiles--
+	if b.remainingBytes < 0 || b.remainingFiles < 0 {
+		b.exhausted = true
+		return fmt.Errorf("include %q: the expansion budget of %d bytes / %d files is exhausted — an include graph that fans out re-expands the same files at every path to them",
+			rel, maxPromptIncludeTotalBytes, maxPromptIncludeCount)
+	}
+	return nil
+}
+
+// errIncludeBudgetSpent marks the expansions after the first refusal: they
+// are dropped silently, the one error already collected being the cause.
+var errIncludeBudgetSpent = errors.New("include: expansion budget exhausted")
+
 // expandPromptIncludesNested expands to a fixed point, so no marker
 // survives the expansion: a marker inside an included file used to be left
 // in the body, where the next compile — on a runner, with no source file
 // — resolved it against ITS working directory.
-func expandPromptIncludesNested(body, baseDir string, stack []string) (string, []error) {
+func expandPromptIncludesNested(body, baseDir string, stack []string, budget *includeBudget) (string, []error) {
 	if !strings.Contains(body, "{{") {
 		return body, nil
 	}
 	var errs []error
 	out := promptIncludeRe.ReplaceAllStringFunc(body, func(match string) string {
+		if budget.exhausted {
+			return ""
+		}
 		rel := promptIncludeRe.FindStringSubmatch(match)[1]
 		content, full, err := readPromptIncludeAt(baseDir, rel)
 		if err != nil {
 			errs = append(errs, err)
+			return ""
+		}
+		if err := budget.charge(rel, len(content)); err != nil {
+			if !errors.Is(err, errIncludeBudgetSpent) {
+				errs = append(errs, err)
+			}
 			return ""
 		}
 		if !HasPromptInclude(content) {
@@ -81,7 +143,7 @@ func expandPromptIncludesNested(body, baseDir string, stack []string) (string, [
 				return ""
 			}
 		}
-		nested, nestedErrs := expandPromptIncludesNested(content, filepath.Dir(full), append(stack, full))
+		nested, nestedErrs := expandPromptIncludesNested(content, filepath.Dir(full), append(stack, full), budget)
 		errs = append(errs, nestedErrs...)
 		return nested
 	})
@@ -103,6 +165,9 @@ func HasPromptInclude(body string) bool {
 // the process working directory, which on a server is nobody's.
 func InlinePromptIncludes(f *ast.File) error {
 	var errs []string
+	// One budget for the whole file: a per-prompt one would let a document
+	// with N prompts inline N times the cap.
+	budget := newIncludeBudget()
 	for _, p := range f.Prompts {
 		if !HasPromptInclude(p.Body) {
 			continue
@@ -114,7 +179,7 @@ func InlinePromptIncludes(f *ast.File) error {
 			errs = append(errs, fmt.Sprintf("prompt %q: an {{include}} cannot be resolved — its source file %q is not an absolute path to a file on this host", p.Name, p.Span.Start.File))
 			continue
 		}
-		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File), budget)
 		if len(incErrs) > 0 {
 			for _, e := range incErrs {
 				errs = append(errs, fmt.Sprintf("prompt %q: %v", p.Name, e))

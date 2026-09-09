@@ -781,6 +781,9 @@ func (c *compiler) canAutoResolveBackend() bool {
 
 func (c *compiler) compilePrompts() {
 	seen := make(map[string]bool, len(c.file.Prompts))
+	// One include budget for the whole compile — see includeBudget: a
+	// per-prompt cap multiplies by the number of prompts.
+	includes := newIncludeBudget()
 	for _, p := range c.file.Prompts {
 		if seen[p.Name] {
 			// Mirror compileSchemas: a second `prompt foo:` used to
@@ -808,7 +811,7 @@ func (c *compiler) compilePrompts() {
 			// and left in the body it would be reported a second time as one.
 			body = promptIncludeRe.ReplaceAllString(body, "")
 		} else {
-			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File))
+			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File), includes)
 		}
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
