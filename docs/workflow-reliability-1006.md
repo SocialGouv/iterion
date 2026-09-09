@@ -71,3 +71,24 @@ window before it can enqueue another corrective message. Failed evaluator
 calls clear only the trigger fingerprint and remain bounded by the existing
 consecutive-failure cap. Launch surfaces that expose a run store opt in via the
 capability method; other observers retain the existing in-memory behaviour.
+
+## Pilot, compatibility and rollback (tranche G)
+
+The rollout is deliberately reversible:
+
+1. Capture a baseline with `reliability.Summarize` (or the equivalent
+   operator report) for finished, failed, failed-resumable, paused and queued
+   runs, including retry-armed and ledger-use counts.
+2. Start a pilot in `report` mode. Admission decisions are recorded and
+   surfaced, but legacy contexts remain runnable; correction and watcher
+   ledgers are observational evidence that can be compared with the baseline.
+3. Promote only the selected tenant/workflow revisions to `enforce` after
+   queued, resumed, nested and watcher paths show matching context and
+   artifact contracts. Keep the per-run retry and correction budgets bounded.
+4. Roll back by setting `ITERION_RELIABILITY_MODE=legacy` (and, if required,
+   `ITERION_OUTPUT_CORRECTION_BUDGET=0`). Do not delete the ledgers: they are
+   the evidence needed to explain the pilot and make a later resume safe.
+
+Legacy documents are always readable. Missing context, admission, correction
+or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
+marks that state explicitly so a green status cannot be inferred by accident.
