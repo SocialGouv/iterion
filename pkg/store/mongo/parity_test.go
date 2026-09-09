@@ -28,6 +28,10 @@ var nonPerRunCollections = map[string]bool{
 	"runs": true, // the run doc; deleted by DeleteRun's own DeleteOne
 	// retry_circuits is keyed by tenant + workflow revision, not run_id;
 	// deleting one run must not erase the shared breaker used by siblings.
+	// Exempt from the sweep does NOT mean unbounded: its retention is the
+	// retry_circuits_ttl index on updated_at (see retrycircuitRetention),
+	// which is what keeps the "or forever, for a TTL-less collection" leak
+	// above from being exactly what this exemption buys.
 	"retry_circuits": true,
 }
 

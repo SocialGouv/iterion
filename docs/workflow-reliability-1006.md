@@ -85,6 +85,14 @@ usually presents as latency rather than a prompt error, the circuit update
 gets its own slice of the arming's store budget so a wedged collection cannot
 starve the write that persists the retry.
 
+**The durable state expires on its own.** A breaker document is keyed by
+tenant + workflow revision, so no per-run deletion reaps it and every `.bot`
+edit mints a fresh key; a TTL index on `updated_at` (30 days) is what keeps
+that from growing without bound. Reaping an idle document changes no decision
+— one cooldown of silence already restarts the streak, and an elapsed cooldown
+already reads as closed — so a breaker untouched for a month is deleted rather
+than kept for a state it no longer holds.
+
 Threshold and cooldown are controlled by `ITERION_RETRY_CIRCUIT_THRESHOLD`
 (a positive integer) and `ITERION_RETRY_CIRCUIT_COOLDOWN` (a Go duration, e.g.
 `15m`). Neither is an off switch: a value that is not usable keeps the default
