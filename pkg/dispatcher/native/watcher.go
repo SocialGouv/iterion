@@ -57,10 +57,15 @@ type indexWatcher struct {
 }
 
 // startIndexWatcher launches a goroutine that mirrors issues/ disk
-// changes into s.index. Returns nil + no error when fsnotify is
-// unavailable on the host (e.g. a read-only or kernel-restricted
-// environment); the Store still works, it just can't see out-of-
-// process writes — same as before this watcher existed.
+// changes into s.index, and publishes the watcher on the store before
+// that goroutine runs.
+//
+// It returns (nil, err) when the host will not give us a watch — a
+// read-only or kernel-restricted environment, ENOSPC at
+// fs.inotify.max_user_watches, EMFILE at max_user_instances. That error
+// is the CALLER's to act on: NewStore records it and arms the rescan net
+// in its place, so an unavailable watch no longer means the store is
+// blind to out-of-process writes until the daemon restarts.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
 	w, err := fsWatcherFactory()()
 	if err != nil {

@@ -178,8 +178,9 @@ func NewStore(root string) (*Store, error) {
 	}
 	s.seq = maxSeq + 1
 
-	// Populate the index from disk. Corrupt files are skipped (a
-	// warning would be nice but the store doesn't carry a logger).
+	// Populate the index from disk. Corrupt files are skipped and warned
+	// about — the store's logger is set above, so the "no logger to warn
+	// with" this used to note has not been true since.
 	if err := s.populateIndex(); err != nil {
 		return nil, err
 	}
