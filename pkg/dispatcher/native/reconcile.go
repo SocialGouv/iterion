@@ -22,8 +22,21 @@ import (
 // mutex, so at this cadence it is ~1% of one core and stalls no reader.
 const defaultRescanInterval = 2 * time.Second
 
+// seamMu guards every package-level test seam in this package — the two
+// interval overrides, the two scan hooks below, and newFSWatcher in
+// watcher.go.
+//
+// They are guarded rather than bare vars because each one is read from a
+// goroutine the test that set it does not own: a store's rescan ticker,
+// its watcher loop. A store whose Close a caller forgot outlives the test
+// that built it, so a bare var here races the NEXT test's setter — and
+// the detector reports that race against the PRODUCTION read
+// (rescanInterval, scanIssues), where it reads as a product bug rather
+// than the seam hygiene it is.
+var seamMu sync.RWMutex
+
 // rescanIntervalOverride lets a test pin the interval; production resolves
-// it from the environment when the net starts.
+// it from the environment when the net starts. Guarded by seamMu.
 var rescanIntervalOverride *time.Duration
 
 // rescanInterval resolves ITERION_NATIVE_INDEX_RESCAN when the net starts —
@@ -32,8 +45,11 @@ var rescanIntervalOverride *time.Duration
 // disables the net and restores the historical blind-until-restart
 // behaviour; an unparsable value falls back to the default.
 func rescanInterval() time.Duration {
-	if rescanIntervalOverride != nil {
-		return *rescanIntervalOverride
+	seamMu.RLock()
+	override := rescanIntervalOverride
+	seamMu.RUnlock()
+	if override != nil {
+		return *override
 	}
 	raw := os.Getenv("ITERION_NATIVE_INDEX_RESCAN")
 	if raw == "" {
@@ -56,11 +72,20 @@ func rescanInterval() time.Duration {
 // in-process write must be able to land while it runs, which it could not
 // if the scan held the store mutex; the second is called by Reconcile
 // after its scan and before the swap — a write that lands there is one
-// the scan did not see, and a swap must not revert it.
+// the scan did not see, and a swap must not revert it. Guarded by seamMu.
 var (
 	reconcileScanning func(*Store)
 	reconcileScanned  func(*Store)
 )
+
+// scanHooks reads the two scan seams under seamMu. Read as a pair and
+// once per scan, so a hook cannot be swapped out between the two calls of
+// a single Reconcile.
+func scanHooks() (scanning, scanned func(*Store)) {
+	seamMu.RLock()
+	defer seamMu.RUnlock()
+	return reconcileScanning, reconcileScanned
+}
 
 // markDirtyLocked records an in-process write while a scan is in flight,
 // so the swap keeps the index's value for that id. Caller holds mu; every
@@ -116,8 +141,8 @@ func (s *Store) Reconcile() error {
 		s.mu.Unlock()
 		return err
 	}
-	if reconcileScanned != nil {
-		reconcileScanned(s)
+	if _, scanned := scanHooks(); scanned != nil {
+		scanned(s)
 	}
 
 	s.mu.Lock()
@@ -194,8 +219,8 @@ func (s *Store) swapIndexLocked(fresh map[string]*Issue, unreadable map[string]e
 // error, for the caller to decide — the rebuild keeps the last value,
 // NewStore skips it.
 func (s *Store) scanIssues() (fresh map[string]*Issue, unreadable map[string]error, err error) {
-	if reconcileScanning != nil {
-		reconcileScanning(s)
+	if scanning, _ := scanHooks(); scanning != nil {
+		scanning(s)
 	}
 	fresh = map[string]*Issue{}
 	entries, err := os.ReadDir(filepath.Join(s.root, issuesDir))

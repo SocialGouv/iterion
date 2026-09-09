@@ -14,8 +14,15 @@ import (
 
 // newFSWatcher is the seam through which a test can make the host refuse
 // a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Production
-// always gets fsnotify's own constructor.
+// always gets fsnotify's own constructor. Guarded by seamMu — declared in
+// reconcile.go, which documents why every seam here needs it.
 var newFSWatcher = fsnotify.NewWatcher
+
+func fsWatcherFactory() func() (*fsnotify.Watcher, error) {
+	seamMu.RLock()
+	defer seamMu.RUnlock()
+	return newFSWatcher
+}
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
 // out-of-process writers (typically the `iterion __mcp-board` stdio
@@ -55,7 +62,7 @@ type indexWatcher struct {
 // environment); the Store still works, it just can't see out-of-
 // process writes — same as before this watcher existed.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
-	w, err := newFSWatcher()
+	w, err := fsWatcherFactory()()
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +115,16 @@ func (iw *indexWatcher) Close() error {
 // question costs one mutex and a map lookup.
 const defaultWatchCheckInterval = 5 * time.Second
 
-// watchCheckIntervalOverride lets a test tighten the check.
+// watchCheckIntervalOverride lets a test tighten the check. Guarded by
+// seamMu.
 var watchCheckIntervalOverride *time.Duration
 
 func watchCheckInterval() time.Duration {
-	if watchCheckIntervalOverride != nil {
-		return *watchCheckIntervalOverride
+	seamMu.RLock()
+	override := watchCheckIntervalOverride
+	seamMu.RUnlock()
+	if override != nil {
+		return *override
 	}
 	return defaultWatchCheckInterval
 }

@@ -15,9 +15,15 @@ import (
 // disables the net.
 func setRescanInterval(t *testing.T, d time.Duration) {
 	t.Helper()
+	seamMu.Lock()
 	prev := rescanIntervalOverride
 	rescanIntervalOverride = &d
-	t.Cleanup(func() { rescanIntervalOverride = prev })
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		rescanIntervalOverride = prev
+		seamMu.Unlock()
+	})
 }
 
 // TestReconcile_DoesNotRevertAWriteThatRacedTheScan pins the two
@@ -41,8 +47,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 
 	var duringScan, afterScan *Issue
 	var scanningOnce, scannedOnce sync.Once
-	prevScanning, prevScanned := reconcileScanning, reconcileScanned
-	reconcileScanning = func(*Store) {
+	scanning := func(*Store) {
 		scanningOnce.Do(func() {
 			// From another goroutine, bounded: a Create that cannot take
 			// the lock while the scan runs is the failure named.
@@ -63,7 +68,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			}
 		})
 	}
-	reconcileScanned = func(*Store) {
+	scanned := func(*Store) {
 		scannedOnce.Do(func() {
 			iss, err := s.Create(Issue{Title: "Landed after the scan, before the swap", State: "backlog"})
 			if err != nil {
@@ -72,7 +77,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			afterScan = iss
 		})
 	}
-	t.Cleanup(func() { reconcileScanning, reconcileScanned = prevScanning, prevScanned })
+	setScanHooks(t, scanning, scanned)
 
 	if err := s.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -98,8 +103,9 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); the overflow path needs one", s.watcherErr)
+	watcher, _, watcherErr := watchState(s)
+	if watcher == nil {
+		t.Skipf("this host refused a watch (%v); the overflow path needs one", watcherErr)
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -122,7 +128,7 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 	delete(s.index, iss.ID)
 	s.mu.Unlock()
 
-	s.watcher.w.Errors <- fsnotify.ErrEventOverflow
+	watcher.w.Errors <- fsnotify.ErrEventOverflow
 
 	waitForIndex(t, s, func() bool {
 		_, ok := s.index[iss.ID]
@@ -143,7 +149,7 @@ func TestRescanInterval_ReadsTheEnvironmentWhenTheNetStarts(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = off.Close() })
-	if off.rescanner != nil {
+	if _, rescanner, _ := watchState(off); rescanner != nil {
 		t.Fatal("ITERION_NATIVE_INDEX_RESCAN=off set before NewStore was not honoured: the interval was resolved at package init")
 	}
 
@@ -153,7 +159,8 @@ func TestRescanInterval_ReadsTheEnvironmentWhenTheNetStarts(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = on.Close() })
-	if on.rescanner == nil || on.rescanner.interval != 50*time.Millisecond {
-		t.Fatalf("ITERION_NATIVE_INDEX_RESCAN=50ms not honoured: rescanner=%+v", on.rescanner)
+	_, rescanner, _ := watchState(on)
+	if rescanner == nil || rescanner.interval != 50*time.Millisecond {
+		t.Fatalf("ITERION_NATIVE_INDEX_RESCAN=50ms not honoured: rescanner=%+v", rescanner)
 	}
 }

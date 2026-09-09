@@ -16,11 +16,45 @@ import (
 // degraded path is exercised on any host instead of only on an exhausted one.
 func refuseWatch(t *testing.T) {
 	t.Helper()
+	seamMu.Lock()
 	prev := newFSWatcher
 	newFSWatcher = func() (*fsnotify.Watcher, error) {
 		return nil, &os.SyscallError{Syscall: "inotify_init1", Err: syscall.EMFILE}
 	}
-	t.Cleanup(func() { newFSWatcher = prev })
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		newFSWatcher = prev
+		seamMu.Unlock()
+	})
+}
+
+// setScanHooks installs the two Reconcile scan seams for one test and
+// restores them after. Both go under seamMu: a store another test leaked
+// is still calling scanHooks from its rescan ticker.
+func setScanHooks(t *testing.T, scanning, scanned func(*Store)) {
+	t.Helper()
+	seamMu.Lock()
+	prevScanning, prevScanned := reconcileScanning, reconcileScanned
+	reconcileScanning, reconcileScanned = scanning, scanned
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		reconcileScanning, reconcileScanned = prevScanning, prevScanned
+		seamMu.Unlock()
+	})
+}
+
+// watchState reads the store's carrier fields under mu. They are no
+// longer written once at NewStore and read forever after: watchLost
+// swaps all three from the WATCHER's goroutine when the kernel drops the
+// watch, so a bare `s.watcher` in a test is a data race with the very
+// code under test — and one the race detector reports as a failure of
+// the production write, which reads as a product bug it is not.
+func watchState(s *Store) (*indexWatcher, *indexRescanner, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.watcher, s.rescanner, s.watcherErr
 }
 
 // fastPathBudget is how long waitForIndex gives the fsnotify fast path
@@ -56,18 +90,19 @@ func waitForIndex(t *testing.T, s *Store, cond func() bool, label string) {
 		return cond()
 	}
 
-	if s.watcher == nil {
-		if s.watcherErr == nil {
+	watcher, _, watcherErr := watchState(s)
+	if watcher == nil {
+		if watcherErr == nil {
 			t.Fatalf("watcher: %s: no watcher and no recorded reason — startIndexWatcher returned (nil, nil)", label)
 		}
 		// The host would not give us a watch. That says nothing about
 		// iterion's code, but the store still owes visibility, so assert
 		// the net instead of skipping the guard.
 		if err := s.Reconcile(); err != nil {
-			t.Fatalf("watcher: %s: host refused a watch (%v) and the reconcile net failed: %v", label, s.watcherErr, err)
+			t.Fatalf("watcher: %s: host refused a watch (%v) and the reconcile net failed: %v", label, watcherErr, err)
 		}
 		if !check() {
-			t.Fatalf("watcher: %s: host refused a watch (%v) AND the reconcile net did not make the change visible", label, s.watcherErr)
+			t.Fatalf("watcher: %s: host refused a watch (%v) AND the reconcile net did not make the change visible", label, watcherErr)
 		}
 		return
 	}
@@ -214,7 +249,7 @@ func TestWatcher_ExternalCreateVisibleWhenWatchRefused(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher != nil {
+	if watcher, _, _ := watchState(s); watcher != nil {
 		t.Fatal("test setup: expected the watch to be refused")
 	}
 
@@ -248,12 +283,17 @@ func TestStore_ReconcileSeesExternalWrites(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	// Take the fast path out of the picture entirely: the net alone
-	// must carry all three shapes of out-of-process change.
-	if s.watcher != nil {
-		if err := s.watcher.Close(); err != nil {
+	// must carry all three shapes of out-of-process change. Close the
+	// watcher OUTSIDE mu — its Close waits for the loop, which may itself
+	// be waiting for mu — then clear the field under it, the order
+	// Store.Close uses for the same reason.
+	if watcher, _, _ := watchState(s); watcher != nil {
+		if err := watcher.Close(); err != nil {
 			t.Fatalf("close watcher: %v", err)
 		}
+		s.mu.Lock()
 		s.watcher = nil
+		s.mu.Unlock()
 	}
 
 	doomed, err := s.Create(Issue{Title: "Removed externally", State: "backlog"})
@@ -362,10 +402,11 @@ func TestStore_FallbackRescanWhenWatchRefused(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher != nil {
+	watcher, rescanner, _ := watchState(s)
+	if watcher != nil {
 		t.Fatal("test setup: expected the watch to be refused")
 	}
-	if s.rescanner == nil {
+	if rescanner == nil {
 		t.Fatal("watch refused but no fallback rescan started: the store is blind until restart")
 	}
 

@@ -20,9 +20,15 @@ import (
 // whether its watch still exists.
 func setWatchCheckInterval(t *testing.T, d time.Duration) {
 	t.Helper()
+	seamMu.Lock()
 	prev := watchCheckIntervalOverride
 	watchCheckIntervalOverride = &d
-	t.Cleanup(func() { watchCheckIntervalOverride = prev })
+	seamMu.Unlock()
+	t.Cleanup(func() {
+		seamMu.Lock()
+		watchCheckIntervalOverride = prev
+		seamMu.Unlock()
+	})
 }
 
 // writeExternal drops an issue file under issues/ behind the store's
@@ -88,8 +94,8 @@ func TestWatcher_ArmsTheNetWhenTheKernelDropsTheWatch(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
+	if watcher, _, watcherErr := watchState(s); watcher == nil {
+		t.Skipf("this host refused a watch (%v); a watch cannot be lost", watcherErr)
 	}
 
 	issues := filepath.Join(dir, issuesDir)
@@ -102,18 +108,14 @@ func TestWatcher_ArmsTheNetWhenTheKernelDropsTheWatch(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		s.mu.Lock()
-		armed := s.watcher == nil && s.rescanner != nil && s.watcherErr == errWatchLost
-		s.mu.Unlock()
-		if armed {
+		watcher, rescanner, watcherErr := watchState(s)
+		if watcher == nil && rescanner != nil && watcherErr == errWatchLost {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	s.mu.Lock()
-	armed := s.watcher == nil && s.rescanner != nil
-	s.mu.Unlock()
-	if !armed {
+	watcher, rescanner, _ := watchState(s)
+	if armed := watcher == nil && rescanner != nil; !armed {
 		t.Fatal("the kernel dropped the watch and the store still believes its fast path is armed: blind until restart")
 	}
 
@@ -140,17 +142,15 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
 		}
-		if s.watcher == nil {
-			t.Skipf("this host refused a watch (%v)", s.watcherErr)
+		if watcher, _, watcherErr := watchState(s); watcher == nil {
+			t.Skipf("this host refused a watch (%v)", watcherErr)
 		}
 		go func() { _ = os.RemoveAll(filepath.Join(dir, issuesDir)) }()
 		time.Sleep(time.Duration(i%7) * time.Millisecond)
 		if err := s.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		s.mu.Lock()
-		r := s.rescanner
-		s.mu.Unlock()
+		_, r, _ := watchState(s)
 		if r != nil {
 			select {
 			case <-r.done:
@@ -165,18 +165,15 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v)", s.watcherErr)
+	iw, _, watcherErr := watchState(s)
+	if iw == nil {
+		t.Skipf("this host refused a watch (%v)", watcherErr)
 	}
-	iw := s.watcher
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	s.watchLost(iw)
-	s.mu.Lock()
-	r := s.rescanner
-	s.mu.Unlock()
-	if r != nil {
+	if _, r, _ := watchState(s); r != nil {
 		t.Fatal("a loss reported after Close armed a net")
 	}
 }
@@ -204,13 +201,11 @@ func TestReconcile_ScansOnceWhateverTheWriteLoad(t *testing.T) {
 	}
 
 	var scans atomic.Int32
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setScanHooks(t, func(st *Store) {
 		if st == s { // another test's store may still be ticking down its Cleanup
 			scans.Add(1)
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	}, nil)
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -324,18 +319,17 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); the overflow path needs one", s.watcherErr)
+	watcher, _, watcherErr := watchState(s)
+	if watcher == nil {
+		t.Skipf("this host refused a watch (%v); the overflow path needs one", watcherErr)
 	}
 
 	stall := make(chan struct{})
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setScanHooks(t, func(st *Store) {
 		if st == s { // stall only this store's rebuild
 			<-stall
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	}, nil)
 	release := func() {
 		select {
 		case <-stall:
@@ -351,7 +345,7 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 		_ = s.Close()
 	})
 
-	s.watcher.w.Errors <- fsnotify.ErrEventOverflow
+	watcher.w.Errors <- fsnotify.ErrEventOverflow
 	// The rebuild is now parked in its scan. The fast path must still work.
 	writeExternal(t, dir, "native:during-the-rebuild", "Delivered while the rebuild is stalled")
 	deadline := time.Now().Add(2 * time.Second)
