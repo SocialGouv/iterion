@@ -2288,6 +2288,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// `iterion run` of the same bot.
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
+	if msg.ExecutionContext != nil {
+		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
+	}
 	// Sandbox-run observer: registers the live sandbox Run so the mid-run
 	// credential refreshers can write rotated tokens THROUGH into the
 	// container (forfait credentials + the k8s workspace's git credential

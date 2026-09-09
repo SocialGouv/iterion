@@ -333,6 +333,20 @@ making every v7 build safe for model pins. The rollout preconditions are:
       DLQ-park mechanics this release introduces, so only a drained queue
       protects in-flight messages during this specific cutover.
 
+## Checklist: v13 → v14 (execution context admission)
+
+v14 carries the resolved `execution_context` contract. The publisher also
+persists it on the queued run document; the runner compares the wire copy with
+that document before attachments, workspace setup or a model call. A stale v13
+runner must reject v14 rather than silently run without admission context.
+
+- [x] `ExecutionContext` is carried by `RunMessage` and the queued run.
+- [x] Schema version is bumped to 14; `MinSchemaVersion` remains 10 for the
+      existing rolling-accept window.
+- [x] Local, CLI, cloud and nested subbot engines run the same pre-model gate.
+- [ ] Roll out the server publisher before runners, then observe admission
+      decisions (`allowed`, `report_only`, `denied`) before enabling enforce.
+
 ## If something went wrong
 
 - **Runs stuck `queued` after a rollout**: check the DLQ (they parked there

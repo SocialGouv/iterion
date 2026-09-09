@@ -456,6 +456,9 @@ type Run struct {
 	// runs written before the reliability contract remain readable and keep
 	// their legacy behaviour on resume.
 	ExecutionContext *ExecutionContext `json:"execution_context,omitempty" bson:"execution_context,omitempty"`
+	// Admission records the last pre-execution decision. It is written before
+	// attachment promotion, workspace setup or any model call.
+	Admission *AdmissionDecision `json:"admission,omitempty" bson:"admission,omitempty"`
 	// Name is a deterministic, human-friendly label derived from
 	// (file_path + run_id) at run creation. Display-only — the
 	// canonical identifier remains ID. Empty for runs persisted

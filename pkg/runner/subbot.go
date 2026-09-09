@@ -181,6 +181,22 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		child.Vars = req.Vars
 		child.Resume = nil
 		child.BotBundle = nil
+		childContext := msg.ExecutionContext.Clone()
+		if childContext != nil {
+			// A child keeps the policy and store/business-store declarations,
+			// but its workflow revision and lineage are authority-owned facts.
+			childContext.Workflow = store.WorkflowContext{}
+			childContext.Lineage = store.LineageContext{}
+		}
+		childContext = runview.ResolveExecutionContext(ctx, r.cfg.Store, childRunID, runview.LaunchSpec{
+			FilePath:         childPath,
+			WorkDir:          req.WorkDir,
+			ParentRunID:      req.ParentRunID,
+			ParentNodeID:     req.NodeID,
+			ExecutionContext: childContext,
+		}, childWf, hash, store.ContextPolicyLegacy, "")
+		childContext.LaunchSurface = "runner-subbot"
+		child.ExecutionContext = childContext
 
 		// The child's own run.log — the studio's per-node Logs tab reads the
 		// CHILD's persisted log, and the parent's logger would fold every
@@ -225,6 +241,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 		opts := []runtime.EngineOption{
 			runtime.WithLogger(childLogger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithExecutionContext(childContext),
 			runtime.WithFilePath(childPath),
 			runtime.WithWorkDir(childWorkDir),
 			runtime.WithSandboxRunObserver(r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{

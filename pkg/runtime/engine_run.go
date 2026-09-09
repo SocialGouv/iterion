@@ -69,6 +69,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return err
 	}
 
+	// Admission is deliberately before attachment promotion, workspace
+	// setup, sandbox startup and the first model call. A denied context is
+	// therefore a durable, actionable failure without external side effects.
+	if err := e.admitRun(ctx, runID, run); err != nil {
+		e.markFailedBestEffort(ctx, runID, "execution context admission", err)
+		return e.setupErr(ctx, err)
+	}
+
 	run, err = e.runPromoteAttachments(ctx, runID, run)
 	if err != nil {
 		return err
@@ -379,7 +387,13 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			if err := ctxContract.Normalize(); err != nil {
 				return nil, fmt.Errorf("runtime: invalid execution context: %w", err)
 			}
-			run.ExecutionContext = ctxContract
+			// A queued/resumed run already has an authority-owned context
+			// stamped by its launcher. Preserve it; the admission gate compares
+			// the runner's wire declaration against that persisted value instead
+			// of allowing a stale message to overwrite the contract.
+			if run.ExecutionContext == nil {
+				run.ExecutionContext = ctxContract
+			}
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)

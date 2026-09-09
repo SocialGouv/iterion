@@ -77,6 +77,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// Re-run the same context admission before any resume claim, workspace
+	// restoration or answer side effect. A denial leaves the resumable status
+	// untouched so the operator can repair the declaration and retry.
+	if err := e.admitRun(ctx, runID, r); err != nil {
+		return err
+	}
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
