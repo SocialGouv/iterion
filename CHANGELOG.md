@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.123.2](https://github.com/SocialGouv/iterion/compare/v3.123.1...v3.123.2) (2026-09-09)
+
+### Bug Fixes
+
+* **golden-master,modernize:** a repairable certificate refusal no longer ends the run ([#1007](https://github.com/SocialGouv/iterion/issues/1007)) ([e8154c8](https://github.com/SocialGouv/iterion/commit/e8154c866b2de998bd26f0aa7935fc5f5e1c7887))
+
+    <details><summary>why</summary>
+
+    Rf213cf. `lot_gate -> extension_provenance when forged` lands on a `resumable: false` fail declared ahead of the repair loop, so every shape that set `forged` ended the campaign outright. The justification written above that edge — "dropping the act block breaks ledger_append_only" — holds for two of the five sites that set it, and `ledger_append_only` is `head_txt.startswith(base_txt)`: it pins only the text BELOW the run's base, so a block appended during the segment can be narrowed or…
+
+    </details>
+
 ## [3.123.1](https://github.com/SocialGouv/iterion/compare/v3.123.0...v3.123.1) (2026-09-09)
 
 ### Bug Fixes
