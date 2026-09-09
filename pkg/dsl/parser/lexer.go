@@ -220,8 +220,12 @@ func (l *Lexer) handleLineStart() {
 		}
 	}
 
-	// Comment lines at line start
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	// Comment lines at line start: `#` or `##` (see scanComment). The one
+	// exception is the first line of a prompt body: prompt mode only starts
+	// when the INDENT below is emitted, so a `# Heading` opening the body
+	// (the ordinary markdown shape of a human node's instructions) must
+	// reach that INDENT as text rather than vanish as a comment.
+	if l.pos < len(l.src) && l.src[l.pos] == '#' && !l.promptBodyOpensHere(spaces) {
 		l.scanComment(startLine)
 		l.atLineStart = true
 		return
@@ -256,6 +260,28 @@ func (l *Lexer) handleLineStart() {
 	}
 
 	l.atLineStart = false
+}
+
+// promptBodyOpensHere reports whether a line indented by `spaces` is the
+// first line of a prompt body: it is deeper than the current level and the
+// tokens emitted so far end with the `prompt <name>:` header. It is the
+// pre-INDENT twin of isPromptIndent, consulted before a `#` on such a line
+// could be scanned as a comment.
+func (l *Lexer) promptBodyOpensHere(spaces int) bool {
+	if spaces <= l.indentStack[len(l.indentStack)-1] {
+		return false
+	}
+	idx := len(l.tokens) - 1
+	if idx >= 0 && l.tokens[idx].Type == TokenNewline {
+		idx--
+	}
+	if idx >= 0 && l.tokens[idx].Type == TokenColon {
+		idx--
+	}
+	if idx >= 0 && (l.tokens[idx].Type == TokenIdent || isKeywordToken(l.tokens[idx].Type)) {
+		idx--
+	}
+	return idx >= 0 && l.tokens[idx].Type == TokenPrompt
 }
 
 // isPromptIndent checks if the last emitted tokens before the INDENT are: prompt IDENT : NEWLINE INDENT
@@ -305,10 +331,18 @@ func (l *Lexer) emitPromptLine(leadingSpaces int) {
 	l.atLineStart = true
 }
 
+// scanComment consumes a comment to the end of its line. A comment opens
+// with `#`; the traditional `##` form is the same comment with one more
+// hash, so both `# note` and `## note` carry the text "note". Outside a
+// string, a prompt body or a block scalar a `#` never means anything else
+// in the language, so accepting the single form costs no ambiguity — and
+// it is the form every YAML-trained author (human or model) reaches for.
 func (l *Lexer) scanComment(startLine int) {
 	startCol := l.col
-	l.advance() // skip first #
-	l.advance() // skip second #
+	l.advance() // skip the opening #
+	if l.pos < len(l.src) && l.src[l.pos] == '#' {
+		l.advance() // the `##` form: skip the second #
+	}
 	var buf []rune
 	for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 		buf = append(buf, l.src[l.pos])
@@ -341,8 +375,8 @@ func (l *Lexer) scanToken() {
 		l.emit(TokenNewline, "", startLine, startCol)
 		l.atLineStart = true
 
-	case ch == '#' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '#':
-		// Inline comment — consume rest of line
+	case ch == '#':
+		// Inline comment (`#` or `##`) — consume rest of line
 		l.scanComment(startLine)
 
 	case ch == ':':
@@ -527,12 +561,12 @@ func (l *Lexer) lastSignificantToken() TokenType {
 // `key: "..."` followed by a newline.
 func (l *Lexer) scanBlockScalar(startLine, startCol int) {
 	l.advance() // skip opening |
-	// Skip trailing inline whitespace and an optional ## comment on the
+	// Skip trailing inline whitespace and an optional comment on the
 	// opener line, then consume the newline that introduces the block.
 	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t') {
 		l.advance()
 	}
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	if l.pos < len(l.src) && l.src[l.pos] == '#' {
 		for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 			l.advance()
 		}
@@ -610,7 +644,7 @@ func (l *Lexer) handleBlockScalarLine(spaces, startLine int) {
 // the dedenting line back through the regular indent state machine).
 func (l *Lexer) handleIndentation(spaces, startLine int) {
 	// Comment-only line at this indentation: scan it and stay at line start.
-	if l.pos+1 < len(l.src) && l.src[l.pos] == '#' && l.src[l.pos+1] == '#' {
+	if l.pos < len(l.src) && l.src[l.pos] == '#' && !l.promptBodyOpensHere(spaces) {
 		l.scanComment(startLine)
 		l.atLineStart = true
 		return
