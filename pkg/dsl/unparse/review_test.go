@@ -1,6 +1,9 @@
 package unparse_test
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +11,72 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
+
+// A document reaching Verify came through the JSON transport, which carries
+// no spans: ir.Compile refuses its {{include}} markers. If the re-parse of
+// the rendered text names a file, ITS markers resolve instead — against the
+// server process's working directory — and the two sides can never agree, so
+// the studio refuses to save or preview any .bot that uses an include.
+// Whether that directory happens to hold the file must not decide either.
+func TestVerifyAcceptsATransportedDocumentThatUsesAnInclude(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		name := "include file absent"
+		if present {
+			name = "include file in the working directory"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if present {
+				if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("BE RIGOROUS\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(dir)
+
+			// Built the way the studio's save and preview handlers build it:
+			// parsed source → JSON → back, so no declaration carries a span.
+			src := strings.Join([]string{
+				"schema out:",
+				"  ok: bool",
+				"",
+				"prompt rigor:",
+				"  Follow the rules:",
+				`  {{include "rules.md"}}`,
+				"  Then stop.",
+				"",
+				"agent a:",
+				`  model: "m"`,
+				"  output: out",
+				"  system: rigor",
+				"",
+				"workflow w:",
+				"  entry: a",
+				"  a -> done",
+				"",
+			}, "\n")
+			pr := parser.Parse("studio.bot", src)
+			for _, d := range pr.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("fixture does not parse: %s", d.Error())
+				}
+			}
+			doc, err := ast.MarshalFile(pr.File)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := ast.UnmarshalFile(json.RawMessage(doc))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(f.Prompts[0].Body, `{{include "rules.md"}}`) {
+				t.Fatalf("the transported body lost its marker: %q", f.Prompts[0].Body)
+			}
+			if err := unparse.Verify(f, unparse.Unparse(f)); err != nil {
+				t.Fatalf("a document that uses an include cannot be saved or previewed: %v", err)
+			}
+		})
+	}
+}
 
 // A document that declares no workflow yet — every half-authored canvas
 // document — has no compiled program to compare; Verify used to pass

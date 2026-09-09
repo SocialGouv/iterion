@@ -18,12 +18,26 @@ import (
 // somewhere the program is later read from (the studio's save path) refuses
 // on an error rather than write a file that means something else than the
 // document it came from.
+//
+// It answers that question about the document AS GIVEN: f is expected to be
+// span-free, the shape every caller has (the JSON transport carries no
+// spans). A caller that hands it a file parsed from disk asks a different
+// question — see the re-parse below.
 func Verify(f *ast.File, text string) error {
-	pr := parser.Parse("unparsed.bot", text)
+	// No source file: f came through the JSON transport with no spans, so
+	// ir.Compile refuses its {{include}} markers. Naming a file here would
+	// make the re-parse resolve them instead, and the two sides could never
+	// agree on a document that uses one. Only include resolution and
+	// diagnostic positions read this name, and SameProgram compares codes.
+	pr := parser.Parse("", text)
 	var errs []string
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
-			errs = append(errs, d.Error())
+			// The empty file name above leaves a leading colon on the
+			// position; the refusal reads "12:3: error …", a line:column in
+			// the text the caller is about to write, which is the file it
+			// names anyway.
+			errs = append(errs, strings.TrimPrefix(d.Error(), ":"))
 		}
 	}
 	if len(errs) > 0 {
