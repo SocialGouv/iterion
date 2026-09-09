@@ -29,7 +29,7 @@ key: |
   with preserved newlines
 ```
 
-Raw strings have no backtick escape. `## strict-escape: on` in the leading file comments opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
+Raw strings have no backtick escape. A `# strict-escape: on` line (or `## strict-escape: on`) among the leading comment lines of the file opts quoted strings into standard escape interpretation. Lists are bracketed and comma-separated. Depending on the property, elements are identifiers, strings, tool refs (`mcp.server.*`), or either.
 
 Scalar declaration literals are strings, integers, floats, or booleans. JSON and `string[]` defaults/preset values therefore use a quoted JSON representation.
 

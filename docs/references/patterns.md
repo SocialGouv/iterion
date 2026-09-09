@@ -356,7 +356,7 @@ schema fix_output:
 tool run_ci:
   ## The exit code becomes a field: a failing suite is a RESULT the judge
   ## reads, not a node failure — and stdout is the JSON the schema declares.
-  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, logs: .}' </tmp/ci.log`
+  command: `if ${CI_COMMAND:-make test} >/tmp/ci.log 2>&1; then ok=true; else ok=false; fi; jq -Rs --argjson passed "$ok" '{passed: $passed, logs: .[-20000:]}' </tmp/ci.log`
   output: ci_result
 
 judge verify:
@@ -392,7 +392,8 @@ workflow ci_fix:
   `output:` schema (`{"passed": true, "logs": "…"}`). Any other stdout is
   silently wrapped as `{"result": "…"}` and the declared fields are absent
   downstream, and a non-zero exit fails the node — hence the wrapper, which
-  turns the exit code into a field
+  turns the exit code into a field and keeps only the log's last 20 000
+  characters (the judge reads that field; nothing else bounds it)
 
 ---
 
