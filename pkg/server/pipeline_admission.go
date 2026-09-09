@@ -411,7 +411,10 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 			return
 		}
 	}
-	if _, err := s.launchTicketNow(runs, board, iss); err != nil {
+	// The loop is local-only (pipelineAdmissionEnabled refuses cloud), so
+	// the board it drives carries no tenant: the bot resolves
+	// platform-over-baked with an empty team, and there is none to invent.
+	if _, err := s.launchTicketNow(context.Background(), "", runs, board, iss); err != nil {
 		// launchTicketNow already logged the specifics; the loop is
 		// best-effort and simply retries on the next tick.
 		return
@@ -483,13 +486,86 @@ var _ interface {
 	ServerNow(context.Context) (time.Time, error)
 } = (*boardmongo.Store)(nil)
 
+// pipelineBot is one bot resolution serving BOTH halves of the pipelines
+// lane: the metadata its admission checks read — the canonical name a card
+// is stamped with, and whether the bot is enabled — and the bundle its
+// launch runs. Resolving the two separately is what let the control center
+// admit a card on the baked catalog's metadata and then launch the baked
+// catalog's bundle for a team that had forked that very bot.
+type pipelineBot struct {
+	// Name is the canonical bot id: what the card records and what the
+	// upsert key is built from. A card may carry a tolerated spelling
+	// (`feature_dev` for a `feature-dev` bundle) — every tier resolves it,
+	// and the board keeps the canonical one.
+	Name string
+	// Enabled is the catalog-visibility decision: the manifest `enabled:`
+	// default, composed with the workspace overlay for baked entries.
+	Enabled bool
+	// Launch is the launch-ready bundle. The caller OWNS it and must
+	// Cleanup() it — including the check-only callers, which pay the
+	// resolution so that a card that cannot be launched is never created
+	// (the admitBoardCard bargain).
+	Launch *launchBot
+}
+
+// resolvePipelineBot resolves the bot a pipeline ticket names through the
+// full tier order — teamID's own botsource row, then a platform override,
+// then the baked catalog — and answers with what BOTH halves of the lane
+// need. (zero, false, nil) is a genuine absence each caller maps to its own
+// refusal; an error is a resolver failure, never a fall-through to a bundle
+// nobody chose.
+//
+// teamID is the tenant the CARD belongs to. The cloud pipeline board is
+// selected from the request's active team (cloudBoardResolve), so a card
+// carried by a team that forked its bot must run that fork, and a bot only
+// that team authored must be cardable at all — a stored row has no
+// filesystem path to launch from. It is a parameter and not a ctx read for
+// bot_resolver.go's reason: the tier must follow "who is this launch for",
+// not whichever tenant the ctx happens to carry. Empty is legitimate for
+// the local studio, whose board has no tenancy.
+func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (pipelineBot, bool, error) {
+	lb, err := s.resolveBotTiered(ctx, teamID, botID, "")
+	if err != nil {
+		return pipelineBot{}, false, err
+	}
+	if lb == nil {
+		return pipelineBot{}, false, nil
+	}
+	// The metadata half of the SAME resolution: both reads go through
+	// teamBotRow, so they land on one row and the enabled flag describes
+	// the bundle that will actually run — not the origin a fork was made
+	// from.
+	entry, found, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
+	if err != nil {
+		lb.Cleanup()
+		return pipelineBot{}, false, err
+	}
+	if !found {
+		// The two halves disagree: a launchable bundle nothing describes.
+		// Say so. Guessing "enabled" is how a disabled bot launches;
+		// guessing "absent" is how a launchable bot becomes uncardable.
+		lb.Cleanup()
+		return pipelineBot{}, false, fmt.Errorf(
+			"bot %q resolves to a launchable bundle on the %s tier but no catalog metadata describes it", botID, lb.Origin)
+	}
+	// The catalog tier answers to a tolerated spelling and hands back the
+	// REQUESTED one; the canonical name is the metadata's. Carry it into
+	// the launch too, so the card, the upsert key and the run all agree.
+	lb.BotID = entry.Name
+	return pipelineBot{Name: entry.Name, Enabled: entry.Enabled, Launch: lb}, true, nil
+}
+
 // launchTicketNow claims a ticket and launches its bot, returning the run
 // id. It is the shared body of the admission loop (which ignores the error
 // and retries next tick) and of the operator's explicit "launch now" drag,
 // which needs the failure reported back over HTTP. The bot-not-in-catalog
 // case is a *skip*, not a failure, for the loop — hence the dedicated
 // error the caller can distinguish.
-func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+//
+// ctx scopes the bot RESOLUTION (a store read in cloud, where this endpoint
+// is reachable); the launch itself keeps its own background context, so a
+// client that hangs up mid-request cannot cancel a run already in flight.
+func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
 	// A ticket held under a LIVE claim already has a launcher — the
 	// dispatcher wins with the CLAIM, and its move out of Ready is
 	// offloaded, so the state alone cannot say the ticket is free. This is
@@ -526,12 +602,12 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	if cur.Claim != "" && !cur.ClaimLeaseUntil.IsZero() && cur.ClaimLeaseUntil.After(s.boardNow(board)) {
 		return "", fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", iss.ID, cur.Claim)
 	}
-	entry, found, err := s.findBot(iss.Bot)
+	bot, found, err := s.resolvePipelineBot(ctx, teamID, iss.Bot)
 	if err != nil {
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)
 		return "", fmt.Errorf("resolve bot %q: %w", iss.Bot, err)
 	}
-	if !found || !entry.Enabled {
+	if !found || !bot.Enabled {
 		// Unknown/disabled bot: leave the ticket in Ready, surfaced as-is.
 		// Say so (once per ticket+bot, not every tick) — after a studio
 		// project switch the boot-scoped board can reference bots the
@@ -540,6 +616,9 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		s.warnAdmissionSkipOnce(iss.ID, iss.Bot, found)
 		return "", fmt.Errorf("bot %q is not in this workspace's catalog (or is disabled)", iss.Bot)
 	}
+	// The materialized bundle dir belongs to this call: the launch consumes
+	// it while compiling, and nothing downstream reads it afterwards.
+	defer bot.Launch.Cleanup()
 	// Leave the launch column BEFORE launching so the next tick won't
 	// re-pick this ticket while Launch is in flight. StateInProgress is not
 	// StateReady, so admitReadyPipelines skips it; the run's status then
@@ -572,10 +651,8 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 			return "", fmt.Errorf("ticket %s moved out of %q while it was being launched — nothing was started; re-read the board and retry", iss.ID, sourceState)
 		}
 	}
-	res, err := runs.Launch(context.Background(), runview.LaunchSpec{
-		FilePath: entry.MainFile(),
-		BotID:    entry.Name,
-		Vars:     iss.BotArgs,
+	spec := runview.LaunchSpec{
+		Vars: iss.BotArgs,
 		// Stamp the ticket onto the run IMMEDIATELY. Without this the run is
 		// undiscoverable from its ticket until SetLastRun lands below — and
 		// between the SetState above and that stamp sit compileForLaunch,
@@ -594,7 +671,12 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 		// reserved slot, and this is what lets its own relaunch spend that
 		// reservation instead of being refused by it.
 		PipelineTicketID: iss.ID,
-	})
+	}
+	// The resolved bundle carries the source, the compile dir, the runner
+	// ref and the tier that served it — so a run says which tier it came
+	// from here exactly as on the other launch surfaces.
+	bot.Launch.Stamp(&spec)
+	res, err := runs.Launch(context.Background(), spec)
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
 		// Put the ticket back where it came FROM, not in a fixed column: a
@@ -618,6 +700,6 @@ func (s *Server) launchTicketNow(runs *runview.Service, board native.BoardStore,
 	if err := board.SetLastRun(iss.ID, res.RunID, ""); err != nil {
 		s.logger.Warn("pipeline admission: link run %s to ticket %s: %v", res.RunID, iss.ID, err)
 	}
-	s.logger.Info("pipeline admission: started ticket %s as run %s (bot %s)", iss.ID, res.RunID, entry.Name)
+	s.logger.Info("pipeline admission: started ticket %s as run %s (bot %s, %s tier)", iss.ID, res.RunID, bot.Name, bot.Launch.Tier())
 	return res.RunID, nil
 }

@@ -1,0 +1,258 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// The pipelines control center is the FIFTH launch surface of the #871
+// class: its board is selected from the request's active team
+// (cloudBoardResolve), so the bot a card names must resolve through the
+// same team → platform → baked order every other surface uses. Resolving
+// it tenant-free serves a team the ORIGIN of the bot it forked, and makes
+// a bot only that team authored impossible to card at all.
+
+// bakeProbeBundle writes the baked catalog's `probe` as a real bundle
+// directory (manifest + main.bot) and returns the discovery root. A bundle
+// and not a loose .bot: a cloud launch freezes the bot's collection before
+// compiling, and that snapshot is rooted at the bundle's main.bot.
+func bakeProbeBundle(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "probe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("name: probe\nversion: 1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(tierBakedBot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// pipelineTierEnv is a cloud-shaped pipelines control center for team t1:
+// its own board behind CloudBoardFor, a catalog baked with `probe`, and a
+// bot-source store the test seeds rows into.
+type pipelineTierEnv struct {
+	srv   *Server
+	board *native.Store
+	pub   *tierPublisher
+}
+
+func newPipelineTierEnv(t *testing.T) *pipelineTierEnv {
+	t.Helper()
+	s := newOrgTestServer(t)
+	s.cfg.Mode = "cloud"
+	seedGate(t, s, gateSpec{id: "t1"})
+
+	s.cfg.Bots.Paths = []string{bakeProbeBundle(t)}
+	s.botSources = botsource.NewMemoryStore()
+
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = board.Close() })
+	s.cfg.CloudBoardFor = func(teamID string) native.BoardStore {
+		if teamID == "t1" {
+			return board
+		}
+		return nil
+	}
+
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Store = rs
+	pub := &tierPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	return &pipelineTierEnv{srv: s, board: board, pub: pub}
+}
+
+// seedRow stores one bot bundle for a tenant.
+func (e *pipelineTierEnv) seedRow(t *testing.T, tenant, slug, body string) {
+	t.Helper()
+	if _, err := e.srv.botSources.Create(store.WithTenant(context.Background(), tenant), botsource.BotSource{
+		TenantID: tenant, Slug: slug,
+		Files: map[string]string{botsource.MainBotFile: body},
+	}); err != nil {
+		t.Fatalf("seed %s/%s: %v", tenant, slug, err)
+	}
+}
+
+// req builds a request authenticated as a member of t1 — the identity the
+// board itself is resolved from.
+func (e *pipelineTierEnv) req(method, path, body string) *http.Request {
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	return r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"}))
+}
+
+// createCard posts a task and returns the created card.
+func (e *pipelineTierEnv) createCard(t *testing.T, body string) native.Issue {
+	t.Helper()
+	w := httptest.NewRecorder()
+	e.srv.handlePipelineBoardTaskCreate(w, e.req(http.MethodPost, "/api/v1/pipeline-board/tasks", body))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create card = %d %s, want 201", w.Code, w.Body.String())
+	}
+	var card native.Issue
+	if err := json.Unmarshal(w.Body.Bytes(), &card); err != nil {
+		t.Fatalf("decode card: %v", err)
+	}
+	return card
+}
+
+// launchCard drives the operator's explicit "launch now".
+func (e *pipelineTierEnv) launchCard(t *testing.T, id string) {
+	t.Helper()
+	r := e.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+id+"/launch", "")
+	r.SetPathValue("id", id)
+	w := httptest.NewRecorder()
+	e.srv.handlePipelineBoardTaskLaunch(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("launch card = %d %s, want 202", w.Code, w.Body.String())
+	}
+}
+
+// Half 1 — a team that forked a catalog bot must run ITS fork from the
+// pipelines board. The card is the team's (the board resolves per team);
+// serving it the catalog bundle is a silent substitution.
+func TestPipelineBoardLaunchServesTheTeamsFork(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	env.seedRow(t, "t1", "probe", tierForkBot)
+
+	card := env.createCard(t, `{"bot":"probe","title":"fork me"}`)
+	env.launchCard(t, card.ID)
+
+	assertServedByTheFork(t, "pipelines control center", env.pub.only(t))
+}
+
+// Half 2 — a bot ONLY the team authored has no filesystem path at all
+// (materializeBotEntries blanks it), so a lane that cards and launches by
+// path cannot serve it: the card is refused at create, and there is no
+// second way in.
+func TestPipelineBoardCardsAndLaunchesATeamAuthoredBot(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	env.seedRow(t, "t1", "teamonly", tierForkBot)
+
+	card := env.createCard(t, `{"bot":"teamonly","title":"authored here"}`)
+	if card.Bot != "teamonly" {
+		t.Fatalf("card bot = %q, want teamonly", card.Bot)
+	}
+	env.launchCard(t, card.ID)
+
+	spec := env.pub.only(t)
+	if !strings.Contains(spec.Source, "TEAMFORK") {
+		t.Errorf("the launch ran a bundle that is not the team's own (source: %q)", spec.Source)
+	}
+	if spec.BotSourceTier != store.BotSourceTierTeam {
+		t.Errorf("bot_source_tier = %q, want %q", spec.BotSourceTier, store.BotSourceTierTeam)
+	}
+	if spec.BotBundle == nil || spec.BotBundle.TenantID != "t1" || spec.BotBundle.Slug != "teamonly" {
+		t.Errorf("bundle ref = %+v, want the team's own row so the runner rebuilds it", spec.BotBundle)
+	}
+}
+
+// Half 2b — the update handler's admission check must reach the same tier
+// as the launch: a bot only the team authored is a legal re-binding.
+func TestPipelineBoardUpdateAcceptsATeamAuthoredBot(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	env.seedRow(t, "t1", "teamonly", tierForkBot)
+
+	card := env.createCard(t, `{"bot":"probe","title":"rebind me"}`)
+	r := env.req(http.MethodPatch, "/api/v1/pipeline-board/tasks/"+card.ID, `{"bot":"teamonly"}`)
+	r.SetPathValue("id", card.ID)
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskUpdate(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update bot = %d %s, want 200 — the team's own bot is not in the catalog and must still bind", w.Code, w.Body.String())
+	}
+	got, err := env.board.Get(card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Bot != "teamonly" {
+		t.Fatalf("card bot = %q, want teamonly", got.Bot)
+	}
+}
+
+// Half 3 — the admission LOOP is local-only (pipelineAdmissionEnabled
+// refuses cloud), so its board carries no tenant: it must keep resolving
+// platform-over-baked with an empty team, and must never be handed some
+// team's row.
+func TestPipelineAdmissionLoopResolvesWithNoTeam(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedGate(t, s, gateSpec{id: "t1"})
+	botsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(botsDir, "probe.bot"), []byte(tierBakedBot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{botsDir}
+	// A team row exists for the same slug — the loop has no team, so it
+	// must not be reachable from here.
+	s.botSources = botsource.NewMemoryStore()
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "probe",
+		Files: map[string]string{botsource.MainBotFile: tierForkBot},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = board.Close() })
+	s.cfg.NativeTrackerStore = board
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Store = rs
+	pub := &tierPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+
+	if !s.pipelineAdmissionEnabled() {
+		t.Fatal("precondition: the local admission loop must be enabled here")
+	}
+	iss, err := board.Create(native.Issue{Title: "local ticket", State: native.StateReady, Bot: "probe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.admitReadyPipelines()
+
+	spec := pub.only(t)
+	if !strings.Contains(spec.Source, "BAKED") {
+		t.Errorf("the loop launched %q — with no team it must serve the baked catalog, never a team's row", spec.Source)
+	}
+	if spec.BotSourceTier != store.BotSourceTierBaked {
+		t.Errorf("bot_source_tier = %q, want %q", spec.BotSourceTier, store.BotSourceTierBaked)
+	}
+	got, err := board.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != native.StateInProgress {
+		t.Fatalf("ticket state = %q, want in_progress — the loop did not launch it", got.State)
+	}
+}
