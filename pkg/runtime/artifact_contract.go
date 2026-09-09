@@ -99,6 +99,27 @@ func schemaFingerprint(wf *ir.Workflow, name string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// nodePublishingRef resolves a logical artifact reference back to the node
+// that publishes it, or "" when the workflow publishes no such ref. Iterated
+// in sorted order so a workflow that (illegally) publishes one ref twice
+// still resolves deterministically.
+func nodePublishingRef(wf *ir.Workflow, logicalRef string) string {
+	if wf == nil || logicalRef == "" {
+		return ""
+	}
+	ids := make([]string, 0, len(wf.Nodes))
+	for id := range wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if nodePublish(wf.Nodes[id]) == logicalRef {
+			return id
+		}
+	}
+	return ""
+}
+
 // consumedArtifactRefs mirrors buildNodeInputRS's selected-edge rules so a
 // contract includes artifact references that reached the node through `with:`
 // without binding it to an unselected sibling mapping.
@@ -241,9 +262,22 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if dep.LogicalRef == "" || !dep.Required {
 				continue
 			}
+			// A dependency may name its producer NODE, or only the logical ref
+			// the workflow publishes it under. Falling back to the ref as if it
+			// were a node id looks a publish name up in a store keyed by node
+			// id: the load then fails for an artifact that is present, and
+			// since an unreadable artifact fails closed under enforce, that
+			// misresolution refuses a perfectly good resume as an
+			// infrastructure error. Resolve the ref through the workflow that
+			// publishes it instead, and when nothing does, say so as the
+			// compatibility violation it is.
 			depNode := dep.NodeID
 			if depNode == "" {
-				depNode = dep.LogicalRef
+				depNode = nodePublishingRef(wf, dep.LogicalRef)
+			}
+			if depNode == "" {
+				violations = append(violations, fmt.Sprintf("artifact %q requires %s, which no node of this workflow publishes", contract.LogicalRef, dep.LogicalRef))
+				continue
 			}
 			persisted, err := s.LoadArtifact(ctx, run.ID, depNode, dep.Version)
 			if err != nil {

@@ -534,3 +534,72 @@ func TestValidateArtifactContractsBindsOutputToItsProducer(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateArtifactContractsResolvesDependencyByPublishedRef pins the
+// NodeID-less dependency. The store is keyed by node id, so treating a
+// logical ref as one makes the load fail for an artifact that is present —
+// and since an unreadable artifact fails closed under enforce, that
+// misresolution refuses a valid resume as an infrastructure error rather
+// than admitting it.
+func TestValidateArtifactContractsResolvesDependencyByPublishedRef(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-dep-ref", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	// The dependency is present, under the node id "planner"; the contract
+	// names it only by the ref that node publishes it as.
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: "artifact-dep-ref", NodeID: "planner", Version: 0,
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "planner", Version: 0},
+		Data:     map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: "artifact-dep-ref", NodeID: "writer", Version: 0,
+		Contract: &store.ArtifactContract{
+			LogicalRef: "report", ProducerNode: "writer", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "plan", Version: 0, Required: true}},
+		},
+		Data: map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err = s.LoadRun(ctx, "artifact-dep-ref")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"writer":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	if err := ValidateArtifactContracts(ctx, s, run, wf, "", false); err != nil {
+		t.Fatalf("a dependency named only by its published ref was refused: %v", err)
+	}
+
+	// When no node publishes the ref, that is a compatibility violation the
+	// operator can act on — never an "unavailable" infrastructure error.
+	orphaned := &ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan-renamed"},
+		"writer":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	err = ValidateArtifactContracts(ctx, s, run, orphaned, "", true)
+	if err == nil {
+		t.Fatal("a dependency no node publishes was admitted")
+	}
+	if errors.Is(err, ErrArtifactContractUnavailable) {
+		t.Fatalf("a resolvable incompatibility was reported as an infrastructure failure: %v", err)
+	}
+	if !errors.Is(err, ErrArtifactContractIncompatible) || !strings.Contains(err.Error(), "no node of this workflow publishes") {
+		t.Fatalf("refusal does not explain the unresolvable dependency: %v", err)
+	}
+}
