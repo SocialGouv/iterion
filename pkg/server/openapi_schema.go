@@ -124,7 +124,8 @@ func routeSchemas() map[string]routeOp {
 				Runs []runview.RunSummary `json:"runs"`
 			}{},
 		},
-		"GET /api/runs/{id}": {response: runview.RunSnapshot{}},
+		"GET /api/runs/{id}":            {response: runview.RunSnapshot{}},
+		"GET /api/runs/{id}/diagnostic": {response: runview.DiagnosticProjection{}},
 		"GET /api/runs/{id}/children": {
 			response: struct {
 				Runs []runview.RunSummary `json:"runs"`

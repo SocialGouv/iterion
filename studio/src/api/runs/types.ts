@@ -512,6 +512,43 @@ export interface RunSnapshot {
   run: RunHeader;
   executions: ExecutionState[];
   last_seq: number; // -1 sentinel when no events have been applied
+  diagnostic?: DiagnosticProjection;
+}
+
+export type DiagnosticOutcome =
+  | "active"
+  | "finished"
+  | "blocked"
+  | "interrupted"
+  | "failed";
+
+export type DiagnosticAction =
+  | "none"
+  | "resume"
+  | "wait"
+  | "answer_or_resume"
+  | "inspect"
+  | "fix_then_resume";
+
+export interface DiagnosticEvidence {
+  seq: number;
+  type: string;
+  node_id?: string;
+  details?: Record<string, string>;
+}
+
+export interface DiagnosticProjection {
+  version: number;
+  run_id: string;
+  parent_run_id?: string;
+  status: string;
+  outcome: DiagnosticOutcome;
+  recoverable: boolean;
+  failure_code?: string;
+  node_id?: string;
+  message?: string;
+  next_action: DiagnosticAction;
+  evidence?: DiagnosticEvidence[];
 }
 
 // RunEvent (mirror of store.Event) lives in ./events.ts as a
