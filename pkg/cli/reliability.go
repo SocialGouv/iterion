@@ -32,11 +32,17 @@ type ReliabilityReport struct {
 	// same reliability.ContextPolicyFromEnv the launches use. Reading them
 	// back is the point: an operator promoting or rolling back needs to see
 	// which of the two variables won.
+	//
+	// Watcher-cursor persistence is deliberately NOT reported here as a
+	// resolved knob: it is not one. A coordinator persists its cursor only
+	// when its launch surface wired a cursor store (Coordinator.cursorStore),
+	// so the honest answer is per-run — watcher_cursor_count on a run's own
+	// report and runs_with_watcher_cursors in the baseline — never a global
+	// flag an operator would read as "on everywhere".
 	Mode                  string `json:"mode"`
 	ContextPolicy         string `json:"context_policy"`
 	RetryCircuitThreshold int    `json:"retry_circuit_threshold"`
 	RetryCircuitCooldown  string `json:"retry_circuit_cooldown"`
-	WatcherCursorsEnabled bool   `json:"watcher_cursors_enabled"`
 
 	Baseline *reliability.Baseline            `json:"baseline,omitempty"`
 	Run      *reliability.CompatibilityReport `json:"run,omitempty"`
@@ -59,7 +65,6 @@ func RunReliabilityReport(opts ReliabilityOptions, p *Printer) error {
 		ContextPolicy:         string(cfg.ContextPolicy()),
 		RetryCircuitThreshold: cfg.RetryCircuitThreshold,
 		RetryCircuitCooldown:  cfg.RetryCircuitCooldown.String(),
-		WatcherCursorsEnabled: cfg.WatcherCursorsEnabled,
 	}
 
 	// A store with no runs is a legitimate baseline (a fresh deployment
@@ -118,7 +123,6 @@ func emitReliabilityReport(out ReliabilityReport, p *Printer) error {
 	p.KV("mode", out.Mode)
 	p.KV("context policy", out.ContextPolicy)
 	p.KV("retry circuit", fmt.Sprintf("threshold %d, cooldown %s", out.RetryCircuitThreshold, out.RetryCircuitCooldown))
-	p.KV("watcher cursors", strconv.FormatBool(out.WatcherCursorsEnabled))
 
 	if r := out.Run; r != nil {
 		p.Blank()
