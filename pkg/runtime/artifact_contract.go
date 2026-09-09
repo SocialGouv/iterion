@@ -34,6 +34,14 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *
 	}
 }
 
+// schemaFingerprintPrefix tags every digest with the generation of the
+// algorithm that produced it, so that algorithm can change without refusing
+// every artifact already on disk: a validator that meets a generation it
+// does not compute treats the fingerprint as UNKNOWN and skips the
+// comparison, exactly as it does an absent one. Bump it in the same change
+// that alters what goes into the digest.
+const schemaFingerprintPrefix = "v1:"
+
 // schemaFingerprint canonicalises a RESOLVED output schema so a change to
 // its body is visible even when the node still references the same name —
 // which is what ir.NodeOutputSchema returns, and the most common shape of
@@ -66,7 +74,7 @@ func schemaFingerprint(wf *ir.Workflow, name string) string {
 	// not an incompatibility and must not fire.
 	sort.Strings(fields)
 	sum := sha256.Sum256([]byte(name + "\n" + strings.Join(fields, "\n")))
-	return hex.EncodeToString(sum[:])
+	return schemaFingerprintPrefix + hex.EncodeToString(sum[:])
 }
 
 // ArtifactContractRemedy is the operator action that resolves a contract
@@ -207,8 +215,10 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		switch {
 		case schema != contract.Schema:
 			violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
-		case contract.SchemaFingerprint == "":
-			// Legacy artifact, written before the body was fingerprinted.
+		case !strings.HasPrefix(contract.SchemaFingerprint, schemaFingerprintPrefix):
+			// No fingerprint (written before the body was digested) or one
+			// from another algorithm generation. Either way it is unknown,
+			// which is not the same as unequal.
 		default:
 			if got := schemaFingerprint(wf, schema); got != "" && got != contract.SchemaFingerprint {
 				violations = append(violations, fmt.Sprintf("artifact %q was written against a different definition of schema %q", contract.LogicalRef, schema))

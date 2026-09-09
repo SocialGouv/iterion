@@ -1492,8 +1492,10 @@ type ArtifactContract struct {
 	// SchemaFingerprint canonicalises the RESOLVED output schema — its
 	// fields, their types and their enum values — so a change to the BODY
 	// of a schema whose name did not change is still visible. The name
-	// alone is only a reference. Empty is the legacy/unknown shape and
-	// skips the comparison.
+	// alone is only a reference. It is prefixed with the generation of the
+	// algorithm that produced it ("v1:"), so a reader that cannot recompute
+	// that generation — like one meeting an empty value — treats it as
+	// unknown and compares nothing.
 	SchemaFingerprint string               `json:"schema_fingerprint,omitempty" bson:"schema_fingerprint,omitempty"`
 	Dependencies      []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
 	Mutable           bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`

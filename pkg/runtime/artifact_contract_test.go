@@ -595,3 +595,26 @@ func TestEnforceContextResumesOnTheArtifactsItWrote(t *testing.T) {
 		t.Fatalf("status = %s, want finished", finished.Status)
 	}
 }
+
+// A digest from another generation of the algorithm is UNKNOWN, not unequal.
+// Without this, changing what goes into the fingerprint would refuse every
+// artifact already on disk, fleet-wide, at the next engine upgrade.
+func TestValidateArtifactContractsSkipsAForeignFingerprintGeneration(t *testing.T) {
+	ctx := context.Background()
+	written := reportSchema(&ir.SchemaField{Name: "summary", Type: ir.FieldTypeString})
+	if !strings.HasPrefix(schemaFingerprint(written, "Report"), schemaFingerprintPrefix) {
+		t.Fatal("the fingerprint carries no generation tag, so it cannot be evolved safely")
+	}
+	s, run := seedContractRun(t, "artifact-fp-generation", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+		Schema: "Report", SchemaFingerprint: "v0:whatever-the-previous-generation-emitted",
+	})
+	// A body that genuinely differs: the comparison must still be skipped,
+	// because a digest we cannot recompute proves nothing either way.
+	other := reportSchema(&ir.SchemaField{Name: "summary", Type: ir.FieldTypeInt})
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: other, Revision: "rev-new",
+	}); err != nil {
+		t.Fatalf("a fingerprint from another generation was treated as unequal: %v", err)
+	}
+}
