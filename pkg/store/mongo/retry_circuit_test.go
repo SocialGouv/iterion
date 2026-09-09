@@ -60,7 +60,16 @@ func circuitTestStore(t *testing.T) *Store {
 	if err := s.EnsureSchema(ctx, 0); err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	// Drop the database, not just the client: the header above tells you to
+	// point these tests at a replica set you keep running, so a fixture that
+	// only closes leaves one iterion_circuit_<nonce> database behind per
+	// test, forever. Same teardown as every sibling helper in this package.
+	t.Cleanup(func() {
+		drop, dcancel := mongotest.TeardownCtx()
+		defer dcancel()
+		_ = s.db.Drop(drop)
+		_ = s.Close(drop)
+	})
 	return s
 }
 
