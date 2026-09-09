@@ -83,6 +83,15 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err := e.admitRun(ctx, runID, r); err != nil {
 		return err
 	}
+	// The source-hash comparison runs FIRST. One edit trips both checks, and
+	// only this one names `--force` — the flag that actually unblocks it. Led
+	// with the contract refusal instead, an operator read "persisted artifact
+	// contract is incompatible" and went looking for a migration command that
+	// does not exist. The per-path checkWorkflowHash calls further down stay:
+	// they own the --force warning and remain the authority.
+	if err := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, e.forceResume); err != nil {
+		return err
+	}
 	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
 		Store:           e.store,
 		Run:             r,
@@ -91,11 +100,24 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		Force:           e.forceResume,
 		Logger:          e.logger,
 	}); err != nil {
+		// Name the recovery that fits the violation CLASS. `--force` waives
+		// producer-revision drift and nothing else — docs/resume.md defines it
+		// as an assertion that stored outputs, node ids and schemas are still
+		// compatible — so pointing at it for a publish-name or schema change
+		// would send the operator round in a circle. That case is what
+		// `iterion rewind` is for: it supersedes the invalidated outputs with
+		// contract-less tombstones, which a later resume accepts.
+		hint := fmt.Sprintf("re-anchor the run on the edited node with `iterion rewind --run-id %s --auto` "+
+			"(it supersedes the outputs that no longer match), then `iterion resume --force`", runID)
+		var contractErr *ArtifactContractError
+		if errors.As(err, &contractErr) && contractErr.RevisionOnly {
+			hint = "resume with --force to accept outputs written by an earlier revision of this workflow"
+		}
 		// Refuse before claiming the checkpoint or touching the workspace.
 		return &RuntimeError{
 			Code:    store.FailureResumeInvalid,
 			Message: "persisted artifact contract is incompatible with this workflow",
-			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract before resuming",
+			Hint:    hint,
 			Cause:   err,
 		}
 	}

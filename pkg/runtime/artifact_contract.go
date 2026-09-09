@@ -111,9 +111,16 @@ func ValidateArtifactContracts(ctx context.Context, c ArtifactContractCheck) err
 	if policy != store.ContextPolicyReport && policy != store.ContextPolicyEnforce {
 		return nil
 	}
-	violations := collectArtifactContractViolations(ctx, c)
-	if len(violations) == 0 {
+	found := collectArtifactContractViolations(ctx, c)
+	if len(found) == 0 {
 		return nil
+	}
+	out := &ArtifactContractError{RevisionOnly: true}
+	for _, v := range found {
+		out.Violations = append(out.Violations, v.msg)
+		if !v.revision {
+			out.RevisionOnly = false
+		}
 	}
 	if policy != store.ContextPolicyEnforce {
 		// `report` is the migration probe an operator runs BEFORE flipping a
@@ -121,18 +128,42 @@ func ValidateArtifactContracts(ctx context.Context, c ArtifactContractCheck) err
 		// policy that pays for every artifact read and answers nothing.
 		if c.Logger != nil {
 			c.Logger.Warn("run %s: artifact contract mismatch under policy %q — `enforce` would refuse this resume: %s",
-				c.Run.ID, policy, strings.Join(violations, "; "))
+				c.Run.ID, policy, strings.Join(out.Violations, "; "))
 		}
 		return nil
 	}
-	return fmt.Errorf("artifact contract incompatible: %s", strings.Join(violations, "; "))
+	return out
+}
+
+// ArtifactContractError is the refusal `enforce` returns. It carries the
+// violation CLASS because the recovery differs by class and naming the wrong
+// one sends an operator in a circle.
+type ArtifactContractError struct {
+	Violations []string
+	// RevisionOnly reports that every violation is producer-revision drift —
+	// the one class `--force` waives. A publish name, a schema shape or an
+	// unreadable body survives `--force` by design (docs/resume.md defines it
+	// as an assertion that those are still compatible), and the way through
+	// is `iterion rewind`, which supersedes the invalidated outputs.
+	RevisionOnly bool
+}
+
+func (e *ArtifactContractError) Error() string {
+	return "artifact contract incompatible: " + strings.Join(e.Violations, "; ")
+}
+
+// contractViolation is one mismatch plus the class that decides its recovery.
+type contractViolation struct {
+	msg string
+	// revision marks producer-revision drift, the class `--force` waives.
+	revision bool
 }
 
 // collectArtifactContractViolations reads every persisted contract the caller
 // did not exclude and returns what no longer matches the current workflow.
 // Node ids are walked in sorted order so the message an operator reads is
 // stable across runs.
-func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCheck) []string {
+func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCheck) []contractViolation {
 	run, s, wf := c.Run, c.Store, c.Workflow
 	nodeIDs := make([]string, 0, len(run.ArtifactIndex))
 	for nodeID := range run.ArtifactIndex {
@@ -141,7 +172,10 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 		}
 	}
 	sort.Strings(nodeIDs)
-	var violations []string
+	var violations []contractViolation
+	add := func(format string, args ...any) {
+		violations = append(violations, contractViolation{msg: fmt.Sprintf(format, args...)})
+	}
 	for _, nodeID := range nodeIDs {
 		version := run.ArtifactIndex[nodeID]
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
@@ -155,7 +189,7 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 			// into a plain error). The index is only ever advanced by a
 			// WriteArtifact that already persisted the body, so an entry that
 			// will not load is itself the anomaly: report it, do not skip it.
-			violations = append(violations, fmt.Sprintf("artifact %s/%d could not be read: %v", nodeID, version, err))
+			add("artifact %s/%d could not be read: %v", nodeID, version, err)
 			continue
 		}
 		if artifact == nil || artifact.Contract == nil {
@@ -163,16 +197,16 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 		}
 		contract := artifact.Contract
 		if contract.LogicalRef == "" || contract.ProducerNode == "" || contract.Version != artifact.Version {
-			violations = append(violations, fmt.Sprintf("artifact %s/%d has an incomplete contract", nodeID, version))
+			add("artifact %s/%d has an incomplete contract", nodeID, version)
 			continue
 		}
 		node, ok := wf.Nodes[nodeID]
 		if !ok {
-			violations = append(violations, fmt.Sprintf("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID))
+			add("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID)
 			continue
 		}
 		if got := nodePublish(node); got != contract.LogicalRef {
-			violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
+			add("artifact %q is now published as %q", contract.LogicalRef, got)
 		}
 		// The SHAPE decides whenever both sides carry a fingerprint: renaming
 		// a schema whose body is unchanged breaks nothing, while editing the
@@ -184,17 +218,21 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 		schema := ir.NodeOutputSchema(node)
 		if hash := schemaFingerprint(wf, schema); contract.SchemaHash != "" && hash != "" {
 			if hash != contract.SchemaHash {
-				violations = append(violations, fmt.Sprintf("artifact %q was produced against a different definition of schema %q", contract.LogicalRef, contract.Schema))
+				add("artifact %q was produced against a different definition of schema %q", contract.LogicalRef, contract.Schema)
 			}
 		} else if schema != contract.Schema {
-			violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
+			add("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema)
 		}
 		// --force is the established escape hatch for deliberately resuming
 		// against edited workflow source. It waives only the producer-revision
 		// comparison: logical reference, schema and dependency compatibility
 		// are still enforced below.
 		if !c.Force && c.CurrentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != c.CurrentRevision {
-			violations = append(violations, fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q", contract.LogicalRef, contract.ProducerRevision, c.CurrentRevision))
+			violations = append(violations, contractViolation{
+				msg: fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q",
+					contract.LogicalRef, contract.ProducerRevision, c.CurrentRevision),
+				revision: true,
+			})
 		}
 		for _, dep := range contract.Dependencies {
 			if dep.LogicalRef == "" || !dep.Required {
@@ -206,9 +244,9 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 			}
 			depVersion, present := run.ArtifactIndex[depNode]
 			if !present {
-				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, which is absent from the run", contract.LogicalRef, dep.LogicalRef, dep.Version))
+				add("artifact %q requires %s v%d, which is absent from the run", contract.LogicalRef, dep.LogicalRef, dep.Version)
 			} else if depVersion < dep.Version {
-				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion))
+				add("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion)
 			}
 		}
 	}

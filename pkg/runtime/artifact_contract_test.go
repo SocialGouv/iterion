@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -405,6 +406,111 @@ func TestValidateArtifactContractsComparesSchemaShapeNotName(t *testing.T) {
 		}
 		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: produced}); err != nil {
 			t.Fatalf("a pre-fingerprint contract with a matching name was refused: %v", err)
+		}
+	})
+}
+
+// seedContractRun parks a resumable run carrying one published artifact whose
+// contract is described by mutate, under the `enforce` context policy.
+func seedContractRun(t *testing.T, id string, mutate func(*store.ArtifactContract)) (store.RunStore, *ir.Workflow) {
+	t.Helper()
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, id, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailedResumable
+	run.WorkflowHash = "rev-persisted"
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	run.Checkpoint = &store.Checkpoint{NodeID: "writer", Outputs: map[string]map[string]any{}}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	contract := &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-persisted", Version: 0,
+	}
+	mutate(contract)
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: id, NodeID: "writer", Version: 0, Contract: contract, Data: map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return s, &ir.Workflow{
+		Name: "wf", Entry: "writer",
+		Nodes: map[string]ir.Node{
+			"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report", Command: "true"},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "writer", To: "done"}},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+}
+
+// TestResumeSurfacesTheSourceHashErrorFirst: one edit trips both the run-level
+// source-hash guard and the artifact contract, and ONLY the hash error names
+// `--force`, the flag that unblocks it. Leading with the contract refusal sent
+// the operator looking for a "migrate the artifact contract" command that does
+// not exist.
+func TestResumeSurfacesTheSourceHashErrorFirst(t *testing.T) {
+	s, wf := seedContractRun(t, "resume-hash-first", func(c *store.ArtifactContract) {})
+	eng := New(wf, s, newStubExecutor(), WithWorkflowHash("rev-edited"))
+
+	err := eng.Resume(context.Background(), "resume-hash-first", nil)
+	if err == nil {
+		t.Fatal("resume against an edited source was accepted")
+	}
+	if !IsWorkflowSourceChanged(err) {
+		t.Fatalf("resume reported %v, want the source-hash error that names --force", err)
+	}
+}
+
+// TestResumeHintNamesTheRecoveryThatFitsTheViolation: `--force` waives
+// producer-revision drift and nothing else, so a hint naming it for a
+// publish-name or schema change walks the operator in a circle. That class is
+// what `iterion rewind` is for.
+func TestResumeHintNamesTheRecoveryThatFitsTheViolation(t *testing.T) {
+	t.Run("revision drift points at --force", func(t *testing.T) {
+		// The desync restampWorkflowSource leaves behind: the RUN's hash was
+		// refreshed by an earlier forced resume, while this artifact keeps the
+		// revision it was written under. The run-level check therefore passes
+		// and the per-artifact one is the only signal left.
+		s, wf := seedContractRun(t, "resume-hint-revision", func(c *store.ArtifactContract) {
+			c.ProducerRevision = "rev-older"
+		})
+		eng := New(wf, s, newStubExecutor(), WithWorkflowHash("rev-persisted"))
+
+		err := eng.Resume(context.Background(), "resume-hint-revision", nil)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) {
+			t.Fatalf("resume error = %v, want a typed RuntimeError", err)
+		}
+		if !strings.Contains(rt.Hint, "--force") {
+			t.Errorf("hint = %q, want it to name --force", rt.Hint)
+		}
+	})
+
+	t.Run("a publish-name change points at rewind", func(t *testing.T) {
+		s, wf := seedContractRun(t, "resume-hint-publish", func(c *store.ArtifactContract) {
+			c.LogicalRef = "renamed-since"
+		})
+		eng := New(wf, s, newStubExecutor(), WithWorkflowHash("rev-persisted"))
+
+		err := eng.Resume(context.Background(), "resume-hint-publish", nil)
+		var rt *RuntimeError
+		if !errors.As(err, &rt) {
+			t.Fatalf("resume error = %v, want a typed RuntimeError", err)
+		}
+		if !strings.Contains(rt.Hint, "iterion rewind") {
+			t.Errorf("hint = %q, want it to name `iterion rewind`", rt.Hint)
+		}
+		if strings.Contains(rt.Hint, "--force to accept") {
+			t.Errorf("hint = %q offers --force, which does not waive a publish-name change", rt.Hint)
 		}
 	})
 }
