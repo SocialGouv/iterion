@@ -3791,8 +3791,17 @@ tool oracle_run:
         # deterministic slice of the corpus, and a member that fell outside it could
         # move unseen — which is precisely the claim the declaration makes, so the
         # one measurement that decides it must not be left to the sampling stride.
+        #
+        # Pinned only if the entry EXISTS. A stale declaration names ids the corpus
+        # no longer has; `capture` walks the corpus and skips them, so a phantom
+        # would sit in the sample never captured and never compared — while
+        # `control_covered` counts the SAMPLE. A mutant declaring the whole corpus
+        # as targets has an empty control sample and is refused as vacuously clean;
+        # one phantom would hand it a non-zero coverage and walk it past the single
+        # check that catches that mutant.
         sample = control_ids(corpus, set(targets), seed)
-        pinned = separator_group_ids(corpus, meta.get("id")) - set(targets)
+        known = {e["id"] for e in corpus["entries"]}
+        pinned = (separator_group_ids(corpus, meta.get("id")) & known) - set(targets)
         if pinned:
             sample = sorted(set(sample) | pinned)
         captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
@@ -4161,10 +4170,16 @@ tool oracle_run:
                 self.moved, self.unstable = set(moved_when_applied), set(unstable)
 
             def capture(self, config, corpus, canon, ids=None):
-                ids = set(ids or self.refs)
+                # Le vrai `capture` PARCOURT le corpus et saute les ids qu'il ne
+                # connait pas ; il ne lit pas la liste demandee. Le double doit
+                # tolerer la meme chose, sinon un id fantome fait ici une
+                # KeyError la ou la production compte silencieusement un temoin
+                # qu'elle n'a jamais capture — le double masquerait la classe de
+                # defaut au lieu de la mesurer.
+                ids = set(ids) if ids is not None else set(self.refs)
                 return {i: self.refs[i] + ("!" if (
                     (i in self.moved) if self.applied else (i in self.unstable)) else "")
-                    for i in ids}
+                    for i in ids if i in self.refs}
 
         def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None):
             ids = ["%03d" % n for n in range(1, 13)]
@@ -6284,6 +6299,17 @@ tool oracle_run:
                         dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
         check("aucun epinglage pour un mutant qui ne separe rien",
               v_nopin["collateral"], [])
+        # UN FANTOME NE CONTROLE RIEN. Une declaration caduque nomme des ids que le
+        # corpus n'a plus : `capture` parcourt le corpus et les saute, donc ils ne
+        # sont ni captures ni compares — alors que `control_covered` compte
+        # l'ECHANTILLON. Un mutant qui declare tout le corpus en cibles n'a aucun
+        # temoin et se fait refuser comme vacuement propre ; un fantome lui
+        # donnerait une couverture non nulle et le ferait passer devant le seul
+        # controle qui l'attrape.
+        v_ghost = score(["%03d" % n for n in range(1, 13)], [], ["001"],
+                        dup_groups=[{"ids": ["777", "888"], "separated_by": "t"}])
+        check("une declaration caduque n'invente pas de couverture de temoin",
+              v_ghost["control_covered"], 0)
 
         D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
         check("separateur qui deplace UN membre : preuve acquittee",
