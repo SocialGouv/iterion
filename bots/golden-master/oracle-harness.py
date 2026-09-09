@@ -1596,11 +1596,49 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
                 "not crashed")
             head_c = base_c = None
         if head_c is not None and base_c is not None:
-            if {k: v for k, v in head_c.items() if k != "entries"} != \
-                    {k: v for k, v in base_c.items() if k != "entries"}:
+            # `duplicate_groups` is the ONE key outside `entries` an extension
+            # may write, and the reason is not convenience: every other key here
+            # is frozen because it is TRUSTED, while this one is VERIFIED. A
+            # group declaration is discharged at the gate by a mutant that must
+            # really move part of the group and leave the rest still, so a lot
+            # gains nothing by writing one — a bogus separator refuses, and
+            # deleting a declaration turns its group back into an undeclared
+            # duplicate, which also refuses.
+            #
+            # Without this the gate named a remedy another judge forbade: the
+            # lot that ADDS an entry is the very lot that can create a new
+            # byte-identical pair, and it would have been told to declare a
+            # separator in a key it is refused permission to touch.
+            FREE_KEYS = {"entries", "duplicate_groups"}
+            if {k: v for k, v in head_c.items() if k not in FREE_KEYS} != \
+                    {k: v for k, v in base_c.items() if k not in FREE_KEYS}:
                 corpus_problems.append(
                     "corpus.json keys outside `entries` changed — an "
                     "extension adds entries and touches nothing else")
+            # Structure is judged HERE, truth at the gate. A malformed
+            # declaration would otherwise be dropped in silence by
+            # duplicate_group_decls and read as "no declaration at all".
+            #
+            # Through duplicate_group_raw / duplicate_group_decl, which is the
+            # SAME predicate the gate reads. Hand-written here, the container
+            # loop was `for g in (head_c.get("duplicate_groups") or [])` and
+            # `{"duplicate_groups": 5}` raised a TypeError — this judge runs
+            # outside the gate's try/finally, so no mutant is stranded, but the
+            # mode prints a stack trace where the campaign expects its verdict.
+            # The file's own doctrine, one screen up: refused, not crashed.
+            if head_c.get("duplicate_groups") is not None \
+                    and not isinstance(head_c.get("duplicate_groups"), list):
+                corpus_problems.append(
+                    "`duplicate_groups` is %s, not a list — every declaration in "
+                    "it is ignored whole and reads as undeclared"
+                    % type(head_c.get("duplicate_groups")).__name__)
+            for g in duplicate_group_raw(head_c):
+                if duplicate_group_decl(g) is None:
+                    corpus_problems.append(
+                        "a `duplicate_groups` entry is malformed (%r) — it needs "
+                        "at least two `ids` and a non-empty `separated_by`, or it "
+                        "is dropped in silence and reads as no declaration at all"
+                        % (g,))
             # An id names ONE observation. Duplicated ids collapse in every
             # by-id index (this one, the capture map, the refs map), so the
             # equality check would read the surviving twin while the capture
@@ -1640,6 +1678,48 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
                         "added entry id %r derives a reference path outside "
                         "refs/ — a write to an existing reference wearing an "
                         "addition's name" % (aid,))
+            # ADDITIONS-ONLY APPLIES INSIDE THE FREED KEY TOO.
+            #
+            # `duplicate_groups` was freed from the freeze because the lot that
+            # ADDS an entry is the one that can create a new byte-identical
+            # class, and telling it to declare a separator in a key another
+            # judge refuses it is a remedy nobody can apply. That argument frees
+            # ADDING a declaration — and adding is the half that is VERIFIED: a
+            # bogus separator is refused at the gate by measurement.
+            #
+            # Rewriting or deleting one is verified by nothing. Swapping a
+            # still-valid separator for another still-valid separator silently
+            # reassigns a class this lot never touched, and a deletion only
+            # re-opens the undeclared-duplicate refusal for whoever comes next.
+            # Exempting the whole key turned "an extension adds entries and
+            # touches nothing else" into a sentence with an exception nobody
+            # bounded.
+            base_decls = duplicate_group_decls(base_c)
+            head_decls = duplicate_group_decls(head_c)
+            added_str = {str(a) for a in added_ids}
+            for key, seps in sorted(base_decls.items()):
+                if key in head_decls:
+                    if set(head_decls[key]) != set(seps):
+                        corpus_problems.append(
+                            "`duplicate_groups` for class %s was RE-ADJUDICATED "
+                            "(%s -> %s) — an extension may declare a class it "
+                            "creates, never re-decide one it did not"
+                            % (json.dumps(list(key)), json.dumps(list(seps)),
+                               json.dumps(list(head_decls[key]))))
+                    continue
+                # A pre-existing class may only disappear into a SUPERSET that
+                # an added entry joined: a new entry landing on an existing
+                # byte-identical class re-keys it, and may need more separators
+                # to keep the members pairwise distinguishable. That is the
+                # legitimate case the exemption exists for; everything else is
+                # a withdrawal.
+                if not any(set(k) > set(key) and (set(k) - set(key)) & added_str
+                           for k in head_decls):
+                    corpus_problems.append(
+                        "`duplicate_groups` for class %s was WITHDRAWN — a "
+                        "deletion re-opens the undeclared-duplicate refusal for "
+                        "whoever comes next, and it is not this lot's "
+                        "adjudication to withdraw" % json.dumps(list(key)))
             claimed = set()
             for act in acts:
                 req = requests.get(act.get("id"))
@@ -2968,6 +3048,43 @@ def overall_revert_clean(verdicts, stopped, ws):
     return all(v.get("revert_clean", True) for v in verdicts)
 
 
+def measurement_hygiene(verdicts, held):
+    """`collateral`, `unstable_controls` and the line that NAMES them — over the
+    visible AND the held-out verdicts.
+
+    `score_pct` must stay visible-only: averaging a sealed set into the headline
+    is the resemblance this bot refuses. But these two are not a score, they are
+    HYGIENE OF MEASUREMENT — did a mutant move what it does not declare, does a
+    control reproduce itself — and `overall_revert_clean` already crosses both
+    sets for exactly that reason.
+
+    It became load-bearing the day a held verdict started DECIDING something:
+    `unproven_duplicate_groups` credits a separator's `collateral` as proof that
+    it moved a group member, and score_mutant PINS every group member into that
+    separator's control sample so the measurement exists. Read from `verdicts`
+    alone, the identical measurement was a hard red when the separator was
+    visible (`collateral == 0` is a gate term, in the graph AND in the standalone
+    runner) and a silent proof when it was held. A class cannot be discharged
+    through a channel the gate is forbidden to look at.
+
+    The detail ranges over the same set as the count — a headline that counts
+    what it does not list is the defect this file just removed from the
+    duplicate-group refusal — and each line says which set it came from, because
+    a held-out finding reads differently even though it is just as actionable.
+    """
+    held_ids = {v.get("id") for v in held}
+    both = list(verdicts) + list(held)
+    return {
+        "collateral": sum(len(v.get("collateral") or []) for v in both),
+        "unstable_controls": sorted({c for v in both
+                                     for c in (v.get("unstable_controls") or [])}),
+        "detail": "; ".join(
+            "%s moved %s%s" % (v.get("id"), v["collateral"],
+                               " (held-out)" if v.get("id") in held_ids else "")
+            for v in both if v.get("collateral")),
+    }
+
+
 def apply_mutant(meta, ws):
     # The marker goes down BEFORE apply.sh runs: an interruption between the
     # two leaves a tree that is mutated and a note that says by what. A marker
@@ -3226,6 +3343,319 @@ def diverged(refs, captured, ids):
     return sorted(i for i in ids if refs.get(i) != captured.get(i))
 
 
+def duplicate_group_decls(corpus):
+    """The corpus's `duplicate_groups` declarations, normalised.
+
+    Two entries whose references are byte-identical are not automatically a
+    defect: on a refusal lane the second is a CONTROL proving a mutant moved
+    only the first. But a note saying so is prose, and the gate cannot read
+    prose — so the claim is declared as data and DISCHARGED by measurement:
+    each group names the mutant that separates it, and the gate checks that the
+    mutant really moves some members and leaves the others still.
+
+    That is the difference between a waiver and a proof obligation. A waiver is
+    believed; this is executed, and it goes red by itself the day its separator
+    dies — which is exactly what happened to two of these groups when a lot
+    re-anchored their mutant, silently, while the notes still claimed the pair
+    was controlled.
+    """
+    # A class declared TWICE is REFUSED, not resolved. `out[key] = ...` let the
+    # later declaration win an ordering nobody audits: ["a","b"] and ["b","a"]
+    # normalise to one key, and which adjudication decided the class was decided
+    # by position in a JSON list. The second-order harm is worse than the
+    # overwrite — separator_group_ids reads THIS map, so the discarded
+    # declaration's separator never gets its group pinned into a control sample
+    # and the measurement that would decide the class is not taken at all.
+    #
+    # Dropping the key is FAIL-CLOSED: the class then reads as declared by
+    # nobody and the gate refuses it, with unproven_duplicate_groups naming the
+    # collision rather than an absence. A class declared twice with the SAME
+    # separators is merely repetitious, not ambiguous — order there decides
+    # nothing, so it is kept.
+    return {k: v[0] for k, v in duplicate_group_index(corpus).items()
+            if len({frozenset(s) for s in v}) == 1}
+
+
+def duplicate_group_index(corpus):
+    """Every well-formed declaration, grouped by the class it keys.
+
+    `{class_key: [separator tuples, one per declaration that named it]}` — the
+    shape that makes a collision VISIBLE instead of resolving it silently.
+    """
+    seen = {}
+    for g in duplicate_group_raw(corpus):
+        norm = duplicate_group_decl(g)
+        if norm is None:
+            continue
+        seen.setdefault(norm[0], []).append(norm[1])
+    return seen
+
+
+def duplicate_group_conflicts(corpus):
+    """Classes with two declarations that do NOT say the same thing."""
+    return {k: [list(s) for s in v]
+            for k, v in duplicate_group_index(corpus).items()
+            if len({frozenset(s) for s in v}) > 1}
+
+
+def duplicate_group_raw(corpus):
+    """The declarations as written — the list, or [] when the key is absent or
+    is not a list at all.
+
+    Ne LEVE JAMAIS, et c'est la moitie porteuse. Ce lecteur est atteint depuis
+    score_mutant, donc APRES que le mutant est applique et AVANT le revert : une
+    exception y tue le harnais sans imprimer son rapport et laisse l'arbre MUTE.
+    La doctrine du fichier est explicite quelques vis plus haut — « refused, not
+    crashed ». Le refus, lui, est prononce ailleurs : par
+    duplicate_groups_shape_problems a la porte, par le juge d'extension sur le
+    canal. Un `for g in (corpus.get("duplicate_groups") or [])` ecrit a la main
+    leve un TypeError sur `5` ou `true` — il y en avait trois copies, il n'y en
+    a plus qu'une.
+    """
+    raw = corpus.get("duplicate_groups")
+    return raw if isinstance(raw, list) else []
+
+
+def duplicate_group_decl(g):
+    """ONE declaration, read once — the single shape predicate of this file.
+
+    Returns `(class_key, separators)` normalised, or None when the entry is
+    malformed. `class_key` is the sorted tuple of ids, which is what makes the
+    declaration keyed on the byte-identical CLASS rather than on an ordering the
+    lot chose; `separators` is deduplicated and order-preserving.
+
+    One separator or several: a class of two needs one mutant to split it, a
+    class of four needs enough of them to tell all four apart. Written as a bare
+    string for the common case, a list when resolution costs more than one.
+
+    It exists as one function because the predicate had been written three
+    times — the reader, the shape refusal, and the extension judge — and three
+    copies of a rule is three chances for a corpus to be well-formed for one
+    reader and malformed for another.
+    """
+    if not isinstance(g, dict):
+        return None
+    ids = g.get("ids")
+    sep = g.get("separated_by")
+    seps = [sep] if isinstance(sep, str) else sep
+    if not isinstance(ids, list) or len(ids) < 2 or not isinstance(seps, list) \
+            or not seps or not all(isinstance(m, str) and m for m in seps):
+        return None
+    return tuple(sorted(str(i) for i in ids)), tuple(dict.fromkeys(seps))
+
+
+def duplicate_groups_shape_problems(corpus):
+    """Ce que le LECTEUR laisse tomber en silence, dit a voix haute.
+
+    duplicate_group_decls ignore ce qu'il ne sait pas lire — il le doit, il
+    tourne avec un mutant applique. Mais une declaration ignoree se lit comme
+    « aucune declaration », donc comme un groupe non declare : le message
+    envoie corriger une absence alors que le defaut est une faute de frappe.
+    """
+    raw = corpus.get("duplicate_groups")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["`duplicate_groups` is %s, not a list — it is ignored whole, and "
+                "every declared group then reads as undeclared"
+                % type(raw).__name__]
+    out = []
+    bad = [repr(g)[:80] for g in raw if duplicate_group_decl(g) is None]
+    if bad:
+        out.append("%d `duplicate_groups` entr%s malformed and silently ignored — "
+                   "each needs at least two `ids` and a non-empty `separated_by` "
+                   "(a string, or a list of them): %s"
+                   % (len(bad), "y is" if len(bad) == 1 else "ies are", "; ".join(bad)))
+    for key, seps in sorted(duplicate_group_conflicts(corpus).items()):
+        out.append(
+            "class %s is declared TWICE with different separators (%s) — the ids "
+            "are normalised, so ['a','b'] and ['b','a'] are ONE class and nothing "
+            "here can say which adjudication is meant. Both are dropped, and the "
+            "class is refused until one declaration remains."
+            % (json.dumps(list(key)), " vs ".join(json.dumps(s) for s in seps)))
+    return out
+
+
+def separator_group_ids(corpus, mutant_id):
+    """Every id of every group this mutant is declared to separate."""
+    if not mutant_id:
+        return set()
+    ids = set()
+    for group, seps in duplicate_group_decls(corpus).items():
+        if mutant_id in seps:
+            ids.update(group)
+    return ids
+
+
+def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
+                              withheld=(), in_the_set=(), deferred=None):
+    """Which byte-identical classes are NOT discharged by measured separators.
+
+    `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
+    sha256 — so a class of three or more cannot be declared as a set of pairs:
+    the declaration is keyed on the class itself. What several separators buy is
+    RESOLUTION. A class is discharged when the members are pairwise
+    distinguishable: for each one, the pattern of which declared separators move
+    it must be unique. One separator over a pair reduces to "moves one, not the
+    other"; four members need enough separators to tell all four apart, which is
+    exactly what the campaign's own notes describe when they name `sep-04` for
+    one member and `sep-05` for two others.
+
+    Returns one record per class that fails, with the reason IN the record — the
+    gate turns them into its refusal, and the selftest calls this same function,
+    so what is tested is what runs.
+
+    A class whose every missing separator is WITHHELD lands in the caller's
+    `deferred` sink, never in the return value.
+    """
+    # WITHHELD is neither ABSENT nor PROVED, and this used to discharge it.
+    # Skipping the class outright removed the false refusal at the cost of a
+    # false PROOF: with `seps = [held, visible]` where the visible one separates
+    # nothing, the class came back discharged without the scored separator ever
+    # being consulted. A term of convergence cannot be handed that.
+    #
+    # So it is DEFERRED — said out loud, in a sink the caller owns, never in the
+    # field the gate reads. A deferral is the absence of a verdict, not a
+    # verdict.
+    #
+    # No sink, no deferral — but the REASON must stay true. A withheld
+    # separator is IN the mutant set; folding it there makes the fallback say
+    # so, instead of shouting an absence that would send the campaign to fix a
+    # mutant that exists. Strictest AND honest: a caller that forgets the sink
+    # can only get a HARSHER verdict, never a softer one, and never a lying one.
+    if deferred is None:
+        in_the_set = list(in_the_set) + list(withheld)
+        withheld = set()
+    else:
+        withheld = set(withheld)
+    decls = duplicate_group_decls(corpus)
+    conflicts = duplicate_group_conflicts(corpus)
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    # VALID only. A failed or inert verdict carries `targets_declared` but
+    # never `undetected_targets` nor `collateral` — score_mutant returns before
+    # they are set — so crediting it would read "moved every declared target"
+    # from a measurement that never ran. And that is exactly how a separator
+    # dies when a lot re-anchors it: its apply.sh stops working. The class would
+    # have been reported PROVED by the failure it exists to catch.
+    scored = {v.get("id"): v for v in verdicts if v.get("id") and v.get("valid")}
+    seen_ids = {v.get("id") for v in verdicts if v.get("id")}
+    unproven = []
+    for g in sorted(observed):
+        seps = decls.get(g)
+        if not seps:
+            # Declared twice is not declared once, but it is not UNDECLARED
+            # either — and sending the campaign to write a declaration it has
+            # already written twice is the dead end this file keeps removing.
+            if g in conflicts:
+                unproven.append({"ids": list(g), "conflicting": conflicts[g], "why":
+                                 "this class is declared TWICE with different separators, and "
+                                 "the ids normalise to ONE key — nothing here can say which "
+                                 "adjudication is meant, so neither is used. Keep one."})
+                continue
+            unproven.append({"ids": list(g), "why":
+                             "no `duplicate_groups` entry declares this class. Either a "
+                             "member is redundant — drop it — or the identity is a control, "
+                             "and then it must name the mutant(s) that tell them apart."})
+            continue
+        missing = [m for m in seps if m not in scored]
+        # WITHHELD is not MISSING. In selfcheck the held-out set is deliberately
+        # not scored — `held` is empty by construction — so a separator drawn
+        # from it would be reported "absent from the mutant set", which is false
+        # and which the campaign cannot fix: the mutant IS in the set, its
+        # result is simply reserved for the final gate. Saying so is the whole
+        # difference between a work item and a dead end.
+        if missing and all(m in set(withheld) for m in missing):
+            deferred.append({"ids": list(g), "separated_by": list(seps),
+                             "withheld": sorted(missing), "why":
+                             "every unscored separator belongs to the held-out set, whose "
+                             "verdicts this pass reserves — not scored here, and not scorable "
+                             "here. Neither proved nor refuted until the final gate scores "
+                             "them."})
+            continue
+        if missing:
+            # THREE reasons, and they send the campaign to three different
+            # places. It RAN and came back invalid — the separator is broken,
+            # fix it. It is IN the mutant set but was not reached — scoring
+            # stopped before it, or GM_MUTANTS excluded it; nothing here is the
+            # campaign's to fix, the class is simply not proved yet. It is
+            # genuinely ABSENT — the declaration names a mutant that does not
+            # exist. Collapsing the middle one into "absent from the mutant set"
+            # is a refusal nothing the campaign does can lift, which is the same
+            # dead end WITHHELD-is-not-ABSENT removed one commit earlier.
+            if all(m in seen_ids for m in missing):
+                why = ("ran but came back INVALID — a separator that stops applying "
+                       "is exactly how this class loses its proof")
+            elif all(m in set(in_the_set) for m in missing):
+                why = ("are IN the mutant set but were not scored in this pass — "
+                       "scoring stopped before them%s. The class is not proved yet; "
+                       "nothing in the corpus is wrong" %
+                       (", or GM_MUTANTS excluded them" if restricted else ""))
+            else:
+                why = ("were not scored in this pass (absent from the mutant set%s)"
+                       % (", or excluded by GM_MUTANTS" if restricted else ""))
+            unproven.append({"ids": list(g), "separated_by": list(seps),
+                             "why": "declared separator(s) %s %s"
+                                    % (", ".join(sorted(missing)), why)})
+            continue
+        # One signature per member: which of the declared separators move it.
+        # Pairwise-distinct signatures IS "the references are distinguishable";
+        # anything less leaves two members that no declared mutant separates.
+        sig = {}
+        for m in g:
+            bits = []
+            for sep in seps:
+                v = scored[sep]
+                moved = ((set(v.get("targets_declared") or [])
+                          - set(v.get("undetected_targets") or []))
+                         | set(v.get("collateral") or []))
+                bits.append(m in moved)
+            sig.setdefault(tuple(bits), []).append(m)
+        collided = sorted(sorted(ms) for ms in sig.values() if len(ms) > 1)
+        if collided:
+            unproven.append({"ids": list(g), "separated_by": list(seps),
+                             "indistinguishable": collided, "why":
+                             "every declared separator treats these members identically, so "
+                             "none of them tells the references apart. Draw one that moves a "
+                             "strict subset, or accept that they are redundant."})
+    for g in sorted(set(decls) - observed):
+        unproven.append({"ids": list(g), "separated_by": list(decls[g]), "why":
+                         "declared, but these references are not a byte-identical class — the "
+                         "claim has nothing left to justify. Remove or re-key the declaration."})
+    return unproven
+
+
+def duplicate_groups_refusal(unproven, duplicate_refs, corpus_distinct, corpus_total):
+    """The gate's refusal, phrased over the TWO populations it actually has.
+
+    An OBSERVED byte-identical class that is not discharged is "N of M"; a STALE
+    declaration is unproved precisely BECAUSE its references are no longer
+    identical, so it is not one of the M and can never be. Counted into one
+    ratio the line read "4 reference group(s) are not proved (out of 1
+    byte-identical …)", which is arithmetic nobody can act on — on a gate whose
+    whole point is precise adjudication, a headline that cannot be read is
+    itself the defect.
+
+    Named rather than inline in main() so the self-test drives THIS text and not
+    a re-implementation of it.
+    """
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    stale = [u for u in unproven if tuple(sorted(u["ids"])) not in observed]
+    head = []
+    if len(unproven) - len(stale):
+        head.append("%d of %d byte-identical reference group(s) across DIFFERENT entries "
+                    "are not proved (the corpus is %d observations wide, not %d)"
+                    % (len(unproven) - len(stale), len(duplicate_refs),
+                       corpus_distinct, corpus_total))
+    if stale:
+        head.append("%d `duplicate_groups` declaration(s) no longer describe a "
+                    "byte-identical class, so the claim has nothing left to justify"
+                    % len(stale))
+    return ("%s. A group may legitimately repeat — a refusal lane's second entry is a "
+            "control — but the claim is discharged by a mutant that moves part of the "
+            "group and leaves the rest still, declared in `duplicate_groups` and checked "
+            "here: %s" % ("; ".join(head), json.dumps(unproven, ensure_ascii=False)))
+
+
 def control_ids(corpus, targets, seed):
     """Deterministic sample of non-target entries, to measure collateral."""
     pool = [e["id"] for e in corpus["entries"] if e["id"] not in targets]
@@ -3334,7 +3764,26 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
     if meta.get("needs_restart", True):
         app_restart(config, ws)
 
+    # An entry named in a duplicate-group declaration is ALWAYS controlled when
+    # the mutant that claims to separate it runs. The sample is otherwise a
+    # deterministic slice of the corpus, and a member that fell outside it could
+    # move unseen — which is precisely the claim the declaration makes, so the
+    # one measurement that decides it must not be left to the sampling stride.
+    #
+    # Pinned against the CORPUS, and that intersection is load-bearing.
+    # `control_covered` is `len(sample)`, and the gate refuses a mutant whose
+    # coverage is 0 — "collateral: 0" with nothing to control against is vacuous
+    # rather than earned. An id that no entry declares is never captured and
+    # never compared (capture() iterates entries; diverged() reads None on both
+    # sides and calls it equal), so pinning one would have raised the coverage
+    # with a control that does not exist and silenced that refusal. A
+    # declaration naming an id the corpus does not have is refused where it
+    # belongs — as a class nothing observes — not by inflating a count here.
     sample = control_ids(corpus, set(targets), seed)
+    corpus_ids = {e["id"] for e in corpus["entries"]}
+    pinned = (separator_group_ids(corpus, meta.get("id")) & corpus_ids) - set(targets)
+    if pinned:
+        sample = sorted(set(sample) | pinned)
     captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
     moved = diverged(refs, captured, targets)
     verdict["detected"] = bool(moved)
@@ -3706,10 +4155,12 @@ def _selftest():
                 (i in self.moved) if self.applied else (i in self.unstable)) else "")
                 for i in ids}
 
-    def score(targets, sample, moved, unstable=(), revert_code=0):
+    def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None):
         ids = ["%03d" % n for n in range(1, 13)]
         refs = {i: "ref-" + i for i in ids}
         corpus = {"entries": [{"id": i, "surface": "http"} for i in ids]}
+        if dup_groups:
+            corpus["duplicate_groups"] = dup_groups
         meta = {"id": "t", "dir": "/dev/null", "class": "code", "surface": "http",
                 "archetype": "value_change", "targets": list(targets), "needs_restart": False}
         w = World(refs, moved, unstable)
@@ -4815,6 +5266,121 @@ def _selftest():
         check("ref ajoutee non declaree par la demande -> refusee",
               xverdict(xbase)["acted"][0]["ok"], False)
 
+        # LE CANAL DE DECLARATION : le lot qui AJOUTE une entree est celui qui
+        # peut creer une nouvelle paire byte-identique, donc celui a qui la
+        # porte demande de declarer son separateur. Si le juge d'extension gelait
+        # cette cle, la porte nommerait un remede qu'un autre juge refuse — le
+        # defaut que le canal existe pour supprimer, simplement deplace.
+        xreset()
+        dup_entry = dict(base_entry, id="7", path="/dup")
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1", "7"],
+                                             "separated_by": "sep-x"}]}, f)
+        xcommit()
+        _vd = xverdict(xbase)["acted"][0]
+        check("declarer un groupe de doublons n'est PAS un gel viole",
+              [pb for pb in _vd["problems"] if "keys outside" in pb], [])
+        # Et le gel tient pour tout le reste : une cle voisine refuse toujours.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry], "baseline": "reecrite"}, f)
+        xcommit()
+        check("mais toute AUTRE cle hors `entries` reste gelee",
+              any("keys outside" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Une declaration malformee est refusee ICI plutot que jetee en silence
+        # par le lecteur, ou elle se lirait comme « aucune declaration ».
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1"], "separated_by": ""}]}, f)
+        xcommit()
+        check("une declaration malformee est refusee, pas ignoree",
+              any("malformed" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Et le CONTENEUR lui-meme : `duplicate_groups: 5` faisait lever un
+        # TypeError a la boucle ecrite a la main ici — ce juge tourne hors du
+        # try/finally de la porte, donc aucun mutant n'est abandonne, mais le
+        # mode imprimait une traceback la ou la campagne attend son verdict.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": 5}, f)
+        xcommit()
+        try:
+            _cv, _craised = xverdict(xbase)["acted"][0], ""
+        except Exception as e:                          # noqa: BLE001 - c'est le test
+            _cv, _craised = {}, "%s: %s" % (type(e).__name__, e)
+        check("un `duplicate_groups` non-liste refuse, il ne fait pas planter le juge",
+              [_craised, any("not a list" in pb for pb in _cv.get("problems") or [])],
+              ["", True])
+
+        # LE CANAL N'EST PAS UN DROIT DE REVISION. La cle est liberee du gel
+        # parce que le lot qui AJOUTE une entree est celui qui peut creer une
+        # nouvelle classe byte-identique. AJOUTER une declaration est verifie —
+        # un separateur bidon est refuse a la porte par la mesure. La REECRIRE
+        # ou la SUPPRIMER n'est verifie par rien : echanger un separateur
+        # valide contre un autre separateur valide rejuge en silence la classe
+        # d'un autre lot, et une suppression rouvre le refus « doublon non
+        # declare » pour le suivant.
+        xreset()
+        dg_a, dg_b = dict(base_entry, id="20"), dict(base_entry, id="21")
+        dg_c = dict(base_entry, id="22")
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dg_a, dg_b],
+                       "duplicate_groups": [{"ids": ["20", "21"],
+                                             "separated_by": "sep-old"}]}, f)
+        xcommit()
+        xbase_dg = fixture_git(xroot, "rev-parse", "HEAD")
+
+        def xdg(groups):
+            """Un lot qui ajoute l'entree 22, sur une base qui PORTE deja une
+            declaration — et qui touche `duplicate_groups` comme indique."""
+            fixture_git(xroot, "reset", "-q", "--hard", xbase_dg)
+            fixture_git(xroot, "clean", "-qfd")
+            xledger(("request",
+                     '{"id": "E-G", "lot": "L", "corpus_entries": [{"id": "22"}]}'),
+                    ("act", '{"id": "E-G", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, dg_a, dg_b, dg_c],
+                           "duplicate_groups": groups}, f)
+            xcommit()
+            return xverdict(xbase_dg)["acted"][0]["problems"]
+
+        check("echanger un separateur valide contre un autre : REFUSE",
+              any("RE-ADJUDICATED" in pb
+                  for pb in xdg([{"ids": ["20", "21"],
+                                  "separated_by": "sep-new"}])), True)
+        check("supprimer la declaration d'un autre lot : REFUSE",
+              any("WITHDRAWN" in pb for pb in xdg([])), True)
+        # Le cas legitime que l'exemption existe pour servir : l'entree ajoutee
+        # REJOINT la classe, qui se recle en sur-ensemble et peut demander un
+        # separateur de plus pour garder les membres distinguables deux a deux.
+        check("une entree ajoutee qui rejoint la classe la recle sans refus",
+              [pb for pb in xdg([{"ids": ["20", "21", "22"],
+                                  "separated_by": ["sep-old", "sep-2"]}])
+               if "duplicate_groups" in pb], [])
+        # Et DECLARER reste libre : ajouter une classe neuve ne touche a
+        # l'adjudication de personne.
+        check("declarer une classe neuve reste libre",
+              [pb for pb in xdg([{"ids": ["20", "21"], "separated_by": "sep-old"},
+                                 {"ids": ["1", "22"], "separated_by": "sep-3"}])
+               if "duplicate_groups" in pb], [])
+
         # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
         xreset()
         xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "1"}]}'),
@@ -5689,6 +6255,365 @@ def _selftest():
     check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
     check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
 
+    # ─── Groupes de references identiques : la preuve, pas la parole ──────────
+    #
+    # Deux entrees byte-identiques ne sont pas fautives en soi : sur une lane de
+    # refus, la seconde est un CONTROLE qui prouve qu'un mutant n'a deplace que
+    # la premiere. Ce que la porte ne pouvait pas faire, c'est distinguer ce cas
+    # d'un doublon — une note en prose ne se verifie pas. La declaration nomme
+    # le mutant separateur, et elle est ACQUITTEE par la mesure.
+    corpus_dg = {"entries": [{"id": "012"}, {"id": "013"}, {"id": "019"}],
+                 "duplicate_groups": [
+                     {"ids": ["013", "012"], "separated_by": "sep-01"},
+                     {"ids": ["019"], "separated_by": "trop-court"},
+                     {"ids": ["019", "012"], "separated_by": ""},
+                     "pas-un-dict"]}
+    check("une declaration se lit triee, et les malformees sont ignorees",
+          duplicate_group_decls(corpus_dg), {("012", "013"): ("sep-01",)})
+    # Un separateur ou plusieurs : une classe de quatre demande assez de mutants
+    # pour distinguer les quatre, pas un seul qui coupe quelque part.
+    check("plusieurs separateurs se lisent, dedupliques et ordonnes",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b", "c"], "separated_by": ["s2", "s1", "s2"]}]}),
+          {("a", "b", "c"): ("s2", "s1")})
+    check("une liste vide ou non-textuelle est ignoree",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b"], "separated_by": []},
+              {"ids": ["c", "d"], "separated_by": [1]}]}), {})
+    check("les ids d'un groupe sont epingles pour SON separateur",
+          separator_group_ids(corpus_dg, "sep-01"), {"012", "013"})
+    check("et pour aucun autre",
+          separator_group_ids(corpus_dg, "sep-02"), set())
+    check("un mutant sans id n'epingle rien",
+          separator_group_ids(corpus_dg, None), set())
+
+    # Le verdict lui-meme : ce que la porte conclut de ce qu'un separateur a
+    # REELLEMENT deplace. La forme qui compte est la derniere — un separateur
+    # qui deplace TOUT le groupe ne le separe plus, et c'est exactement ce qui
+    # est arrive a deux paires quand un lot a reancre leur mutant.
+    # Appelle la FONCTION QUE LA PORTE APPELLE — pas une reimplementation.
+    # Un banc qui rejoue la logique reste vert quand le produit derive ; celui-ci
+    # rougit avec lui.
+    def whys(group, decls, moved_by):
+        corpus_ = {"entries": [], "duplicate_groups": decls}
+        verdicts_ = [{"id": mid, "valid": True, "targets_declared": sorted(mv),
+                      "undetected_targets": [], "collateral": []}
+                     for mid, mv in moved_by.items()]
+        out = unproven_duplicate_groups([sorted(group)], corpus_, verdicts_)
+        return [x["ids"] for x in out]
+
+    # L'EPINGLAGE, et c'est la moitie porteuse : sans lui la mesure qui decide
+    # n'existe pas. Un membre du groupe hors de l'echantillon deterministe
+    # pourrait bouger sans etre vu, et la porte conclurait "sous-ensemble strict,
+    # groupe prouve" sur une separation qui n'a plus lieu.
+    v_pin = score(["001"], ["005"], ["001", "009"],
+                  dup_groups=[{"ids": ["001", "009"], "separated_by": "t"}])
+    check("un membre du groupe hors echantillon est quand meme controle",
+          v_pin["collateral"], ["009"])
+    # Et rien n'est epingle pour un mutant qui ne separe aucun groupe.
+    v_nopin = score(["001"], ["005"], ["001", "009"],
+                    dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
+    check("aucun epinglage pour un mutant qui ne separe rien",
+          v_nopin["collateral"], [])
+    # Et JAMAIS un id que le corpus n'a pas. `control_covered` est len(sample),
+    # et la porte refuse un mutant dont la couverture est nulle — « collateral
+    # 0 » sans rien a controler est vide, pas merite. Un id qu'aucune entree ne
+    # declare n'est jamais capture ni compare : l'epingler aurait leve la
+    # couverture avec un temoin qui n'existe pas, et eteint ce refus-la.
+    # Lu sans planter : si l'epinglage repassait large, la capture serait
+    # interrogee sur un id qu'elle n'a pas — et un banc qui plante dit qu'il
+    # s'est passe quelque chose sans dire quoi.
+    try:
+        _vg = score(["001"], [], ["001"],
+                    dup_groups=[{"ids": ["001", "fantome"], "separated_by": "t"}])
+        _ghost = [_vg["control_covered"], _vg["collateral"]]
+    except Exception as e:                              # noqa: BLE001 - c'est le test
+        _ghost = "%s: %s" % (type(e).__name__, e)
+    check("un id absent du corpus n'est pas epingle comme temoin", _ghost, [0, []])
+
+    # Un separateur INVALIDE ne prouve rien. Son verdict porte
+    # `targets_declared` mais jamais `undetected_targets` ni `collateral`, donc
+    # le crediter revient a lire « toutes les cibles ont bouge » d'une mesure
+    # qui n'a pas eu lieu — et c'est precisement ainsi qu'un separateur meurt.
+    check("un separateur INVALIDE ne prouve pas le groupe",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+              [{"id": "sep-01", "valid": False,
+                "targets_declared": ["013"], "reason": "apply.sh a echoue"}])],
+          [["012", "013"]])
+    # Le motif, lu sans indexer a l'aveugle : si le groupe repassait "prouve",
+    # un `[0]` planterait au lieu de RAPPORTER, et un banc qui plante dit qu'il
+    # s'est passe quelque chose sans dire quoi.
+    _inv = unproven_duplicate_groups(
+        [["012", "013"]],
+        {"entries": [], "duplicate_groups": [
+            {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+        [{"id": "sep-01", "valid": False, "targets_declared": ["013"]}])
+    check("et le motif dit qu'il a tourne, pas qu'il est absent",
+          [("INVALID" in x["why"]) for x in _inv], [True])
+
+    # Une CLASSE de quatre, le cas reel du corpus : `sep-04` deplace un membre,
+    # `sep-05` en deplace deux — ensemble ils donnent quatre signatures
+    # distinctes, donc les quatre references sont distinguables.
+    C4 = [{"ids": ["074", "075", "076", "110"],
+           "separated_by": ["sep-04", "sep-05"]}]
+    def _v(mid, moved):
+        return {"id": mid, "valid": True, "targets_declared": sorted(moved),
+                "undetected_targets": [], "collateral": []}
+    # Et le resultat est celui du corpus REEL, pas celui qu'on esperait :
+    # `sep-04` isole 074, `sep-05` deplace 076 ET 110 ensemble — donc ces deux-la
+    # partagent leur signature et rien ne les separe. Deux separateurs ne
+    # suffisent pas a distinguer quatre references ; le banc l'a appris du
+    # produit apres avoir affirme le contraire.
+    check("deux separateurs ne distinguent pas quatre membres",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": C4},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"})])],
+          [[["076", "110"]]])
+    # Avec un troisieme qui ne bouge que 110, les quatre signatures deviennent
+    # distinctes et la classe est acquittee.
+    check("un separateur de plus les distingue toutes : acquittee",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"],
+                   "separated_by": ["sep-04", "sep-05", "sep-06"]}]},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"}),
+               _v("sep-06", {"110"})])],
+          [])
+    # 076 et 110 partagent la meme signature : deux membres que rien ne separe.
+    check("deux membres de meme signature : la classe n'est PAS acquittee",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"], "separated_by": ["sep-04"]}]},
+              [_v("sep-04", {"074"})])],
+          [[["075", "076", "110"]]])
+    # Et une declaration en PAIRES sur une classe de trois ne la couvre pas :
+    # la cle est la classe maximale, pas un decoupage choisi par le lot.
+    check("des paires ne declarent pas une classe de trois",
+          sorted(x["ids"] for x in unproven_duplicate_groups(
+              [["a", "b", "c"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["a", "b"], "separated_by": "s1"},
+                  {"ids": ["b", "c"], "separated_by": "s1"}]},
+              [_v("s1", {"a"})])),
+          [["a", "b"], ["a", "b", "c"], ["b", "c"]])
+
+    # Le CONTRAT que le site d'appel doit honorer : un separateur fourni parmi
+    # les verdicts du jeu tenu a l'ecart est reconnu comme les autres. La
+    # fonction est agnostique — c'est l'appelant qui doit composer les deux
+    # listes, et CE cablage-la n'est pas couvert par ce banc (le rejouer
+    # demanderait une porte complete). La limite est ecrite plutot que masquee.
+    check("un separateur venu du jeu tenu a l'ecart est reconnu",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "held-sep"}]},
+              [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": []}])],
+          [])
+    # ...et l'AUTRE moitie de ce contrat : ce que ce separateur tenu a l'ecart a
+    # deplace doit atteindre les memes termes de porte qu'un separateur visible.
+    # Le meme verdict etait un rouge dur quand il etait visible (`collateral == 0`
+    # est un terme de la porte) et une preuve silencieuse quand il etait retenu :
+    # une classe ne peut pas etre acquittee par un canal que la porte n'a pas le
+    # droit de regarder.
+    _hy = measurement_hygiene(
+        [{"id": "vis", "collateral": ["005"]}],
+        [{"id": "held-sep", "collateral": ["009"], "unstable_controls": ["012"]}])
+    check("le collateral du jeu tenu a l'ecart compte dans le total",
+          _hy["collateral"], 2)
+    check("et ses temoins instables aussi",
+          _hy["unstable_controls"], ["012"])
+    # La liste couvre le meme ensemble que le compte — un titre qui compte ce
+    # qu'il ne nomme pas est le defaut que ce fichier vient de retirer au refus
+    # des doublons — et chaque ligne dit d'ou elle vient.
+    check("et chaque ligne nomme sa provenance",
+          _hy["detail"], "vis moved ['005']; held-sep moved ['009'] (held-out)")
+    check("un jeu tenu a l'ecart propre ne change rien",
+          measurement_hygiene([{"id": "vis", "collateral": ["005"]}], []),
+          {"collateral": 1, "unstable_controls": [], "detail": "vis moved ['005']"})
+
+    # R797693 : le lecteur ne LEVE jamais (il tourne avec un mutant applique),
+    # et ce qu'il laisse tomber est dit a voix haute par le controle de forme —
+    # sinon une faute de frappe se lit comme « groupe non declare » et envoie
+    # corriger une absence.
+    check("un `duplicate_groups` non-liste ne fait pas planter le lecteur",
+          duplicate_group_decls({"duplicate_groups": 5}), {})
+    check("et il est REFUSE, pas ignore",
+          len(duplicate_groups_shape_problems({"duplicate_groups": 5})), 1)
+    check("une entree malformee est refusee nommement",
+          len(duplicate_groups_shape_problems({"duplicate_groups": [
+              {"ids": ["a"], "separated_by": "s"}]})), 1)
+    check("et un corpus sans declaration ne dit rien",
+          duplicate_groups_shape_problems({"entries": []}), [])
+    # UN SEUL predicat de forme. Il en existait trois copies — le lecteur, le
+    # refus de forme, le juge d'extension — et trois copies d'une regle sont
+    # trois occasions qu'un corpus soit bien forme pour l'un et malforme pour
+    # l'autre. Ce banc pince l'accord plutot que chaque copie : ce que le
+    # normaliseur refuse est exactement ce que le lecteur laisse tomber et
+    # exactement ce que le refus nomme.
+    _shapes = [{"ids": ["a", "b"], "separated_by": "s"},          # bien forme
+               {"ids": ["a", "b"], "separated_by": ["s", "s"]},   # bien forme
+               {"ids": ["a"], "separated_by": "s"},               # trop court
+               {"ids": ["a", "b"], "separated_by": []},           # sans separateur
+               {"ids": ["a", "b"], "separated_by": [1]},          # non textuel
+               {"ids": "ab", "separated_by": "s"},                # ids non-liste
+               "pas-un-dict"]
+    check("le normaliseur et le refus de forme s'accordent entree par entree",
+          [duplicate_group_decl(g) is None for g in _shapes],
+          [False, False, True, True, True, True, True])
+    check("et le lecteur ne garde que ce que le normaliseur accepte",
+          len(duplicate_group_decls({"duplicate_groups": _shapes})), 1)
+    check("le refus de forme nomme exactement les autres",
+          len(duplicate_groups_shape_problems({"duplicate_groups": _shapes})), 1)
+
+    # DEUX declarations pour UNE classe : refusees, pas departagees. Les ids sont
+    # normalises, donc ["a","b"] et ["b","a"] sont la MEME classe et c'est la
+    # POSITION dans la liste qui tranchait. Le mal du second ordre est pire que
+    # l'ecrasement : separator_group_ids lit cette meme carte, donc le separateur
+    # perdant n'epingle jamais son groupe dans son echantillon de temoins — la
+    # mesure qui deciderait la classe n'est pas prise du tout.
+    _clash = {"duplicate_groups": [{"ids": ["a", "b"], "separated_by": "first"},
+                                   {"ids": ["b", "a"], "separated_by": "second"}]}
+    check("une classe declaree deux fois n'est pas departagee par l'ordre",
+          duplicate_group_decls(_clash), {})
+    check("et le perdant n'epingle plus rien en silence",
+          [separator_group_ids(_clash, "first"), separator_group_ids(_clash, "second")],
+          [set(), set()])
+    check("la collision est REFUSEE nommement",
+          [("declared TWICE" in p) for p in duplicate_groups_shape_problems(_clash)],
+          [True])
+    # Et le refus dit la collision, pas une absence : envoyer ecrire une
+    # declaration deja ecrite deux fois est le cul-de-sac que ce fichier retire.
+    check("le motif nomme la collision, pas une declaration manquante",
+          [[("declared TWICE" in x["why"]), x.get("conflicting")]
+           for x in unproven_duplicate_groups([["a", "b"]], _clash, [])],
+          [[True, [["first"], ["second"]]]])
+    # Repeter la MEME adjudication n'est pas ambigu : l'ordre n'y decide rien.
+    check("la meme adjudication ecrite deux fois reste lisible",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b"], "separated_by": ["s1", "s2"]},
+              {"ids": ["b", "a"], "separated_by": ["s2", "s1"]}]}),
+          {("a", "b"): ("s1", "s2")})
+
+    # R8bcd2c : RETENU n'est pas ABSENT. En selfcheck le jeu tenu a l'ecart
+    # n'est pas score, donc un separateur qui en vient est retenu, pas manquant
+    # — et le dire autrement produit un refus que la campagne ne peut pas lever.
+    _wd = {"entries": [], "duplicate_groups": [
+        {"ids": ["012", "013"], "separated_by": "held-sep"}]}
+    _sink = []
+    check("un separateur RETENU ne produit pas de refus",
+          unproven_duplicate_groups([["012", "013"]], _wd, [], False,
+                                    ["held-sep"], (), _sink), [])
+    # ...ET IL EST DIFFERE, PAS EFFACE. Sauter la classe retirait le faux refus
+    # au prix d'une fausse PREUVE : avec `seps = [retenu, visible]` ou le
+    # visible ne separe rien, la classe ressortait dechargee sans que le
+    # separateur score soit jamais consulte. Un terme de convergence ne peut pas
+    # recevoir ca.
+    check("... et la classe est DIFFEREE, pas effacee",
+          [(x["ids"], x["withheld"]) for x in _sink],
+          [(["012", "013"], ["held-sep"])])
+    # SANS PUITS, PAS DE REPORT — et le motif reste VRAI : un separateur retenu
+    # est dans le jeu, pas absent. Le defaut ne peut que RESSERRER, jamais
+    # mentir.
+    check("sans puits, RETENU redevient un refus, et un refus qui ne ment pas",
+          [x["why"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, ["held-sep"])],
+          ["declared separator(s) held-sep are IN the mutant set but were not "
+           "scored in this pass — scoring stopped before them. The class is not "
+           "proved yet; nothing in the corpus is wrong"])
+    # A LA PORTE FINALE RIEN N'EST RETENU : la voie du report y est
+    # inatteignable, donc elle ne peut pas adoucir le verdict qui decide.
+    _sink2 = []
+    check("porte finale : aucun report possible, le refus tient",
+          [[x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, (), (), _sink2)], _sink2],
+          [[["012", "013"]], []])
+    check("mais un separateur simplement ABSENT en produit un",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, [])], [["012", "013"]])
+    # Et le TROISIEME cas, celui qui restait confondu avec le second : un
+    # separateur que le scan n'a pas ATTEINT (arret apres un revert sale,
+    # GM_MUTANTS restreint) existe bel et bien. Le refus doit rester — rien n'est
+    # prouve — mais dire « absent du jeu de mutants » envoyait la campagne
+    # corriger une absence qui n'en est pas une, exactement le cul-de-sac que
+    # RETENU-n'est-pas-ABSENT venait de retirer.
+    check("un separateur NON ATTEINT refuse en le disant, pas en criant l'absence",
+          [x["why"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, [], ["held-sep"])],
+          ["declared separator(s) held-sep are IN the mutant set but were not "
+           "scored in this pass — scoring stopped before them. The class is not "
+           "proved yet; nothing in the corpus is wrong"])
+    check("et un separateur vraiment absent garde son motif",
+          [("absent from the mutant set" in x["why"])
+           for x in unproven_duplicate_groups(
+               [["012", "013"]], _wd, [], False, [], ["un-autre"])], [True])
+    # Un separateur qui a TOURNE et qui est invalide garde le sien : le fait
+    # d'etre dans le jeu ne doit pas masquer qu'il a echoue.
+    check("un separateur INVALIDE reste un INVALIDE meme s'il est dans le jeu",
+          [("INVALID" in x["why"]) for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd,
+              [{"id": "held-sep", "valid": False, "reason": "apply.sh a echoue"}],
+              False, [], ["held-sep"])], [True])
+
+    # LE TITRE, et il porte sur DEUX populations. Une classe OBSERVEE non
+    # acquittee se compte « N sur M » ; une declaration CADUQUE est non prouvee
+    # justement parce que ses references ne sont plus identiques, donc elle
+    # n'est pas l'un des M et ne peut pas l'etre. Comptees dans un seul rapport,
+    # la ligne annoncait « 4 reference group(s) are not proved (out of 1
+    # byte-identical …) » — une arithmetique sur laquelle personne n'agit.
+    _mixed = [{"ids": ["012", "013"], "why": "x"},
+              {"ids": ["019", "077"], "why": "caduque"},
+              {"ids": ["080", "081"], "why": "caduque aussi"}]
+    _head = duplicate_groups_refusal(_mixed, [["012", "013"]], 11, 14)
+    check("le titre separe les classes observees des declarations caduques",
+          [("1 of 1 byte-identical" in _head),
+           ("2 `duplicate_groups` declaration(s) no longer describe" in _head)],
+          [True, True])
+    check("et une seule population ne fait pas parler de l'autre",
+          [("no longer describe" in duplicate_groups_refusal(
+              [{"ids": ["012", "013"], "why": "x"}], [["012", "013"]], 11, 14)),
+           ("byte-identical reference group(s)" in duplicate_groups_refusal(
+               [{"ids": ["019", "077"], "why": "caduque"}], [], 14, 14))],
+          [False, False])
+
+    D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
+    check("separateur qui deplace UN membre : preuve acquittee",
+          whys(["012", "013"], D, {"sep-01": {"013"}}), [])
+    check("separateur qui deplace TOUT le groupe : refuse",
+          whys(["012", "013"], D, {"sep-01": {"012", "013"}}), [["012", "013"]])
+    check("separateur qui ne deplace AUCUN membre : refuse",
+          whys(["012", "013"], D, {"sep-01": {"099"}}), [["012", "013"]])
+    check("separateur absent du jeu score : refuse",
+          whys(["012", "013"], D, {"autre": {"013"}}), [["012", "013"]])
+    check("groupe observe mais non declare : refuse",
+          whys(["012", "013"], [], {}), [["012", "013"]])
+    check("declaration devenue caduque : refuse",
+          whys(["012", "013"], D + [{"ids": ["019", "077"], "separated_by": "sep-02"}],
+               {"sep-01": {"013"}}), [["019", "077"]])
+    # Le collateral compte comme un deplacement : un membre que le separateur ne
+    # DECLARE pas mais deplace quand meme casse la separation aussi surement.
+    check("un membre deplace en collateral casse la separation",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "valid": True, "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": ["012"]}])],
+          [["012", "013"]])
+    # Et une cible DECLAREE qui n'a pas bouge ne compte pas comme deplacee.
+    check("une cible declaree mais immobile ne prouve rien",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "valid": True, "targets_declared": ["012", "013"],
+                "undetected_targets": ["012", "013"], "collateral": []}])],
+          [["012", "013"]])
+
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
         for f in failures:
@@ -5841,6 +6766,11 @@ def main():
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
+              "duplicate_groups_unproven": [],
+              # Rapporte, jamais gate : un report est l'absence d'un verdict,
+              # pas un verdict. Il existe pour qu'un selfcheck ne lise pas
+              # PROUVE ce qu'il n'a fait que ne pas pouvoir mesurer.
+              "duplicate_groups_deferred": [],
               "runner_replayable": False,
               "holdout_reused": [],
               "log_tail": ""}
@@ -6342,6 +7272,7 @@ def main():
                 if scoring_must_stop(v, ws):
                     stopped = v
                     break
+        hygiene = measurement_hygiene(verdicts, held)
         if stopped is not None:
             note(report, "scoring stopped after mutant %s: %s. The tree or the app is no longer "
                  "KNOWN to be at baseline, so the mutants after it were not scored and are absent "
@@ -6365,9 +7296,8 @@ def main():
             detected=len(detected),
             score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
             revert_clean=overall_revert_clean(verdicts + held, stopped, ws),
-            collateral=sum(len(v.get("collateral") or []) for v in verdicts),
-        unstable_controls=sorted({c for v in verdicts
-                                  for c in (v.get("unstable_controls") or [])}),
+            collateral=hygiene["collateral"],
+            unstable_controls=hygiene["unstable_controls"],
             uncontrolled=[v["id"] for v in valid if not v.get("control_covered")],
             blind_lanes=blind,
             holdout_total=len([v for v in held if v.get("valid")]),
@@ -6444,10 +7374,7 @@ def main():
                             "cover. Not averaged away, not weighted: this list must be "
                             "empty. %s" % json.dumps(blind, ensure_ascii=False))
         if report["collateral"]:
-            detail = "; ".join(
-                "%s moved %s" % (v["id"], v["collateral"])
-                for v in verdicts if v.get("collateral")
-            )
+            detail = hygiene["detail"]
             problems.append("collateral drift on %d control entries — a mutant moves "
                             "responses it does not declare as targets. Either its "
                             "`targets` under-state its blast radius, or the capture is "
@@ -6472,18 +7399,55 @@ def main():
         if report["score_pct"] < floor:
             problems.append("mutation score %d%% is under the %d%% floor"
                             % (report["score_pct"], floor))
-        if report["duplicate_refs"]:
-            problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
-                            "so the corpus is %d observations wide, not %d. This is NOT always a "
-                            "defect: on a refusal lane two entries legitimately capture the same "
-                            "302, and the second is a control proving a mutant moved only the "
-                            "first. It IS a defect when the endpoints were meant to differ — then "
-                            "either one is redundant, or they differ on a path this fixture does "
-                            "not exercise and the difference is captured NOWHERE. Decide which, "
-                            "per group: %s"
-                            % (len(report["duplicate_refs"]), report["corpus_distinct"],
-                               report["corpus_total"],
-                               json.dumps(report["duplicate_refs"], ensure_ascii=False)))
+        # Byte-identical references are not automatically a defect — on a
+        # refusal lane the second entry is a CONTROL proving a mutant moved only
+        # the first. What was missing is the difference between that and a
+        # redundant pair, and it cannot be settled by a note: the gate reads
+        # data, not prose. So the corpus DECLARES the separating mutant per
+        # group, and the declaration is discharged by MEASUREMENT — the mutant
+        # must move some members and leave the others still, with every member
+        # pinned into its control sample so the answer exists.
+        #
+        # A proof obligation, not a waiver. It goes red by itself the day the
+        # separator dies, which is what a waiver could never do: measured 08/09,
+        # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
+        # separator to a lot's re-anchoring — the mutant now moves both members,
+        # and the pair proves nothing at all.
+        #
+        # verdicts + held. A declared separator may live in the held-out set —
+        # score_mutant pins its group into the control sample there too, so the
+        # deciding measurement really IS taken — but it lands in `held`, not
+        # `verdicts`. Passing only the latter made the gate report a separator it
+        # had just scored as never scored, and refuse the group on its own blind
+        # spot. What that held measurement finds reaches the gate's own hygiene
+        # terms through `measurement_hygiene`, so a class cannot be discharged
+        # through a channel the gate is forbidden to look at.
+        #
+        # Les ids TENUS A L'ECART quand leur resultat est reserve : en selfcheck
+        # `held` est vide par construction, et un separateur qui en vient n'est
+        # pas absent, il est retenu.
+        withheld_ids = ([m.get("id") for m in held_meta]
+                        if (mode == "selfcheck" and not held) else [])
+        # Ce que le JEU DE MUTANTS contient, score ou non. Un separateur que le
+        # scan n'a pas atteint — l'arret apres un revert sale, un GM_MUTANTS
+        # restreint — n'est pas absent : il existe, il n'a pas tourne. Le dire
+        # « absent du jeu » envoyait corriger une absence qui n'en est pas une.
+        in_the_set = [m.get("id") for m in visible + held_meta]
+        # Le puits des classes DIFFEREES. Il est fourni, donc `withheld` est
+        # honore ; sans lui la fonction retombe sur le refus le plus severe.
+        # Rien n'est retenu a la porte finale (`withheld_ids` y est vide), donc
+        # cette voie ne peut pas adoucir le verdict qui decide.
+        deferred = []
+        unproven = unproven_duplicate_groups(
+            report["duplicate_refs"], corpus, list(verdicts) + list(held),
+            bool(only), withheld_ids, in_the_set, deferred)
+        problems.extend(duplicate_groups_shape_problems(corpus))
+        report["duplicate_groups_unproven"] = unproven
+        report["duplicate_groups_deferred"] = deferred
+        if unproven:
+            problems.append(duplicate_groups_refusal(
+                unproven, report["duplicate_refs"],
+                report["corpus_distinct"], report["corpus_total"]))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
                          "its result is withheld on purpose. Only the final gate scores "

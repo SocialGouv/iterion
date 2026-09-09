@@ -87,7 +87,8 @@ reports success on the strength of the resemblance.
 | the gate passed | the runner exited 0 | the runner printed a red report and exited 0 anyway |
 | the held-out set was detected | `detected == total` | `0 == 0` holds when the set is absent |
 | the net is complete | the references are committed | the harness that replays them was gitignored |
-| the corpus is N wide | there are N entries | two entries shared one byte-identical reference |
+| the corpus is N wide | there are N entries | two entries shared one byte-identical reference — the remedy is `duplicate_groups`, which names the separating mutant and has the gate MEASURE the claim, see [[golden-master]] |
+| the identical pair is a deliberate control | a note in `REPORT.md` says so | the mutant that separated them was re-anchored by a later lot and now moves both; the note still read "settled, and proved" |
 
 The shape is always the same, and so is the consequence: **the failure mode is
 a false green, never a false red.** A check that under-claims annoys someone; a

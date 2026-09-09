@@ -39,6 +39,13 @@ You write the mutants. The harness decides whether they count. It will:
 - **refuse a mutant that targets everything.** With no control entries left, clean collateral is
   vacuous rather than earned. Keep mutants narrow: a blast radius covering the whole corpus tests
   nothing precise.
+- **hold a SEPARATOR to its claim.** A mutant a corpus names in `duplicate_groups` — the
+  declaration that two byte-identical references are a deliberate control rather than a redundant
+  pair — must be measured moving a *strict subset* of that class. Every member is pinned into its
+  control sample so the observation always exists, and the class stays unproved (gate red) if the
+  mutant moves all of them, none of them, or comes back invalid. Re-anchoring such a mutant
+  therefore breaks the pair it was quietly holding up: see [[golden-master]] for the declaration
+  shape and the discharge rule.
 
 ## Required archetypes
 

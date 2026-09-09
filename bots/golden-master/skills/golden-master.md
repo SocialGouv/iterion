@@ -201,6 +201,72 @@ a supervising process needs to see them:
 None of the three is a refusal: the judge publishes the state and the count, and the process that
 owns the campaign's cadence decides what a debt costs.
 
+## Two entries with the SAME reference — declare the mutant that tells them apart
+
+Two entries whose canonical references are byte-identical are one observation,
+not two. The corpus is then narrower than it claims, and the gate says so
+(`corpus_distinct` versus `corpus_total`).
+
+That is **not automatically a defect**. On a refusal lane the second entry is
+often a *control*: it exists to prove a mutant moved only the first. But a note
+in `REPORT.md` saying so is prose, and the gate reads data — so the claim is
+declared in `corpus.json` and **discharged by measurement**:
+
+```json
+{
+  "entries": [ ... ],
+  "duplicate_groups": [
+    {"ids": ["012", "013"], "separated_by": "sep-01"},
+    {"ids": ["074", "075", "076", "110"],
+     "separated_by": ["sep-04", "sep-05", "sep-06"]}
+  ]
+}
+```
+
+The rules, all of them enforced at the gate — `duplicate_groups_unproven` must
+be empty or the run does not converge, in the graph gate AND in
+`verify-oracle.sh`:
+
+- **The key is the CLASS, not a pairing you choose.** `duplicate_refs` reports
+  maximal equivalence classes — every id sharing one sha256 — so a class of
+  three cannot be declared as three pairs. `["a","b"]` and `["b","a"]` are the
+  same class; declaring one class **twice with different separators** is
+  refused, not resolved, because nothing can say which adjudication is meant.
+- **The separator must move a STRICT SUBSET.** A mutant that moves every member
+  no longer separates anything, and one that moves none never did. This is
+  measured: every member of a declared group is pinned into that mutant's
+  control sample, so the deciding observation always exists.
+- **Move the members you separate as DECLARED `targets`.** A member that moves
+  without being declared surfaces as `collateral`, which is its own hard gate
+  red — including for a separator drawn from the held-out set.
+- **A class of N needs enough separators for pairwise-distinct signatures.**
+  Two mutants do not tell four references apart: if `sep-05` moves 076 and 110
+  together, nothing separates those two and the class stays unproved. Add a
+  separator that moves a different subset.
+- **It is a proof obligation, not a waiver.** It goes red by itself the day a
+  lot re-anchors the separating mutant — which is exactly how two groups whose
+  notes read "settled, and proved" turned out to prove nothing at all.
+- **A declaration whose references are no longer identical is stale** and is
+  refused too: remove it or re-key it.
+
+A malformed declaration (fewer than two `ids`, an empty `separated_by`, a
+non-list container) is **named**, never dropped in silence — a dropped
+declaration would read as "this class is undeclared" and send you to write one
+you had already written.
+
+**Proving a group does not buy back width, and that is deliberate.** The floor
+is applied to `corpus_distinct`, which counts distinct baseline observations. A
+separator proves the two references are *distinguishable under mutation*; it
+does not make them two observations of the application's behaviour at rest, and
+crediting them back would let a corpus reach its floor by padding with
+controls. So the two refusals are independent: discharge the class *and* widen
+the corpus. If the gate still says the corpus is too narrow after every group
+is proved, the answer is a new entry, never a new declaration.
+
+The extension channel may write this key: the lot that ADDS an entry is the one
+that can create a new byte-identical class, so it is also the one that must
+declare its separator. Every other key outside `entries` stays frozen.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the
