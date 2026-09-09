@@ -1482,6 +1482,49 @@
         ],
         "type": "object"
       },
+      "OutputCorrectionEpisode": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "budget": {
+            "type": "integer"
+          },
+          "episode_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string"
+          },
+          "invocation_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_output_fingerprint": {
+            "type": "string"
+          },
+          "last_violation_fingerprint": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ParallelCheckpoint": {
         "properties": {
           "artifact_allocations": {
@@ -2150,6 +2193,12 @@
           "outcome_seq": {
             "type": "integer"
           },
+          "output_corrections": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "object"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -2196,6 +2245,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "watcher_cursors": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WatcherCursor"
+            },
+            "type": "object"
           },
           "work_dir": {
             "type": "string"
@@ -2535,6 +2590,45 @@
           "status",
           "is_super_admin"
         ],
+        "type": "object"
+      },
+      "WatcherCursor": {
+        "properties": {
+          "consecutive_no_progress": {
+            "type": "integer"
+          },
+          "last_action": {
+            "type": "string"
+          },
+          "last_action_fingerprint": {
+            "type": "string"
+          },
+          "last_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_fingerprint": {
+            "type": "string"
+          },
+          "last_trigger_fingerprint": {
+            "type": "string"
+          },
+          "next_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "watcher_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "WireEdge": {

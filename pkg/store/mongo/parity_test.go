@@ -26,6 +26,9 @@ import (
 // children sweep). Anything else added here needs an explicit reason.
 var nonPerRunCollections = map[string]bool{
 	"runs": true, // the run doc; deleted by DeleteRun's own DeleteOne
+	// retry_circuits is keyed by tenant + workflow revision, not run_id;
+	// deleting one run must not erase the shared breaker used by siblings.
+	"retry_circuits": true,
 }
 
 func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {
