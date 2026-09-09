@@ -806,7 +806,10 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 			}
 		}
 	}
-	for _, rc := range collectAllRefs(w) {
+	// Artifact dependency discovery needs reference ownership, not source
+	// positions. The compiler supplies span maps for diagnostics; nil maps keep
+	// this runtime-facing helper independent of parser metadata.
+	for _, rc := range collectAllRefs(w, nil, nil) {
 		if rc.NodeID != nodeID || rc.EdgeTo != "" {
 			continue
 		}
