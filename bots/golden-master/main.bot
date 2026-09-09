@@ -1901,6 +1901,48 @@ tool oracle_run:
                             "added entry id %r derives a reference path outside "
                             "refs/ — a write to an existing reference wearing an "
                             "addition's name" % (aid,))
+                # ADDITIONS-ONLY APPLIES INSIDE THE FREED KEY TOO.
+                #
+                # `duplicate_groups` was freed from the freeze because the lot that
+                # ADDS an entry is the one that can create a new byte-identical
+                # class, and telling it to declare a separator in a key another
+                # judge refuses it is a remedy nobody can apply. That argument frees
+                # ADDING a declaration — and adding is the half that is VERIFIED: a
+                # bogus separator is refused at the gate by measurement.
+                #
+                # Rewriting or deleting one is verified by nothing. Swapping a
+                # still-valid separator for another still-valid separator silently
+                # reassigns a class this lot never touched, and a deletion only
+                # re-opens the undeclared-duplicate refusal for whoever comes next.
+                # Exempting the whole key turned "an extension adds entries and
+                # touches nothing else" into a sentence with an exception nobody
+                # bounded.
+                base_decls = duplicate_group_decls(base_c)
+                head_decls = duplicate_group_decls(head_c)
+                added_str = {str(a) for a in added_ids}
+                for key, seps in sorted(base_decls.items()):
+                    if key in head_decls:
+                        if set(head_decls[key]) != set(seps):
+                            corpus_problems.append(
+                                "`duplicate_groups` for class %s was RE-ADJUDICATED "
+                                "(%s -> %s) — an extension may declare a class it "
+                                "creates, never re-decide one it did not"
+                                % (json.dumps(list(key)), json.dumps(list(seps)),
+                                   json.dumps(list(head_decls[key]))))
+                        continue
+                    # A pre-existing class may only disappear into a SUPERSET that
+                    # an added entry joined: a new entry landing on an existing
+                    # byte-identical class re-keys it, and may need more separators
+                    # to keep the members pairwise distinguishable. That is the
+                    # legitimate case the exemption exists for; everything else is
+                    # a withdrawal.
+                    if not any(set(k) > set(key) and (set(k) - set(key)) & added_str
+                               for k in head_decls):
+                        corpus_problems.append(
+                            "`duplicate_groups` for class %s was WITHDRAWN — a "
+                            "deletion re-opens the undeclared-duplicate refusal for "
+                            "whoever comes next, and it is not this lot's "
+                            "adjudication to withdraw" % json.dumps(list(key)))
                 claimed = set()
                 for act in acts:
                     req = requests.get(act.get("id"))
@@ -5437,6 +5479,59 @@ tool oracle_run:
             check("un `duplicate_groups` non-liste refuse, il ne fait pas planter le juge",
                   [_craised, any("not a list" in pb for pb in _cv.get("problems") or [])],
                   ["", True])
+
+            # LE CANAL N'EST PAS UN DROIT DE REVISION. La cle est liberee du gel
+            # parce que le lot qui AJOUTE une entree est celui qui peut creer une
+            # nouvelle classe byte-identique. AJOUTER une declaration est verifie —
+            # un separateur bidon est refuse a la porte par la mesure. La REECRIRE
+            # ou la SUPPRIMER n'est verifie par rien : echanger un separateur
+            # valide contre un autre separateur valide rejuge en silence la classe
+            # d'un autre lot, et une suppression rouvre le refus « doublon non
+            # declare » pour le suivant.
+            xreset()
+            dg_a, dg_b = dict(base_entry, id="20"), dict(base_entry, id="21")
+            dg_c = dict(base_entry, id="22")
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, dg_a, dg_b],
+                           "duplicate_groups": [{"ids": ["20", "21"],
+                                                 "separated_by": "sep-old"}]}, f)
+            xcommit()
+            xbase_dg = fixture_git(xroot, "rev-parse", "HEAD")
+
+            def xdg(groups):
+                """Un lot qui ajoute l'entree 22, sur une base qui PORTE deja une
+                declaration — et qui touche `duplicate_groups` comme indique."""
+                fixture_git(xroot, "reset", "-q", "--hard", xbase_dg)
+                fixture_git(xroot, "clean", "-qfd")
+                xledger(("request",
+                         '{"id": "E-G", "lot": "L", "corpus_entries": [{"id": "22"}]}'),
+                        ("act", '{"id": "E-G", "lot": "L",'
+                                ' "recorded_paths": [".golden-master/corpus.json"]}'))
+                with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                    json.dump({"entries": [base_entry, dg_a, dg_b, dg_c],
+                               "duplicate_groups": groups}, f)
+                xcommit()
+                return xverdict(xbase_dg)["acted"][0]["problems"]
+
+            check("echanger un separateur valide contre un autre : REFUSE",
+                  any("RE-ADJUDICATED" in pb
+                      for pb in xdg([{"ids": ["20", "21"],
+                                      "separated_by": "sep-new"}])), True)
+            check("supprimer la declaration d'un autre lot : REFUSE",
+                  any("WITHDRAWN" in pb for pb in xdg([])), True)
+            # Le cas legitime que l'exemption existe pour servir : l'entree ajoutee
+            # REJOINT la classe, qui se recle en sur-ensemble et peut demander un
+            # separateur de plus pour garder les membres distinguables deux a deux.
+            check("une entree ajoutee qui rejoint la classe la recle sans refus",
+                  [pb for pb in xdg([{"ids": ["20", "21", "22"],
+                                      "separated_by": ["sep-old", "sep-2"]}])
+                   if "duplicate_groups" in pb], [])
+            # Et DECLARER reste libre : ajouter une classe neuve ne touche a
+            # l'adjudication de personne.
+            check("declarer une classe neuve reste libre",
+                  [pb for pb in xdg([{"ids": ["20", "21"], "separated_by": "sep-old"},
+                                     {"ids": ["1", "22"], "separated_by": "sep-3"}])
+                   if "duplicate_groups" in pb], [])
 
             # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
             xreset()
