@@ -19,13 +19,17 @@ version: 0.9.0
 ## any more; they receive ticket TEXT. (Residual, stated in the node: `as:
 ## file` secrets are mounted run-wide and the engine lists their paths in
 ## every agent prompt, so what moved is the instruction to use it.)
-## That node asks the FORGE
-## which issues the PR closes (GitLab `closes_issues`, GitHub
-## `closingIssuesReferences`, paginated, each ticket keeping its own repo
-## identity) rather than trusting a regex over prose, falls back to a text
-## scan, marks a merely-mentioned reference as such (only a closing link
-## can produce a blocking `requirements` finding), and reports a number
-## that resolves to a pull request as unverifiable instead of judging it.
+## That node asks the FORGE which issues the PR closes (GitLab
+## `closes_issues`, GitHub `closingIssuesReferences`, paginated, each
+## ticket keeping its own repo identity) rather than trusting a regex over
+## prose, falls back to a text scan, marks a merely-mentioned reference as
+## such (only a closing link can produce a blocking `requirements`
+## finding), and reports a number that resolves to a pull request as
+## unverifiable instead of judging it. It addresses the forge on ITS own
+## host (a GitHub Enterprise token never goes to api.github.com), holds
+## the credential back from a cleartext or redirected request, and
+## authenticates GitLab with Bearer — the only header that serves both a
+## PAT and an OAuth token.
 ## A PR with no ticket stays a normal PR — the absence of a reference is
 ## never a finding.
 ## 0.8.1 — budget max_cost_usd 12 → 48: the guard tier died at $36 and $30
