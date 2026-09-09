@@ -1030,6 +1030,63 @@ is allowed — it is an explicit operator gesture on the board's own
 schema — but it is held to the same dependents check as a single-card
 reopen, so the column editor cannot become the way around a refusal.
 
+## Index freshness on the native board (`ITERION_NATIVE_INDEX_RESCAN`)
+
+The native store keeps every card in an in-memory index. Its own writes
+update it directly; a write made by **another process** — the `iterion
+__mcp-board` stdio subprocess a bot's `board.*` capability spawns, an
+`iterion issue` invocation against the same store dir — lands on disk
+only, and reaches the index through an inotify watch on `issues/`.
+
+inotify is a lossy carrier by construction, and every one of its failure
+modes is silent:
+
+| What happens | Kernel signal |
+|---|---|
+| Host at `fs.inotify.max_user_watches` | the watch is refused (`ENOSPC`) |
+| Host at `fs.inotify.max_user_instances` | the inotify fd is refused (`EMFILE`) |
+| Event queue fills faster than we drain it | events **dropped** (`ErrEventOverflow`) |
+| `issues/` removed, renamed or unmounted | the watch is dropped (`IN_IGNORED`) |
+
+None of these is recoverable by waiting for an event that will never be
+sent. Without a net the index would be frozen at its startup snapshot for
+the life of the process: every out-of-process write invisible to `/board`
+and to the dispatcher until the daemon restarts.
+
+So a store that has no live watch falls back to re-reading `issues/` from
+disk on a ticker, and a queue overflow triggers one immediate rebuild.
+**`ITERION_NATIVE_INDEX_RESCAN` sets that ticker's interval**:
+
+| Value | Effect |
+|---|---|
+| unset | `2s` (the default) |
+| a Go duration (`5s`, `500ms`, `1m`) | that interval |
+| a bare integer (`5`) | that many **seconds** |
+| `off` or `0` | **no net** — restores the historical blind-until-restart behaviour |
+| anything else | falls back to `2s`, silently |
+
+A scan is one `ReadDir` plus a read and a parse per card — measured at
+~4 ms for 200 cards and ~19 ms for 2000 — and it runs *outside* the store
+mutex, so at the default cadence it costs about 1% of one core and stalls
+no reader. Raise the interval on a board far past the ~1k-card working
+set this is sized for; lower it if two seconds of staleness is too much.
+
+**The net is only armed when the fast path is not**, so a healthy host
+pays nothing for it. The two log lines that say which carrier a store
+ended up on are worth grepping:
+
+```
+native index watcher unavailable: <err> — falling back to a 2s disk rescan for out-of-process issue changes
+native index watcher: inotify watch on issues/ lost mid-life — falling back to a 2s disk rescan for out-of-process issue changes
+```
+
+The first is a watch refused at startup, the second one the kernel
+dropped later (the store notices within 5s and arms the same net). With
+`ITERION_NATIVE_INDEX_RESCAN=off` both lines instead end `and the rescan
+net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue
+changes will not be seen until restart`, which is the one configuration
+where a stale `/board` is expected rather than a bug.
+
 ## Operational tips
 
 - Always pair `iterion dispatch` with `iterion studio` (or just visit

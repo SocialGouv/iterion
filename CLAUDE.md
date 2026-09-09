@@ -317,7 +317,16 @@ the hours this one spent.
   by TRANSFER and routes the card by `DecideStuckCard`, the
   terminal-state sink + operator `Reopen`, and the two-release
   expand/contract rollout. Read it when a native-board card is stuck
-  `in_progress` with a dead owner, or before enabling the reaper.
+  `in_progress` with a dead owner, or before enabling the reaper. Its
+  *Index freshness* section covers the other native-board staleness —
+  a `/board` that does not show what another process wrote, because
+  inotify failed silently (host at `fs.inotify.max_user_watches`, a
+  full kernel event queue, an `issues/` removed under the store) — and
+  `ITERION_NATIVE_INDEX_RESCAN`, the interval of the disk-rescan net
+  that carries out-of-process visibility when the watch cannot
+  (default `2s`; `off` restores the blind-until-restart behaviour).
+  Read it when a card written by `iterion __mcp-board` or `iterion
+  issue` is invisible to the studio until a restart.
 - [docs/github-board-sync.md](docs/github-board-sync.md) — making a GitHub
   **Projects v2** board and the native board the same tickets (ADR-097): the
   permissions (App `organization_projects`, PAT `project`), `iterion issue
