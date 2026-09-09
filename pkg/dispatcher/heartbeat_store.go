@@ -53,7 +53,7 @@ func (h *heartbeatStore) AppendQueuedMessageOnce(ctx context.Context, runID stri
 	if once := store.AsQueuedMessageInsertOnceStore(h.RunStore); once != nil {
 		return once.AppendQueuedMessageOnce(ctx, runID, msg)
 	}
-	if err := h.RunStore.AppendQueuedMessage(ctx, runID, msg); err != nil {
+	if err := h.AppendQueuedMessage(ctx, runID, msg); err != nil {
 		return false, err
 	}
 	return true, nil
