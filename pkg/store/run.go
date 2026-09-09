@@ -635,8 +635,14 @@ type Run struct {
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
-	// OutputCorrections is the durable, per-node ledger for bounded invalid
-	// output correction. Nil/empty means no correction was attempted. Legacy
+	// OutputCorrections is the durable ledger for bounded invalid output
+	// correction, keyed by NODE EXECUTION — node id plus loop-iteration path
+	// and fan-out branch id, sanitized to a Mongo-safe field name exactly like
+	// SubbotChildren (the engine builds it in executionScopedKey). A raw node
+	// id would be wrong twice: a bounded loop's iterations would share one
+	// budget and inherit each other's terminal verdict, and group expansion
+	// mints dotted ids (`prefix.name`) that Mongo reads as nested path
+	// separators. Nil/empty means no correction was attempted. Legacy
 	// runs keep their existing fail-fast behaviour unless their executor opts
 	// into correction through the runtime option.
 	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`

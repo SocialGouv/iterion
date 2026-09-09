@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -72,22 +73,44 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		return output, validationErr
 	}
 
-	inputFingerprint := correctionFingerprint(output)
+	// The ledger is keyed by NODE EXECUTION, not by node id: a bounded loop
+	// re-executes the same node, and a raw node id would make every iteration
+	// share one budget and inherit the previous one's terminal verdict. The key
+	// is also Mongo-safe, which a raw node id is not — group expansion mints
+	// dotted ids (`prefix.name`).
+	//
+	// The branch id is empty because correction is TRUNK-ONLY: fan-out branches
+	// validate through validateNodeOutput directly (branch.go) and never reach
+	// here. The key composition already carries a branch slot, so extending
+	// correction into branches later needs no ledger migration.
+	ledgerKey := e.executionScopedKey(nodeID, rs.loopCounters, "")
+	if ledgerKey == "" {
+		return output, validationErr
+	}
+	inputFingerprint := correctionPayloadFingerprint(output)
 	violationFingerprint := correctionFingerprint(validationErr.Error())
-	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, ledgerKey)
 	if loadErr != nil {
 		// Fail closed: without the ledger we cannot know how much budget this
 		// episode already consumed, and guessing "none" is exactly the
 		// unbounded loop the ledger exists to prevent.
 		return output, fmt.Errorf("output correction ledger: %w (original validation: %v)", loadErr, validationErr)
 	}
+	// The budget this episode was actually stopped under. Captured BEFORE any
+	// raise below, because that assignment is what tells "the operator raised
+	// the cap" apart from "the same cap, simply re-entered" — and the raise
+	// would otherwise destroy the evidence.
+	persistedBudget := episode.Budget
 	// InputFingerprint identifies the episode. The violation can legitimately
 	// change while a corrector improves a payload, so comparing it here would
-	// accidentally reset an exhausted episode on resume.
-	if !found || episode.InputFingerprint != inputFingerprint {
+	// accidentally reset an exhausted episode on resume. A `succeeded` episode
+	// is CLOSED: the node ran again and produced an invalid payload again, so
+	// this is a new execution and it gets its own budget — inheriting the
+	// closed one's spent attempts would hand it zero corrections.
+	if !found || episode.InputFingerprint != inputFingerprint || episode.Status == correctionStatusSucceeded {
 		now := time.Now().UTC()
 		episode = store.OutputCorrectionEpisode{
-			EpisodeID:                fmt.Sprintf("%s-%d", inputFingerprint[:minInt(16, len(inputFingerprint))], now.UnixNano()),
+			EpisodeID:                fmt.Sprintf("%s-%d", inputFingerprint[:min(16, len(inputFingerprint))], now.UnixNano()),
 			NodeID:                   nodeID,
 			Budget:                   e.outputCorrectionBudget,
 			Status:                   correctionStatusActive,
@@ -97,14 +120,30 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			StartedAt:                now,
 			UpdatedAt:                now,
 		}
+		persistedBudget = 0
 	} else if episode.Budget < e.outputCorrectionBudget {
 		// A launch may raise the budget, but never lower an already consumed
 		// episode's bound. The persisted value remains the audit contract.
 		episode.Budget = e.outputCorrectionBudget
 	}
 
-	if (episode.Status == correctionStatusExhausted || episode.Status == correctionStatusUnchanged) && episode.Attempts >= episode.Budget {
+	// Terminal statuses are enforced HERE, not by the loop bound below: an
+	// `Attempts >= Budget` conjunct would be inert, since `for episode.Attempts
+	// < episode.Budget` already short-circuits on it.
+	switch episode.Status {
+	case correctionStatusUnchanged:
+		// Provably dead: the same payload produced the same violation, so every
+		// further call is spend on a known-dead path. Terminal even with budget
+		// left, and even when the operator raises it.
 		return output, validationErr
+	case correctionStatusExhausted:
+		// Terminal at the budget it was stopped under — otherwise a resume
+		// silently re-enters a closed episode and the persisted bound means
+		// nothing. Only a genuine RAISE reopens it, and then only for the
+		// difference: attempts already spent are never given back.
+		if e.outputCorrectionBudget <= persistedBudget {
+			return output, validationErr
+		}
 	}
 	if episode.Budget <= 0 {
 		return output, validationErr
@@ -115,11 +154,11 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	for episode.Attempts < episode.Budget {
 		episode.Status = correctionStatusActive
 		episode.Attempts++
-		episode.LastOutputFingerprint = correctionFingerprint(current)
+		episode.LastOutputFingerprint = correctionPayloadFingerprint(current)
 		episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
 		episode.LastError = currentErr.Error()
 		episode.UpdatedAt = time.Now().UTC()
-		if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+		if err := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); err != nil {
 			// Losing the durable ledger is safer than pretending an unbounded
 			// correction is allowed: surface the original validation failure and
 			// let the normal run lifecycle mark it resumable/failed.
@@ -127,6 +166,16 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		}
 
 		candidate, correctionErr := corrector.CorrectOutput(ctx, node, current, currentErr)
+		// Carry the engine's own `_`-prefixed metadata across. The natural
+		// corrector returns just the repaired business payload, and replacing
+		// `output` wholesale would drop `_tokens`/`_cost_usd` — deleting the
+		// node's entire contribution to the run budget and the daily spend cap
+		// — along with `_backend`/`_model`/`_fallback_used`/`_served_by`, which
+		// a downstream deterministic gate reads to fail closed on a degraded
+		// input, and `_duration_ms`, which the report renders. A key the
+		// corrector set itself always wins, so it can fold its OWN spend into
+		// `_tokens`/`_cost_usd` (the only accounting channel it has).
+		mergeEngineMetadata(candidate, output)
 		if correctionErr != nil || candidate == nil {
 			episode.Status = correctionStatusExhausted
 			if correctionErr != nil {
@@ -135,14 +184,14 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 				episode.LastError = "corrector returned a nil output"
 			}
 			episode.UpdatedAt = time.Now().UTC()
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return current, fmt.Errorf("output correction failed: %v; ledger: %w", episode.LastError, persistErr)
 			}
 			return current, currentErr
 		}
 
 		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
-		candidateFP := correctionFingerprint(candidate)
+		candidateFP := correctionPayloadFingerprint(candidate)
 		candidateViolationFP := ""
 		if candidateErr != nil {
 			candidateViolationFP = correctionFingerprint(candidateErr.Error())
@@ -153,7 +202,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			episode.LastViolationFingerprint = ""
 			episode.LastError = ""
 			episode.UpdatedAt = time.Now().UTC()
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return candidate, fmt.Errorf("output correction succeeded but ledger could not be persisted: %w", persistErr)
 			}
 			return candidate, nil
@@ -161,13 +210,13 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 		// A corrector that returns the exact same invalid payload is a
 		// no-progress loop. Stop immediately, even when budget remains.
-		if candidateFP == correctionFingerprint(current) && candidateViolationFP == correctionFingerprint(currentErr.Error()) {
+		if candidateFP == correctionPayloadFingerprint(current) && candidateViolationFP == correctionFingerprint(currentErr.Error()) {
 			episode.Status = correctionStatusUnchanged
 			episode.LastOutputFingerprint = candidateFP
 			episode.LastViolationFingerprint = candidateViolationFP
 			episode.LastError = candidateErr.Error()
 			episode.UpdatedAt = time.Now().UTC()
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
 				return candidate, fmt.Errorf("unchanged output correction; ledger: %w", persistErr)
 			}
 			return candidate, candidateErr
@@ -182,10 +231,47 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	episode.Status = correctionStatusExhausted
 	episode.UpdatedAt = time.Now().UTC()
-	if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+	if err := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); err != nil {
 		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
 	}
 	return current, currentErr
+}
+
+// correctionPayloadFingerprint hashes only the SCHEMA/business payload: every
+// `_`-prefixed key is engine or provenance metadata and is excluded.
+//
+// This is what makes the episode identity stable. The engine stamps
+// `_duration_ms` on every node output before validation runs, so hashing the
+// whole map gave a different InputFingerprint on every execution — a resume or
+// a loop re-entry always minted a FRESH episode at Attempts=0 and the
+// persisted bound, terminal status included, was never once consulted. It also
+// keeps the no-progress guard honest in the other direction: a corrector that
+// folds its own spend into `_tokens` must not thereby look like progress.
+func correctionPayloadFingerprint(output map[string]any) string {
+	payload := make(map[string]any, len(output))
+	for k, v := range output {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		payload[k] = v
+	}
+	return correctionFingerprint(payload)
+}
+
+// mergeEngineMetadata copies the `_`-prefixed keys of src onto dst, leaving any
+// key dst already set untouched. Both may be nil.
+func mergeEngineMetadata(dst, src map[string]any) {
+	if dst == nil || src == nil {
+		return
+	}
+	for k, v := range src {
+		if !strings.HasPrefix(k, "_") {
+			continue
+		}
+		if _, exists := dst[k]; !exists {
+			dst[k] = v
+		}
+	}
 }
 
 func correctionFingerprint(value any) string {
@@ -195,13 +281,6 @@ func correctionFingerprint(value any) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // loadCorrectionEpisode reads the persisted episode for key. It FAILS CLOSED:
@@ -225,7 +304,7 @@ func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, key string) (
 	return ep, ok, nil
 }
 
-func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
+func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, key string, episode store.OutputCorrectionEpisode) error {
 	if e.store == nil {
 		return nil
 	}
@@ -237,7 +316,7 @@ func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID str
 		if r.OutputCorrections == nil {
 			r.OutputCorrections = make(map[string]store.OutputCorrectionEpisode)
 		}
-		r.OutputCorrections[nodeID] = episode
+		r.OutputCorrections[key] = episode
 		if err := e.store.SaveRun(ctx, r); err == nil {
 			return nil
 		} else if !errors.Is(err, store.ErrRunConflict) {

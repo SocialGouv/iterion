@@ -252,7 +252,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
-		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		ReattachKey: e.executionScopedKey(nodeID, rs.loopCounters, branchID),
 		WorkDir:     e.workDir,
 		// The child executes where THIS run executes.
 		ParentSandbox: e.activeShare,
@@ -271,14 +271,19 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 	return output, nil
 }
 
-// subbotReattachKey builds the stable, unique key identifying one execution of
-// a subbot node: node id, plus the loop-iteration path (disambiguates loop
+// executionScopedKey builds the stable, unique key identifying one execution of
+// a node: node id, plus the loop-iteration path (disambiguates loop
 // iterations across resume) and the fan-out branch id (disambiguates
 // concurrent branches of the same node). The result is sanitized to a
 // Mongo-safe field name ('.' and '$' → '_') because it becomes a map key on
-// the parent run doc. Empty node id (never expected) yields "" → re-attach
-// disabled for that call.
-func (e *Engine) subbotReattachKey(nodeID string, loopCounters map[string]int, branchID string) string {
+// a run doc — and group expansion deliberately mints dotted node ids
+// (`prefix.name`, see ir.expandGroups), which Mongo would otherwise read as
+// nested path separators. Empty node id (never expected) yields "".
+//
+// Shared by the subbot re-attach ledger (Run.SubbotChildren) and the bounded
+// output-correction ledger (Run.OutputCorrections): both are per-node-execution
+// maps on the run document and need exactly this identity.
+func (e *Engine) executionScopedKey(nodeID string, loopCounters map[string]int, branchID string) string {
 	if nodeID == "" {
 		return ""
 	}

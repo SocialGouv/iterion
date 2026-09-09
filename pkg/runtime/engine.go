@@ -103,6 +103,18 @@ type NodeExecutor interface {
 // return a new candidate payload and must not publish external side effects;
 // artifact persistence and downstream edges happen only after validation
 // succeeds.
+//
+// The candidate need only carry the business payload: the engine merges its
+// own `_`-prefixed metadata (`_tokens`, `_cost_usd`, `_backend`, `_model`,
+// `_fallback_used`, `_served_by`, `_duration_ms`, ...) from the node's original
+// output onto whatever is returned.
+//
+// ACCOUNTING: a key the corrector sets itself wins over that merge, and
+// `_tokens`/`_cost_usd` are the only channel a correction has to report its
+// OWN spend. A model-backed corrector must therefore return the node's usage
+// PLUS its own on those keys — the engine reads them once, after the loop, so a
+// correction that leaves them at the node's original figures is invisible to
+// the run budget and to the daily spend cap.
 type OutputCorrector interface {
 	CorrectOutput(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, error)
 }

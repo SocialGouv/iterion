@@ -187,6 +187,268 @@ func TestSchemaValidation_LedgerReadFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// invalidAgentOutput is the payload validationWorkflow's schema rejects
+// ("score" must be an int). Shared so the seeded episodes below carry the same
+// InputFingerprint the engine will compute.
+func invalidAgentOutput() map[string]any {
+	return map[string]any{"summary": "initial", "score": "not-a-number"}
+}
+
+// seedCorrectionEpisode stands in for what an earlier PROCESS left on the run
+// document before a restart or resume: a run whose ledger already holds one
+// episode for my_agent. The key and the fingerprint are computed with the
+// production helpers — a literal would drift and the engine would silently
+// treat the seeded episode as a different one, passing the test vacuously.
+func seedCorrectionEpisode(t *testing.T, st store.RunStore, runID string, ep store.OutputCorrectionEpisode) {
+	t.Helper()
+	ctx := context.Background()
+	run, err := st.CreateRun(ctx, runID, "validation_test", nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	e := New(validationWorkflow(), st, newStubExecutor())
+	key := e.executionScopedKey("my_agent", nil, "")
+	ep.NodeID = "my_agent"
+	ep.InputFingerprint = correctionFingerprint(invalidAgentOutput())
+	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{key: ep}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+}
+
+// runWithSeededEpisode re-executes the node against a ledger a previous process
+// already wrote, and reports how many correction calls that cost.
+func runWithSeededEpisode(t *testing.T, runID string, seeded store.OutputCorrectionEpisode, budget int) (calls int, run *store.Run) {
+	t.Helper()
+	st := tmpStore(t)
+	seedCorrectionEpisode(t, st, runID, seeded)
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+	_ = New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(budget)).
+		Run(context.Background(), runID, nil)
+
+	loaded, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	return exec.calls, loaded
+}
+
+// The terminal statuses must be enforced by the guard, not by the loop bound:
+// `Attempts >= Budget` is inert there, because `for episode.Attempts <
+// episode.Budget` already short-circuits on it. Without the guard, an episode
+// stopped after 1 attempt of a budget of 5 is re-entered and burns 4 more
+// calls on a payload already proven dead.
+func TestSchemaValidation_TerminalEpisodeIsNotReEntered(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    string
+		seeded    store.OutputCorrectionEpisode
+		budget    int
+		wantCalls int
+	}{
+		{
+			name:      "unchanged is terminal even with budget left",
+			seeded:    store.OutputCorrectionEpisode{Budget: 5, Attempts: 1, Status: correctionStatusUnchanged},
+			budget:    5,
+			wantCalls: 0,
+		},
+		{
+			name:      "unchanged stays terminal even when the budget is raised",
+			seeded:    store.OutputCorrectionEpisode{Budget: 5, Attempts: 1, Status: correctionStatusUnchanged},
+			budget:    9,
+			wantCalls: 0,
+		},
+		{
+			name:      "exhausted is terminal at the budget it stopped under",
+			seeded:    store.OutputCorrectionEpisode{Budget: 5, Attempts: 1, Status: correctionStatusExhausted},
+			budget:    5,
+			wantCalls: 0,
+		},
+		{
+			name:      "exhausted at full spend is terminal",
+			seeded:    store.OutputCorrectionEpisode{Budget: 2, Attempts: 2, Status: correctionStatusExhausted},
+			budget:    2,
+			wantCalls: 0,
+		},
+		{
+			name:      "a genuine raise reopens an exhausted episode",
+			seeded:    store.OutputCorrectionEpisode{Budget: 2, Attempts: 2, Status: correctionStatusExhausted},
+			budget:    4,
+			wantCalls: 1,
+		},
+		{
+			name:      "a closed succeeded episode does not starve the next execution",
+			seeded:    store.OutputCorrectionEpisode{Budget: 2, Attempts: 2, Status: correctionStatusSucceeded},
+			budget:    2,
+			wantCalls: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, _ := runWithSeededEpisode(t, "run-term-"+strings.ReplaceAll(tc.name, " ", "-"), tc.seeded, tc.budget)
+			if calls != tc.wantCalls {
+				t.Fatalf("correction calls = %d, want %d", calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// The budget is a hard bound: a corrector that keeps returning DIFFERENT
+// invalid payloads (so the no-progress guard never fires) is stopped by the
+// budget and the episode is left exhausted.
+func TestSchemaValidation_BudgetExhaustionStops(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		// A different invalid payload each call — progress, never valid.
+		return map[string]any{"summary": "try", "score": strings.Repeat("x", exec.calls)}, nil
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(3)).
+		Run(context.Background(), "run-val-exhausted", nil)
+	if err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+	if exec.calls != 3 {
+		t.Fatalf("correction calls = %d, want 3 (the configured budget)", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-exhausted")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	ep := singleCorrectionEpisode(t, run)
+	if ep.Status != correctionStatusExhausted || ep.Attempts != 3 {
+		t.Fatalf("episode = %#v, want exhausted/3", ep)
+	}
+}
+
+// A corrector that errors is stopped at once — the remaining budget is not
+// spent re-asking a corrector that just failed.
+func TestSchemaValidation_CorrectorErrorStopsAtOnce(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return nil, errors.New("corrector unavailable")
+	}
+
+	st := tmpStore(t)
+	if err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(4)).
+		Run(context.Background(), "run-val-corrector-err", nil); err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-corrector-err")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	ep := singleCorrectionEpisode(t, run)
+	if ep.Status != correctionStatusExhausted || ep.LastError != "corrector unavailable" {
+		t.Fatalf("episode = %#v, want exhausted carrying the corrector error", ep)
+	}
+}
+
+// Replacing the output map with the corrector's candidate must not drop the
+// engine's own metadata: `_tokens`/`_cost_usd` are what recordAndDeferBudget
+// charges to the run budget and the daily spend cap, and `_backend`/`_model`/
+// `_fallback_used`/`_served_by` are what a downstream deterministic gate reads
+// to fail closed on a degraded input.
+func TestSchemaValidation_CorrectionKeepsEngineMetadata(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"summary": "initial", "score": "not-a-number",
+			"_tokens": 1234, "_cost_usd": 0.5,
+			"_backend": "claw", "_model": "anthropic/claude-opus-5",
+			"_fallback_used": true, "_served_by": "fallback_route",
+		}, nil
+	})
+	// The natural corrector: return just the repaired business payload.
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	var finished map[string]any
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec,
+		WithOutputValidation(true), WithOutputCorrectionBudget(2),
+		WithOnNodeFinished(func(_, nodeID string, out map[string]any) {
+			if nodeID == "my_agent" {
+				finished = out
+			}
+		}),
+	).Run(context.Background(), "run-val-meta", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if finished["summary"] != "repaired" {
+		t.Fatalf("summary = %v, want the corrected payload", finished["summary"])
+	}
+	for key, want := range map[string]any{
+		"_tokens": 1234, "_cost_usd": 0.5,
+		"_backend": "claw", "_model": "anthropic/claude-opus-5",
+		"_fallback_used": true, "_served_by": "fallback_route",
+	} {
+		if got := finished[key]; got != want {
+			t.Errorf("%s = %v, want %v — the correction dropped engine metadata", key, got, want)
+		}
+	}
+	if _, ok := finished["_duration_ms"]; !ok {
+		t.Error("_duration_ms missing — the correction dropped the engine's own stamp")
+	}
+}
+
+// A corrector that folds its OWN spend into `_tokens`/`_cost_usd` overrides the
+// merge — that is the only accounting channel it has.
+func TestSchemaValidation_CorrectorMayOverrideUsage(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "nope", "_tokens": 100, "_cost_usd": 0.1}, nil
+	})
+	exec.correct = func(out map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "ok", "score": 1, "_tokens": 150, "_cost_usd": 0.15}, nil
+	}
+
+	var finished map[string]any
+	st := tmpStore(t)
+	if err := New(validationWorkflow(), st, exec,
+		WithOutputValidation(true), WithOutputCorrectionBudget(2),
+		WithOnNodeFinished(func(_, nodeID string, out map[string]any) { finished = out }),
+	).Run(context.Background(), "run-val-usage", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if finished["_tokens"] != 150 || finished["_cost_usd"] != 0.15 {
+		t.Fatalf("_tokens/_cost_usd = %v/%v, want the corrector's own 150/0.15",
+			finished["_tokens"], finished["_cost_usd"])
+	}
+}
+
+// singleCorrectionEpisode asserts the ledger holds exactly one episode and
+// returns it — the key is an execution identity, not a bare node id, so tests
+// must not hardcode it.
+func singleCorrectionEpisode(t *testing.T, run *store.Run) store.OutputCorrectionEpisode {
+	t.Helper()
+	if len(run.OutputCorrections) != 1 {
+		t.Fatalf("correction ledger = %#v, want exactly one episode", run.OutputCorrections)
+	}
+	for _, ep := range run.OutputCorrections {
+		return ep
+	}
+	return store.OutputCorrectionEpisode{}
+}
+
 func TestSchemaValidation_DisabledByDefault(t *testing.T) {
 	wf := validationWorkflow()
 
