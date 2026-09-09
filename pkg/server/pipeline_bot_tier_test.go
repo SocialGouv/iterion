@@ -237,8 +237,14 @@ func TestPipelineBoardDisabledBotLeavesNoBundleBehind(t *testing.T) {
 }
 
 // Half 2b — the update handler's admission check must reach the same tier
-// as the launch: a bot only the team authored is a legal re-binding.
+// as the launch: a bot only the team authored is a legal re-binding. It is
+// also the THIRD site paying for a materialization it does not run, so it
+// carries the same ownership assertion as create and launch: three sites,
+// one contract, and the ordering slip that shipped at one of them is only
+// caught if every one is checked.
 func TestPipelineBoardUpdateAcceptsATeamAuthoredBot(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	env := newPipelineTierEnv(t)
 	env.seedRow(t, "t1", "teamonly", tierForkBot)
 
@@ -256,6 +262,9 @@ func TestPipelineBoardUpdateAcceptsATeamAuthoredBot(t *testing.T) {
 	}
 	if got.Bot != "teamonly" {
 		t.Fatalf("card bot = %q, want teamonly", got.Bot)
+	}
+	if n := countBundleTempDirs(t, tmp); n != 0 {
+		t.Errorf("the re-binding check left %d materialized bundle dir(s) behind — it resolves a bundle only to answer whether the bot exists", n)
 	}
 }
 
