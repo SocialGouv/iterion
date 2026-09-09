@@ -220,6 +220,63 @@ func TestRebuildAsync_DefersAnOverflowThatArrivesMidRebuild(t *testing.T) {
 	}
 }
 
+// TestRebuildAsync_StopsWhenTheStoreClosesMidRebuild: the coalescing
+// loop must not carry a deferred pass across Close. A single-pass
+// rebuild ended on its own; a loop that re-reads its again-flag needs an
+// explicit reason to stop, or a request banked before Close would run a
+// scan on a store nobody owns any more.
+func TestRebuildAsync_StopsWhenTheStoreClosesMidRebuild(t *testing.T) {
+	refuseWatch(t)
+	setRescanInterval(t, 0)
+
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	var scans atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(closeRelease)
+	setScanHooks(t, func(st *Store) {
+		if st != s {
+			return
+		}
+		if scans.Add(1) == 1 {
+			<-release
+		}
+	}, nil)
+
+	s.rebuildAsync("overflow")
+	deadline := time.Now().Add(fastPathBudget)
+	for scans.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if scans.Load() != 1 {
+		t.Fatal("test setup: the rebuild never reached its scan")
+	}
+
+	// A second overflow banks a follow-up pass, then the store closes
+	// with that pass still owed. Close must win.
+	s.rebuildAsync("overflow while closing")
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	closeRelease()
+
+	deadline = time.Now().Add(fastPathBudget)
+	for s.rebuildInFlight() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if s.rebuildInFlight() {
+		t.Fatal("the rebuild goroutine outlived Close")
+	}
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("a pass banked before Close still ran: %d scans, want 1", got)
+	}
+}
+
 // TestWatcher_ReconcilesOnKernelQueueOverflow: a full kernel queue drops
 // events that are never resent, so the overflow signal rebuilds the index
 // from disk instead of leaving the board stale until the next event.

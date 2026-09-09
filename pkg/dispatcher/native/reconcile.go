@@ -285,13 +285,17 @@ func (s *Store) rebuildAsync(what string) {
 			if err := s.Reconcile(); err != nil {
 				s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
 			}
+			s.rebuildMu.Lock()
+			// A store that closed while this ran owes nobody a further
+			// scan. Read closed INSIDE this hold, together with the
+			// again-flag it gates: read before it, a Close landing in
+			// between would be missed and the loop would run one more
+			// pass past it. Order is rebuildMu → mu, and nothing takes
+			// rebuildMu while holding mu (rebuildAsync is called from the
+			// watcher loop's error branch, which holds neither).
 			s.mu.Lock()
 			closed := s.closed
 			s.mu.Unlock()
-
-			s.rebuildMu.Lock()
-			// A store that closed while this ran owes nobody a further
-			// scan; without this the loop could outlive Close.
 			if !s.rebuildAgain || closed {
 				s.rebuildAgain = false
 				s.rebuildRunning = false
