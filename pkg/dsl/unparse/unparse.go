@@ -857,6 +857,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "repo_devbox", wf.RepoDevbox)
 		}
 
+		if wf.WorkspaceCheckpoint != "" {
+			writeProp(&w.b, "workspace_checkpoint", wf.WorkspaceCheckpoint)
+		}
+
 		if wf.Permission != "" {
 			writeProp(&w.b, "permission", wf.Permission)
 		}

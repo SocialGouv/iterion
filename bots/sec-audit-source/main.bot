@@ -4519,6 +4519,23 @@ workflow sec_audit_source:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
 
+  ## An audit READS the repository it is pointed at. The mid-run workspace
+  ## checkpoint would `git add -A` the pod's tree — this bot's own
+  ## `.sec-audit/` state included, since it is untracked and nothing
+  ## ignores it — and force-push it as a BRANCH on that repository. On a
+  ## public target that publishes the findings of an audit whose whole
+  ## point is that they are not public yet. The findings live in node
+  ## outputs, durable in the store without any push.
+  ##
+  ## Known cost, accepted: an opt-in `remediate=true` pass DOES commit (a
+  ## temp branch in the checkout), and it loses the net here. Its
+  ## documented form is a dedicated local `iterion run`, where a
+  ## bind-mount driver never had a checkpoint anyway; only a CLOUD
+  ## remediation run is affected, and its patches are published node
+  ## outputs regardless. Re-enabling it per run needs a launch-level
+  ## override, which is not wired yet.
+  workspace_checkpoint: off
+
   budget:
     max_parallel_branches: 4
     ## Env-tunable (the budget block is env-resolved): raise for remediation

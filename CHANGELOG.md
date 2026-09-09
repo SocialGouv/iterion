@@ -3,6 +3,35 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.129.0](https://github.com/SocialGouv/iterion/compare/v3.128.0...v3.129.0) (2026-09-09)
+
+### Features
+
+* **runner:** let a read-only bot decline the workspace checkpoint ([#1042](https://github.com/SocialGouv/iterion/issues/1042)) ([a7db190](https://github.com/SocialGouv/iterion/commit/a7db190e7ff9b5bf4c5fde8d08396ee4b70e2aa7))
+
+    <details><summary>why</summary>
+
+    The mid-run workspace checkpoint force-pushes the pod's tree as `iterion/run-<id>-checkpoint` on the run's OWN remote — the repository the bot was pointed at — and reads that tree with `git add -A`, so a bot's scratch directory rides along: untracked, and nothing ignores it.
+
+    </details>
+
+### Bug Fixes
+
+* **forge,server:** a key iterion cannot read is not the forge being down ([#1030](https://github.com/SocialGouv/iterion/issues/1030)) ([daf30e7](https://github.com/SocialGouv/iterion/commit/daf30e798e954de6cda1e00de7dd400107f90f58)), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    The App-token mint signs its JWT from a stored private key BEFORE it opens a socket, so a key that is not parseable PEM fails inside what reads like a pure remote call. Three handlers default to 502 for anything the classifier does not recognise — a sound default, since an unclassified failure on a forge round trip really is the forge's — and they were reporting GitHub as broken for iterion's own stored key.
+
+    </details>
+* **golden-master:** a duplicate reference group is proved by a mutant, not by a note ([#1009](https://github.com/SocialGouv/iterion/issues/1009)) ([28af2c2](https://github.com/SocialGouv/iterion/commit/28af2c2cb54ce69900a0a9da83227bb70884a681))
+
+    <details><summary>why</summary>
+
+    The gate refused on ANY two byte-identical references, unconditionally. Its own message said the refusal is not always right — "on a refusal lane two entries legitimately capture the same 302, and the second is a control proving a mutant moved only the first" — and then offered no way to say so. The corpus answered in `note`, which is prose, and the gate reads data. So a net whose duplicates were every one of them justified could never converge.
+
+    </details>
+
 ## [3.128.0](https://github.com/SocialGouv/iterion/compare/v3.127.2...v3.128.0) (2026-09-09)
 
 ### Features
