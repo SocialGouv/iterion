@@ -99,7 +99,7 @@ prompt review_user:
   Previous result: {{outputs.prior.summary}}
 ```
 
-`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the `.bot`, may not escape its directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
+`{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates.
 
 ### Schemas
 
@@ -202,7 +202,6 @@ agent worker:
     read: true
     write: true
     pre_compact_inject: true
-    project_root: true
     visibility: "bot"
   cursors:
     enabled: true
