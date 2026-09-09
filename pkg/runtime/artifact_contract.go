@@ -151,7 +151,16 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		}
 		node, ok := wf.Nodes[nodeID]
 		if !ok {
-			violations = append(violations, fmt.Sprintf("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID))
+			// A node the graph no longer declares is ADVISORY, not a
+			// refusal. Its artifact is unreachable — rebuildArtifacts only
+			// maps nodes present in the workflow, and `{{outputs.<gone>}}`
+			// is a compile error — so it can feed nothing. Refusing on it
+			// left no way out at all: the resume refused, and so did the
+			// rewind, because a node absent from the current graph is
+			// absent from the rewind's invalidated set and never reaches
+			// its skip list. Deleting a node is a normal edit; inert
+			// history it leaves behind must not brick the run.
+			advisories = append(advisories, fmt.Sprintf("artifact %q was produced by node %q, which the workflow no longer declares", contract.LogicalRef, nodeID))
 			continue
 		}
 		if got := nodePublish(node); got != contract.LogicalRef {
@@ -210,7 +219,7 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 	sort.Strings(advisories)
 	sort.Strings(violations)
 	if len(advisories) > 0 && check.Logger != nil {
-		check.Logger.Warn("runtime: run %s carries artifacts from another workflow revision: %s", run.ID, strings.Join(advisories, "; "))
+		check.Logger.Warn("runtime: run %s carries artifacts the current workflow no longer accounts for: %s", run.ID, strings.Join(advisories, "; "))
 	}
 	if len(violations) == 0 {
 		return nil

@@ -95,8 +95,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		return &RuntimeError{
 			Code:    store.FailureResumeInvalid,
 			Message: "persisted artifact contract is incompatible with this workflow",
-			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract before resuming",
-			Cause:   err,
+			// Not "--force": force is the assertion that the stored outputs
+			// ARE compatible, and this check is what found they are not.
+			// The way through is to invalidate the offending output so the
+			// node produces it again, or to restore the declaration.
+			Hint:  "rewind to the producing node so it re-executes (iterion rewind --node <id>), or restore its publish/output declaration",
+			Cause: err,
 		}
 	}
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),

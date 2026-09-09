@@ -1099,3 +1099,22 @@ func TestRewind_RefusedByAnIncompatibleSurvivingArtifact(t *testing.T) {
 		t.Errorf("status = %q, want the refusal to leave the run untouched at failed_resumable", run.Status)
 	}
 }
+
+// A node deleted from the .bot leaves an artifact nothing can reach. It must
+// not brick the run: refusing on it used to close BOTH doors — the resume
+// refused, and so did the rewind, because a node absent from the current
+// graph is absent from the invalidated set and never reaches the skip list.
+func TestRewind_SurvivesAnArtifactOfADeletedNode(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, publishBot, cp, store.RunStatusFailedResumable)
+	seedContractArtifact(t, st, runID, "deleted_node", &store.ArtifactContract{
+		LogicalRef: "gone", ProducerNode: "deleted_node", Version: 0,
+		ProducerRevision: "hash-original",
+	})
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("rewind refused over a deleted node's inert artifact, leaving no operator action at all: %v", err)
+	}
+}

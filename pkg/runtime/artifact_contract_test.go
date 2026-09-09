@@ -410,3 +410,27 @@ func TestEngineStampsContractOnPublishedArtifacts(t *testing.T) {
 		t.Fatalf("the engine's own freshly written artifacts failed the gate: %v", err)
 	}
 }
+
+// The resume half of the same case: a deleted node's artifact is inert
+// history — rebuildArtifacts only maps nodes the workflow declares — so it
+// must not refuse the resume either.
+func TestValidateArtifactContractsAdmitsArtifactOfDeletedNode(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-deleted-node", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+	})
+	// The workflow no longer declares "writer" at all.
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"other": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "other"}},
+	}}
+	var out bytes.Buffer
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+		Logger: iterlog.New(iterlog.LevelWarn, &out),
+	}); err != nil {
+		t.Fatalf("artifact of a deleted node refused the resume: %v", err)
+	}
+	if !strings.Contains(out.String(), "no longer declares") {
+		t.Fatalf("the drift was not even reported; log = %q", out.String())
+	}
+}
