@@ -87,8 +87,11 @@ type Store struct {
 	closed bool
 
 	// rebuildPending coalesces the rebuilds a kernel-queue overflow asks
-	// for: one runs at a time, the next overflow waits for it.
+	// for: one runs at a time; rebuildRerun records that a request came
+	// in while it ran, so the goroutine goes once more instead of
+	// dropping a request the running scan could not have covered.
 	rebuildPending atomic.Bool
+	rebuildRerun   atomic.Bool
 
 	// reconcileMu serialises Reconcile callers (the rescan ticker, a
 	// kernel-queue overflow, an explicit call) so two scans cannot
@@ -274,6 +277,15 @@ func (s *Store) populateIndex() error {
 		}
 	}
 	return nil
+}
+
+// watchState reports the watcher, the net and the reason for its absence
+// under the lock — the watcher goroutine swaps them when a watch is lost,
+// so a reader outside the lock races it.
+func (s *Store) watchState() (*indexWatcher, *indexRescanner, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.watcher, s.rescanner, s.watcherErr
 }
 
 // errWatchLost is recorded on a store whose armed watch went away
