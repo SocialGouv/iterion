@@ -41,7 +41,11 @@ type LaunchSpec struct {
 	// retained for display and for the runner to recompile against
 	// the same logical workflow.
 	Source string
-	Vars   map[string]string // --var-style overrides
+	// ExecutionContext is an optional caller declaration for the versioned
+	// run-context contract. When omitted, the service resolves a legacy
+	// compatible context from the launch inputs and persists it on the run.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	Vars             map[string]string       // --var-style overrides
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.

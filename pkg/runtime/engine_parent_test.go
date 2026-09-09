@@ -46,3 +46,34 @@ func TestWithParentRunIDPersistsLineage(t *testing.T) {
 		t.Fatalf("status = %q, want %q", child.Status, store.RunStatusFinished)
 	}
 }
+
+func TestWithExecutionContextPersistsVersionedContract(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:    "context",
+		Entry:   "done",
+		Nodes:   map[string]ir.Node{"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+	s := tmpStore(t)
+	ctxContract := &store.ExecutionContext{
+		RunStore:  store.ContextRef{ID: "run", Kind: "filesystem"},
+		Policy:    store.ContextPolicyReport,
+		Workflow:  store.WorkflowContext{WorkflowRevision: "rev-1"},
+		Workspace: store.WorkspaceContext{Mode: store.WorkspaceInherited},
+	}
+	eng := New(wf, s, newStubExecutor(), WithExecutionContext(ctxContract))
+	if err := eng.Run(context.Background(), "context-run", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "context-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ExecutionContext == nil || run.ExecutionContext.Policy != store.ContextPolicyReport {
+		t.Fatalf("execution context not persisted: %+v", run.ExecutionContext)
+	}
+	if run.ExecutionContext.Version != store.ExecutionContextVersion {
+		t.Fatalf("context version=%d, want %d", run.ExecutionContext.Version, store.ExecutionContextVersion)
+	}
+}

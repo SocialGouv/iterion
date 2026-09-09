@@ -44,6 +44,46 @@ export type RunSourceKind =
   | "fork"
   | "shard";
 
+// Versioned launch-context contract. These fields are optional at the run
+// level because runs persisted before context stamping remain valid.
+export interface ContextRef {
+  id: string;
+  kind: string;
+  namespace?: string;
+  revision?: string;
+  required?: boolean;
+}
+
+export interface WorkspaceContext {
+  mode?: string;
+  declared_mode?: string;
+  workspace_id?: string;
+  declared_root?: string;
+}
+
+export interface WorkflowContext {
+  workflow_revision?: string;
+  workflow_root?: string;
+  bundle_revision?: string;
+}
+
+export interface LineageContext {
+  root_run_id?: string;
+  parent_run_id?: string;
+  parent_node_id?: string;
+}
+
+export interface ExecutionContext {
+  version: number;
+  policy?: string;
+  run_store: ContextRef;
+  business_stores?: ContextRef[];
+  workspace: WorkspaceContext;
+  workflow: WorkflowContext;
+  lineage: LineageContext;
+  launch_surface?: string;
+}
+
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
@@ -250,6 +290,7 @@ export type RunCheckpoint = CheckpointBudget & {
 
 export interface RunHeader {
   id: string;
+  execution_context?: ExecutionContext;
   // Deterministic, human-friendly run label. Empty for legacy runs
   // persisted before this field existed; UI falls back to workflow_name.
   name?: string;

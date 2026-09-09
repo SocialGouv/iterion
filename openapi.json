@@ -630,6 +630,30 @@
         ],
         "type": "object"
       },
+      "ContextRef": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
       "DependencyGraphEdge": {
         "properties": {
           "from": {
@@ -840,6 +864,45 @@
           "outcome",
           "recoverable",
           "next_action"
+        ],
+        "type": "object"
+      },
+      "ExecutionContext": {
+        "properties": {
+          "business_stores": {
+            "items": {
+              "$ref": "#/components/schemas/ContextRef"
+            },
+            "type": "array"
+          },
+          "launch_surface": {
+            "type": "string"
+          },
+          "lineage": {
+            "$ref": "#/components/schemas/LineageContext"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "run_store": {
+            "$ref": "#/components/schemas/ContextRef"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowContext"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceContext"
+          }
+        },
+        "required": [
+          "version",
+          "run_store",
+          "workspace",
+          "workflow",
+          "lineage"
         ],
         "type": "object"
       },
@@ -1261,6 +1324,20 @@
           "attempts",
           "last_at"
         ],
+        "type": "object"
+      },
+      "LineageContext": {
+        "properties": {
+          "parent_node_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "root_run_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "MembershipView": {
@@ -1955,6 +2032,9 @@
           "error": {
             "type": "string"
           },
+          "execution_context": {
+            "$ref": "#/components/schemas/ExecutionContext"
+          },
           "failure_code": {
             "type": "string"
           },
@@ -2551,6 +2631,20 @@
         ],
         "type": "object"
       },
+      "WorkflowContext": {
+        "properties": {
+          "bundle_revision": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          },
+          "workflow_root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "WorkspaceCheckpoint": {
         "properties": {
           "commit": {
@@ -2585,6 +2679,23 @@
           "fetch_command",
           "warning"
         ],
+        "type": "object"
+      },
+      "WorkspaceContext": {
+        "properties": {
+          "declared_mode": {
+            "type": "string"
+          },
+          "declared_root": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "apiKeyView": {

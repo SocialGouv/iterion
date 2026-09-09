@@ -5851,6 +5851,13 @@ export interface components {
             updated_at: string;
             webhook_base_url?: string;
         };
+        ContextRef: {
+            id: string;
+            kind: string;
+            namespace?: string;
+            required?: boolean;
+            revision?: string;
+        };
         DependencyGraphEdge: {
             from: string;
             to: string;
@@ -5908,6 +5915,16 @@ export interface components {
             run_id: string;
             status: string;
             version: number;
+        };
+        ExecutionContext: {
+            business_stores?: components["schemas"]["ContextRef"][];
+            launch_surface?: string;
+            lineage: components["schemas"]["LineageContext"];
+            policy?: string;
+            run_store: components["schemas"]["ContextRef"];
+            version: number;
+            workflow: components["schemas"]["WorkflowContext"];
+            workspace: components["schemas"]["WorkspaceContext"];
         };
         ExecutionState: {
             branch_id: string;
@@ -6043,6 +6060,11 @@ export interface components {
             last_reason?: string;
             /** Format: date-time */
             not_before?: string;
+        };
+        LineageContext: {
+            parent_node_id?: string;
+            parent_run_id?: string;
+            root_run_id?: string;
         };
         MembershipView: {
             personal?: boolean;
@@ -6252,6 +6274,7 @@ export interface components {
             deployment?: components["schemas"]["DeploymentReport"];
             end_reason?: string;
             error?: string;
+            execution_context?: components["schemas"]["ExecutionContext"];
             failure_code?: string;
             fallbacks_used?: components["schemas"]["FallbackUsage"][];
             file_path?: string;
@@ -6435,6 +6458,11 @@ export interface components {
             nodes: components["schemas"]["WireNode"][];
             stale_hash?: boolean;
         };
+        WorkflowContext: {
+            bundle_revision?: string;
+            workflow_revision?: string;
+            workflow_root?: string;
+        };
         WorkspaceCheckpoint: {
             commit: string;
             event_seq: number;
@@ -6444,6 +6472,12 @@ export interface components {
             ref: string;
             source: string;
             warning: string;
+        };
+        WorkspaceContext: {
+            declared_mode?: string;
+            declared_root?: string;
+            mode?: string;
+            workspace_id?: string;
         };
         apiKeyView: {
             alive_runs?: number;
