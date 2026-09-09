@@ -1263,6 +1263,11 @@ type Checkpoint struct {
 	// zero the resume must not read as a price.
 	LoopBudgetMarksV int            `json:"loop_budget_marks_v,omitempty" bson:"loop_budget_marks_v,omitempty"`
 	ArtifactVersions map[string]int `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	// ArtifactRevisions binds each logical publish name to the exact physical
+	// artifact currently exposed through {{artifacts.<name>}}. Version counters
+	// alone cannot recover this when several nodes share a publish name or when
+	// parallel branches allocate different versions.
+	ArtifactRevisions map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
 	// SelectedIncoming records, per destination node, the incoming edges
 	// that routing actually selected for the current visit of that node.
 	// buildNodeInputRS applies with-mappings only from those edges so an
@@ -1388,21 +1393,22 @@ type ParallelCheckpoint struct {
 // values produced inside the branch; the immutable parent snapshot is rebuilt
 // by the router when the invocation resumes.
 type BranchCheckpoint struct {
-	BranchID           string                        `json:"branch_id" bson:"branch_id"`
-	StartNodeID        string                        `json:"start_node_id" bson:"start_node_id"`
-	CurrentNodeID      string                        `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
-	Outputs            map[string]map[string]any     `json:"outputs,omitempty" bson:"outputs,omitempty"`
-	Artifacts          map[string]map[string]any     `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
-	ArtifactVersions   map[string]int                `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
-	LoopCounters       map[string]int                `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
-	LoopPreviousOutput map[string]map[string]any     `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
-	LoopCurrentOutput  map[string]map[string]any     `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
-	LoopBudgetMarks    map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
-	SelectedIncoming   map[string][]IncomingEdge     `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	JoinNodeID         string                        `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
-	TerminalNodeID     string                        `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
-	Completed          bool                          `json:"completed,omitempty" bson:"completed,omitempty"`
-	TerminatedAtDone   bool                          `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	BranchID           string                         `json:"branch_id" bson:"branch_id"`
+	StartNodeID        string                         `json:"start_node_id" bson:"start_node_id"`
+	CurrentNodeID      string                         `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
+	Outputs            map[string]map[string]any      `json:"outputs,omitempty" bson:"outputs,omitempty"`
+	Artifacts          map[string]map[string]any      `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	ArtifactVersions   map[string]int                 `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
+	ArtifactRevisions  map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	LoopCounters       map[string]int                 `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
+	LoopPreviousOutput map[string]map[string]any      `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
+	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	JoinNodeID         string                         `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID     string                         `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed          bool                           `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone   bool                           `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
 	// CostUSD is this branch's cumulative LLM spend for the current
 	// invocation. The daily spend cap records per-branch spend under a
 	// monotonic-max ledger key, so a resumed branch must restart its
@@ -1461,6 +1467,14 @@ type ArtifactDependency struct {
 	NodeID     string `json:"node_id,omitempty" bson:"node_id,omitempty"`
 	Version    int    `json:"version" bson:"version"`
 	Required   bool   `json:"required,omitempty" bson:"required,omitempty"`
+}
+
+// ArtifactRevisionRef identifies one persisted artifact revision. Checkpoints
+// store it by logical publish name so dependency contracts describe the value
+// actually consumed rather than guessing its producer from the workflow.
+type ArtifactRevisionRef struct {
+	NodeID  string `json:"node_id" bson:"node_id"`
+	Version int    `json:"version" bson:"version"`
 }
 
 // ArtifactContract is the durable restart contract for one logical output.

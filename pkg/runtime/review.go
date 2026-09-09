@@ -126,7 +126,8 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 		artifactVersions = make(map[string]int)
 	}
 
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	artifactRevisions := e.rebuildArtifactRevisions(outputs, artifactVersions, cp.ArtifactRevisions)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -258,6 +259,8 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 			return "", fmt.Errorf("runtime: review gate %q: write artifact: %w", nodeID, werr)
 		}
 		rs.artifactVersions[nodeID] = version + 1
+		rs.artifacts[pub] = verdict
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version}
 		if err := e.emit(ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub, "version": version,
 		}); err != nil && e.logger != nil {

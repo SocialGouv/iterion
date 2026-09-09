@@ -596,6 +596,11 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	for _, id := range dropped {
 		delete(cp.Outputs, id)
 		delete(cp.SelectedIncoming, id)
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			if revision.NodeID == id {
+				delete(cp.ArtifactRevisions, logicalRef)
+			}
+		}
 	}
 	// Recovery budgets clear over the UNFILTERED set: a node that failed
 	// has attempts recorded and no output, so keying this on `dropped`

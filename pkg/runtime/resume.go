@@ -91,10 +91,13 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	}
 	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
 		// Refuse before claiming the checkpoint or touching the workspace.
+		if errors.Is(err, ErrArtifactContractUnavailable) {
+			return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
+		}
 		return &RuntimeError{
 			Code:    store.FailureResumeInvalid,
 			Message: "persisted artifact contract is incompatible with this workflow",
-			Hint:    "restore the producing workflow revision, explicitly migrate the artifact contract, or resume with --force after reviewing the source change",
+			Hint:    "restore the producing workflow revision or explicitly migrate the artifact contract",
 			Cause:   err,
 		}
 	}
@@ -182,11 +185,53 @@ func shortWorkflowHash(hash string) string {
 // rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.
 func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]map[string]any {
 	artifacts := make(map[string]map[string]any)
-	for nodeID, output := range outputs {
+	nodeIDs := make([]string, 0, len(outputs))
+	for nodeID := range outputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		output := outputs[nodeID]
 		if n, ok := e.workflow.Nodes[nodeID]; ok {
 			if pub := nodePublish(n); pub != "" {
 				artifacts[pub] = output
 			}
+		}
+	}
+	return artifacts
+}
+
+// rebuildArtifactRevisions restores the exact logical-to-physical mapping
+// persisted by current checkpoints. For legacy checkpoints, use the same
+// deterministic node ordering as rebuildArtifacts and the last allocated
+// revision as a best-effort migration fallback.
+func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, versions map[string]int, persisted map[string]store.ArtifactRevisionRef) map[string]store.ArtifactRevisionRef {
+	revisions := make(map[string]store.ArtifactRevisionRef)
+	nodeIDs := make([]string, 0, len(outputs))
+	for nodeID := range outputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		node, ok := e.workflow.Nodes[nodeID]
+		if !ok || nodePublish(node) == "" || versions[nodeID] <= 0 {
+			continue
+		}
+		revisions[nodePublish(node)] = store.ArtifactRevisionRef{NodeID: nodeID, Version: versions[nodeID] - 1}
+	}
+	for name, revision := range persisted {
+		if _, ok := outputs[revision.NodeID]; ok {
+			revisions[name] = revision
+		}
+	}
+	return revisions
+}
+
+func (e *Engine) rebuildArtifactsWithRevisions(outputs map[string]map[string]any, revisions map[string]store.ArtifactRevisionRef) map[string]map[string]any {
+	artifacts := e.rebuildArtifacts(outputs)
+	for name, revision := range revisions {
+		if output, ok := outputs[revision.NodeID]; ok {
+			artifacts[name] = output
 		}
 	}
 	return artifacts
@@ -285,7 +330,9 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
 	// bumps it in place, and the engine mutates it further during the run —
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneMap(cp.ArtifactVersions), e.rebuildArtifacts(cp.Outputs))
+	artifactVersions := cloneMap(cp.ArtifactVersions)
+	artifactRevisions := e.rebuildArtifactRevisions(cp.Outputs, artifactVersions, cp.ArtifactRevisions)
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, e.rebuildArtifactsWithRevisions(cp.Outputs, artifactRevisions), artifactRevisions)
 	if err != nil {
 		return err
 	}
@@ -311,7 +358,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// `rewind --auto` re-report edits that already ran — the same
 	// monotonically-growing pivot the failure path restamps to avoid.
 	e.restampWorkflowSource(ctx, r)
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -438,8 +485,9 @@ func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
+	artifactRevisions := e.rebuildArtifactRevisions(outputs, artifactVersions, cp.ArtifactRevisions)
 	e.restampWorkflowSource(ctx, r)
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -500,7 +548,8 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
-	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions)
+	artifactRevisions := e.rebuildArtifactRevisions(outputs, artifactVersions, persisted.ArtifactRevisions)
+	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions, artifactRevisions)
 	if err != nil {
 		return err
 	}
@@ -552,7 +601,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, artifacts map[string]map[string]any) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
@@ -560,7 +609,10 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
-	contractState := &runState{artifacts: artifacts, artifactVersions: artifactVersions}
+	if artifactRevisions == nil {
+		artifactRevisions = make(map[string]store.ArtifactRevisionRef)
+	}
+	contractState := &runState{artifacts: artifacts, artifactVersions: artifactVersions, artifactRevisions: artifactRevisions}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{
@@ -574,6 +626,8 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 			return nil, fmt.Errorf("runtime: write human artifact: %w", err)
 		}
 		artifactVersions[humanNodeID] = version + 1
+		artifacts[pub] = answers
+		artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: humanNodeID, Version: version}
 		// The artifact itself is durably written; the event is
 		// observational. Best-effort emit — log the failure so the
 		// observability gap is visible rather than swallowing it
@@ -701,7 +755,7 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 // On a sandbox-start failure it persists failed_resumable (PRESERVING the
 // rich checkpoint so the next resume doesn't restart from entry) and
 // returns the error with a nil runState and a no-op cleanup.
-func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int) (*runState, func(), error) {
+func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int, artifactRevisions map[string]store.ArtifactRevisionRef) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
 
@@ -775,7 +829,11 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// startSandbox, so attachmentPath reads the settled sandbox state.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	rs.outputs = outputs
-	rs.artifacts = e.rebuildArtifacts(outputs)
+	if artifactRevisions == nil {
+		artifactRevisions = e.rebuildArtifactRevisions(outputs, artifactVersions, cp.ArtifactRevisions)
+	}
+	rs.artifactRevisions = artifactRevisions
+	rs.artifacts = e.rebuildArtifactsWithRevisions(outputs, artifactRevisions)
 	rs.loopCounters = loopCounters
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
@@ -1093,7 +1151,8 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	if rs.outputs == nil {
 		rs.outputs = make(map[string]map[string]any)
 	}
-	rs.artifacts = e.rebuildArtifacts(rs.outputs)
+	rs.artifactRevisions = e.rebuildArtifactRevisions(rs.outputs, cp.ArtifactVersions, cp.ArtifactRevisions)
+	rs.artifacts = e.rebuildArtifactsWithRevisions(rs.outputs, rs.artifactRevisions)
 	// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
 	// mutate loopCounters/roundRobinCounters and artifactVersions in
 	// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
@@ -1287,6 +1346,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
@@ -1935,6 +1995,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
