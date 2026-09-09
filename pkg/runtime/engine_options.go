@@ -244,6 +244,17 @@ func WithWorkflowSource(src string) EngineOption {
 	return func(e *Engine) { e.workflowSource = src }
 }
 
+// WithExecutionContext supplies the resolved, versioned context contract
+// stamped on the run at launch. The engine clones it so a caller cannot
+// mutate the persisted contract while execution is in flight.
+func WithExecutionContext(c *store.ExecutionContext) EngineOption {
+	return func(e *Engine) {
+		if c != nil {
+			e.executionContext = c.Clone()
+		}
+	}
+}
+
 // WithFilePath records the absolute .bot source path on the run
 // metadata so that resume (and the run console) can re-locate the
 // workflow without the caller having to thread it back through the

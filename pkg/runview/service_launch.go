@@ -349,6 +349,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		token:      spec.CallbackToken,
 		answerNode: spec.CallbackAnswerNode,
 	}
+	ctxContract := s.resolveExecutionContext(parent, runID, spec, wf, hash)
 
 	precreateInputs := inputs
 	if !precreate {
@@ -360,7 +361,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -940,6 +941,9 @@ type launchExtras struct {
 	// budget ask, handed to the engine so the run doc persists it as the
 	// replay source every resume surface reads (runtime.WithBudgetAsk).
 	budgetAsk *ir.BudgetOverrides
+	// executionContext is the resolved, versioned launch contract persisted
+	// by the engine before the first node executes.
+	executionContext *store.ExecutionContext
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -997,6 +1001,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.budgetAsk != nil {
 		opts = append(opts, runtime.WithBudgetAsk(ex.budgetAsk))
+	}
+	if ex.executionContext != nil {
+		opts = append(opts, runtime.WithExecutionContext(ex.executionContext))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /

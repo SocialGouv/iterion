@@ -297,7 +297,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil ||
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
 		e.routingPolicy != nil || e.budgetAsk != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
@@ -373,6 +373,13 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.CallbackURL = e.callbackURL
 			run.CallbackToken = e.callbackToken
 			run.CallbackAnswerNode = e.callbackAnswerNode
+		}
+		if e.executionContext != nil {
+			ctxContract := e.executionContext.Clone()
+			if err := ctxContract.Normalize(); err != nil {
+				return nil, fmt.Errorf("runtime: invalid execution context: %w", err)
+			}
+			run.ExecutionContext = ctxContract
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)

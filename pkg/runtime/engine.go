@@ -122,6 +122,7 @@ type Engine struct {
 	recoveryDispatch         RecoveryDispatch                     // optional; consulted on node execution failure
 	workflowHash             string                               // SHA-256 of the .bot source, set via WithWorkflowHash
 	workflowSource           string                               // .bot text at launch, set via WithWorkflowSource (else read from filePath)
+	executionContext         *store.ExecutionContext              // resolved launch/resume context contract, set via WithExecutionContext
 	workspaceTracker         workspacetrack.Tracker               // iterion-owned workspace versioning; nil = disabled (see WithWorkspaceTracker)
 	filePath                 string                               // absolute .bot source path, set via WithFilePath
 	parentRunID              string                               // immediate parent run, set via WithParentRunID for nested executions

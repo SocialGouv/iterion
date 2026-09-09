@@ -452,6 +452,10 @@ type RunCredStamp struct {
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
+	// ExecutionContext is the versioned launch contract. It is optional so
+	// runs written before the reliability contract remain readable and keep
+	// their legacy behaviour on resume.
+	ExecutionContext *ExecutionContext `json:"execution_context,omitempty" bson:"execution_context,omitempty"`
 	// Name is a deterministic, human-friendly label derived from
 	// (file_path + run_id) at run creation. Display-only — the
 	// canonical identifier remains ID. Empty for runs persisted

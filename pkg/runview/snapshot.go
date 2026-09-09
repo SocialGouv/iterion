@@ -60,6 +60,9 @@ type ExecutionState struct {
 // RunHeader is the run-level metadata embedded in a snapshot.
 type RunHeader struct {
 	ID string `json:"id"`
+	// ExecutionContext is the resolved, versioned launch contract. It is
+	// absent on legacy runs created before context persistence was enabled.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -1494,6 +1497,7 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
 		ID:                   r.ID,
+		ExecutionContext:     r.ExecutionContext,
 		Name:                 r.Name,
 		WorkflowName:         r.WorkflowName,
 		WorkflowHash:         r.WorkflowHash,
