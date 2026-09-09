@@ -1321,8 +1321,12 @@ tool ticket_fetch:
                 token = ""
         # The host is derived from a LAUNCH VAR, and this credential is
         # write-capable: never put it on the wire in clear. Loopback is the
-        # exception a self-hosted forge under test legitimately needs.
-        if token and u.scheme != "https" and host.split(":")[0] not in ("127.0.0.1", "::1", "localhost"):
+        # exception a self-hosted forge under test legitimately needs — the
+        # whole 127.0.0.0/8, and read from .hostname so an IPv6 literal
+        # ([::1]:3000) is not mangled by a naive split on the port colon.
+        hostname = (u.hostname or "")
+        loopback = hostname == "localhost" or hostname == "::1" or hostname.startswith("127.")
+        if token and u.scheme != "https" and not loopback:
             token = ""
             notes.append("pr_url is not https: reading anonymously rather than sending the forge token in cleartext")
         if not token:
