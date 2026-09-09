@@ -315,14 +315,10 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		// transport, a body that is not the shape pkg/forge parses). The
 		// other two are iterion's own state — the seal/client construction
 		// BEFORE any forge call (forgeAdminFor), and the persist AFTER the
-		// upload already landed — and both are marked at their wrap site,
-		// where which step failed is still known, so they answer 500
-		// instead of sharing the 502 a genuine forge outage gets. That
-		// sharing is the inversion #969 is about.
-		if isIterionFault(err) {
-			httpError(w, http.StatusInternalServerError, "%v", err)
-			return
-		}
+		// upload already landed. Both are marked at their wrap site, where
+		// which step failed is still known, and writeForgeUpstreamError
+		// answers a marked error 500 instead of letting it share the 502 a
+		// genuine forge outage gets.
 		if !writeForgeUpstreamError(w, err, "%v", err) {
 			httpError(w, http.StatusBadGateway, "%v", err)
 		}

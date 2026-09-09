@@ -555,9 +555,15 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	// Everything down to httpClient.Do below is iterion's own preparation:
+	// reading a stored key, marshalling, building the URL. A caller that
+	// sees this function fail cannot tell that from a GitHub outage, and the
+	// handlers on top default to 502 — so each of these carries
+	// forge.ErrLocalPreflight, which isIterionFault reads as "we never
+	// asked".
 	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("%w: %w", forge.ErrLocalPreflight, err)
 	}
 	var body io.Reader
 	if opts != nil {
@@ -571,7 +577,7 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		if len(payload) > 0 {
 			raw, err := json.Marshal(payload)
 			if err != nil {
-				return "", time.Time{}, err
+				return "", time.Time{}, fmt.Errorf("%w: marshal installation token request: %w", forge.ErrLocalPreflight, err)
 			}
 			body = bytes.NewReader(raw)
 		}
@@ -579,7 +585,7 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", body)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("%w: build installation token request: %w", forge.ErrLocalPreflight, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

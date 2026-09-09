@@ -59,6 +59,9 @@ import (
 //	  forge.ErrBoardBindingNotFound        0
 //	  forge.ErrProvisionApprovalNotFound   0
 //
+//	OUTSIDE it, and never sent at all — the one 0 the caller never sees
+//	  forge.ErrLocalPreflight              0 here; writeForgeUpstreamError reads it through isIterionFault and answers 500
+//
 //	OUTSIDE it, though the forge did answer 404 — the caller classifies
 //	  forge.ErrProjectNotFound             0; a bind answers the board ref itself
 //	  forge.ErrFileNotFound                0; config-share answers every read failure alike
@@ -118,10 +121,20 @@ func forgeUpstreamStatus(err error) (int, string) {
 }
 
 // writeForgeUpstreamError answers err with the status forgeUpstreamStatus
-// gives it, echoing the forge's Retry-After. Reports false — writing
-// nothing — when the failure is not an answer from the forge, so the caller
-// keeps its own fault status for the errors that really are iterion's.
+// gives it, echoing the forge's Retry-After. An error MARKED as iterion's
+// own is answered 500 here, since the caller's default arm would name the
+// forge for it. Reports false — writing nothing — only when the failure is
+// neither: an unclassified error on a route whose failures are forge round
+// trips, which its own 502 default then covers.
 func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, args ...any) bool {
+	// The marker is what makes "not an answer from the forge" actionable:
+	// forgeUpstreamStatus answers 0 for a request that never left AND for an
+	// upstream failure it does not recognise, and those two want opposite
+	// statuses. Deciding it here keeps the classifier a classifier.
+	if isIterionFault(err) {
+		httpError(w, http.StatusInternalServerError, format, args...)
+		return true
+	}
 	code, retryAfter := forgeUpstreamStatus(err)
 	if code == 0 {
 		return false
@@ -156,8 +169,9 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 // private key — before its first socket, so a key that is not parseable
 // PEM fails inside what reads like a pure `admin.ListRepos(ctx)`. Trace
 // the call to its first byte on the wire before concluding a site is
-// clean; three arms on this branch were cleared on the shorter reading
-// and were wrong (see the residuals named at each).
+// clean. That is what forge.ErrLocalPreflight settles for the mint
+// chain: the marking happens where the wire boundary is visible, so a
+// handler no longer has to derive it.
 //
 // Finally: the 502 default is a per-route CHOICE, not the package's
 // rule, and this marker exists for the routes that make it. A handler
@@ -174,14 +188,12 @@ type iterionFault struct{ err error }
 // tell iterion's own faults apart (answer 500) from a forge that
 // answered or fell silent (keep 502 / the taxonomy code).
 //
-// The mark is INERT on its own, and reading it as sufficient is the
-// mistake to avoid: forgeUpstreamStatus has no iterionFault case and
-// writeForgeUpstreamError only consults that, so a marked error still
-// falls through to whatever the caller's own default arm is — 502 on
-// every route but the avatar one, the only handler that carries the
-// isIterionFault check. Marking a new site therefore takes TWO edits,
-// and the SECOND is the one that changes an answer. A mark alone is a
-// comment.
+// The mark now acts on its own: writeForgeUpstreamError asks
+// isIterionFault first and answers 500, so every 502-defaulting route
+// gets it at once and marking a site is one edit, not two.
+// forgeUpstreamStatus still has no case for it, deliberately — it says
+// what the FORGE answered, and a marked error is one the forge never
+// saw.
 func newIterionFault(err error) error {
 	if err == nil {
 		return nil
@@ -192,11 +204,15 @@ func newIterionFault(err error) error {
 func (e *iterionFault) Error() string { return e.err.Error() }
 func (e *iterionFault) Unwrap() error { return e.err }
 
-// isIterionFault reports whether err (or anything it wraps) was marked
-// with iterionFault, so a 502-default handler can answer 500 instead.
+// isIterionFault reports whether err (or anything it wraps) was marked as
+// iterion's own, so a 502-default handler answers 500 instead. Two markers
+// say the same thing from the two sides of the package boundary:
+// iterionFault, wrapped in pkg/server where the failing step is known, and
+// forge.ErrLocalPreflight, carried out of pkg/forge by work that ran before
+// any byte reached the network.
 func isIterionFault(err error) bool {
 	var f *iterionFault
-	return errors.As(err, &f)
+	return errors.As(err, &f) || errors.Is(err, forge.ErrLocalPreflight)
 }
 
 // retryAfterHeader renders a delay as delta-seconds, the form every client

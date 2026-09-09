@@ -49,6 +49,15 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		why: "a forge-answered 404 the orchestrator also reads as 'the hook is already gone'",
 	},
 
+	// Prepared but never sent. Deliberately 0 here: this table classifies
+	// what the FORGE answered, and the forge answered nothing. The 500 is
+	// writeForgeUpstreamError's, via isIterionFault — a status in this
+	// column would make the classifier decide fault, which is not its job.
+	"forge.ErrLocalPreflight": {
+		err: forge.ErrLocalPreflight, wantStatus: 0,
+		why: "iterion's own preparation failed before any byte reached the network — writeForgeUpstreamError renders it 500, not the 502 its route defaults to",
+	},
+
 	// Store misses. Every "…but could not be recorded on connection X: %w"
 	// wrap in the forge layer carries one of these; in the class they would
 	// all answer 404 for a write iterion itself failed.
