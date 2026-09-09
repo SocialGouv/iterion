@@ -195,6 +195,11 @@ func TestReviewPRTicketFetch(t *testing.T) {
 		if !strings.Contains(res.Status, "acme/widgets#11: fetched (closes") {
 			t.Errorf("a forge-linked issue must be marked `closes`:\n%s", res.Status)
 		}
+		// GraphQL answers OPEN, REST answers open: the same ticket must not read
+		// differently depending on which path reached it.
+		if strings.Contains(res.Tickets, "state=OPEN") {
+			t.Errorf("the GraphQL state enum reaches the reviewer un-normalised:\n%s", res.Tickets)
+		}
 		if res.Count != 3 {
 			t.Errorf("count = %d, want 3 readable tickets (#11 here, #11 elsewhere, #42)", res.Count)
 		}

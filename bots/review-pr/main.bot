@@ -1365,7 +1365,11 @@ tool ticket_fetch:
             if link == "closes":
                 e["link"] = "closes"   # a formal link always outranks a mention
             if title is not None:
-                e["title"] = s(title); e["body"] = body or ""; e["state"] = s(state)
+                e["title"] = s(title); e["body"] = body or ""
+                # GraphQL answers CLOSED where REST answers closed: normalise,
+                # so the same ticket does not read differently depending on
+                # which of the two paths reached it.
+                e["state"] = s(state).lower()
                 e["url"] = url or e["url"]
             return e
 
@@ -1491,7 +1495,7 @@ tool ticket_fetch:
                 res, err = api(api_base + "/projects/" + enc + "/issues/" + str(e["number"]), headers())
                 if isinstance(res, dict):
                     e["title"] = s(res.get("title")); e["body"] = res.get("description") or ""
-                    e["state"] = s(res.get("state")); e["url"] = s(res.get("web_url"))
+                    e["state"] = s(res.get("state")).lower(); e["url"] = s(res.get("web_url"))
                 else:
                     e["error"] = err or "not readable"
             else:
@@ -1502,7 +1506,7 @@ tool ticket_fetch:
                     e["error"] = "#" + str(e["number"]) + " is a pull request, not an issue"
                 elif isinstance(res, dict):
                     e["title"] = s(res.get("title")); e["body"] = res.get("body") or ""
-                    e["state"] = s(res.get("state")); e["url"] = s(res.get("html_url"))
+                    e["state"] = s(res.get("state")).lower(); e["url"] = s(res.get("html_url"))
                 else:
                     e["error"] = err or "not readable"
 
