@@ -914,6 +914,18 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}, nil
 	}
 
+	// BOTH exits below are past the recovery pass, and both owe its bill: it
+	// is a separate, fully-billed provider call, and its usage reaches here
+	// only because GenerateObjectDirect hands back a partial beside its error
+	// (a bare nil made a billed call indistinguishable from one that never
+	// left the process). The success path above sums the two for the same
+	// reason. ONE figure for both exits — deriving it twice is how the
+	// text-bearing one came to be priced from the tool loop alone.
+	billed := result.TotalUsage
+	if obj != nil {
+		accumulateUsage(&billed, obj.TotalUsage)
+	}
+
 	// Last-ditch: surface whatever text we got as a parse-fallback so
 	// the runtime's existing structured-output retry path can decide
 	// what to do. The error from the recovery pass is logged for
@@ -921,24 +933,8 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text == "" {
 		// The most expensive failure claw has: a whole agentic tool loop ran
 		// (possibly to MaxSteps) and the schema-forced recovery pass ran on
-		// top of it, and the node has nothing to show for either. The bill is
-		// both of them.
-		abandoned := result.TotalUsage
-		if obj != nil {
-			accumulateUsage(&abandoned, obj.TotalUsage)
-		}
-		return meteredFailure(task, abandoned), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
-	}
-	// The recovery pass was billed on THIS exit too, and it is the exit the
-	// recovery is FOR: the tool loop narrated instead of answering, the
-	// schema-forced pass ran on top of it and came back unusable. Its usage
-	// reaches here only because GenerateObjectDirect now hands back a partial
-	// beside its error — the sibling exit above and the success path fold it
-	// for the same reason, and pricing this one from the tool loop alone
-	// reported a fully-billed provider call as free.
-	billed := result.TotalUsage
-	if obj != nil {
-		accumulateUsage(&billed, obj.TotalUsage)
+		// top of it, and the node has nothing to show for either.
+		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
 	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
