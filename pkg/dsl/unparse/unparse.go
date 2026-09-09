@@ -20,10 +20,18 @@ func Unparse(f *ast.File) string {
 	text, needsStrict := render(f, strict)
 	if needsStrict && !strict {
 		// A value no v1 form can hold (a backtick together with a quote,
-		// a backslash or a newline): the whole file switches to
-		// strict-escape mode, where every value has a quoted form, and
-		// says so in its first line.
+		// a backslash, a newline, or any carriage return): the whole file
+		// switches to strict-escape mode, where every value has a quoted
+		// form.
+		strict = true
 		text, _ = render(f, true)
+	}
+	if strict {
+		// The lexer reads the directive from the file's first 32 lines,
+		// before the first line of code. It goes on line 1 whatever
+		// comment it came from — render skipped its copies in the comment
+		// list — or a directive at comment #35 would be written strict and
+		// read v1.
 		text = "## " + strictEscapeDirective + "\n" + text
 	}
 	return text
@@ -39,18 +47,27 @@ const strictEscapeDirective = "strict-escape: on"
 // the OUTPUT is read in is what the quoting has to match.
 func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 	for _, c := range comments {
-		switch strings.TrimSpace(c.Text) {
-		case "strict-escape: on", "strict-escape:on", "strict-escape = on":
+		if isStrictEscapeDirective(c.Text) {
 			return true
 		}
 	}
 	return false
 }
 
+// isStrictEscapeDirective accepts the forms the lexer accepts.
+func isStrictEscapeDirective(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "strict-escape: on", "strict-escape:on", "strict-escape = on":
+		return true
+	}
+	return false
+}
+
 // render writes f in one quoting mode and reports whether a value needed the
-// strict one.
+// strict one. In strict mode the directive's own comment lines are skipped:
+// Unparse writes the directive on line 1.
 func render(f *ast.File, strict bool) (string, bool) {
-	w := &fileWriter{b: buf{strict: strict}}
+	w := &fileWriter{b: buf{strict: strict}, skipDirective: strict}
 	w.writeFile(f)
 	return w.b.String(), w.b.needsStrict
 }
@@ -107,8 +124,10 @@ func (b *buf) str(v string) string {
 	if !strings.ContainsAny(v, "\"\\\n\r") {
 		return "\"" + v + "\""
 	}
+	// The lexer folds CRLF to LF before it reads anything, so no v1 form
+	// carries a carriage return; only the strict escape does.
 	multiLine := strings.ContainsAny(v, "\n\r")
-	if !strings.Contains(v, "`") && (!b.nested || !multiLine) {
+	if !strings.Contains(v, "`") && !strings.Contains(v, "\r") && (!b.nested || !multiLine) {
 		return "`" + v + "`"
 	}
 	b.needsStrict = true
@@ -206,6 +225,19 @@ func indentBlock(text, indent string) string {
 type fileWriter struct {
 	b         buf
 	needBlank bool
+	// skipDirective drops the strict-escape directive from the comment
+	// list: Unparse writes it on line 1 itself.
+	skipDirective bool
+}
+
+// ensureBody writes a no-op property under a declaration header that got
+// no properties (a node added on the canvas and saved before it is filled
+// in): a header with no indented body does not parse, and an empty
+// description is what an absent one reads as, so the next save drops it.
+func (w *fileWriter) ensureBody(mark int) {
+	if w.b.Len() == mark {
+		w.b.WriteString("  description: \"\"\n")
+	}
 }
 
 // blankLine emits a separator newline before the next section, unless
@@ -221,6 +253,9 @@ func (w *fileWriter) blankLine() {
 
 func (w *fileWriter) writeComments(comments []*ast.Comment) {
 	for _, c := range comments {
+		if w.skipDirective && isStrictEscapeDirective(c.Text) {
+			continue
+		}
 		w.blankLine()
 		w.needBlank = false // comments don't need blank line between them
 		w.b.WriteString("## ")
@@ -356,6 +391,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 	for _, a := range agents {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "agent %s:\n", a.Name)
+		mark := w.b.Len()
 		if a.Description != "" {
 			writeQuotedProp(&w.b, "description", a.Description)
 		}
@@ -364,7 +400,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		}
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
-			Input: a.Input, Output: a.Output, Publish: a.Publish,
+			Input: a.Input, Output: a.Output, Publish: a.Publish, ArtifactLabels: a.ArtifactLabels,
 			System: a.System, User: a.User, Session: a.Session,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
@@ -384,6 +420,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			writeCursorsBlock(&w.b, a.Cursors, "  ")
 		}
 		writeFallbacksBlock(&w.b, a.Fallbacks, "  ")
+		w.ensureBody(mark)
 	}
 }
 
@@ -391,6 +428,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 	for _, j := range judges {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "judge %s:\n", j.Name)
+		mark := w.b.Len()
 		if j.Description != "" {
 			writeQuotedProp(&w.b, "description", j.Description)
 		}
@@ -399,7 +437,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		}
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
-			Input: j.Input, Output: j.Output, Publish: j.Publish,
+			Input: j.Input, Output: j.Output, Publish: j.Publish, ArtifactLabels: j.ArtifactLabels,
 			System: j.System, User: j.User, Session: j.Session,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
@@ -419,6 +457,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			writeCursorsBlock(&w.b, j.Cursors, "  ")
 		}
 		writeFallbacksBlock(&w.b, j.Fallbacks, "  ")
+		w.ensureBody(mark)
 	}
 }
 
@@ -477,6 +516,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 	for _, h := range humans {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "human %s:\n", h.Name)
+		mark := w.b.Len()
 		if h.Description != "" {
 			writeQuotedProp(&w.b, "description", h.Description)
 		}
@@ -489,6 +529,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 		if h.Publish != "" {
 			writeProp(&w.b, "publish", h.Publish)
 		}
+		writeArtifactLabels(&w.b, h.ArtifactLabels, "  ")
 		// Skip when it matches the implicit Human default. Emitting it
 		// unconditionally introduced parse → unparse → re-parse noise
 		// (every authored human node gained a synthetic
@@ -533,6 +574,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 		if h.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", h.Await.String())
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -540,6 +582,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 	for _, t := range tools {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "tool %s:\n", t.Name)
+		mark := w.b.Len()
 		if t.Description != "" {
 			writeQuotedProp(&w.b, "description", t.Description)
 		}
@@ -561,6 +604,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Publish != "" {
 			writeProp(&w.b, "publish", t.Publish)
 		}
+		writeArtifactLabels(&w.b, t.ArtifactLabels, "  ")
 		if t.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", t.Await.String())
 		}
@@ -590,6 +634,7 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 			writeRecoveryBlock(&w.b, t.Recovery, "  ")
 		}
 		writeSandboxBlock(&w.b, t.Sandbox, "  ")
+		w.ensureBody(mark)
 	}
 }
 
@@ -618,6 +663,7 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 	for _, s := range subbots {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "subbot %s:\n", s.Name)
+		mark := w.b.Len()
 		if s.Description != "" {
 			writeQuotedProp(&w.b, "description", s.Description)
 		}
@@ -640,6 +686,7 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 		if s.Isolated {
 			writeProp(&w.b, "isolated", "true")
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -647,6 +694,7 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 	for _, c := range computes {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "compute %s:\n", c.Name)
+		mark := w.b.Len()
 		if c.Description != "" {
 			writeQuotedProp(&w.b, "description", c.Description)
 		}
@@ -659,6 +707,7 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 		if c.Publish != "" {
 			writeProp(&w.b, "publish", c.Publish)
 		}
+		writeArtifactLabels(&w.b, c.ArtifactLabels, "  ")
 		if c.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", c.Await.String())
 		}
@@ -668,6 +717,7 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 				fmt.Fprintf(&w.b, "    %s: %s\n", e.Key, w.b.str(e.Expr))
 			}
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -675,6 +725,7 @@ func (w *fileWriter) writeEmits(emits []*ast.EmitDecl) {
 	for _, e := range emits {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "emit %s:\n", e.Name)
+		mark := w.b.Len()
 		if e.Description != "" {
 			writeQuotedProp(&w.b, "description", e.Description)
 		}
@@ -688,6 +739,7 @@ func (w *fileWriter) writeEmits(emits []*ast.EmitDecl) {
 			}
 			w.b.WriteString("  }\n")
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -695,6 +747,7 @@ func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
 	for _, wt := range waits {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "wait %s:\n", wt.Name)
+		mark := w.b.Len()
 		if wt.Description != "" {
 			writeQuotedProp(&w.b, "description", wt.Description)
 		}
@@ -707,6 +760,7 @@ func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
 		if wt.Output != "" {
 			writeProp(&w.b, "output", wt.Output)
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -714,6 +768,7 @@ func (w *fileWriter) writeAwaitAnswers(decls []*ast.AwaitAnswersDecl) {
 	for _, aa := range decls {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "await_answers %s:\n", aa.Name)
+		mark := w.b.Len()
 		if aa.Description != "" {
 			writeQuotedProp(&w.b, "description", aa.Description)
 		}
@@ -723,6 +778,7 @@ func (w *fileWriter) writeAwaitAnswers(decls []*ast.AwaitAnswersDecl) {
 		if aa.Timeout != "" {
 			writeQuotedProp(&w.b, "timeout", aa.Timeout)
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -730,6 +786,7 @@ func (w *fileWriter) writeFails(decls []*ast.FailDecl) {
 	for _, fd := range decls {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "fail %s:\n", fd.Name)
+		mark := w.b.Len()
 		if fd.Description != "" {
 			writeQuotedProp(&w.b, "description", fd.Description)
 		}
@@ -742,6 +799,7 @@ func (w *fileWriter) writeFails(decls []*ast.FailDecl) {
 		if fd.Resumable {
 			writeProp(&w.b, "resumable", "true")
 		}
+		w.ensureBody(mark)
 	}
 }
 
@@ -861,6 +919,20 @@ func writeIdentProp(b *buf, key, value string) {
 		return
 	}
 	writeQuotedProp(b, key, value)
+}
+
+// writeArtifactLabels renders `artifact_labels: [a, b]` — the labels a
+// published artifact is tagged with (ADR on artifact labels); a label is an
+// identifier, quoted only if it is not.
+func writeArtifactLabels(b *buf, labels []string, indent string) {
+	if len(labels) == 0 {
+		return
+	}
+	items := make([]string, len(labels))
+	for i, l := range labels {
+		items[i] = identOrStr(b, l)
+	}
+	fmt.Fprintf(b, "%sartifact_labels: [%s]\n", indent, strings.Join(items, ", "))
 }
 
 // identOrStr renders v bare when it is an identifier and as a string
@@ -1098,6 +1170,7 @@ func quoteList(b *buf, vals []string) string {
 type llmFields struct {
 	Model, Backend, Provider, Command   string
 	Input, Output, Publish              string
+	ArtifactLabels                      []string
 	System, User                        string
 	Session                             ast.SessionMode
 	Tools, ToolPolicy                   []string
@@ -1140,6 +1213,7 @@ func writeAgentFields(b *buf, f llmFields) {
 	if f.Publish != "" {
 		writeIdentProp(b, "publish", f.Publish)
 	}
+	writeArtifactLabels(b, f.ArtifactLabels, "  ")
 	if f.System != "" {
 		writeIdentProp(b, "system", f.System)
 	}

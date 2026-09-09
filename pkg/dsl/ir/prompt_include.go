@@ -44,18 +44,46 @@ var promptIncludeRe = regexp.MustCompile(`\{\{\s*include\s+"([^"]*)"\s*\}\}`)
 // path escaping the base (via ..) are rejected, and files larger than
 // maxPromptIncludeBytes are refused.
 func expandPromptIncludes(body, baseDir string) (string, []error) {
+	return expandPromptIncludesNested(body, baseDir, nil)
+}
+
+// maxPromptIncludeDepth bounds include nesting: an included file may include
+// another (relative to ITS OWN directory), to this depth; a cycle is refused
+// by the path stack before the depth is reached.
+const maxPromptIncludeDepth = 8
+
+// expandPromptIncludesNested expands to a fixed point, so no marker
+// survives the expansion: a marker inside an included file used to be left
+// in the body, where the next compile — on a runner, with no source file
+// — resolved it against ITS working directory.
+func expandPromptIncludesNested(body, baseDir string, stack []string) (string, []error) {
 	if !strings.Contains(body, "{{") {
 		return body, nil
 	}
 	var errs []error
 	out := promptIncludeRe.ReplaceAllStringFunc(body, func(match string) string {
 		rel := promptIncludeRe.FindStringSubmatch(match)[1]
-		content, err := readPromptInclude(baseDir, rel)
+		content, full, err := readPromptIncludeAt(baseDir, rel)
 		if err != nil {
 			errs = append(errs, err)
 			return ""
 		}
-		return content
+		if !HasPromptInclude(content) {
+			return content
+		}
+		if len(stack) >= maxPromptIncludeDepth {
+			errs = append(errs, fmt.Errorf("include %q: nested deeper than %d levels", rel, maxPromptIncludeDepth))
+			return ""
+		}
+		for _, seen := range stack {
+			if seen == full {
+				errs = append(errs, fmt.Errorf("include %q: includes itself (cycle through %s)", rel, strings.Join(stack, " > ")))
+				return ""
+			}
+		}
+		nested, nestedErrs := expandPromptIncludesNested(content, filepath.Dir(full), append(stack, full))
+		errs = append(errs, nestedErrs...)
+		return nested
 	})
 	return out, errs
 }
@@ -79,8 +107,11 @@ func InlinePromptIncludes(f *ast.File) error {
 		if !HasPromptInclude(p.Body) {
 			continue
 		}
-		if info, err := os.Stat(p.Span.Start.File); p.Span.Start.File == "" || err != nil || info.IsDir() {
-			errs = append(errs, fmt.Sprintf("prompt %q: an {{include}} cannot be resolved — its source file %q is not on this host", p.Name, p.Span.Start.File))
+		// An absolute path that exists here: a relative one would be looked
+		// up in the process working directory, which is the lookup this
+		// function exists to refuse.
+		if info, err := os.Stat(p.Span.Start.File); !filepath.IsAbs(p.Span.Start.File) || err != nil || info.IsDir() {
+			errs = append(errs, fmt.Sprintf("prompt %q: an {{include}} cannot be resolved — its source file %q is not an absolute path to a file on this host", p.Name, p.Span.Start.File))
 			continue
 		}
 		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
@@ -102,11 +133,18 @@ func InlinePromptIncludes(f *ast.File) error {
 // and returns the file contents. It refuses absolute paths, paths that
 // escape baseDir, missing files, and files over the size cap.
 func readPromptInclude(baseDir, rel string) (string, error) {
+	content, _, err := readPromptIncludeAt(baseDir, rel)
+	return content, err
+}
+
+// readPromptIncludeAt is readPromptInclude returning the resolved path as
+// well, the base a nested include resolves from.
+func readPromptIncludeAt(baseDir, rel string) (string, string, error) {
 	if rel == "" {
-		return "", fmt.Errorf("include: empty path")
+		return "", "", fmt.Errorf("include: empty path")
 	}
 	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("include %q: absolute paths are not allowed (use a path relative to the file that contains the include)", rel)
+		return "", "", fmt.Errorf("include %q: absolute paths are not allowed (use a path relative to the file that contains the include)", rel)
 	}
 	if baseDir == "" {
 		baseDir = "."
@@ -114,14 +152,14 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 	full := filepath.Join(baseDir, filepath.Clean(rel))
 	// Confine the resolved path to baseDir's subtree (lexical guard).
 	if err := confineToBase(baseDir, full); err != nil {
-		return "", fmt.Errorf("include %q: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	info, err := os.Stat(full)
 	if err != nil {
-		return "", fmt.Errorf("include %q: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("include %q: is a directory, not a file", rel)
+		return "", "", fmt.Errorf("include %q: is a directory, not a file", rel)
 	}
 	// Re-check containment AFTER symlink resolution: a symlink INSIDE
 	// baseDir pointing outside it passes the lexical guard above but would
@@ -131,23 +169,23 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 	// pkg/bundle.
 	realBase, err := filepath.EvalSymlinks(baseDir)
 	if err != nil {
-		return "", fmt.Errorf("include %q: resolve base dir: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: resolve base dir: %w", rel, err)
 	}
 	realFull, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		return "", fmt.Errorf("include %q: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	if err := confineToBase(realBase, realFull); err != nil {
-		return "", fmt.Errorf("include %q: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	if info.Size() > maxPromptIncludeBytes {
-		return "", fmt.Errorf("include %q: file is %d bytes, over the %d byte limit", rel, info.Size(), maxPromptIncludeBytes)
+		return "", "", fmt.Errorf("include %q: file is %d bytes, over the %d byte limit", rel, info.Size(), maxPromptIncludeBytes)
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		return "", fmt.Errorf("include %q: %w", rel, err)
+		return "", "", fmt.Errorf("include %q: %w", rel, err)
 	}
-	return string(data), nil
+	return string(data), full, nil
 }
 
 // confineToBase reports an error if full is not baseDir itself or a path

@@ -64,6 +64,47 @@ func TestBundleLaunchInlinesIncludesForTheRunner(t *testing.T) {
 	}
 }
 
+// An include inside an included file is resolved too, so no marker reaches
+// the runner — where it would be refused (C055), or, before the compiler's
+// own guard, resolved against the pod's working directory.
+func TestBundleLaunchInlinesNestedIncludes(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"main.bot":  "prompt p:\n  {{include \"rules.md\"}}\n\nworkflow main:\n  entry: done\n",
+		"rules.md":  "RULES\n{{include \"secret.md\"}}\n",
+		"secret.md": "THE BOT'S OWN SECRET",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, _ := os.ReadFile(filepath.Join(dir, "main.bot"))
+	body, err := marshalIRFromSpec("bots/probe/main.bot", string(source), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("THE BOT'S OWN SECRET")) || bytes.Contains(body, []byte("{{include")) {
+		t.Fatalf("nested include did not travel resolved: %s", body)
+	}
+	// A pod whose working directory holds a decoy of the same name.
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "secret.md"), []byte("THE POD'S OWN FILE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	f, err := ast.UnmarshalFile(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := ir.Compile(f)
+	if cr.HasErrors() {
+		t.Fatalf("the runner's compile fails: %v", cr.Diagnostics)
+	}
+	if strings.Contains(cr.Workflow.Prompts["p"].Body, "THE POD'S OWN FILE") {
+		t.Fatal("the runner read its own working directory into the prompt")
+	}
+}
+
 // An inline upload has no files beside its source: an include it carries
 // is refused at publish, with the remedy, instead of dying on the runner
 // with C055 — and never resolved against the server's working directory.

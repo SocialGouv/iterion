@@ -796,9 +796,16 @@ func (c *compiler) compilePrompts() {
 		// Resolve relative to the directory of the file that declares the
 		// prompt, carried on the declaration's span: the .bot source, or
 		// the bundle's prompts/ for a merged prompts/*.md. A prompt with no
-		// span would resolve against the process working directory — on a
-		// server, nobody's — so every constructor stamps one.
-		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		// source file (an AST that came through the JSON transport) has
+		// nothing to resolve against: its marker is refused, never looked
+		// up in the process working directory — on a runner, the pod's own.
+		body := p.Body
+		var incErrs []error
+		if HasPromptInclude(body) && p.Span.Start.File == "" {
+			incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: the prompt has no source file (an inline or transported prompt must carry its includes resolved)")}
+		} else {
+			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File))
+		}
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
 		}
