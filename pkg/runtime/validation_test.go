@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 type correctingExecutor struct {
@@ -136,6 +138,52 @@ func TestSchemaValidation_UnchangedCorrectionStopsImmediately(t *testing.T) {
 	ep := run.OutputCorrections["my_agent"]
 	if ep.Status != correctionStatusUnchanged || ep.Attempts != 1 {
 		t.Fatalf("correction episode = %#v, want unchanged/1", ep)
+	}
+}
+
+// flakyLoadStore fails exactly ONE LoadRun once armed and then recovers — a
+// transient outage, which is the only shape that discriminates fail-closed
+// from fail-open: a permanent outage stops both, because the ledger WRITE
+// would fail too.
+type flakyLoadStore struct {
+	store.RunStore
+	armed atomic.Bool
+	burnt atomic.Bool
+}
+
+func (s *flakyLoadStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	if s.armed.Load() && s.burnt.CompareAndSwap(false, true) {
+		return nil, errors.New("simulated transient store outage")
+	}
+	return s.RunStore.LoadRun(ctx, id)
+}
+
+// A store read that fails must NOT read as "no episode": folding it into
+// found=false manufactures a fresh episode at Attempts=0, and the very next
+// (recovered) write persists that over an exhausted/unchanged one — silently
+// resetting the durable bound the ledger exists to hold.
+func TestSchemaValidation_LedgerReadFailureFailsClosed(t *testing.T) {
+	st := &flakyLoadStore{RunStore: tmpStore(t)}
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		// Arm the outage for the ledger read that immediately follows.
+		st.armed.Store(true)
+		return map[string]any{"summary": "initial", "score": "not-a-number"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(context.Background(), "run-val-ledger-read", nil)
+	if err == nil {
+		t.Fatal("expected the run to fail when the correction ledger cannot be read")
+	}
+	if !strings.Contains(err.Error(), "output correction ledger") {
+		t.Fatalf("error = %v, want it to name the correction ledger", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 — an unreadable ledger must not authorise a correction", exec.calls)
 	}
 }
 

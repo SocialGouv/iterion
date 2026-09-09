@@ -74,7 +74,13 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	inputFingerprint := correctionFingerprint(output)
 	violationFingerprint := correctionFingerprint(validationErr.Error())
-	episode, found := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	if loadErr != nil {
+		// Fail closed: without the ledger we cannot know how much budget this
+		// episode already consumed, and guessing "none" is exactly the
+		// unbounded loop the ledger exists to prevent.
+		return output, fmt.Errorf("output correction ledger: %w (original validation: %v)", loadErr, validationErr)
+	}
 	// InputFingerprint identifies the episode. The violation can legitimately
 	// change while a corrector improves a payload, so comparing it here would
 	// accidentally reset an exhausted episode on resume.
@@ -198,16 +204,25 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string) (store.OutputCorrectionEpisode, bool) {
+// loadCorrectionEpisode reads the persisted episode for key. It FAILS CLOSED:
+// a store error is returned, never folded into "no episode". Reading a
+// transient LoadRun failure as "none" would manufacture a fresh episode at
+// Attempts=0 and — once the store recovers for the very next write — persist
+// that over an exhausted/unchanged one, silently resetting the durable bound
+// this ledger exists to hold.
+func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, key string) (store.OutputCorrectionEpisode, bool, error) {
 	if e.store == nil {
-		return store.OutputCorrectionEpisode{}, false
+		return store.OutputCorrectionEpisode{}, false, nil
 	}
 	r, err := e.store.LoadRun(ctx, runID)
-	if err != nil || r == nil || r.OutputCorrections == nil {
-		return store.OutputCorrectionEpisode{}, false
+	if err != nil {
+		return store.OutputCorrectionEpisode{}, false, err
 	}
-	ep, ok := r.OutputCorrections[nodeID]
-	return ep, ok
+	if r == nil || r.OutputCorrections == nil {
+		return store.OutputCorrectionEpisode{}, false, nil
+	}
+	ep, ok := r.OutputCorrections[key]
+	return ep, ok, nil
 }
 
 func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
