@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.127.1](https://github.com/SocialGouv/iterion/compare/v3.127.0...v3.127.1) (2026-09-09)
+
+### Bug Fixes
+
+* **pipelines:** the control center served a team the origin of its own fork ([#1031](https://github.com/SocialGouv/iterion/issues/1031)) ([a99fec7](https://github.com/SocialGouv/iterion/commit/a99fec7f05fc2c4e47e0b8e29e967c85fcc4510e)), references [#871](https://github.com/SocialGouv/iterion/issues/871)
+
+    <details><summary>why</summary>
+
+    The pipelines board is selected per team in cloud (cloudBoardResolve), but its bot was resolved tenant-free and launched by filesystem path — the fifth surface of the #871 class, and the last one still outside the tiered resolver. Two silent consequences: a team that forked a catalog bot got the CATALOG bundle on its own cards, and a bot only that team authored could not be carded at all (a stored row's Path is blanked, so MainFile() had nothing to launch).
+
+    </details>
+
 ## [3.127.0](https://github.com/SocialGouv/iterion/compare/v3.126.0...v3.127.0) (2026-09-09)
 
 ### Features
