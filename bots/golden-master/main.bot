@@ -178,6 +178,14 @@ schema mutation_report:
   corpus_total: int
   corpus_distinct: int
   duplicate_refs: json
+  ## Byte-identical groups whose identity is NOT discharged by a measured
+  ## separator. Must be EMPTY: a duplicate pair is admissible only as a
+  ## control, and the corpus proves that by naming the mutant that moves part
+  ## of the group and leaves the rest still. Gated here rather than left in
+  ## the log, because a note the gate cannot read is exactly the waiver this
+  ## obligation replaces — two groups whose prose still claimed they were
+  ## controlled had lost their separator to a lot's re-anchoring.
+  duplicate_groups_unproven: json
   ## The emitted net must be runnable from a clean checkout. A gitignored
   ## harness ships references nobody can replay — the very defect this bot
   ## exists to expose in other people's deliveries.
@@ -7058,7 +7066,14 @@ compute oracle_gate:
     ## DISTINCT references: two entries with a byte-identical reference are one
     ## observation, and a corpus padded with duplicates is narrower than it
     ## looks.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ##
+    ## `duplicate_groups_unproven` is the other half of that count, and it is
+    ## a TERM here rather than a line in the log: the width floor only notices
+    ## a duplicate by making the corpus narrower, so a wide corpus could carry
+    ## an undischarged pair and converge green. The obligation is empty only
+    ## when every byte-identical group names a mutant the pass MEASURED moving
+    ## part of it.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -7108,7 +7123,12 @@ tool emit_runner:
         # point is WEAKER than the graph gate on the one term that stops a
         # spent, published set from being replayed as if it were fresh -- and
         # the standalone entry point is what CI and humans run.
+        #
+        # `duplicate_groups_unproven` is the same shape and belongs beside it:
+        # an undischarged byte-identical group is a reference nobody can tell
+        # apart, and the width floor does not catch it on a wide corpus.
         "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
+        "    and not r.get(\"duplicate_groups_unproven\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
         # A notice is never fatal, but it must never be silent either: the one
         # that matters here says the held-out figure is 0/0 because the set was
