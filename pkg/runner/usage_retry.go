@@ -11,6 +11,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -329,6 +330,20 @@ func (r *Runner) armUsageWindowRetry(
 	}
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
+	}
+	// Coordinate the retry wave across runner replicas. The per-run retry
+	// ledger remains authoritative for the attempt bound; the shared circuit
+	// only moves the next wake-up out of a provider-wide failure storm.
+	if key := retrycoord.Key(runMeta); key != "" {
+		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, time.Now().UTC(), retrycoord.FromEnv())
+		if circuitErr != nil {
+			// A circuit-store outage must not drop a durable per-run retry. The
+			// existing ScheduleRunRetry below still provides the safe fallback.
+			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
+		} else if circuitState != nil && circuitState.OpenUntil != nil && circuitState.OpenUntil.After(at) {
+			at = circuitState.OpenUntil.UTC()
+			source += "+circuit_open"
+		}
 	}
 
 	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, runID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)

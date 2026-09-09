@@ -52,6 +52,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -2419,6 +2420,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runErr = engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+	}
+	if runErr == nil {
+		// A successful run closes the shared workflow breaker. Use a detached
+		// short context because cleanup/cancellation below must not strand a
+		// recovered circuit open after the run has already finished.
+		resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, msg.RunID); loadErr == nil {
+			if key := retrycoord.Key(runMeta); key != "" {
+				if resetErr := retrycoord.RecordSuccess(resetCtx, r.cfg.Store, key, time.Now().UTC()); resetErr != nil {
+					r.cfg.Logger.Warn("runner: run %s: retry circuit reset failed: %v", msg.RunID, resetErr)
+				}
+			}
+		}
+		resetCancel()
 	}
 
 	// Persist the run's git metadata (commits + modified files vs the

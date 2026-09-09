@@ -48,3 +48,15 @@ count, output/violation fingerprints and a terminal status (`succeeded`,
 stopped immediately, and a resume continues the existing budget rather than
 starting a new loop. Executors must keep correction side-effect free; publish
 and external-effect nodes remain behind the validation boundary.
+
+## Coordinated retries and circuit breaker (tranche E)
+
+Cloud runners retain the per-run retry budget, but usage-window failures also
+update a tenant-scoped durable circuit keyed by workflow revision. Once the
+shared failure threshold is reached, the next retry wave is delayed until the
+breaker cooldown instead of starting one pod per run against the same provider
+wall. A successful run clears the streak. The circuit is an optional Mongo
+capability; local/filesystem stores keep their existing retry behaviour, and a
+circuit-store outage falls back to the durable per-run retry rather than
+dropping work. Threshold and cooldown are controlled by
+`ITERION_RETRY_CIRCUIT_THRESHOLD` and `ITERION_RETRY_CIRCUIT_COOLDOWN`.
