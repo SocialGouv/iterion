@@ -64,3 +64,37 @@ func TestSecurityReadPatch_GenuineForgeFailureKeepsBadGateway(t *testing.T) {
 		t.Fatalf("code=%d body=%s, want 502 — an unclassified failure on this arm is still the forge's", w.Code, w.Body.String())
 	}
 }
+
+// The security-read composition above drives the arm through the
+// s.forgeSecurityMint seam — the arm's own injection point, but not the
+// chain the other two arms take. This one takes the long way, with nothing
+// injected: a real github_app connection whose STORED App key is not
+// parseable PEM, through forgeAdminFor → AppClient.rest →
+// MintInstallationToken → the marker → the junction. No forge is reachable
+// and none is needed; that is the point. The reverse direction (a forge
+// that really did fail keeps its 502) is pinned at the junction, which this
+// route shares.
+func TestListForgeRepos_UnreadableStoredKeyAnswers500NotBadGateway(t *testing.T) {
+	s := newForgeTestServer(t)
+	s.forgeOAuthApps = forge.NewMemoryOAuthAppStore()
+	storeApp(t, s, "app-1", "t1", "SocialGouv", "111",
+		"-----BEGIN RSA PRIVATE KEY-----\nnot base64\n-----END RSA PRIVATE KEY-----",
+		time.Unix(1700000000, 0).UTC())
+	conn := forge.Connection{
+		ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
+		Status: forge.StatusActive, InstallationID: 42, OAuthAppID: "app-1",
+	}
+	if err := s.forgeConnections.Create(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	req := forgeReq(superAdminCtx(), "GET", "/api/teams/t1/forge/connections/c1/repos", "", "t1")
+	req.SetPathValue("conn_id", "c1")
+	w := httptest.NewRecorder()
+	s.handleListForgeRepos(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("code=%d body=%s, want 500 — GitHub was never asked; the key iterion stored is the one that cannot be read",
+			w.Code, w.Body.String())
+	}
+}
