@@ -83,6 +83,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err := e.admitRun(ctx, runID, r); err != nil {
 		return err
 	}
+	// Preserve the established source-change classification before the
+	// artifact guard reports derivative publish/schema mismatches. Dispatchers
+	// use this typed error to park the run for an explicit forced resume.
+	if err := e.checkWorkflowHash(r); err != nil {
+		return err
+	}
 	if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
 		// Refuse before claiming the checkpoint or touching the workspace.
 		return &RuntimeError{
@@ -190,9 +196,6 @@ func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]
 // continuing execution from the node after the human checkpoint.
 func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(r); err != nil {
-		return err
-	}
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
 	}
@@ -282,7 +285,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
 	// bumps it in place, and the engine mutates it further during the run —
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneMap(cp.ArtifactVersions))
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneMap(cp.ArtifactVersions), e.rebuildArtifacts(cp.Outputs))
 	if err != nil {
 		return err
 	}
@@ -549,7 +552,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, artifacts map[string]map[string]any) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
@@ -557,6 +560,7 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
+	contractState := &runState{artifacts: artifacts, artifactVersions: artifactVersions}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{
@@ -564,7 +568,7 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 			NodeID:   humanNodeID,
 			Version:  version,
 			Data:     answers,
-			Contract: e.artifactContractFor(humanNodeID, humanNode, version),
+			Contract: e.artifactContractFor(humanNodeID, humanNode, version, contractState),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return nil, fmt.Errorf("runtime: write human artifact: %w", err)
@@ -942,9 +946,6 @@ var (
 // them through but the engine refuses to resume.
 func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(r); err != nil {
-		return err
-	}
 
 	cp := r.Checkpoint
 	restartNodeID := e.workflow.Entry
@@ -1279,7 +1280,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 			NodeID:   nodeID,
 			Version:  version,
 			Data:     output,
-			Contract: e.artifactContractFor(nodeID, node, version),
+			Contract: e.artifactContractFor(nodeID, node, version, rs),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
@@ -1927,7 +1928,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			NodeID:   nodeID,
 			Version:  version,
 			Data:     output,
-			Contract: e.artifactContractFor(nodeID, node, version),
+			Contract: e.artifactContractFor(nodeID, node, version, rs),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("runtime: write artifact: %w", err)

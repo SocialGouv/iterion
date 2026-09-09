@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -759,6 +760,28 @@ func NodePromptRefs(node Node) []string {
 			refs = append(refs, n.Instructions)
 		}
 	}
+	return refs
+}
+
+// NodeArtifactRefs returns the logical artifact names a node reads while it
+// executes. Edge with-mappings are excluded because they run only after the
+// source node has published its own artifact.
+func NodeArtifactRefs(w *Workflow, nodeID string) []string {
+	if w == nil || nodeID == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, rc := range collectAllRefs(w) {
+		if rc.NodeID != nodeID || rc.EdgeTo != "" || rc.Ref == nil || rc.Ref.Kind != RefArtifacts || len(rc.Ref.Path) == 0 {
+			continue
+		}
+		seen[rc.Ref.Path[0]] = struct{}{}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
 	return refs
 }
 

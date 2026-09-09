@@ -12,12 +12,12 @@ import (
 // artifactContractFor derives the immutable portion of an artifact contract
 // from the compiled workflow. It deliberately does not infer external side
 // effects from output data: only the declared publish reference is persisted.
-func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *store.ArtifactContract {
+func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, rs *runState) *store.ArtifactContract {
 	logicalRef := nodePublish(node)
 	if logicalRef == "" {
 		return nil
 	}
-	return &store.ArtifactContract{
+	contract := &store.ArtifactContract{
 		LogicalRef:       logicalRef,
 		ProducerNode:     nodeID,
 		ProducerRevision: e.workflowHash,
@@ -25,6 +25,38 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *
 		Schema:           ir.NodeOutputSchema(node),
 		Effects:          []string{"persist"},
 	}
+	if rs == nil {
+		return contract
+	}
+	for _, consumedRef := range ir.NodeArtifactRefs(e.workflow, nodeID) {
+		if _, present := rs.artifacts[consumedRef]; !present {
+			continue
+		}
+		producerID := e.artifactProducer(consumedRef)
+		nextVersion, present := rs.artifactVersions[producerID]
+		if producerID == "" || !present || nextVersion <= 0 {
+			continue
+		}
+		contract.Dependencies = append(contract.Dependencies, store.ArtifactDependency{
+			LogicalRef: consumedRef,
+			NodeID:     producerID,
+			Version:    nextVersion - 1,
+			Required:   true,
+		})
+	}
+	return contract
+}
+
+func (e *Engine) artifactProducer(logicalRef string) string {
+	if e.workflow == nil {
+		return ""
+	}
+	for nodeID, node := range e.workflow.Nodes {
+		if nodePublish(node) == logicalRef {
+			return nodeID
+		}
+	}
+	return ""
 }
 
 // ValidateArtifactContracts checks persisted artifact metadata before a
@@ -47,6 +79,10 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
 		return nil
 	}
+	policy := store.ContextPolicyLegacy
+	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
+		policy = run.ExecutionContext.Policy
+	}
 	var violations []string
 	for nodeID, version := range run.ArtifactIndex {
 		if ignoredNodes[nodeID] {
@@ -54,9 +90,12 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		}
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		if err != nil {
-			// A stale index is a legacy/cache condition. Do not turn it into a
-			// destructive rewind; the store's artifact reader remains the source
-			// of truth and the next write repairs the index.
+			// Legacy documents historically treated the index as a cache. Once a
+			// run opts into report/enforce, however, an unreadable indexed artifact
+			// means validation could not be completed and must be visible.
+			if policy != store.ContextPolicyLegacy {
+				violations = append(violations, fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err))
+			}
 			continue
 		}
 		if artifact == nil || artifact.Contract == nil {
@@ -107,9 +146,16 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if len(violations) == 0 {
 		return nil
 	}
-	policy := store.ContextPolicyLegacy
-	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
-		policy = run.ExecutionContext.Policy
+	if policy == store.ContextPolicyReport {
+		_, _ = s.AppendEvent(context.WithoutCancel(ctx), run.ID, store.Event{
+			Type:  store.EventArtifactContractViolation,
+			RunID: run.ID,
+			Data: map[string]any{
+				"policy":     string(policy),
+				"violations": append([]string(nil), violations...),
+			},
+		})
+		return nil
 	}
 	if policy != store.ContextPolicyEnforce {
 		return nil
