@@ -102,16 +102,24 @@ func (c Config) ContextPolicy() store.ContextPolicy { return c.Mode.ContextPolic
 // state. The booleans are deliberately explicit so an operator can decide to
 // roll a pilot back without parsing opaque JSON or event prose.
 type CompatibilityReport struct {
-	RunID                  string `json:"run_id"`
-	WorkflowHash           string `json:"workflow_hash,omitempty"`
-	ContextVersion         int    `json:"context_version,omitempty"`
-	ContextPolicy          string `json:"context_policy"`
-	LegacyContext          bool   `json:"legacy_context"`
-	AdmissionRecorded      bool   `json:"admission_recorded"`
-	PublishedArtifactCount int    `json:"published_artifact_count"`
-	CorrectionEpisodeCount int    `json:"correction_episode_count"`
-	WatcherCursorCount     int    `json:"watcher_cursor_count"`
-	RollbackSafe           bool   `json:"rollback_safe"`
+	RunID             string `json:"run_id"`
+	WorkflowHash      string `json:"workflow_hash,omitempty"`
+	ContextVersion    int    `json:"context_version,omitempty"`
+	ContextPolicy     string `json:"context_policy"`
+	LegacyContext     bool   `json:"legacy_context"`
+	AdmissionRecorded bool   `json:"admission_recorded"`
+	// PublishingNodeCount is the number of DISTINCT nodes the run's artifact
+	// index records as having published — not a count of artifacts. The index
+	// is a node_id → latest-version map (store.Run.ArtifactIndex), so one node
+	// publishing versions 0, 1 and 2 contributes 1, and it is a cache the
+	// store may legitimately leave incomplete (see FilesystemRunStore's
+	// ErrRunNotFound branch). Distinct publishers is the number the index can
+	// actually back, and the one that answers the promote-vs-rollback
+	// question: did the same nodes publish under the new contract?
+	PublishingNodeCount    int  `json:"publishing_node_count"`
+	CorrectionEpisodeCount int  `json:"correction_episode_count"`
+	WatcherCursorCount     int  `json:"watcher_cursor_count"`
+	RollbackSafe           bool `json:"rollback_safe"`
 }
 
 func ReportForRun(run *store.Run) CompatibilityReport {
@@ -123,7 +131,7 @@ func ReportForRun(run *store.Run) CompatibilityReport {
 	r.RunID = run.ID
 	r.WorkflowHash = run.WorkflowHash
 	r.AdmissionRecorded = run.Admission != nil
-	r.PublishedArtifactCount = len(run.ArtifactIndex)
+	r.PublishingNodeCount = len(run.ArtifactIndex)
 	r.CorrectionEpisodeCount = len(run.OutputCorrections)
 	r.WatcherCursorCount = len(run.WatcherCursors)
 	if run.ExecutionContext == nil {
