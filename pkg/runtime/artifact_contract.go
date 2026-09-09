@@ -114,6 +114,13 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		}
 		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
 		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// The caller went away; that is not a verdict on the contract.
+			// Folding it into the violations would report a cancellation as
+			// an incompatible artifact — Engine.Resume stamps those
+			// RESUME_INVALID with a "restore the declaration" hint — and
+			// send the operator after a problem that does not exist.
+			return fmt.Errorf("runtime: validate artifact contracts for run %s: %w", run.ID, err)
 		case errors.Is(err, store.ErrArtifactNotFound):
 			// An index entry with no artifact behind it is a legacy/cache
 			// condition, and there is no contract to read: tolerated, and

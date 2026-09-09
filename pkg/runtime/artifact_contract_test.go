@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -432,5 +433,48 @@ func TestValidateArtifactContractsAdmitsArtifactOfDeletedNode(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no longer declares") {
 		t.Fatalf("the drift was not even reported; log = %q", out.String())
+	}
+}
+
+// loadFailingStore fails every artifact read with a fixed error.
+type loadFailingStore struct {
+	store.RunStore
+	err error
+}
+
+func (f loadFailingStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
+	return nil, f.err
+}
+
+// A cancelled or timed-out read is an operational failure, not a verdict on
+// the contract: Engine.Resume stamps a contract violation RESUME_INVALID
+// with a "restore the declaration" hint, which would send the operator after
+// a problem that does not exist.
+func TestValidateArtifactContractsSeparatesCancellationFromIncompatibility(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-cancelled", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+	})
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+	}}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+			Store: loadFailingStore{RunStore: s, err: cause}, Run: run, Workflow: wf, Revision: "rev-new",
+		})
+		if !errors.Is(err, cause) {
+			t.Fatalf("error = %v, want it to carry %v", err, cause)
+		}
+		if strings.Contains(err.Error(), "artifact contract incompatible") {
+			t.Fatalf("a cancellation was reported as an incompatible contract: %v", err)
+		}
+	}
+	// An ordinary read failure stays a contract violation, so an enforce
+	// run still fails closed on an unreadable store.
+	err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: loadFailingStore{RunStore: s, err: errors.New("s3: 503 slow down")}, Run: run, Workflow: wf, Revision: "rev-new",
+	})
+	if err == nil || !strings.Contains(err.Error(), "artifact contract incompatible") {
+		t.Fatalf("unreadable artifact = %v, want the enforce refusal", err)
 	}
 }
