@@ -186,15 +186,23 @@ func TestRetryCircuit_SuccessClosesTheBreaker(t *testing.T) {
 // that could never be disarmed. consecutive_failures is only incremented,
 // and RecordRetrySuccess needs a SUCCESSFUL engine run of the same workflow
 // revision — which a revision that always fails never produces. Without a
-// decay window, two failures months apart plus one today would arm a
-// tenant-wide cooldown on an isolated failure.
+// decay window, an old storm plus one failure today would arm a tenant-wide
+// cooldown on an isolated failure.
 func TestRetryCircuit_StaleStreakDecays(t *testing.T) {
 	s := circuitTestStore(t)
 	ctx := circuitCtx()
 	now := time.Now().UTC()
 	const cooldown = 15 * time.Minute
 
-	old := now.Add(-90 * 24 * time.Hour)
+	// The gap the decay needs is ONE cooldown, and the fixture stays well
+	// inside retrycircuitRetention on purpose: an `old` far enough back to
+	// read as "months ago" also back-dates updated_at past the
+	// retry_circuits_ttl index, making the document TTL-eligible the moment
+	// it is written. Mongo's TTL monitor sweeping mid-test would either fail
+	// the streak assertion below or — worse — delete the document and let
+	// the final assertions hold for the wrong reason, leaving this test
+	// green with the decay branch removed.
+	old := now.Add(-2 * cooldown)
 	for i := 1; i <= 2; i++ {
 		st, err := s.RecordRetryFailure(ctx, "workflow:stale", "run-old", old, 3, cooldown)
 		if err != nil {
@@ -211,7 +219,7 @@ func TestRetryCircuit_StaleStreakDecays(t *testing.T) {
 		t.Fatalf("fresh failure: %v", err)
 	}
 	if st.ConsecutiveFailures != 1 {
-		t.Errorf("streak = %d, want 1 — a 90-day-old storm still counts toward today's threshold", st.ConsecutiveFailures)
+		t.Errorf("streak = %d, want 1 — a storm older than the cooldown still counts toward today's threshold", st.ConsecutiveFailures)
 	}
 	if st.OpenUntil != nil {
 		t.Errorf("an isolated failure armed the breaker off a stale streak (open_until=%s)", st.OpenUntil)
