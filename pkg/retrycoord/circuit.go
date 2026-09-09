@@ -23,8 +23,14 @@ const (
 	DefaultCooldown  = 15 * time.Minute
 )
 
-// Config bounds a shared retry circuit. Threshold is the number of failures
-// across runs before opening; cooldown is the minimum quiet period.
+// Config bounds a shared retry circuit.
+//
+// Threshold is the number of failures needed to open it, counted across the
+// runs of one workflow revision and WITHIN one cooldown of each other — the
+// store restarts the streak after a wider gap, so the threshold describes a
+// storm rather than a tally that can accumulate over a week. Cooldown is both
+// how long the breaker stays open and that decay window; one duration,
+// because both answer "how long does a provider storm last".
 type Config struct {
 	Threshold int
 	Cooldown  time.Duration

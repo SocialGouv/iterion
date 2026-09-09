@@ -2421,15 +2421,26 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
-	if runErr == nil {
-		// A successful run closes the shared workflow breaker. Use a detached
-		// short context because cleanup/cancellation below must not strand a
-		// recovered circuit open after the run has already finished.
+	// A successful run closes the shared workflow breaker. The capability
+	// probe comes FIRST because the reset needs the run document for its
+	// workflow revision: on a store with no circuit that LoadRun would be a
+	// round trip per successful run to reach a no-op.
+	if runErr == nil && store.AsRetryCircuitStore(r.cfg.Store) != nil {
+		// Detached short context: the cleanup and cancellation below must not
+		// strand a recovered circuit open after the run has already finished.
+		// WithoutCancel keeps the tenant identity the Mongo filter needs.
 		resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		if runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, msg.RunID); loadErr == nil {
+		runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, msg.RunID)
+		switch {
+		case loadErr != nil:
+			// Best-effort, but not silent: a breaker nobody can reset keeps
+			// padding this revision's retries for a provider that recovered,
+			// and this log line is the only place that would be visible.
+			runLogger.Warn("runner: run %s: cannot read the run to reset the retry circuit: %v", msg.RunID, loadErr)
+		default:
 			if key := retrycoord.Key(runMeta); key != "" {
 				if resetErr := retrycoord.RecordSuccess(resetCtx, r.cfg.Store, key, time.Now().UTC()); resetErr != nil {
-					r.cfg.Logger.Warn("runner: run %s: retry circuit reset failed: %v", msg.RunID, resetErr)
+					runLogger.Warn("runner: run %s: retry circuit reset failed: %v", msg.RunID, resetErr)
 				}
 			}
 		}
