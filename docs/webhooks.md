@@ -46,6 +46,45 @@ Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate
 returns a fresh plaintext (also shown once) and updates the forge's
 "secret" field is then a manual step.
 
+## When a forge cannot reach the deployment's public URL
+
+Provisioned hook URLs are built from the deployment's public URL
+(`auth.publicUrl` → `forge.Orchestrator.PublicURL`), which is what every
+connection wants: move the deployment and the next provision moves its
+hooks with it.
+
+A forge may refuse that host outright. **GitLab** rejects any webhook URL
+outside its instance-wide outbound allowlist with `Invalid url given`
+(HTTP 422, surfaced as `create hook: HTTP 422`), and getting a host listed
+is an administrative act on the forge's side — Admin area → Settings →
+Network → Outbound requests. A deployment that serves two names, or that is
+migrating between them, then has one connection that cannot follow.
+
+`Connection.WebhookBaseURL` pins the base for **that connection only**:
+
+```sh
+iterion remote forge connections webhook-base <conn-id> \
+  --url https://iterion.old-and-allowlisted.example
+iterion remote forge connections webhook-base <conn-id> --url ""   # clear
+```
+
+It takes effect at the next provision, and the value must be scheme+host
+(the `/api/webhooks/<provider>/<id>` route is appended to it). An
+unparseable or path-carrying value is refused with 422 at the PATCH, on
+purpose: a wrong base does not fail when it is set — it fails as hooks that
+register successfully and never arrive.
+
+**Declaring the pin is what makes the exception durable.** A hook URL that
+merely predates a public-URL change is one re-provision away from being
+silently rewritten to an address the forge is not allowed to call — and
+enabling one more bot, or moving the repo to another team, is a
+re-provision. The write succeeds; only the deliveries stop.
+
+Prefer getting the canonical host allowlisted and clearing the pin. It is
+an escape hatch for the interval where that is out of your hands, not a
+target state — the pinned host has to keep resolving and serving for as
+long as the pin is there.
+
 ## Auth modes — token vs HMAC
 
 Iterion's middleware has two authentication modes, picked per provider

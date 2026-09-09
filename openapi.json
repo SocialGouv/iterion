@@ -613,6 +613,9 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
           }
         },
         "required": [

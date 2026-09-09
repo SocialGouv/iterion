@@ -408,6 +408,12 @@ type forgeConnectionPatchReq struct {
 	// SecurityReadEnabled toggles the org-wide Dependabot-alerts token flow
 	// for this github_app connection (see forge.SecurityReadSecretName).
 	SecurityReadEnabled *bool `json:"security_read_enabled,omitempty"`
+	// WebhookBaseURL pins the base this connection's inbound hook URLs are
+	// built from, for a forge that cannot reach the deployment's public URL
+	// (see forge.Connection.WebhookBaseURL). An explicit "" clears it and
+	// hands the connection back to the public URL — which is why it is a
+	// pointer: absent and "cleared" are different intents.
+	WebhookBaseURL *string `json:"webhook_base_url,omitempty"`
 }
 
 // handlePatchForgeConnection updates a connection's operator-tunable flags.
@@ -435,12 +441,35 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.SecurityReadEnabled == nil && req.WebhookBaseURL == nil {
+		httpError(w, http.StatusBadRequest, "nothing to update: patchable fields are security_read_enabled and webhook_base_url")
+		return
+	}
+	ctx := store.WithTenant(r.Context(), teamID)
+	// Applied before the security-read flow and independent of it: pinning a
+	// hook base mints and withdraws nothing, and a request that carries only
+	// this field must not walk a token path at all.
+	if req.WebhookBaseURL != nil {
+		base, err := canonicalWebhookBaseURL(*req.WebhookBaseURL)
+		if err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%v", err)
+			return
+		}
+		conn.WebhookBaseURL = base
+	}
 	if req.SecurityReadEnabled == nil {
-		httpError(w, http.StatusBadRequest, "nothing to update: security_read_enabled is the only patchable field")
+		conn.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(ctx, conn); err != nil {
+			httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+			return
+		}
+		s.auditTenant(r, teamID, "forge.connection.webhook_base_url", "forge_connection", conn.ID, map[string]any{
+			"webhook_base_url": conn.WebhookBaseURL,
+		})
+		writeJSON(w, conn)
 		return
 	}
 	enable := *req.SecurityReadEnabled
-	ctx := store.WithTenant(r.Context(), teamID)
 	if enable {
 		if conn.Kind != forge.KindGitHubApp {
 			httpError(w, http.StatusUnprocessableEntity, "security-read requires a github_app connection (this one is %s); a non-App deployment can set the %q team secret by hand instead", conn.Kind, forge.SecurityReadSecretName)
