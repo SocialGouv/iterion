@@ -74,7 +74,12 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	inputFingerprint := correctionFingerprint(output)
 	violationFingerprint := correctionFingerprint(validationErr.Error())
-	episode, found := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	if loadErr != nil {
+		// A transient read failure must not look like an empty ledger and
+		// reset an already-consumed correction budget.
+		return output, fmt.Errorf("output correction ledger read: %w (original validation: %v)", loadErr, validationErr)
+	}
 	// InputFingerprint identifies the episode. The violation can legitimately
 	// change while a corrector improves a payload, so comparing it here would
 	// accidentally reset an exhausted episode on resume.
@@ -258,16 +263,19 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string) (store.OutputCorrectionEpisode, bool) {
+func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string) (store.OutputCorrectionEpisode, bool, error) {
 	if e.store == nil {
-		return store.OutputCorrectionEpisode{}, false
+		return store.OutputCorrectionEpisode{}, false, nil
 	}
 	r, err := e.store.LoadRun(ctx, runID)
-	if err != nil || r == nil || r.OutputCorrections == nil {
-		return store.OutputCorrectionEpisode{}, false
+	if err != nil {
+		return store.OutputCorrectionEpisode{}, false, err
+	}
+	if r == nil || r.OutputCorrections == nil {
+		return store.OutputCorrectionEpisode{}, false, nil
 	}
 	ep, ok := r.OutputCorrections[nodeID]
-	return ep, ok
+	return ep, ok, nil
 }
 
 func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
