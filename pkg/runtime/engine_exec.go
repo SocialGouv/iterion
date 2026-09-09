@@ -619,6 +619,15 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 // effort), snapshots the worktree at the node boundary, and selects
 // the outgoing edge. Returns the next node ID.
 func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNodeID string, node ir.Node, output map[string]any) (string, error) {
+	// Validate/correct before committing session state or emitting verified
+	// action evidence. A rejected payload must not leave durable metadata that
+	// describes work the run ultimately discarded.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
+	if validationErr != nil {
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
+	}
+	output = validatedOutput
+
 	// Verified Action (ADR-044): a tool node that escalated through the
 	// recovery ladder stamps a private `_verified_action` key. Emit the
 	// node_verified_action event for observability, then strip the key so
@@ -631,15 +640,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 
 	rs.outputs[currentNodeID] = output
 
-	// Validate output against the declared schema (optional). Capable
-	// executors may repair a bounded number of invalid payloads; no artifact,
-	// downstream edge or external publish happens until the repaired output
-	// validates.
-	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
-	if validationErr != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
-	}
-	output = validatedOutput
+	// The output was validated/corrected before the commit boundary above.
 	rs.outputs[currentNodeID] = output
 
 	// Record budget usage and check limits.

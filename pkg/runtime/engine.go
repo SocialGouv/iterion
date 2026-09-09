@@ -126,6 +126,22 @@ type OutputCorrector interface {
 	CorrectOutput(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, error)
 }
 
+// OutputCorrectionUsage is optional accounting returned by a corrector that
+// performs its own model call. The runtime folds it into the node's normal
+// `_tokens`/`_cost_usd` metadata before budget enforcement.
+type OutputCorrectionUsage struct {
+	Tokens  int
+	CostUSD float64
+}
+
+// OutputCorrectorWithUsage extends OutputCorrector for executors that can
+// report the correction call's spend. Executors may implement either
+// interface; the plain capability remains source-compatible and still keeps
+// existing underscore metadata intact.
+type OutputCorrectorWithUsage interface {
+	CorrectOutputWithUsage(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, OutputCorrectionUsage, error)
+}
+
 // The following minimal interfaces are optional extensions to NodeExecutor:
 // the engine type-asserts the configured executor against each and, on a
 // match, pushes the corresponding launch-time state in (workDir, repoRoot,

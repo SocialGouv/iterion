@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 type correctingExecutor struct {
@@ -150,6 +151,72 @@ func TestSchemaValidation_UnchangedCorrectionStopsImmediately(t *testing.T) {
 	if ep.Status != correctionStatusUnchanged || ep.Attempts != 1 {
 		t.Fatalf("correction episode = %#v, want unchanged/1", ep)
 	}
+}
+
+func TestSchemaValidation_PreseededTerminalEpisodeIsNotReinvoked(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "would be repaired", "score": 1}, nil
+	}
+	st := tmpStore(t)
+	if _, err := st.CreateRun(context.Background(), "run-val-preseed", "validation_test", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), "run-val-preseed")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+		"my_agent": {
+			EpisodeID:        "episode-1",
+			NodeID:           "my_agent",
+			Budget:           5,
+			Attempts:         1,
+			Status:           correctionStatusUnchanged,
+			InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
+		},
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5))
+	rs := &runState{ctx: context.Background(), runID: "run-val-preseed"}
+	_, validationErr := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "bad", "score": "x"})
+	if validationErr == nil || exec.calls != 0 {
+		t.Fatalf("preseeded terminal episode invoked corrector: calls=%d err=%v", exec.calls, validationErr)
+	}
+}
+
+func TestSchemaValidation_CorrectionCarriesUsageMetadata(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 9, "_cost_usd": 1.25, "_backend": "test"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+	st := tmpStore(t)
+	if err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-meta", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events, err := st.LoadEvents(context.Background(), "run-val-meta")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "my_agent" {
+			continue
+		}
+		if got, _ := extractUsage(evt.Data); got != 9 {
+			t.Fatalf("node_finished _tokens = %#v, want 9", evt.Data["_tokens"])
+		}
+		payload, _ := evt.Data["output"].(map[string]any)
+		if got, _ := payload["_backend"].(string); got != "test" {
+			t.Fatalf("node_finished output._backend = %#v, want test", payload["_backend"])
+		}
+		return
+	}
+	t.Fatal("my_agent node_finished event not found")
 }
 
 func TestSchemaValidation_DisabledByDefault(t *testing.T) {

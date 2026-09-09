@@ -382,18 +382,20 @@ func (c *Coordinator) ingest(evt *store.Event) {
 			c.rescanLastWatchedActive()
 		}
 	}
-	c.recent = append(c.recent, RenderEvent(evt))
-	if evt.Timestamp.IsZero() {
-		evt.Timestamp = time.Now()
+	rendered := RenderEvent(evt)
+	c.recent = append(c.recent, rendered)
+	progressAt := evt.Timestamp
+	if progressAt.IsZero() {
+		progressAt = time.Now()
 	}
-	progressFP := supervisorFingerprint(RenderEvent(evt))
+	progressFP := supervisorFingerprint(rendered)
 	if c.cursor.LastProgressFingerprint == progressFP {
 		c.cursor.ConsecutiveNoProgress++
 	} else {
 		c.cursor.ConsecutiveNoProgress = 0
 	}
 	c.cursor.LastProgressFingerprint = progressFP
-	c.cursor.LastProgressAt = evt.Timestamp
+	c.cursor.LastProgressAt = progressAt
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
 	}
@@ -569,24 +571,13 @@ func (c *Coordinator) restoreCursor() {
 }
 
 func (c *Coordinator) persistCursor() {
-	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
+	cursorStore := store.AsWatcherCursorStore(c.cursorStore)
+	if cursorStore == nil || c.runID == "" || c.cursorID == "" {
 		return
 	}
 	c.cursor.UpdatedAt = time.Now().UTC()
-	for attempt := 0; attempt < 4; attempt++ {
-		run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
-		if err != nil || run == nil {
-			return
-		}
-		if run.WatcherCursors == nil {
-			run.WatcherCursors = make(map[string]store.WatcherCursor)
-		}
-		run.WatcherCursors[c.cursorID] = c.cursor
-		if err := c.cursorStore.SaveRun(c.ctx, run); err == nil {
-			return
-		} else if !errors.Is(err, store.ErrRunConflict) {
-			return
-		}
+	if err := cursorStore.SetWatcherCursor(c.ctx, c.runID, c.cursorID, c.cursor); err != nil {
+		c.warn("supervise[%s]: watcher cursor save failed on run %s: %v", c.spec.Name, c.runID, err)
 	}
 }
 

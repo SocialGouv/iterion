@@ -31,7 +31,7 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *
 // resume or rewind can mutate the run. Legacy artifacts without a contract
 // are accepted; report/legacy context policies record the mismatch through
 // the caller while enforce refuses it nondestructively.
-func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string) error {
+func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
 		return nil
 	}
@@ -63,7 +63,11 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
 			violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
 		}
-		if currentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != currentRevision {
+		// --force is the established escape hatch for deliberately resuming
+		// against edited workflow source. It waives only the producer-revision
+		// comparison: logical reference, schema and dependency compatibility
+		// are still enforced below.
+		if !forceSourceChange && currentRevision != "" && contract.ProducerRevision != "" && contract.ProducerRevision != currentRevision {
 			violations = append(violations, fmt.Sprintf("artifact %q was produced by workflow revision %q, current revision is %q", contract.LogicalRef, contract.ProducerRevision, currentRevision))
 		}
 		for _, dep := range contract.Dependencies {
@@ -74,8 +78,10 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			if depNode == "" {
 				depNode = dep.LogicalRef
 			}
-			depVersion := run.ArtifactIndex[depNode]
-			if depVersion < dep.Version {
+			depVersion, present := run.ArtifactIndex[depNode]
+			if !present {
+				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, which is absent from the run", contract.LogicalRef, dep.LogicalRef, dep.Version))
+			} else if depVersion < dep.Version {
 				violations = append(violations, fmt.Sprintf("artifact %q requires %s v%d, persisted v%d", contract.LogicalRef, dep.LogicalRef, dep.Version, depVersion))
 			}
 		}
