@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -546,11 +547,14 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	// its own `enabled:` no longer inherits the flag of the baked twin it
 	// shadows. Which is this chokepoint's whole point: metadata from one
 	// tier and a bundle from another is the divergence it exists to close.
-	metaTeam, metaName := teamID, botID
-	if lb.Ref != nil && lb.Ref.TenantID != "" {
-		metaTeam, metaName = lb.Ref.TenantID, lb.Ref.Slug
-	}
-	entry, found, err := s.effectiveFindByNameForTeam(ctx, metaTeam, metaName)
+	//
+	// A stored tier reads STRICTLY for the same reason. effectiveFindByNameForTeam
+	// falls THROUGH when the row it found will not materialize — a fork whose
+	// manifest.yaml does not parse, a store blip on the second read — and its
+	// fall-through lands on the origin this fork replaces: exactly the pairing
+	// the paragraph above forbids, arriving through a helper instead of a tier
+	// choice. Here it is an error the operator can act on.
+	entry, found, err := s.pipelineBotEntry(ctx, teamID, botID, lb)
 	if err != nil {
 		lb.Cleanup()
 		return pipelineBot{}, false, err
@@ -568,6 +572,18 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 	// the launch too, so the card, the upsert key and the run all agree.
 	lb.BotID = entry.Name
 	return pipelineBot{Name: entry.Name, Enabled: entry.Enabled, Launch: lb}, true, nil
+}
+
+// pipelineBotEntry reads the catalog metadata describing the bundle `lb`
+// selected — from the tier that selected it. A stored row (team or platform)
+// answers for itself, strictly: no other tier may stand in for it. Only the
+// baked tier falls through the ordinary team → platform → baked metadata
+// path, which is what it resolved through in the first place.
+func (s *Server) pipelineBotEntry(ctx context.Context, teamID, botID string, lb *launchBot) (botregistry.EntryWithSchema, bool, error) {
+	if lb.Ref != nil && lb.Ref.TenantID != "" {
+		return s.storedBotEntry(ctx, lb.Ref.TenantID, lb.Ref.Slug)
+	}
+	return s.effectiveFindByNameForTeam(ctx, teamID, botID)
 }
 
 // launchTicketNow claims a ticket and launches its bot, returning the run

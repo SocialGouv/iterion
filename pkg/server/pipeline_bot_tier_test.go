@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -329,6 +330,80 @@ func TestPipelineBoardPlatformMetadataDescribesTheBundleThatRuns(t *testing.T) {
 				"and reading `enabled` off the baked twin it shadows launches it anyway", w.Code, w.Body.String())
 		}
 	})
+}
+
+// blipStore fails the Nth GetBySlug of one tenant and serves every other
+// read normally — the transient store failure that lands BETWEEN the two
+// reads a single resolution makes.
+type blipStore struct {
+	botsource.Store
+	tenant string
+	failOn int // 1-based index of the GetBySlug call to fail
+	seen   int
+}
+
+func (b *blipStore) GetBySlug(ctx context.Context, tenantID, slug string) (botsource.BotSource, error) {
+	if tenantID == b.tenant {
+		b.seen++
+		if b.seen == b.failOn {
+			return botsource.BotSource{}, errors.New("mongo: connection reset by peer")
+		}
+	}
+	return b.Store.GetBySlug(ctx, tenantID, slug)
+}
+
+// A row whose OWN metadata cannot be read is the other way the two halves
+// come apart: the launch resolves the fork (a non-empty main.bot is all it
+// asks for), while the metadata read falls THROUGH to the tier below and
+// lands on the ORIGIN this fork replaces. Pairing the fork's bundle with the
+// origin's `enabled` and canonical name is the substitution the chokepoint
+// exists to refuse — and refusing it explicitly is the same contract the
+// launch half already keeps, where only ErrNotFound may fall through.
+func TestPipelineBoardRefusesAForkWhoseOwnMetadataIsUnreadable(t *testing.T) {
+	// Both cases card the slug of an ENABLED baked `probe` — the entry a
+	// fall-through hands back, and the reason silence here is not neutral.
+	t.Run("a store blip between the two reads", func(t *testing.T) {
+		env := newPipelineTierEnv(t)
+		env.seedRow(t, "t1", "probe", tierForkBot)
+		// The launch half reads the row (call 1) and materializes the fork;
+		// the metadata read (call 2) is the one that blips.
+		env.srv.botSources = &blipStore{Store: env.srv.botSources, tenant: "t1", failOn: 2}
+
+		assertUnreadableMetadataRefusal(t, env)
+	})
+
+	t.Run("a bundle whose metadata does not materialize", func(t *testing.T) {
+		env := newPipelineTierEnv(t)
+		// No manifest.yaml and two workflows: discovery cannot say which one
+		// the row IS, so it describes the row with neither.
+		if _, err := env.srv.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+			TenantID: "t1", Slug: "probe",
+			Files: map[string]string{botsource.MainBotFile: tierForkBot, "child.bot": tierForkBot},
+		}); err != nil {
+			t.Fatalf("seed t1/probe: %v", err)
+		}
+
+		assertUnreadableMetadataRefusal(t, env)
+	})
+}
+
+// assertUnreadableMetadataRefusal drives a card create for `probe` and
+// requires an explicit refusal naming the row — never a card admitted on the
+// baked twin's metadata, and never a launch of the fork behind it.
+func assertUnreadableMetadataRefusal(t *testing.T, env *pipelineTierEnv) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"unreadable fork"}`))
+	if w.Code == http.StatusCreated {
+		t.Fatalf("the card was created (%d) — the team's fork was admitted on the ORIGIN's metadata, "+
+			"which is not the bundle that would run", w.Code)
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("create = %d %s, want 500 naming the row whose metadata cannot be read", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "t1/probe") {
+		t.Errorf("refusal = %s, want the tenant/slug of the row the operator has to fix", body)
+	}
 }
 
 // Half 3 — the admission LOOP is local-only (pipelineAdmissionEnabled
