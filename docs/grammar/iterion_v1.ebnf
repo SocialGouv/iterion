@@ -450,7 +450,8 @@ template_namespace = "vars" | "input" | "outputs" | "artifacts"
 ident_list = "[" [ IDENT { "," IDENT } ] "]" ;
 string_list = "[" [ STRING_LIT { "," STRING_LIT } ] "]" ;
 string_or_ident_list = "[" [ string_or_ident { "," string_or_ident } ] "]" ;
-tool_ref_list = "[" [ tool_ref { "," tool_ref } ] "]" ;
+tool_ref_list = "[" [ tool_ref_elem { "," tool_ref_elem } ] "]" ;
+tool_ref_elem = tool_ref | STRING_LIT ;  (* a quoted element is the literal name *)
 skill_ref_list = "[" [ skill_ref { "," skill_ref } ] "]" ;
 
 tool_ref = IDENT { "." IDENT } [ "." "*" ] ;

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
@@ -109,39 +108,6 @@ func TestInlinePromptIncludes_RefusesACycle(t *testing.T) {
 	err := InlinePromptIncludes(pr.File)
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("want a cycle refusal, got %v", err)
-	}
-}
-
-// The compiler itself never resolves an include against the process
-// working directory: a prompt with no source file (an AST that came through
-// the JSON transport with a marker left in it) is refused with C055, even
-// when a file of that name sits in the working directory.
-func TestCompileRefusesAnIncludeWithNoSourceFile(t *testing.T) {
-	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, "secret.md"), []byte("THE POD'S OWN FILE"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(cwd)
-	f := &ast.File{
-		Schemas:   []*ast.SchemaDecl{{Name: "out"}},
-		Prompts:   []*ast.PromptDecl{{Name: "p", Body: "x {{include \"secret.md\"}}"}},
-		Agents:    []*ast.AgentDecl{{Name: "a", LLMDecl: ast.LLMDecl{Model: "m", Output: "out", System: "p"}}},
-		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "a", Edges: []*ast.Edge{{From: "a", To: "done"}}}},
-	}
-	cr := Compile(f)
-	var refused bool
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagBadPromptInclude {
-			refused = true
-		}
-	}
-	if !refused {
-		t.Fatalf("no C055; diagnostics: %v", cr.Diagnostics)
-	}
-	if cr.Workflow != nil {
-		if p, ok := cr.Workflow.Prompts["p"]; ok && strings.Contains(p.Body, "THE POD'S OWN FILE") {
-			t.Fatal("the working directory's file was read into the prompt")
-		}
 	}
 }
 

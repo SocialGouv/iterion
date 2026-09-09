@@ -931,8 +931,9 @@ func writeIdentProp(b *buf, key, value string) {
 }
 
 // writeArtifactLabels renders `artifact_labels: [a, b]` — the labels a
-// published artifact is tagged with (ADR on artifact labels); a label is an
-// identifier, quoted only if it is not.
+// published artifact is tagged with (ADR on artifact labels); a label is
+// written bare when it is an identifier and quoted otherwise, and the tool
+// list parser reads a quoted element back as the literal name.
 func writeArtifactLabels(b *buf, labels []string, indent string) {
 	if len(labels) == 0 {
 		return

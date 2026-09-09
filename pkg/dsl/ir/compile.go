@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -797,19 +796,24 @@ func (c *compiler) compilePrompts() {
 		// of the resolved prompt (auditable, no runtime file reads).
 		// Resolve relative to the directory of the file that declares the
 		// prompt, carried on the declaration's span: the .bot source, or
-		// the bundle's prompts/ for a merged prompts/*.md. A prompt with no
-		// source file (an AST that came through the JSON transport) has
+		// the bundle's prompts/ for a merged prompts/*.md. A prompt whose
+		// recorded source is not a file on this host — none at all (the
+		// JSON transport), or a synthetic name such as "<inline>" — has
 		// nothing to resolve against: its marker is refused, never looked
-		// up in the process working directory — on a runner, the pod's own.
+		// up in the process working directory, which filepath.Dir of a
+		// synthetic name would be — on a runner, the pod's own.
 		body := p.Body
 		var incErrs []error
-		if HasPromptInclude(body) && p.Span.Start.File == "" {
-			incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: the prompt has no source file (an inline or transported prompt must carry its includes resolved)")}
-			// One error per cause: the marker is not a template reference,
-			// and left in the body it would be reported a second time as one.
-			body = promptIncludeRe.ReplaceAllString(body, "")
-		} else {
-			body, incErrs = expandPromptIncludes(body, filepath.Dir(p.Span.Start.File), budget)
+		if HasPromptInclude(body) {
+			if dir, err := promptSourceDir(p.Span.Start.File); err != nil {
+				incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: %v", err)}
+				// One error per cause: the marker is not a template
+				// reference, and left in the body it would be reported a
+				// second time as one.
+				body = promptIncludeRe.ReplaceAllString(body, "")
+			} else {
+				body, incErrs = expandPromptIncludes(body, dir, budget)
+			}
 		}
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)

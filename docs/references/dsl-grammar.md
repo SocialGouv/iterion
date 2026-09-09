@@ -147,9 +147,9 @@ They share the exact property surface:
 | `description` | string |
 | `model`, `backend`, `provider`, `command` | string |
 | `input`, `output`, `publish`, `system`, `user` | identifier reference |
-| `artifact_labels` | tool-ref-style identifier list |
+| `artifact_labels` | tool-ref-style identifier list; a quoted string is the literal label (`"review-ledger"`) |
 | `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` |
-| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted |
+| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted, and a quoted string is the literal name |
 | `skills` | quoted string or dotted-identifier list |
 | `tool_max_steps`, `max_tokens` | integer |
 | `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or quoted runtime value |
@@ -216,7 +216,7 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `description`, `command`, `script`, `goal`, `postcondition` | string |
 | `language` | `js`, `py`, `sh`, `bash` |
 | `input`, `output`, `publish` | identifier |
-| `artifact_labels` | tool-ref list |
+| `artifact_labels` | tool-ref list; a quoted string is the literal label |
 | `await` | `wait_all`, `best_effort` |
 | `sandbox` | sandbox block |
 | `compress` | `off`, `on`, `ultra` |

@@ -131,6 +131,25 @@ func HasPromptInclude(body string) bool {
 	return promptIncludeRe.MatchString(body)
 }
 
+// promptSourceDir is the directory an include in a prompt resolves against:
+// the directory of the file the prompt was read from, when that names an
+// existing regular file on this host. A synthetic name — "" from the JSON
+// transport, "<inline>" from an inline launch, "studio.bot" from the
+// studio's parse endpoint — is not a file, and filepath.Dir of it is ".":
+// the process working directory, which on a server is nobody's and on a
+// runner is the pod's own. The compiler refuses those; the export
+// (InlinePromptIncludes) is stricter still and wants an absolute path.
+func promptSourceDir(file string) (string, error) {
+	if file == "" {
+		return "", errors.New("the prompt has no source file (an inline or transported prompt must carry its includes resolved)")
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.IsDir() {
+		return "", fmt.Errorf("the prompt's source %q is not a file on this host (an inline source cannot carry an include — run the file itself)", file)
+	}
+	return filepath.Dir(file), nil
+}
+
 // InlinePromptIncludes resolves every {{include "..."}} marker in the
 // file's prompts INTO the prompt bodies, each relative to its prompt's own
 // source file, so the AST is self-contained: what travels — a queue message,
