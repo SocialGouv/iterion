@@ -61,22 +61,10 @@ func (s *Service) resolveExecutionContext(ctx context.Context, runID string, spe
 	if out.Workspace.DeclaredMode == "" {
 		out.Workspace.DeclaredMode = wf.Worktree
 	}
-	if out.Workspace.Mode == "" {
-		if wf.Worktree == "auto" {
-			out.Workspace.Mode = store.WorkspaceIsolated
-		} else {
-			out.Workspace.Mode = store.WorkspaceInherited
-		}
-	}
-	if out.Workspace.WorkspaceID == "" {
-		if out.Workspace.Mode == store.WorkspaceIsolated {
-			out.Workspace.WorkspaceID = runID
-		} else if spec.ParentRunID != "" {
-			out.Workspace.WorkspaceID = spec.ParentRunID
-		} else {
-			out.Workspace.WorkspaceID = runID
-		}
-	}
+	// Mode and WorkspaceID are intentionally left for the runtime to stamp
+	// after worktree setup. `worktree: auto` is only a declaration: it may
+	// degrade to in-place execution, while a delegated linked worktree may be
+	// isolated even without that declaration.
 	if out.Workspace.DeclaredRoot == "" {
 		out.Workspace.DeclaredRoot = spec.WorkDir
 		if out.Workspace.DeclaredRoot == "" {

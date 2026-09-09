@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -525,6 +526,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 				}
 			}
 		}
+		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
+			e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
+			return e.setupErr(ctx, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
+		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			e.markFailedBestEffort(ctx, runID, "save work dir", err)
 			return e.setupErr(ctx, fmt.Errorf("runtime: save work dir: %w", err))
@@ -587,6 +592,34 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run.
 	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
+	return nil
+}
+
+// reconcileExecutionWorkspace stamps the effective workspace identity only
+// after worktree setup/adoption has made the isolation decision authoritative.
+// A workflow's `worktree: auto` declaration cannot decide this at launch: it
+// may degrade to in-place, and a delegated linked worktree can be adopted even
+// when the workflow did not request one.
+func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error {
+	if run == nil || run.ExecutionContext == nil {
+		return nil
+	}
+	contract := run.ExecutionContext.Clone()
+	if run.Worktree {
+		contract.Workspace.Mode = store.WorkspaceIsolated
+		contract.Workspace.WorkspaceID = runID
+	} else {
+		contract.Workspace.Mode = store.WorkspaceInherited
+		root := filepath.Clean(e.workDir)
+		if abs, err := filepath.Abs(root); err == nil {
+			root = abs
+		}
+		contract.Workspace.WorkspaceID = store.StableContextID("workspace", root)
+	}
+	if err := contract.Normalize(); err != nil {
+		return err
+	}
+	run.ExecutionContext = contract
 	return nil
 }
 
