@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -337,7 +338,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, runview.ErrRewindNodeNotReached),
 			errors.Is(err, runview.ErrRewindNoSourceRecorded),
 			errors.Is(err, runview.ErrRewindNoChange),
-			errors.Is(err, runview.ErrRewindAmbiguous):
+			errors.Is(err, runview.ErrRewindAmbiguous),
+			errors.Is(err, runtime.ErrArtifactContractIncompatible):
 			s.httpErrorFor(w, r, http.StatusBadRequest, "rewind: %v", err)
 		default:
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "rewind: %v", err)

@@ -763,10 +763,17 @@ func NodePromptRefs(node Node) []string {
 	return refs
 }
 
-// NodeArtifactRefs returns the logical artifact names a node reads while it
-// executes. Edge with-mappings are excluded because they run only after the
-// source node has published its own artifact.
+// NodeArtifactRefs returns every logical artifact name that can feed a node,
+// either directly from its body/prompts or through an incoming edge mapping.
+// Runtime callers that know which incoming edges fired should use
+// NodeArtifactRefsForEdges to exclude unselected alternatives.
 func NodeArtifactRefs(w *Workflow, nodeID string) []string {
+	return NodeArtifactRefsForEdges(w, nodeID, nil)
+}
+
+// NodeArtifactRefsForEdges is NodeArtifactRefs with an optional incoming-edge
+// predicate. A nil predicate includes all incoming mappings.
+func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*Edge) bool) []string {
 	if w == nil || nodeID == "" {
 		return nil
 	}
@@ -776,6 +783,18 @@ func NodeArtifactRefs(w *Workflow, nodeID string) []string {
 			continue
 		}
 		seen[rc.Ref.Path[0]] = struct{}{}
+	}
+	for _, edge := range w.Edges {
+		if edge == nil || edge.To != nodeID || (includeIncoming != nil && !includeIncoming(edge)) {
+			continue
+		}
+		for _, mapping := range edge.With {
+			for _, ref := range mapping.Refs {
+				if ref != nil && ref.Kind == RefArtifacts && len(ref.Path) > 0 {
+					seen[ref.Path[0]] = struct{}{}
+				}
+			}
+		}
 	}
 	refs := make([]string, 0, len(seen))
 	for ref := range seen {
