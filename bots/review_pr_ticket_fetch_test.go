@@ -317,6 +317,44 @@ func TestReviewPRTicketFetch(t *testing.T) {
 		}
 	})
 
+	// The API host comes from a launch VAR and the token is write-capable, so
+	// the two ways a credential leaves toward somewhere nobody intended are
+	// closed here: cleartext, and a redirect (urllib replays Authorization).
+	t.Run("the credential never leaves in clear", func(t *testing.T) {
+		res := run(t, map[string]string{
+			"{{vars.pr_url}}":              `"http://forge.example.invalid/acme/widgets/pull/7"`,
+			"{{secrets.forge_token.path}}": `"` + tokenFile(t) + `"`,
+		})
+		if !strings.Contains(res.Note, "cleartext") {
+			t.Errorf("a non-https pr_url must drop the token and say so, note = %q", res.Note)
+		}
+	})
+
+	t.Run("a redirect is not followed with the credential", func(t *testing.T) {
+		var elsewhere bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/collector" {
+				elsewhere = true
+				w.WriteHeader(200)
+				return
+			}
+			http.Redirect(w, r, "/collector", http.StatusFound)
+		}))
+		defer srv.Close()
+
+		res := run(t, map[string]string{
+			"{{vars.pr_url}}":              `"` + srv.URL + `/acme/widgets/pull/7"`,
+			"{{vars.ticket_refs}}":         `"#4"`,
+			"{{secrets.forge_token.path}}": `"` + tokenFile(t) + `"`,
+		})
+		if elsewhere {
+			t.Error("the node followed a redirect while holding the forge token")
+		}
+		if !strings.Contains(res.Status, "acme/widgets#4: unverifiable") {
+			t.Errorf("a refused redirect must read as unverifiable, got %q", res.Status)
+		}
+	})
+
 	// An unreachable forge degrades to `unverifiable`; it must never crash the
 	// node, because a crashed node is a review that never posts its gate.
 	t.Run("unreachable forge degrades, never crashes", func(t *testing.T) {

@@ -1224,6 +1224,16 @@ tool ticket_fetch:
             obj = obj.get(k)
         return obj
 
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        # urllib replays the Authorization header on a redirect, so following
+        # one would hand the forge token to wherever the response points. The
+        # endpoints used here never legitimately redirect; a 3xx surfaces as
+        # "HTTP 30x" and the ticket is unverifiable, which is the honest answer.
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+
+    OPENER = urllib.request.build_opener(NoRedirect)
+
     def api(url, headers, payload=None):
         if budget[0] <= 0:
             return None, "request budget exhausted"
@@ -1235,7 +1245,7 @@ tool ticket_fetch:
             hdrs["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=hdrs)
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with OPENER.open(req, timeout=TIMEOUT) as r:
                 return json.loads(r.read().decode("utf-8", "replace")), ""
         except urllib.error.HTTPError as e:
             return None, "HTTP " + str(e.code)
@@ -1295,8 +1305,14 @@ tool ticket_fetch:
                     token = fh.read().strip()
             except Exception:
                 token = ""
+        # The host is derived from a LAUNCH VAR, and this credential is
+        # write-capable: never put it on the wire in clear. Loopback is the
+        # exception a self-hosted forge under test legitimately needs.
+        if token and u.scheme != "https" and host.split(":")[0] not in ("127.0.0.1", "::1", "localhost"):
+            token = ""
+            notes.append("pr_url is not https: reading anonymously rather than sending the forge token in cleartext")
         if not token:
-            notes.append("no forge credential bound: reading anonymously (private issues will be unverifiable)")
+            notes.append("no forge credential in use: reading anonymously (private issues will be unverifiable)")
 
         def headers():
             h = {"Accept": "application/json", "User-Agent": "iterion-revi"}
