@@ -526,6 +526,84 @@ func TestOutputCorrectionBudget_EnvReachesEngine(t *testing.T) {
 	}
 }
 
+// conflictingSaveStore makes the first N SaveRun calls lose the CAS race, the
+// way a concurrent granular write (an operator cancel, the orphan sweeper)
+// does — every partial run write bumps the CAS version, so the whole-document
+// ledger write conflicts rather than silently reverting it.
+type conflictingSaveStore struct {
+	store.RunStore
+	armed         atomic.Bool
+	conflictsLeft atomic.Int32
+}
+
+func (s *conflictingSaveStore) SaveRun(ctx context.Context, r *store.Run) error {
+	// Only once the node has run: conflicting earlier would break run
+	// admission, which has a CAS loop of its own.
+	if s.armed.Load() && s.conflictsLeft.Add(-1) >= 0 {
+		return store.ErrRunConflict
+	}
+	return s.RunStore.SaveRun(ctx, r)
+}
+
+// A lost CAS race on the ledger must be retried, not reported as a hard run
+// failure in place of the validation error the loop was called to repair.
+func TestSchemaValidation_LedgerWriteRetriesOnConflict(t *testing.T) {
+	st := &conflictingSaveStore{RunStore: tmpStore(t)}
+	st.conflictsLeft.Store(2) // lose twice, win on the third attempt
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		st.armed.Store(true)
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	if err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(context.Background(), "run-val-conflict", nil); err != nil {
+		t.Fatalf("Run: %v — a retried CAS conflict must not fail the run", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-conflict")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if ep := singleCorrectionEpisode(t, run); ep.Status != correctionStatusSucceeded {
+		t.Fatalf("episode = %#v, want succeeded", ep)
+	}
+}
+
+// Losing every retry is a ledger failure, and must surface as one rather than
+// letting the correction proceed on an unrecorded budget.
+func TestSchemaValidation_LedgerWriteExhaustedFailsClosed(t *testing.T) {
+	st := &conflictingSaveStore{RunStore: tmpStore(t)}
+	st.conflictsLeft.Store(1 << 20) // never win
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		st.armed.Store(true)
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(context.Background(), "run-val-conflict-hard", nil)
+	if err == nil {
+		t.Fatal("expected the run to fail when the ledger can never be written")
+	}
+	if !strings.Contains(err.Error(), "output correction ledger") {
+		t.Fatalf("error = %v, want it to name the correction ledger", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 — an unrecorded budget must not authorise a correction", exec.calls)
+	}
+}
+
 // singleCorrectionEpisode asserts the ledger holds exactly one episode and
 // returns it — the key is an execution identity, not a bare node id, so tests
 // must not hardcode it.

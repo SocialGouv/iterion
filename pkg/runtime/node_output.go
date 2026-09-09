@@ -387,11 +387,33 @@ func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, key string) (
 	return ep, ok, nil
 }
 
+// correctionLedgerRetries / correctionLedgerBackoff bound the CAS retry on the
+// whole-document ledger write. Every partial run write bumps the CAS version
+// (FilesystemRunStore.writeRun; versionRunUpdate on Mongo), so a concurrent
+// granular write — an operator cancel, the orphan sweeper — makes this write
+// CONFLICT rather than silently revert it. The cost is therefore contention,
+// not data loss: without a pause between attempts, four retries fired
+// microseconds apart all lose to the same competing writer and the loop
+// reports a hard ledger failure in place of the validation error it was called
+// to repair.
+const (
+	correctionLedgerRetries = 4
+	correctionLedgerBackoff = 5 * time.Millisecond
+)
+
 func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, key string, episode store.OutputCorrectionEpisode) error {
 	if e.store == nil {
 		return nil
 	}
-	for attempt := 0; attempt < 4; attempt++ {
+	var lastErr error = store.ErrRunConflict
+	for attempt := 0; attempt < correctionLedgerRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(correctionLedgerBackoff << (attempt - 1)):
+			}
+		}
 		r, err := e.store.LoadRun(ctx, runID)
 		if err != nil {
 			return err
@@ -400,13 +422,16 @@ func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, key string
 			r.OutputCorrections = make(map[string]store.OutputCorrectionEpisode)
 		}
 		r.OutputCorrections[key] = episode
-		if err := e.store.SaveRun(ctx, r); err == nil {
+		err = e.store.SaveRun(ctx, r)
+		if err == nil {
 			return nil
-		} else if !errors.Is(err, store.ErrRunConflict) {
+		}
+		if !errors.Is(err, store.ErrRunConflict) {
 			return err
 		}
+		lastErr = err
 	}
-	return store.ErrRunConflict
+	return lastErr
 }
 
 // ---------------------------------------------------------------------------
