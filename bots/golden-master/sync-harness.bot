@@ -3571,16 +3571,38 @@ tool sync_harness:
                       - set(v.get("undetected_targets") or []))
                      | set(v.get("collateral") or []))
             inside = moved & set(g)
+            still = set(g) - inside
             if not inside:
                 unproven.append({"ids": list(g), "separated_by": sep, "moved": [], "why":
                                  "the declared separator moves NO member of the group — it "
                                  "does not separate anything"})
-            elif inside == set(g):
+            elif not still:
                 unproven.append({"ids": list(g), "separated_by": sep,
                                  "moved": sorted(inside), "why":
                                  "the declared separator moves EVERY member together, so it no "
                                  "longer tells them apart. Draw one that moves a strict subset, "
                                  "or accept that the group is redundant."})
+            elif len(inside) > 1 or len(still) > 1:
+                # A STRICT SUBSET IS NOT ENOUGH ONCE THE GROUP EXCEEDS TWO, and
+                # reading it as enough was a false green of the exact family this
+                # obligation exists to remove: three byte-identical references, a
+                # separator moving one, and the remaining PAIR reported proved
+                # while nothing had ever told the two apart.
+                #
+                # The measurement compares each entry to its OWN reference — never
+                # two entries to each other — so two members on the same side of
+                # the split carry no evidence about each other, whether they both
+                # moved or both stayed. Only a split into two singletons is a
+                # separation this net has actually observed.
+                unproven.append({"ids": list(g), "separated_by": sep,
+                                 "moved": sorted(inside), "why":
+                                 "the declared separator splits the group into %s and %s, and a "
+                                 "side holding more than one entry is NOT separated: the capture "
+                                 "compares each entry to its own reference, never two entries to "
+                                 "each other, so those references remain interchangeable on the "
+                                 "evidence. One mutant can only tell two apart — drop the "
+                                 "redundant entries, or make them observe something that differs."
+                                 % (sorted(inside), sorted(still))})
         for g in sorted(set(decls) - observed):
             unproven.append({"ids": list(g), "separated_by": decls[g], "why":
                              "declared, but these references are no longer byte-identical — the "
@@ -6262,6 +6284,25 @@ tool sync_harness:
               whys(["012", "013"], D, {"autre": {"013"}}), [["012", "013"]])
         check("groupe observe mais non declare : refuse",
               whys(["012", "013"], [], {}), [["012", "013"]])
+        # AU-DELA DE DEUX, un sous-ensemble strict ne prouve plus rien. Trois
+        # references identiques, un separateur qui en deplace UNE, et la PAIRE
+        # restante passait pour prouvee alors que rien ne l'avait jamais separee —
+        # le faux vert exact que cette obligation existe pour supprimer. La mesure
+        # compare chaque entree a SA reference, jamais deux entrees entre elles.
+        T = [{"ids": ["012", "013", "014"], "separated_by": "sep-01"}]
+        check("groupe de trois, separateur qui en deplace une : refuse",
+              whys(["012", "013", "014"], T, {"sep-01": {"012"}}),
+              [["012", "013", "014"]])
+        check("groupe de trois, separateur qui en deplace deux : refuse aussi",
+              whys(["012", "013", "014"], T, {"sep-01": {"012", "013"}}),
+              [["012", "013", "014"]])
+        check("et le refus nomme les deux cotes de la coupe",
+              unproven_duplicate_groups(
+                  [["012", "013", "014"]],
+                  {"entries": [], "duplicate_groups": T},
+                  [{"id": "sep-01", "valid": True, "targets_declared": ["012"],
+                    "undetected_targets": [], "collateral": []}])[0]["moved"],
+              ["012"])
         check("declaration devenue caduque : refuse",
               whys(["012", "013"], D + [{"ids": ["019", "077"], "separated_by": "sep-02"}],
                    {"sep-01": {"013"}}), [["019", "077"]])
