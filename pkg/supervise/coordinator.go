@@ -492,9 +492,8 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	}
 	dec, usage, err := c.eval.Evaluate(c.ctx, in)
 	c.lastEvalAt = time.Now()
-	now := c.lastEvalAt
-	c.cursor.LastEvaluationAt = &now
-	c.cursor.NextEvaluationAt = timePtr(now.Add(c.spec.Cooldown))
+	c.cursor.LastEvaluationAt = timePtr(c.lastEvalAt)
+	c.cursor.NextEvaluationAt = timePtr(c.lastEvalAt.Add(c.spec.Cooldown))
 	c.cursor.LastTriggerFingerprint = triggerFP
 	defer c.persistCursor()
 	c.inTokens += usage.InputTokens
@@ -533,6 +532,14 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	c.info("supervise[%s]: eval %d/%d (wake=%s) → %s",
 		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
+	switch {
+	case dec.Intervene:
+		c.cursor.LastAction = "intervene"
+	case dec.Done:
+		c.cursor.LastAction = "done"
+	default:
+		c.cursor.LastAction = "observe"
+	}
 	if dec.Intervene {
 		// Make the CONSUMED TRIGGER durable before the steering message is.
 		// The deferred persist above only runs once evaluate returns, i.e.
@@ -548,13 +555,6 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		c.persistCursor()
 	}
 	c.applyDecision(dec)
-	if dec.Intervene {
-		c.cursor.LastAction = "intervene"
-	} else if dec.Done {
-		c.cursor.LastAction = "done"
-	} else {
-		c.cursor.LastAction = "observe"
-	}
 	return false
 }
 
