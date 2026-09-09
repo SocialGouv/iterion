@@ -40,6 +40,47 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	}
 }
 
+// cursorProbeInjector snapshots the run document at the instant Inject is
+// called — the exact point a crash would leave a durable steering message
+// behind an absent trigger fingerprint.
+type cursorProbeInjector struct {
+	StoreInjector
+	cursorsAtInject map[string]store.WatcherCursor
+}
+
+func (i *cursorProbeInjector) Inject(ctx context.Context, runID, nodeID, text string) error {
+	if run, err := i.Store.LoadRun(ctx, runID); err == nil && run != nil {
+		i.cursorsAtInject = run.WatcherCursors
+	}
+	return i.StoreInjector.Inject(ctx, runID, nodeID, text)
+}
+
+func TestConsumedTriggerIsDurableBeforeTheSteeringMessageIs(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if _, err := st.CreateRun(context.Background(), "cursor-run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	inj := &cursorProbeInjector{StoreInjector: StoreInjector{Store: st}}
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: true, Message: "re-read the diff before continuing"}}}
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, inj, "cursor-run",
+		Spec{Name: "watch", Cooldown: time.Minute}, eval, nil)
+	c.ctx = context.Background()
+	c.ingest(&store.Event{RunID: "cursor-run", Type: store.EventNodeStarted, NodeID: "agent", Seq: 1, Timestamp: time.Now().UTC()})
+	c.evaluate("monitor matched: give-up marker", true)
+
+	cursor, ok := inj.cursorsAtInject[c.cursorID]
+	if !ok {
+		t.Fatalf("run carried %#v when the steering message was enqueued, want cursor %q already durable",
+			inj.cursorsAtInject, c.cursorID)
+	}
+	if cursor.LastTriggerFingerprint == "" {
+		t.Fatalf("cursor %#v had no trigger fingerprint at enqueue time — a crash here replays the same correction", cursor)
+	}
+}
+
 // ctxSensitiveStore refuses a read/write whose context is already spent,
 // the way the Mongo twin does. The filesystem store takes `_ context.Context`
 // and ignores it, so a plain store is structurally incapable of catching a

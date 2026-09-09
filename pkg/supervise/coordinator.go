@@ -534,6 +534,20 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	c.info("supervise[%s]: eval %d/%d (wake=%s) → %s",
 		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
+	if dec.Intervene {
+		// Make the CONSUMED TRIGGER durable before the steering message is.
+		// The deferred persist above only runs once evaluate returns, i.e.
+		// after applyDecision has already enqueued — and the enqueue is
+		// durable and un-deduplicated (Inject mints a fresh message id;
+		// AppendQueuedMessage is a blind append). A crash in that window
+		// would leave the correction on the run's inbox and no proof that
+		// its trigger was spent, so the next process re-evaluates the same
+		// evidence and enqueues the same correction again: exactly the loop
+		// this cursor exists to close. The other ordering costs at most one
+		// intervention, and the next event re-earns it with a fresh progress
+		// fingerprint.
+		c.persistCursor()
+	}
 	c.applyDecision(dec)
 	if dec.Intervene {
 		c.cursor.LastAction = "intervene"
