@@ -71,3 +71,67 @@ window before it can enqueue another corrective message. Failed evaluator
 calls clear only the trigger fingerprint and remain bounded by the existing
 consecutive-failure cap. Launch surfaces that expose a run store opt in via the
 capability method; other observers retain the existing in-memory behaviour.
+
+## Pilot, compatibility and rollback (tranche G)
+
+The rollout is deliberately reversible:
+
+1. Capture a baseline with `iterion reliability report` — finished, failed,
+   failed-resumable, paused and queued runs, plus retry-armed and ledger-use
+   counts, over the store the working directory resolves to (`--store-dir`
+   overrides it, `--json` makes it diffable). The same command with
+   `--run-id <id>` answers the per-run question instead: legacy or contract
+   context, admission recorded, how many nodes published, and whether the run
+   is rollback-safe. Both are strictly read-only — reporting on a legacy run
+   never upgrades its policy. The report's first lines are the RESOLVED mode
+   and context policy, so the baseline always states which of the two
+   variables below was in effect when it was taken.
+2. Start a pilot in `report` mode with `ITERION_RELIABILITY_MODE=report`.
+   Admission decisions are recorded and surfaced, but legacy contexts remain
+   runnable; correction and watcher ledgers are observational evidence that
+   can be compared with the baseline.
+3. Promote only the selected tenant/workflow revisions to `enforce` after
+   queued, resumed, nested and watcher paths show matching context and
+   artifact contracts. The retry circuit stays bounded by
+   `ITERION_RETRY_CIRCUIT_THRESHOLD` / `ITERION_RETRY_CIRCUIT_COOLDOWN`.
+4. Roll back by setting `ITERION_RELIABILITY_MODE=legacy`
+   (`iterion reliability rollback` prints the plan verbatim, including which
+   variable wins — it prints, it does not mutate: the variable is set where
+   the launch surfaces read it, in a pod spec or a service unit, not by a
+   one-shot CLI process). Do not delete the
+   ledgers: they are the evidence needed to explain the pilot and make a later
+   resume safe.
+
+The output correction budget is deliberately **not** on that list. Correction
+runs only for an engine built with `runtime.WithOutputValidation` and an
+executor implementing `runtime.OutputCorrector`, and no production path has
+either today — the production `ClawExecutor` validates and retries upstream of
+the engine's optional path. An `ITERION_OUTPUT_CORRECTION_BUDGET` would read
+as an emergency lever during an incident and do nothing, so the rollout does
+not offer one; `runtime.WithOutputCorrectionBudget` remains the explicit API
+for a custom or test engine. The `output_corrections` ledger stays readable
+either way — pre-pilot runs simply have none.
+
+### The two variables, and which one wins
+
+`ITERION_RELIABILITY_MODE` (`legacy|report|enforce`) is the operator-facing
+switch for this rollout and it is **authoritative**.
+`ITERION_EXECUTION_CONTEXT_POLICY` — the narrower, pre-existing switch this
+rollout generalises — takes the same three values and is read when
+`ITERION_RELIABILITY_MODE` is unset or invalid. Both resolve through one
+implementation
+([`reliability.ContextPolicyFromEnv`](../pkg/reliability/rollout.go), which
+`runview.ExecutionContextPolicyFromEnv` delegates to), so what a report names
+is what the launch surfaces apply.
+
+The precedence is what makes step 4 an emergency lever rather than a
+suggestion: a deployment that already carries
+`ITERION_EXECUTION_CONTEXT_POLICY=enforce` rolls back by setting
+`ITERION_RELIABILITY_MODE=legacy` alone — it does not also have to find and
+unset the older variable. An unrecognised value emits a one-time warning; an
+invalid new mode falls back to the older valid policy, while an invalid or
+absent value in both variables resolves to `legacy`.
+
+Legacy documents are always readable. Missing context, admission, correction
+or watcher fields mean “pre-pilot”, not “successful”; the compatibility report
+marks that state explicitly so a green status cannot be inferred by accident.
