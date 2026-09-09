@@ -200,13 +200,14 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// Synthetic checkpoint anchoring the engine at NodeID. The engine's
 	// resumeFromFailure path re-executes NodeID first, then walks
 	// downstream.
+	artifactRevisionsKnown := parent.Checkpoint != nil && parent.Checkpoint.ArtifactRevisionsKnown
 	child.Checkpoint = &store.Checkpoint{
 		NodeID:                 spec.NodeID,
 		Outputs:                copyOutputs(parent.Checkpoint),
 		LoopCounters:           copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
 		ArtifactVersions:       copyArtifactVersions(parent.Checkpoint),
 		ArtifactRevisions:      copyArtifactRevisions(parent.Checkpoint),
-		ArtifactRevisionsKnown: parent.Checkpoint.ArtifactRevisionsKnown,
+		ArtifactRevisionsKnown: artifactRevisionsKnown,
 		Vars:                   copyVars(parent.Checkpoint),
 		BackendName:            turn.Backend,
 		BackendSessionID:       turn.SessionID,
@@ -395,12 +396,14 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		artifact, err := runStore.LoadArtifact(ctx, parentRunID, key.nodeID, key.version)
 		if err != nil {
 			if optionalRoot {
+				delete(seen, key)
 				return fmt.Errorf("%w: %s/%d: %v", errInferredForkArtifactUnavailable, key.nodeID, key.version, err)
 			}
 			return fmt.Errorf("load %s/%d from parent: %w", key.nodeID, key.version, err)
 		}
 		if artifact == nil || artifact.RunID != parentRunID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
 			if optionalRoot {
+				delete(seen, key)
 				return fmt.Errorf("%w: %s/%d has mismatched persisted identity", errInferredForkArtifactUnavailable, key.nodeID, key.version)
 			}
 			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)

@@ -276,6 +276,76 @@ func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
 	}
 }
 
+func TestCopyForkArtifactsDoesNotCacheFailedOptionalRoot(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-optional-dependency-parent", "fork-optional-dependency-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "consumer", Version: 0, Data: map[string]any{"value": "derived"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "consumer", ProducerNode: "consumer", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "missing", NodeID: "missing", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inferred := []store.ArtifactRevisionRef{
+		{NodeID: "missing", Version: 0},
+		{NodeID: "consumer", Version: 0},
+	}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, nil, inferred); err == nil {
+		t.Fatal("consumer was copied after its previously skipped required dependency remained unavailable")
+	}
+	if _, err := st.LoadArtifact(ctx, childID, "consumer", 0); err == nil {
+		t.Fatal("consumer artifact was written despite its missing required dependency")
+	}
+}
+
+func TestForkBeforeFirstCheckpointKeepsLegacyArtifactStateUnknown(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID = "fork-before-first-checkpoint"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{
+		RunID: parentID, NodeID: "first", TurnIndex: 0, Backend: "claude_code", WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Fork(ctx, ForkSpec{RunID: parentID, NodeID: "first", TurnIndex: 0})
+	if err != nil {
+		t.Fatalf("Fork before first completed node: %v", err)
+	}
+	child, err := st.LoadRun(ctx, result.NewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Checkpoint == nil {
+		t.Fatal("fork did not create its synthetic checkpoint")
+	}
+	if child.Checkpoint.ArtifactRevisionsKnown {
+		t.Fatal("fork invented authoritative artifact provenance without a parent checkpoint")
+	}
+}
+
 // TestFork_LatestTurn confirms that passing turn_index=-1 picks the
 // most-recent turn captured for the node.
 func TestFork_LatestTurn(t *testing.T) {
