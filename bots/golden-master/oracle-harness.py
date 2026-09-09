@@ -1619,10 +1619,12 @@ def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
             # declaration would otherwise be dropped in silence by
             # duplicate_group_decls and read as "no declaration at all".
             for g in (head_c.get("duplicate_groups") or []):
+                _sep = g.get("separated_by") if isinstance(g, dict) else None
+                _seps = [_sep] if isinstance(_sep, str) else _sep
                 if not isinstance(g, dict) or not isinstance(g.get("ids"), list) \
                         or len(g.get("ids") or []) < 2 \
-                        or not isinstance(g.get("separated_by"), str) \
-                        or not g.get("separated_by"):
+                        or not isinstance(_seps, list) or not _seps \
+                        or not all(isinstance(m, str) and m for m in _seps):
                     corpus_problems.append(
                         "a `duplicate_groups` entry is malformed (%r) — it needs "
                         "at least two `ids` and a non-empty `separated_by`, or it "
@@ -3262,9 +3264,15 @@ def duplicate_group_decls(corpus):
             continue
         ids = g.get("ids")
         sep = g.get("separated_by")
-        if not isinstance(ids, list) or len(ids) < 2 or not isinstance(sep, str) or not sep:
+        # One separator or several: a class of two needs one mutant to split it,
+        # a class of four needs enough of them to tell all four apart. Written
+        # as a bare string for the common case, a list when resolution costs
+        # more than one.
+        seps = [sep] if isinstance(sep, str) else sep
+        if not isinstance(ids, list) or len(ids) < 2 or not isinstance(seps, list) \
+                or not seps or not all(isinstance(m, str) and m for m in seps):
             continue
-        out[tuple(sorted(str(i) for i in ids))] = sep
+        out[tuple(sorted(str(i) for i in ids))] = tuple(dict.fromkeys(seps))
     return out
 
 
@@ -3273,18 +3281,28 @@ def separator_group_ids(corpus, mutant_id):
     if not mutant_id:
         return set()
     ids = set()
-    for group, sep in duplicate_group_decls(corpus).items():
-        if sep == mutant_id:
+    for group, seps in duplicate_group_decls(corpus).items():
+        if mutant_id in seps:
             ids.update(group)
     return ids
 
 
 def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False):
-    """Which byte-identical groups are NOT discharged by a measured separator.
+    """Which byte-identical classes are NOT discharged by measured separators.
 
-    Returns one record per group that fails, with the reason IN the record —
-    the gate turns them into its refusal, and the selftest calls this same
-    function, so what is tested is what runs.
+    `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
+    sha256 — so a class of three or more cannot be declared as a set of pairs:
+    the declaration is keyed on the class itself. What several separators buy is
+    RESOLUTION. A class is discharged when the members are pairwise
+    distinguishable: for each one, the pattern of which declared separators move
+    it must be unique. One separator over a pair reduces to "moves one, not the
+    other"; four members need enough separators to tell all four apart, which is
+    exactly what the campaign's own notes describe when they name `sep-04` for
+    one member and `sep-05` for two others.
+
+    Returns one record per class that fails, with the reason IN the record — the
+    gate turns them into its refusal, and the selftest calls this same function,
+    so what is tested is what runs.
     """
     decls = duplicate_group_decls(corpus)
     observed = {tuple(sorted(g)) for g in duplicate_refs}
@@ -3292,48 +3310,54 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
     # never `undetected_targets` nor `collateral` — score_mutant returns before
     # they are set — so crediting it would read "moved every declared target"
     # from a measurement that never ran. And that is exactly how a separator
-    # dies when a lot re-anchors it: its apply.sh stops working. The group would
+    # dies when a lot re-anchors it: its apply.sh stops working. The class would
     # have been reported PROVED by the failure it exists to catch.
     scored = {v.get("id"): v for v in verdicts if v.get("id") and v.get("valid")}
     seen_ids = {v.get("id") for v in verdicts if v.get("id")}
     unproven = []
     for g in sorted(observed):
-        sep = decls.get(g)
-        if not sep:
+        seps = decls.get(g)
+        if not seps:
             unproven.append({"ids": list(g), "why":
-                             "no `duplicate_groups` entry declares this group. Either one "
+                             "no `duplicate_groups` entry declares this class. Either a "
                              "member is redundant — drop it — or the identity is a control, "
-                             "and then it must name the mutant that separates it."})
+                             "and then it must name the mutant(s) that tell them apart."})
             continue
-        v = scored.get(sep)
-        if v is None:
-            unproven.append({"ids": list(g), "separated_by": sep, "why":
-                             ("the declared separator ran but came back INVALID — it proves "
-                              "nothing, and a separator that stops applying is exactly how "
-                              "this group loses its proof")
-                             if sep in seen_ids else
-                             ("the declared separator was not scored in this pass (absent "
-                              "from the mutant set%s)" %
-                              (", or excluded by GM_MUTANTS" if restricted else ""))})
+        missing = [m for m in seps if m not in scored]
+        if missing:
+            unproven.append({"ids": list(g), "separated_by": list(seps), "why":
+                             "declared separator(s) %s %s" %
+                             (", ".join(sorted(missing)),
+                              "ran but came back INVALID — a separator that stops applying "
+                              "is exactly how this class loses its proof"
+                              if all(m in seen_ids for m in missing) else
+                              ("were not scored in this pass (absent from the mutant set%s)"
+                               % (", or excluded by GM_MUTANTS" if restricted else "")))})
             continue
-        moved = ((set(v.get("targets_declared") or [])
-                  - set(v.get("undetected_targets") or []))
-                 | set(v.get("collateral") or []))
-        inside = moved & set(g)
-        if not inside:
-            unproven.append({"ids": list(g), "separated_by": sep, "moved": [], "why":
-                             "the declared separator moves NO member of the group — it "
-                             "does not separate anything"})
-        elif inside == set(g):
-            unproven.append({"ids": list(g), "separated_by": sep,
-                             "moved": sorted(inside), "why":
-                             "the declared separator moves EVERY member together, so it no "
-                             "longer tells them apart. Draw one that moves a strict subset, "
-                             "or accept that the group is redundant."})
+        # One signature per member: which of the declared separators move it.
+        # Pairwise-distinct signatures IS "the references are distinguishable";
+        # anything less leaves two members that no declared mutant separates.
+        sig = {}
+        for m in g:
+            bits = []
+            for sep in seps:
+                v = scored[sep]
+                moved = ((set(v.get("targets_declared") or [])
+                          - set(v.get("undetected_targets") or []))
+                         | set(v.get("collateral") or []))
+                bits.append(m in moved)
+            sig.setdefault(tuple(bits), []).append(m)
+        collided = sorted(sorted(ms) for ms in sig.values() if len(ms) > 1)
+        if collided:
+            unproven.append({"ids": list(g), "separated_by": list(seps),
+                             "indistinguishable": collided, "why":
+                             "every declared separator treats these members identically, so "
+                             "none of them tells the references apart. Draw one that moves a "
+                             "strict subset, or accept that they are redundant."})
     for g in sorted(set(decls) - observed):
-        unproven.append({"ids": list(g), "separated_by": decls[g], "why":
-                         "declared, but these references are no longer byte-identical — the "
-                         "claim has nothing left to justify. Remove the declaration."})
+        unproven.append({"ids": list(g), "separated_by": list(decls[g]), "why":
+                         "declared, but these references are not a byte-identical class — the "
+                         "claim has nothing left to justify. Remove or re-key the declaration."})
     return unproven
 
 
@@ -5838,7 +5862,17 @@ def _selftest():
                      {"ids": ["019", "012"], "separated_by": ""},
                      "pas-un-dict"]}
     check("une declaration se lit triee, et les malformees sont ignorees",
-          duplicate_group_decls(corpus_dg), {("012", "013"): "sep-01"})
+          duplicate_group_decls(corpus_dg), {("012", "013"): ("sep-01",)})
+    # Un separateur ou plusieurs : une classe de quatre demande assez de mutants
+    # pour distinguer les quatre, pas un seul qui coupe quelque part.
+    check("plusieurs separateurs se lisent, dedupliques et ordonnes",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b", "c"], "separated_by": ["s2", "s1", "s2"]}]}),
+          {("a", "b", "c"): ("s2", "s1")})
+    check("une liste vide ou non-textuelle est ignoree",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b"], "separated_by": []},
+              {"ids": ["c", "d"], "separated_by": [1]}]}), {})
     check("les ids d'un groupe sont epingles pour SON separateur",
           separator_group_ids(corpus_dg, "sep-01"), {"012", "013"})
     check("et pour aucun autre",
@@ -5897,6 +5931,69 @@ def _selftest():
         [{"id": "sep-01", "valid": False, "targets_declared": ["013"]}])
     check("et le motif dit qu'il a tourne, pas qu'il est absent",
           [("INVALID" in x["why"]) for x in _inv], [True])
+
+    # Une CLASSE de quatre, le cas reel du corpus : `sep-04` deplace un membre,
+    # `sep-05` en deplace deux — ensemble ils donnent quatre signatures
+    # distinctes, donc les quatre references sont distinguables.
+    C4 = [{"ids": ["074", "075", "076", "110"],
+           "separated_by": ["sep-04", "sep-05"]}]
+    def _v(mid, moved):
+        return {"id": mid, "valid": True, "targets_declared": sorted(moved),
+                "undetected_targets": [], "collateral": []}
+    # Et le resultat est celui du corpus REEL, pas celui qu'on esperait :
+    # `sep-04` isole 074, `sep-05` deplace 076 ET 110 ensemble — donc ces deux-la
+    # partagent leur signature et rien ne les separe. Deux separateurs ne
+    # suffisent pas a distinguer quatre references ; le banc l'a appris du
+    # produit apres avoir affirme le contraire.
+    check("deux separateurs ne distinguent pas quatre membres",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": C4},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"})])],
+          [[["076", "110"]]])
+    # Avec un troisieme qui ne bouge que 110, les quatre signatures deviennent
+    # distinctes et la classe est acquittee.
+    check("un separateur de plus les distingue toutes : acquittee",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"],
+                   "separated_by": ["sep-04", "sep-05", "sep-06"]}]},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"}),
+               _v("sep-06", {"110"})])],
+          [])
+    # 076 et 110 partagent la meme signature : deux membres que rien ne separe.
+    check("deux membres de meme signature : la classe n'est PAS acquittee",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"], "separated_by": ["sep-04"]}]},
+              [_v("sep-04", {"074"})])],
+          [[["075", "076", "110"]]])
+    # Et une declaration en PAIRES sur une classe de trois ne la couvre pas :
+    # la cle est la classe maximale, pas un decoupage choisi par le lot.
+    check("des paires ne declarent pas une classe de trois",
+          sorted(x["ids"] for x in unproven_duplicate_groups(
+              [["a", "b", "c"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["a", "b"], "separated_by": "s1"},
+                  {"ids": ["b", "c"], "separated_by": "s1"}]},
+              [_v("s1", {"a"})])),
+          [["a", "b"], ["a", "b", "c"], ["b", "c"]])
+
+    # Le CONTRAT que le site d'appel doit honorer : un separateur fourni parmi
+    # les verdicts du jeu tenu a l'ecart est reconnu comme les autres. La
+    # fonction est agnostique — c'est l'appelant qui doit composer les deux
+    # listes, et CE cablage-la n'est pas couvert par ce banc (le rejouer
+    # demanderait une porte complete). La limite est ecrite plutot que masquee.
+    check("un separateur venu du jeu tenu a l'ecart est reconnu",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "held-sep"}]},
+              [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": []}])],
+          [])
 
     D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
     check("separateur qui deplace UN membre : preuve acquittee",
@@ -6728,8 +6825,13 @@ def main():
         # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
         # separator to a lot's re-anchoring — the mutant now moves both members,
         # and the pair proves nothing at all.
+        # verdicts + held. A declared separator may live in the held-out set —
+        # score_mutant pins its group unconditionally, so the deciding
+        # measurement really IS taken — but it lands in `held`, not `verdicts`.
+        # Passing only the latter made the gate report a separator it had just
+        # scored as never scored, and refuse the group on its own blind spot.
         unproven = unproven_duplicate_groups(
-            report["duplicate_refs"], corpus, verdicts, bool(only))
+            report["duplicate_refs"], corpus, list(verdicts) + list(held), bool(only))
         report["duplicate_groups_unproven"] = unproven
         if unproven:
             # The headline counts what the payload lists. Interpolating the
