@@ -3145,6 +3145,43 @@ tool sync_harness:
         return all(v.get("revert_clean", True) for v in verdicts)
 
 
+    def measurement_hygiene(verdicts, held):
+        """`collateral`, `unstable_controls` and the line that NAMES them — over the
+        visible AND the held-out verdicts.
+
+        `score_pct` must stay visible-only: averaging a sealed set into the headline
+        is the resemblance this bot refuses. But these two are not a score, they are
+        HYGIENE OF MEASUREMENT — did a mutant move what it does not declare, does a
+        control reproduce itself — and `overall_revert_clean` already crosses both
+        sets for exactly that reason.
+
+        It became load-bearing the day a held verdict started DECIDING something:
+        `unproven_duplicate_groups` credits a separator's `collateral` as proof that
+        it moved a group member, and score_mutant PINS every group member into that
+        separator's control sample so the measurement exists. Read from `verdicts`
+        alone, the identical measurement was a hard red when the separator was
+        visible (`collateral == 0` is a gate term, in the graph AND in the standalone
+        runner) and a silent proof when it was held. A class cannot be discharged
+        through a channel the gate is forbidden to look at.
+
+        The detail ranges over the same set as the count — a headline that counts
+        what it does not list is the defect this file just removed from the
+        duplicate-group refusal — and each line says which set it came from, because
+        a held-out finding reads differently even though it is just as actionable.
+        """
+        held_ids = {v.get("id") for v in held}
+        both = list(verdicts) + list(held)
+        return {
+            "collateral": sum(len(v.get("collateral") or []) for v in both),
+            "unstable_controls": sorted({c for v in both
+                                         for c in (v.get("unstable_controls") or [])}),
+            "detail": "; ".join(
+                "%s moved %s%s" % (v.get("id"), v["collateral"],
+                                   " (held-out)" if v.get("id") in held_ids else "")
+                for v in both if v.get("collateral")),
+        }
+
+
     def apply_mutant(meta, ws):
         # The marker goes down BEFORE apply.sh runs: an interruption between the
         # two leaves a tree that is mutated and a note that says by what. A marker
@@ -6206,6 +6243,27 @@ tool sync_harness:
                   [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
                     "undetected_targets": [], "collateral": []}])],
               [])
+        # ...et l'AUTRE moitie de ce contrat : ce que ce separateur tenu a l'ecart a
+        # deplace doit atteindre les memes termes de porte qu'un separateur visible.
+        # Le meme verdict etait un rouge dur quand il etait visible (`collateral == 0`
+        # est un terme de la porte) et une preuve silencieuse quand il etait retenu :
+        # une classe ne peut pas etre acquittee par un canal que la porte n'a pas le
+        # droit de regarder.
+        _hy = measurement_hygiene(
+            [{"id": "vis", "collateral": ["005"]}],
+            [{"id": "held-sep", "collateral": ["009"], "unstable_controls": ["012"]}])
+        check("le collateral du jeu tenu a l'ecart compte dans le total",
+              _hy["collateral"], 2)
+        check("et ses temoins instables aussi",
+              _hy["unstable_controls"], ["012"])
+        # La liste couvre le meme ensemble que le compte — un titre qui compte ce
+        # qu'il ne nomme pas est le defaut que ce fichier vient de retirer au refus
+        # des doublons — et chaque ligne dit d'ou elle vient.
+        check("et chaque ligne nomme sa provenance",
+              _hy["detail"], "vis moved ['005']; held-sep moved ['009'] (held-out)")
+        check("un jeu tenu a l'ecart propre ne change rien",
+              measurement_hygiene([{"id": "vis", "collateral": ["005"]}], []),
+              {"collateral": 1, "unstable_controls": [], "detail": "vis moved ['005']"})
 
         # R797693 : le lecteur ne LEVE jamais (il tourne avec un mutant applique),
         # et ce qu'il laisse tomber est dit a voix haute par le controle de forme —
@@ -6919,6 +6977,7 @@ tool sync_harness:
                     if scoring_must_stop(v, ws):
                         stopped = v
                         break
+            hygiene = measurement_hygiene(verdicts, held)
             if stopped is not None:
                 note(report, "scoring stopped after mutant %s: %s. The tree or the app is no longer "
                      "KNOWN to be at baseline, so the mutants after it were not scored and are absent "
@@ -6942,9 +7001,8 @@ tool sync_harness:
                 detected=len(detected),
                 score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
                 revert_clean=overall_revert_clean(verdicts + held, stopped, ws),
-                collateral=sum(len(v.get("collateral") or []) for v in verdicts),
-            unstable_controls=sorted({c for v in verdicts
-                                      for c in (v.get("unstable_controls") or [])}),
+                collateral=hygiene["collateral"],
+                unstable_controls=hygiene["unstable_controls"],
                 uncontrolled=[v["id"] for v in valid if not v.get("control_covered")],
                 blind_lanes=blind,
                 holdout_total=len([v for v in held if v.get("valid")]),
@@ -7021,10 +7079,7 @@ tool sync_harness:
                                 "cover. Not averaged away, not weighted: this list must be "
                                 "empty. %s" % json.dumps(blind, ensure_ascii=False))
             if report["collateral"]:
-                detail = "; ".join(
-                    "%s moved %s" % (v["id"], v["collateral"])
-                    for v in verdicts if v.get("collateral")
-                )
+                detail = hygiene["detail"]
                 problems.append("collateral drift on %d control entries — a mutant moves "
                                 "responses it does not declare as targets. Either its "
                                 "`targets` under-state its blast radius, or the capture is "
