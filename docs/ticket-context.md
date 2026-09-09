@@ -30,12 +30,20 @@ In order:
 1. Explicit: `--var ticket_refs="PROJ-123 PROJ-456"` (or `#12`).
 2. Forge-native only — **what the forge says this PR closes**: GitHub's
    `closingIssuesReferences`, GitLab's `closes_issues`. A formal link
-   beats any regex over prose, and it is the only source that can carry
-   a blocking `requirements` finding, along with (1).
+   beats any regex over prose, and it is the only source a PR's author
+   cannot write.
 3. Scanned from the PR title/body and the source branch name — Jira
-   keys (`PROJ-123`), `#N` and `owner/repo#N` refs, pasted ticket URLs.
-   A reference the text merely *mentions* is context for the review, not
-   a promise to deliver: it never becomes a blocking finding.
+   keys (`PROJ-123`), `#N` refs, pasted ticket URLs. A reference the text
+   merely *mentions* is context for the review, not a promise to deliver:
+   it never becomes a blocking finding. Each ticket reaches the reviewer
+   with its voucher named (`closes via forge link` / `via operator ref` /
+   `via PR text`), so a claim only the PR body makes is weighed as one.
+
+A repository other than the PR's own may only be named by (1) or (2). A
+cross-repo reference in the PR *text* is reported `unverifiable` and never
+read: that text is written by whoever opened the PR, while the run's forge
+token spans the team's provisioned repos — reading it would republish
+another repo's issue in a review posted on this one.
 
 A fetch failure or zero extractable refs yields an explicit
 `unverifiable — <reason>` verdict; it never fails the review and never

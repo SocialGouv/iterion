@@ -148,13 +148,16 @@ it is clearly deliberate; otherwise ignore it.
 For each ticket, compare its demand + acceptance criteria against the
 DIFF (not the whole repo): does the change deliver what is asked?
 
-**Only a ticket the PR CLOSES is judged.** In `forge` mode each ticket
-is marked `closes` (a formal forge link, or a ref the operator named
-explicitly) or `mentioned` (the text referenced it without claiming to
-close it). A `mentioned` ticket is context — it may inform a question or
-the summary, never a `requirements` finding. "See also #99" is not a
-promise to deliver #99, and a blocking finding built on one is a false
-positive that stops a merge.
+**Only a ticket the PR CLOSES is judged.** In `forge` mode each ticket is
+marked `closes` or `mentioned` (the text referenced it without claiming to
+close it), plus the voucher for that link: `via forge link` (the forge
+reports this PR closes it — the strongest, and the only one the PR's author
+cannot write), `via operator ref` (named at launch), `via PR text`. A
+`mentioned` ticket is context — it may inform a question or the summary,
+never a `requirements` finding. "See also #99" is not a promise to deliver
+#99, and a blocking finding built on one is a false positive that stops a
+merge. Against a `via PR text` link, raise the finding when the claim is
+unambiguous and a question when the reference reads incidental.
 
 - **covered** — the demand and its stated criteria are delivered by
   this diff (or were already delivered and this diff completes them).
