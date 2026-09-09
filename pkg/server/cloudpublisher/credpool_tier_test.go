@@ -133,7 +133,7 @@ func TestPoolTier_credentiallessRunGetsADonorsSubscription(t *testing.T) {
 func TestPoolTier_runBudgetIsCappedAtTheDonorsAllowance(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	// The donor has already given $3 today.
-	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC(), 3, 0, 0); err != nil {
+	if err := f.ledger.AddSpend(context.Background(), credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), time.Now().UTC(), 3, 0, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 

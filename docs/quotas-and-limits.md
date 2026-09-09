@@ -172,8 +172,12 @@ Cost metering is "floor, not invoice":
   reports `cost_usd` per call.
 - **Every CLI delegate** (`claude_code`, Codex, `pi`, Kimi, and Grok)
   contributes its aggregate token total when the CLI reports usage. The cloud
-  runner's delegate event has no input/output split, so that total is currently
-  booked to `input_tokens`.
+  runner's delegate event carries no input/output split, so that total is
+  reported as **`aggregate_tokens`** — its own field, leaving `input_tokens`
+  and `output_tokens` for splits that were actually measured. **A true total
+  is the sum of the three**, and a per-direction ratio is only meaningful on a
+  row whose aggregate is zero. Zero in all three means *not observed*, never
+  *nothing spent*.
 - A CLI delegate's `cost_usd` **is** added to `org_usage.cost_usd` — the
   `delegate_finished` figure flows through `metricsEmitter.RunTotals` into
   `recordOrgSpend`. `claw` is the one exclusion, and deliberately: being
@@ -290,6 +294,7 @@ Both views share the same JSON shape
   "cost_usd_this_month":          18.91,
   "input_tokens_this_month":      4123890,
   "output_tokens_this_month":      921334,
+  "aggregate_tokens_this_month":  2210544,
   "monthly_cost_cap_usd":         80.0,
   "max_concurrent_runs":          5,
   "active_runs":                  2,

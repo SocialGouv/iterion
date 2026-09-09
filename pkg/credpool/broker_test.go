@@ -191,7 +191,7 @@ func TestBroker_fairnessPrefersTheLeastConsumedDonor(t *testing.T) {
 	h.donor(t, "bob", Limits{MaxUSDPerDay: 10})
 
 	// Alice has already given $8 of her 10 today; Bob nothing.
-	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 8, 0, 0); err != nil {
+	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 8, 0, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
@@ -213,8 +213,8 @@ func TestBroker_fairnessIsProportional(t *testing.T) {
 	h.donor(t, "modest", Limits{MaxUSDPerDay: 2})
 
 	// Generous gave $20 (20% of their offer); modest gave $1 (50%).
-	_ = h.ledger.AddSpend(ctx, PledgeID("generous", SourceOAuth, "claude_code"), h.now, 20, 0, 0)
-	_ = h.ledger.AddSpend(ctx, PledgeID("modest", SourceOAuth, "claude_code"), h.now, 1, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("generous", SourceOAuth, "claude_code"), h.now, 20, 0, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("modest", SourceOAuth, "claude_code"), h.now, 1, 0, 0, 0)
 
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
 	if err != nil {
@@ -231,7 +231,7 @@ func TestBroker_exhaustedDonorYieldsToTheNext(t *testing.T) {
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
 	h.donor(t, "bob", Limits{MaxUSDPerDay: 5})
 	// Alice is spent; she must be skipped, not fail the acquisition.
-	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0, 0)
 
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))
 	if err != nil {
@@ -246,7 +246,7 @@ func TestBroker_everyDonorExhausted(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
-	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0)
+	_ = h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0, 0)
 
 	if _, err := h.broker.Acquire(ctx, h.request("run-1")); !errors.Is(err, ErrNoDonor) {
 		t.Errorf("Acquire = %v, want ErrNoDonor", err)

@@ -305,6 +305,7 @@ type memBucket struct {
 	runs                     int
 	costMillis               int64
 	inputTokens, outputToken int64
+	aggregateTokens          int64
 }
 
 type MemoryLedger struct {
@@ -376,11 +377,11 @@ func (l *MemoryLedger) ReleaseRun(_ context.Context, pledgeID string, when time.
 	return nil
 }
 
-func (l *MemoryLedger) AddSpend(_ context.Context, pledgeID string, when time.Time, costUSD float64, in, out int64) error {
+func (l *MemoryLedger) AddSpend(_ context.Context, pledgeID string, when time.Time, costUSD float64, in, out, aggregate int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	millis := CostToMillis(costUSD)
-	if millis == 0 && in <= 0 && out <= 0 {
+	if millis == 0 && in <= 0 && out <= 0 && aggregate <= 0 {
 		return nil
 	}
 	for _, key := range []string{
@@ -394,6 +395,9 @@ func (l *MemoryLedger) AddSpend(_ context.Context, pledgeID string, when time.Ti
 		}
 		if out > 0 {
 			b.outputToken += out
+		}
+		if aggregate > 0 {
+			b.aggregateTokens += aggregate
 		}
 	}
 	return nil

@@ -753,8 +753,9 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 		ToolCalls:    toolCalls,
 		TextDigest:   sha256Hex(info.Text),
 		Usage: store.TurnUsage{
-			InputTokens:  info.InputTokens,
-			OutputTokens: info.OutputTokens,
+			InputTokens:     info.InputTokens,
+			OutputTokens:    info.OutputTokens,
+			AggregateTokens: info.AggregateTokens,
 		},
 		SessionID: info.SessionID,
 	}

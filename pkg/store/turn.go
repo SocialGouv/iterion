@@ -159,6 +159,10 @@ type TurnUsage struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
 	CostUSD      float64 `json:"cost_usd,omitempty"`
+	// AggregateTokens holds a turn total the backend could not split.
+	// Absent when the backend reported a real split, and never counted
+	// twice with the pair above — a total is the sum of the three.
+	AggregateTokens int `json:"aggregate_tokens,omitempty"`
 }
 
 // TurnIndexEntry is the per-node directory's `index.json` row,

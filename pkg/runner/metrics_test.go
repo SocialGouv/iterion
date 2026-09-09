@@ -265,12 +265,21 @@ func TestMetricsEmitter_delegateFinished_aggregatedTokens(t *testing.T) {
 		},
 	})
 
-	c, err := reg.LLMTokensTotal.GetMetricWithLabelValues("claude_code", "unknown", "input")
+	// The delegate's one number gets its own direction label. A dashboard
+	// panel filtering direction="input" must not be served it (#992).
+	c, err := reg.LLMTokensTotal.GetMetricWithLabelValues("claude_code", "unknown", "aggregate")
 	if err != nil {
 		t.Fatalf("GetMetricWithLabelValues: %v", err)
 	}
 	if got := counterValue(t, c); got != 420 {
-		t.Errorf("delegate tokens = %v, want 420", got)
+		t.Errorf("delegate tokens under direction=aggregate = %v, want 420", got)
+	}
+	in, err := reg.LLMTokensTotal.GetMetricWithLabelValues("claude_code", "unknown", "input")
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues: %v", err)
+	}
+	if got := counterValue(t, in); got != 0 {
+		t.Errorf("direction=input = %v, want 0 — the delegate never reported a split", got)
 	}
 }
 
@@ -324,12 +333,15 @@ func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
 		t.Errorf("emitted cost_usd = %v, want 0.4242 — the hook is dropping the delegation's cost", got)
 	}
 
-	costUSD, in, _ := usage.RunTotals()
+	costUSD, in, _, aggregate := usage.RunTotals()
 	if costUSD != 0.4242 {
 		t.Errorf("RunTotals cost = %v, want 0.4242 — delegate spend is not charged to the run", costUSD)
 	}
-	if in != 1200 {
-		t.Errorf("RunTotals input tokens = %d, want 1200", in)
+	if aggregate != 1200 {
+		t.Errorf("RunTotals aggregate tokens = %d, want 1200", aggregate)
+	}
+	if in != 0 {
+		t.Errorf("RunTotals input tokens = %d, want 0 — the delegate reported no split (#992)", in)
 	}
 }
 
@@ -348,7 +360,7 @@ func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
 	if _, present := inner.events[0].Data["cost_usd"]; present {
 		t.Error("cost_usd present for an unpriced delegation — 'no data' must stay distinguishable from $0")
 	}
-	if costUSD, _, _ := usage.RunTotals(); costUSD != 0 {
+	if costUSD, _, _, _ := usage.RunTotals(); costUSD != 0 {
 		t.Errorf("RunTotals cost = %v, want 0", costUSD)
 	}
 }
@@ -372,7 +384,7 @@ func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
 		Type: store.EventLLMStepFinished, RunID: "run-1", NodeID: "n1",
 		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(500)},
 	})
-	perStep, _, _ := usage.RunTotals()
+	perStep, _, _, _ := usage.RunTotals()
 	if perStep <= 0 {
 		t.Fatalf("the step itself priced to %v — the test cannot show a double count", perStep)
 	}
@@ -382,7 +394,10 @@ func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
 		Data: map[string]any{"backend": "claw", "tokens": float64(1500), "cost_usd": perStep},
 	})
 
-	total, in, out := usage.RunTotals()
+	total, in, out, aggregate := usage.RunTotals()
+	if aggregate != 0 {
+		t.Errorf("aggregate tokens = %d, want 0 — the summarised delegation must not be booked at all", aggregate)
+	}
 	if total != perStep {
 		t.Errorf("cost = %v after the delegation total, want %v — claw was charged twice", total, perStep)
 	}
@@ -401,7 +416,7 @@ func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
 		Type: store.EventDelegateFinished, RunID: "run-2", NodeID: "n1",
 		Data: map[string]any{"backend": "claude_code", "tokens": float64(900), "cost_usd": 0.42},
 	})
-	if cost, _, _ := usage.RunTotals(); cost != 0.42 {
+	if cost, _, _, _ := usage.RunTotals(); cost != 0.42 {
 		t.Errorf("cost = %v, want 0.42", cost)
 	}
 }
@@ -434,15 +449,18 @@ func TestMetricsEmitter_sandboxedClaw_delegateOnlyIsPricedAndRouted(t *testing.T
 	if !ok {
 		t.Fatalf("routes = %v, want one keyed (claw, openai/gpt-5.6-sol) — the declared model must name the route", routes)
 	}
-	if got.inputTokens != 25000 {
-		t.Errorf("route input tokens = %d, want 25000", got.inputTokens)
+	if got.aggregateTokens != 25000 {
+		t.Errorf("route aggregate tokens = %d, want 25000", got.aggregateTokens)
+	}
+	if got.inputTokens != 0 {
+		t.Errorf("route input tokens = %d, want 0 — one aggregate count is not an input count (#992)", got.inputTokens)
 	}
 	if got.costUSD <= 0 {
 		t.Errorf("route cost = %v, want > 0: the table prices gpt-5.6-sol, and a delegation the guard excluded is not a free call", got.costUSD)
 	}
-	cost, in, _ := usage.RunTotals()
-	if cost != got.costUSD || in != 25000 {
-		t.Errorf("RunTotals = ($%v, %d) — must mirror the route (%+v)", cost, in, got)
+	cost, _, _, aggregate := usage.RunTotals()
+	if cost != got.costUSD || aggregate != 25000 {
+		t.Errorf("RunTotals = ($%v, %d) — must mirror the route (%+v)", cost, aggregate, got)
 	}
 }
 
@@ -455,8 +473,8 @@ func TestMetricsEmitter_sandboxedClaw_delegateCostWinsOverTheTable(t *testing.T)
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "tokens": float64(25000), "cost_usd": 0.1234}})
-	if cost, in, _ := usage.RunTotals(); cost != 0.1234 || in != 25000 {
-		t.Fatalf("RunTotals = ($%v, %d), want ($0.1234, 25000)", cost, in)
+	if cost, _, _, aggregate := usage.RunTotals(); cost != 0.1234 || aggregate != 25000 {
+		t.Fatalf("RunTotals = ($%v, %d), want ($0.1234, 25000)", cost, aggregate)
 	}
 }
 
@@ -468,12 +486,12 @@ func TestMetricsEmitter_sandboxedClaw_unknownModelStaysUnpriced(t *testing.T) {
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-99-nowhere"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "tokens": float64(400)}})
-	cost, in, _ := usage.RunTotals()
+	cost, _, _, aggregate := usage.RunTotals()
 	if cost != 0 {
 		t.Errorf("cost = %v for a model no source prices, want 0 (unknown)", cost)
 	}
-	if in != 400 {
-		t.Errorf("input tokens = %d, want 400 — the tokens are known even when the price is not", in)
+	if aggregate != 400 {
+		t.Errorf("aggregate tokens = %d, want 400 — the tokens are known even when the price is not", aggregate)
 	}
 	if _, ok := usage.RouteTotals()[routeKey{backend: "claw", model: "openai/gpt-99-nowhere"}]; !ok {
 		t.Errorf("routes = %v, want the unpriced route present so the credential still sees its tokens", usage.RouteTotals())
@@ -549,7 +567,7 @@ func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T
 	relay.OnLLMRequest("plan_review", model.LLMRequestInfo{Model: "gpt-5.6-sol"})
 	relay.OnLLMStepFinish("plan_review", model.LLMStepInfo{Number: 1, InputTokens: 20000, OutputTokens: 3000})
 	relay.OnLLMStepFinish("plan_review", model.LLMStepInfo{Number: 2, InputTokens: 20000, OutputTokens: 3000})
-	stepsCost, _, _ := usage.RunTotals()
+	stepsCost, _, _, _ := usage.RunTotals()
 	if stepsCost <= 0 {
 		t.Fatalf("the relayed steps priced to %v — gpt-5.6-sol is in the table", stepsCost)
 	}
@@ -569,7 +587,7 @@ func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T
 	if len(routes) != 1 {
 		t.Errorf("routes = %v, want the one route", routes)
 	}
-	if cost, in, out := usage.RunTotals(); cost != stepsCost || in != 40000 || out != 6000 {
+	if cost, in, out, _ := usage.RunTotals(); cost != stepsCost || in != 40000 || out != 6000 {
 		t.Errorf("RunTotals = ($%v, %d, %d), want ($%v, 40000, 6000)", cost, in, out, stepsCost)
 	}
 }
@@ -586,13 +604,13 @@ func TestMetricsEmitter_newAttemptResetsTheStepGuard(t *testing.T) {
 		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(0)}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "tokens": float64(1000)}})
-	if _, in, _ := usage.RunTotals(); in != 1000 {
-		t.Fatalf("after a summarised first attempt: input tokens = %d, want 1000", in)
+	if _, in, _, aggregate := usage.RunTotals(); in != 1000 || aggregate != 0 {
+		t.Fatalf("after a summarised first attempt: in %d / aggregate %d, want 1000/0", in, aggregate)
 	}
 	usage.observe(start)
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "tokens": float64(500)}})
-	if _, in, _ := usage.RunTotals(); in != 1500 {
-		t.Fatalf("after an unrelayed second attempt: input tokens = %d, want 1500 — the guard must reset per attempt", in)
+	if _, in, _, aggregate := usage.RunTotals(); in != 1000 || aggregate != 500 {
+		t.Fatalf("after an unrelayed second attempt: in %d / aggregate %d, want 1000/500 — the guard must reset per attempt", in, aggregate)
 	}
 }

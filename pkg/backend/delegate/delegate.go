@@ -1131,9 +1131,12 @@ type TurnFinishedInfo struct {
 	// this delegate call. Used for the TextDigest fingerprint.
 	Text string
 	// InputTokens / OutputTokens come from the CLI's Result.Usage and
-	// feed the per-turn store.TurnUsage.
-	InputTokens  int
-	OutputTokens int
+	// feed the per-turn store.TurnUsage. AggregateTokens carries a total
+	// the CLI reported WITHOUT a split — filed apart so neither direction
+	// is claimed on evidence that does not exist.
+	InputTokens     int
+	OutputTokens    int
+	AggregateTokens int
 }
 
 // BuildSystemPrompt returns the task's SystemPrompt augmented with
