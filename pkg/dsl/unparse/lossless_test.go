@@ -141,6 +141,46 @@ func TestUnparseKeepsGroupsAndUses(t *testing.T) {
 	}
 }
 
+// A group body is rendered by a sub-writer and indented AFTER the fact, so
+// a value spanning lines cannot go out as a raw `…` string: the
+// continuation lines would be indented with it and the value would come
+// back two spaces wider. The writer's `nested` flag is what refuses that
+// form inside a group and flips the file to strict escapes instead — every
+// shape below is one the top-level writer renders raw, so this fails the
+// moment the flag stops being set.
+func TestUnparseKeepsMultilineValuesInsideAGroup(t *testing.T) {
+	for _, v := range []string{
+		"printf one\nprintf two",
+		"echo \"quoted\"\necho second",
+		"leading\n  already indented\nlast",
+	} {
+		t.Run(v, func(t *testing.T) {
+			src := "group g:\n  tool t:\n    command: \"placeholder\"\n\nuse g as r\n\nworkflow w:\n  entry: r.t\n  r.t -> done\n"
+			pr := parser.Parse("nested.bot", src)
+			for _, d := range pr.Diagnostics {
+				t.Fatalf("fixture does not parse: %s", d.Error())
+			}
+			pr.File.Groups[0].Tools[0].Command = v
+			direct := ir.Compile(pr.File)
+			if direct.HasErrors() {
+				t.Fatalf("fixture does not compile: %v", direct.Diagnostics)
+			}
+			text := unparse.Unparse(pr.File)
+			pr2 := parser.Parse("nested.bot", text)
+			for _, d := range pr2.Diagnostics {
+				t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
+			}
+			if got := pr2.File.Groups[0].Tools[0].Command; got != v {
+				t.Errorf("group member command: %q came back as %q\n%s", v, got, text)
+			}
+			dsltest.AssertSameProgram(t, "nested.bot", direct, ir.Compile(pr2.File))
+			if err := unparse.Verify(pr.File, text); err != nil {
+				t.Errorf("Verify: %v\n%s", err, text)
+			}
+		})
+	}
+}
+
 // Every workflow in the repository must survive parse → unparse → parse as
 // the same program: that is what a studio save of an untouched document
 // promises.
