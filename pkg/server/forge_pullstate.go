@@ -102,6 +102,16 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		// may wait out, a grant it will never get — instead of one 502 for
 		// every cause.
 		if !writeForgeUpstreamError(w, err, "read pull request %s#%d: %v", repo, number, err) {
+			// Default, and NOT a clean one for a github_app connection.
+			// This route reads and nothing else, so no post-forge store
+			// write can mix in the way the avatar route's does (#969) —
+			// but the read itself is not purely upstream: an App's
+			// GetPullRequest goes through scopedREST, which mints an
+			// installation token and signs the App JWT locally FIRST, so
+			// a stored key that is not parseable PEM fails before any
+			// socket and answers 502 here. The same inversion, still open
+			// on this arm; the fix belongs in the mint chain, which alone
+			// knows which step failed. Residual on #969.
 			httpError(w, http.StatusBadGateway, "read pull request %s#%d: %v", repo, number, err)
 		}
 		return

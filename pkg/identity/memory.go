@@ -227,6 +227,44 @@ func (m *MemoryStore) UpdateTeam(_ context.Context, t Team) error {
 	return nil
 }
 
+// PatchTeam mirrors the Mongo $set: only the named fields move, so two
+// concurrent editors of different fields cannot undo each other.
+func (m *MemoryStore) PatchTeam(_ context.Context, id string, p TeamPatch) (Team, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.teams[id]
+	if !ok {
+		return Team{}, ErrNotFound
+	}
+	if p.Slug != nil && *p.Slug != cur.Slug {
+		if _, taken := m.teamSlugs[*p.Slug]; taken {
+			return Team{}, ErrSlugAlreadyTaken
+		}
+		delete(m.teamSlugs, cur.Slug)
+		m.teamSlugs[*p.Slug] = id
+		cur.Slug = *p.Slug
+	}
+	if p.Name != nil {
+		cur.Name = *p.Name
+	}
+	if p.Status != nil {
+		cur.Status = *p.Status
+		if *p.Status == TeamStatusSuspended {
+			now := time.Now().UTC()
+			cur.SuspendedAt = &now
+			cur.SuspendedBy = p.SuspendedBy
+			cur.SuspendReason = p.SuspendReason
+		} else {
+			cur.SuspendedAt = nil
+			cur.SuspendedBy = ""
+			cur.SuspendReason = ""
+		}
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	m.teams[id] = cur
+	return cur, nil
+}
+
 func (m *MemoryStore) ListTeams(_ context.Context, page Page) ([]Team, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -304,6 +342,39 @@ func (m *MemoryStore) UpdateOrg(_ context.Context, o Org) error {
 	}
 	m.orgs[o.ID] = o
 	return nil
+}
+
+// PatchOrg mirrors the Mongo $set — see PatchTeam.
+func (m *MemoryStore) PatchOrg(_ context.Context, id string, p OrgPatch) (Org, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.orgs[id]
+	if !ok {
+		return Org{}, ErrNotFound
+	}
+	if p.Slug != nil && *p.Slug != cur.Slug {
+		if _, taken := m.orgSlugs[*p.Slug]; taken {
+			return Org{}, ErrOrgSlugAlreadyTaken
+		}
+		delete(m.orgSlugs, cur.Slug)
+		m.orgSlugs[*p.Slug] = id
+		cur.Slug = *p.Slug
+	}
+	if p.Name != nil {
+		cur.Name = *p.Name
+	}
+	if p.RequireProvisionApproval != nil {
+		cur.RequireProvisionApproval = *p.RequireProvisionApproval
+	}
+	if p.ProvisionApprovalScope != nil {
+		cur.ProvisionApprovalScope = *p.ProvisionApprovalScope
+	}
+	if p.CredentialAudience != nil {
+		cur.CredentialAudience = *p.CredentialAudience
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	m.orgs[id] = cur
+	return cur, nil
 }
 
 func (m *MemoryStore) ListOrgsPendingPurge(_ context.Context, before time.Time) ([]Org, error) {

@@ -94,7 +94,6 @@ export interface AdmissionDecision {
   workflow_revision?: string;
   checked_at: string;
 }
-
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;

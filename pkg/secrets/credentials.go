@@ -56,6 +56,10 @@ type Credentials struct {
 	// credential — see RunBundle.PoolSourced. Metering that scopes a bump
 	// per tenant must treat these as the donor's, not the run's tenant's.
 	PoolSourced map[string]bool
+	// OrgSourced marks the slots the ORG tier filled with the org's own
+	// shared credential — see RunBundle.OrgSourced. Metering must treat
+	// these as the ORG's: one account serving every admitted team.
+	OrgSourced map[string]bool
 	// Fingerprints maps a credential slot (a Provider name or an OAuth
 	// kind) to the audit identity of what filled it. Not sensitive (8
 	// hash bytes) and deliberately NOT zeroed by cleanup: it says WHICH
@@ -89,18 +93,26 @@ func (c Credentials) IsPoolSourced(slot string) bool {
 	return c.PoolSourced[slot]
 }
 
+// IsOrgSourced reports whether the named credential slot was filled by the
+// ORG tier — the org's own shared credential, lent to the teams its
+// CredentialAudience admits.
+func (c Credentials) IsOrgSourced(slot string) bool {
+	return c.OrgSourced[slot]
+}
+
 // IsTenantOwned reports whether the slot was filled from the RUN'S OWN
-// tenant stores — i.e. by neither the platform tier nor the pool.
+// tenant stores — i.e. by none of the shared tiers (platform, pool, org).
 //
 // Every decision that scopes something per tenant reads this question, and
-// the two negatives are what it is made of: a platform credential is the
-// deployment's, a lent one is the donor's, and both serve several tenants.
-// It lives here as one predicate because the alternative — each site
-// spelling out its own conjunction — is how the pool tier came to be
-// honoured by the metering bump and missed by the usage meter, which then
-// opened one ledger per borrower of the same subscription.
+// the negatives are what it is made of: a platform credential is the
+// deployment's, a lent one is the donor's, an org one is the parent org's,
+// and each serves several tenants. It lives here as one predicate because
+// the alternative — each site spelling out its own conjunction — is how the
+// pool tier came to be honoured by the metering bump and missed by the usage
+// meter, which then opened one ledger per borrower of the same subscription.
+// Adding a tier means adding its negative HERE, once.
 func (c Credentials) IsTenantOwned(slot string) bool {
-	return !c.IsPlatformSourced(slot) && !c.IsPoolSourced(slot)
+	return !c.IsPlatformSourced(slot) && !c.IsPoolSourced(slot) && !c.IsOrgSourced(slot)
 }
 
 // WireFamily groups credential slots (Provider names and OAuthKinds) that

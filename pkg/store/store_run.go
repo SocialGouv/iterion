@@ -1052,9 +1052,9 @@ func (s *FilesystemRunStore) SetWatcherCursor(_ context.Context, runID, watcherI
 // filesystem store mutex. It is intentionally granular: a correction call
 // must not replace a run document that an operator or runner concurrently
 // transitioned.
-func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, nodeID string, episode OutputCorrectionEpisode) error {
-	if nodeID == "" {
-		return fmt.Errorf("store: output correction node id is empty")
+func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, ledgerKey string, episode OutputCorrectionEpisode) error {
+	if ledgerKey == "" {
+		return fmt.Errorf("store: output correction ledger key is empty")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1065,7 +1065,7 @@ func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, no
 	if r.OutputCorrections == nil {
 		r.OutputCorrections = make(map[string]OutputCorrectionEpisode)
 	}
-	r.OutputCorrections[nodeID] = episode
+	r.OutputCorrections[ledgerKey] = episode
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }

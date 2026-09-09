@@ -737,3 +737,100 @@ func TestForgeConnectionAvatar_UnreachableForgeIsNotAVouchMatter(t *testing.T) {
 		t.Fatalf("404 on /user: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// failingUpdateStore wraps the memory ConnectionStore and injects a caller-
+// controlled failure on Update. It exists to prove that a persist error
+// AFTER a successful forge round-trip does not answer 502 — the doctrine
+// forgeUpstreamStatus writes down: only an iterion fault reaches 500.
+type failingUpdateStore struct {
+	forge.ConnectionStore
+	failOnUpdate error
+}
+
+func (f *failingUpdateStore) Update(ctx context.Context, conn forge.Connection) error {
+	if f.failOnUpdate != nil {
+		return f.failOnUpdate
+	}
+	return f.ConnectionStore.Update(ctx, conn)
+}
+
+// A persist that fails AFTER SetAvatar succeeded is iterion's own state
+// failing — the forge did answer, and the answer was 200. Answering 502
+// tells the operator, the logs, Sentry and every alert that the forge
+// broke; the truth is that iterion could not write down what the forge
+// gave it. The route must answer 500, and its body must still name the
+// connection and the underlying cause so the operator can act on it.
+func TestForgeConnectionAvatar_StoreFailAfterUploadIsIterionFault500(t *testing.T) {
+	s := newForgeTestServer(t)
+	failing := &failingUpdateStore{
+		ConnectionStore: s.forgeConnections,
+		failOnUpdate:    errors.New("mongo: connection reset by peer"),
+	}
+	s.forgeConnections = failing
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-persist-fail", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+
+	w := avatarReq(s, "c-persist-fail", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a store write that failed AFTER a successful upload must answer 500 (iterion's own), got %d: body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "c-persist-fail") {
+		t.Errorf("body must name the connection to act on it: body=%s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "connection reset by peer") {
+		t.Errorf("body must carry the underlying cause: body=%s", w.Body.String())
+	}
+	if gl.count() != 1 {
+		t.Errorf("uploads = %d, want 1 — the upload landed before persist failed", gl.count())
+	}
+}
+
+// A SetAvatar that failed IS the forge's answer: 502 is the true code. The
+// fix for the mixed case must not accidentally reroute the upstream half
+// through the iterion-fault arm.
+func TestForgeConnectionAvatar_UpstreamSetAvatarFailureStays502(t *testing.T) {
+	s := newForgeTestServer(t)
+	// The forge answers 503 to the upload; forgeUpstreamStatus maps this
+	// onto 502 (the forge's own fault, not iterion's).
+	gl := &mockGitLabAvatar{bot: true, status: http.StatusServiceUnavailable}
+	srv := gl.server()
+	defer srv.Close()
+	seedAvatarConn(t, s, forge.Connection{ID: "c-upstream-503", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+
+	w := avatarReq(s, "c-upstream-503", "")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("an upstream 5xx on SetAvatar must stay 502 (the forge's fault), got %d: body=%s", w.Code, w.Body.String())
+	}
+	if gl.count() != 1 {
+		t.Errorf("uploads = %d, want 1", gl.count())
+	}
+}
+
+// The route's THIRD failure source, and the one that fails BEFORE the forge
+// is ever contacted: forgeAdminFor opens the connection's sealed token. On
+// the only kind that reaches it (KindPAT) that is pure local work, so a
+// sealer that will not open the blob is iterion's own state — yet it carries
+// no forge sentinel and no *url.Error, which is exactly what the handler's
+// 502 default arm serves. Blaming the forge for a key iterion cannot use
+// sends the operator to the forge's status page for an outage that is not
+// there. The upload count is the proof it never left the process.
+func TestForgeConnectionAvatar_SealFailureBeforeUploadIsIterionFault500(t *testing.T) {
+	s := newForgeTestServer(t)
+	gl := &mockGitLabAvatar{bot: true}
+	srv := gl.server()
+	defer srv.Close()
+	// Seed with the live sealer (the blob is well-formed), then take the
+	// sealer away — the shape of a rotated or unreadable master key.
+	seedAvatarConn(t, s, forge.Connection{ID: "c-seal-fail", Provider: forge.ProviderGitLab, Kind: forge.KindPAT, AccountLogin: "group_1_bot_x", AccountKind: forge.AccountKindBot, ForgeBaseURL: srv.URL})
+	s.sealer = nil
+
+	w := avatarReq(s, "c-seal-fail", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a seal that will not open is iterion's own and must answer 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if gl.count() != 0 {
+		t.Errorf("uploads = %d, want 0 — this failure precedes any forge call", gl.count())
+	}
+}

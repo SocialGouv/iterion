@@ -11,6 +11,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -59,7 +61,71 @@ func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Iden
 	if s.canManageOrg(ctx, id, t.OrgID) {
 		return "", nil // org admin / super-admin: auto-approved by right
 	}
+	// A team that funds its OWN runs answers to nobody for what it spends,
+	// so an org that scoped its gate to shared credentials lets it through.
+	// Same fail-closed rule as the reads above: a store error parks the
+	// request rather than waving it past the gate.
+	if o.EffectiveProvisionApprovalScope() == identity.ProvisionApprovalSharedCredentials {
+		funded, err := s.teamFundsItsOwnRuns(ctx, teamID)
+		if err != nil {
+			return "", fmt.Errorf("resolve team %s credentials for the provision-approval gate: %w", teamID, err)
+		}
+		if funded {
+			return "", nil
+		}
+	}
 	return t.OrgID, nil
+}
+
+// teamFundsItsOwnRuns reports whether the team holds a credential of its
+// own — a team-scoped BYOK key or a team forfait — for ANY wire.
+//
+// Any wire, not the wires the requested bots will actually use, and that is
+// a deliberate limit rather than an oversight: the gate holds bot IDs, and
+// deciding which providers they resolve to would mean loading every bundle
+// and re-deriving its routes at provisioning time, for an answer the next
+// `--var model=…` invalidates. A team holding only an OpenAI key can
+// therefore provision Anthropic-only automation without review.
+//
+// What that costs is bounded, because this flag governs REVIEW, not
+// spending. Whether such a run may draw on the org's key is the org's
+// CredentialAudience — which admits nobody by default and is the org
+// admin's explicit act — and whether it may draw on the deployment's is the
+// platform audience. Pairing `shared_credentials` with an enforced platform
+// audience is what makes "BYOK is free, shared keys are reviewed" hold at
+// the wire level; the flag alone expresses "brings a credential", which is
+// coarser and says so.
+//
+// USER-scoped keys deliberately do not count. The owner of a webhook,
+// board or schedule launch is a synthetic identity with no personal
+// credential, so one member's key funds none of the automated runs the
+// provisioning being reviewed would create; counting it would let a team
+// pass the gate on a credential its repo integrations can never reach.
+//
+// Errors propagate: the caller parks on them. "I could not tell" must
+// never read as "they pay their own way" — that is the direction in which
+// a mistake spends the org's money.
+func (s *Server) teamFundsItsOwnRuns(ctx context.Context, teamID string) (bool, error) {
+	tctx := store.WithTenant(ctx, teamID)
+	if s.apiKeys != nil {
+		keys, err := s.apiKeys.ListByTeam(tctx, teamID, "")
+		if err != nil {
+			return false, fmt.Errorf("list team api keys: %w", err)
+		}
+		if len(keys) > 0 {
+			return true, nil
+		}
+	}
+	if s.oauthStore != nil {
+		recs, err := s.oauthStore.ListByUser(tctx, secrets.OrgOwnerKey(teamID))
+		if err != nil {
+			return false, fmt.Errorf("list team forfaits: %w", err)
+		}
+		if len(recs) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // parkProvisionRequest records the pending request and answers the team

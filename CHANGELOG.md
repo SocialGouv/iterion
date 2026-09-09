@@ -3,6 +3,104 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.126.0](https://github.com/SocialGouv/iterion/compare/v3.125.1...v3.126.0) (2026-09-09)
+
+### Features
+
+* persist versioned workflow execution context ([#1018](https://github.com/SocialGouv/iterion/issues/1018)) ([a0b4945](https://github.com/SocialGouv/iterion/commit/a0b49455fc73a2a31cbbd34f951414f0b87452bf))
+
+## [3.125.1](https://github.com/SocialGouv/iterion/compare/v3.125.0...v3.125.1) (2026-09-09)
+
+### Bug Fixes
+
+* **cost:** an OpenAI turn was priced as if it had cost nothing to send ([#1034](https://github.com/SocialGouv/iterion/issues/1034)) ([6bb10e3](https://github.com/SocialGouv/iterion/commit/6bb10e370341f836288b46d75eb6124519baf022)), references [#992](https://github.com/SocialGouv/iterion/issues/992) [#992](https://github.com/SocialGouv/iterion/issues/992)
+
+    <details><summary>why</summary>
+
+    Every OpenAI-family call through claw reported ZERO input tokens. Both endpoints reported the count and both translations dropped it: the chat-completions path parsed `prompt_tokens` and never read it, and /v1/responses sends `message_start` bare and built its usage from the output half alone. Sweeping claw for any assignment of input tokens returned two hits — the Anthropic SSE client and bedrock.
+
+    </details>
+
+## [3.125.0](https://github.com/SocialGouv/iterion/compare/v3.124.0...v3.125.0) (2026-09-09)
+
+### Features
+
+* **runview:** expose shared workflow diagnostics ([#1008](https://github.com/SocialGouv/iterion/issues/1008)) ([d9d136f](https://github.com/SocialGouv/iterion/commit/d9d136fb5920356fe8a44bedaf779a2d0bed1fc3))
+
+## [3.124.0](https://github.com/SocialGouv/iterion/compare/v3.123.3...v3.124.0) (2026-09-09)
+
+### Features
+
+* **studio:** redesign the cloud home around orchestration ([#1028](https://github.com/SocialGouv/iterion/issues/1028)) ([e5a711d](https://github.com/SocialGouv/iterion/commit/e5a711dda699f905c219bacad90a3ad99c2c1f6d))
+
+    <details><summary>why</summary>
+
+    CloudLanding is one of App.tsx's few eager view imports — PublicTopBar lives in the same module and renders on /marketplace, outside the lazy route tree. The redesign's static `import CloudHome` therefore pulled the whole product page into the entry chunk: CloudHome + PlatformFeatures + StackCompatibility, ~40 lucide icon modules, 11 @lobehub brand icons and the 348-line cloud-home.css, downloaded and parsed on first paint by every authenticated operator — an audience AuthGate never shows it to.
+
+    </details>
+
+## [3.123.3](https://github.com/SocialGouv/iterion/compare/v3.123.2...v3.123.3) (2026-09-09)
+
+### Bug Fixes
+
+* **server:** a tenant the store says is GONE is not a blip to launch past ([#1027](https://github.com/SocialGouv/iterion/issues/1027)) ([998baac](https://github.com/SocialGouv/iterion/commit/998baac488733577c306753513ff1ffe82bb2c0a)), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    gateLaunch is the choke point every cloud launch surface crosses — the REST launch and resume, the inbound webhooks, the retry sweeper, the board dispatcher. It read the caller's team and, on ANY error, admitted the launch: quotas are operator policy, and a transient Mongo blip must not wedge a whole deployment.
+
+    </details>
+
+## [3.123.2](https://github.com/SocialGouv/iterion/compare/v3.123.1...v3.123.2) (2026-09-09)
+
+### Bug Fixes
+
+* **golden-master,modernize:** a repairable certificate refusal no longer ends the run ([#1007](https://github.com/SocialGouv/iterion/issues/1007)) ([e8154c8](https://github.com/SocialGouv/iterion/commit/e8154c866b2de998bd26f0aa7935fc5f5e1c7887))
+
+    <details><summary>why</summary>
+
+    Rf213cf. `lot_gate -> extension_provenance when forged` lands on a `resumable: false` fail declared ahead of the repair loop, so every shape that set `forged` ended the campaign outright. The justification written above that edge — "dropping the act block breaks ledger_append_only" — holds for two of the five sites that set it, and `ledger_append_only` is `head_txt.startswith(base_txt)`: it pins only the text BELOW the run's base, so a block appended during the segment can be narrowed or…
+
+    </details>
+
+## [3.123.1](https://github.com/SocialGouv/iterion/compare/v3.123.0...v3.123.1) (2026-09-09)
+
+### Bug Fixes
+
+* **bots:** a campaign verify node refuses a dirty tree instead of judging it ([#995](https://github.com/SocialGouv/iterion/issues/995)) ([9b0e19b](https://github.com/SocialGouv/iterion/commit/9b0e19bda2df4c0df976e7cb4c4aca4883899760)), references [#807](https://github.com/SocialGouv/iterion/issues/807) [#807](https://github.com/SocialGouv/iterion/issues/807) [#799](https://github.com/SocialGouv/iterion/issues/799)
+
+    <details><summary>why</summary>
+
+    A tool node whose whole contract is "judge HEAD" was judging whatever the previous attempt left on disk. Measured once: a golden-master gate ran 7,676 s until the pod's exec stream broke, the engine classified the failure NETWORK_TRANSIENT and re-executed the node on the same tree — where a mutant the harness had applied was still there. The second attempt judged a mutated program and called it the lot's; the run finished not-converged with hours of budget left.
+
+    </details>
+* **server:** an avatar recorded after a failed store write is iterion's fault, not the forge's ([#993](https://github.com/SocialGouv/iterion/issues/993)) ([cf69634](https://github.com/SocialGouv/iterion/commit/cf696343ad917c8ba5390ca602816851060634ae)), references [#969](https://github.com/SocialGouv/iterion/issues/969) [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    forgeUpstreamStatus returns 0 to mean "NOT an answer from the forge", and its own doc says the caller then answers with its fault status — "Only that arm may be a 500." The avatar route rendered that arm 502 Bad Gateway, so a persist failure AFTER an upload that had already landed on the forge was reported as a forge outage: the exact inversion the classifier was written to end, running the other way. Sentry, alerts and any client retrying on 502 were told a third party broke when iterion's own…
+
+    </details>
+
+## [3.123.0](https://github.com/SocialGouv/iterion/compare/v3.122.3...v3.123.0) (2026-09-09)
+
+### Features
+
+* **credentials,teams:** an org can lend its own LLM keys, and a team has a lifecycle ([#1000](https://github.com/SocialGouv/iterion/issues/1000)) ([ebbae7e](https://github.com/SocialGouv/iterion/commit/ebbae7eb1af96d9ea4d0351809484fd8610a9e82))
+
+    <details><summary>why</summary>
+
+    Sharing a key across an org's product teams had no home. The API-key walk only sees the team's and the user's rows, and secrets.OrgOwnerKey — despite its name — keys a TEAM forfait. The only way to share was to copy the credential into every team: N writes per rotation, N places to forget one, and no way to tell whose spend was whose. Measured on the prod instance, where one Claude forfait is already duplicated across two teams.
+
+    </details>
+* **forge:** a connection can pin the base its hook URLs are built from ([#1011](https://github.com/SocialGouv/iterion/issues/1011)) ([df80e5b](https://github.com/SocialGouv/iterion/commit/df80e5be213f49b781bd736e9dfaba8d3fc23cf1))
+
+    <details><summary>why</summary>
+
+    Hook URLs are derived from the deployment's public URL, which is right for every connection until one of them cannot reach that host. GitLab refuses any webhook URL outside its instance-wide outbound allowlist with "Invalid url given" (HTTP 422), and listing a host is an administrative act on the forge's side, not ours. One such forge therefore pinned the public URL of the WHOLE deployment: moving to a new domain meant either leaving that forge behind or not moving.
+
+    </details>
+
 ## [3.122.3](https://github.com/SocialGouv/iterion/compare/v3.122.2...v3.122.3) (2026-09-08)
 
 ### Bug Fixes

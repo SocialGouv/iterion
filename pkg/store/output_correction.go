@@ -7,7 +7,7 @@ import "context"
 // correction call cannot whole-document-replace a newer cancel, checkpoint or
 // steering update owned by another authority.
 type OutputCorrectionStore interface {
-	SetRunOutputCorrection(ctx context.Context, runID, nodeID string, episode OutputCorrectionEpisode) error
+	SetRunOutputCorrection(ctx context.Context, runID, ledgerKey string, episode OutputCorrectionEpisode) error
 }
 
 func AsOutputCorrectionStore(s RunStore) OutputCorrectionStore {

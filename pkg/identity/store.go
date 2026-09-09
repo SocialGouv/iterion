@@ -34,6 +34,8 @@ type Store interface {
 	// ids are absent from the result (see GetUsersByIDs).
 	GetOrgsByIDs(ctx context.Context, ids []string) (map[string]Org, error)
 	UpdateOrg(ctx context.Context, o Org) error
+	// PatchOrg is PatchTeam's org twin — see its contract.
+	PatchOrg(ctx context.Context, id string, p OrgPatch) (Org, error)
 	// DeleteOrg removes an org. Orgs are never deleted in normal
 	// operation; this exists for the teams→orgs backfill's --reverse path.
 	DeleteOrg(ctx context.Context, id string) error
@@ -53,6 +55,11 @@ type Store interface {
 	// ids are absent from the result (see GetUsersByIDs).
 	GetTeamsByIDs(ctx context.Context, ids []string) (map[string]Team, error)
 	UpdateTeam(ctx context.Context, t Team) error
+	// PatchTeam writes ONLY the fields a patch names, and returns the row as
+	// it stands after the write. Prefer it over UpdateTeam in any handler
+	// that changes a subset: UpdateTeam replaces the whole document, so two
+	// concurrent editors of different fields silently undo each other.
+	PatchTeam(ctx context.Context, id string, p TeamPatch) (Team, error)
 	// DeleteTeam removes a team. Like DeleteOrg this is not part of
 	// normal operation; it backs super-admin org deletion (cascade) and
 	// the teams→orgs backfill reversal. Team-scoped resources in other

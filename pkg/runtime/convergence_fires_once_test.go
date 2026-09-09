@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -294,19 +295,59 @@ func TestSharedTargetFanOut_BranchFailure(t *testing.T) {
 
 // A branch that pauses at a human gate resumes into the SAME fan-out: the
 // completed sibling is not replayed and the collector fires once across the
-// two engine invocations.
+// two engine invocations. A `barrier` agent between the fan-out and the gate
+// makes what this test asserts a workflow precondition — the runtime
+// promises no order between sibling branches, so a schedule that reaches the
+// gate first cancels a and this test's post-resume invariants would never
+// be exercised.
 func TestSharedTargetFanOut_ResumeAfterBranchPauseFiresCollectorOnce(t *testing.T) {
 	wf := sharedTargetFanOut(ir.AwaitBestEffort)
+	wf.Nodes["barrier"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "barrier"}}
 	wf.Nodes["gate"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
 	for _, edge := range wf.Edges {
 		if edge.From == "fan" && edge.To == "b" {
-			edge.To = "gate"
+			edge.To = "barrier"
 		}
 	}
-	wf.Edges = append(wf.Edges, &ir.Edge{From: "gate", To: "b", Condition: "approved"})
+	wf.Edges = append(wf.Edges,
+		&ir.Edge{From: "barrier", To: "gate"},
+		&ir.Edge{From: "gate", To: "b", Condition: "approved"},
+	)
 
 	exec := newCountingExecutor()
 	exec.on("entry", dualEntry(true))
+	// aDone gates the branch that hosts the human gate on the branch that
+	// runs a. Without it the two fan-out goroutines race and the gate can
+	// pause first, cancelling a before it starts (issue #960).
+	// What the barrier orders is exactly what the assertion below reads:
+	// countingExecutor increments calls[id] BEFORE dispatching to the hook,
+	// so by the time this channel closes, count("a") is already 1. It does
+	// NOT order a's artifact write, and nothing here needs it to.
+	//
+	// close() is guarded: a regression that replays a would otherwise panic
+	// on a closed channel inside a branch goroutine, where launchBranches'
+	// recover() turns it into "panic in branch" — burying the replay, which
+	// is one of the defects this test exists to catch.
+	aDone := make(chan struct{})
+	var aOnce sync.Once
+	exec.on("a", func(map[string]any) (map[string]any, error) {
+		aOnce.Do(func() { close(aDone) })
+		return map[string]any{"from": "a"}, nil
+	})
+	exec.on("barrier", func(map[string]any) (map[string]any, error) {
+		// A bounded wait, not a bare receive: the barrier assumes the two
+		// fan-out branches can run concurrently. Should a budget ever pin
+		// max_parallel_branches to 1, a bare receive would deadlock and the
+		// package would die on a timeout naming nothing.
+		select {
+		case <-aDone:
+		case <-time.After(10 * time.Second):
+			return nil, fmt.Errorf("barrier waited 10s for branch a: the fan-out cannot " +
+				"run its two branches concurrently, so this test's precondition is " +
+				"unreachable (check max_parallel_branches)")
+		}
+		return map[string]any{"from": "barrier"}, nil
+	})
 	s := tmpStore(t)
 	runID := "shared-target-resume-pause"
 	if err := New(wf, s, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {

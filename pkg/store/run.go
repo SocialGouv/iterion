@@ -447,6 +447,7 @@ type RunRetryState struct {
 // remains.  Status is one of active, succeeded, exhausted or unchanged.
 type OutputCorrectionEpisode struct {
 	EpisodeID                string    `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string    `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
 	NodeID                   string    `json:"node_id,omitempty" bson:"node_id,omitempty"`
 	Budget                   int       `json:"budget,omitempty" bson:"budget,omitempty"`
 	Attempts                 int       `json:"attempts,omitempty" bson:"attempts,omitempty"`

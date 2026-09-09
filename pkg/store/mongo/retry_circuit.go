@@ -13,11 +13,10 @@ import (
 )
 
 // RecordRetryFailure atomically advances the tenant/workflow circuit's
-// failure streak. The follow-up $max preserves a longer cooldown already
-// opened by a concurrent runner. The operation is intentionally small and
-// idempotent at the document boundary: a duplicate delivery may add one
-// failure, but it cannot create a second circuit document or lose an open
-// interval.
+// failure streak and opens it when the new count reaches threshold. Both
+// changes live in one update pipeline: a concurrent RecordRetrySuccess can
+// therefore happen wholly before or wholly after this failure, never between
+// the increment and a follow-up open write.
 func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now time.Time, threshold int, cooldown time.Duration) (*store.RetryCircuitState, error) {
 	if key == "" {
 		return nil, errors.New("retry circuit: empty key")
@@ -31,35 +30,34 @@ func (s *Store) RecordRetryFailure(ctx context.Context, key, runID string, now t
 	now = now.UTC()
 	base := bson.M{"key": key}
 	filter := withTenantFilter(ctx, base)
-	setOnInsert := bson.M{"key": key}
-	if tenant, ok := store.TenantFromContext(ctx); ok && tenant != "" {
-		setOnInsert["tenant_id"] = tenant
+	firstSet := bson.M{
+		"key":                  key,
+		"last_failure_at":      now,
+		"last_failure_run_id":  runID,
+		"updated_at":           now,
+		"consecutive_failures": bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$consecutive_failures", 0}}, 1}},
 	}
-	update := bson.M{
-		"$set": bson.M{
-			"last_failure_at":     now,
-			"last_failure_run_id": runID,
-			"updated_at":          now,
-		},
-		"$inc":         bson.M{"consecutive_failures": 1},
-		"$setOnInsert": setOnInsert,
+	if tenant, ok := store.TenantFromContext(ctx); ok && tenant != "" {
+		firstSet["tenant_id"] = tenant
+	}
+	openUntil := now.Add(cooldown)
+	openExpr := bson.M{"$cond": bson.A{
+		bson.M{"$gte": bson.A{"$consecutive_failures", threshold}},
+		bson.M{"$cond": bson.A{
+			bson.M{"$gt": bson.A{bson.M{"$ifNull": bson.A{"$open_until", now}}, openUntil}},
+			"$open_until",
+			openUntil,
+		}},
+		bson.M{"$ifNull": bson.A{"$open_until", "$$REMOVE"}},
+	}}
+	update := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: firstSet}},
+		bson.D{{Key: "$set", Value: bson.M{"open_until": openExpr}}},
 	}
 	var state store.RetryCircuitState
 	if err := s.retryCircuits.FindOneAndUpdate(ctx, filter, update,
 		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)).Decode(&state); err != nil {
 		return nil, err
-	}
-	if state.ConsecutiveFailures >= threshold {
-		openUntil := now.Add(cooldown)
-		if _, err := s.retryCircuits.UpdateOne(ctx, filter, bson.M{
-			"$max": bson.M{"open_until": openUntil},
-			"$set": bson.M{"updated_at": now},
-		}); err != nil {
-			return nil, err
-		}
-		if err := s.retryCircuits.FindOne(ctx, filter).Decode(&state); err != nil {
-			return nil, err
-		}
 	}
 	return &state, nil
 }

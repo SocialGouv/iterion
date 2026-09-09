@@ -101,6 +101,31 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	return true, attempt, nil
 }
 
+// DelayRunRetry moves an existing intent behind a shared circuit without
+// charging a new attempt. The exact retry_after CAS means a stale sweeper can
+// neither overwrite a newer arm nor resurrect an operator-resumed run.
+func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusFailedResumable),
+		retryPath("retry_after"): expectedAfter.UTC(),
+	})
+	update := bson.M{
+		"$set": bson.M{
+			retryPath("retry_after"): delayedUntil.UTC(),
+			"updated_at":             now,
+		},
+		"$unset": bson.M{retryPath("claimed_at"): ""},
+		"$inc":   bson.M{"version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // ClaimRunRetry leases an armed retry, conditioning on the retry_after value
 // the caller read AND on no live lease existing. First writer wins; every
 // other replica sees won=false — no leader election.
