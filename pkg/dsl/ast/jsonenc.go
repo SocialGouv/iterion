@@ -1429,11 +1429,12 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxIterations:       w.Budget.MaxIterations,
 		}
 	}
-	if w.Resources != nil && len(w.Resources.Capacities) > 0 {
+	// Each half travels on its own: gating the members on a non-empty
+	// capacities map would make one field's survival depend on an unrelated
+	// one, which is the silent-loss shape this mirror exists to rule out.
+	if w.Resources != nil && (len(w.Resources.Capacities) > 0 || len(w.Resources.Members) > 0) {
 		jw.Resources = w.Resources.Capacities
-		if len(w.Resources.Members) > 0 {
-			jw.ResourceMembers = w.Resources.Members
-		}
+		jw.ResourceMembers = w.Resources.Members
 	}
 	for _, e := range w.Edges {
 		jw.Edges = append(jw.Edges, edgeToJSON(e))
@@ -2218,11 +2219,8 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
 	}
-	if len(jw.Resources) > 0 {
-		w.Resources = &ResourcesBlock{Capacities: jw.Resources}
-		if len(jw.ResourceMembers) > 0 {
-			w.Resources.Members = jw.ResourceMembers
-		}
+	if len(jw.Resources) > 0 || len(jw.ResourceMembers) > 0 {
+		w.Resources = &ResourcesBlock{Capacities: jw.Resources, Members: jw.ResourceMembers}
 	}
 	for _, je := range jw.Edges {
 		e, err := edgeFromJSON(je)

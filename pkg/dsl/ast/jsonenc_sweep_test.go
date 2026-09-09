@@ -178,4 +178,30 @@ func TestResourcesBlockIsFullyMirrored(t *testing.T) {
 	if got := strings.Join(names, ","); got != "Capacities,Members" {
 		t.Errorf("ResourcesBlock grew a field the workflow mirror does not know: %s", got)
 	}
+	// Field names on both sides prove nothing about what the converters
+	// actually assign: each half has to travel on its OWN, or one field's
+	// survival hangs on an unrelated one and a pool disappears in silence.
+	for _, tc := range []struct {
+		name string
+		res  *ResourcesBlock
+	}{
+		{"both", &ResourcesBlock{Capacities: map[string]int{"godot": 2}, Members: map[string][]string{"godot": {"s1", "s2"}}}},
+		{"capacities only", &ResourcesBlock{Capacities: map[string]int{"cpu": 4}}},
+		{"members only", &ResourcesBlock{Members: map[string][]string{"godot": {"s1", "s2"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &File{Workflows: []*WorkflowDecl{{Name: "w", Resources: tc.res}}}
+			b, err := MarshalFile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := UnmarshalFile(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(out.Workflows[0].Resources, tc.res) {
+				t.Errorf("resources did not survive: %+v became %+v\n%s", tc.res, out.Workflows[0].Resources, b)
+			}
+		})
+	}
 }

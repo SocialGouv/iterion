@@ -211,8 +211,11 @@ func declFingerprints(f *ast.File) map[string]string {
 	// "<unencodable N>" placeholder, derived from the ORDINAL position and
 	// therefore identical in the recorded and the edited source — a false
 	// negative ("the workflow source is unchanged") that resumes against
-	// the OLD node. TestEveryASTFieldHasAJSONCounterpart in pkg/dsl/ast is
-	// what keeps the encoder complete.
+	// the OLD node. TestEveryFieldSurvivesTheTransport in pkg/dsl/ast is
+	// what keeps the encoder complete — it fills every field and compares
+	// the round-trip. Its sibling TestEveryASTFieldHasAJSONCounterpart only
+	// matches field NAMES across the two structs, so a field that exists on
+	// both sides and is never assigned by a converter passes it unseen.
 	for _, d := range f.Groups {
 		put("group", d.Name, &ast.File{Groups: []*ast.GroupDecl{d}})
 	}
