@@ -301,12 +301,6 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
 	}
-	// Refuse an incompatible persisted artifact before claiming the run or
-	// mutating its checkpoint/workspace. Legacy/report contexts remain
-	// compatible during rollout; enforce contexts fail closed.
-	if err := runtime.ValidateArtifactContracts(ctx, s.store, run, wf, "", false); err != nil {
-		return nil, err
-	}
 	// Nodes this run actually executed — the search space for --auto and
 	// the validity domain for an explicit --node.
 	executed := map[string]bool{}
@@ -378,7 +372,30 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
+	invalidatedSet := map[string]bool{}
+	for _, id := range invalidated {
+		invalidatedSet[id] = true
+	}
 	fromNode := cp.NodeID
+
+	// Refuse an incompatible persisted artifact before claiming the run or
+	// mutating its checkpoint/workspace — but only for the artifacts that
+	// SURVIVE this rewind. Checking the invalidated subgraph would refuse the
+	// operation for the very outputs it exists to discard, and `--auto`
+	// targets the node whose declaration just changed, i.e. precisely the one
+	// whose contract no longer matches. That would make `edit → rewind
+	// --auto → resume` — the bot-dev loop this command was built for —
+	// unusable under `enforce`, and would re-introduce here the source-change
+	// guard the contract stated 90 lines above deliberately excludes.
+	//
+	// What clears the subgraph afterwards is writeArtifactTombstones: its
+	// marker carries no Contract, so a later resume skips it as a legacy
+	// artifact. That nil contract is load-bearing, not mere tolerance.
+	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
+		Store: s.store, Run: run, Workflow: wf, Skip: invalidatedSet, Logger: s.logger,
+	}); err != nil {
+		return nil, err
+	}
 
 	// Claim the run BEFORE touching anything, the workspace included. The
 	// CAS exists to make a concurrent resume safe; reverting first defeats
@@ -488,11 +505,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// a rewind is invoked on — has no output, so the output-filtered set
 	// would skip exactly the node whose questions are still pending. Same
 	// argument detachSubbotChildren and the NodeAttempts clear rest on.
-	retireNodes := map[string]bool{}
-	for _, id := range invalidated {
-		retireNodes[id] = true
-	}
-	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, retireNodes); rerr != nil {
+	if n, rerr := store.RetireAsyncInteractions(ctx, s.store, run.ID, invalidatedSet); rerr != nil {
 		if s.logger != nil {
 			s.logger.Warn("rewind: retire async interactions for %s: %v", run.ID, rerr)
 		}

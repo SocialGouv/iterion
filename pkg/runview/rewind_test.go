@@ -999,3 +999,85 @@ func TestRewind_KeepsTheFinishedAtTheClaimStamped(t *testing.T) {
 			"the save dropped it, so the studio duration ticker runs forever")
 	}
 }
+
+// seedEnforcedContractArtifact parks the run under the `enforce` context
+// policy and publishes one artifact for nodeID whose contract names a
+// logical ref the CURRENT source no longer declares — the shape an operator
+// produces by editing a published node's `publish:`/`output:`.
+func seedEnforcedContractArtifact(t *testing.T, st store.RunStore, runID, nodeID string) {
+	t.Helper()
+	ctx := context.Background()
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	// WriteArtifact advances Run.ArtifactIndex inside run.json, so it must
+	// come after the SaveRun above or the index write would be clobbered.
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: nodeID, Version: 0,
+		Contract: &store.ArtifactContract{
+			LogicalRef: nodeID + "-report", ProducerNode: nodeID, Version: 0,
+		},
+		Data: map[string]any{"value": "stale"},
+	}); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+}
+
+// TestRewind_SkipsContractsOfTheSubgraphItInvalidates is the regression guard
+// for the bot-dev loop this command exists for: edit a published node, rewind
+// onto it, resume. Under the `enforce` context policy the pre-edit artifact of
+// that very node no longer matches the source — and refusing the rewind for it
+// would make the documented recovery unreachable, since the rewind is what
+// supersedes it (with a contract-less tombstone the later resume skips).
+func TestRewind_SkipsContractsOfTheSubgraphItInvalidates(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	// linearBot publishes nothing, so this contract's logical ref is absent
+	// from the current source — an incompatibility, on a node the rewind to
+	// "implement" invalidates.
+	seedEnforcedContractArtifact(t, st, runID, "implement")
+
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind refused for an artifact it was about to supersede: %v", err)
+	}
+}
+
+// TestRewind_RefusesIncompatibleSurvivingArtifact is the other half: the skip
+// set is scoped to what the rewind discards, never a blanket waiver. An
+// upstream artifact the rewind KEEPS still has to match the source, or the
+// resume would feed a downstream node an output under a contract that no
+// longer holds.
+func TestRewind_RefusesIncompatibleSurvivingArtifact(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	// "survey" is upstream of the "implement" pivot: it survives the rewind.
+	seedEnforcedContractArtifact(t, st, runID, "survey")
+
+	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err == nil {
+		t.Fatal("Rewind accepted an incompatible artifact that survives it")
+	}
+	if !strings.Contains(err.Error(), "survey-report") {
+		t.Fatalf("error does not name the offending artifact: %v", err)
+	}
+	// The refusal must be non-destructive: the run keeps its resumable status.
+	run, lerr := st.LoadRun(context.Background(), runID)
+	if lerr != nil {
+		t.Fatalf("load run: %v", lerr)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %q after a refused rewind, want the untouched %q",
+			run.Status, store.RunStatusFailedResumable)
+	}
+}
