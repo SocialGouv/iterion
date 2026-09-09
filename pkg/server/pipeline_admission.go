@@ -530,6 +530,22 @@ func (s *Server) resolvePipelineBot(ctx context.Context, teamID, botID string) (
 		return pipelineBot{}, false, err
 	}
 	if lb == nil {
+		// "Nothing resolved" is not always "no such bot": the baked tier
+		// reports an UNREADABLE catalog as an absence — resolveBotTieredRaw
+		// collapses every ResolveBotPath failure into (nil, nil), and one
+		// malformed manifest.yaml anywhere under the discovery roots fails
+		// the whole walk, for every bot. The metadata read crosses the same
+		// catalog and propagates that error, so ask it before answering
+		// "absent": the operator is then told his catalog will not parse
+		// (what findBot used to say, before this lane went through the
+		// tiers) instead of being told the bot he just typed does not exist.
+		// A genuine absence stays a genuine absence. It is the SAME read the
+		// found path makes (the sweep's tenant-aware form, so this probe
+		// cannot answer from a tier the launch would not have served); only
+		// its error is used here, since nothing resolved to describe.
+		if _, _, catErr := s.effectiveFindByNameForTeam(ctx, teamID, botID); catErr != nil {
+			return pipelineBot{}, false, catErr
+		}
 		return pipelineBot{}, false, nil
 	}
 	// The metadata half of the SAME resolution. It must describe the

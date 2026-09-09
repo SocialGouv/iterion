@@ -332,6 +332,41 @@ func TestPipelineBoardPlatformMetadataDescribesTheBundleThatRuns(t *testing.T) {
 	})
 }
 
+// A catalog that will not PARSE is not a catalog without this bot in it.
+// The baked tier reports both the same way — resolveBotTieredRaw turns any
+// ResolveBotPath failure into "nothing resolved", and one malformed
+// manifest.yaml under the discovery roots fails the walk for every bot — so
+// the lane has to ask before it answers "not found". Before this lane went
+// through the tiers, findBot propagated that error and the operator was told
+// what to fix.
+func TestPipelineBoardSaysWhenTheCatalogItselfWillNotParse(t *testing.T) {
+	env := newPipelineTierEnv(t)
+	// A second bundle, alongside the healthy `probe`, whose manifest is not
+	// YAML. Discovery walks the whole root, so `probe` stops resolving too.
+	broken := filepath.Join(env.srv.cfg.Bots.Paths[0], "broken")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "manifest.yaml"), []byte("name: broken\nversion: [1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "main.bot"), []byte(tierBakedBot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskCreate(w, env.req(http.MethodPost, "/api/v1/pipeline-board/tasks", `{"bot":"probe","title":"catalog is broken"}`))
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("create = 404 %s — the catalog could not be READ, and the operator is being sent to look for a bot that is there", w.Body.String())
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("create = %d %s, want 500 carrying the parse failure", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "manifest") {
+		t.Errorf("refusal = %s, want the manifest parse failure that actually blocked the resolution", body)
+	}
+}
+
 // blipStore fails the Nth GetBySlug of one tenant and serves every other
 // read normally — the transient store failure that lands BETWEEN the two
 // reads a single resolution makes.
