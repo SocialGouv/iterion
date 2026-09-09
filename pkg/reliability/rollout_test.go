@@ -64,6 +64,7 @@ func TestSummarizeAndRollback(t *testing.T) {
 
 func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "")
+	t.Setenv(EnvContextPolicyAlias, "")
 	t.Setenv("ITERION_RETRY_CIRCUIT_THRESHOLD", "7")
 	t.Setenv("ITERION_RETRY_CIRCUIT_COOLDOWN", "2m")
 	c := FromEnv()
@@ -73,5 +74,45 @@ func TestFromEnvDefaultsToSafeLegacy(t *testing.T) {
 	t.Setenv(EnvMode, "enforce")
 	if got := FromEnv().ContextPolicy(); got != store.ContextPolicyEnforce {
 		t.Fatalf("enforce policy = %s", got)
+	}
+}
+
+// TestModeFromEnvPrecedence covers every combination of the two variables an
+// operator can be carrying. The load-bearing row is "legacy over an enforcing
+// alias": the rollback documented in docs/workflow-reliability-1006.md is only
+// an emergency lever if the older variable cannot shadow it.
+func TestModeFromEnvPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mode   string
+		alias  string
+		want   Mode
+		policy store.ContextPolicy
+	}{
+		{name: "neither set", want: ModeLegacy, policy: store.ContextPolicyLegacy},
+		{name: "mode alone", mode: "enforce", want: ModeEnforce, policy: store.ContextPolicyEnforce},
+		{name: "alias alone", alias: "report", want: ModeReport, policy: store.ContextPolicyReport},
+		{name: "legacy over an enforcing alias", mode: "legacy", alias: "enforce", want: ModeLegacy, policy: store.ContextPolicyLegacy},
+		{name: "report over an enforcing alias", mode: "report", alias: "enforce", want: ModeReport, policy: store.ContextPolicyReport},
+		{name: "enforce over a legacy alias", mode: "enforce", alias: "legacy", want: ModeEnforce, policy: store.ContextPolicyEnforce},
+		{name: "agreeing values", mode: "report", alias: "report", want: ModeReport, policy: store.ContextPolicyReport},
+		{name: "whitespace and case are tolerated", mode: "  Enforce\t", want: ModeEnforce, policy: store.ContextPolicyEnforce},
+		{name: "blank mode falls through to the alias", mode: "   ", alias: "enforce", want: ModeEnforce, policy: store.ContextPolicyEnforce},
+		{name: "unrecognised mode means legacy, not the alias", mode: "nonsense", alias: "enforce", want: ModeLegacy, policy: store.ContextPolicyLegacy},
+		{name: "unrecognised alias means legacy", alias: "nonsense", want: ModeLegacy, policy: store.ContextPolicyLegacy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvMode, tc.mode)
+			t.Setenv(EnvContextPolicyAlias, tc.alias)
+			if got := ModeFromEnv(); got != tc.want {
+				t.Fatalf("mode = %q, want %q", got, tc.want)
+			}
+			if got := ContextPolicyFromEnv(); got != tc.policy {
+				t.Fatalf("policy = %q, want %q", got, tc.policy)
+			}
+			if got := FromEnv().Mode; got != tc.want {
+				t.Fatalf("FromEnv mode = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

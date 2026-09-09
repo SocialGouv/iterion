@@ -79,15 +79,35 @@ The rollout is deliberately reversible:
 1. Capture a baseline with `reliability.Summarize` (or the equivalent
    operator report) for finished, failed, failed-resumable, paused and queued
    runs, including retry-armed and ledger-use counts.
-2. Start a pilot in `report` mode. Admission decisions are recorded and
-   surfaced, but legacy contexts remain runnable; correction and watcher
-   ledgers are observational evidence that can be compared with the baseline.
+2. Start a pilot in `report` mode with `ITERION_RELIABILITY_MODE=report`.
+   Admission decisions are recorded and surfaced, but legacy contexts remain
+   runnable; correction and watcher ledgers are observational evidence that
+   can be compared with the baseline.
 3. Promote only the selected tenant/workflow revisions to `enforce` after
    queued, resumed, nested and watcher paths show matching context and
    artifact contracts. Keep the per-run retry and correction budgets bounded.
 4. Roll back by setting `ITERION_RELIABILITY_MODE=legacy` (and, if required,
    `ITERION_OUTPUT_CORRECTION_BUDGET=0`). Do not delete the ledgers: they are
    the evidence needed to explain the pilot and make a later resume safe.
+
+### The two variables, and which one wins
+
+`ITERION_RELIABILITY_MODE` (`legacy|report|enforce`) is the operator-facing
+switch for this rollout and it is **authoritative**.
+`ITERION_EXECUTION_CONTEXT_POLICY` — the narrower, pre-existing switch this
+rollout generalises — takes the same three values and is read only when
+`ITERION_RELIABILITY_MODE` is unset. Both resolve through one implementation
+([`reliability.ContextPolicyFromEnv`](../pkg/reliability/rollout.go), which
+`runview.ExecutionContextPolicyFromEnv` delegates to), so what a report names
+is what the launch surfaces apply.
+
+The precedence is what makes step 4 an emergency lever rather than a
+suggestion: a deployment that already carries
+`ITERION_EXECUTION_CONTEXT_POLICY=enforce` rolls back by setting
+`ITERION_RELIABILITY_MODE=legacy` alone — it does not also have to find and
+unset the older variable. An unrecognised value in either resolves to
+`legacy`; it never falls through to the other variable, so a typo in a
+rollback cannot leave enforcement on.
 
 Legacy documents are always readable. Missing context, admission, correction
 or watcher fields mean “pre-pilot”, not “successful”; the compatibility report

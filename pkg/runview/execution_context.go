@@ -3,33 +3,24 @@ package runview
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/reliability"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ExecutionContextPolicyFromEnv provides a common opt-in switch for launch
 // surfaces that do not construct a runview.Service (notably the CLI runner).
 // Invalid or unset values intentionally fall back to legacy compatibility.
+//
+// The resolution itself lives in pkg/reliability, which owns the staged
+// rollout knobs: ITERION_RELIABILITY_MODE is authoritative and
+// ITERION_EXECUTION_CONTEXT_POLICY is the compatibility alias consulted only
+// when it is unset. Delegating instead of re-deriving is what keeps a rollout
+// report from naming a policy the launch surfaces do not actually apply.
 func ExecutionContextPolicyFromEnv() store.ContextPolicy {
-	raw := strings.TrimSpace(os.Getenv("ITERION_EXECUTION_CONTEXT_POLICY"))
-	// The staged reliability rollout exposes one operator-facing switch. Keep
-	// the older, more specific variable authoritative when both are present so
-	// existing deployments can roll out independently.
-	if raw == "" {
-		raw = os.Getenv("ITERION_RELIABILITY_MODE")
-	}
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case string(store.ContextPolicyReport):
-		return store.ContextPolicyReport
-	case string(store.ContextPolicyEnforce):
-		return store.ContextPolicyEnforce
-	default:
-		return store.ContextPolicyLegacy
-	}
+	return reliability.ContextPolicyFromEnv()
 }
 
 // ResolveExecutionContext builds the effective context for a launch. Callers
