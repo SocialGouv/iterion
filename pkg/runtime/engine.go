@@ -97,6 +97,16 @@ type NodeExecutor interface {
 	Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error)
 }
 
+// OutputCorrector is an optional executor capability used after a node
+// produced a schema-invalid output. The engine invokes it only for the
+// bounded correction budget configured on the Engine. Implementations must
+// return a new candidate payload and must not publish external side effects;
+// artifact persistence and downstream edges happen only after validation
+// succeeds.
+type OutputCorrector interface {
+	CorrectOutput(ctx context.Context, node ir.Node, output map[string]any, validationErr error) (map[string]any, error)
+}
+
 // The following minimal interfaces are optional extensions to NodeExecutor:
 // the engine type-asserts the configured executor against each and, on a
 // match, pushes the corresponding launch-time state in (workDir, repoRoot,
@@ -138,6 +148,7 @@ type Engine struct {
 	routingPolicy            *store.RoutingPolicy                 // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
 	budgetAsk                *ir.BudgetOverrides                  // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
+	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
 	forceResume              bool                                 // when true, skip workflow hash check on resume
 	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
 	workDirDelegated         bool                                 // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
@@ -243,7 +254,12 @@ type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]any, 
 
 // New creates a new Engine for a raw workflow.
 func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
-	e := &Engine{workflow: wf, store: s, executor: exec}
+	// A corrector is an optional executor capability. Keeping a small default
+	// budget makes the safety feature effective for capable production
+	// executors while preserving legacy fail-fast behaviour for executors that
+	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
+	// it explicitly.
+	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: 2}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -258,7 +274,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec}
+	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: 2}
 	for _, opt := range opts {
 		opt(e)
 	}

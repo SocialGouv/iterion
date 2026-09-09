@@ -436,6 +436,29 @@ type RunRetryState struct {
 	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
 }
 
+// OutputCorrectionEpisode is the durable ledger for bounded schema-output
+// correction.  An episode belongs to one node execution and survives a
+// process restart/resume, so a watcher cannot accidentally turn an invalid
+// output into an unbounded model-correction loop.
+//
+// Attempts is the number of correction calls already made.  The fingerprints
+// make the no-progress guard explicit: if the same invalid payload produces
+// the same violation twice, the runtime stops immediately even when budget
+// remains.  Status is one of active, succeeded, exhausted or unchanged.
+type OutputCorrectionEpisode struct {
+	EpisodeID                string    `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	NodeID                   string    `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int       `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string    `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string    `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string    `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string    `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string    `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+}
+
 // RunCredStamp is what one credential resolution leaves on the run
 // document: the audit identities of the credentials it sealed, and when the
 // earliest credential it passed over reopens. Written as a unit — at launch
@@ -612,6 +635,11 @@ type Run struct {
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
+	// OutputCorrections is the durable, per-node ledger for bounded invalid
+	// output correction. Nil/empty means no correction was attempted. Legacy
+	// runs keep their existing fail-fast behaviour unless their executor opts
+	// into correction through the runtime option.
+	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`
 	// DeletedAt is the Mongo-side durable tombstone (the filesystem
 	// twin is the .deleted marker file): DeleteRun strips the run's
 	// data and leaves a skeleton doc carrying this stamp, so a late

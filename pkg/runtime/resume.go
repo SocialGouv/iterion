@@ -1266,10 +1266,14 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	// LLM decided no human input needed — store output and continue.
 	rs.outputs[nodeID] = output
 
-	// Validate output against declared schema (optional).
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
-		return false, e.failRunErrWithCheckpoint(rs, nodeID, err)
+	// Validate output against the declared schema, preserving the same
+	// bounded correction ledger used by the normal execution path.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	if validationErr != nil {
+		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
+	output = validatedOutput
+	rs.outputs[nodeID] = output
 
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
@@ -1909,10 +1913,13 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Store the output and continue execution normally.
 	rs.outputs[nodeID] = output
 
-	// Validate output.
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
-		return e.failRunErrWithCheckpoint(rs, nodeID, err)
+	// Validate output, continuing any durable bounded correction episode.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	if validationErr != nil {
+		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
+	output = validatedOutput
+	rs.outputs[nodeID] = output
 
 	// Record budget.
 	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {

@@ -10,6 +10,20 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+type correctingExecutor struct {
+	*stubExecutor
+	correct func(map[string]any, error) (map[string]any, error)
+	calls   int
+}
+
+func (e *correctingExecutor) CorrectOutput(_ context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, error) {
+	e.calls++
+	if e.correct == nil {
+		return output, validationErr
+	}
+	return e.correct(output, validationErr)
+}
+
 // validationWorkflow builds a simple workflow: agent -> done
 // where the agent declares an output schema.
 func validationWorkflow() *ir.Workflow {
@@ -68,6 +82,60 @@ func TestSchemaValidation_CatchesBadOutput(t *testing.T) {
 	}
 	if rtErr.NodeID != "my_agent" {
 		t.Errorf("expected nodeID %q, got %q", "my_agent", rtErr.NodeID)
+	}
+}
+
+func TestSchemaValidation_BoundedCorrectionPersistsSuccess(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "not-a-number"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correct", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, err := st.LoadRun(context.Background(), "run-val-correct")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	ep, ok := run.OutputCorrections["my_agent"]
+	if !ok || ep.Status != correctionStatusSucceeded || ep.Attempts != 1 {
+		t.Fatalf("correction episode = %#v, want succeeded/1", ep)
+	}
+}
+
+func TestSchemaValidation_UnchangedCorrectionStopsImmediately(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "not-a-number"}, nil
+	})
+	exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
+		return output, nil
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5)).Run(context.Background(), "run-val-unchanged", nil)
+	if err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-unchanged")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	ep := run.OutputCorrections["my_agent"]
+	if ep.Status != correctionStatusUnchanged || ep.Attempts != 1 {
+		t.Fatalf("correction episode = %#v, want unchanged/1", ep)
 	}
 }
 

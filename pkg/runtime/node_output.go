@@ -1,12 +1,19 @@
 package runtime
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,6 +46,190 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 		}
 	}
 	return nil
+}
+
+const (
+	correctionStatusActive    = "active"
+	correctionStatusSucceeded = "succeeded"
+	correctionStatusExhausted = "exhausted"
+	correctionStatusUnchanged = "unchanged"
+)
+
+// correctAndValidateNodeOutput applies the optional bounded correction loop
+// around schema validation. The original output has not been published when
+// this helper runs, so a correction can never replay a downstream side effect.
+// The episode is persisted before each correction call and after each result;
+// a process restart therefore resumes the same budget instead of starting a
+// fresh watcher-triggered loop.
+func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]any) (map[string]any, error) {
+	validationErr := e.validateNodeOutput(nodeID, node, output)
+	if validationErr == nil {
+		return output, nil
+	}
+
+	corrector, ok := e.executor.(OutputCorrector)
+	if !ok || e.outputCorrectionBudget <= 0 || e.store == nil {
+		return output, validationErr
+	}
+
+	inputFingerprint := correctionFingerprint(output)
+	violationFingerprint := correctionFingerprint(validationErr.Error())
+	episode, found := e.loadCorrectionEpisode(ctx, rs.runID, nodeID)
+	// InputFingerprint identifies the episode. The violation can legitimately
+	// change while a corrector improves a payload, so comparing it here would
+	// accidentally reset an exhausted episode on resume.
+	if !found || episode.InputFingerprint != inputFingerprint {
+		now := time.Now().UTC()
+		episode = store.OutputCorrectionEpisode{
+			EpisodeID:                fmt.Sprintf("%s-%d", inputFingerprint[:minInt(16, len(inputFingerprint))], now.UnixNano()),
+			NodeID:                   nodeID,
+			Budget:                   e.outputCorrectionBudget,
+			Status:                   correctionStatusActive,
+			InputFingerprint:         inputFingerprint,
+			LastOutputFingerprint:    inputFingerprint,
+			LastViolationFingerprint: violationFingerprint,
+			StartedAt:                now,
+			UpdatedAt:                now,
+		}
+	} else if episode.Budget < e.outputCorrectionBudget {
+		// A launch may raise the budget, but never lower an already consumed
+		// episode's bound. The persisted value remains the audit contract.
+		episode.Budget = e.outputCorrectionBudget
+	}
+
+	if (episode.Status == correctionStatusExhausted || episode.Status == correctionStatusUnchanged) && episode.Attempts >= episode.Budget {
+		return output, validationErr
+	}
+	if episode.Budget <= 0 {
+		return output, validationErr
+	}
+
+	current := output
+	currentErr := validationErr
+	for episode.Attempts < episode.Budget {
+		episode.Status = correctionStatusActive
+		episode.Attempts++
+		episode.LastOutputFingerprint = correctionFingerprint(current)
+		episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
+		episode.LastError = currentErr.Error()
+		episode.UpdatedAt = time.Now().UTC()
+		if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+			// Losing the durable ledger is safer than pretending an unbounded
+			// correction is allowed: surface the original validation failure and
+			// let the normal run lifecycle mark it resumable/failed.
+			return current, fmt.Errorf("output correction ledger: %w (original validation: %v)", err, currentErr)
+		}
+
+		candidate, correctionErr := corrector.CorrectOutput(ctx, node, current, currentErr)
+		if correctionErr != nil || candidate == nil {
+			episode.Status = correctionStatusExhausted
+			if correctionErr != nil {
+				episode.LastError = correctionErr.Error()
+			} else {
+				episode.LastError = "corrector returned a nil output"
+			}
+			episode.UpdatedAt = time.Now().UTC()
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+				return current, fmt.Errorf("output correction failed: %v; ledger: %w", episode.LastError, persistErr)
+			}
+			return current, currentErr
+		}
+
+		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
+		candidateFP := correctionFingerprint(candidate)
+		candidateViolationFP := ""
+		if candidateErr != nil {
+			candidateViolationFP = correctionFingerprint(candidateErr.Error())
+		}
+		if candidateErr == nil {
+			episode.Status = correctionStatusSucceeded
+			episode.LastOutputFingerprint = candidateFP
+			episode.LastViolationFingerprint = ""
+			episode.LastError = ""
+			episode.UpdatedAt = time.Now().UTC()
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+				return candidate, fmt.Errorf("output correction succeeded but ledger could not be persisted: %w", persistErr)
+			}
+			return candidate, nil
+		}
+
+		// A corrector that returns the exact same invalid payload is a
+		// no-progress loop. Stop immediately, even when budget remains.
+		if candidateFP == correctionFingerprint(current) && candidateViolationFP == correctionFingerprint(currentErr.Error()) {
+			episode.Status = correctionStatusUnchanged
+			episode.LastOutputFingerprint = candidateFP
+			episode.LastViolationFingerprint = candidateViolationFP
+			episode.LastError = candidateErr.Error()
+			episode.UpdatedAt = time.Now().UTC()
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
+				return candidate, fmt.Errorf("unchanged output correction; ledger: %w", persistErr)
+			}
+			return candidate, candidateErr
+		}
+
+		current = candidate
+		currentErr = candidateErr
+		episode.LastOutputFingerprint = candidateFP
+		episode.LastViolationFingerprint = candidateViolationFP
+		episode.LastError = candidateErr.Error()
+	}
+
+	episode.Status = correctionStatusExhausted
+	episode.UpdatedAt = time.Now().UTC()
+	if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
+		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
+	}
+	return current, currentErr
+}
+
+func correctionFingerprint(value any) string {
+	b, err := json.Marshal(value)
+	if err != nil {
+		b = []byte(fmt.Sprintf("%#v", value))
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string) (store.OutputCorrectionEpisode, bool) {
+	if e.store == nil {
+		return store.OutputCorrectionEpisode{}, false
+	}
+	r, err := e.store.LoadRun(ctx, runID)
+	if err != nil || r == nil || r.OutputCorrections == nil {
+		return store.OutputCorrectionEpisode{}, false
+	}
+	ep, ok := r.OutputCorrections[nodeID]
+	return ep, ok
+}
+
+func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
+	if e.store == nil {
+		return nil
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		r, err := e.store.LoadRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if r.OutputCorrections == nil {
+			r.OutputCorrections = make(map[string]store.OutputCorrectionEpisode)
+		}
+		r.OutputCorrections[nodeID] = episode
+		if err := e.store.SaveRun(ctx, r); err == nil {
+			return nil
+		} else if !errors.Is(err, store.ErrRunConflict) {
+			return err
+		}
+	}
+	return store.ErrRunConflict
 }
 
 // ---------------------------------------------------------------------------

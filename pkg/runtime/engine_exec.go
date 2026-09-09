@@ -631,10 +631,16 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 
 	rs.outputs[currentNodeID] = output
 
-	// Validate output against declared schema (optional).
-	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
+	// Validate output against the declared schema (optional). Capable
+	// executors may repair a bounded number of invalid payloads; no artifact,
+	// downstream edge or external publish happens until the repaired output
+	// validates.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
+	if validationErr != nil {
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
 	}
+	output = validatedOutput
+	rs.outputs[currentNodeID] = output
 
 	// Record budget usage and check limits.
 	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
