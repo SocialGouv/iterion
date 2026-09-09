@@ -364,7 +364,16 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 			}
 			loaded[key] = artifact
 		}
-		state.artifacts[name] = artifact.Data
+		// ArtifactVersions is an allocator cursor, not provenance. In legacy
+		// checkpoints without an explicit revision for this physical artifact,
+		// a parallel publisher may have completed out of order: versions-1 can
+		// therefore name a different branch invocation than the value captured
+		// in Outputs. Keep that checkpoint value authoritative. Exact persisted
+		// revisions (including aliases rebound during a forced migration) may
+		// safely restore their immutable artifact body.
+		if required[key] {
+			state.artifacts[name] = artifact.Data
+		}
 		if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
 			revision.ContractLogicalRef = artifact.Contract.LogicalRef
 			state.revisions[name] = revision

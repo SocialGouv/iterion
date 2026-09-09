@@ -811,6 +811,22 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 			addArtifactRef(ref)
 		}
 	}
+	addImageArtifactRefs := func(fields *LLMFields) {
+		if fields == nil {
+			return
+		}
+		for _, image := range fields.Images {
+			refs, err := ParseRefs(image)
+			if err == nil {
+				addArtifactRefs(refs)
+			}
+		}
+	}
+	if node, ok := w.Nodes[nodeID].(LLMNode); ok {
+		addImageArtifactRefs(node.GetLLMFields())
+	} else if node, ok := w.Nodes[nodeID].(*RouterNode); ok {
+		addImageArtifactRefs(&node.LLMFields)
+	}
 	switch node := w.Nodes[nodeID].(type) {
 	case *ToolNode:
 		addArtifactRefs(node.PostcondRefs)

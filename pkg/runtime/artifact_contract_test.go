@@ -787,12 +787,52 @@ func TestNodeArtifactRefsIncludesPostconditionAndReviewURL(t *testing.T) {
 			BaseNode: ir.BaseNode{ID: "review"}, Publish: "verdict",
 			ReviewURLRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"environment"}}},
 		},
+		"vision": &ir.AgentNode{
+			BaseNode: ir.BaseNode{ID: "vision"},
+			LLMFields: ir.LLMFields{Images: []string{
+				"plain.png", "{{artifacts.seed.path}}",
+			}},
+		},
 	}}
 	if got := ir.NodeArtifactRefs(wf, "tool"); len(got) != 1 || got[0] != "plan" {
 		t.Fatalf("tool artifact refs = %v", got)
 	}
 	if got := ir.NodeArtifactRefs(wf, "review"); len(got) != 1 || got[0] != "environment" {
 		t.Fatalf("review artifact refs = %v", got)
+	}
+	if got := ir.NodeArtifactRefs(wf, "vision"); len(got) != 1 || got[0] != "seed" {
+		t.Fatalf("image artifact refs = %v", got)
+	}
+}
+
+func TestPrepareResumeArtifactsKeepsLegacyParallelCheckpointValue(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	const runID = "artifact-legacy-parallel-order"
+	run, err := s.CreateRun(ctx, runID, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "worker", Version: 1,
+		Data: map[string]any{"item": "later-version"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		Outputs:          map[string]map[string]any{"worker": {"item": "checkpoint-branch"}},
+		ArtifactVersions: map[string]int{"worker": 2},
+	}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"worker": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "worker"}, Publish: "result"},
+	}}, s, newStubExecutor())
+
+	state, err := eng.prepareResumeArtifacts(ctx, run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["result"]["item"]; got != "checkpoint-branch" {
+		t.Fatalf("legacy checkpoint value was replaced by inferred revision: %v", got)
 	}
 }
 
