@@ -1717,6 +1717,13 @@ func testArtifactVersions(t *testing.T, s store.RunStore) {
 	if latest.Version != 3 {
 		t.Errorf("Latest version: got %d want 3", latest.Version)
 	}
+	// A version that is not there must be DISTINGUISHABLE from a store that
+	// could not be read: the artifact-contract gate tolerates the first and
+	// fails closed on the second, so a twin that returns a bare error makes
+	// an enforce run admit everything during an outage.
+	if _, err := s.LoadArtifact(testCtx(), "run_5", "node_a", 99); !errors.Is(err, store.ErrArtifactNotFound) {
+		t.Errorf("LoadArtifact of an absent version = %v, want it to wrap store.ErrArtifactNotFound", err)
+	}
 }
 
 func testLockExclusive(t *testing.T, s store.RunStore) {

@@ -247,6 +247,9 @@ type RunStore interface {
 
 	// Artifacts (versionnés)
 	WriteArtifact(ctx context.Context, a *Artifact) error
+	// LoadArtifact wraps ErrArtifactNotFound when the version genuinely is
+	// not there, and only then: a bare error means the store could not be
+	// read and must NOT be taken for absence (see ErrArtifactNotFound).
 	LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*Artifact, error)
 	LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*Artifact, error)
 	ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]ArtifactVersionInfo, error)
