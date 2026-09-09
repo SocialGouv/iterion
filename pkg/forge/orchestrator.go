@@ -646,6 +646,20 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ri.ID = existing.ID
 		ri.CreatedAt = existing.CreatedAt
 		ri.CreatedBy = existing.CreatedBy
+		// The literal above is built from the REQUEST, so every field the
+		// provisioner does not own is absent from it and the Update — which
+		// replaces the whole document — erases it. These three are set only
+		// through PATCH /forge/integrations/{iid}; provisioning has no
+		// opinion about them and must carry them through. (The webhook
+		// config half of this problem is carryOperatorWebhookSettings.)
+		//
+		// MinAuthorRole is the one that matters most: it is the trust
+		// threshold deciding whether a synced issue is stamped triage:auto
+		// or parked needs:approval, so dropping it does not fail — it
+		// silently RELAXES an operator's tightened gate back to the default.
+		ri.SyncIssuesEnabled = existing.SyncIssuesEnabled
+		ri.LastSyncedAt = existing.LastSyncedAt
+		ri.MinAuthorRole = existing.MinAuthorRole
 		if err := o.Integrations.Update(ctx, ri); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: update integration: %w", err)
 		}
