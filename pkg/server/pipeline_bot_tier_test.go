@@ -95,6 +95,38 @@ func (e *pipelineTierEnv) seedRow(t *testing.T, tenant, slug, body string) {
 	}
 }
 
+// seedRowWithManifest is seedRow for a row that must carry catalog
+// metadata — the `enabled:` flag being the only way to produce a
+// (found=true, Enabled=false) resolution, which is the disabled-bot path.
+func (e *pipelineTierEnv) seedRowWithManifest(t *testing.T, tenant, slug, body, manifest string) {
+	t.Helper()
+	if _, err := e.srv.botSources.Create(store.WithTenant(context.Background(), tenant), botsource.BotSource{
+		TenantID: tenant, Slug: slug,
+		Files: map[string]string{botsource.MainBotFile: body, "manifest.yaml": manifest},
+	}); err != nil {
+		t.Fatalf("seed %s/%s: %v", tenant, slug, err)
+	}
+}
+
+// countBundleTempDirs counts the materializations a bot resolution leaves
+// under the test's private TMPDIR: `storedLaunchBot`'s own dir, and the
+// frozen collection `snapshotLaunchBot` writes in cloud mode. Both are
+// owned by the resolving call and must be gone when it returns.
+func countBundleTempDirs(t *testing.T, tmp string) int {
+	t.Helper()
+	ents, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("read TMPDIR %s: %v", tmp, err)
+	}
+	n := 0
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "iterion-launch-bot-") || strings.HasPrefix(e.Name(), "iterion-bundle-snapshot-") {
+			n++
+		}
+	}
+	return n
+}
+
 // req builds a request authenticated as a member of t1 — the identity the
 // board itself is resolved from.
 func (e *pipelineTierEnv) req(method, path, body string) *http.Request {
@@ -170,6 +202,37 @@ func TestPipelineBoardCardsAndLaunchesATeamAuthoredBot(t *testing.T) {
 	}
 	if spec.BotBundle == nil || spec.BotBundle.TenantID != "t1" || spec.BotBundle.Slug != "teamonly" {
 		t.Errorf("bundle ref = %+v, want the team's own row so the runner rebuilds it", spec.BotBundle)
+	}
+}
+
+// Paying for a resolution means owning what it materialized. A DISABLED bot
+// is the path where the two diverge: the resolution succeeded — a temp
+// bundle dir on disk, and in cloud a second one holding the frozen
+// collection — and the caller then refuses the launch. Every operator click
+// of "launch now" on such a card leaves one full bundle tree under the
+// server pod's TMPDIR, and nothing ever comes back for it.
+func TestPipelineBoardDisabledBotLeavesNoBundleBehind(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	env := newPipelineTierEnv(t)
+	env.seedRowWithManifest(t, "t1", "parked", tierForkBot, "name: parked\nversion: 1.0.0\nenabled: false\n")
+
+	// Creation admits the card (only `start: true` is refused on a disabled
+	// bot) and already reclaims its own materialization.
+	card := env.createCard(t, `{"bot":"parked","title":"disabled bot"}`)
+	if n := countBundleTempDirs(t, tmp); n != 0 {
+		t.Fatalf("card creation left %d materialized bundle dir(s) behind", n)
+	}
+
+	r := env.req(http.MethodPost, "/api/v1/pipeline-board/tasks/"+card.ID+"/launch", "")
+	r.SetPathValue("id", card.ID)
+	w := httptest.NewRecorder()
+	env.srv.handlePipelineBoardTaskLaunch(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("launch of a card bound to a disabled bot = %d %s, want 409", w.Code, w.Body.String())
+	}
+	if n := countBundleTempDirs(t, tmp); n != 0 {
+		t.Errorf("the refused launch left %d materialized bundle dir(s) behind — one per operator click, with no reaper", n)
 	}
 }
 

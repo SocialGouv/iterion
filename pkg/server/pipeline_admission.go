@@ -607,6 +607,14 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		s.logger.Warn("pipeline admission: resolve bot %q: %v", iss.Bot, err)
 		return "", fmt.Errorf("resolve bot %q: %w", iss.Bot, err)
 	}
+	// The materialized bundle dir belongs to this call: the launch consumes
+	// it while compiling, and nothing downstream reads it afterwards. The
+	// defer sits ABOVE the skip so a DISABLED bot's bundle is reclaimed too
+	// — a resolution that FOUND the bot materialized it (and in cloud
+	// snapshotted the whole collection to a second temp dir), and nothing
+	// ever comes back for it. Cleanup is nil-safe, so the not-found branch
+	// costs nothing.
+	defer bot.Launch.Cleanup()
 	if !found || !bot.Enabled {
 		// Unknown/disabled bot: leave the ticket in Ready, surfaced as-is.
 		// Say so (once per ticket+bot, not every tick) — after a studio
@@ -616,9 +624,6 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 		s.warnAdmissionSkipOnce(iss.ID, iss.Bot, found)
 		return "", fmt.Errorf("bot %q is not in this workspace's catalog (or is disabled)", iss.Bot)
 	}
-	// The materialized bundle dir belongs to this call: the launch consumes
-	// it while compiling, and nothing downstream reads it afterwards.
-	defer bot.Launch.Cleanup()
 	// Leave the launch column BEFORE launching so the next tick won't
 	// re-pick this ticket while Launch is in flight. StateInProgress is not
 	// StateReady, so admitReadyPipelines skips it; the run's status then
