@@ -3278,6 +3278,25 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
                              "from the mutant set%s)" %
                              (", or excluded by GM_MUTANTS" if restricted else "")})
             continue
+        if not v.get("valid"):
+            # NOT MEASURED — a different thing from absent, and it must never
+            # read as proved. `probe_mutation`'s failure paths (apply refused,
+            # apply non-zero, inert) return a verdict carrying
+            # `targets_declared` but NEITHER `undetected_targets` nor
+            # `collateral`, so `moved` below would degenerate to every DECLARED
+            # target and credit the separator with a separation it never
+            # performed. And that is exactly how a separator dies — its
+            # apply.sh stops applying once a lot re-anchors it — so the one
+            # shape this obligation exists to catch would have reported PROVED.
+            #
+            # `valid` is the exact "a measurement exists" predicate: it is set
+            # only past the mutation check, and every path beyond it writes
+            # both fields, INCLUDING the revert-failed early return, which is a
+            # completed capture and must keep counting.
+            unproven.append({"ids": list(g), "separated_by": sep, "why":
+                             "the declared separator is INVALID (%s) — it never ran, so it "
+                             "separated nothing" % (v.get("reason") or "no reason recorded")})
+            continue
         moved = ((set(v.get("targets_declared") or [])
                   - set(v.get("undetected_targets") or []))
                  | set(v.get("collateral") or []))
@@ -5774,7 +5793,10 @@ def _selftest():
     # rougit avec lui.
     def whys(group, decls, moved_by):
         corpus_ = {"entries": [], "duplicate_groups": decls}
-        verdicts_ = [{"id": mid, "targets_declared": sorted(mv),
+        # `valid: True` beside the two measurement fields, because that is the
+        # shape score_mutant returns and the three travel together: a verdict
+        # is valid exactly when the capture happened.
+        verdicts_ = [{"id": mid, "valid": True, "targets_declared": sorted(mv),
                       "undetected_targets": [], "collateral": []}
                      for mid, mv in moved_by.items()]
         out = unproven_duplicate_groups([sorted(group)], corpus_, verdicts_)
@@ -5814,7 +5836,7 @@ def _selftest():
           [x["ids"] for x in unproven_duplicate_groups(
               [["012", "013"]],
               {"entries": [], "duplicate_groups": D},
-              [{"id": "sep-01", "targets_declared": ["013"],
+              [{"id": "sep-01", "valid": True, "targets_declared": ["013"],
                 "undetected_targets": [], "collateral": ["012"]}])],
           [["012", "013"]])
     # Et une cible DECLAREE qui n'a pas bouge ne compte pas comme deplacee.
@@ -5822,9 +5844,45 @@ def _selftest():
           [x["ids"] for x in unproven_duplicate_groups(
               [["012", "013"]],
               {"entries": [], "duplicate_groups": D},
-              [{"id": "sep-01", "targets_declared": ["012", "013"],
+              [{"id": "sep-01", "valid": True, "targets_declared": ["012", "013"],
                 "undetected_targets": ["012", "013"], "collateral": []}])],
           [["012", "013"]])
+
+    # UN VERDICT INVALIDE N'EST PAS UNE MESURE — et c'est la forme sous
+    # laquelle un separateur meurt. Les chemins d'echec de probe_mutation
+    # rendent la main AVANT que `undetected_targets` et `collateral` existent :
+    # sans garde, `moved` se reduit aux cibles DECLAREES et le groupe est
+    # rapporte PROUVE par une capture qui n'a jamais eu lieu. Ces verdicts sont
+    # ecrits litteralement, parce que `whys` emet toujours les deux champs de
+    # mesure — c'est precisement pourquoi cette forme n'etait pas exercee.
+    def refus(verdict):
+        return unproven_duplicate_groups(
+            [["012", "013"]], {"entries": [], "duplicate_groups": D}, [verdict])
+
+    v_failed = refus({"id": "sep-01", "valid": False, "detected": False,
+                      "reason": "apply.sh exited 1: patch does not apply",
+                      "targets_declared": ["013"]})
+    check("separateur dont l'apply a echoue : refuse, jamais prouve",
+          [x["ids"] for x in v_failed], [["012", "013"]])
+    check("et le refus dit INVALIDE, pas « absent du jeu score »",
+          ("INVALID" in v_failed[0]["why"], "not scored" in v_failed[0]["why"]),
+          (True, False))
+    check("la raison de l'invalidite est reportee telle quelle",
+          "patch does not apply" in v_failed[0]["why"], True)
+    check("separateur inerte : refuse aussi",
+          [x["ids"] for x in refus(
+              {"id": "sep-01", "valid": False, "detected": False,
+               "reason": "apply.sh left the tree and the data probe unchanged",
+               "targets_declared": ["012", "013"]})],
+          [["012", "013"]])
+    # Et un separateur valide dont le revert a echoue GARDE sa mesure : la
+    # capture est complete a ce point, seul le retour a la reference a rate.
+    check("un separateur valide au revert rate prouve quand meme",
+          [x["ids"] for x in refus(
+              {"id": "sep-01", "valid": True, "revert_clean": False,
+               "reason": "revert.sh exited 1", "targets_declared": ["013"],
+               "undetected_targets": [], "collateral": []})],
+          [])
 
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
