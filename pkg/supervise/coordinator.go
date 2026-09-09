@@ -40,6 +40,13 @@ type Injector interface {
 	Inject(ctx context.Context, runID, nodeID, text string) error
 }
 
+// IdempotentInjector guarantees that replaying one stable delivery ID cannot
+// enqueue the same intervention twice. Built-in launch surfaces implement it;
+// custom injectors retain the legacy best-effort seam.
+type IdempotentInjector interface {
+	InjectOnce(ctx context.Context, runID, nodeID, text, deliveryID string) error
+}
+
 // WatcherProgressStoreProvider is an optional seam implemented by launch
 // surfaces that can persist watcher cursors. Keeping it out of Injector and
 // Observer preserves compatibility with external implementations.
@@ -519,6 +526,15 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		}
 		return false
 	}
+	if dec == nil {
+		c.evalFailures++
+		c.cursor.LastTriggerFingerprint = ""
+		c.warn("supervise[%s]: evaluator returned a nil decision on run %s (wake=%s)", c.spec.Name, c.runID, reason)
+		if c.evalFailures >= maxEvalFailures {
+			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
+		}
+		return false
+	}
 	c.evalFailures = 0
 	c.evalCount++
 	// A silent verdict is the common (and desired) case — log it anyway
@@ -527,7 +543,13 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	c.info("supervise[%s]: eval %d/%d (wake=%s) → %s",
 		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
-	c.applyDecision(dec)
+	if err := c.applyDecision(dec, triggerFP); err != nil {
+		// The action did not land. Do not commit either the trigger or a
+		// successful intervention fingerprint: the same signal must remain
+		// eligible for a bounded later evaluation.
+		c.cursor.LastTriggerFingerprint = ""
+		return false
+	}
 	if dec.Intervene {
 		c.cursor.LastAction = "intervene"
 	} else if dec.Done {
@@ -583,9 +605,9 @@ func (c *Coordinator) persistCursor() {
 
 // applyDecision registers any new monitors and enqueues the steering
 // message when the bot chose to intervene.
-func (c *Coordinator) applyDecision(dec *Decision) {
+func (c *Coordinator) applyDecision(dec *Decision, triggerFP string) error {
 	if dec == nil {
-		return
+		return errors.New("supervise: nil decision")
 	}
 	for _, m := range dec.Watch {
 		// Deduplicate: the eval prompt shows the current list and asks
@@ -598,22 +620,26 @@ func (c *Coordinator) applyDecision(dec *Decision) {
 	}
 	if dec.Intervene {
 		if strings.TrimSpace(dec.Message) != "" {
-			c.inject(dec.Message)
+			if err := c.inject(dec.Message, triggerFP); err != nil {
+				return err
+			}
 		} else {
 			// An intervention with no text is a malformed decision; say
 			// so instead of silently doing nothing.
 			c.warn("supervise[%s]: bot chose intervene with an empty message — dropped", c.spec.Name)
+			return errors.New("supervise: intervention message is empty")
 		}
 	}
 	if dec.Done {
 		c.finished = true
 	}
+	return nil
 }
 
 // inject enqueues a steering message, node-scoped when the supervisor
 // watches specific nodes so a late message can't leak into the next
 // node. Whole-run supervisors enqueue run-scoped messages.
-func (c *Coordinator) inject(text string) {
+func (c *Coordinator) inject(text, triggerFP string) error {
 	scopeNode := ""
 	if len(c.spec.Watches) > 0 {
 		scopeNode = c.lastWatchedActive
@@ -622,11 +648,19 @@ func (c *Coordinator) inject(text string) {
 	if c.spec.Name != "" {
 		body = fmt.Sprintf("[supervisor %s] %s", c.spec.Name, text)
 	}
-	if err := c.inj.Inject(c.ctx, c.runID, scopeNode, body); err != nil {
+	var err error
+	if inj, ok := c.inj.(IdempotentInjector); ok {
+		deliveryID := "msg_supervisor_" + supervisorFingerprint(c.cursorID+"|"+triggerFP)
+		err = inj.InjectOnce(c.ctx, c.runID, scopeNode, body, deliveryID)
+	} else {
+		err = c.inj.Inject(c.ctx, c.runID, scopeNode, body)
+	}
+	if err != nil {
 		c.warn("supervise[%s]: enqueue to run %s failed: %v", c.spec.Name, c.runID, err)
-		return
+		return err
 	}
 	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(text, 120))
+	return nil
 }
 
 func (c *Coordinator) info(format string, args ...any) {
