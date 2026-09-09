@@ -448,20 +448,25 @@ type RunRetryState struct {
 // Attempts is the number of correction calls already made.  The fingerprints
 // make the no-progress guard explicit: if the same invalid payload produces
 // the same violation twice, the runtime stops immediately even when budget
-// remains.  Status is one of active, succeeded, exhausted or unchanged.
+// remains. Status is one of active, succeeded, exhausted, unchanged or
+// spend_blocked. A spend-blocked episode is reconsidered after an operator
+// raises the run budget; it does not consume another correction attempt by
+// itself.
 type OutputCorrectionEpisode struct {
-	EpisodeID                string    `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
-	InvocationID             string    `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
-	NodeID                   string    `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Budget                   int       `json:"budget,omitempty" bson:"budget,omitempty"`
-	Attempts                 int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	Status                   string    `json:"status,omitempty" bson:"status,omitempty"`
-	InputFingerprint         string    `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
-	LastOutputFingerprint    string    `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
-	LastViolationFingerprint string    `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
-	LastError                string    `json:"last_error,omitempty" bson:"last_error,omitempty"`
-	StartedAt                time.Time `json:"started_at,omitempty" bson:"started_at,omitempty"`
-	UpdatedAt                time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
 }
 
 // WatcherCursor is the durable anti-loop cursor for a supervisor/watch
@@ -681,6 +686,10 @@ type Run struct {
 	// runs keep their existing fail-fast behaviour unless their executor opts
 	// into correction through the runtime option.
 	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`
+	// OutputCorrectionHistory retains terminal and in-flight correction
+	// ledgers invalidated by an explicit rewind. The live map can then start a
+	// fresh bounded episode without erasing the audit record of paid calls.
+	OutputCorrectionHistory []OutputCorrectionEpisode `json:"output_correction_history,omitempty" bson:"output_correction_history,omitempty"`
 	// WatcherCursors is keyed by supervisor/watch identity. It is deliberately
 	// separate from run events: a watcher may restart without replaying the
 	// entire event stream, while its cooldown and last-action proof remain

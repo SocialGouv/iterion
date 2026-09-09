@@ -321,8 +321,42 @@ func TestSchemaValidation_CorrectionDoesNotStartAfterOriginalSpendLimit(t *testi
 	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 150 {
 		t.Fatalf("charged original spend = %+v, want 150 tokens", run.Checkpoint)
 	}
-	if episode := run.OutputCorrections["my_agent"]; episode.Status != correctionStatusExhausted || episode.Attempts != 0 {
-		t.Fatalf("correction episode = %+v, want exhausted before attempt 1", episode)
+	if episode := run.OutputCorrections["my_agent"]; episode.Status != correctionStatusSpendBlocked || episode.Attempts != 0 {
+		t.Fatalf("correction episode = %+v, want spend_blocked before attempt 1", episode)
+	}
+}
+
+func TestSchemaValidation_RaisedRunBudgetReopensSpendBlockedEpisode(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-raised-spend", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "fixed", "score": 1}, OutputCorrectionUsage{Tokens: 5}, nil
+	}
+	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	invalid := map[string]any{"summary": "bad", "score": "x", "_tokens": 100}
+	lowBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 100}, nil)}
+	if _, err := eng.correctAndValidateNodeOutput(ctx, lowBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 while spend is blocked", exec.calls)
+	}
+
+	highBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 1000}, nil)}
+	out, err := eng.correctAndValidateNodeOutput(ctx, highBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid)
+	if err != nil || exec.calls != 1 || out["score"] != 1 {
+		t.Fatalf("raised spend result = (%+v, %v), calls=%d", out, err, exec.calls)
+	}
+	persisted, err := st.LoadRun(ctx, "run-val-raised-spend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode := persisted.OutputCorrections["my_agent"]; episode.Status != correctionStatusSucceeded || episode.Attempts != 1 {
+		t.Fatalf("reopened correction episode = %+v, want succeeded/1", episode)
 	}
 }
 

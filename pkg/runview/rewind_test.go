@@ -222,6 +222,18 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 		CostUSDTotal:     1.25,
 	}
 	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	seeded, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load correction fixture: %v", err)
+	}
+	seeded.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+		"survey":    {EpisodeID: "survey", NodeID: "survey", Status: "succeeded", Attempts: 1},
+		"implement": {EpisodeID: "implement", NodeID: "implement", Status: "unchanged", Attempts: 1},
+		"verify":    {EpisodeID: "verify", NodeID: "verify", Status: "exhausted", Attempts: 2},
+	}
+	if err := st.SaveRun(context.Background(), seeded); err != nil {
+		t.Fatalf("save correction fixture: %v", err)
+	}
 
 	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
 	if err != nil {
@@ -283,6 +295,23 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	if _, ok := got.NodeAttempts["survey"]; !ok {
 		t.Error("NodeAttempts[survey] was dropped; only replayed nodes reset")
 	}
+	if _, ok := run.OutputCorrections["implement"]; ok {
+		t.Error("the invalidated implement correction episode survived as a live replay guard")
+	}
+	if _, ok := run.OutputCorrections["verify"]; ok {
+		t.Error("the invalidated verify correction episode survived as a live replay guard")
+	}
+	if _, ok := run.OutputCorrections["survey"]; !ok {
+		t.Error("the retained survey correction episode was retired")
+	}
+	if len(run.OutputCorrectionHistory) != 2 {
+		t.Fatalf("output correction history = %+v, want the two invalidated episodes", run.OutputCorrectionHistory)
+	}
+	for _, episode := range run.OutputCorrectionHistory {
+		if episode.RetiredAt == nil || episode.RetiredReason != "rewind" {
+			t.Errorf("retired correction episode = %+v, want rewind audit stamp", episode)
+		}
+	}
 
 	// The audit marker must be appended, not a truncation of history.
 	events, err := st.LoadEvents(context.Background(), runID)
@@ -303,6 +332,9 @@ func TestRewind_LinearDropsDownstream(t *testing.T) {
 	}
 	if found.Data["from_node"] != "verify" || found.Data["to_node"] != "implement" {
 		t.Errorf("run_rewound data = %v, want from verify to implement", found.Data)
+	}
+	if found.Data["retired_output_corrections"] != float64(2) && found.Data["retired_output_corrections"] != 2 {
+		t.Errorf("run_rewound retired corrections = %v, want 2", found.Data["retired_output_corrections"])
 	}
 }
 

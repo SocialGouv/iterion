@@ -469,6 +469,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		cp.ArtifactVersions[ts.nodeID] = ts.version + 1
 	}
 
+	retiredCorrections := retireOutputCorrections(run, invalidated, time.Now().UTC())
 	run.Status = store.RunStatusCancelled
 	// Clear the stale failure message AND its typed code: the run is no
 	// longer "failed at verify", it is parked at the pivot awaiting a
@@ -530,17 +531,18 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		RunID:  run.ID,
 		NodeID: pivot,
 		Data: map[string]any{
-			"from_node":            fromNode,
-			"to_node":              pivot,
-			"dropped_nodes":        dropped,
-			"tombstoned_artifacts": tombstoned,
-			"orphaned_child_runs":  orphaned,
-			"promoted_from":        promotedFrom,
-			"files_reverted":       files.Reverted,
-			"files_ref":            files.Ref,
-			"files_revert_commit":  files.RevertCommit,
-			"files_backup_ref":     files.BackupRef,
-			"files_skip_reason":    files.SkipReason,
+			"from_node":                  fromNode,
+			"to_node":                    pivot,
+			"dropped_nodes":              dropped,
+			"tombstoned_artifacts":       tombstoned,
+			"orphaned_child_runs":        orphaned,
+			"retired_output_corrections": retiredCorrections,
+			"promoted_from":              promotedFrom,
+			"files_reverted":             files.Reverted,
+			"files_ref":                  files.Ref,
+			"files_revert_commit":        files.RevertCommit,
+			"files_backup_ref":           files.BackupRef,
+			"files_skip_reason":          files.SkipReason,
 			// The audit trail has to answer "what did that rewind take
 			// from me". A remote or agent-driven rewind never sees the
 			// CLI's stderr, so counts that live only in the printer are
@@ -581,6 +583,35 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		PromotedFrom:        promotedFrom,
 		Changes:             changes,
 	}, nil
+}
+
+// retireOutputCorrections removes correction episodes owned by nodes whose
+// execution is explicitly discarded. Keeping those terminal ledgers live
+// would make the replay inherit an exhausted/unchanged verdict from the old
+// execution. The archived copy preserves paid-call accounting and diagnostics.
+func retireOutputCorrections(run *store.Run, invalidated []string, retiredAt time.Time) int {
+	if run == nil || len(run.OutputCorrections) == 0 || len(invalidated) == 0 {
+		return 0
+	}
+	nodes := make(map[string]bool, len(invalidated))
+	for _, nodeID := range invalidated {
+		nodes[nodeID] = true
+	}
+	keys := make([]string, 0, len(run.OutputCorrections))
+	for key, episode := range run.OutputCorrections {
+		if nodes[episode.NodeID] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		episode := run.OutputCorrections[key]
+		episode.RetiredAt = &retiredAt
+		episode.RetiredReason = "rewind"
+		run.OutputCorrectionHistory = append(run.OutputCorrectionHistory, episode)
+		delete(run.OutputCorrections, key)
+	}
+	return len(keys)
 }
 
 // applyRewind mutates cp in place: re-anchor on nodeID and invalidate

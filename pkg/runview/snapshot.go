@@ -66,11 +66,12 @@ type RunHeader struct {
 	// Admission is the durable pre-model launch decision, if one has been
 	// recorded for this run.
 	Admission *store.AdmissionDecision `json:"admission,omitempty"`
-	// OutputCorrections and WatcherCursors expose the reliability ledgers so
+	// OutputCorrections, OutputCorrectionHistory and WatcherCursors expose the reliability ledgers so
 	// the studio can distinguish a bounded repair from a repeated watcher
 	// loop without scraping events or run errors.
-	OutputCorrections map[string]store.OutputCorrectionEpisode `json:"output_corrections,omitempty"`
-	WatcherCursors    map[string]store.WatcherCursor           `json:"watcher_cursors,omitempty"`
+	OutputCorrections       map[string]store.OutputCorrectionEpisode `json:"output_corrections,omitempty"`
+	OutputCorrectionHistory []store.OutputCorrectionEpisode          `json:"output_correction_history,omitempty"`
+	WatcherCursors          map[string]store.WatcherCursor           `json:"watcher_cursors,omitempty"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -1556,6 +1557,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		ShardLabel:           r.ShardLabel,
 		WatchedIssueIDs:      r.WatchedIssueIDs,
 	}
+	h.OutputCorrectionHistory = r.OutputCorrectionHistory
 	// Bootstrap fallback: when the run is already running but the WS
 	// catch-up hasn't yet seen the run_started event, anchor on
 	// CreatedAt so the live timer starts at 0 instead of staying frozen.

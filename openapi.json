@@ -1544,6 +1544,13 @@
           "node_id": {
             "type": "string"
           },
+          "retired_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "retired_reason": {
+            "type": "string"
+          },
           "started_at": {
             "format": "date-time",
             "type": "string"
@@ -2225,6 +2232,12 @@
           },
           "outcome_seq": {
             "type": "integer"
+          },
+          "output_correction_history": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "array"
           },
           "output_corrections": {
             "additionalProperties": {

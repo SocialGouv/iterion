@@ -2616,6 +2616,11 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		}
 	}
 	if recordArtifactCompatibility {
+		// A forced migration accepts one coherent target revision. Cloud
+		// runners may know only its hash (the source text and file path are
+		// intentionally absent), so sourceChanged is not a sufficient guard
+		// for advancing the run-level revision.
+		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
 		if r.ExecutionContext != nil {
 			r.ExecutionContext = r.ExecutionContext.Clone()

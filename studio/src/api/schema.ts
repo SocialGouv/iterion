@@ -6130,6 +6130,9 @@ export interface components {
             last_violation_fingerprint?: string;
             node_id?: string;
             /** Format: date-time */
+            retired_at?: string;
+            retired_reason?: string;
+            /** Format: date-time */
             started_at?: string;
             status?: string;
             /** Format: date-time */
@@ -6344,6 +6347,7 @@ export interface components {
                 [key: string]: components["schemas"]["NodeServed"];
             };
             outcome_seq?: number;
+            output_correction_history?: components["schemas"]["OutputCorrectionEpisode"][];
             output_corrections?: {
                 [key: string]: components["schemas"]["OutputCorrectionEpisode"];
             };

@@ -50,10 +50,11 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 }
 
 const (
-	correctionStatusActive    = "active"
-	correctionStatusSucceeded = "succeeded"
-	correctionStatusExhausted = "exhausted"
-	correctionStatusUnchanged = "unchanged"
+	correctionStatusActive       = "active"
+	correctionStatusSucceeded    = "succeeded"
+	correctionStatusExhausted    = "exhausted"
+	correctionStatusUnchanged    = "unchanged"
+	correctionStatusSpendBlocked = "spend_blocked"
 )
 
 // correctAndValidateNodeOutput applies the optional bounded correction loop
@@ -133,7 +134,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	// already reached the same hard boundary that gates ordinary node calls.
 	if hasUsageCorrector {
 		if spendErr := e.outputCorrectionSpendError(rs, nodeID, current); spendErr != nil {
-			episode.Status = correctionStatusExhausted
+			episode.Status = correctionStatusSpendBlocked
 			episode.LastOutputFingerprint = correctionSemanticFingerprint(current)
 			episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
 			episode.LastError = spendErr.Error()
@@ -234,7 +235,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		// shared tracker so another correction call cannot start after token or
 		// cost spend has reached the same 90% boundary as any other model call.
 		if spendErr := e.outputCorrectionSpendError(rs, nodeID, candidate); spendErr != nil {
-			episode.Status = correctionStatusExhausted
+			episode.Status = correctionStatusSpendBlocked
 			episode.LastOutputFingerprint = candidateFP
 			episode.LastViolationFingerprint = candidateViolationFP
 			episode.LastError = spendErr.Error()

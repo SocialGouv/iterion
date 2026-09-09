@@ -119,6 +119,36 @@ func TestForcedArtifactCompatibilitySurvivesWorkflowRestamp(t *testing.T) {
 	}
 }
 
+func TestForcedArtifactCompatibilityRestampsHashWithoutSourceText(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-cloud-migration", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowHash = "rev-old"
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		Workflow: store.WorkflowContext{WorkflowRevision: "rev-old"},
+	}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := &Engine{store: s, workflowHash: "rev-new", forceResume: true}
+	eng.restampWorkflowSource(ctx, run)
+	persisted, err := s.LoadRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkflowHash != "rev-new" || persisted.ArtifactCompatibilityRevision != "rev-new" {
+		t.Fatalf("hash-only migration = hash %q compatibility %q", persisted.WorkflowHash, persisted.ArtifactCompatibilityRevision)
+	}
+	if got := persisted.ExecutionContext.Workflow.WorkflowRevision; got != "rev-new" {
+		t.Fatalf("execution context revision = %q, want rev-new", got)
+	}
+}
+
 type artifactReadErrorStore struct{ store.RunStore }
 
 func (artifactReadErrorStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
