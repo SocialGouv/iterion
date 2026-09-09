@@ -238,21 +238,17 @@ func (w *fileWriter) ensureBody(mark int) {
 	ensureBlockBody(&w.b, mark, noopDescription)
 }
 
-// The no-op property each declaration kind gets when its body would be
-// empty. Every one of them re-reads as the zero value it stands in for, so
-// the declaration round-trips unchanged — which is what lets Verify compare
-// the two documents rather than accept a difference.
-const (
-	noopDescription  = "  description: \"\"\n" // agent/judge/human/tool/… and cursor
-	noopArgs         = "  args: []\n"          // mcp_server
-	noopMonitors     = "  monitors: []\n"      // supervisor
-	noopCapabilities = "  capabilities: []\n"  // workflow
-)
+// noopDescription is the no-op an ordinary node declaration gets; the other
+// kinds pass their own at the call site.
+const noopDescription = "  description: \"\"\n"
 
-// ensureBlockBody writes noop when nothing was written since mark. A
-// declaration header with no indented body is a parse error (E002 expected
-// INDENT), so a declaration the author has not filled in yet needs one
-// property that means nothing.
+// ensureBlockBody writes noop when nothing was written since mark. A header
+// with no indented body is a parse error (E002 expected INDENT), so a
+// declaration the author has not filled in yet needs one property that means
+// nothing — and it has to mean nothing on the way BACK too: every no-op
+// passed here re-reads as the zero value it stands in for, so the
+// declaration round-trips unchanged and Verify can compare the two documents
+// instead of being taught to accept a difference.
 func ensureBlockBody(b *buf, mark int, noop string) {
 	if b.Len() == mark {
 		b.WriteString(noop)
@@ -361,7 +357,7 @@ func (w *fileWriter) writeMCPServers(servers []*ast.MCPServerDecl) {
 		if s.Auth != nil {
 			writeMCPAuthBlock(&w.b, s.Auth)
 		}
-		ensureBlockBody(&w.b, mark, noopArgs)
+		ensureBlockBody(&w.b, mark, "  args: []\n")
 	}
 }
 
@@ -432,7 +428,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			}
 			fmt.Fprintf(&w.b, "  monitors: [%s]\n", strings.Join(quoted, ", "))
 		}
-		ensureBlockBody(&w.b, mark, noopMonitors)
+		ensureBlockBody(&w.b, mark, "  monitors: []\n")
 	}
 }
 
@@ -955,7 +951,7 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		// A workflow with no entry and no edge is what the canvas holds
 		// the moment the entry node is deleted — a header with no body,
 		// which does not parse.
-		ensureBlockBody(&w.b, mark, noopCapabilities)
+		ensureBlockBody(&w.b, mark, "  capabilities: []\n")
 	}
 }
 
