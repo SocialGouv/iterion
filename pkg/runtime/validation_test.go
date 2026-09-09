@@ -636,6 +636,43 @@ func TestSchemaValidation_CorrectorUsageAccumulatesAcrossAttempts(t *testing.T) 
 	}
 }
 
+// A correction is the first thing in the post-exec pipeline that can BLOCK, so
+// an operator cancel can now land inside it. It must be classified as a
+// cancel, not stringified into a schema failure — a cancelled run that lands
+// failed_resumable gets redelivered-resumed.
+func TestSchemaValidation_CancelDuringCorrectionIsACancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return invalidAgentOutput(), nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		// The operator cancels while the corrector is working.
+		cancel()
+		return nil, context.Canceled
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).
+		Run(ctx, "run-val-cancel", nil)
+	if err == nil {
+		t.Fatal("expected the cancelled run to report an error")
+	}
+	var rtErr *RuntimeError
+	if errors.As(err, &rtErr) && rtErr.Code == ErrCodeSchemaValidation {
+		t.Fatalf("cancel was reported as a schema failure: %v", err)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-cancel")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if run.Status != store.RunStatusCancelled {
+		t.Fatalf("run status = %q, want %q", run.Status, store.RunStatusCancelled)
+	}
+}
+
 // singleCorrectionEpisode asserts the ledger holds exactly one episode and
 // returns it — the key is an execution identity, not a bare node id, so tests
 // must not hardcode it.

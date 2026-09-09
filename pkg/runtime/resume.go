@@ -1270,6 +1270,16 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	// bounded correction ledger used by the normal execution path.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
 	if validationErr != nil {
+		// A correction is the first thing in the post-exec pipeline that can
+		// BLOCK, so the run can now be torn down — operator cancel, drain,
+		// wall-clock deadline — while we sit in it. Route that through the
+		// cause-aware handler exactly as the exec path does: a generic fail
+		// stringifies the error and loses the sentinel, so a drain surfaces as
+		// a spurious "run failed" instead of a silent auto-resume, and an
+		// operator cancel lands failed_resumable and gets redelivered-resumed.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
 		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 	output = validatedOutput
@@ -1916,6 +1926,16 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Validate output, continuing any durable bounded correction episode.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
 	if validationErr != nil {
+		// A correction is the first thing in the post-exec pipeline that can
+		// BLOCK, so the run can now be torn down — operator cancel, drain,
+		// wall-clock deadline — while we sit in it. Route that through the
+		// cause-aware handler exactly as the exec path does: a generic fail
+		// stringifies the error and loses the sentinel, so a drain surfaces as
+		// a spurious "run failed" instead of a silent auto-resume, and an
+		// operator cancel lands failed_resumable and gets redelivered-resumed.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
 		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 	output = validatedOutput
