@@ -178,6 +178,16 @@ schema mutation_report:
   corpus_total: int
   corpus_distinct: int
   duplicate_refs: json
+  ## The DISCHARGE record, not a diagnostic. A byte-identical class is not
+  ## automatically a defect — on a refusal lane the second entry is a control
+  ## proving a mutant moved only the first — but the claim is data, and it is
+  ## acquitted by MEASUREMENT: the corpus names the separating mutant(s) in
+  ## `duplicate_groups`, the harness pins every member into that mutant's
+  ## control sample, and a class is discharged only when the members are
+  ## pairwise distinguishable. What stays here is what the measurement did NOT
+  ## acquit, so it must be empty — a waiver is believed, a proof obligation is
+  ## executed and goes red by itself the day its separator dies.
+  duplicate_groups_unproven: json
   ## The emitted net must be runnable from a clean checkout. A gitignored
   ## harness ships references nobody can replay — the very defect this bot
   ## exists to expose in other people's deliveries.
@@ -7555,7 +7565,16 @@ compute oracle_gate:
     ## DISTINCT references: two entries with a byte-identical reference are one
     ## observation, and a corpus padded with duplicates is narrower than it
     ## looks.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ##
+    ## And `duplicate_groups_unproven` is a TERM, not a note. A class the corpus
+    ## claims is a deliberate control must NAME the mutant that separates it and
+    ## have that mutant measured moving a strict subset. Computed but unwired,
+    ## the obligation reached the operator only through `log_tail` — the message
+    ## rendered once `converged` is already false — so a corpus whose single
+    ## defect was an unproved class went green while every docstring in the
+    ## harness claimed the gate checked it. A proof obligation nothing refuses is
+    ## a waiver with extra steps.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -7601,6 +7620,12 @@ tool emit_runner:
         "ok=(r.get(\"stable\") and r.get(\"noop_silent\") and r.get(\"revert_clean\")\n"
         "    and r.get(\"collateral\")==0 and not r.get(\"uncontrolled\")\n"
         "    and not r.get(\"blind_lanes\") and not r.get(\"missing_archetypes\")\n"
+        # And so does `duplicate_groups_unproven`, for the same reason: a
+        # byte-identical class the corpus declares as a deliberate control is
+        # discharged by a MEASURED separator, and a class nothing separated is a
+        # corpus narrower than it reports. Absent here, the entry point CI runs
+        # would approve exactly the tree the graph gate refuses.
+        "    and not r.get(\"duplicate_groups_unproven\")\n"
         # `holdout_reused` belongs here too. Without it the standalone entry
         # point is WEAKER than the graph gate on the one term that stops a
         # spent, published set from being replayed as if it were fresh -- and
