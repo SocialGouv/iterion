@@ -51,11 +51,23 @@ type Store struct {
 	index map[string]*Issue
 
 	// watcher mirrors out-of-process writes (e.g. the `iterion
-	// __mcp-board` stdio MCP subprocess) into the index. nil when
-	// fsnotify isn't available on the host — the Store still works,
-	// it just can't see writes by other processes, which is the
-	// pre-watcher status quo.
+	// __mcp-board` stdio MCP subprocess) into the index. nil when the
+	// host refused a watch — the rescanner below then carries the same
+	// promise on a slower path.
 	watcher *indexWatcher
+
+	// watcherErr records why the watch could not be armed. From the
+	// outside an absent watcher is a nil field either way, so without
+	// this a host that refused the watch (ENOSPC at max_user_watches,
+	// EMFILE at max_user_instances) and a regression that stops the
+	// watcher starting are the same observation.
+	watcherErr error
+
+	// rescanner is the reconciliation net that replaces the watcher
+	// when the host refused it. Without it the index is frozen at its
+	// NewStore snapshot for the life of the process. nil when a watch
+	// was armed (the fast path needs no net) or when the net is off.
+	rescanner *indexRescanner
 
 	// pendingEvents buffers events whose appendEventLocked call
 	// returned an error (transient fsync failure, NFS hiccup). Every
@@ -141,13 +153,20 @@ func NewStore(root string) (*Store, error) {
 
 	// Start the fsnotify watcher AFTER the initial index population
 	// so the watcher can never overwrite a fresh load with a stale
-	// disk snapshot. A failure here is non-fatal — the Store keeps
-	// working, just blind to out-of-process writes (the historical
-	// behaviour). We don't log because the package carries no logger
-	// today; the missing-watcher symptom (stale board reads) is
-	// already documented as a known mode in the cache-desync finding.
+	// disk snapshot. A failure here is not fatal, but it is not
+	// nothing either: a refused watch must not silently become "this
+	// store is blind until the daemon restarts". Record why, say so,
+	// and fall back to the reconciliation net so the store's promise
+	// survives a host that has no watch descriptor to give.
 	if w, err := startIndexWatcher(s); err == nil {
 		s.watcher = w
+	} else {
+		s.watcherErr = err
+		if s.rescanner = startFallbackRescan(s); s.rescanner != nil {
+			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, fallbackRescanInterval)
+		} else {
+			s.logger.Warn("native index watcher unavailable: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", err)
+		}
 	}
 	return s, nil
 }
@@ -176,9 +195,10 @@ func (s *Store) getLogger() *iterlog.Logger {
 // watcher goroutine). Safe to call multiple times; safe on a Store
 // whose watcher never started.
 func (s *Store) Close() error {
-	if s == nil || s.watcher == nil {
+	if s == nil {
 		return nil
 	}
+	_ = s.rescanner.Close()
 	return s.watcher.Close()
 }
 
@@ -242,8 +262,7 @@ func (s *Store) recoverMutator(name string, err *error) {
 	// here is folded into the returned error so the caller knows the
 	// store is in a degraded state and the process should probably
 	// be restarted to recover.
-	s.index = map[string]*Issue{}
-	if reloadErr := s.populateIndex(); reloadErr != nil {
+	if reloadErr := s.reconcileLocked(); reloadErr != nil {
 		*err = fmt.Errorf("native store: %s panicked (%v) and index reload failed (%v) — restart recommended", name, r, reloadErr)
 		return
 	}

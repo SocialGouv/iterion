@@ -2,13 +2,19 @@ package native
 
 import (
 	"errors"
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
+
+// newFSWatcher is the seam through which a test can make the host refuse
+// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Production
+// always gets fsnotify's own constructor.
+var newFSWatcher = fsnotify.NewWatcher
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
 // out-of-process writers (typically the `iterion __mcp-board` stdio
@@ -48,7 +54,7 @@ type indexWatcher struct {
 // environment); the Store still works, it just can't see out-of-
 // process writes — same as before this watcher existed.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
-	w, err := fsnotify.NewWatcher()
+	w, err := newFSWatcher()
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +192,10 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// out, or someone hand-edited it). Drop the cached entry
 		// on ErrNotFound; leave it alone on other errors so the
 		// stale-but-readable cached value beats a forced 404.
-		if errors.Is(err, fs.ErrNotExist) {
+		// readIssueFromDisk maps a missing file to tracker.ErrNotFound,
+		// which does not wrap fs.ErrNotExist — matching on the latter
+		// never fires and leaves the tombstone in the index.
+		if errors.Is(err, tracker.ErrNotFound) {
 			delete(s.index, id)
 		}
 		return
