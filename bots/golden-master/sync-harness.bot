@@ -3636,7 +3636,7 @@ tool sync_harness:
 
 
     def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
-                                  withheld=(), in_the_set=()):
+                                  withheld=(), in_the_set=(), deferred=None):
         """Which byte-identical classes are NOT discharged by measured separators.
 
         `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
@@ -3652,7 +3652,30 @@ tool sync_harness:
         Returns one record per class that fails, with the reason IN the record — the
         gate turns them into its refusal, and the selftest calls this same function,
         so what is tested is what runs.
+
+        A class whose every missing separator is WITHHELD lands in the caller's
+        `deferred` sink, never in the return value.
         """
+        # WITHHELD is neither ABSENT nor PROVED, and this used to discharge it.
+        # Skipping the class outright removed the false refusal at the cost of a
+        # false PROOF: with `seps = [held, visible]` where the visible one separates
+        # nothing, the class came back discharged without the scored separator ever
+        # being consulted. A term of convergence cannot be handed that.
+        #
+        # So it is DEFERRED — said out loud, in a sink the caller owns, never in the
+        # field the gate reads. A deferral is the absence of a verdict, not a
+        # verdict.
+        #
+        # No sink, no deferral — but the REASON must stay true. A withheld
+        # separator is IN the mutant set; folding it there makes the fallback say
+        # so, instead of shouting an absence that would send the campaign to fix a
+        # mutant that exists. Strictest AND honest: a caller that forgets the sink
+        # can only get a HARSHER verdict, never a softer one, and never a lying one.
+        if deferred is None:
+            in_the_set = list(in_the_set) + list(withheld)
+            withheld = set()
+        else:
+            withheld = set(withheld)
         decls = duplicate_group_decls(corpus)
         conflicts = duplicate_group_conflicts(corpus)
         observed = {tuple(sorted(g)) for g in duplicate_refs}
@@ -3690,6 +3713,12 @@ tool sync_harness:
             # result is simply reserved for the final gate. Saying so is the whole
             # difference between a work item and a dead end.
             if missing and all(m in set(withheld) for m in missing):
+                deferred.append({"ids": list(g), "separated_by": list(seps),
+                                 "withheld": sorted(missing), "why":
+                                 "every unscored separator belongs to the held-out set, whose "
+                                 "verdicts this pass reserves — not scored here, and not scorable "
+                                 "here. Neither proved nor refuted until the final gate scores "
+                                 "them."})
                 continue
             if missing:
                 # THREE reasons, and they send the campaign to three different
@@ -6596,9 +6625,34 @@ tool sync_harness:
         # — et le dire autrement produit un refus que la campagne ne peut pas lever.
         _wd = {"entries": [], "duplicate_groups": [
             {"ids": ["012", "013"], "separated_by": "held-sep"}]}
+        _sink = []
         check("un separateur RETENU ne produit pas de refus",
               unproven_duplicate_groups([["012", "013"]], _wd, [], False,
-                                        ["held-sep"]), [])
+                                        ["held-sep"], (), _sink), [])
+        # ...ET IL EST DIFFERE, PAS EFFACE. Sauter la classe retirait le faux refus
+        # au prix d'une fausse PREUVE : avec `seps = [retenu, visible]` ou le
+        # visible ne separe rien, la classe ressortait dechargee sans que le
+        # separateur score soit jamais consulte. Un terme de convergence ne peut pas
+        # recevoir ca.
+        check("... et la classe est DIFFEREE, pas effacee",
+              [(x["ids"], x["withheld"]) for x in _sink],
+              [(["012", "013"], ["held-sep"])])
+        # SANS PUITS, PAS DE REPORT — et le motif reste VRAI : un separateur retenu
+        # est dans le jeu, pas absent. Le defaut ne peut que RESSERRER, jamais
+        # mentir.
+        check("sans puits, RETENU redevient un refus, et un refus qui ne ment pas",
+              [x["why"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], _wd, [], False, ["held-sep"])],
+              ["declared separator(s) held-sep are IN the mutant set but were not "
+               "scored in this pass — scoring stopped before them. The class is not "
+               "proved yet; nothing in the corpus is wrong"])
+        # A LA PORTE FINALE RIEN N'EST RETENU : la voie du report y est
+        # inatteignable, donc elle ne peut pas adoucir le verdict qui decide.
+        _sink2 = []
+        check("porte finale : aucun report possible, le refus tient",
+              [[x["ids"] for x in unproven_duplicate_groups(
+                  [["012", "013"]], _wd, [], False, (), (), _sink2)], _sink2],
+              [[["012", "013"]], []])
         check("mais un separateur simplement ABSENT en produit un",
               [x["ids"] for x in unproven_duplicate_groups(
                   [["012", "013"]], _wd, [], False, [])], [["012", "013"]])
@@ -6832,6 +6886,10 @@ tool sync_harness:
                   "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
                   "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
                   "duplicate_groups_unproven": [],
+                  # Rapporte, jamais gate : un report est l'absence d'un verdict,
+                  # pas un verdict. Il existe pour qu'un selfcheck ne lise pas
+                  # PROUVE ce qu'il n'a fait que ne pas pouvoir mesurer.
+                  "duplicate_groups_deferred": [],
                   "runner_replayable": False,
                   "holdout_reused": [],
                   "log_tail": ""}
@@ -7494,11 +7552,17 @@ tool sync_harness:
             # restreint — n'est pas absent : il existe, il n'a pas tourne. Le dire
             # « absent du jeu » envoyait corriger une absence qui n'en est pas une.
             in_the_set = [m.get("id") for m in visible + held_meta]
+            # Le puits des classes DIFFEREES. Il est fourni, donc `withheld` est
+            # honore ; sans lui la fonction retombe sur le refus le plus severe.
+            # Rien n'est retenu a la porte finale (`withheld_ids` y est vide), donc
+            # cette voie ne peut pas adoucir le verdict qui decide.
+            deferred = []
             unproven = unproven_duplicate_groups(
                 report["duplicate_refs"], corpus, list(verdicts) + list(held),
-                bool(only), withheld_ids, in_the_set)
+                bool(only), withheld_ids, in_the_set, deferred)
             problems.extend(duplicate_groups_shape_problems(corpus))
             report["duplicate_groups_unproven"] = unproven
+            report["duplicate_groups_deferred"] = deferred
             if unproven:
                 problems.append(duplicate_groups_refusal(
                     unproven, report["duplicate_refs"],
