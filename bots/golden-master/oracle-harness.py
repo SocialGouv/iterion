@@ -3259,7 +3259,15 @@ def duplicate_group_decls(corpus):
     was controlled.
     """
     out = {}
-    for g in (corpus.get("duplicate_groups") or []):
+    # Ne LEVE JAMAIS. Ce lecteur est atteint depuis score_mutant, donc APRES
+    # que le mutant est applique et AVANT le revert : une exception y tue le
+    # harnais sans imprimer son rapport et laisse l'arbre MUTE. La doctrine du
+    # fichier est explicite une vis plus haut — « refused, not crashed ». Le
+    # refus, lui, est prononce par duplicate_groups_shape_problems.
+    raw = corpus.get("duplicate_groups") or []
+    if not isinstance(raw, list):
+        return out
+    for g in raw:
         if not isinstance(g, dict):
             continue
         ids = g.get("ids")
@@ -3276,6 +3284,40 @@ def duplicate_group_decls(corpus):
     return out
 
 
+def duplicate_groups_shape_problems(corpus):
+    """Ce que le LECTEUR laisse tomber en silence, dit a voix haute.
+
+    duplicate_group_decls ignore ce qu'il ne sait pas lire — il le doit, il
+    tourne avec un mutant applique. Mais une declaration ignoree se lit comme
+    « aucune declaration », donc comme un groupe non declare : le message
+    envoie corriger une absence alors que le defaut est une faute de frappe.
+    """
+    raw = corpus.get("duplicate_groups")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["`duplicate_groups` is %s, not a list — it is ignored whole, and "
+                "every declared group then reads as undeclared"
+                % type(raw).__name__]
+    bad = []
+    for g in raw:
+        if not isinstance(g, dict):
+            bad.append(repr(g)[:80])
+            continue
+        sep = g.get("separated_by")
+        seps = [sep] if isinstance(sep, str) else sep
+        if not isinstance(g.get("ids"), list) or len(g.get("ids") or []) < 2 \
+                or not isinstance(seps, list) or not seps \
+                or not all(isinstance(m, str) and m for m in seps):
+            bad.append(repr(g)[:80])
+    if bad:
+        return ["%d `duplicate_groups` entr%s malformed and silently ignored — "
+                "each needs at least two `ids` and a non-empty `separated_by` "
+                "(a string, or a list of them): %s"
+                % (len(bad), "y is" if len(bad) == 1 else "ies are", "; ".join(bad))]
+    return []
+
+
 def separator_group_ids(corpus, mutant_id):
     """Every id of every group this mutant is declared to separate."""
     if not mutant_id:
@@ -3287,7 +3329,8 @@ def separator_group_ids(corpus, mutant_id):
     return ids
 
 
-def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False):
+def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
+                              withheld=()):
     """Which byte-identical classes are NOT discharged by measured separators.
 
     `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
@@ -3324,6 +3367,14 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
                              "and then it must name the mutant(s) that tell them apart."})
             continue
         missing = [m for m in seps if m not in scored]
+        # WITHHELD is not MISSING. In selfcheck the held-out set is deliberately
+        # not scored — `held` is empty by construction — so a separator drawn
+        # from it would be reported "absent from the mutant set", which is false
+        # and which the campaign cannot fix: the mutant IS in the set, its
+        # result is simply reserved for the final gate. Saying so is the whole
+        # difference between a work item and a dead end.
+        if missing and all(m in set(withheld) for m in missing):
+            continue
         if missing:
             unproven.append({"ids": list(g), "separated_by": list(seps), "why":
                              "declared separator(s) %s %s" %
@@ -5995,6 +6046,32 @@ def _selftest():
                 "undetected_targets": [], "collateral": []}])],
           [])
 
+    # R797693 : le lecteur ne LEVE jamais (il tourne avec un mutant applique),
+    # et ce qu'il laisse tomber est dit a voix haute par le controle de forme —
+    # sinon une faute de frappe se lit comme « groupe non declare » et envoie
+    # corriger une absence.
+    check("un `duplicate_groups` non-liste ne fait pas planter le lecteur",
+          duplicate_group_decls({"duplicate_groups": 5}), {})
+    check("et il est REFUSE, pas ignore",
+          len(duplicate_groups_shape_problems({"duplicate_groups": 5})), 1)
+    check("une entree malformee est refusee nommement",
+          len(duplicate_groups_shape_problems({"duplicate_groups": [
+              {"ids": ["a"], "separated_by": "s"}]})), 1)
+    check("et un corpus sans declaration ne dit rien",
+          duplicate_groups_shape_problems({"entries": []}), [])
+
+    # R8bcd2c : RETENU n'est pas ABSENT. En selfcheck le jeu tenu a l'ecart
+    # n'est pas score, donc un separateur qui en vient est retenu, pas manquant
+    # — et le dire autrement produit un refus que la campagne ne peut pas lever.
+    _wd = {"entries": [], "duplicate_groups": [
+        {"ids": ["012", "013"], "separated_by": "held-sep"}]}
+    check("un separateur RETENU ne produit pas de refus",
+          unproven_duplicate_groups([["012", "013"]], _wd, [], False,
+                                    ["held-sep"]), [])
+    check("mais un separateur simplement ABSENT en produit un",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, [])], [["012", "013"]])
+
     D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
     check("separateur qui deplace UN membre : preuve acquittee",
           whys(["012", "013"], D, {"sep-01": {"013"}}), [])
@@ -6830,8 +6907,16 @@ def main():
         # measurement really IS taken — but it lands in `held`, not `verdicts`.
         # Passing only the latter made the gate report a separator it had just
         # scored as never scored, and refuse the group on its own blind spot.
+        # Les ids TENUS A L'ECART quand leur resultat est reserve : en selfcheck
+        # `held` est vide par construction, et un separateur qui en vient n'est
+        # pas absent, il est retenu.
+        withheld_ids = ([m.get("id") for m in held_meta]
+                        if (mode == "selfcheck" and not held) else [])
         unproven = unproven_duplicate_groups(
-            report["duplicate_refs"], corpus, list(verdicts) + list(held), bool(only))
+            report["duplicate_refs"], corpus, list(verdicts) + list(held),
+            bool(only), withheld_ids)
+        for shape in duplicate_groups_shape_problems(corpus):
+            problems.append(shape)
         report["duplicate_groups_unproven"] = unproven
         if unproven:
             # The headline counts what the payload lists. Interpolating the
