@@ -514,3 +514,150 @@ func TestResumeHintNamesTheRecoveryThatFitsTheViolation(t *testing.T) {
 		}
 	})
 }
+
+// mislabelingStore simulates a store handing back an object that is not the
+// one asked for — a key collision, a bad migration, a hand-edited artifact.
+type mislabelingStore struct {
+	store.RunStore
+	nodeID string
+}
+
+func (m *mislabelingStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	a, err := m.RunStore.LoadArtifact(ctx, runID, nodeID, version)
+	if a != nil {
+		a.NodeID = m.nodeID
+	}
+	return a, err
+}
+
+// TestValidateArtifactContractsBindsTheOutputToItsProducer: binding an output
+// to its producer is the contract's stated purpose, but only non-emptiness
+// was checked — the workflow node was then resolved by the artifact-index KEY,
+// so a contract naming a different producer was validated against the wrong
+// node's declaration and admitted, and the loaded body's own identity was
+// never compared to the one requested.
+func TestValidateArtifactContractsBindsTheOutputToItsProducer(t *testing.T) {
+	ctx := context.Background()
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+		"other":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "other"}, Publish: "other-report"},
+	}}
+	seed := func(t *testing.T, id, producer string) (store.RunStore, *store.Run) {
+		t.Helper()
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, id, "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ArtifactIndex = map[string]int{"writer": 0}
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: id, NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{LogicalRef: "report", ProducerNode: producer, Version: 0},
+			Data:     map[string]any{"ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s, run
+	}
+
+	t.Run("contract names a producer other than the index key", func(t *testing.T) {
+		s, run := seed(t, "artifact-identity-producer", "other")
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: wf})
+		if err == nil {
+			t.Fatal("enforce admitted a contract naming a different producer")
+		}
+		if !strings.Contains(err.Error(), "names producer") {
+			t.Fatalf("error = %v, want it to report the producer mismatch", err)
+		}
+	})
+
+	t.Run("the loaded body belongs to another node", func(t *testing.T) {
+		s, run := seed(t, "artifact-identity-body", "writer")
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+			Store: &mislabelingStore{RunStore: s, nodeID: "other"}, Run: run, Workflow: wf,
+		})
+		if err == nil {
+			t.Fatal("enforce admitted an artifact body belonging to another node")
+		}
+		if !strings.Contains(err.Error(), "loaded as") {
+			t.Fatalf("error = %v, want it to report the identity mismatch", err)
+		}
+	})
+}
+
+// TestValidateArtifactContractsResolvesDependencyByLogicalRef: a dependency
+// that names only its logical ref used to be looked up in run.ArtifactIndex,
+// which is keyed by NODE ID — so a present artifact was reported "absent from
+// the run" purely because its publish name and its node id differ.
+func TestValidateArtifactContractsResolvesDependencyByLogicalRef(t *testing.T) {
+	ctx := context.Background()
+	// The producer's node id ("planner") differs from its publish name
+	// ("plan"), which is the ordinary case and the one that broke.
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report"},
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+	}}
+	seed := func(t *testing.T, id string, dep store.ArtifactDependency, withPlan bool) (store.RunStore, *store.Run) {
+		t.Helper()
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, id, "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if withPlan {
+			if err := s.WriteArtifact(ctx, &store.Artifact{
+				RunID: id, NodeID: "planner", Version: 0,
+				Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "planner", Version: 0},
+				Data:     map[string]any{"ok": true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: id, NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{
+				LogicalRef: "report", ProducerNode: "writer", Version: 0,
+				Dependencies: []store.ArtifactDependency{dep},
+			},
+			Data: map[string]any{"ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, reloaded
+	}
+
+	t.Run("a present dependency named by ref is accepted", func(t *testing.T) {
+		s, run := seed(t, "artifact-dep-ref", store.ArtifactDependency{LogicalRef: "plan", Version: 0, Required: true}, true)
+		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: wf}); err != nil {
+			t.Fatalf("a dependency that IS present was refused: %v", err)
+		}
+	})
+
+	t.Run("a genuinely absent dependency is still refused", func(t *testing.T) {
+		s, run := seed(t, "artifact-dep-absent", store.ArtifactDependency{LogicalRef: "plan", Version: 0, Required: true}, false)
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: wf})
+		if err == nil || !strings.Contains(err.Error(), "absent from the run") {
+			t.Fatalf("missing dependency error = %v", err)
+		}
+	})
+
+	t.Run("a ref no node publishes is reported as such", func(t *testing.T) {
+		s, run := seed(t, "artifact-dep-unknown", store.ArtifactDependency{LogicalRef: "ghost", Version: 0, Required: true}, false)
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: wf})
+		if err == nil || !strings.Contains(err.Error(), "no node of this workflow publishes") {
+			t.Fatalf("unknown logical ref error = %v", err)
+		}
+	})
+}

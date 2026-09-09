@@ -152,6 +152,27 @@ func (e *ArtifactContractError) Error() string {
 	return "artifact contract incompatible: " + strings.Join(e.Violations, "; ")
 }
 
+// nodePublishingRef resolves a logical artifact reference back to the node
+// that publishes it, or "" when the workflow publishes no such ref. Iterated
+// in sorted order so a workflow that (illegally) publishes one ref twice
+// still resolves deterministically.
+func nodePublishingRef(wf *ir.Workflow, logicalRef string) string {
+	if wf == nil || logicalRef == "" {
+		return ""
+	}
+	ids := make([]string, 0, len(wf.Nodes))
+	for id := range wf.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if nodePublish(wf.Nodes[id]) == logicalRef {
+			return id
+		}
+	}
+	return ""
+}
+
 // contractViolation is one mismatch plus the class that decides its recovery.
 type contractViolation struct {
 	msg string
@@ -200,6 +221,22 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 			add("artifact %s/%d has an incomplete contract", nodeID, version)
 			continue
 		}
+		// The contract's whole purpose is binding an output to its producer,
+		// and until now only non-emptiness was checked: the workflow node was
+		// then resolved by the ARTIFACT-INDEX KEY, so a contract naming a
+		// different producer passed, and the loaded body's own identity was
+		// never compared to the one requested. A store that returned the
+		// wrong object — a key collision, a bad migration, a hand-edited
+		// artifact — would have been validated against the wrong node's
+		// declaration and admitted.
+		if contract.ProducerNode != nodeID {
+			add("artifact %s/%d names producer %q", nodeID, version, contract.ProducerNode)
+			continue
+		}
+		if artifact.NodeID != nodeID || artifact.RunID != run.ID {
+			add("artifact %s/%d loaded as %s/%s", nodeID, version, artifact.RunID, artifact.NodeID)
+			continue
+		}
 		node, ok := wf.Nodes[nodeID]
 		if !ok {
 			add("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID)
@@ -238,9 +275,18 @@ func collectArtifactContractViolations(ctx context.Context, c ArtifactContractCh
 			if dep.LogicalRef == "" || !dep.Required {
 				continue
 			}
+			// A dependency may name its producer NODE or only the logical ref
+			// the workflow publishes it under. Falling back to the ref as if
+			// it were a node id looked a publish name up in an index keyed by
+			// node id, so a dependency written without NodeID was reported
+			// "absent from the run" for an artifact that is present.
 			depNode := dep.NodeID
 			if depNode == "" {
-				depNode = dep.LogicalRef
+				depNode = nodePublishingRef(wf, dep.LogicalRef)
+			}
+			if depNode == "" {
+				add("artifact %q requires %s, which no node of this workflow publishes", contract.LogicalRef, dep.LogicalRef)
+				continue
 			}
 			depVersion, present := run.ArtifactIndex[depNode]
 			if !present {

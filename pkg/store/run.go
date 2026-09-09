@@ -1468,11 +1468,11 @@ type ArtifactDependency struct {
 // "external" are understood); it is metadata for admission, never a request
 // to replay an external side effect.
 type ArtifactContract struct {
-	LogicalRef       string               `json:"logical_ref" bson:"logical_ref"`
-	ProducerNode     string               `json:"producer_node" bson:"producer_node"`
-	ProducerRevision string               `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
-	Version          int                  `json:"version" bson:"version"`
-	Schema           string               `json:"schema,omitempty" bson:"schema,omitempty"`
+	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int    `json:"version" bson:"version"`
+	Schema           string `json:"schema,omitempty" bson:"schema,omitempty"`
 	// SchemaHash fingerprints the resolved schema DEFINITION. Schema alone is
 	// a label: editing a schema's fields — the change that actually
 	// invalidates a persisted artifact, because a downstream node reads
@@ -1482,8 +1482,8 @@ type ArtifactContract struct {
 	// comparison stays the fallback for both.
 	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
 	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
-	Mutable          bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
-	Effects          []string             `json:"effects,omitempty" bson:"effects,omitempty"`
+	Mutable      bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects      []string             `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
