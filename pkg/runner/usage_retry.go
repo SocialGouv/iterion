@@ -172,6 +172,48 @@ func reservesLastAttempt(pol retrypolicy.Policy, attemptsSpent int, authoritativ
 	return !authoritativeAt.Add(pol.JitterDuration()).After(now.Add(pol.MaxWaitDuration()))
 }
 
+// circuitCooldownAt adopts a shared breaker's cooldown as this run's next
+// wake-up, keeping the two guarantees usageWindowRetryAt applies to every
+// instant it returns.
+//
+// Both matter MORE here, not less, precisely because the cooldown is shared:
+//
+//   - The spread. OpenUntil is one durable instant every run behind the
+//     breaker reads, so adopting it raw arms them all for the identical
+//     moment — exactly the synchronized wave the jitter above exists to
+//     prevent (five feed-watch digests re-exhausting a fresh window). A
+//     breaker that replaces a storm of pods with a storm of pods one cooldown
+//     later has bought nothing.
+//   - The horizon. max_wait is the RUN's own policy; the cooldown comes from
+//     the deployment's env. An authority outside the run may only ever lower
+//     a policy, never lengthen a wait past what it permits — the same
+//     precedence retrypolicy.Clamp enforces for the platform ceiling.
+//
+// The clamp is also what keeps reservesLastAttempt honest: it decides whether
+// to spend the last attempt on a speculative wake by reasoning about where
+// the ceiling lands, so an instant that escapes the ceiling here would
+// invalidate a decision already taken above.
+//
+// Reports false when the result no longer moves the wake-up later than at —
+// the ceiling clamped the cooldown back to (or below) the instant the
+// evidence already chose, so the breaker did not contribute and the caller
+// must neither relabel the source nor pull the retry EARLIER.
+func circuitCooldownAt(openUntil, at time.Time, pol retrypolicy.Policy, now time.Time) (time.Time, bool) {
+	out := openUntil.UTC()
+	if j := pol.JitterDuration(); j > 0 {
+		out = out.Add(rand.N(j))
+	}
+	if ceiling := now.Add(pol.MaxWaitDuration()); out.After(ceiling) {
+		out = ceiling
+	}
+	// No floor to re-apply: out is only ever adopted when it is later than
+	// at, which usageWindowRetryAt already floored.
+	if !out.After(at) {
+		return at, false
+	}
+	return out, true
+}
+
 // usageWindowEvidence answers the one question "did this error mean the
 // provider's quota window is shut, and when does it reopen".
 //
@@ -324,7 +366,12 @@ func (r *Runner) armUsageWindowRetry(
 	if runMeta.RetryState != nil {
 		attemptsSpent = runMeta.RetryState.Attempts
 	}
-	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped, attemptsSpent)
+	// One clock for the whole arming. usageWindowRetryAt clamps against
+	// now+max_wait, and the circuit adoption below re-clamps against the same
+	// ceiling; deriving a second time.Now() there would move the ceiling
+	// under the instant it is checking.
+	now := time.Now().UTC()
+	at, source, ok := usageWindowRetryAt(execErr, pol, now, skipped, attemptsSpent)
 	if !ok {
 		return usageRetryNotApplicable
 	}
@@ -335,14 +382,15 @@ func (r *Runner) armUsageWindowRetry(
 	// ledger remains authoritative for the attempt bound; the shared circuit
 	// only moves the next wake-up out of a provider-wide failure storm.
 	if key := retrycoord.Key(runMeta); key != "" {
-		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, time.Now().UTC(), retrycoord.FromEnv())
+		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, now, retrycoord.FromEnv())
 		if circuitErr != nil {
 			// A circuit-store outage must not drop a durable per-run retry. The
 			// existing ScheduleRunRetry below still provides the safe fallback.
 			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
 		} else if circuitState != nil && circuitState.OpenUntil != nil && circuitState.OpenUntil.After(at) {
-			at = circuitState.OpenUntil.UTC()
-			source += "+circuit_open"
+			if moved, ok := circuitCooldownAt(*circuitState.OpenUntil, at, pol, now); ok {
+				at, source = moved, source+"+circuit_open"
+			}
 		}
 	}
 
