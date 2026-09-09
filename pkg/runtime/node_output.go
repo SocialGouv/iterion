@@ -139,13 +139,19 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	// the cap" apart from "the same cap, simply re-entered" — and the raise
 	// would otherwise destroy the evidence.
 	persistedBudget := episode.Budget
-	// InputFingerprint identifies the episode. The violation can legitimately
-	// change while a corrector improves a payload, so comparing it here would
-	// accidentally reset an exhausted episode on resume. A `succeeded` episode
-	// is CLOSED: the node ran again and produced an invalid payload again, so
-	// this is a new execution and it gets its own budget — inheriting the
-	// closed one's spent attempts would hand it zero corrections.
-	if !found || episode.InputFingerprint != inputFingerprint || episode.Status == correctionStatusSucceeded {
+	// The LEDGER KEY is the episode's identity — deliberately NOT the payload
+	// fingerprint. An LLM node re-executed by a resume produces a DIFFERENT
+	// invalid payload each time, so keying on the payload handed every resume
+	// a fresh episode at Attempts=0: under --auto-resume / retrypolicy that is
+	// precisely the unbounded correction loop this ledger exists to stop, and
+	// it silently overwrote the record of what the earlier attempts had spent.
+	// The fingerprint stays as EVIDENCE, and as the qualifier on the
+	// `unchanged` verdict below.
+	//
+	// A `succeeded` episode is CLOSED, and only that resets the budget: the
+	// previous execution ended on a valid payload, so this is new work rather
+	// than a retry of a correction that never landed.
+	if !found || episode.Status == correctionStatusSucceeded {
 		now := time.Now().UTC()
 		episode = store.OutputCorrectionEpisode{
 			EpisodeID:                fmt.Sprintf("%s-%d", inputFingerprint[:min(16, len(inputFingerprint))], now.UnixNano()),
@@ -158,22 +164,27 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			StartedAt:                now,
 			UpdatedAt:                now,
 		}
-		persistedBudget = 0
+		found, persistedBudget = false, 0
 	} else if episode.Budget < e.outputCorrectionBudget {
 		// A launch may raise the budget, but never lower an already consumed
 		// episode's bound. The persisted value remains the audit contract.
 		episode.Budget = e.outputCorrectionBudget
 	}
+	samePayload := found && episode.InputFingerprint == inputFingerprint
 
 	// Terminal statuses are enforced HERE, not by the loop bound below: an
 	// `Attempts >= Budget` conjunct would be inert, since `for episode.Attempts
 	// < episode.Budget` already short-circuits on it.
 	switch episode.Status {
 	case correctionStatusUnchanged:
-		// Provably dead: the same payload produced the same violation, so every
-		// further call is spend on a known-dead path. Terminal even with budget
-		// left, and even when the operator raises it.
-		return output, validationErr
+		// Provably dead — for the payload it was proven on. The same payload
+		// produced the same violation, so every further call is spend on a
+		// known-dead path: terminal even with budget left, and even when the
+		// operator raises it. A DIFFERENT payload was never tried, so it may
+		// still be corrected, bounded by the attempts already spent.
+		if samePayload {
+			return output, validationErr
+		}
 	case correctionStatusExhausted:
 		// Terminal at the budget it was stopped under — otherwise a resume
 		// silently re-enters a closed episode and the persisted bound means
@@ -185,6 +196,14 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	}
 	if episode.Budget <= 0 {
 		return output, validationErr
+	}
+	if !samePayload {
+		// Same node execution, new payload: carry the attempts already spent —
+		// that accumulation IS the durable bound — and record what we are now
+		// working on.
+		episode.InputFingerprint = inputFingerprint
+		episode.LastViolationFingerprint = violationFingerprint
+		episode.Status = correctionStatusActive
 	}
 
 	// The primary node call runs under the run's remaining-duration deadline
@@ -242,7 +261,16 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		// having it reset to the node's original usage.
 		mergeEngineMetadata(candidate, current)
 		if correctionErr != nil || candidate == nil {
-			episode.Status = correctionStatusExhausted
+			// NOT terminal. A 429, a usage window, a network blip or a
+			// DeadlineExceeded is exactly what the failed_resumable + retry
+			// machinery exists to recover from, and stamping `exhausted` here
+			// closed the episode for good — with most of the budget unspent and
+			// no raise able to reopen it on the retry pod, since the budget is
+			// process-wide and identical there. The ATTEMPT we already charged
+			// is the bound; a later re-entry that spends the rest lands on the
+			// exhausted path below by itself. This also matches the ctx-expiry
+			// stop above, which deliberately writes no terminal status either.
+			episode.Status = correctionStatusActive
 			if correctionErr != nil {
 				episode.LastError = correctionErr.Error()
 			} else {

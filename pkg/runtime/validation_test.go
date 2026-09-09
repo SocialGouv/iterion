@@ -361,8 +361,10 @@ func TestSchemaValidation_CorrectorErrorStopsAtOnce(t *testing.T) {
 		t.Fatalf("LoadRun: %v", loadErr)
 	}
 	ep := singleCorrectionEpisode(t, run)
-	if ep.Status != correctionStatusExhausted || ep.LastError != "corrector unavailable" {
-		t.Fatalf("episode = %#v, want exhausted carrying the corrector error", ep)
+	// Deliberately NOT terminal: a corrector that failed once may be back on
+	// the next attempt. The charged attempt is the bound.
+	if ep.Status != correctionStatusActive || ep.Attempts != 1 || ep.LastError != "corrector unavailable" {
+		t.Fatalf("episode = %#v, want an open episode at 1 attempt carrying the corrector error", ep)
 	}
 }
 
@@ -670,6 +672,142 @@ func TestSchemaValidation_CancelDuringCorrectionIsACancel(t *testing.T) {
 	}
 	if run.Status != store.RunStatusCancelled {
 		t.Fatalf("run status = %q, want %q", run.Status, store.RunStatusCancelled)
+	}
+}
+
+// reEnterCorrection drives the correction helper against an already-persisted
+// run, standing in for what a RESUME does: a fresh engine, in a fresh process,
+// re-executing the node and reading the ledger the previous one left behind.
+// Going through Engine.Run twice cannot express this — the second call is
+// refused because the run sits in failed_resumable — and a test that lets that
+// refusal count as "the schema failure stood" passes while the corrector is
+// never invoked at all.
+func reEnterCorrection(t *testing.T, st store.RunStore, runID string, exec *correctingExecutor, budget int, output map[string]any) error {
+	t.Helper()
+	wf := validationWorkflow()
+	eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(budget))
+	rs := &runState{ctx: context.Background(), runID: runID}
+	_, err := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", wf.Nodes["my_agent"], output)
+	return err
+}
+
+func newRunForLedger(t *testing.T, st store.RunStore, runID string) {
+	t.Helper()
+	if _, err := st.CreateRun(context.Background(), runID, "validation_test", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+}
+
+// The headline claim — "a resume continues the existing budget rather than
+// starting a new loop" — under the conditions it actually meets in production:
+// an LLM node is NON-DETERMINISTIC, so each re-execution yields a DIFFERENT
+// invalid payload. Keying the episode on the payload handed every resume a
+// fresh budget at Attempts=0, which under --auto-resume is exactly the
+// unbounded correction loop the ledger exists to stop.
+func TestSchemaValidation_BudgetHoldsAcrossResumesOfANonDeterministicNode(t *testing.T) {
+	st := tmpStore(t)
+	const runID = "run-val-nondet"
+	const budget = 2
+
+	totalCalls := 0
+	newRunForLedger(t, st, runID)
+	for pass := 1; pass <= 4; pass++ {
+		exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+		exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+			// Never repairs it, and never repeats itself — so neither the
+			// no-progress guard nor a success can end the episode early.
+			return map[string]any{"summary": "try", "score": strings.Repeat("y", pass*10+exec.calls)}, nil
+		}
+		// A different invalid payload every execution, as a real model gives.
+		out := map[string]any{"summary": "attempt", "score": strings.Repeat("x", pass)}
+		if err := reEnterCorrection(t, st, runID, exec, budget, out); err == nil {
+			t.Fatalf("pass %d: expected the schema failure to stand", pass)
+		}
+		totalCalls += exec.calls
+	}
+
+	if totalCalls != budget {
+		t.Fatalf("correction calls across 4 re-executions = %d, want %d — the durable bound did not hold", totalCalls, budget)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	ep := singleCorrectionEpisode(t, run)
+	if ep.Attempts != budget || ep.Status != correctionStatusExhausted {
+		t.Fatalf("episode = %#v, want exhausted with %d attempts", ep, budget)
+	}
+}
+
+// A corrector that fails transiently (a 429, a usage window, a network blip)
+// must NOT durably close the episode: that is precisely the failure class the
+// failed_resumable + retry machinery exists to recover from, and the budget is
+// process-wide, so no raise would reopen it on the retry pod. The attempt
+// already charged is the bound, so the budget still converges.
+func TestSchemaValidation_TransientCorrectorErrorIsNotTerminal(t *testing.T) {
+	st := tmpStore(t)
+	const runID = "run-val-transient"
+	newRunForLedger(t, st, runID)
+
+	failing := &correctingExecutor{stubExecutor: newStubExecutor()}
+	failing.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return nil, errors.New("429 rate limited")
+	}
+	if err := reEnterCorrection(t, st, runID, failing, 3, invalidAgentOutput()); err == nil {
+		t.Fatal("expected the schema failure to stand while the corrector is down")
+	}
+	if failing.calls != 1 {
+		t.Fatalf("pass 1 correction calls = %d, want 1", failing.calls)
+	}
+
+	// The retry pod: same budget, corrector recovered, episode must still be open.
+	recovered := &correctingExecutor{stubExecutor: newStubExecutor()}
+	recovered.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+	if err := reEnterCorrection(t, st, runID, recovered, 3, invalidAgentOutput()); err != nil {
+		t.Fatalf("pass 2: %v — a transient corrector error must not close the episode", err)
+	}
+	if recovered.calls != 1 {
+		t.Fatalf("pass 2 correction calls = %d, want 1", recovered.calls)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	// Attempts accumulate across the two executions: that accumulation IS the bound.
+	if ep := singleCorrectionEpisode(t, run); ep.Status != correctionStatusSucceeded || ep.Attempts != 2 {
+		t.Fatalf("episode = %#v, want succeeded with 2 accumulated attempts", ep)
+	}
+}
+
+// A corrector that keeps failing must still converge: the accumulated attempts
+// reach the budget and the episode closes exhausted, with no raise reopening it.
+func TestSchemaValidation_RepeatedCorrectorErrorsConvergeToExhausted(t *testing.T) {
+	st := tmpStore(t)
+	const runID = "run-val-always-down"
+	newRunForLedger(t, st, runID)
+
+	total := 0
+	for pass := 1; pass <= 5; pass++ {
+		exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+		exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+			return nil, errors.New("corrector permanently down")
+		}
+		if err := reEnterCorrection(t, st, runID, exec, 2, invalidAgentOutput()); err == nil {
+			t.Fatalf("pass %d: expected the schema failure to stand", pass)
+		}
+		total += exec.calls
+	}
+	if total != 2 {
+		t.Fatalf("correction calls across 5 re-executions = %d, want 2 (the budget)", total)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if ep := singleCorrectionEpisode(t, run); ep.Status != correctionStatusExhausted || ep.Attempts != 2 {
+		t.Fatalf("episode = %#v, want exhausted/2", ep)
 	}
 }
 
