@@ -48,6 +48,11 @@ func TestVerifyRunDriftTail(t *testing.T) {
 
 	run := func(t *testing.T, ws, scratch string) verifyResult {
 		t.Helper()
+		// Commit whatever the test set up before verify_run runs. The
+		// net_dirty gate (issue #799) refuses a dirty tree; the campaign
+		// contract already commits its work before the deterministic gate,
+		// so the test represents the SAME state a real pass would present.
+		commitFixture(t, ws)
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		out, err := exec.Command("sh", "-c", cmd).Output()
@@ -301,6 +306,11 @@ func TestVerifyRunMaskedPipeline(t *testing.T) {
 	}
 	run := func(t *testing.T, ws, scratch string) verifyResult {
 		t.Helper()
+		// Commit whatever the test set up before verify_run runs. The
+		// net_dirty gate (issue #799) refuses a dirty tree; the campaign
+		// contract already commits its work before the deterministic gate,
+		// so the test represents the SAME state a real pass would present.
+		commitFixture(t, ws)
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		out, err := exec.Command("sh", "-c", cmd).Output()
@@ -440,6 +450,11 @@ func TestAppDevVerifyRunEnforcesTheSameTail(t *testing.T) {
 	}
 	run := func(t *testing.T, ws, scratch string) {
 		t.Helper()
+		// Commit whatever the test set up before verify_run runs. The
+		// net_dirty gate (issue #799) refuses a dirty tree; the campaign
+		// contract already commits its work before the deterministic gate,
+		// so the test represents the SAME state a real pass would present.
+		commitFixture(t, ws)
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		out, err := exec.Command("sh", "-c", cmd).Output()
@@ -535,6 +550,31 @@ func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
 func verifyRunCommand(t *testing.T, rel string) string {
 	t.Helper()
 	return toolCommand(t, rel, "verify_run")
+}
+
+// commitFixture makes the test's workspace fixture the tree HEAD, the way a
+// campaign pass would leave it before the deterministic verify gate runs.
+// Since the net_dirty gate (issue #799) refuses a dirty tree BEFORE running
+// verify.sh, a test that writes files into ws without committing them would
+// hit the refusal instead of exercising verify_run's actual concern.
+// commitFixture is a no-op when the tree is already clean OR when ws is not
+// a git repository at all (the subtests that assert graceful degradation on
+// a non-git workspace keep their shape).
+func commitFixture(t *testing.T, ws string) {
+	t.Helper()
+	status, err := gittest.Try(ws, "status", "--porcelain")
+	if err != nil {
+		// Not a git repo (or git otherwise refused to answer): let the
+		// verify_run guard handle it. tree_state() will return nil there
+		// and the net_dirty check falls through, which is the same
+		// fail-open path a bot's greenfield run takes.
+		return
+	}
+	if status == "" {
+		return
+	}
+	gittest.Run(t, ws, "add", "-A")
+	gittest.Run(t, ws, "commit", "-q", "-m", "test fixture")
 }
 
 func toolCommand(t *testing.T, rel, node string) string {
