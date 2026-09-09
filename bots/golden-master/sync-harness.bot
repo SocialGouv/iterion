@@ -3655,6 +3655,14 @@ tool sync_harness:
         return unproven
 
 
+    # How many undischarged records the refusal SPELLS OUT. The rest are counted,
+    # never dropped: they stay in the report's `duplicate_groups_unproven`, which is
+    # the field the gate reads. This exists because `log_tail` is a 6000-character
+    # tail over ALL problems, so one unbounded list silently evicts every other
+    # refusal in the run.
+    _DUP_SHOWN = 6
+
+
     def duplicate_groups_refusal(unproven, duplicate_refs, corpus_distinct, corpus_total):
         """The gate's refusal for undischarged identity claims.
 
@@ -3670,7 +3678,18 @@ tool sync_harness:
         groups and one stale note that five groups needed work. On a gate whose
         whole subject is precise adjudication, the number and the list it
         introduces must count the same things.
+
+        The embedded list is CAPPED. `log_tail` keeps the last 6000 characters of
+        every problem joined, and it is the campaign's only diagnostic (the gate
+        publishes it as `fail_log`). Measured: twelve undischarged three-member
+        groups render one 6444-character problem — over the whole budget by itself,
+        so it evicts the negative control, the blind lanes, the score, and even its
+        own header, leaving the reader a headless fragment of JSON. Every record is
+        published intact in the report's `duplicate_groups_unproven`, which is what
+        the gate actually reads; the log only has to name the problem well enough to
+        act on it.
         """
+        shown, hidden = unproven[:_DUP_SHOWN], max(0, len(unproven) - _DUP_SHOWN)
         return ("%d identity claim(s) are UNPROVED. Each record below carries its own reason, "
                 "and a record is either a group observed byte-identical in this pass or a "
                 "declaration whose references have since diverged — so this count is NOT the "
@@ -3680,9 +3699,13 @@ tool sync_harness:
                 "`duplicate_groups`, and this gate checks that the mutant really moves part of "
                 "the group and leaves the rest still. Separately, %d group(s) captured "
                 "byte-identical across DIFFERENT entries, which is why the corpus is %d "
-                "observations wide and not %d. Unproved: %s"
+                "observations wide and not %d. Unproved: %s%s"
                 % (len(unproven), len(duplicate_refs), corpus_distinct, corpus_total,
-                   json.dumps(unproven, ensure_ascii=False)))
+                   json.dumps(shown, ensure_ascii=False),
+                   "" if not hidden else
+                   (" … and %d more, withheld so this refusal cannot evict the rest of the log; "
+                    "every record is in the report's `duplicate_groups_unproven`, which is the "
+                    "field the gate reads." % hidden)))
 
 
     def control_ids(corpus, targets, seed):
@@ -6476,6 +6499,21 @@ tool sync_harness:
               and "11 observations wide and not 14" in msg, True)
         check("la liste montree est celle qui est comptee",
               msg.count('"ids"'), 1)
+        # ET ELLE EST BORNEE. `log_tail` ne garde que les 6000 derniers caracteres
+        # de TOUS les problemes reunis, et c'est le seul diagnostic que la campagne
+        # recoit (`fail_log`). Mesure : douze groupes de trois non acquittes
+        # rendaient un seul probleme de 6444 caracteres — au-dela du budget entier,
+        # donc il chassait le controle negatif, les lanes aveugles, le score, et
+        # jusqu'a son propre en-tete. Rien n'est perdu : tout est dans le rapport.
+        many = [{"ids": ["e%03d" % i, "e%03d" % (i + 1)], "separated_by": "M-%02d" % i,
+                 "why": "le separateur ne deplace aucun membre du groupe"} for i in range(20)]
+        long_msg = duplicate_groups_refusal(many, [], 11, 14)
+        check("le refus ne detaille que les premiers enregistrements",
+              long_msg.count('"ids"'), _DUP_SHOWN)
+        check("et il compte ceux qu'il retient",
+              "and %d more" % (20 - _DUP_SHOWN) in long_msg, True)
+        check("l'en-tete survit a la troncature de log_tail",
+              long_msg[-6000:].startswith("20 identity claim(s) are UNPROVED"), True)
 
         if failures:
             log("harnais : %d test(s) ECHOUENT" % len(failures))
