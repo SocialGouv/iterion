@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/SocialGouv/iterion/pkg/reliability"
@@ -70,7 +71,11 @@ func RunReliabilityReport(opts ReliabilityOptions, p *Printer) error {
 	// A store with no runs is a legitimate baseline (a fresh deployment
 	// about to start a pilot), not an error — but it cannot answer a
 	// question about a specific run.
-	if !storeHasRuns(out.StoreDir) {
+	hasRuns, err := reliabilityStoreHasRuns(out.StoreDir)
+	if err != nil {
+		return fmt.Errorf("inspect run store: %w", err)
+	}
+	if !hasRuns {
 		if opts.RunID != "" {
 			return UserInputError(fmt.Errorf("run %q: no run store at %s", opts.RunID, out.StoreDir))
 		}
@@ -111,6 +116,26 @@ func RunReliabilityReport(opts ReliabilityOptions, p *Printer) error {
 	baseline := reliability.Summarize(runs)
 	out.Baseline = &baseline
 	return emitReliabilityReport(out, p)
+}
+
+// reliabilityStoreHasRuns distinguishes a genuinely absent store from one
+// the operator cannot inspect. The reliability report is rollout evidence:
+// treating EACCES, EIO, or any other stat failure as an empty baseline would
+// turn missing evidence into a false success.
+func reliabilityStoreHasRuns(storeDir string) (bool, error) {
+	if _, err := os.Stat(storeDir); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := os.Stat(filepath.Join(storeDir, "runs")); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func emitReliabilityReport(out ReliabilityReport, p *Printer) error {

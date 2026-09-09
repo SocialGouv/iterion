@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -118,6 +119,29 @@ func TestReliabilityReportRejectsAnUnknownRun(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("an unknown run id must not report a clean, empty result")
+	}
+}
+
+func TestReliabilityReportRejectsAnInaccessibleStore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/runs", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Errorf("restore store permissions: %v", err)
+		}
+	})
+
+	err := RunReliabilityReport(
+		ReliabilityOptions{StoreDir: dir},
+		&Printer{W: &bytes.Buffer{}, Format: OutputJSON},
+	)
+	if err == nil {
+		t.Fatal("an inaccessible store must not report a successful empty baseline")
 	}
 }
 
