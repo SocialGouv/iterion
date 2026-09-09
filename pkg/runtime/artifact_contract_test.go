@@ -335,3 +335,78 @@ func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 		t.Fatalf("legacy artifact refused: %v", err)
 	}
 }
+
+// The gate is only as good as the stamping half, and nothing else covers
+// it: every other test here hand-builds a store.Artifact. A regression
+// making artifactContractFor return nil — nodePublish changing shape, a
+// write site dropping the field in a merge — would silently disable the
+// whole feature with every test still green, and the failure would only
+// surface as an operator's enforce run quietly catching nothing.
+func TestEngineStampsContractOnPublishedArtifacts(t *testing.T) {
+	ctx := context.Background()
+	wf := &ir.Workflow{
+		Name:  "contract_stamp",
+		Entry: "make_note",
+		Nodes: map[string]ir.Node{
+			"make_note": &ir.ToolNode{
+				BaseNode:     ir.BaseNode{ID: "make_note"},
+				SchemaFields: ir.SchemaFields{OutputSchema: "Note"},
+				Command:      "noop",
+				Publish:      "note_artifact",
+			},
+			"unpublished": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "unpublished"}, Command: "noop"},
+			"done":        &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "make_note", To: "unpublished"},
+			{From: "unpublished", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{
+			"Note": {Name: "Note", Fields: []*ir.SchemaField{{Name: "msg", Type: ir.FieldTypeString}}},
+		},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	exec := newStubExecutor()
+	exec.on("make_note", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"msg": "hi"}, nil
+	})
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithWorkflowHash("rev-stamped"))
+	if err := eng.Run(ctx, "run-contract-stamp", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	art, err := s.LoadArtifact(ctx, "run-contract-stamp", "make_note", 0)
+	if err != nil {
+		t.Fatalf("load published artifact: %v", err)
+	}
+	got := art.Contract
+	if got == nil {
+		t.Fatal("published artifact carries no contract — the enforce gate has nothing to check")
+	}
+	if got.LogicalRef != "note_artifact" {
+		t.Errorf("LogicalRef = %q, want the node's publish name", got.LogicalRef)
+	}
+	if got.ProducerNode != "make_note" || got.Version != 0 {
+		t.Errorf("identity = %s/v%d, want make_note/v0", got.ProducerNode, got.Version)
+	}
+	if got.ProducerRevision != "rev-stamped" {
+		t.Errorf("ProducerRevision = %q, want the run's workflow hash", got.ProducerRevision)
+	}
+	if got.Schema != "Note" || got.SchemaFingerprint != schemaFingerprint(wf, "Note") {
+		t.Errorf("schema = %q/%q, want Note fingerprinted from the resolved body", got.Schema, got.SchemaFingerprint)
+	}
+
+	// And the run that just wrote them resumes on its own artifacts.
+	run, err := s.LoadRun(ctx, "run-contract-stamp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-stamped",
+	}); err != nil {
+		t.Fatalf("the engine's own freshly written artifacts failed the gate: %v", err)
+	}
+}
