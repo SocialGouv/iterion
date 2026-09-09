@@ -413,6 +413,17 @@ func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledg
 	if rs != nil {
 		iterationPath = e.currentCorrectionIterationPath(nodeID, runStateIterationCounters(rs))
 		scope = rs.correctionScope
+		// A fan-out branch can terminate at a node outside the enclosing
+		// loop's compiled body. Its branch ID repeats on the next fan-out
+		// invocation, so node membership alone would make both executions
+		// share one durable correction budget. Carry the trunk counters that
+		// identify the enclosing parallel invocation even for such terminal
+		// branch nodes. Root fan-outs retain their historical identity.
+		if rs.branchLocal {
+			if enclosingPath := branchCounterPath(rs.enclosingLoopCounters); enclosingPath != "root" {
+				scope += "@" + enclosingPath
+			}
+		}
 	}
 	invocationID = fmt.Sprintf("node=%s;branch=%s;loops=%s", nodeID, scope, iterationPath)
 	if scope == "" && iterationPath == "" && !strings.Contains(nodeID, ".") && !strings.HasPrefix(nodeID, "$") {

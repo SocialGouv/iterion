@@ -549,6 +549,30 @@ func TestCorrectionInvocationIdentitySeparatesLoopsAndBranches(t *testing.T) {
 	}
 }
 
+func TestCorrectionInvocationIdentityIncludesEnclosingFanOutIteration(t *testing.T) {
+	eng := New(validationWorkflow(), nil, newStubExecutor())
+	firstKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:           true,
+		correctionScope:       "branch_dispatch_terminal",
+		enclosingLoopCounters: map[string]int{"outer": 1},
+	}, "terminal_branch_node")
+	secondKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:           true,
+		correctionScope:       "branch_dispatch_terminal",
+		enclosingLoopCounters: map[string]int{"outer": 2},
+	}, "terminal_branch_node")
+	rootKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:     true,
+		correctionScope: "branch_dispatch_terminal",
+	}, "terminal_branch_node")
+	if firstKey == secondKey {
+		t.Fatalf("looped fan-out invocations share correction key %q", firstKey)
+	}
+	if rootKey == firstKey || rootKey == secondKey {
+		t.Fatalf("root and looped fan-out correction keys collide: root=%q first=%q second=%q", rootKey, firstKey, secondKey)
+	}
+}
+
 func TestSchemaValidation_CorrectionBudgetIsPerForeachItem(t *testing.T) {
 	wf := foreachWorkflow()
 	wf.Schemas = validationWorkflow().Schemas

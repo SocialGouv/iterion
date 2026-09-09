@@ -24,6 +24,12 @@ const turnDebounce = 3 * time.Second
 // carries. Keeps the evaluation prompt small and prompt-cache-stable.
 const recentEventsCap = 40
 
+// cursorInitialRunPoll is only used for the short fresh-launch window where
+// launch surfaces subscribe supervisors before Engine.Run creates run.json.
+// The observer is already attached, so buffered run events are not lost while
+// cursor restoration waits for the document to become visible.
+const cursorInitialRunPoll = 10 * time.Millisecond
+
 // Observer streams a supervised run's events. *runview.Service
 // satisfies it via ObserveRun; the seam keeps pkg/supervise free of a
 // runview import (so the engine can spawn a coordinator without an
@@ -650,11 +656,29 @@ func (c *Coordinator) restoreCursor() bool {
 	if loadCtx == nil {
 		loadCtx = context.Background()
 	}
-	run, err := c.cursorStore.LoadRun(loadCtx, c.runID)
-	if err != nil {
-		c.cursorReady = false
-		c.warn("supervise[%s]: watcher cursor load failed on run %s: %v", c.spec.Name, c.runID, err)
-		return false
+	var run *store.Run
+	for {
+		var err error
+		run, err = c.cursorStore.LoadRun(loadCtx, c.runID)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrRunNotFound) {
+			c.cursorReady = false
+			c.warn("supervise[%s]: watcher cursor load failed on run %s: %v", c.spec.Name, c.runID, err)
+			return false
+		}
+		// A missing document is expected on fresh CLI/dispatcher launches:
+		// supervisors subscribe before Engine.Run creates the run so they
+		// cannot miss its first events. Wait only for that precise sentinel;
+		// every other read error remains fail-closed to avoid replaying an
+		// intervention from an unknown cursor.
+		select {
+		case <-loadCtx.Done():
+			c.cursorReady = false
+			return false
+		case <-time.After(cursorInitialRunPoll):
+		}
 	}
 	c.cursorReady = true
 	if run == nil || run.WatcherCursors == nil {

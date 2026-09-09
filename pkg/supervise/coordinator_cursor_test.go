@@ -129,6 +129,36 @@ func TestCoordinatorCursorLoadFailureStopsActionsAndWrites(t *testing.T) {
 	}
 }
 
+func TestCoordinatorWaitsForFreshRunBeforeRestoringCursor(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(NewEventHub(), &StoreInjector{Store: st}, "fresh-run", Spec{Name: "watch"}, &stubEval{}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.ctx = ctx
+	restored := make(chan bool, 1)
+	go func() { restored <- c.restoreCursor() }()
+
+	select {
+	case result := <-restored:
+		t.Fatalf("cursor restoration returned %v before the fresh run was created", result)
+	case <-time.After(3 * cursorInitialRunPoll):
+	}
+	if _, err := st.CreateRun(context.Background(), "fresh-run", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-restored:
+		if !result || !c.cursorReady {
+			t.Fatal("cursor restoration did not become ready after run creation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cursor restoration did not observe the newly created run")
+	}
+}
+
 func TestCoordinatorNilDecisionIsRetryable(t *testing.T) {
 	eval := &scriptedEval{decisions: []*Decision{nil, {Intervene: false}}}
 	c := newBareCoordinator(t, Spec{MaxEvals: 5}, eval, nil)
