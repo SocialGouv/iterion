@@ -971,6 +971,31 @@ accept. Anything else leaves the watchdog OFF and is logged once at
 startup on both surfaces, so a mistyped cutover shows up in the log
 rather than as cards that quietly stay stuck.
 
+**The index net (native board, `ITERION_NATIVE_INDEX_RESCAN`).** The
+native store keeps an in-memory index of `issues/*.json`, kept current
+by an inotify watch so a write another process makes (the
+`iterion __mcp-board` subprocess of a run) shows on `/board` and to the
+dispatcher at once. inotify is a lossy carrier: a host at
+`fs.inotify.max_user_watches` refuses the watch (`ENOSPC`), one at
+`max_user_instances` refuses the descriptor (`EMFILE`), a full kernel
+queue drops events (`ErrEventOverflow`), and a watched directory that is
+removed, renamed or unmounted loses its watch without a word (the loop
+asks fsnotify every 5 s whether the watch still exists). Each of those
+used to leave the index frozen until the daemon restarted; each now
+falls back to a full rescan of `issues/` — outside the store mutex, so
+board reads never wait behind disk I/O — every `ITERION_NATIVE_INDEX_RESCAN`
+(a Go duration or a bare number of seconds, default `2s`; measured at
+~4 ms for 200 cards and ~19 ms for 2 000). `off`, `0`, `0s` or any
+non-positive value disables the net and restores the blind-until-restart
+behaviour; an unparsable value falls back to `2s`. The symptom the net
+answers is a card written on disk that `/board` never shows; the log
+says which mode the store is in (`native index watcher unavailable: …
+falling back to a 2s disk rescan`, `kernel event queue overflowed; index
+rebuilt from disk`, `inotify watch on issues/ lost mid-life`). A card
+whose file is present but momentarily unreadable is kept as last seen,
+never dropped; a vanished `issues/` directory is an error that leaves the
+index as it was, never an empty board.
+
 **The un-leased horizon (cloud board).** A claim a mixed-fleet write
 stripped of its lease is only reclaimable once nothing has touched the
 card for `ITERION_BOARD_UNLEASED_CLAIM_HORIZON` (default `24h`): an

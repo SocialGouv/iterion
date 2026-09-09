@@ -88,8 +88,8 @@ func TestWatcher_ArmsTheNetWhenTheKernelDropsTheWatch(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
+	if w, _, werr := s.watchState(); w == nil {
+		t.Skipf("this host refused a watch (%v); a watch cannot be lost", werr)
 	}
 
 	issues := filepath.Join(dir, issuesDir)
@@ -140,8 +140,8 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
 		}
-		if s.watcher == nil {
-			t.Skipf("this host refused a watch (%v)", s.watcherErr)
+		if w, _, werr := s.watchState(); w == nil {
+			t.Skipf("this host refused a watch (%v)", werr)
 		}
 		go func() { _ = os.RemoveAll(filepath.Join(dir, issuesDir)) }()
 		time.Sleep(time.Duration(i%7) * time.Millisecond)
@@ -165,10 +165,10 @@ func TestClose_LeavesNoNetRunningAfterALostWatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v)", s.watcherErr)
+	iw, _, werr := s.watchState()
+	if iw == nil {
+		t.Skipf("this host refused a watch (%v)", werr)
 	}
-	iw := s.watcher
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -324,8 +324,9 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); the overflow path needs one", s.watcherErr)
+	w, _, werr := s.watchState()
+	if w == nil {
+		t.Skipf("this host refused a watch (%v); the overflow path needs one", werr)
 	}
 
 	stall := make(chan struct{})
@@ -351,7 +352,7 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 		_ = s.Close()
 	})
 
-	s.watcher.w.Errors <- fsnotify.ErrEventOverflow
+	w.w.Errors <- fsnotify.ErrEventOverflow
 	// The rebuild is now parked in its scan. The fast path must still work.
 	writeExternal(t, dir, "native:during-the-rebuild", "Delivered while the rebuild is stalled")
 	deadline := time.Now().Add(2 * time.Second)

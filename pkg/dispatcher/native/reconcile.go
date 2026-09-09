@@ -28,9 +28,12 @@ var rescanIntervalOverride *time.Duration
 
 // rescanInterval resolves ITERION_NATIVE_INDEX_RESCAN when the net starts —
 // not at package init, which would read the environment before a test's
-// t.Setenv or an embedding process had set it. A Go duration; "off" or "0"
-// disables the net and restores the historical blind-until-restart
-// behaviour; an unparsable value falls back to the default.
+// t.Setenv or an embedding process had set it. A Go duration or a bare
+// number of seconds; "off", or any duration or number that is zero or
+// negative ("0", "0s", "-1"), disables the net and restores the
+// historical blind-until-restart behaviour — an explicit disable in any
+// spelling is honoured, never quietly replaced by the default; an
+// unparsable value falls back to the default.
 func rescanInterval() time.Duration {
 	if rescanIntervalOverride != nil {
 		return *rescanIntervalOverride
@@ -39,13 +42,19 @@ func rescanInterval() time.Duration {
 	if raw == "" {
 		return defaultRescanInterval
 	}
-	if raw == "off" || raw == "0" {
+	if raw == "off" {
 		return 0
 	}
-	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return 0
+		}
 		return d
 	}
-	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+	if n, err := strconv.Atoi(raw); err == nil {
+		if n <= 0 {
+			return 0
+		}
 		return time.Duration(n) * time.Second
 	}
 	return defaultRescanInterval
@@ -226,19 +235,25 @@ func (s *Store) scanIssues() (fresh map[string]*Issue, unreadable map[string]err
 	return fresh, unreadable, nil
 }
 
-// rebuildAsync runs one Reconcile on its own goroutine, coalescing the
-// requests that arrive while it runs. The watcher loop asks for it on a
-// kernel-queue overflow: fsnotify's event channel is unbuffered, so a
-// rebuild run ON the loop's goroutine would stop draining the very queue
-// that just overflowed for the whole of the scan.
+// rebuildAsync runs Reconcile on its own goroutine, coalescing the
+// requests that arrive while one runs into ONE more pass — never dropping
+// them: a request that arrives mid-scan concerns files the running scan
+// listed before they changed. The watcher loop asks for it on a
+// kernel-queue overflow: the store opens fsnotify with NewWatcher, whose
+// event channel is unbuffered, so a rebuild run ON the loop's goroutine
+// would stop draining the very queue that just overflowed for the whole
+// of the scan.
 func (s *Store) rebuildAsync(what string) {
+	s.rebuildRerun.Store(true)
 	if !s.rebuildPending.CompareAndSwap(false, true) {
-		return
+		return // the running pass will see the rerun flag and go again
 	}
 	go func() {
 		defer s.rebuildPending.Store(false)
-		if err := s.Reconcile(); err != nil {
-			s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+		for s.rebuildRerun.CompareAndSwap(true, false) {
+			if err := s.Reconcile(); err != nil {
+				s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
+			}
 		}
 	}()
 }

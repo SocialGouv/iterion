@@ -98,8 +98,9 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); the overflow path needs one", s.watcherErr)
+	w, _, werr := s.watchState()
+	if w == nil {
+		t.Skipf("this host refused a watch (%v); the overflow path needs one", werr)
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -122,7 +123,7 @@ func TestWatcher_ReconcilesOnKernelQueueOverflow(t *testing.T) {
 	delete(s.index, iss.ID)
 	s.mu.Unlock()
 
-	s.watcher.w.Errors <- fsnotify.ErrEventOverflow
+	w.w.Errors <- fsnotify.ErrEventOverflow
 
 	waitForIndex(t, s, func() bool {
 		_, ok := s.index[iss.ID]

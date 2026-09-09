@@ -239,8 +239,13 @@ func idFromIssuePath(eventPath, issuesPath string) string {
 func applyEvent(s *Store, id string, op fsnotify.Op) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Every mutation here is marked dirty like an in-process write: an
+	// overflow-triggered rebuild scans the disk with the mutex released
+	// while this loop keeps draining the backlog, and its swap must not
+	// revert what the events applied after the scan read those files.
 	if op&fsnotify.Remove == fsnotify.Remove {
 		delete(s.index, id)
+		s.markDirtyLocked(id)
 		return
 	}
 	iss, err := s.readIssueFromDisk(id)
@@ -255,8 +260,10 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// never fires and leaves the tombstone in the index.
 		if errors.Is(err, tracker.ErrNotFound) {
 			delete(s.index, id)
+			s.markDirtyLocked(id)
 		}
 		return
 	}
 	s.index[id] = iss
+	s.markDirtyLocked(id)
 }

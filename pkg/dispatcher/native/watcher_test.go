@@ -56,18 +56,18 @@ func waitForIndex(t *testing.T, s *Store, cond func() bool, label string) {
 		return cond()
 	}
 
-	if s.watcher == nil {
-		if s.watcherErr == nil {
+	if w, _, werr := s.watchState(); w == nil {
+		if werr == nil {
 			t.Fatalf("watcher: %s: no watcher and no recorded reason — startIndexWatcher returned (nil, nil)", label)
 		}
 		// The host would not give us a watch. That says nothing about
 		// iterion's code, but the store still owes visibility, so assert
 		// the net instead of skipping the guard.
 		if err := s.Reconcile(); err != nil {
-			t.Fatalf("watcher: %s: host refused a watch (%v) and the reconcile net failed: %v", label, s.watcherErr, err)
+			t.Fatalf("watcher: %s: host refused a watch (%v) and the reconcile net failed: %v", label, werr, err)
 		}
 		if !check() {
-			t.Fatalf("watcher: %s: host refused a watch (%v) AND the reconcile net did not make the change visible", label, s.watcherErr)
+			t.Fatalf("watcher: %s: host refused a watch (%v) AND the reconcile net did not make the change visible", label, werr)
 		}
 		return
 	}
@@ -211,7 +211,7 @@ func TestWatcher_ExternalCreateVisibleWhenWatchRefused(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher != nil {
+	if w, _, _ := s.watchState(); w != nil {
 		t.Fatal("test setup: expected the watch to be refused")
 	}
 
@@ -246,11 +246,13 @@ func TestStore_ReconcileSeesExternalWrites(t *testing.T) {
 
 	// Take the fast path out of the picture entirely: the net alone
 	// must carry all three shapes of out-of-process change.
-	if s.watcher != nil {
-		if err := s.watcher.Close(); err != nil {
+	if w, _, _ := s.watchState(); w != nil {
+		if err := w.Close(); err != nil {
 			t.Fatalf("close watcher: %v", err)
 		}
+		s.mu.Lock()
 		s.watcher = nil
+		s.mu.Unlock()
 	}
 
 	doomed, err := s.Create(Issue{Title: "Removed externally", State: "backlog"})
@@ -359,10 +361,11 @@ func TestStore_FallbackRescanWhenWatchRefused(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher != nil {
+	w, r, _ := s.watchState()
+	if w != nil {
 		t.Fatal("test setup: expected the watch to be refused")
 	}
-	if s.rescanner == nil {
+	if r == nil {
 		t.Fatal("watch refused but no fallback rescan started: the store is blind until restart")
 	}
 
