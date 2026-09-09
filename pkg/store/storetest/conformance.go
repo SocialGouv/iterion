@@ -1695,7 +1695,9 @@ func testArtifactVersions(t *testing.T, s store.RunStore) {
 	if _, err := s.CreateRun(testCtx(), "run_5", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
-	for v := 1; v <= 3; v++ {
+	// Deliberately write out of order: artifact_index is a latest-version
+	// cache, so replaying an older immutable revision must never regress it.
+	for _, v := range []int{3, 1, 2} {
 		if err := s.WriteArtifact(testCtx(), &store.Artifact{
 			RunID:     "run_5",
 			NodeID:    "node_a",

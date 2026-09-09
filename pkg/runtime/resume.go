@@ -207,22 +207,31 @@ func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]
 // revision as a best-effort migration fallback.
 func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, versions map[string]int, persisted map[string]store.ArtifactRevisionRef) map[string]store.ArtifactRevisionRef {
 	revisions := make(map[string]store.ArtifactRevisionRef)
+	persistedNodes := make(map[string]bool)
+	for name, revision := range persisted {
+		if _, ok := outputs[revision.NodeID]; ok {
+			revisions[name] = revision
+			persistedNodes[revision.NodeID] = true
+		}
+	}
 	nodeIDs := make([]string, 0, len(outputs))
 	for nodeID := range outputs {
 		nodeIDs = append(nodeIDs, nodeID)
 	}
 	sort.Strings(nodeIDs)
 	for _, nodeID := range nodeIDs {
+		// A persisted logical name is authoritative for this producer. In
+		// particular, a forced source edit may have renamed publish:, and
+		// synthesizing the new alias would contradict the old artifact's
+		// immutable contract at the next checkpoint validation.
+		if persistedNodes[nodeID] {
+			continue
+		}
 		node, ok := e.workflow.Nodes[nodeID]
 		if !ok || nodePublish(node) == "" || versions[nodeID] <= 0 {
 			continue
 		}
 		revisions[nodePublish(node)] = store.ArtifactRevisionRef{NodeID: nodeID, Version: versions[nodeID] - 1}
-	}
-	for name, revision := range persisted {
-		if _, ok := outputs[revision.NodeID]; ok {
-			revisions[name] = revision
-		}
 	}
 	return revisions
 }

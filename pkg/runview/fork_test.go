@@ -33,12 +33,13 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	parent.Checkpoint = &store.Checkpoint{
 		NodeID:           "step2",
-		ArtifactVersions: map[string]int{"source": 1, "step1": 1},
+		ArtifactVersions: map[string]int{"source": 1, "step1": 1, "legacy": 1},
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
 			"analysis": {NodeID: "step1", Version: 0},
 		},
 		Outputs: map[string]map[string]any{
-			"step1": {"value": "alpha"},
+			"step1":  {"value": "alpha"},
+			"legacy": {"value": "old-checkpoint"},
 		},
 		Vars: map[string]any{"workflow_var": "v"},
 	}
@@ -75,6 +76,11 @@ func TestFork_HappyPath(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatalf("write parent artifact: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "legacy", Version: 0, Data: map[string]any{"value": "old-checkpoint"},
+	}); err != nil {
+		t.Fatalf("write legacy parent artifact: %v", err)
 	}
 	// Write a turn checkpoint that the Fork resolver picks up.
 	turnCP := &store.TurnCheckpoint{
@@ -178,13 +184,72 @@ func TestFork_HappyPath(t *testing.T) {
 	if v := child.Checkpoint.Outputs["step1"]["value"]; v != "alpha" {
 		t.Errorf("child upstream output step1.value = %v, want alpha", v)
 	}
-	for _, revision := range []store.ArtifactRevisionRef{{NodeID: "step1", Version: 0}, {NodeID: "source", Version: 0}} {
+	for _, revision := range []store.ArtifactRevisionRef{{NodeID: "step1", Version: 0}, {NodeID: "source", Version: 0}, {NodeID: "legacy", Version: 0}} {
 		artifact, err := st.LoadArtifact(context.Background(), child.ID, revision.NodeID, revision.Version)
 		if err != nil {
 			t.Fatalf("load copied child artifact %s/%d: %v", revision.NodeID, revision.Version, err)
 		}
 		if artifact.RunID != child.ID {
 			t.Fatalf("copied artifact run id = %q, want %q", artifact.RunID, child.ID)
+		}
+	}
+}
+
+type recordingArtifactStore struct {
+	store.RunStore
+	childRunID string
+	writes     []store.ArtifactRevisionRef
+}
+
+func (s *recordingArtifactStore) WriteArtifact(ctx context.Context, artifact *store.Artifact) error {
+	if artifact.RunID == s.childRunID {
+		s.writes = append(s.writes, store.ArtifactRevisionRef{NodeID: artifact.NodeID, Version: artifact.Version})
+	}
+	return s.RunStore.WriteArtifact(ctx, artifact)
+}
+
+func TestCopyForkArtifactsWritesEachNodeInVersionOrder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-order-parent", "fork-order-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []*store.Artifact{
+		{RunID: parentID, NodeID: "a", Version: 0, Data: map[string]any{"version": 0}},
+		{RunID: parentID, NodeID: "a", Version: 1, Data: map[string]any{"version": 1}},
+		{
+			RunID: parentID, NodeID: "z", Version: 0, Data: map[string]any{"version": 0},
+			Contract: &store.ArtifactContract{
+				LogicalRef: "z", ProducerNode: "z", Version: 0,
+				Dependencies: []store.ArtifactDependency{{LogicalRef: "a", NodeID: "a", Version: 0, Required: true}},
+			},
+		},
+	} {
+		if err := st.WriteArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recording := &recordingArtifactStore{RunStore: st, childRunID: childID}
+	if err := copyForkArtifacts(ctx, recording, parentID, childID, []store.ArtifactRevisionRef{
+		{NodeID: "a", Version: 1},
+		{NodeID: "z", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []store.ArtifactRevisionRef{{NodeID: "a", Version: 0}, {NodeID: "a", Version: 1}, {NodeID: "z", Version: 0}}
+	if len(recording.writes) != len(want) {
+		t.Fatalf("copy order = %+v, want %+v", recording.writes, want)
+	}
+	for i := range want {
+		if recording.writes[i] != want[i] {
+			t.Fatalf("copy order = %+v, want %+v", recording.writes, want)
 		}
 	}
 }

@@ -370,3 +370,24 @@ func TestMaterializeHumanArtifactKeepsIncomingArtifactDependency(t *testing.T) {
 		t.Fatalf("human artifact dependencies = %+v", artifact.Contract)
 	}
 }
+
+func TestRebuildArtifactRevisionsDoesNotAliasPersistedProducerAfterRename(t *testing.T) {
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new-name"},
+		"legacy": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "legacy"}, Publish: "legacy-name"},
+	}}, nil, newStubExecutor())
+	revisions := eng.rebuildArtifactRevisions(
+		map[string]map[string]any{"writer": {"ok": true}, "legacy": {"ok": true}},
+		map[string]int{"writer": 2, "legacy": 1},
+		map[string]store.ArtifactRevisionRef{"old-name": {NodeID: "writer", Version: 1}},
+	)
+	if got := revisions["old-name"]; got.NodeID != "writer" || got.Version != 1 {
+		t.Fatalf("persisted revision = %+v", got)
+	}
+	if _, aliased := revisions["new-name"]; aliased {
+		t.Fatalf("forced publish rename synthesized contradictory revision: %+v", revisions)
+	}
+	if got := revisions["legacy-name"]; got.NodeID != "legacy" || got.Version != 0 {
+		t.Fatalf("partial legacy revision was not inferred: %+v", revisions)
+	}
+}

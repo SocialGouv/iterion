@@ -234,7 +234,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// Provenance is useful only while it remains resolvable in the child's
 	// run namespace. Copy every retained exact revision and its transitive
 	// contract dependencies before the child is parked for resume.
-	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, child.Checkpoint.ArtifactRevisions); err != nil {
+	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, forkArtifactRevisions(child.Checkpoint)); err != nil {
 		return nil, fmt.Errorf("copy retained artifacts: %w", err)
 	}
 	// WriteArtifact maintains the child run's artifact index and advances its
@@ -345,7 +345,29 @@ func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisi
 	return map[string]store.ArtifactRevisionRef{}
 }
 
-func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, revisions map[string]store.ArtifactRevisionRef) error {
+// forkArtifactRevisions returns every retained physical revision. Exact
+// logical provenance wins when present; checkpoint outputs plus the allocator
+// cursor supply a compatibility root for producers saved by older binaries.
+func forkArtifactRevisions(cp *store.Checkpoint) []store.ArtifactRevisionRef {
+	if cp == nil {
+		return nil
+	}
+	revisions := make([]store.ArtifactRevisionRef, 0, len(cp.ArtifactRevisions)+len(cp.Outputs))
+	represented := make(map[string]bool, len(cp.ArtifactRevisions))
+	for _, revision := range cp.ArtifactRevisions {
+		revisions = append(revisions, revision)
+		represented[revision.NodeID] = true
+	}
+	for nodeID := range cp.Outputs {
+		if represented[nodeID] || cp.ArtifactVersions[nodeID] <= 0 {
+			continue
+		}
+		revisions = append(revisions, store.ArtifactRevisionRef{NodeID: nodeID, Version: cp.ArtifactVersions[nodeID] - 1})
+	}
+	return revisions
+}
+
+func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, revisions []store.ArtifactRevisionRef) error {
 	if runStore == nil || len(revisions) == 0 {
 		return nil
 	}
@@ -354,8 +376,9 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		version int
 	}
 	seen := make(map[revisionKey]bool)
-	var copyOne func(revisionKey) error
-	copyOne = func(key revisionKey) error {
+	artifacts := make(map[revisionKey]*store.Artifact)
+	var collectOne func(revisionKey) error
+	collectOne = func(key revisionKey) error {
 		if key.nodeID == "" {
 			return errors.New("artifact revision has no producer node")
 		}
@@ -367,7 +390,7 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		if err != nil {
 			return fmt.Errorf("load %s/%d from parent: %w", key.nodeID, key.version, err)
 		}
-		if artifact == nil || artifact.NodeID != key.nodeID || artifact.Version != key.version {
+		if artifact == nil || artifact.RunID != parentRunID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
 			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)
 		}
 		if artifact.Contract != nil {
@@ -379,21 +402,26 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 				if depNode == "" {
 					depNode = dependency.LogicalRef
 				}
-				if err := copyOne(revisionKey{nodeID: depNode, version: dependency.Version}); err != nil {
+				if err := collectOne(revisionKey{nodeID: depNode, version: dependency.Version}); err != nil {
 					return err
 				}
 			}
 		}
-		clone := *artifact
-		clone.RunID = childRunID
-		if err := runStore.WriteArtifact(ctx, &clone); err != nil {
-			return fmt.Errorf("write %s/%d to child: %w", key.nodeID, key.version, err)
-		}
+		artifacts[key] = artifact
 		return nil
 	}
 	keys := make([]revisionKey, 0, len(revisions))
 	for _, revision := range revisions {
 		keys = append(keys, revisionKey{nodeID: revision.NodeID, version: revision.Version})
+	}
+	for _, key := range keys {
+		if err := collectOne(key); err != nil {
+			return err
+		}
+	}
+	keys = keys[:0]
+	for key := range artifacts {
+		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].nodeID != keys[j].nodeID {
@@ -402,8 +430,10 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		return keys[i].version < keys[j].version
 	})
 	for _, key := range keys {
-		if err := copyOne(key); err != nil {
-			return err
+		clone := *artifacts[key]
+		clone.RunID = childRunID
+		if err := runStore.WriteArtifact(ctx, &clone); err != nil {
+			return fmt.Errorf("write %s/%d to child: %w", key.nodeID, key.version, err)
 		}
 	}
 	return nil
