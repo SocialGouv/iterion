@@ -9,11 +9,48 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 )
 
+// usesHostPrefix reports whether this deployment can carry __Host- cookies.
+// The prefix is only honoured by a browser when the cookie is Secure, has
+// Path=/ and declares NO Domain — so a plaintext local studio, or a
+// deployment that deliberately widens the cookie with CookieDomain, keeps
+// the bare names. Emitting a __Host- cookie there would not be "less
+// secure", it would be silently DISCARDED, i.e. nobody could log in.
+func (s *Server) usesHostPrefix() bool {
+	return s.cfg.CookieSecure && s.cfg.CookieDomain == ""
+}
+
+// authCookieWriteName is the name this deployment SETS for a session cookie.
+// Reads accept the legacy name too — see cookieValue.
+func (s *Server) authCookieWriteName(base string) string {
+	if s.usesHostPrefix() {
+		return hostCookiePrefix + base
+	}
+	return base
+}
+
+// cookieValue reads a session cookie, preferring the __Host- form.
+//
+// The order is the point. A sibling host under the same registrable domain
+// can set a cookie with Domain=<shared parent> and the bare name, which the
+// browser then sends alongside ours ("cookie tossing") — enough to pin a
+// victim onto an attacker's session. A __Host- cookie cannot be written that
+// way at all, so preferring it means a tossed bare cookie can never shadow a
+// migrated session.
+func cookieValue(r *http.Request, base string) string {
+	if c, err := r.Cookie(hostCookiePrefix + base); err == nil && c != nil && c.Value != "" {
+		return c.Value
+	}
+	if c, err := r.Cookie(base); err == nil && c != nil {
+		return c.Value
+	}
+	return ""
+}
+
 func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp time.Time, refresh string, refreshExp time.Time) {
 	access = strings.TrimSpace(access)
 	if access != "" {
 		http.SetCookie(w, &http.Cookie{
-			Name:     authCookieName,
+			Name:     s.authCookieWriteName(authCookieName),
 			Value:    access,
 			Path:     "/",
 			Domain:   s.cfg.CookieDomain,
@@ -25,9 +62,9 @@ func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp 
 	}
 	if refresh != "" {
 		http.SetCookie(w, &http.Cookie{
-			Name:     refreshCookieName,
+			Name:     s.authCookieWriteName(refreshCookieName),
 			Value:    refresh,
-			Path:     "/api/auth",
+			Path:     s.refreshCookiePath(),
 			Domain:   s.cfg.CookieDomain,
 			HttpOnly: true,
 			Secure:   s.cfg.CookieSecure,
@@ -37,19 +74,45 @@ func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp 
 	}
 }
 
+// refreshCookiePath is /api/auth normally, but __Host- mandates Path=/.
+// Trading the narrower path for the prefix is deliberate: path scoping is not
+// a security boundary (the cookie is HttpOnly either way, and any same-origin
+// page can cause a request to any path), whereas the prefix is what makes the
+// cookie unforgeable by a sibling host.
+func (s *Server) refreshCookiePath() string {
+	if s.usesHostPrefix() {
+		return "/"
+	}
+	return "/api/auth"
+}
+
+// clearAuthCookies expires BOTH spellings. During the migration a browser can
+// hold the legacy cookie and the prefixed one at once; clearing only the name
+// this build writes would leave the other live and log the user back in.
 func (s *Server) clearAuthCookies(w http.ResponseWriter) {
-	for _, name := range []string{authCookieName, refreshCookieName} {
-		path := "/"
-		if name == refreshCookieName {
-			path = "/api/auth"
+	type target struct{ name, path string }
+	targets := []target{
+		{authCookieName, "/"},
+		{refreshCookieName, "/api/auth"},
+		{hostCookiePrefix + authCookieName, "/"},
+		{hostCookiePrefix + refreshCookieName, "/"},
+	}
+	for _, t := range targets {
+		domain := s.cfg.CookieDomain
+		secure := s.cfg.CookieSecure
+		if strings.HasPrefix(t.name, hostCookiePrefix) {
+			// A __Host- deletion is only accepted on the same terms as the
+			// write that created it.
+			domain = ""
+			secure = true
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name:     name,
+			Name:     t.name,
 			Value:    "",
-			Path:     path,
-			Domain:   s.cfg.CookieDomain,
+			Path:     t.path,
+			Domain:   domain,
 			HttpOnly: true,
-			Secure:   s.cfg.CookieSecure,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 		})
@@ -57,8 +120,8 @@ func (s *Server) clearAuthCookies(w http.ResponseWriter) {
 }
 
 func (s *Server) refreshTokenFromRequest(r *http.Request) string {
-	if c, err := r.Cookie(refreshCookieName); err == nil && c != nil {
-		return c.Value
+	if v := cookieValue(r, refreshCookieName); v != "" {
+		return v
 	}
 	// Fallback for SDK clients that send it in the body via header.
 	if h := r.Header.Get("X-Iterion-Refresh"); h != "" {

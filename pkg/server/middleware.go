@@ -18,8 +18,17 @@ const authCookieName = "iterion_auth"
 
 // refreshCookieName is the HttpOnly cookie carrying the refresh
 // token. Scoped to the /api/auth path so it never leaves the auth
-// endpoints.
+// endpoints (Path=/ under the __Host- prefix — see refreshCookiePath).
 const refreshCookieName = "iterion_refresh"
+
+// hostCookiePrefix makes a cookie unwritable by any host but the exact one
+// that served the response: the browser only accepts it with Secure, Path=/
+// and NO Domain attribute. That is what stops a sibling host under a shared
+// registrable domain from tossing a same-named cookie to pin a victim onto
+// its own session. Deployments that cannot satisfy those terms (a plaintext
+// local studio, or an explicit CookieDomain) keep the bare names — see
+// Server.usesHostPrefix.
+const hostCookiePrefix = "__Host-"
 
 // requireAuth wraps next with JWT verification. On success it
 // injects the resolved Identity into the request context.
@@ -212,8 +221,8 @@ func extractBearer(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
-	if c, err := r.Cookie(authCookieName); err == nil && c != nil {
-		return c.Value
+	if v := cookieValue(r, authCookieName); v != "" {
+		return v
 	}
 	// Browsers can't attach Authorization headers to a WS upgrade,
 	// so we accept ?t=<jwt> on the WS endpoints (same-origin only).

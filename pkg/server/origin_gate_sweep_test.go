@@ -22,7 +22,7 @@ import (
 // secrets, OAuth forfaits, PATs, webhook configs. The bare newTestServer
 // registers 70 routes; those conditional groups are exactly the ones that had
 // no origin guard, so sweeping without them would miss the point.
-func newSweepServer(t *testing.T) *Server {
+func newSweepServer(t *testing.T, opts ...func(*Config)) *Server {
 	t.Helper()
 	key := bytes.Repeat([]byte{7}, 32)
 	signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(key), 15*time.Minute)
@@ -43,7 +43,7 @@ func newSweepServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
-	return New(Config{
+	cfg := Config{
 		WorkDir:                 t.TempDir(),
 		Bind:                    "127.0.0.1",
 		SkipProjectRegistration: true,
@@ -57,7 +57,11 @@ func newSweepServer(t *testing.T) *Server {
 		OAuthPending:            secrets.NewMemoryOAuthPendingStore(),
 		BotBindings:             secrets.NewMemoryBotSecretBindingStore(),
 		WebhookConfigs:          webhooks.NewMemoryConfigStore(),
-	}, iterlog.New(iterlog.LevelError, nil))
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return New(cfg, iterlog.New(iterlog.LevelError, nil))
 }
 
 // foreignOrigin is a sibling host under the SAME registrable domain as the
