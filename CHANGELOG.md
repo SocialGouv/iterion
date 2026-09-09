@@ -3,6 +3,12 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.125.0](https://github.com/SocialGouv/iterion/compare/v3.124.0...v3.125.0) (2026-09-09)
+
+### Features
+
+* **runview:** expose shared workflow diagnostics ([#1008](https://github.com/SocialGouv/iterion/issues/1008)) ([d9d136f](https://github.com/SocialGouv/iterion/commit/d9d136fb5920356fe8a44bedaf779a2d0bed1fc3))
+
 ## [3.124.0](https://github.com/SocialGouv/iterion/compare/v3.123.3...v3.124.0) (2026-09-09)
 
 ### Features
