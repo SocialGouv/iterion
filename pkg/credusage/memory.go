@@ -15,14 +15,15 @@ type MemoryCounter struct {
 }
 
 type memRow struct {
-	key           Key
-	month         string
-	nature        Nature
-	costUSDMillis int64
-	inputTokens   int64
-	outputTokens  int64
-	runs          int
-	backends      map[string]bool
+	key             Key
+	month           string
+	nature          Nature
+	costUSDMillis   int64
+	inputTokens     int64
+	outputTokens    int64
+	aggregateTokens int64
+	runs            int
+	backends        map[string]bool
 }
 
 func NewMemoryCounter() *MemoryCounter {
@@ -47,6 +48,9 @@ func (c *MemoryCounter) AddSpend(_ context.Context, when time.Time, s Spend) err
 	}
 	if s.OutputTokens > 0 {
 		r.outputTokens += s.OutputTokens
+	}
+	if s.AggregateTokens > 0 {
+		r.aggregateTokens += s.AggregateTokens
 	}
 	r.runs++
 	if s.Backend != "" {
@@ -111,17 +115,18 @@ func (r *memRow) view() MonthlyUsage {
 	}
 	sort.Strings(backends)
 	return MonthlyUsage{
-		Month:        r.month,
-		Fingerprint:  r.key.Fingerprint,
-		Provider:     r.key.Provider,
-		Tier:         r.key.Tier,
-		TenantID:     r.key.TenantID,
-		Nature:       r.nature,
-		CostUSD:      millisToCost(r.costUSDMillis),
-		InputTokens:  r.inputTokens,
-		OutputTokens: r.outputTokens,
-		Runs:         r.runs,
-		Backends:     backends,
+		Month:           r.month,
+		Fingerprint:     r.key.Fingerprint,
+		Provider:        r.key.Provider,
+		Tier:            r.key.Tier,
+		TenantID:        r.key.TenantID,
+		Nature:          r.nature,
+		CostUSD:         millisToCost(r.costUSDMillis),
+		InputTokens:     r.inputTokens,
+		OutputTokens:    r.outputTokens,
+		AggregateTokens: r.aggregateTokens,
+		Runs:            r.runs,
+		Backends:        backends,
 	}
 }
 

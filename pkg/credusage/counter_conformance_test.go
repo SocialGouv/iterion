@@ -45,11 +45,22 @@ func runCounterConformance(t *testing.T, c Counter) {
 			t.Fatalf("AddSpend(%s): %v", k.Fingerprint, err)
 		}
 	}
+	addAggregate := func(k Key, nature Nature, backend string, cost float64, aggregate int64, when time.Time) {
+		t.Helper()
+		if err := c.AddSpend(ctx, when, Spend{
+			Key: k, Nature: nature, Backend: backend,
+			CostUSD: cost, AggregateTokens: aggregate,
+		}); err != nil {
+			t.Fatalf("AddSpend(%s): %v", k.Fingerprint, err)
+		}
+	}
 	add(teamKey, NatureMetered, "claw", 1.25, 1000, 200, sept)
 	add(teamKey, NatureMetered, "claw", 0.75, 500, 100, sept)
 	// The SAME run's other half, on another credential and another
 	// backend — the case a single RunTotals() figure cannot express.
-	add(forfait, NatureEstimate, "claude_code", 4.5, 9000, 1200, sept)
+	// A CLI delegate reports ONE count and no split (#992): it must land in
+	// the aggregate on BOTH twins, leaving the directional pair at zero.
+	addAggregate(forfait, NatureEstimate, "claude_code", 4.5, 9000, sept)
 	add(platform, NatureEstimate, "codex", 2.0, 300, 60, sept)
 
 	got, err = c.Usage(ctx, sept, teamKey)
@@ -66,12 +77,25 @@ func runCounterConformance(t *testing.T, c Counter) {
 		t.Fatalf("backends = %v, want [claw]", got.Backends)
 	}
 
+	// A spend carrying ONLY an aggregate is recordable: a delegation whose
+	// price sources knew nothing still proves the credential was used.
+	addAggregate(forfait, NatureEstimate, "claude_code", 0, 1000, sept)
+
 	fRow, err := c.Usage(ctx, sept, forfait)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fRow.Nature != NatureEstimate {
 		t.Fatalf("forfait nature = %q, want estimate — a subscription bills nothing per call", fRow.Nature)
+	}
+	if fRow.AggregateTokens != 10000 {
+		t.Fatalf("forfait aggregate tokens = %d, want 10000 (9000 + the unpriced 1000)", fRow.AggregateTokens)
+	}
+	if fRow.InputTokens != 0 || fRow.OutputTokens != 0 {
+		t.Fatalf("forfait row = in %d / out %d, want 0/0 — the delegate never reported a split (#992)", fRow.InputTokens, fRow.OutputTokens)
+	}
+	if fRow.Runs != 2 {
+		t.Fatalf("forfait runs = %d, want 2 — an aggregate-only spend is not an empty one", fRow.Runs)
 	}
 
 	// A tenant listing carries every credential that served it, biggest

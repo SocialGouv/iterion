@@ -101,6 +101,10 @@ type Usage struct {
 	CostUSD      float64 `json:"cost_usd"`
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
+	// AggregateTokens holds a CLI delegate's unsplittable total. Zero in
+	// all three token fields means "not observed", never "nothing spent";
+	// a true total is their sum.
+	AggregateTokens int64 `json:"aggregate_tokens"`
 }
 
 // Ledger meters per-pledge consumption and enforces the donor's limits.
@@ -132,7 +136,7 @@ type Ledger interface {
 	ReleaseRun(ctx context.Context, pledgeID string, when time.Time) error
 	// AddSpend records what a served run actually consumed, into both the
 	// day and week buckets.
-	AddSpend(ctx context.Context, pledgeID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error
+	AddSpend(ctx context.Context, pledgeID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error
 	// Usage reads one pledge's day and week buckets.
 	Usage(ctx context.Context, pledgeID string, when time.Time) (day Usage, week Usage, err error)
 	// UsageMany reads the day bucket of several pledges at once — the

@@ -3,6 +3,30 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.129.2](https://github.com/SocialGouv/iterion/compare/v3.129.1...v3.129.2) (2026-09-09)
+
+### Bug Fixes
+
+* **usage:** an aggregated token count no longer claims to be input ([#1052](https://github.com/SocialGouv/iterion/issues/1052)) ([ba4f730](https://github.com/SocialGouv/iterion/commit/ba4f730b187b743272243185ca62c08645c0fd46)), references [#992](https://github.com/SocialGouv/iterion/issues/992)
+
+    <details><summary>why</summary>
+
+    A CLI delegate reports ONE token count and no split. Every usage surface booked it under `input_tokens`, which kept a sum correct and made the named field a lie: measured on ovh-prod, every credential filled exactly one of the two fields and zeroed the other, so each per-token ratio, cache-hit reading and input/output share taken from the public endpoint was wrong, with nothing on the row saying so.
+
+    </details>
+
+## [3.129.1](https://github.com/SocialGouv/iterion/compare/v3.129.0...v3.129.1) (2026-09-09)
+
+### Bug Fixes
+
+* **forge:** a re-provision erased three fields it does not own ([#1046](https://github.com/SocialGouv/iterion/issues/1046)) ([22b660b](https://github.com/SocialGouv/iterion/commit/22b660bb218f497f02e54e6b77cde091ba1902d3))
+
+    <details><summary>why</summary>
+
+    Provision rebuilds RepoIntegration from the REQUEST and Updates it, and the update replaces the whole document. Any field the literal omits is therefore erased — silently, on a live repo, with a 200 in reply.
+
+    </details>
+
 ## [3.129.0](https://github.com/SocialGouv/iterion/compare/v3.128.0...v3.129.0) (2026-09-09)
 
 ### Features

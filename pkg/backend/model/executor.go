@@ -1055,14 +1055,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 			// the anchor the Fork API uses to relaunch claude with
 			// --resume + --fork-session.
 			fn(nodeID, LLMTurnCaptureInfo{
-				Step:         1,
-				Text:         info.Text,
-				FinishReason: info.FinishReason,
-				InputTokens:  info.InputTokens,
-				OutputTokens: info.OutputTokens,
-				SessionID:    info.SessionID,
-				Backend:      delegate.BackendClaudeCode,
-				Iteration:    iteration,
+				Step:            1,
+				Text:            info.Text,
+				FinishReason:    info.FinishReason,
+				InputTokens:     info.InputTokens,
+				OutputTokens:    info.OutputTokens,
+				AggregateTokens: info.AggregateTokens,
+				SessionID:       info.SessionID,
+				Backend:         delegate.BackendClaudeCode,
+				Iteration:       iteration,
 			})
 		}
 	}

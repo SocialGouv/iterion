@@ -29,9 +29,14 @@ type MonthlyUsage struct {
 	// when it reports none (a subscription session bills nothing per
 	// call). A node whose model the price table cannot price adds
 	// nothing — treat this as a floor, not an exact invoice.
-	CostUSD      float64 `json:"cost_usd"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
+	CostUSD float64 `json:"cost_usd"`
+	// InputTokens / OutputTokens are DIRECTIONAL — a split that was
+	// actually observed. AggregateTokens holds what a CLI delegate
+	// reported as one unsplittable total. Zero means "not observed",
+	// never "none spent", and a true total is the sum of the three.
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	AggregateTokens int64 `json:"aggregate_tokens"`
 }
 
 // DenyReason qualifies an AllowRun refusal so the launch gate can map
@@ -62,7 +67,7 @@ type Counter interface {
 	AllowRun(ctx context.Context, tenantID string, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error)
 	// AddSpend accumulates post-hoc LLM cost/token usage for the
 	// month. Never gates — AllowRun enforces the cap pre-launch.
-	AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error
+	AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error
 	// ReleaseRun undoes one AllowRun admission whose launch was
 	// ultimately abandoned without any run being created (e.g. the
 	// loser of two concurrent duplicate webhook deliveries). Decrements

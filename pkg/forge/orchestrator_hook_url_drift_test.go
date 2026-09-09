@@ -123,6 +123,57 @@ func TestReprovisionStillNoOpsWhenNothingMoved(t *testing.T) {
 	}
 }
 
+// TestReprovisionRepairsAnIntegrationWithNoStoredHookURL: an integration
+// provisioned before hook_url was persisted carries an empty one, so it reads
+// as drifted on its first re-provision after this ships. The commit claimed
+// that repairs itself into the address it already had; asserting it by
+// construction is not asserting it.
+func TestReprovisionRepairsAnIntegrationWithNoStoredHookURL(t *testing.T) {
+	o, fa, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+	req := ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"review-pr"}, ActorID: "u1",
+	}
+	res, err := o.Provision(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlBefore := hookURLFor(t, fa, "group/api")
+	hookBefore := fa.hooks["group/api"].ID
+
+	// Age the record back to before hook_url was stored.
+	integ, err := o.Integrations.Get(ctx, res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	integ.HookURL = ""
+	if err := o.Integrations.Update(ctx, integ); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := o.Provision(ctx, req); err != nil {
+		t.Fatalf("the upgrade path must not error: %v", err)
+	}
+
+	if got := hookURLFor(t, fa, "group/api"); got != urlBefore {
+		t.Fatalf("hook URL = %q, want the address it already had (%q) — the one-shot repair "+
+			"must be a no-change, not a move", got, urlBefore)
+	}
+	if fa.hooks["group/api"].ID != hookBefore {
+		t.Errorf("hook id changed (%s → %s) on the upgrade path", hookBefore, fa.hooks["group/api"].ID)
+	}
+	after, err := o.Integrations.Get(ctx, res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.HookURL != urlBefore {
+		t.Fatalf("hook_url was not backfilled (%q); the record would read as drifted on every "+
+			"provision forever", after.HookURL)
+	}
+}
+
 // TestReprovisionFollowsAConnectionPin: the desired address is the connection's
 // when it pins one, so pinning a base AFTER a repo was provisioned repairs that
 // repo too. Without it the pin would only apply to repos provisioned later —

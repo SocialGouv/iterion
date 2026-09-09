@@ -146,12 +146,22 @@ func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
 		Data: map[string]any{"backend": "claude_code", "tokens": float64(420)},
 	})
 
-	cost, in, out := m.RunTotals()
-	if in != 1420 {
-		t.Errorf("input tokens = %d, want 1420 (claw 1000 + delegate 420)", in)
+	// The mixed shape #992 is about: claw measured a real 1000/500 split,
+	// the claude_code delegate reported 420 it could not split. Merging the
+	// two under `input` made the measured figure unreadable — 1420 input is
+	// neither a measurement nor a total.
+	cost, in, out, aggregate := m.RunTotals()
+	if in != 1000 {
+		t.Errorf("input tokens = %d, want 1000 — claw's measured input alone", in)
 	}
 	if out != 500 {
 		t.Errorf("output tokens = %d, want 500", out)
+	}
+	if aggregate != 420 {
+		t.Errorf("aggregate tokens = %d, want 420 — the delegate's unsplittable total", aggregate)
+	}
+	if total := in + out + aggregate; total != 1920 {
+		t.Errorf("summed tokens = %d, want 1920 — the total must stay exact", total)
 	}
 	if cost <= 0 {
 		t.Errorf("cost = %v, want > 0 for a priced claw model", cost)

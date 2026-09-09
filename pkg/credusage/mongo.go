@@ -49,33 +49,38 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 type usageDoc struct {
-	Month         string    `bson:"month"`
-	Fingerprint   string    `bson:"fingerprint"`
-	Provider      string    `bson:"provider"`
-	Tier          string    `bson:"tier"`
-	TenantID      string    `bson:"tenant_id"`
-	Nature        string    `bson:"nature"`
-	CostUSDMillis int64     `bson:"cost_usd_millis"`
-	InputTokens   int64     `bson:"input_tokens"`
-	OutputTokens  int64     `bson:"output_tokens"`
-	Runs          int       `bson:"runs"`
-	Backends      []string  `bson:"backends,omitempty"`
-	MonthStart    time.Time `bson:"month_start"`
+	Month         string `bson:"month"`
+	Fingerprint   string `bson:"fingerprint"`
+	Provider      string `bson:"provider"`
+	Tier          string `bson:"tier"`
+	TenantID      string `bson:"tenant_id"`
+	Nature        string `bson:"nature"`
+	CostUSDMillis int64  `bson:"cost_usd_millis"`
+	InputTokens   int64  `bson:"input_tokens"`
+	OutputTokens  int64  `bson:"output_tokens"`
+	// Absent on documents written before the aggregate got its own
+	// counter: those months' aggregates are inside InputTokens and
+	// cannot be separated after the fact.
+	AggregateTokens int64     `bson:"aggregate_tokens"`
+	Runs            int       `bson:"runs"`
+	Backends        []string  `bson:"backends,omitempty"`
+	MonthStart      time.Time `bson:"month_start"`
 }
 
 func (d usageDoc) view() MonthlyUsage {
 	return MonthlyUsage{
-		Month:        d.Month,
-		Fingerprint:  d.Fingerprint,
-		Provider:     d.Provider,
-		Tier:         Tier(d.Tier),
-		TenantID:     d.TenantID,
-		Nature:       Nature(d.Nature),
-		CostUSD:      millisToCost(d.CostUSDMillis),
-		InputTokens:  d.InputTokens,
-		OutputTokens: d.OutputTokens,
-		Runs:         d.Runs,
-		Backends:     d.Backends,
+		Month:           d.Month,
+		Fingerprint:     d.Fingerprint,
+		Provider:        d.Provider,
+		Tier:            Tier(d.Tier),
+		TenantID:        d.TenantID,
+		Nature:          Nature(d.Nature),
+		CostUSD:         millisToCost(d.CostUSDMillis),
+		InputTokens:     d.InputTokens,
+		OutputTokens:    d.OutputTokens,
+		AggregateTokens: d.AggregateTokens,
+		Runs:            d.Runs,
+		Backends:        d.Backends,
 	}
 }
 
@@ -92,6 +97,9 @@ func (c *MongoCounter) AddSpend(ctx context.Context, when time.Time, s Spend) er
 	}
 	if s.OutputTokens > 0 {
 		inc["output_tokens"] = s.OutputTokens
+	}
+	if s.AggregateTokens > 0 {
+		inc["aggregate_tokens"] = s.AggregateTokens
 	}
 	update := bson.M{
 		"$inc": inc,

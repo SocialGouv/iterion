@@ -344,12 +344,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			SessionID:    result.SessionID,
 			FinishReason: "", // claude_code SDK doesn't surface a granular reason at Result level
 			Text:         text,
-			// Token totals come from Result.Tokens (in+out) but the
-			// claude_code path doesn't split them apart — the hooks
-			// layer logs the total under InputTokens for now; a future
-			// refinement would track input/output split through the
-			// stream parser.
-			InputTokens: result.Tokens,
+			// Result.Tokens is in+out with no split available here, so it
+			// travels as the aggregate rather than being filed under a
+			// direction it was never measured in (#992).
+			AggregateTokens: result.Tokens,
 		})
 	}()
 
