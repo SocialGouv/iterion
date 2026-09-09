@@ -75,6 +75,12 @@ type Store struct {
 	// scan stale, and a stale swap would revert it.
 	writes uint64
 
+	// reconcileMu serialises Reconcile callers (the rescan ticker, a
+	// kernel-queue overflow, an explicit call) so two scans cannot
+	// overlap and swap in the older one last. Never held with mu by the
+	// same goroutine except in the order reconcileMu → mu.
+	reconcileMu sync.Mutex
+
 	// pendingEvents buffers events whose appendEventLocked call
 	// returned an error (transient fsync failure, NFS hiccup). Every
 	// subsequent successful event flush drains the buffer first so a
@@ -204,22 +210,68 @@ func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
-	_ = s.rescanner.Close()
-	return s.watcher.Close()
+	// Snapshot under the lock — a watch lost mid-life swaps these from the
+	// watcher goroutine — and close outside it: closing the watcher waits
+	// for its loop, which may itself be waiting for the store mutex.
+	s.mu.Lock()
+	rescanner, watcher := s.rescanner, s.watcher
+	s.mu.Unlock()
+	if rescanner != nil {
+		_ = rescanner.Close()
+	}
+	if watcher != nil {
+		return watcher.Close()
+	}
+	return nil
 }
 
 // populateIndex loads every committed issue file into the index at
 // NewStore. It adds to the index rather than replacing it; the full
-// rebuild that also drops vanished files is Reconcile.
+// rebuild that also drops vanished files is Reconcile. A file that cannot
+// be read is skipped, and said so.
 func (s *Store) populateIndex() error {
-	fresh, err := s.scanIssues()
+	fresh, unreadable, err := s.scanIssues()
 	if err != nil {
 		return err
 	}
 	for id, iss := range fresh {
 		s.index[id] = iss
 	}
+	if len(unreadable) > 0 && s.logger != nil {
+		for id, err := range unreadable {
+			s.logger.Warn("native store: %d issue file(s) could not be read at startup and were skipped (e.g. %s: %v)", len(unreadable), id, err)
+			break
+		}
+	}
 	return nil
+}
+
+// errWatchLost is recorded on a store whose armed watch went away
+// mid-life: fsnotify closed its channels under the loop.
+var errWatchLost = errors.New("fsnotify watch lost mid-life (event channel closed)")
+
+// watchLost is called by the watcher loop when its channels close without
+// a Close: the fast path is gone, so the store arms the same net a watch
+// refused at startup gets, with the reason recorded, instead of serving
+// its last snapshot until restart.
+func (s *Store) watchLost(iw *indexWatcher) {
+	s.mu.Lock()
+	if s.watcher != iw {
+		s.mu.Unlock()
+		return
+	}
+	s.watcher = nil
+	s.watcherErr = errWatchLost
+	s.rescanner = startFallbackRescan(s)
+	r, logger := s.rescanner, s.logger
+	s.mu.Unlock()
+	switch {
+	case logger == nil:
+	case r != nil:
+		logger.Warn("native index watcher: %v — falling back to a %s disk rescan for out-of-process issue changes", errWatchLost, r.interval)
+	default:
+		logger.Warn("native index watcher: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", errWatchLost)
+	}
 }
 
 // readIssueFromDisk bypasses the index — used only at NewStore to

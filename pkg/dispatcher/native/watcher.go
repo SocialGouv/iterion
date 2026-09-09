@@ -93,6 +93,19 @@ func (iw *indexWatcher) Close() error {
 	return iw.closeErr
 }
 
+// lost is called when a channel closed under the loop. Close closes the
+// stop channel BEFORE it closes the fsnotify watcher, so a closed channel
+// with no stop pending is a watch that went away on its own: hand the
+// store over to the fallback net.
+func (iw *indexWatcher) lost(s *Store) {
+	select {
+	case <-iw.stop:
+		return
+	default:
+	}
+	s.watchLost(iw)
+}
+
 func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 	defer close(iw.done)
 	var mu sync.Mutex // guards seenErr only — store mutex covers index access.
@@ -103,6 +116,7 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			return
 		case ev, ok := <-iw.w.Events:
 			if !ok {
+				iw.lost(s)
 				return
 			}
 			if !relevantEvent(ev) {
@@ -115,6 +129,7 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			applyEvent(s, id, ev.Op)
 		case err, ok := <-iw.w.Errors:
 			if !ok {
+				iw.lost(s)
 				return
 			}
 			// fsnotify's error channel carries the kernel queue-full
