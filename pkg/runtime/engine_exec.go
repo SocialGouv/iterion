@@ -620,6 +620,21 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 // effort), snapshots the worktree at the node boundary, and selects
 // the outgoing edge. Returns the next node ID.
 func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNodeID string, node ir.Node, output map[string]any) (string, error) {
+	// Validate/correct before committing session state or emitting verified
+	// action evidence. A rejected payload must not leave durable metadata that
+	// describes work the run ultimately discarded.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
+	output = validatedOutput
+	// Model spend is real even when validation/correction ultimately fails.
+	// Charge it before taking the failure path; the checkpoint then carries
+	// the consumed budget into any resume.
+	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
+		return "", err
+	}
+	if validationErr != nil {
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
+	}
+
 	// Verified Action (ADR-044): a tool node that escalated through the
 	// recovery ladder stamps a private `_verified_action` key. Emit the
 	// node_verified_action event for observability, then strip the key so
@@ -631,16 +646,6 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	}
 
 	rs.outputs[currentNodeID] = output
-
-	// Validate output against declared schema (optional).
-	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
-	}
-
-	// Record budget usage and check limits.
-	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
-		return "", err
-	}
 
 	// Persist artifact if node has publish.
 	if err := e.persistArtifactIfPublished(ctx, rs, currentNodeID, node, output); err != nil {

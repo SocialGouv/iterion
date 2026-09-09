@@ -205,6 +205,7 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		loopProgressSig:             parent.loopProgressSig,
 		loopStaleness:               parent.loopStaleness,
 		loopBudgetMarks:             parent.loopBudgetMarks,
+		correctionScope:             parent.correctionScope,
 		enclosingLoopCounters:       cloneMap(parent.enclosingLoopCounters),
 		enclosingLoopPreviousOutput: copyOutputs(parent.enclosingLoopPreviousOutput),
 		roundRobinCounters:          cloneMap(parent.roundRobinCounters),

@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -97,5 +98,63 @@ func TestHeartbeatStoreForwardsCreateChildRun(t *testing.T) {
 	}
 	if loaded.ParentRunID != "parent" {
 		t.Fatalf("persisted parent = %q, want parent in the create write", loaded.ParentRunID)
+	}
+}
+
+func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
+	fs, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := fs.CreateRun(ctx, "run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	hb := newHeartbeatStore(fs, func(string) {})
+
+	once := store.AsQueuedMessageInsertOnceStore(hb)
+	if once == nil {
+		t.Fatal("*heartbeatStore hides QueuedMessageInsertOnceStore")
+	}
+	msg := store.QueuedUserMessage{ID: "msg_stable", Text: "fix it"}
+	inserted, err := once.AppendQueuedMessageOnce(ctx, "run", msg)
+	if err != nil || !inserted {
+		t.Fatalf("first AppendQueuedMessageOnce = (%t, %v), want inserted", inserted, err)
+	}
+	inserted, err = once.AppendQueuedMessageOnce(ctx, "run", msg)
+	if err != nil || inserted {
+		t.Fatalf("replayed AppendQueuedMessageOnce = (%t, %v), want no-op", inserted, err)
+	}
+
+	cursors := store.AsWatcherCursorStore(hb)
+	if cursors == nil {
+		t.Fatal("*heartbeatStore hides WatcherCursorStore")
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := cursors.SetWatcherCursor(ctx, "run", "supervisor:safe", store.WatcherCursor{WatcherID: "supervisor:safe", LastProgressAt: now}); err != nil {
+		t.Fatalf("SetWatcherCursor: %v", err)
+	}
+
+	corrections := store.AsOutputCorrectionStore(hb)
+	if corrections == nil {
+		t.Fatal("*heartbeatStore hides OutputCorrectionStore")
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, "run", "agent_root", store.OutputCorrectionEpisode{EpisodeID: "agent/root", Status: "active", UpdatedAt: now}); err != nil {
+		t.Fatalf("SetRunOutputCorrection: %v", err)
+	}
+
+	loaded, err := fs.LoadRun(ctx, "run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	queued, err := fs.ListQueuedMessages(ctx, "run")
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("queued messages = (%d, %v), want one", len(queued), err)
+	}
+	if got := loaded.WatcherCursors["supervisor:safe"].WatcherID; got != "supervisor:safe" {
+		t.Fatalf("persisted watcher id = %q", got)
+	}
+	if got := loaded.OutputCorrections["agent_root"].EpisodeID; got != "agent/root" {
+		t.Fatalf("persisted correction episode = %q", got)
 	}
 }

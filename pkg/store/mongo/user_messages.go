@@ -54,6 +54,33 @@ func (s *Store) AppendQueuedMessage(ctx context.Context, runID string, msg store
 	return nil
 }
 
+// AppendQueuedMessageOnce inserts a stable message ID exactly once. Unlike
+// ReplaceOne, a replay cannot move an already-delivered/consumed row back to
+// queued; $setOnInsert makes the existing row immutable on the duplicate.
+func (s *Store) AppendQueuedMessageOnce(ctx context.Context, runID string, msg store.QueuedUserMessage) (bool, error) {
+	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
+		return false, fmt.Errorf("store/mongo: %w", err)
+	}
+	if err := s.guardNotDeleted(ctx, runID); err != nil {
+		return false, err
+	}
+	stampTenantOnQueuedMessage(ctx, &msg)
+	doc := userMessageDoc{
+		ID:                userMessageID{RunID: runID, MessageID: msg.ID},
+		QueuedUserMessage: msg,
+	}
+	res, err := s.userMessages.UpdateOne(
+		ctx,
+		withTenantFilter(ctx, bson.M{"_id": doc.ID}),
+		bson.M{"$setOnInsert": doc},
+		options.UpdateOne().SetUpsert(true),
+	)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: insert-once user_message %s/%s: %w", runID, msg.ID, err)
+	}
+	return res.UpsertedCount > 0, nil
+}
+
 // UpdateQueuedMessageStatus performs a compare-and-set on the message
 // row when expectedFrom is non-empty; otherwise it unconditionally
 // stamps the new status + the matching transition timestamp.

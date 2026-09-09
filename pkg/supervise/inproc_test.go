@@ -8,6 +8,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// coreRunStore intentionally hides optional capabilities exposed by its
+// concrete backend, mirroring decorators that only forward RunStore.
+type coreRunStore struct{ store.RunStore }
+
 func TestEventHubFanOut(t *testing.T) {
 	h := NewEventHub()
 	ch1, rel1, err := h.ObserveRun(context.Background(), "ignored")
@@ -110,6 +114,53 @@ func TestStoreInjectorAppendsNodeScopedMessage(t *testing.T) {
 	texts, _, err = store.DrainPendingForNode(ctx, st, nil, "r1", "implement")
 	if err != nil || len(texts) != 1 || texts[0] != "check the diff" {
 		t.Fatalf("drain for implement = (%v, %v); want the message", texts, err)
+	}
+}
+
+func TestStoreInjectorStableDeliveryDoesNotDuplicateOrResurrect(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &StoreInjector{Store: st}
+	const deliveryID = "msg_supervisor_stable"
+
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("first InjectOnce: %v", err)
+	}
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("replayed InjectOnce: %v", err)
+	}
+	msgs, err := st.ListQueuedMessages(ctx, "r1")
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("messages after replay = (%+v, %v), want one", msgs, err)
+	}
+	if _, _, err := store.DrainPendingForNode(ctx, st, nil, "r1", "implement"); err != nil {
+		t.Fatalf("DrainPendingForNode: %v", err)
+	}
+	if err := inj.InjectOnce(ctx, "r1", "implement", "fix once", deliveryID); err != nil {
+		t.Fatalf("post-delivery replay: %v", err)
+	}
+	pending, err := st.LoadPendingQueuedMessages(ctx, "r1")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("post-delivery replay resurrected pending message: (%+v, %v)", pending, err)
+	}
+}
+
+func TestStoreInjectorFallsBackWhenAtomicInsertCapabilityIsHidden(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inj := &StoreInjector{Store: coreRunStore{RunStore: st}}
+	if err := inj.InjectOnce(ctx, "r1", "implement", "do not drop me", "msg_supervisor_hidden"); err != nil {
+		t.Fatalf("InjectOnce through core RunStore decorator: %v", err)
+	}
+	msgs, err := st.LoadPendingQueuedMessages(ctx, "r1")
+	if err != nil || len(msgs) != 1 || msgs[0].Text != "do not drop me" {
+		t.Fatalf("fallback delivery = (%+v, %v), want one queued message", msgs, err)
 	}
 }
 

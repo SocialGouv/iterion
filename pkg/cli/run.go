@@ -333,7 +333,10 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	// The CLI is another launch authority, so it stamps the same context
 	// contract as the service/cloud paths before the engine can execute a
-	// node. The policy is opt-in through ITERION_EXECUTION_CONTEXT_POLICY.
+	// node. The policy is opt-in through ITERION_RELIABILITY_MODE, with
+	// ITERION_EXECUTION_CONTEXT_POLICY kept as the compatibility alias read
+	// only when that is unset (pkg/reliability.ModeFromEnv). Naming just the
+	// alias is what made the documented rollback look inert.
 	cliContext := runview.ResolveExecutionContext(ctx, s, runID, runview.LaunchSpec{
 		FilePath: iterFile,
 		Source:   "",

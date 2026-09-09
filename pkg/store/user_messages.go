@@ -113,6 +113,40 @@ func (s *FilesystemRunStore) AppendQueuedMessage(ctx context.Context, runID stri
 	return nil
 }
 
+// AppendQueuedMessageOnce atomically appends msg only when its stable ID has
+// never appeared in this run's transition log. It is the crash-safe delivery
+// seam for producers such as supervisors: replaying an intent must not
+// resurrect a message that was already delivered or consumed.
+func (s *FilesystemRunStore) AppendQueuedMessageOnce(ctx context.Context, runID string, msg QueuedUserMessage) (bool, error) {
+	if err := NormalizeQueuedForAppend(&msg, runID); err != nil {
+		return false, err
+	}
+	if err := s.guardNotDeleted(runID); err != nil {
+		return false, err
+	}
+	path, err := s.userMessagesPath(runID)
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
+		return false, fmt.Errorf("store: mkdir user_messages: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	latest, err := loadLatestQueuedMessages(path)
+	if err != nil {
+		return false, err
+	}
+	if _, exists := latest[msg.ID]; exists {
+		return false, nil
+	}
+	if err := appendJSONL(path, msg); err != nil {
+		return false, err
+	}
+	s.bumpInboxVersion(runID)
+	return true, nil
+}
+
 // UpdateQueuedMessageStatus transitions the latest record for msgID
 // to the new status. Writes a new line (the JSONL is a transition
 // log; the latest line per ID wins). Returns
@@ -297,6 +331,20 @@ func StampQueuedTransition(msg *QueuedUserMessage, status QueuedMessageStatus, n
 // for liveness and need not implement this.
 type QueuedInboxVersioner interface {
 	QueuedInboxVersion(runID string) uint64
+}
+
+// QueuedMessageInsertOnceStore is the optional atomic idempotency capability
+// for durable message producers. Both built-in stores implement it.
+type QueuedMessageInsertOnceStore interface {
+	AppendQueuedMessageOnce(ctx context.Context, runID string, msg QueuedUserMessage) (inserted bool, err error)
+}
+
+func AsQueuedMessageInsertOnceStore(s RunStore) QueuedMessageInsertOnceStore {
+	if s == nil {
+		return nil
+	}
+	once, _ := s.(QueuedMessageInsertOnceStore)
+	return once
 }
 
 // InboxEventFor builds the canonical store.Event payload for one

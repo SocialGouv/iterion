@@ -271,7 +271,7 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/runview/subbot.go :: Cancelled+Failed+FailedResumable":                                          {[]string{"AwaitSubbotTerminal", "ReattachSubbotChild"}, "subbot outcome routing: failure-trio → clear + rerun fresh"},
 
 	// -- pkg/supervise.
-	"pkg/supervise/inproc.go :: Cancelled+Failed+Finished": {[]string{"Inject"}, "steering inbox refuse set: failed_resumable deliberately accepted"},
+	"pkg/supervise/inproc.go :: Cancelled+Failed+Finished": {[]string{"inject"}, "shared ordinary/idempotent steering inbox refuse set: failed_resumable deliberately accepted"},
 
 	// -- pkg/runtime: claim-CAS / routing sets (transition gates, not
 	// external eligibility — see CanOperatorResume's doc).
