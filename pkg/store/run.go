@@ -1473,7 +1473,15 @@ type ArtifactContract struct {
 	ProducerRevision string               `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
 	Version          int                  `json:"version" bson:"version"`
 	Schema           string               `json:"schema,omitempty" bson:"schema,omitempty"`
-	Dependencies     []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+	// SchemaHash fingerprints the resolved schema DEFINITION. Schema alone is
+	// a label: editing a schema's fields — the change that actually
+	// invalidates a persisted artifact, because a downstream node reads
+	// `outputs.x.field` — keeps the name, while renaming an unchanged schema
+	// changes no shape at all. Empty on artifacts written before this field
+	// existed and on nodes with no declared output schema; the name
+	// comparison stays the fallback for both.
+	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
+	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
 	Mutable          bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
 	Effects          []string             `json:"effects,omitempty" bson:"effects,omitempty"`
 }

@@ -291,3 +291,120 @@ func TestValidateArtifactContractsReportPolicyIsObservable(t *testing.T) {
 		t.Errorf("report policy recorded nothing actionable, log = %q", got)
 	}
 }
+
+// TestValidateArtifactContractsComparesSchemaShapeNotName is the guard for
+// the incompatibility that actually matters. `ir.NodeOutputSchema` returns
+// the schema REFERENCE NAME, so editing a schema's fields — removing the
+// field a downstream node reads as `outputs.x.field`, i.e. exactly the change
+// that invalidates a persisted artifact — kept the name and sailed through
+// `enforce`; while renaming a schema whose body was unchanged was refused for
+// a shape that never moved.
+func TestValidateArtifactContractsComparesSchemaShapeNotName(t *testing.T) {
+	ctx := context.Background()
+
+	// The workflow that produced the artifact: schema `out` with two fields.
+	produced := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"writer": &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report",
+				SchemaFields: ir.SchemaFields{OutputSchema: "out"},
+			},
+		},
+		Schemas: map[string]*ir.Schema{"out": {Name: "out", Fields: []*ir.SchemaField{
+			{Name: "value", Type: ir.FieldTypeString},
+			{Name: "ok", Type: ir.FieldTypeBool},
+		}}},
+	}
+	producedHash := schemaFingerprint(produced, "out")
+	if producedHash == "" {
+		t.Fatal("fixture: schema fingerprint is empty")
+	}
+
+	seed := func(t *testing.T, id string) (store.RunStore, *store.Run) {
+		t.Helper()
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, id, "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ArtifactIndex = map[string]int{"writer": 0}
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: run.ID, NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{
+				LogicalRef: "report", ProducerNode: "writer", Version: 0,
+				Schema: "out", SchemaHash: producedHash,
+			},
+			Data: map[string]any{"value": "v", "ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return s, run
+	}
+
+	t.Run("same name, a field removed, refused", func(t *testing.T) {
+		s, run := seed(t, "artifact-schema-edited")
+		edited := &ir.Workflow{
+			Nodes: produced.Nodes,
+			Schemas: map[string]*ir.Schema{"out": {Name: "out", Fields: []*ir.SchemaField{
+				{Name: "value", Type: ir.FieldTypeString},
+			}}},
+		}
+		err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: edited})
+		if err == nil {
+			t.Fatal("enforce admitted an artifact whose schema lost a field")
+		}
+		if !strings.Contains(err.Error(), "different definition") {
+			t.Fatalf("error does not name the definition drift: %v", err)
+		}
+	})
+
+	t.Run("renamed schema, identical body, admitted", func(t *testing.T) {
+		s, run := seed(t, "artifact-schema-renamed")
+		renamed := &ir.Workflow{
+			Nodes: map[string]ir.Node{
+				"writer": &ir.ToolNode{
+					BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report",
+					SchemaFields: ir.SchemaFields{OutputSchema: "result"},
+				},
+			},
+			Schemas: map[string]*ir.Schema{"result": {Name: "result", Fields: []*ir.SchemaField{
+				// Declared in the other order too: an artifact is a JSON
+				// object keyed by field name, so order is not shape.
+				{Name: "ok", Type: ir.FieldTypeBool},
+				{Name: "value", Type: ir.FieldTypeString},
+			}}},
+		}
+		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: renamed}); err != nil {
+			t.Fatalf("enforce refused a schema rename that changed no shape: %v", err)
+		}
+	})
+
+	t.Run("legacy contract without a fingerprint falls back to the name", func(t *testing.T) {
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, "artifact-schema-legacy", "wf", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.ArtifactIndex = map[string]int{"writer": 0}
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.WriteArtifact(ctx, &store.Artifact{
+			RunID: run.ID, NodeID: "writer", Version: 0,
+			Contract: &store.ArtifactContract{
+				LogicalRef: "report", ProducerNode: "writer", Version: 0, Schema: "out",
+			},
+			Data: map[string]any{"ok": true},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{Store: s, Run: run, Workflow: produced}); err != nil {
+			t.Fatalf("a pre-fingerprint contract with a matching name was refused: %v", err)
+		}
+	})
+}

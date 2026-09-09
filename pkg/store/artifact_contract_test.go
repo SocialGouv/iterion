@@ -17,6 +17,7 @@ func TestArtifactContractRoundTrip(t *testing.T) {
 		ProducerRevision: "rev-1",
 		Version:          2,
 		Schema:           "Report",
+		SchemaHash:       "b0a1c2d3",
 		Dependencies:     []ArtifactDependency{{LogicalRef: "plan", NodeID: "planner", Version: 1, Required: true}},
 		Effects:          []string{"persist"},
 	}
@@ -29,5 +30,10 @@ func TestArtifactContractRoundTrip(t *testing.T) {
 	}
 	if got.Contract == nil || got.Contract.LogicalRef != want.LogicalRef || got.Contract.Dependencies[0].Version != 1 {
 		t.Fatalf("contract = %+v, want %+v", got.Contract, want)
+	}
+	// The fingerprint has to survive persistence: without it every later
+	// compatibility check degrades to comparing schema NAMES.
+	if got.Contract.SchemaHash != want.SchemaHash {
+		t.Errorf("contract.SchemaHash = %q, want %q", got.Contract.SchemaHash, want.SchemaHash)
 	}
 }
