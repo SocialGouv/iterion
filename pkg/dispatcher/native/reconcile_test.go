@@ -42,7 +42,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 	var duringScan, afterScan *Issue
 	var scanningOnce, scannedOnce sync.Once
 	prevScanning, prevScanned := reconcileScanning, reconcileScanned
-	reconcileScanning = func() {
+	reconcileScanning = func(*Store) {
 		scanningOnce.Do(func() {
 			// From another goroutine, bounded: a Create that cannot take
 			// the lock while the scan runs is the failure named.
@@ -63,7 +63,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			}
 		})
 	}
-	reconcileScanned = func() {
+	reconcileScanned = func(*Store) {
 		scannedOnce.Do(func() {
 			iss, err := s.Create(Issue{Title: "Landed after the scan, before the swap", State: "backlog"})
 			if err != nil {

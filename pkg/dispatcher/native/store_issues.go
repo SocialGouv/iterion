@@ -759,7 +759,7 @@ func (s *Store) Delete(id string) (err error) {
 		return fmt.Errorf("native store: remove issue: %w", err)
 	}
 	delete(s.index, id)
-	s.writes++
+	s.markDirtyLocked(id)
 	return s.emitPostCommitEvent(Event{Type: EvtIssueDeleted, IssueID: id})
 }
 
@@ -808,7 +808,7 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := store.WriteFileAtomic(p, data, filePerm); err != nil {
 		return fmt.Errorf("native store: write issue: %w", err)
 	}
-	s.writes++
+	s.markDirtyLocked(iss.ID)
 	return nil
 }
 

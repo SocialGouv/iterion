@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -72,6 +73,12 @@ func startIndexWatcher(s *Store) (*indexWatcher, error) {
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
 	}
+	// Published on the store BEFORE the loop starts: the loop may report
+	// the watch lost within its first tick, and watchLost only acts on the
+	// watcher the store holds.
+	s.mu.Lock()
+	s.watcher = iw
+	s.mu.Unlock()
 	go iw.loop(s, issuesPath)
 	return iw, nil
 }
@@ -93,10 +100,29 @@ func (iw *indexWatcher) Close() error {
 	return iw.closeErr
 }
 
-// lost is called when a channel closed under the loop. Close closes the
-// stop channel BEFORE it closes the fsnotify watcher, so a closed channel
-// with no stop pending is a watch that went away on its own: hand the
-// store over to the fallback net.
+// defaultWatchCheckInterval is how often the loop asks fsnotify whether
+// its watch still exists. The kernel drops an inotify watch when the
+// watched directory is removed, renamed or unmounted (IN_IGNORED), and
+// fsnotify then forgets it WITHOUT closing a channel or sending an error —
+// the loop would sit forever on a watch that no longer exists. The
+// question costs one mutex and a map lookup.
+const defaultWatchCheckInterval = 5 * time.Second
+
+// watchCheckIntervalOverride lets a test tighten the check.
+var watchCheckIntervalOverride *time.Duration
+
+func watchCheckInterval() time.Duration {
+	if watchCheckIntervalOverride != nil {
+		return *watchCheckIntervalOverride
+	}
+	return defaultWatchCheckInterval
+}
+
+// lost is called when the loop has established that its watch is gone:
+// fsnotify forgot it (the directory went away), or a channel closed
+// without a Close pending — Close closes the stop channel BEFORE it closes
+// the fsnotify watcher, so a closed channel with no stop pending is not a
+// Close. Hand the store over to the fallback net.
 func (iw *indexWatcher) lost(s *Store) {
 	select {
 	case <-iw.stop:
@@ -110,10 +136,17 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 	defer close(iw.done)
 	var mu sync.Mutex // guards seenErr only — store mutex covers index access.
 	var seenErr bool
+	check := time.NewTicker(watchCheckInterval())
+	defer check.Stop()
 	for {
 		select {
 		case <-iw.stop:
 			return
+		case <-check.C:
+			if len(iw.w.WatchList()) == 0 {
+				iw.lost(s)
+				return
+			}
 		case ev, ok := <-iw.w.Events:
 			if !ok {
 				iw.lost(s)
@@ -136,18 +169,20 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			// signal: events were DROPPED, and nothing will resend
 			// them. The watcher stays alive and the index is rebuilt
 			// from disk — the second lossy carrier gets the same net
-			// as a refused watch. Log once per session so a host that
-			// overflows every second does not flood the log. Wrap the
-			// flag in a tiny mutex because the events + errors selects
-			// run on the same goroutine but the linter cannot prove that.
+			// as a refused watch — on another goroutine: this one must
+			// keep draining the unbuffered event channel, or the queue
+			// that just overflowed fills again during the repair. Log
+			// once per session so a host that overflows every second
+			// does not flood the log. Wrap the flag in a tiny mutex
+			// because the events + errors selects run on the same
+			// goroutine but the linter cannot prove that.
 			mu.Lock()
 			first := !seenErr
 			seenErr = true
 			mu.Unlock()
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
-				if rerr := s.Reconcile(); rerr != nil {
-					s.getLogger().Error("native index watcher: kernel event queue overflowed and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", rerr)
-				} else if first {
+				s.rebuildAsync("kernel event queue overflowed")
+				if first {
 					s.getLogger().Warn("native index watcher: kernel event queue overflowed; index rebuilt from disk (further overflows rebuild silently this session)")
 				}
 				continue
