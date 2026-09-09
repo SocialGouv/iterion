@@ -3430,6 +3430,30 @@ def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False
         moved = ((set(v.get("targets_declared") or [])
                   - set(v.get("undetected_targets") or []))
                  | set(v.get("collateral") or []))
+        unstable = set(v.get("unstable_controls") or []) & set(g)
+        if unstable:
+            # NOT MEASURED, per MEMBER this time — the same inference from
+            # absence the invalid-verdict guard closes for the whole verdict.
+            # `score_mutant` moves an entry OUT of `collateral` and into
+            # `unstable_controls` when it still differs after the revert, so a
+            # member that really did diverge under the mutant falls out of
+            # `moved` and would land silently on the STILL side, proving the
+            # group on the one entry whose measurement was just invalidated.
+            #
+            # The graph gate happens to mask this behind its own
+            # `unstable_controls == []` term; the emitted `verify-oracle.sh`
+            # does NOT restate that term, so there the group really would read
+            # as discharged. And this predicate is the shared authority the
+            # selftest pins — it must be right on its own.
+            unproven.append({"ids": list(g), "separated_by": sep,
+                             "unstable": sorted(unstable), "why":
+                             "member(s) %s do NOT reproduce themselves: they differed with "
+                             "the mutant applied AND still differed once it was reverted, so "
+                             "the mutant is not the cause and nothing here measures them. "
+                             "Neither moved nor still — not measured. Canonicalise what "
+                             "drifts, or pin it in the fixture, then re-run."
+                             % ", ".join(sorted(unstable))})
+            continue
         inside = moved & set(g)
         still = set(g) - inside
         if not inside:
@@ -6241,6 +6265,32 @@ def _selftest():
                "reason": "apply.sh left the tree and the data probe unchanged",
                "targets_declared": ["012", "013"]})],
           [["012", "013"]])
+    # UN MEMBRE QUI NE SE REPRODUIT PAS N'EST NI DEPLACE NI IMMOBILE.
+    # score_mutant retire une entree de `collateral` pour la mettre dans
+    # `unstable_controls` quand elle differe encore APRES le revert : un membre
+    # qui avait bien bouge sous le mutant sort donc de `moved` et tomberait en
+    # silence du cote IMMOBILE, prouvant le groupe sur la seule entree dont la
+    # mesure vient d'etre invalidee. La porte du graphe le masque derriere son
+    # propre terme `unstable_controls == []` ; le `verify-oracle.sh` emis, lui,
+    # ne reprend pas ce terme.
+    check("un membre instable ne prouve rien : ni deplace, ni immobile",
+          [x["ids"] for x in refus(
+              {"id": "sep-01", "valid": True, "targets_declared": ["012"],
+               "undetected_targets": [], "collateral": [],
+               "unstable_controls": ["013"]})],
+          [["012", "013"]])
+    check("et le refus nomme le membre en cause",
+          refus({"id": "sep-01", "valid": True, "targets_declared": ["012"],
+                 "undetected_targets": [], "collateral": [],
+                 "unstable_controls": ["013"]})[0]["unstable"], ["013"])
+    # Un temoin instable HORS du groupe ne change rien a son verdict.
+    check("un instable hors groupe ne refuse pas le groupe",
+          [x["ids"] for x in refus(
+              {"id": "sep-01", "valid": True, "targets_declared": ["012"],
+               "undetected_targets": [], "collateral": [],
+               "unstable_controls": ["099"]})],
+          [])
+
     # Et un separateur valide dont le revert a echoue GARDE sa mesure : la
     # capture est complete a ce point, seul le retour a la reference a rate.
     check("un separateur valide au revert rate prouve quand meme",
