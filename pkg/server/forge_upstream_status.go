@@ -131,6 +131,14 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 	// forgeUpstreamStatus answers 0 for a request that never left AND for an
 	// upstream failure it does not recognise, and those two want opposite
 	// statuses. Deciding it here keeps the classifier a classifier.
+	//
+	// Asking FIRST is safe only while the two are disjoint, and today they
+	// are: every marked return in MintInstallationToken is above
+	// httpClient.Do, and both newIterionFault wraps are on failures no forge
+	// answered. Mark an error that ALSO carries a forge status and this
+	// order silently outranks it — a 429 with its Retry-After, a 404, would
+	// become 500. So mark the STEP that failed, never a call that completed
+	// a round trip.
 	if isIterionFault(err) {
 		httpError(w, http.StatusInternalServerError, format, args...)
 		return true
