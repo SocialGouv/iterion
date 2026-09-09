@@ -62,7 +62,7 @@ func (s *Store) ReclaimExpired(id string, prev tracker.ClaimToken, marker string
 	if err := s.writeIssueLocked(iss); err != nil {
 		return tracker.ClaimToken{}, "", err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type: EvtIssueClaimed, IssueID: id,
 		Payload: map[string]any{"marker": marker, "claim_epoch": iss.ClaimEpoch, "reclaimed_from": prev.Marker},

@@ -980,7 +980,7 @@ dispatcher at once. inotify is a lossy carrier: a host at
 `max_user_instances` refuses the descriptor (`EMFILE`), a full kernel
 queue drops events (`ErrEventOverflow`), and a watched directory that is
 removed, renamed or unmounted loses its watch without a word (the loop
-asks fsnotify every 5 s whether the watch still exists). Each of those
+asks fsnotify every 5 s whether the watch still exists, and hands over after two consecutive empty answers). Each of those
 used to leave the index frozen until the daemon restarted; each now
 falls back to a full rescan of `issues/` — outside the store mutex, so
 board reads never wait behind disk I/O — every `ITERION_NATIVE_INDEX_RESCAN`

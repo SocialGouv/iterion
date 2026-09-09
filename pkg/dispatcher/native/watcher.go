@@ -138,15 +138,25 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 	var seenErr bool
 	check := time.NewTicker(watchCheckInterval())
 	defer check.Stop()
+	misses := 0 // consecutive empty watch lists: two before the watch is declared lost
 	for {
 		select {
 		case <-iw.stop:
 			return
 		case <-check.C:
+			// Two consecutive empty answers before the hand-over: on Linux
+			// the list empties only when the kernel dropped the watch, and
+			// a second look costs one tick; on a backend where the list
+			// could read empty for an instant, one look would demote a live
+			// watch to the rescan net for good.
 			if len(iw.w.WatchList()) == 0 {
-				iw.lost(s)
-				return
+				if misses++; misses >= 2 {
+					iw.lost(s)
+					return
+				}
+				continue
 			}
+			misses = 0
 		case ev, ok := <-iw.w.Events:
 			if !ok {
 				iw.lost(s)
@@ -244,8 +254,7 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 	// while this loop keeps draining the backlog, and its swap must not
 	// revert what the events applied after the scan read those files.
 	if op&fsnotify.Remove == fsnotify.Remove {
-		delete(s.index, id)
-		s.markDirtyLocked(id)
+		s.dropIndexLocked(id)
 		return
 	}
 	iss, err := s.readIssueFromDisk(id)
@@ -259,11 +268,9 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// which does not wrap fs.ErrNotExist — matching on the latter
 		// never fires and leaves the tombstone in the index.
 		if errors.Is(err, tracker.ErrNotFound) {
-			delete(s.index, id)
-			s.markDirtyLocked(id)
+			s.dropIndexLocked(id)
 		}
 		return
 	}
-	s.index[id] = iss
-	s.markDirtyLocked(id)
+	s.setIndexLocked(id, iss)
 }

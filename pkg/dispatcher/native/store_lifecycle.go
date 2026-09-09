@@ -40,7 +40,7 @@ func (s *Store) Claim(id, marker string) (tok tracker.ClaimToken, err error) {
 		if err := s.writeIssueLocked(iss); err != nil {
 			return tracker.ClaimToken{}, err
 		}
-		s.index[iss.ID] = cloneIssue(iss)
+		s.setIndexLocked(iss.ID, cloneIssue(iss))
 		return tracker.ClaimToken{Marker: marker, Epoch: iss.ClaimEpoch}, nil
 	}
 	iss.Claim = marker
@@ -51,7 +51,7 @@ func (s *Store) Claim(id, marker string) (tok tracker.ClaimToken, err error) {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return tracker.ClaimToken{}, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type: EvtIssueClaimed, IssueID: id,
 		Payload: map[string]any{"marker": marker, "claim_epoch": iss.ClaimEpoch},
@@ -94,7 +94,7 @@ func (s *Store) RenewClaim(id string, tok tracker.ClaimToken) (err error) {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	return nil
 }
 
@@ -160,7 +160,7 @@ func (s *Store) setLaunchRefusalLocked(iss *Issue, r *LaunchRefusal) error {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	return s.emitPostCommitEvent(Event{
 		Type:    EvtIssueLaunchRefused,
 		IssueID: iss.ID,
@@ -238,7 +238,7 @@ func (s *Store) setLastRunLocked(iss *Issue, runID, workdir string) error {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	return s.emitPostCommitEvent(Event{
 		Type:    EvtIssueLastRun,
 		IssueID: iss.ID,
@@ -272,7 +272,7 @@ func (s *Store) setAwaitingInputLocked(iss *Issue, v bool) error {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	return s.emitPostCommitEvent(Event{
 		Type:    EvtIssueUpdated,
 		IssueID: iss.ID,
@@ -329,7 +329,7 @@ func (s *Store) setGaveUpLocked(iss *Issue, g *GiveUp) error {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	payload := map[string]any{"gave_up": stamped != nil}
 	if stamped != nil {
 		payload["run_id"] = stamped.RunID
@@ -412,7 +412,7 @@ func (s *Store) AddComment(id, author, body string) (updated *Issue, comment *Co
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, nil, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueComment,
 		IssueID: id,
@@ -452,7 +452,7 @@ func (s *Store) releaseLocked(iss *Issue, marker string) error {
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	return s.emitPostCommitEvent(Event{
 		Type: EvtIssueReleased, IssueID: iss.ID,
 		Payload: map[string]any{"marker": marker},

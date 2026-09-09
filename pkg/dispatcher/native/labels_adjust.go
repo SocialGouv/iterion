@@ -77,7 +77,7 @@ func (s *Store) AdjustLabels(id string, add, remove []string) (updated *Issue, c
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, false, err
 	}
-	s.index[iss.ID] = cloneIssue(iss)
+	s.setIndexLocked(iss.ID, cloneIssue(iss))
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueUpdated,
 		IssueID: iss.ID,
