@@ -91,7 +91,7 @@ attachments:
 
 Then reference it in the relevant scanner tool node command:
 
-```iter
+```iter fragment
 tool run_js_scanners:
   command: |
     semgrep \

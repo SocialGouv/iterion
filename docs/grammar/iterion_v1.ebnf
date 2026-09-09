@@ -5,7 +5,9 @@
    reachability, exhaustive routing, cycle declarations, budgets, and so on.
 
    INDENT/DEDENT are virtual tokens emitted by the indentation-aware lexer.
-   Comments beginning with ## and blank lines are ignored between constructs.
+   Comments open with # (## is the same comment) and, like blank lines, are
+   ignored between constructs; inside a string, a prompt body or a block
+   scalar a # is text.
 *)
 
 file = { top_level_decl } ;

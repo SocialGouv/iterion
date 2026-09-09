@@ -257,7 +257,7 @@ boundaries are worth knowing before a heavy fan-out:
 The headline pattern — *map a sub-bot over a dependency DAG of work items, each
 in its own worktree slot* — combines all of these:
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"

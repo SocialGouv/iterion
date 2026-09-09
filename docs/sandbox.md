@@ -363,7 +363,7 @@ Blocked requests surface to the run as a `network_blocked` event in
 
 The DSL accepts both short-form modes and block-form inline specs:
 
-```iter
+```iter fragment
 workflow x:
   # Short form: read .devcontainer/devcontainer.json, or fall back to
   # the default image when no devcontainer is present.
@@ -414,7 +414,7 @@ and auto-mode fallback cases.
 Per-node overrides accept the same short or block form on `agent`,
 `judge`, and `tool`:
 
-```iter
+```iter fragment
 agent shell_helper:
   sandbox: none      # this node runs on the host even though the
                      # workflow has sandbox: auto
@@ -1181,7 +1181,7 @@ service is deployed; the resulting image lands in the local Docker
 image store and the sibling container of the run consumes it via
 `docker run` like any pre-built ref.
 
-```iter
+```iter fragment:workflow
 sandbox:
   build:
     dockerfile: "examples/sandbox_build.dockerfile"

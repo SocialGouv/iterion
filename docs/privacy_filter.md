@@ -99,7 +99,7 @@ needed.
 
 ### 1. Anti-secret commit gate (flagship)
 
-```iter
+```iter fragment
 tool generate_diff:
   command: "git diff --cached"
   output: diff_text
@@ -119,7 +119,10 @@ judge review:
   output: review_verdict
 
 workflow main:
-  start -> generate_diff -> scan_secrets -> gate
+  entry: start
+  start -> generate_diff
+  generate_diff -> scan_secrets
+  scan_secrets -> gate
   gate -> review when not has_secret
   gate -> fail_node when has_secret
   review -> done
@@ -133,7 +136,7 @@ PEM, etc.) plus generic high-entropy detection.
 
 ### 2. Triage tickets without exposing PII to the LLM
 
-```iter
+```iter fragment
 schema ticket_in:
   raw: string
 schema redacted:
@@ -158,7 +161,10 @@ agent classify:
   user: triage_prompt
 
 workflow main:
-  start -> sanitize -> classify -> done
+  entry: start
+  start -> sanitize
+  sanitize -> classify
+  classify -> done
 ```
 
 The LLM only ever sees `PII_xxx` tokens for emails and phone numbers by default.
@@ -167,7 +173,7 @@ PII either, so the entire run trace is publishable / auditable as-is.
 
 ### 3. Web-fetch summarization with sanitization
 
-```iter
+```iter fragment
 tool fetch_doc:
   command: "web_fetch"
   input: url_in
@@ -184,7 +190,11 @@ agent summarize:
   output: summary
 
 workflow main:
-  start -> fetch_doc -> sanitize -> summarize -> done
+  entry: start
+  start -> fetch_doc
+  fetch_doc -> sanitize
+  sanitize -> summarize
+  summarize -> done
 ```
 
 Useful for scheduled scraping workflows where the input domain is
@@ -193,7 +203,7 @@ public pages in your `events.jsonl`.
 
 ### 4. Two-stage customer support (redact → draft → unredact)
 
-```iter
+```iter fragment
 schema email_in:
   body: string
 
@@ -223,7 +233,12 @@ human approve:
   output: approval
 
 workflow main:
-  start -> redact_email -> draft_reply -> restore_pii -> approve -> done
+  entry: start
+  start -> redact_email
+  redact_email -> draft_reply
+  draft_reply -> restore_pii
+  restore_pii -> approve
+  approve -> done
 ```
 
 The agent is structurally prevented from seeing emails, phone numbers,
@@ -237,7 +252,7 @@ the placeholder format is overridable if needed.
 
 ### 5. Anonymized dataset / example export
 
-```iter
+```iter fragment
 tool list_artifacts:
   command: "ls .iterion/runs/$RUN_ID/artifacts/*.json"
   output: file_list
@@ -250,8 +265,11 @@ tool redact_artifact:
   output: clean_artifact
 
 workflow main:
-  start -> list_artifacts -> fan
-  fan -> redact_artifact -> done
+  entry: start
+  start -> list_artifacts
+  list_artifacts -> fan
+  fan -> redact_artifact
+  redact_artifact -> done
 ```
 
 Convert real-data run traces into shareable demo material. Combine with
@@ -259,7 +277,7 @@ Convert real-data run traces into shareable demo material. Combine with
 
 ### 6. Sanitization after a Human node
 
-```iter
+```iter fragment
 human collect_context:
   interaction: human
   output: raw_context
@@ -274,7 +292,11 @@ agent investigate:
   output: report
 
 workflow main:
-  start -> collect_context -> sanitize -> investigate -> done
+  entry: start
+  start -> collect_context
+  collect_context -> sanitize
+  sanitize -> investigate
+  investigate -> done
 ```
 
 Belt-and-braces: the raw answer lives only in `interactions/<id>.json`
@@ -283,7 +305,7 @@ artifacts.
 
 ### 7. Pure detect-mode audit / compliance scan
 
-```iter
+```iter fragment
 prompt report_prompt:
   Produce a markdown report listing: spans per category, highest-risk
   documents, recommended actions. Use the `rule` field to identify
@@ -301,7 +323,10 @@ agent report:
   user: report_prompt
 
 workflow main:
-  start -> scan -> report -> done
+  entry: start
+  start -> scan
+  scan -> report
+  report -> done
 ```
 
 No mutation of source data — produces an inventory. Combine with

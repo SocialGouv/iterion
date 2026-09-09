@@ -53,7 +53,7 @@ Declare secrets in the DSL; the agent only ever sees an opaque
 placeholder `__ITERION_SECRET_<name>__`; iterion swaps in the real value
 at the moment of execution.
 
-```iter
+```iter fragment
 secrets:
   github_token: "${GITHUB_TOKEN}"          # short form
   deploy_key:
@@ -88,7 +88,7 @@ materialization above.
 Some credentials are safer and more ergonomic as files (`kubeconfig`,
 cloud SDK config, deploy certs). Declare them with `as: file`:
 
-```iter
+```iter fragment
 secrets:
   kubeconfig:
     as: file
@@ -132,7 +132,7 @@ records the failure as `StatusLaunchError` on its delivery trail.
 Mark a secret `optional: true` to skip it silently instead — for a bot
 that only needs the credential on *some* runs:
 
-```iter
+```iter fragment
 secrets:
   forge_token:
     as: file
@@ -286,10 +286,10 @@ A declared secret with **no inline `value:`** resolves *by name* from this
 store — so a bot declares what it needs, and the operator supplies it out of
 band:
 
-```iter
+```iter fragment
 secrets:
   GITHUB_TOKEN:            # no value: → resolved by name from the local store
-    hosts: [github.com]    # egress lock still applies (Layer 2)
+    hosts: ["github.com"]    # egress lock still applies (Layer 2)
 ```
 
 ### Storage, master key, scope

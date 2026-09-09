@@ -718,7 +718,7 @@ auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 A Codex node receives OpenAI's hosted native Web search only when it declares
 the canonical DSL tool:
 
-```iter
+```iter fragment
 agent researcher:
   backend: "codex"
   model: "gpt-5.6-terra"
@@ -1288,19 +1288,22 @@ To pin a backend across an entire workflow (e.g. force `claude_code`
 even when OAuth is missing, expecting CI to inject it later):
 
 ```iter
-default_backend: claude_code
+workflow review:
+  entry: reviewer
+  default_backend: "claude_code"   # every node without its own backend: uses it
+  reviewer -> done
 
 agent reviewer:
   # inherits backend: claude_code
-  ...
+  model: "anthropic/claude-sonnet-4-6"
 ```
 
 Per-node overrides take precedence:
 
-```iter
+```iter fragment
 agent reviewer:
-  backend: claw
-  model: anthropic/claude-haiku-4-5-20251001
+  backend: "claw"
+  model: "anthropic/claude-haiku-4-5-20251001"
 ```
 
 ## Using a non-Anthropic provider via the Anthropic wire format (z.ai / GLM)

@@ -45,7 +45,7 @@ Add a `round_robin` mode to the `router` node in the v1 DSL.
 
 ### Syntax
 
-```iter
+```iter fragment
 router refine_selector:
   mode: round_robin
 ```
@@ -61,28 +61,28 @@ router refine_selector:
 
 ### Usage example
 
-```iter
+```iter fragment
 router refine_selector:
   mode: round_robin
 
 agent claude_refine:
   backend: "claude_code"
-  ...
+  # …
 
 agent codex_refine:
   backend: "codex"
-  ...
+  # …
 
 workflow example:
-  ...
+  # …
   val_judge -> refine_selector when not ready as refine_loop(4)
 
-  refine_selector -> claude_refine with { ... }
-  refine_selector -> codex_refine with { ... }
+  refine_selector -> claude_refine
+  refine_selector -> codex_refine
 
-  claude_refine -> val_fanout with { ... }
-  codex_refine -> val_fanout with { ... }
-  ...
+  claude_refine -> val_fanout
+  codex_refine -> val_fanout
+  # …
 ```
 
 On the first pass: `claude_refine` is selected.

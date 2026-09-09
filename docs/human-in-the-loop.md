@@ -199,7 +199,7 @@ Two shapes, matching the two things an operator actually does.
 
 ### A declared `file` field — the workflow knows it needs one
 
-```iter
+```iter fragment
 schema music_gate:
   approved: bool
   music: file
@@ -212,7 +212,7 @@ human pick_soundtrack:
 The studio renders a drop zone for `music`. Downstream nodes read a
 descriptor:
 
-```iter
+```iter fragment
 prompt mix:
   Master the track at {{outputs.pick_soundtrack.music.path}}
   ({{outputs.pick_soundtrack.music.mime}},
@@ -271,7 +271,7 @@ files.
 Those land on the reserved `_attachments` answer key as a list of the
 same descriptors:
 
-```iter
+```iter fragment
 prompt apply_feedback:
   {{outputs.review._attachments}}
 ```
