@@ -66,14 +66,26 @@ func TestReportForRunComputesRollbackSafety(t *testing.T) {
 	if got := ReportForRun(nil); got.RollbackSafe {
 		t.Fatalf("nil run must not be rollback-safe: %+v", got)
 	}
-	for _, status := range []string{"active", "exhausted", "unchanged"} {
+	// Every status that is not a repaired, published output. "unchanged" is
+	// the runtime's no-progress stop, which it groups with "exhausted" in its
+	// own terminated-episode guard; the empty and unknown rows pin the
+	// fail-closed rule, so a status added later cannot read as green here
+	// just because nobody came back to update this list.
+	for _, status := range []string{"active", "exhausted", "unchanged", "", "some-future-state"} {
 		run := &store.Run{
 			ExecutionContext:  &store.ExecutionContext{Policy: store.ContextPolicyReport},
 			OutputCorrections: map[string]store.OutputCorrectionEpisode{"node": {Status: status}},
 		}
 		if got := ReportForRun(run); got.RollbackSafe {
-			t.Fatalf("%s correction episode must not be rollback-safe: %+v", status, got)
+			t.Fatalf("%q correction episode must not be rollback-safe: %+v", status, got)
 		}
+	}
+	// The one status that is: correction repaired the output and it shipped.
+	if got := ReportForRun(&store.Run{
+		ExecutionContext:  &store.ExecutionContext{Policy: store.ContextPolicyReport},
+		OutputCorrections: map[string]store.OutputCorrectionEpisode{"node": {Status: "succeeded"}},
+	}); !got.RollbackSafe {
+		t.Fatalf("a succeeded correction episode must stay rollback-safe: %+v", got)
 	}
 	if got := ReportForRun(&store.Run{
 		ExecutionContext: &store.ExecutionContext{Policy: store.ContextPolicyEnforce},

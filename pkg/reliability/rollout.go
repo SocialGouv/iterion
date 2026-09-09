@@ -143,12 +143,32 @@ func ReportForRun(run *store.Run) CompatibilityReport {
 		}
 	}
 	for _, episode := range run.OutputCorrections {
-		if episode.Status == "active" || episode.Status == "exhausted" || episode.Status == "unchanged" {
+		if !correctionEpisodeSettled(episode) {
 			r.RollbackSafe = false
 			break
 		}
 	}
 	return r
+}
+
+// correctionSucceeded is the one episode status that leaves nothing for a
+// rollback to strand: the output was repaired and published. The vocabulary
+// is store.OutputCorrectionEpisode.Status, whose values are spelled out in
+// pkg/runtime/node_output.go (active | succeeded | exhausted | unchanged) —
+// unexported there, so this is a literal by necessity, not by choice.
+const correctionSucceeded = "succeeded"
+
+// correctionEpisodeSettled decides whether one episode leaves the run safe to
+// roll back. The SAFE set is the closed one, deliberately: enumerating the
+// UNSAFE statuses is what made "unchanged" — the runtime's no-progress stop,
+// which it groups with "exhausted" in its own terminated-episode guard — read
+// as green, on the very artifact an operator uses to decide promote vs
+// rollback. It is the mistake the rollout doc names one level up: a missing
+// or unrecognised field means pre-pilot, never successful. An episode status
+// this package has not seen (a future state, or an empty one on a partially
+// written ledger) is therefore unsafe, not safe.
+func correctionEpisodeSettled(episode store.OutputCorrectionEpisode) bool {
+	return episode.Status == correctionSucceeded
 }
 
 // Baseline summarises the current fleet without changing any run. It is the
