@@ -382,18 +382,27 @@ func (c *Coordinator) ingest(evt *store.Event) {
 			c.rescanLastWatchedActive()
 		}
 	}
-	c.recent = append(c.recent, RenderEvent(evt))
-	if evt.Timestamp.IsZero() {
-		evt.Timestamp = time.Now()
+	// Render ONCE: RenderEvent json.Marshal's evt.Data, and ingest runs on
+	// every event of every supervised run — the hot path a busy tool stream
+	// drives.
+	rendered := RenderEvent(evt)
+	c.recent = append(c.recent, rendered)
+	// Derive the progress stamp into a LOCAL. ingest folds a borrowed
+	// event; writing a default timestamp back into the caller's *store.Event
+	// would leak coordinator bookkeeping into whatever else the observer
+	// hands that event to.
+	progressAt := evt.Timestamp
+	if progressAt.IsZero() {
+		progressAt = time.Now()
 	}
-	progressFP := supervisorFingerprint(RenderEvent(evt))
+	progressFP := supervisorFingerprint(rendered)
 	if c.cursor.LastProgressFingerprint == progressFP {
 		c.cursor.ConsecutiveNoProgress++
 	} else {
 		c.cursor.ConsecutiveNoProgress = 0
 	}
 	c.cursor.LastProgressFingerprint = progressFP
-	c.cursor.LastProgressAt = evt.Timestamp
+	c.cursor.LastProgressAt = progressAt
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
 	}
