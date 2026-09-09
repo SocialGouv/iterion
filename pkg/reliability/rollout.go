@@ -7,7 +7,6 @@ package reliability
 import (
 	"encoding/json"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,11 +21,10 @@ const (
 	// keeps working, but EnvMode is AUTHORITATIVE: the documented rollback
 	// (EnvMode=legacy) has to take effect on exactly those hosts, and a lever
 	// the older variable can silently shadow is not an emergency lever.
-	EnvContextPolicyAlias          = "ITERION_EXECUTION_CONTEXT_POLICY"
-	EnvOutputCorrectionBudget      = "ITERION_OUTPUT_CORRECTION_BUDGET"
-	ModeLegacy                Mode = "legacy"
-	ModeReport                Mode = "report"
-	ModeEnforce               Mode = "enforce"
+	EnvContextPolicyAlias      = "ITERION_EXECUTION_CONTEXT_POLICY"
+	ModeLegacy            Mode = "legacy"
+	ModeReport            Mode = "report"
+	ModeEnforce           Mode = "enforce"
 )
 
 // Mode controls the compatibility gate during rollout. Legacy is the safe
@@ -76,24 +74,26 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // Config is the operator-facing rollout configuration. The retry circuit's
 // threshold/cooldown are read by pkg/retrycoord; they are repeated here only
 // so a report can print one coherent pilot configuration.
+//
+// Every field here is a knob an operator can actually turn. The output
+// correction budget deliberately is NOT one: correction fires only for an
+// engine built with runtime.WithOutputValidation AND an executor implementing
+// runtime.OutputCorrector, and neither exists on a production path today
+// (the sole corrector in the tree is a test double, and the production
+// ClawExecutor validates and retries upstream of the engine's optional path).
+// An env var for it would read as an emergency lever and do nothing, which is
+// worse than no lever at all — runtime.WithOutputCorrectionBudget stays the
+// explicit API for a custom or test engine.
 type Config struct {
-	Mode                   Mode
-	OutputCorrectionBudget int
-	RetryCircuitThreshold  int
-	RetryCircuitCooldown   time.Duration
-	WatcherCursorsEnabled  bool
+	Mode                  Mode
+	RetryCircuitThreshold int
+	RetryCircuitCooldown  time.Duration
+	WatcherCursorsEnabled bool
 }
 
 func FromEnv() Config {
-	mode := ModeFromEnv()
-	budget := 2
-	if raw := strings.TrimSpace(os.Getenv(EnvOutputCorrectionBudget)); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
-			budget = n
-		}
-	}
 	circuit := retrycoord.FromEnv()
-	return Config{Mode: mode, OutputCorrectionBudget: budget, RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown, WatcherCursorsEnabled: true}
+	return Config{Mode: ModeFromEnv(), RetryCircuitThreshold: circuit.Threshold, RetryCircuitCooldown: circuit.Cooldown, WatcherCursorsEnabled: true}
 }
 
 func (c Config) ContextPolicy() store.ContextPolicy { return c.Mode.ContextPolicy() }
@@ -206,7 +206,6 @@ func (c Config) Rollback() RollbackPlan {
 		PreserveEvidence:   true,
 		Actions: []string{
 			"set " + EnvMode + "=legacy (authoritative; it overrides " + EnvContextPolicyAlias + ", which does not need unsetting)",
-			"set ITERION_OUTPUT_CORRECTION_BUDGET=0 for new launches if needed",
 			"keep execution_context, admission, correction and watcher ledgers for audit",
 		},
 	}

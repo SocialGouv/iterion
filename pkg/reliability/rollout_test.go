@@ -1,6 +1,7 @@
 package reliability
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
@@ -59,6 +60,48 @@ func TestSummarizeAndRollback(t *testing.T) {
 	plan := (Config{}).Rollback()
 	if !plan.DisableEnforcement || !plan.PreserveEvidence || len(plan.Actions) == 0 {
 		t.Fatalf("rollback = %+v", plan)
+	}
+}
+
+// envAssignment matches the `set NAME=VALUE` shape RollbackPlan.Actions uses.
+var envAssignment = regexp.MustCompile(`\bset ([A-Z][A-Z0-9_]*)=(\S+)`)
+
+// TestRollbackPlanActionsActuallyFire executes the published plan verbatim
+// against a hostile baseline and checks the observable outcome, because a
+// plan is only an emergency lever if pulling it changes something.
+//
+// This is the ratchet for the two defects the plan shipped with: an action
+// naming ITERION_OUTPUT_CORRECTION_BUDGET, which no production path reads, and
+// an ITERION_RELIABILITY_MODE=legacy that the older alias could shadow. Both
+// left an operator following the documented procedure still enforcing.
+func TestRollbackPlanActionsActuallyFire(t *testing.T) {
+	// A deployment mid-pilot, enforcing through the new switch AND the older
+	// alias — the host on which the rollback has the most to undo.
+	t.Setenv(EnvMode, string(ModeEnforce))
+	t.Setenv(EnvContextPolicyAlias, string(ModeEnforce))
+	if got := ContextPolicyFromEnv(); got != store.ContextPolicyEnforce {
+		t.Fatalf("baseline policy = %s, want enforce; the rollback has nothing to undo", got)
+	}
+
+	// Only variables this package resolves may be named: an action that sets
+	// anything else reads as a lever and does nothing.
+	readsEnv := map[string]bool{EnvMode: true, EnvContextPolicyAlias: true}
+	applied := 0
+	for _, action := range (Config{}).Rollback().Actions {
+		for _, m := range envAssignment.FindAllStringSubmatch(action, -1) {
+			if !readsEnv[m[1]] {
+				t.Errorf("action %q sets %s, which no rollout resolution reads", action, m[1])
+				continue
+			}
+			t.Setenv(m[1], m[2])
+			applied++
+		}
+	}
+	if applied == 0 {
+		t.Fatal("no rollback action assigns a variable the rollout reads; the plan cannot be executed")
+	}
+	if got := ContextPolicyFromEnv(); got != store.ContextPolicyLegacy {
+		t.Fatalf("policy after executing the rollback plan = %s, want legacy", got)
 	}
 }
 
