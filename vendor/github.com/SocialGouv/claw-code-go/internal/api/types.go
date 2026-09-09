@@ -369,6 +369,14 @@ type MessageDelta struct {
 // UsageDelta contains token usage info.
 type UsageDelta struct {
 	OutputTokens int `json:"output_tokens"`
+	// InputTokens is the prompt count for providers that only learn it
+	// once the turn is over. Anthropic and Bedrock report theirs on
+	// message_start (StreamEvent.InputTokens) and leave this at 0; the
+	// OpenAI endpoints have no equivalent frame, since both put the
+	// prompt count in the terminal usage payload. A consumer therefore
+	// takes whichever of the two is non-zero — never the later one
+	// unconditionally, which would zero the Anthropic count.
+	InputTokens int `json:"input_tokens"`
 	// OutputTokensDetails carries Anthropic's exact billed breakdown.
 	// ThinkingTokens counts the raw internal reasoning (always the full
 	// amount regardless of thinking.display); 0 when the API omits it.
