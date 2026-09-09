@@ -54,12 +54,36 @@ func TestEveryDeclarationFieldIsWrittenByTheUnparser(t *testing.T) {
 		"CursorBlock", "CursorSetting", "SupervisorDecl", "MCPServerDecl", "MCPAuthDecl",
 		"MCPConfigDecl", "RecoveryBlock", "VarField", "SecretField", "AttachmentField",
 		"PromptDecl", "SchemaDecl", "SchemaField", "Preset", "PresetValue", "Literal",
+		"VarsBlock", "SecretsBlock", "PresetsBlock", "AttachmentsBlock",
+	}
+	// The list above is kept complete by construction, the way the JSON
+	// codec's own sweep is: a declaration type nobody listed is exactly the
+	// hole a sweep exists to close. Four block types were already carrying
+	// entries in `unwritten` that could never fire, because the type itself
+	// was never swept.
+	notSwept := map[string]string{
+		"File":    "the container; its declaration lists are what the types above describe",
+		"Comment": "comments are not program — the writer hoists them and Verify excludes them",
+		"Span":    "source positions never travel",
+		"Pos":     "source positions never travel",
 	}
 	writer, err := os.ReadFile("unparse.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fields := structFields(t, filepath.Join("..", "ast", "ast.go"))
+	listed := map[string]bool{}
+	for _, typ := range types {
+		listed[typ] = true
+	}
+	for typ := range fields {
+		if listed[typ] {
+			continue
+		}
+		if _, ok := notSwept[typ]; !ok {
+			t.Errorf("ast.%s is in neither the sweep's type list nor its exclusions — a field added to it can be dropped by the unparser unseen", typ)
+		}
+	}
 	for _, typ := range types {
 		fs, ok := fields[typ]
 		if !ok {
