@@ -85,12 +85,10 @@ func newIncludeBudget() *includeBudget {
 }
 
 // charge books one inlined file against the budget, returning the error that
-// refuses the expansion once either axis runs out. The first refusal is the
-// only one reported.
+// refuses the expansion once either axis runs out. Callers must not call it
+// on a spent budget — the walk stops at the first refusal — so this reports
+// the exhaustion exactly once.
 func (b *includeBudget) charge(rel string, n int) error {
-	if b.exhausted {
-		return errIncludeBudgetSpent
-	}
 	b.remainingBytes -= int64(n)
 	b.remainingFiles--
 	if b.remainingBytes < 0 || b.remainingFiles < 0 {
@@ -100,10 +98,6 @@ func (b *includeBudget) charge(rel string, n int) error {
 	}
 	return nil
 }
-
-// errIncludeBudgetSpent marks the expansions after the first refusal: they
-// are dropped silently, the one error already collected being the cause.
-var errIncludeBudgetSpent = errors.New("include: expansion budget exhausted")
 
 // expandPromptIncludesNested expands to a fixed point, so no marker
 // survives the expansion: a marker inside an included file used to be left
@@ -125,9 +119,7 @@ func expandPromptIncludesNested(body, baseDir string, stack []string, budget *in
 			return ""
 		}
 		if err := budget.charge(rel, len(content)); err != nil {
-			if !errors.Is(err, errIncludeBudgetSpent) {
-				errs = append(errs, err)
-			}
+			errs = append(errs, err)
 			return ""
 		}
 		if !HasPromptInclude(content) {
