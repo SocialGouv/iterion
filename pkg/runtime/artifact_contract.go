@@ -107,6 +107,18 @@ func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run 
 // resume, and a preflight must make the same check before callers consume
 // staged inputs.
 func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run) error {
+	return validateCheckpointArtifactAvailability(ctx, s, run, nil)
+}
+
+// ValidateCheckpointArtifactAvailabilityExcept applies the unconditional
+// physical-availability guard while excluding producers a rewind is about to
+// invalidate. Only revisions that survive the mutation need to remain
+// executable.
+func ValidateCheckpointArtifactAvailabilityExcept(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) error {
+	return validateCheckpointArtifactAvailability(ctx, s, run, ignoredNodes)
+}
+
+func validateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) error {
 	if run == nil || run.Checkpoint == nil || s == nil {
 		return nil
 	}
@@ -117,6 +129,9 @@ func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStor
 	revisions := make(map[revisionKey]string)
 	add := func(exact map[string]store.ArtifactRevisionRef) error {
 		for logicalRef, revision := range exact {
+			if ignoredNodes[revision.NodeID] {
+				continue
+			}
 			if revision.NodeID == "" {
 				return fmt.Errorf("%w: artifact %q has no persisted producer identity", ErrArtifactContractUnavailable, logicalRef)
 			}
@@ -174,6 +189,13 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	if policy == store.ContextPolicyLegacy {
 		return nil
 	}
+	// A forced migration acknowledges all source-derived differences for one
+	// exact target revision. The acknowledgement is persisted on the run when
+	// the engine restamps its source, so later ordinary and automatic resumes
+	// do not require an operator to repeat --force. Artifact identity and exact
+	// dependency availability remain validated below on every resume.
+	sourceChangeAccepted := forceSourceChange ||
+		(currentRevision != "" && run.ArtifactCompatibilityRevision == currentRevision)
 	var violations []string
 	type validationKey struct {
 		logicalRef string
@@ -224,7 +246,7 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		// names, schemas, node presence and the producer revision all derive
 		// from that source, so they must be waived together. Persisted contract
 		// integrity and dependency versions remain enforced below.
-		if !forceSourceChange {
+		if !sourceChangeAccepted {
 			node, ok := wf.Nodes[nodeID]
 			if !ok {
 				violations = append(violations, fmt.Sprintf("artifact %q was produced by missing node %q", contract.LogicalRef, nodeID))

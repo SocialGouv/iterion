@@ -68,10 +68,67 @@ func TestValidateArtifactContractsRefusesIncompatibleRevisionInEnforce(t *testin
 	}
 }
 
+func TestForcedArtifactCompatibilitySurvivesWorkflowRestamp(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-forced-migration", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowHash = "rev-old"
+	run.WorkflowSource = "old source"
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0,
+		Contract: &store.ArtifactContract{
+			LogicalRef: "old-report", ProducerNode: "writer", ProducerRevision: "rev-old", Version: 0,
+		},
+		Data: map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new-report"},
+	}}
+	if err := ValidateArtifactContracts(ctx, s, run, wf, "rev-new", true); err != nil {
+		t.Fatalf("forced migration preflight: %v", err)
+	}
+	eng := &Engine{
+		store: s, workflowHash: "rev-new", workflowSource: "new source", forceResume: true,
+	}
+	eng.restampWorkflowSource(ctx, run)
+	persisted, err := s.LoadRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkflowHash != "rev-new" || persisted.ArtifactCompatibilityRevision != "rev-new" {
+		t.Fatalf("restamped migration = hash %q compatibility %q", persisted.WorkflowHash, persisted.ArtifactCompatibilityRevision)
+	}
+	if err := ValidateArtifactContracts(ctx, s, persisted, wf, "rev-new", false); err != nil {
+		t.Fatalf("ordinary resume demanded --force again after accepted migration: %v", err)
+	}
+}
+
 type artifactReadErrorStore struct{ store.RunStore }
 
 func (artifactReadErrorStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
 	return nil, errors.New("blob unavailable")
+}
+
+type artifactNodeReadErrorStore struct {
+	store.RunStore
+	nodeID string
+}
+
+func (s artifactNodeReadErrorStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	if nodeID == s.nodeID {
+		return nil, errors.New("blob unavailable")
+	}
+	return s.RunStore.LoadArtifact(ctx, runID, nodeID, version)
 }
 
 func TestValidateArtifactContractsFailsClosedOnUnreadableEnforcedArtifact(t *testing.T) {
@@ -160,6 +217,33 @@ func TestValidateCheckpointArtifactAvailabilityIgnoresPolicy(t *testing.T) {
 	err = ValidateCheckpointArtifactAvailability(ctx, artifactReadErrorStore{base}, run)
 	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) || !strings.Contains(err.Error(), "blob unavailable") {
 		t.Fatalf("legacy-policy availability error = %v", err)
+	}
+}
+
+func TestValidateCheckpointArtifactAvailabilityExceptSkipsInvalidatedProducer(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	run, err := base.CreateRun(ctx, "artifact-availability-rewind", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nodeID := range []string{"retained", "invalidated"} {
+		if err := base.WriteArtifact(ctx, &store.Artifact{
+			RunID: run.ID, NodeID: nodeID, Version: 0, Data: map[string]any{"node": nodeID},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Checkpoint = &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"kept":    {NodeID: "retained", Version: 0},
+		"removed": {NodeID: "invalidated", Version: 0},
+	}}
+	s := artifactNodeReadErrorStore{RunStore: base, nodeID: "invalidated"}
+	if err := ValidateCheckpointArtifactAvailability(ctx, s, run); err == nil {
+		t.Fatal("unreadable invalidated producer was unexpectedly available")
+	}
+	if err := ValidateCheckpointArtifactAvailabilityExcept(ctx, s, run, map[string]bool{"invalidated": true}); err != nil {
+		t.Fatalf("rewind availability guard did not exclude invalidated producer: %v", err)
 	}
 }
 

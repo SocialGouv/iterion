@@ -115,6 +115,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// the workflow source + bundle without re-supplying.
 	child.FilePath = parent.FilePath
 	child.WorkflowHash = parent.WorkflowHash
+	child.ArtifactCompatibilityRevision = parent.ArtifactCompatibilityRevision
 	child.Preset = parent.Preset
 	child.BundleHash = parent.BundleHash
 	child.BundlePath = parent.BundlePath

@@ -2547,16 +2547,27 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // one was needed, the third more, and the cost grows monotonically —
 // precisely the loop the feature exists to cheapen.
 //
-// Only refreshed when the engine holds a source AND it actually differs,
-// so a plain resume touches nothing.
+// The source is refreshed only when the engine holds a different value. A
+// forced resume also persists its artifact-compatibility acknowledgement for
+// the target revision; an ordinary unchanged resume still touches nothing.
 func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	src := e.resolveWorkflowSource()
-	if src == "" || r == nil || src == r.WorkflowSource {
+	if r == nil {
 		return
 	}
-	r.WorkflowSource = src
-	if e.workflowHash != "" {
-		r.WorkflowHash = e.workflowHash
+	sourceChanged := src != "" && src != r.WorkflowSource
+	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
+	if !sourceChanged && !recordArtifactCompatibility {
+		return
+	}
+	if sourceChanged {
+		r.WorkflowSource = src
+		if e.workflowHash != "" {
+			r.WorkflowHash = e.workflowHash
+		}
+	}
+	if recordArtifactCompatibility {
+		r.ArtifactCompatibilityRevision = e.workflowHash
 	}
 	// Re-read before writing. BOTH call sites run AFTER the resume CAS
 	// flipped the run to `running` — and the claim helpers mutate their
@@ -2579,6 +2590,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	}
 	fresh.WorkflowSource = r.WorkflowSource
 	fresh.WorkflowHash = r.WorkflowHash
+	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
 	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}

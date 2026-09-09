@@ -520,7 +520,13 @@ type Run struct {
 
 	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+	// ArtifactCompatibilityRevision records the workflow revision for which an
+	// operator explicitly accepted the source-derived portions of every
+	// retained artifact contract with --force. Artifact bodies remain immutable;
+	// this run-level acknowledgement keeps a later ordinary/automatic resume
+	// from demanding the same force flag again after WorkflowHash is restamped.
+	ArtifactCompatibilityRevision string `json:"artifact_compatibility_revision,omitempty" bson:"artifact_compatibility_revision,omitempty"`
+	FilePath                      string `json:"file_path,omitempty" bson:"file_path,omitempty"` // absolute .bot source path captured at launch (resume without re-supplying file)
 	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
 	// answers "did the source change since?"; this answers "which node
 	// changed", which is what `iterion rewind --auto` needs to target the

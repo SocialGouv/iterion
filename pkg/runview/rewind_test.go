@@ -177,6 +177,18 @@ func seedRun(t *testing.T, botSrc string, cp *store.Checkpoint, status store.Run
 	return svc, st, runID
 }
 
+type rewindArtifactReadErrorStore struct {
+	store.RunStore
+	nodeID string
+}
+
+func (s rewindArtifactReadErrorStore) LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	if nodeID == s.nodeID {
+		return nil, errors.New("artifact backend unavailable")
+	}
+	return s.RunStore.LoadArtifact(ctx, runID, nodeID, version)
+}
+
 func outputsOf(ids ...string) map[string]map[string]any {
 	m := map[string]map[string]any{}
 	for _, id := range ids {
@@ -355,6 +367,74 @@ func TestRewind_ArtifactContractSourceChanges(t *testing.T) {
 			t.Fatalf("forced rewind rejected source-derived retained contract change: %v", err)
 		}
 	})
+}
+
+func TestRewind_RejectsUnreadableRetainedExactArtifactBeforeMutation(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:                 "verify",
+		Outputs:                outputsOf("survey", "plan", "implement", "verify"),
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "plan", Version: 0},
+		},
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: runID, NodeID: "plan", Version: 0, Data: map[string]any{"value": "plan"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.store = rewindArtifactReadErrorStore{RunStore: st, nodeID: "plan"}
+	_, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", KeepFiles: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "artifact backend unavailable") {
+		t.Fatalf("rewind with unreadable retained artifact error = %v", err)
+	}
+	persisted, loadErr := st.LoadRun(context.Background(), runID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if persisted.Status != store.RunStatusFailedResumable || persisted.Checkpoint.NodeID != "verify" {
+		t.Fatalf("failed preflight mutated run: status=%s checkpoint=%+v", persisted.Status, persisted.Checkpoint)
+	}
+}
+
+func TestRewind_InvalidatesArtifactRevisionWithoutCurrentOutput(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:                 "verify",
+		Outputs:                outputsOf("survey", "plan", "implement"),
+		ArtifactVersions:       map[string]int{"verify": 1},
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"verdict": {NodeID: "verify", Version: 0},
+		},
+	}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: runID, NodeID: "verify", Version: 0, Data: map[string]any{"value": "stale verdict"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", KeepFiles: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := persisted.Checkpoint.ArtifactRevisions["verdict"]; present {
+		t.Fatalf("invalidated revision survived without a current output: %+v", persisted.Checkpoint.ArtifactRevisions)
+	}
+	latest, err := st.LoadLatestArtifact(context.Background(), runID, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || !isRewoundArtifact(latest) {
+		t.Fatalf("invalidated artifact was not superseded: %+v", latest)
+	}
 }
 
 // TestRewind_LoopKeepsCycleAncestor is the reason downstreamOf subtracts

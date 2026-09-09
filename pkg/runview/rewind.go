@@ -387,6 +387,9 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	for _, id := range invalidated {
 		ignoredArtifacts[id] = true
 	}
+	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, run, ignoredArtifacts); err != nil {
+		return nil, err
+	}
 	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, run, wf, "", spec.Force, ignoredArtifacts); err != nil {
 		return nil, err
 	}
@@ -428,7 +431,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// but write the artifacts AFTER. WriteArtifact updates
 	// Run.ArtifactIndex inside run.json, so writing first and saving the
 	// run second would clobber that index with our stale in-memory copy.
-	tombstones := s.planArtifactTombstones(ctx, run.ID, cp, dropped)
+	tombstones := s.planArtifactTombstones(ctx, run.ID, cp, invalidated)
 
 	// Release the subbot child pointers of the dropped nodes. Without
 	// this the rewind is silently a no-op for subbots: ReattachSubbotChild
@@ -600,6 +603,8 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	for _, id := range dropped {
 		delete(cp.Outputs, id)
 		delete(cp.SelectedIncoming, id)
+	}
+	for _, id := range invalidated {
 		for logicalRef, revision := range cp.ArtifactRevisions {
 			if revision.NodeID == id {
 				delete(cp.ArtifactRevisions, logicalRef)
@@ -726,7 +731,7 @@ type artifactTombstone struct {
 	supersedes int
 }
 
-// planArtifactTombstones decides which dropped nodes have a published
+// planArtifactTombstones decides which invalidated nodes have a published
 // artifact that must be superseded, and reserves the version each marker
 // will occupy.
 //
@@ -739,9 +744,9 @@ type artifactTombstone struct {
 // already invalidated. Appending a marker version fixes that while
 // keeping every earlier version on disk and readable, which is the same
 // append-only contract events.jsonl follows.
-func (s *Service) planArtifactTombstones(ctx context.Context, runID string, cp *store.Checkpoint, dropped []string) []artifactTombstone {
+func (s *Service) planArtifactTombstones(ctx context.Context, runID string, cp *store.Checkpoint, invalidated []string) []artifactTombstone {
 	var out []artifactTombstone
-	for _, id := range dropped {
+	for _, id := range invalidated {
 		latest, err := s.store.LoadLatestArtifact(ctx, runID, id)
 		if err != nil || latest == nil {
 			// No artifact published by this node — nothing to supersede.
