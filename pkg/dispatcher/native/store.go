@@ -67,6 +67,11 @@ type Store struct {
 	// was armed (the fast path needs no net) or when the net is off.
 	rescanner *indexRescanner
 
+	// closing is set under mu before Close snapshots the background workers.
+	// It prevents a watcher-loss callback that was already in flight from
+	// installing a new rescanner after that snapshot.
+	closing bool
+
 	// writes counts the in-process mutations of issues/ (every file write
 	// through writeIssueLocked, every Delete), under mu. Reconcile scans
 	// the disk WITHOUT the mutex and compares this counter before it
@@ -213,6 +218,7 @@ func (s *Store) Close() error {
 	// watcher goroutine — and close outside it: closing the watcher waits
 	// for its loop, which may itself be waiting for the store mutex.
 	s.mu.Lock()
+	s.closing = true
 	rescanner, watcher := s.rescanner, s.watcher
 	s.mu.Unlock()
 	if rescanner != nil {
@@ -255,7 +261,7 @@ var errWatchLost = errors.New("fsnotify watch lost mid-life (event channel close
 // its last snapshot until restart.
 func (s *Store) watchLost(iw *indexWatcher) {
 	s.mu.Lock()
-	if s.watcher != iw {
+	if s.closing || s.watcher != iw {
 		s.mu.Unlock()
 		return
 	}

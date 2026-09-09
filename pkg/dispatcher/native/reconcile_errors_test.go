@@ -110,3 +110,39 @@ func TestWatcher_ArmsTheNetWhenTheWatchIsLost(t *testing.T) {
 	}
 	t.Fatal("after the watch was lost, an out-of-process create never became visible")
 }
+
+// A watcher-loss callback may already have passed its stop-channel check when
+// Close begins. Once Close has marked the store as closing, that late callback
+// must not install a fresh rescanner that outlives the store.
+func TestWatcherLossDoesNotArmNetAfterCloseBegins(t *testing.T) {
+	setRescanInterval(t, 20*time.Millisecond)
+
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if s.watcher == nil {
+		_ = s.Close()
+		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
+	}
+	watcher := s.watcher
+
+	// Stage the exact Close boundary under the same mutex: a loss callback
+	// that reaches watchLost after this point is late and must be ignored.
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	s.watchLost(watcher)
+
+	s.mu.Lock()
+	rescanner := s.rescanner
+	s.mu.Unlock()
+	if rescanner != nil {
+		_ = rescanner.Close()
+		_ = watcher.Close()
+		t.Fatal("watcher loss armed a fallback rescanner after close began")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}

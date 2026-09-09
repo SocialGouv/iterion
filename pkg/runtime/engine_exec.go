@@ -689,6 +689,9 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 		return "", err
 	}
 	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return "", e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
+		}
 		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
 	}
 

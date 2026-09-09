@@ -494,6 +494,44 @@ func TestSchemaValidation_DurationInterruptedCorrectionResumesUnusedAttempt(t *t
 	}
 }
 
+func TestSchemaValidation_CancellationDuringCorrectionCancelsRun(t *testing.T) {
+	st := tmpStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "invalid", "score": "not-an-int"}, nil
+	})
+	exec.correct = func(correctionCtx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		cancel()
+		<-correctionCtx.Done()
+		return nil, OutputCorrectionUsage{Tokens: 3}, correctionCtx.Err()
+	}
+
+	err := New(
+		validationWorkflow(),
+		st,
+		exec,
+		WithOutputValidation(true),
+		WithOutputCorrectionBudget(2),
+		WithWorkDir(t.TempDir()),
+	).Run(ctx, "run-val-correction-cancel", nil)
+	if !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("Run error = %v, want ErrRunCancelled", err)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-cancel")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Status != store.RunStatusCancelled || run.FailureCode != store.FailureCancelled {
+		t.Fatalf("cancelled run = status %s, failure code %s", run.Status, run.FailureCode)
+	}
+	episode := run.OutputCorrections["my_agent"]
+	if episode.Status != correctionStatusActive || episode.Attempts != 1 {
+		t.Fatalf("cancelled correction episode = %+v, want active with one consumed attempt", episode)
+	}
+}
+
 func TestCorrectionInvocationIdentitySeparatesLoopsAndBranches(t *testing.T) {
 	wf := validationWorkflow()
 	wf.Loops = map[string]*ir.Loop{

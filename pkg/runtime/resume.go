@@ -1564,6 +1564,9 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		return false, err
 	}
 	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return false, e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
 		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 	rs.outputs[nodeID] = output
@@ -2223,6 +2226,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		return err
 	}
 	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
 		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 

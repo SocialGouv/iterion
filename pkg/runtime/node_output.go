@@ -197,7 +197,29 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			}
 			episode.UpdatedAt = time.Now().UTC()
 			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
-			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
+			// When the run itself was interrupted, the parent context can no
+			// longer carry teardown bookkeeping to the store. Detach this one
+			// bounded write, just like cancellation checkpointing does, so the
+			// paid attempt remains consumed across a later manual resume.
+			parentErr := ctx.Err()
+			persistCtx := ctx
+			cancelPersist := func() {}
+			if parentErr != nil {
+				persistCtx, cancelPersist = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			}
+			persistErr := e.persistCorrectionEpisode(persistCtx, rs.runID, ledgerKey, episode)
+			cancelPersist()
+			if parentErr != nil {
+				if persistErr != nil {
+					e.logger.Warn("output correction teardown ledger could not be persisted: %v", persistErr)
+				}
+				// Preserve the run interruption instead of laundering it into the
+				// schema error that originally triggered correction. Trunk callers
+				// route this through handleContextDoneWithCheckpoint; branch callers
+				// propagate it to the cancellation-aware fan-out collector.
+				return current, parentErr
+			}
+			if persistErr != nil {
 				return current, fmt.Errorf("output correction failed: %v; ledger: %w", episode.LastError, persistErr)
 			}
 			if budgetDeadline && errors.Is(correctionCtx.Err(), context.DeadlineExceeded) {
