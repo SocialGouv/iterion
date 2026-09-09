@@ -102,15 +102,16 @@ The rollout is deliberately reversible:
    ledgers: they are the evidence needed to explain the pilot and make a later
    resume safe.
 
-The output correction budget is deliberately **not** on that list. Correction
-runs only for an engine built with `runtime.WithOutputValidation` and an
-executor implementing `runtime.OutputCorrector`, and no production path has
-either today — the production `ClawExecutor` validates and retries upstream of
-the engine's optional path. An `ITERION_OUTPUT_CORRECTION_BUDGET` would read
-as an emergency lever during an incident and do nothing, so the rollout does
-not offer one; `runtime.WithOutputCorrectionBudget` remains the explicit API
-for a custom or test engine. The `output_corrections` ledger stays readable
-either way — pre-pilot runs simply have none.
+The output correction budget is deliberately **not a rollback lever** for this
+pilot. `ITERION_OUTPUT_CORRECTION_BUDGET` does exist: it sets the process-wide
+default (two attempts when unset), while `runtime.WithOutputCorrectionBudget`
+overrides it for one engine. Correction still runs only when output validation
+is enabled and the executor implements `runtime.OutputCorrector`; no production
+path currently satisfies both conditions because `ClawExecutor` validates and
+retries upstream of this optional engine path. Changing the variable therefore
+does not disable the other reliability controls listed above. The
+`output_corrections` ledger stays readable either way — pre-pilot runs simply
+have none.
 
 ### The two variables, and which one wins
 

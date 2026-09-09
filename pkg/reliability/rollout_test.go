@@ -122,10 +122,11 @@ var envAssignment = regexp.MustCompile(`\bset ([A-Z][A-Z0-9_]*)=(\S+)`)
 // against a hostile baseline and checks the observable outcome, because a
 // plan is only an emergency lever if pulling it changes something.
 //
-// This is the ratchet for the two defects the plan shipped with: an action
-// naming ITERION_OUTPUT_CORRECTION_BUDGET, which no production path reads, and
-// an ITERION_RELIABILITY_MODE=legacy that the older alias could shadow. Both
-// left an operator following the documented procedure still enforcing.
+// This is the ratchet for the two defects the plan shipped with: treating
+// ITERION_OUTPUT_CORRECTION_BUDGET as a rollout lever even though no production
+// path satisfies the correction prerequisites, and an
+// ITERION_RELIABILITY_MODE=legacy that the older alias could shadow. Both left
+// an operator following the documented procedure still enforcing.
 func TestRollbackPlanActionsActuallyFire(t *testing.T) {
 	// A deployment mid-pilot, enforcing through the new switch AND the older
 	// alias — the host on which the rollback has the most to undo.

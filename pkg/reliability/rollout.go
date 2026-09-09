@@ -109,15 +109,16 @@ func (m Mode) ContextPolicy() store.ContextPolicy {
 // Watcher cursor persistence is decided per launch surface, so it is reported
 // only from the cursors each run actually wrote, never as a global setting.
 //
-// The output correction budget deliberately is not a field here at all:
-// correction fires only for an
-// engine built with runtime.WithOutputValidation AND an executor implementing
-// runtime.OutputCorrector, and neither exists on a production path today
-// (the sole corrector in the tree is a test double, and the production
-// ClawExecutor validates and retries upstream of the engine's optional path).
-// An env var for it would read as an emergency lever and do nothing, which is
-// worse than no lever at all — runtime.WithOutputCorrectionBudget stays the
-// explicit API for a custom or test engine.
+// The output correction budget deliberately is not a Config field here: it is
+// not a rollback lever for the reliability-mode pilot. The existing
+// ITERION_OUTPUT_CORRECTION_BUDGET variable sets the process-wide engine
+// default, and runtime.WithOutputCorrectionBudget overrides it per engine, but
+// correction fires only when runtime.WithOutputValidation is enabled AND the
+// executor implements runtime.OutputCorrector. No production path currently
+// satisfies both conditions (the sole corrector in the tree is a test double,
+// and ClawExecutor validates and retries upstream of the engine's optional
+// path), so changing that budget does not disable the pilot controls reported
+// by Config.
 type Config struct {
 	Mode                  Mode
 	RetryCircuitThreshold int
