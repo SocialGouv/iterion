@@ -63,11 +63,49 @@ dropping work. Threshold and cooldown are controlled by
 
 ## Progress-sensitive watchers (tranche F)
 
-Supervisors keep a durable cursor per `(run, supervisor, watched-node set)`.
-The cursor stores the last progress fingerprint, evaluation/action trigger and
-next evaluation time. A repeated event therefore cannot bypass the cooldown
-by being redelivered, and a process restart restores the same suppression
-window before it can enqueue another corrective message. Failed evaluator
-calls clear only the trigger fingerprint and remain bounded by the existing
-consecutive-failure cap. Launch surfaces that expose a run store opt in via the
-capability method; other observers retain the existing in-memory behaviour.
+Supervisors keep a durable cursor per `(run, supervisor, watched-node set)` on
+the run document. The cursor stores the last progress fingerprint, the trigger
+fingerprint that was last consumed, the last action, the evaluation window and
+the run's completed evaluation count. The watch set is canonicalised (sorted,
+deduplicated) before it is hashed, so reordering `watches:` — or the `iterion
+supervise --node` flags — addresses the same cursor rather than silently
+minting a fresh one.
+
+What it buys:
+
+- **A redelivered event cannot bypass the cooldown.** The trigger fingerprint
+  is `(wake reason, last progress sample)`, so the same evidence never earns a
+  second evaluation, even on a high-signal monitor wake that bypasses the
+  ordinary cooldown. New progress produces a different fingerprint and stays
+  eligible immediately.
+- **A restart cannot re-enqueue a correction it already sent.** The consumed
+  trigger is written *before* the steering message is enqueued, not after —
+  the inbox append is durable and un-deduplicated, so the other ordering left
+  a window where a crash replayed the correction. The reverse exposure is one
+  intervention, which the next event re-earns.
+- **`max_evals` caps the run, not the process.** The completed evaluation
+  count rides the cursor, so a resumed run or a redeployed pod continues
+  spending the same budget. Consecutive evaluator failures and the bot's
+  `done` flag deliberately still reset on a restart.
+
+Failed evaluator calls clear only the trigger fingerprint (the signal was not
+consumed) and remain bounded by the existing consecutive-failure cap. The
+cursor write is issued on a context detached from the coordinator's own
+cancellation — otherwise the last write before a pod goes down, the one a
+restart depends on, would be dropped by any store that honours `ctx` — and
+every way it can fail is logged rather than swallowed.
+
+Launch surfaces opt in through the `WatcherProgressStoreProvider` capability
+method: `runview.Service` (studio, `iterion supervise --run-id`) and
+`supervise.StoreInjector` (CLI `run`/`resume`, the dispatcher's engine runner,
+and the cloud runner pod) both expose one, so the cursor is present where a
+restart matters most. Observers with no run store behind them — the raw
+`claude` session attach — keep the previous in-memory cooldown and a
+per-process eval budget.
+
+One bound worth knowing: the trigger-fingerprint half of the suppression needs
+an observer that replays the run's history, because the restored fingerprint
+has to be re-derived from the same last event. `runview.Service.ObserveRun`
+replays from `events.jsonl` and dedupes by seq; `supervise.EventHub` is
+live-only, so after a restart there it is the restored *cooldown* that holds
+until the next event arrives.
