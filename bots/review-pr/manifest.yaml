@@ -205,6 +205,15 @@ forge:
   token_scopes:
     pull_requests: write     # post the review + inline ```suggestion blocks
     repository: read         # clone + read the diff
+    issues: read             # ticket conformance reads the issues the PR
+                             # closes with this same connection (forge-native
+                             # mode, v0.9.0). Declaration accuracy: this block
+                             # is advisory — it feeds the provisioning PREVIEW
+                             # an operator sizes permissions from
+                             # (forge.UnionScopes → EnablePreview.Scopes), not
+                             # the minted token, whose permissions come from
+                             # RuntimeInstallationPermissions. Undeclared, the
+                             # preview understates what Revi actually reads.
     statuses: write          # post the revi/review merge-gate commit status
                              # (GitHub App perm "Commit statuses: Read and
                              # write"; without it SetCommitStatus 403s
