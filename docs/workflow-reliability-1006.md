@@ -55,8 +55,37 @@ Cloud runners retain the per-run retry budget, but usage-window failures also
 update a tenant-scoped durable circuit keyed by workflow revision. Once the
 shared failure threshold is reached, the next retry wave is delayed until the
 breaker cooldown instead of starting one pod per run against the same provider
-wall. A successful run clears the streak. The circuit is an optional Mongo
-capability; local/filesystem stores keep their existing retry behaviour, and a
-circuit-store outage falls back to the durable per-run retry rather than
-dropping work. Threshold and cooldown are controlled by
-`ITERION_RETRY_CIRCUIT_THRESHOLD` and `ITERION_RETRY_CIRCUIT_COOLDOWN`.
+wall. A successful run clears the streak.
+
+**The breaker moves a wake-up; it never overrides the run's own policy.** The
+adopted cooldown is spread by the policy's `jitter` and clamped to its
+`max_wait`, exactly like every other instant the retry path computes. Both
+matter more here than elsewhere, because `open_until` is ONE durable instant
+every run behind the breaker reads: unspread it would arm them all for the
+same moment, and a breaker that replaces a storm of pods with a storm of pods
+one cooldown later has bought nothing. The clamp is the same precedence the
+platform ceiling obeys — an authority outside the run may only ever *lower* a
+policy. A cooldown the ceiling clamps back is reported as not having
+contributed, so the `run_retry_scheduled` event's `reset_source` never claims
+a wait the run did not take.
+
+**The streak decays.** A failure more than one cooldown after the previous one
+restarts the count at 1. Without that, `consecutive_failures` could only ever
+be cleared by a *successful* run of the same workflow revision — which a
+revision that always fails never produces — so a single old storm would arm a
+tenant-wide cooldown on the next isolated failure, forever. The decay is also
+what keeps the threshold meaning failures *across runs, close together*
+rather than one lonely run's retries, which are floored minutes to hours
+apart, adding up over a week.
+
+The circuit is an optional Mongo capability; local/filesystem stores keep
+their existing retry behaviour. A circuit-store outage falls back to the
+durable per-run retry rather than dropping work — and because a store outage
+usually presents as latency rather than a prompt error, the circuit update
+gets its own slice of the arming's store budget so a wedged collection cannot
+starve the write that persists the retry.
+
+Threshold and cooldown are controlled by `ITERION_RETRY_CIRCUIT_THRESHOLD`
+(a positive integer) and `ITERION_RETRY_CIRCUIT_COOLDOWN` (a Go duration, e.g.
+`15m`). Neither is an off switch: a value that is not usable keeps the default
+and logs one line on stderr saying so, rather than reading as configured.

@@ -6,9 +6,11 @@ package retrycoord
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -28,19 +30,53 @@ type Config struct {
 	Cooldown  time.Duration
 }
 
+// FromEnv resolves the circuit bounds, falling back to the package defaults.
+//
+// A value it cannot use keeps the default and SAYS SO on stderr, once per
+// process. Silence was the operability hole: `ITERION_RETRY_CIRCUIT_COOLDOWN=15`
+// (no unit) or a typo'd threshold reads as configured, deploys clean, and
+// runs the default forever with nothing in the logs — on a knob whose whole
+// purpose is to be tuned against a live provider. The repo already fails this
+// way loudly for ITERION_BUDGET_EXIT_GRACE; this matches it.
 func FromEnv() Config {
-	c := Config{Threshold: DefaultThreshold, Cooldown: DefaultCooldown}
-	if raw := strings.TrimSpace(os.Getenv(EnvThreshold)); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			c.Threshold = n
-		}
-	}
-	if raw := strings.TrimSpace(os.Getenv(EnvCooldown)); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
-			c.Cooldown = d
-		}
+	c, problems := configFromEnv(os.Getenv)
+	if len(problems) > 0 {
+		envWarnOnce.Do(func() {
+			for _, p := range problems {
+				fmt.Fprintf(os.Stderr, "iterion: %s\n", p)
+			}
+		})
 	}
 	return c
+}
+
+var envWarnOnce sync.Once
+
+// configFromEnv is FromEnv's pure half: it returns the resolved config plus
+// one human-readable line per value it had to reject, so the rejection is
+// testable without capturing stderr or fighting a sync.Once.
+func configFromEnv(getenv func(string) string) (Config, []string) {
+	c := Config{Threshold: DefaultThreshold, Cooldown: DefaultCooldown}
+	var problems []string
+	if raw := strings.TrimSpace(getenv(EnvThreshold)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			c.Threshold = n
+		} else {
+			problems = append(problems, fmt.Sprintf(
+				"%s=%q is not a positive integer — keeping the default threshold of %d",
+				EnvThreshold, raw, DefaultThreshold))
+		}
+	}
+	if raw := strings.TrimSpace(getenv(EnvCooldown)); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			c.Cooldown = d
+		} else {
+			problems = append(problems, fmt.Sprintf(
+				"%s=%q is not a positive Go duration (e.g. 15m) — keeping the default cooldown of %s",
+				EnvCooldown, raw, DefaultCooldown))
+		}
+	}
+	return c, problems
 }
 
 // Key derives a stable, non-secret breaker identity. WorkflowHash is
