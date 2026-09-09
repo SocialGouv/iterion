@@ -268,6 +268,44 @@ with updated workflow (force)** retry. Force is useful after repairing the
 workflow, but it is an operator assertion that stored outputs, node IDs,
 schemas, and the new graph are still compatible.
 
+### Artifact contracts (`enforce` execution context)
+
+A run launched under the `enforce` context policy also validates the
+contract each published artifact was written with, before the resume claims
+the checkpoint or touches the workspace. The refusal is nondestructive: the
+run keeps its resumable status.
+
+What refuses:
+
+| Condition | Why |
+|---|---|
+| The producing node's `publish:` name changed | Downstream `{{artifacts.<name>}}` would resolve to something else |
+| Its `output:` schema changed — the reference *or* the resolved body | The stored output no longer matches the shape the graph expects |
+| The contract is incomplete, or names another producer/version | A misbound or corrupted record |
+| The artifact exists in the index but cannot be READ | Unavailable is not compatible; enforce fails closed |
+| A required dependency is absent or older than the contract asks | The downstream node would be fed a revision it was not written against |
+
+What does not refuse — reported as a warning instead: an artifact produced
+by another workflow revision (that is the source-hash check above, and its
+override is `--force`), an artifact whose producing node the workflow no
+longer declares (nothing can reference it), an index entry with no artifact
+behind it, and any artifact written before contracts existed.
+
+**`--force` does not waive these.** Force is the operator's assertion that
+the stored outputs are still compatible; these checks are what test that
+assertion, so waiving them would make the flag strictly more dangerous. The
+way through a genuine incompatibility is to invalidate the offending output
+so its node produces a new one:
+
+```sh
+iterion rewind --run-id <id> --node <producing-node>
+iterion resume --run-id <id> --file <bot> --force
+```
+
+Under the `report` and legacy policies nothing is refused: the violations
+are logged as what `enforce` would have rejected, so a deployment can
+measure the flip before making it.
+
 `--file` defaults to the persisted `FilePath`. Bundle runs also persist their
 bundle path; resume reopens a `.botz` or bundle directory so prompts, skills,
 attachments, recipes, and the selected preset are restored. If the original
@@ -453,6 +491,12 @@ Rewind resolves "downstream" against the workflow source **as it is now**,
 which is why it performs no hash check — you rewind precisely because you
 edited the `.bot`. The resume that follows still needs `--force`. Pass
 `--file` when the source is not where the run recorded it.
+
+Under an `enforce` context the rewind validates artifact contracts too, but
+only over the artifacts that SURVIVE it: the outputs it is about to
+invalidate are exactly the ones the operator edited the node for, so
+checking them would refuse the repair with the damage as the reason. That
+is also what makes rewind the escape hatch a refused resume points at.
 
 ### Subbots and parallel branches
 
