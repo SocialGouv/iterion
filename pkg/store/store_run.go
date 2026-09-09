@@ -1028,6 +1028,26 @@ func (s *FilesystemRunStore) SetRunLLMIdle(_ context.Context, runID string, idle
 	return s.writeRun(r)
 }
 
+// SetWatcherCursor updates one durable supervisor cursor under the store
+// mutex, without replacing status/checkpoint fields owned by the engine.
+func (s *FilesystemRunStore) SetWatcherCursor(_ context.Context, runID, watcherID string, cursor WatcherCursor) error {
+	if watcherID == "" {
+		return fmt.Errorf("store: watcher cursor id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.WatcherCursors == nil {
+		r.WatcherCursors = make(map[string]WatcherCursor)
+	}
+	r.WatcherCursors[watcherID] = cursor
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // SetRunBudgetOverrides persists the operator's launch-time budget ask
 // (see RunStore). Load-modify-save under the store mutex, like
 // SetRunBudgetSnapshot below, so a status transition racing this write
