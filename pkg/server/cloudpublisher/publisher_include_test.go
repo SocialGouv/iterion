@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -102,6 +103,60 @@ func TestBundleLaunchInlinesNestedIncludes(t *testing.T) {
 	}
 	if strings.Contains(cr.Workflow.Prompts["p"].Body, "THE POD'S OWN FILE") {
 		t.Fatal("the runner read its own working directory into the prompt")
+	}
+}
+
+// The entry a bundle launch parses as is the snapshot's own main.bot, which
+// bundle.Snapshot.Validate guarantees is there — never a name taken from the
+// spec's file path. That path is the CLIENT's word: on a resume it comes
+// straight off the request body, while the bundle dir was built by this
+// server, so a name derived from it can point at a file the snapshot does
+// not hold and refuse a launch whose includes sit right beside the entry.
+func TestBundleLaunchParsesTheSnapshotEntryNotTheClientPath(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"main.bot": "prompt p:\n  {{include \"rules.md\"}}\n\nworkflow main:\n  entry: done\n",
+		"rules.md": "RULES-FROM-THE-SNAPSHOT",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := os.ReadFile(filepath.Join(dir, "main.bot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A path whose base names no file of the snapshot: taking the entry from
+	// it would stat a file that is not there and refuse the publish.
+	body, err := marshalIRFromSpec("bots/probe/not-the-entry.bot", string(source), dir)
+	if err != nil {
+		t.Fatalf("a client path that names another file refused the launch: %v", err)
+	}
+	if !bytes.Contains(body, []byte("RULES-FROM-THE-SNAPSHOT")) {
+		t.Errorf("the include did not resolve beside the snapshot entry: %s", body)
+	}
+}
+
+// The invariant the entry name above rests on, pinned here because it is
+// enforced in another package: a materialised snapshot has main.bot at its
+// root — a collection without one never gets that far. Should the snapshot
+// format ever admit another entry name, this fails here, at the site that
+// reads it, instead of at a publish.
+func TestSnapshotAlwaysMaterialisesARootMainBot(t *testing.T) {
+	snap := &bundle.Snapshot{Files: map[string]bundle.SnapshotFile{
+		"probe/other.bot": {Content: []byte("workflow main:\n  entry: done\n")},
+	}, Root: "probe"}
+	if err := snap.Validate(); err == nil {
+		t.Fatal("a collection whose entry is not main.bot was accepted")
+	}
+	snap.Files["probe/main.bot"] = bundle.SnapshotFile{Content: []byte("workflow main:\n  entry: done\n")}
+	dir, cleanup, err := snap.Materialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Stat(filepath.Join(dir, "main.bot")); err != nil {
+		t.Fatalf("a materialised snapshot has no root main.bot: %v", err)
 	}
 }
 
