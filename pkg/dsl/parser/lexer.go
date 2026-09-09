@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
 
 // Safety limits to prevent DoS from malicious .bot files.
@@ -85,14 +87,17 @@ func NewLexer(filename, src string) *Lexer {
 func detectStrictEscape(src string) bool {
 	lines := strings.SplitN(src, "\n", 32)
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if !strings.HasPrefix(trimmed, "##") {
+		// A comment is a `#` or `##` line — the same rule the lexer applies
+		// (workflowfile.CommentText is the shared definition), so a plain
+		// `# note` above the directive neither hides it nor ends the scan.
+		body, ok := workflowfile.CommentText(line)
+		if !ok {
 			return false
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(trimmed, "##"))
+		body = strings.TrimSpace(body)
 		// Accept `strict-escape: on` (with optional surrounding whitespace
 		// already trimmed) and a few cosmetic variants.
 		if body == "strict-escape: on" || body == "strict-escape:on" || body == "strict-escape = on" {
@@ -271,41 +276,46 @@ func (l *Lexer) promptBodyOpensHere(spaces int) bool {
 	if spaces <= l.indentStack[len(l.indentStack)-1] {
 		return false
 	}
-	idx := len(l.tokens) - 1
-	if idx >= 0 && l.tokens[idx].Type == TokenNewline {
-		idx--
-	}
-	if idx >= 0 && l.tokens[idx].Type == TokenColon {
-		idx--
-	}
-	if idx >= 0 && (l.tokens[idx].Type == TokenIdent || isKeywordToken(l.tokens[idx].Type)) {
-		idx--
-	}
-	return idx >= 0 && l.tokens[idx].Type == TokenPrompt
+	return l.promptHeaderEndsAt(len(l.tokens) - 1)
 }
 
 // isPromptIndent checks if the last emitted tokens before the INDENT are: prompt IDENT : NEWLINE INDENT
 func (l *Lexer) isPromptIndent() bool {
-	n := len(l.tokens)
-	if n < 4 {
-		return false
-	}
-	// tokens: ..., TokenPrompt, TokenIdent(name), TokenColon, TokenNewline, TokenIndent(just emitted)
-	// The INDENT we just emitted is at n-1
-	idx := n - 2 // should be Newline
+	// The INDENT just emitted sits at len-1; the header ends before it.
+	return l.promptHeaderEndsAt(len(l.tokens) - 2)
+}
+
+// promptHeaderEndsAt reports whether the significant tokens ending at index
+// idx are the suffix of a prompt header, `prompt <name>:` followed by an
+// optional NEWLINE. Comment tokens are skipped: a trailing `# why` on the
+// header line is a comment, not a token of the header, and must not hide the
+// body that follows (scanComment consumes the newline, so the Newline token
+// may be absent after one).
+func (l *Lexer) promptHeaderEndsAt(idx int) bool {
+	idx = l.significantIndexAt(idx)
 	if idx >= 0 && l.tokens[idx].Type == TokenNewline {
-		idx--
+		idx = l.significantIndexAt(idx - 1)
 	}
 	if idx >= 0 && l.tokens[idx].Type == TokenColon {
-		idx--
+		idx = l.significantIndexAt(idx - 1)
+	} else {
+		return false
 	}
 	if idx >= 0 && (l.tokens[idx].Type == TokenIdent || isKeywordToken(l.tokens[idx].Type)) {
+		idx = l.significantIndexAt(idx - 1)
+	} else {
+		return false
+	}
+	return idx >= 0 && l.tokens[idx].Type == TokenPrompt
+}
+
+// significantIndexAt returns the index of the last non-comment token at or
+// before idx, or -1.
+func (l *Lexer) significantIndexAt(idx int) int {
+	for idx >= 0 && l.tokens[idx].Type == TokenComment {
 		idx--
 	}
-	if idx >= 0 && l.tokens[idx].Type == TokenPrompt {
-		return true
-	}
-	return false
+	return idx
 }
 
 // emitPromptLine captures the rest of the current line as a prompt text line.

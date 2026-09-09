@@ -503,21 +503,24 @@ func leadingCommentDescription(raw []byte, filename string) string {
 	var out []string
 	skippingFM := false
 	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		if trim == "## ---" {
+		// A comment line is `#` or `##`, the lexer's own rule
+		// (workflowfile.CommentText); the frontmatter fence is the `---`
+		// comment whichever hash count it uses.
+		text, isComment := workflowfile.CommentText(ln)
+		if isComment && strings.TrimSpace(text) == workflowfile.FrontmatterFence {
 			skippingFM = !skippingFM
 			continue
 		}
 		if skippingFM {
 			continue
 		}
-		if !strings.HasPrefix(trim, "##") {
+		if !isComment {
 			if len(out) > 0 {
 				break
 			}
 			continue
 		}
-		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trim, "##"), " "))
+		body := strings.TrimSpace(text)
 		if body == "" || isDecorationLine(body) || body == filename {
 			if len(out) > 0 {
 				break

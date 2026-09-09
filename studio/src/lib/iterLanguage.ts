@@ -4,7 +4,7 @@ export const ITER_LANGUAGE_ID = "iter";
 
 export const iterLanguageConfig: languages.LanguageConfiguration = {
   comments: {
-    lineComment: "##",
+    lineComment: "#",
   },
   brackets: [
     ["{", "}"],
@@ -76,7 +76,7 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
   tokenizer: {
     root: [
       // Comments
-      [/##.*$/, "comment"],
+      [/#.*$/, "comment"],
 
       // Template expressions {{...}}
       [/\{\{/, { token: "delimiter.template", next: "@template" }],
