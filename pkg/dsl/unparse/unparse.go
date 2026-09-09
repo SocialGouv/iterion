@@ -235,8 +235,53 @@ type fileWriter struct {
 // in): a header with no indented body does not parse, and an empty
 // description is what an absent one reads as, so the next save drops it.
 func (w *fileWriter) ensureBody(mark int) {
-	if w.b.Len() == mark {
-		w.b.WriteString("  description: \"\"\n")
+	ensureBlockBody(&w.b, mark, noopDescription)
+}
+
+// The no-op property each declaration kind gets when its body would be
+// empty. Every one of them re-reads as the zero value it stands in for, so
+// the declaration round-trips unchanged — which is what lets Verify compare
+// the two documents rather than accept a difference.
+const (
+	noopDescription  = "  description: \"\"\n" // agent/judge/human/tool/… and cursor
+	noopArgs         = "  args: []\n"          // mcp_server
+	noopMonitors     = "  monitors: []\n"      // supervisor
+	noopCapabilities = "  capabilities: []\n"  // workflow
+)
+
+// ensureBlockBody writes noop when nothing was written since mark. A
+// declaration header with no indented body is a parse error (E002 expected
+// INDENT), so a declaration the author has not filled in yet needs one
+// property that means nothing.
+func ensureBlockBody(b *buf, mark int, noop string) {
+	if b.Len() == mark {
+		b.WriteString(noop)
+	}
+}
+
+// writeBlock renders `<indent><name>:` and the body under it — but only when
+// the body writes something. The header on its own does not parse (E002
+// expected INDENT), so a block the author opened and left blank has to go
+// somewhere, and `compaction:`/`memory:` are the two whose empty form is
+// genuinely nothing: the compiler reads a blank one exactly as it reads no
+// block at all, so leaving it out loses nothing and Verify accepts the
+// omission. Every OTHER block is meaningful when blank — a bare `budget:`
+// replaces the default caps, a bare `mcp:` turns off the project autoload —
+// and those are written with a no-op property instead (ensureBlockBody), so
+// nothing that carries meaning is ever silently dropped.
+//
+// lead (a separator newline) is written only when the block is.
+func writeBlock(b *buf, lead, indent, name string, body func(*buf)) {
+	sub := &buf{strict: b.strict, nested: b.nested}
+	body(sub)
+	if sub.Len() == 0 {
+		return
+	}
+	b.WriteString(lead)
+	fmt.Fprintf(b, "%s%s:\n", indent, name)
+	b.WriteString(sub.String())
+	if sub.needsStrict {
+		b.needsStrict = true
 	}
 }
 
@@ -300,6 +345,7 @@ func (w *fileWriter) writeMCPServers(servers []*ast.MCPServerDecl) {
 	for _, s := range servers {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "mcp_server %s:\n", s.Name)
+		mark := w.b.Len()
 		if s.Transport != ast.MCPTransportUnknown {
 			writeProp(&w.b, "transport", s.Transport.String())
 		}
@@ -315,6 +361,7 @@ func (w *fileWriter) writeMCPServers(servers []*ast.MCPServerDecl) {
 		if s.Auth != nil {
 			writeMCPAuthBlock(&w.b, s.Auth)
 		}
+		ensureBlockBody(&w.b, mark, noopArgs)
 	}
 }
 
@@ -362,6 +409,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 	for _, s := range supervisors {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "supervisor %s:\n", s.Name)
+		mark := w.b.Len()
 		if len(s.Watches) > 0 {
 			fmt.Fprintf(&w.b, "  watches: [%s]\n", strings.Join(s.Watches, ", "))
 		}
@@ -384,6 +432,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			}
 			fmt.Fprintf(&w.b, "  monitors: [%s]\n", strings.Join(quoted, ", "))
 		}
+		ensureBlockBody(&w.b, mark, noopMonitors)
 	}
 }
 
@@ -644,6 +693,7 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 		return
 	}
 	fmt.Fprintf(b, "%srecovery:\n", indent)
+	mark := b.Len()
 	inner := indent + "  "
 	if r.MaxRepairAttempts > 0 {
 		fmt.Fprintf(b, "%smax_repair_attempts: %d\n", inner, r.MaxRepairAttempts)
@@ -657,6 +707,10 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 	if len(r.AgentTools) > 0 {
 		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, strings.Join(r.AgentTools, ", "))
 	}
+	// A declared `recovery:` block arms the adaptive-recovery ladder on the
+	// node whatever its settings, so it is written, never dropped; a zero
+	// attempt count re-reads as the empty block.
+	ensureBlockBody(b, mark, inner+"max_repair_attempts: 0\n")
 }
 
 func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
@@ -807,6 +861,7 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 	for _, wf := range workflows {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "workflow %s:\n", wf.Name)
+		mark := w.b.Len()
 
 		if wf.Vars != nil && len(wf.Vars.Fields) > 0 {
 			writeVarsBlock(&w.b, wf.Vars, "  ")
@@ -897,6 +952,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			w.b.WriteByte('\n')
 			writeEdge(&w.b, e)
 		}
+		// A workflow with no entry and no edge is what the canvas holds
+		// the moment the entry node is deleted — a header with no body,
+		// which does not parse.
+		ensureBlockBody(&w.b, mark, noopCapabilities)
 	}
 }
 
@@ -1121,6 +1180,7 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 
 func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 	b.WriteString("  auth:\n")
+	mark := b.Len()
 	if auth.Type != "" {
 		fmt.Fprintf(b, "    type: %s\n", b.str(auth.Type))
 	}
@@ -1139,10 +1199,12 @@ func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 	if len(auth.Scopes) > 0 {
 		fmt.Fprintf(b, "    scopes: [%s]\n", quoteList(b, auth.Scopes))
 	}
+	ensureBlockBody(b, mark, "    type: \"\"\n")
 }
 
 func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	fmt.Fprintf(b, "%smcp:\n", indent)
+	mark := b.Len()
 	if cfg.AutoloadProject != nil {
 		fmt.Fprintf(b, "%s  autoload_project: %t\n", indent, *cfg.AutoloadProject)
 	}
@@ -1155,6 +1217,11 @@ func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	if len(cfg.Disable) > 0 {
 		fmt.Fprintf(b, "%s  disable: [%s]\n", indent, strings.Join(cfg.Disable, ", "))
 	}
+	// A declared `mcp:` block is not the same node as no block at all — it
+	// turns off the project autoload default — so it is written, never
+	// dropped. An empty server list re-reads as the empty block it stands in
+	// for.
+	ensureBlockBody(b, mark, indent+"  servers: []\n")
 }
 
 func quoteList(b *buf, vals []string) string {
@@ -1418,23 +1485,31 @@ func writeSandboxNetworkBlock(b *buf, n *ast.SandboxNetworkBlock, indent string)
 }
 
 func writeCompaction(b *buf, compaction *ast.CompactionBlock, indent string, leadingBlank bool) {
-	if leadingBlank {
-		b.WriteByte('\n')
+	writeBlock(b, blankIf(leadingBlank), indent, "compaction", func(b *buf) {
+		if compaction.Threshold != nil {
+			fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
+		}
+		if compaction.PreserveRecent != nil {
+			fmt.Fprintf(b, "%s  preserve_recent: %d\n", indent, *compaction.PreserveRecent)
+		}
+	})
+}
+
+// blankIf is the separator newline writeBlock puts before a block it writes.
+func blankIf(leading bool) string {
+	if leading {
+		return "\n"
 	}
-	fmt.Fprintf(b, "%scompaction:\n", indent)
-	if compaction.Threshold != nil {
-		fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
-	}
-	if compaction.PreserveRecent != nil {
-		fmt.Fprintf(b, "%s  preserve_recent: %d\n", indent, *compaction.PreserveRecent)
-	}
+	return ""
 }
 
 func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
-	if leadingBlank {
-		b.WriteByte('\n')
-	}
-	fmt.Fprintf(b, "%smemory:\n", indent)
+	writeBlock(b, blankIf(leadingBlank), indent, "memory", func(b *buf) {
+		writeMemoryProps(b, m, indent)
+	})
+}
+
+func writeMemoryProps(b *buf, m *ast.MemoryBlock, indent string) {
 	if m.Enabled != nil {
 		fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
 	}
@@ -1471,6 +1546,7 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 // where reorderings happen.
 func writeCursorDecl(b *buf, c *ast.CursorDecl) {
 	fmt.Fprintf(b, "cursor %s:\n", c.Name)
+	mark := b.Len()
 	if c.Description != "" {
 		fmt.Fprintf(b, "  description: %s\n", b.str(c.Description))
 	}
@@ -1486,6 +1562,7 @@ func writeCursorDecl(b *buf, c *ast.CursorDecl) {
 			fmt.Fprintf(b, "    %s: %s\n", b.str(band.Range), b.str(band.Prompt))
 		}
 	}
+	ensureBlockBody(b, mark, noopDescription)
 }
 
 // writeCursorsBlock renders an agent/judge `cursors:` activation
@@ -1571,6 +1648,7 @@ func isCursorValueBareIdent(s string) bool {
 
 func writeBudget(b *buf, budget *ast.BudgetBlock) {
 	b.WriteString("\n  budget:\n")
+	mark := b.Len()
 	if budget.MaxParallelBranches > 0 {
 		fmt.Fprintf(b, "    max_parallel_branches: %d\n", budget.MaxParallelBranches)
 	}
@@ -1589,6 +1667,10 @@ func writeBudget(b *buf, budget *ast.BudgetBlock) {
 	if budget.MaxIterations > 0 {
 		fmt.Fprintf(b, "    max_iterations: %d\n", budget.MaxIterations)
 	}
+	// A declared `budget:` block replaces the compiler's defaults with the
+	// zero budget, so it is written, never dropped; a zero cap re-reads as
+	// the empty block it stands in for.
+	ensureBlockBody(b, mark, "    max_iterations: 0\n")
 }
 
 // writeResources serializes the workflow `resources:` block. Names are

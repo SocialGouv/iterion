@@ -115,6 +115,126 @@ func TestUnparseGivesAnEmptyDeclarationABody(t *testing.T) {
 	}
 }
 
+// The same for the DECLARATION kinds, which ensureBody never covered: the
+// studio creates a `prompt`/`schema` the moment the button is clicked, and
+// deleting a workflow's entry node leaves `workflow NAME:` with nothing under
+// it. Every one of them used to render a bare header, which does not parse —
+// and since this branch made Verify a hard gate on the save path, that is a
+// 422 on the whole file, not a cosmetic wart.
+func TestUnparseGivesAnEmptyTopLevelDeclarationABody(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		file *ast.File
+	}{
+		{"cursor", &ast.File{Cursors: []*ast.CursorDecl{{Name: "c"}}}},
+		{"mcp_server", &ast.File{MCPServers: []*ast.MCPServerDecl{{Name: "m"}}}},
+		{"supervisor", &ast.File{Supervisors: []*ast.SupervisorDecl{{Name: "sv"}}}},
+		{"workflow", &ast.File{Workflows: []*ast.WorkflowDecl{{Name: "w"}}}},
+		{"router", &ast.File{Routers: []*ast.RouterDecl{{Name: "r"}}}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			text := unparse.Unparse(tc.file)
+			pr := parser.Parse("empty.bot", text)
+			for _, d := range pr.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
+				}
+			}
+			if err := unparse.Verify(tc.file, text); err != nil {
+				t.Errorf("Verify: %v\n%s", err, text)
+			}
+		})
+	}
+}
+
+// A nested block the author opened and left blank is the same trap one level
+// down. Two answers, and which one applies is a property of the block: a
+// block whose blank form the compiler reads as no block at all is left out,
+// every other one is written with a no-op property — never dropped, since
+// dropping it would change the program the file describes.
+func TestUnparseWritesOrDropsAnEmptyNestedBlock(t *testing.T) {
+	agent := func(d ast.LLMDecl) *ast.File {
+		return &ast.File{Agents: []*ast.AgentDecl{{Name: "a", LLMDecl: d}}}
+	}
+	for _, tc := range []struct {
+		kind string
+		file *ast.File
+		// want is a fragment the output must carry (the no-op property),
+		// or "" when the block is legitimately left out.
+		want string
+	}{
+		{"auth", &ast.File{MCPServers: []*ast.MCPServerDecl{{Name: "m", URL: "u", Auth: &ast.MCPAuthDecl{}}}}, "auth:\n    type: \"\""},
+		{"node mcp", agent(ast.LLMDecl{MCP: &ast.MCPConfigDecl{}}), "mcp:\n    servers: []"},
+		{"workflow mcp", &ast.File{
+			Agents:    []*ast.AgentDecl{{Name: "a"}},
+			Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "a", MCP: &ast.MCPConfigDecl{}}},
+		}, "mcp:\n    servers: []"},
+		{"recovery", &ast.File{Tools: []*ast.ToolNodeDecl{{Name: "t", Command: "x", Recovery: &ast.RecoveryBlock{}}}}, "recovery:\n    max_repair_attempts: 0"},
+		{"budget", &ast.File{Workflows: []*ast.WorkflowDecl{{Name: "w", Budget: &ast.BudgetBlock{}}}}, "budget:\n    max_iterations: 0"},
+		{"compaction", agent(ast.LLMDecl{Compaction: &ast.CompactionBlock{}}), ""},
+		{"memory", agent(ast.LLMDecl{Memory: &ast.MemoryBlock{}}), ""},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			text := unparse.Unparse(tc.file)
+			pr := parser.Parse("empty.bot", text)
+			for _, d := range pr.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("does not parse back: %s\n%s", d.Error(), text)
+				}
+			}
+			if tc.want != "" && !strings.Contains(text, tc.want) {
+				t.Errorf("want the no-op body %q, got:\n%s", tc.want, text)
+			}
+			if err := unparse.Verify(tc.file, text); err != nil {
+				t.Errorf("Verify: %v\n%s", err, text)
+			}
+		})
+	}
+}
+
+// A blank `sandbox:` block is neither: it has no written form (the block
+// syntax always reads back as inline mode) and dropping it changes the node,
+// so it must be REFUSED — never written away in silence. This is the guard on
+// the tolerance the two droppable blocks needed.
+func TestVerifyRefusesADroppedSandboxBlock(t *testing.T) {
+	f := &ast.File{Agents: []*ast.AgentDecl{{Name: "a", LLMDecl: ast.LLMDecl{Sandbox: &ast.SandboxBlock{}}}}}
+	err := unparse.Verify(f, unparse.Unparse(f))
+	if err == nil {
+		t.Fatal("a sandbox block the writer dropped was accepted")
+	}
+	if !strings.Contains(err.Error(), "sandbox") {
+		t.Errorf("the refusal does not name the block: %v", err)
+	}
+}
+
+// A prompt with no text and a schema with no field have no written form at
+// all — any placeholder would BECOME content. They are refused by NAME, the
+// way an empty group already was: `expected INDENT, got EOF` about a file the
+// author never sees is not an answer they can act on.
+func TestVerifyNamesADeclarationTheSyntaxCannotWrite(t *testing.T) {
+	for _, tc := range []struct {
+		kind, want string
+		file       *ast.File
+	}{
+		{"prompt", `prompt "p"`, &ast.File{Prompts: []*ast.PromptDecl{{Name: "p"}}}},
+		{"prompt blank", `prompt "p"`, &ast.File{Prompts: []*ast.PromptDecl{{Name: "p", Body: "\n  \n"}}}},
+		{"schema", `schema "s"`, &ast.File{Schemas: []*ast.SchemaDecl{{Name: "s"}}}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			err := unparse.Verify(tc.file, unparse.Unparse(tc.file))
+			if err == nil {
+				t.Fatal("an inexpressible declaration was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal does not name the declaration: %v", err)
+			}
+			if strings.Contains(err.Error(), "expected INDENT") {
+				t.Errorf("the refusal is the raw parse error: %v", err)
+			}
+		})
+	}
+}
+
 // A value with a backtick beside a quote, backslash or newline has no v1
 // form: the WHOLE file is rendered in strict-escape mode — every other
 // quoted value re-escaped, the directive on line 1. Lossless, and worth
