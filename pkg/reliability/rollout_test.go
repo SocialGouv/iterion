@@ -89,8 +89,12 @@ func TestSummarizeAndRollback(t *testing.T) {
 		{Status: store.RunStatusFailed},
 		{Status: store.RunStatusFailedResumable, RetryState: &store.RunRetryState{RetryAfter: &at}},
 		{Status: store.RunStatusPausedOperator, WatcherCursors: map[string]store.WatcherCursor{"w": {}}},
+		// BOTH paused statuses, so the bucket cannot stay green while
+		// counting only the one an author happened to think of — the
+		// drift the store's IsPaused contract exists to prevent.
+		{Status: store.RunStatusPausedWaitingHuman},
 	})
-	if b.Total != 4 || b.Finished != 1 || b.Failed != 1 || b.FailedResumable != 1 || b.Paused != 1 || b.RetryArmed != 1 || b.RunsWithWatcherCursors != 1 {
+	if b.Total != 5 || b.Finished != 1 || b.Failed != 1 || b.FailedResumable != 1 || b.Paused != 2 || b.RetryArmed != 1 || b.RunsWithWatcherCursors != 1 {
 		t.Fatalf("baseline = %+v", b)
 	}
 	plan := (Config{}).Rollback()
