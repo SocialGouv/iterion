@@ -89,6 +89,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
+	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -96,6 +97,52 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testOutputCorrectionStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	corrections := store.AsOutputCorrectionStore(s)
+	if corrections == nil {
+		t.Skip("backend does not implement OutputCorrectionStore")
+	}
+	ctx := testCtx()
+	const runID = "run_output_correction"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, "schema mismatch", store.FailureSchemaValidation); err != nil {
+		t.Fatalf("park run: %v", err)
+	}
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "writer"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	before, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun before: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	want := store.OutputCorrectionEpisode{
+		EpisodeID: "writer/root", InvocationID: "writer", NodeID: "writer",
+		Budget: 2, Attempts: 1, Status: "active", InputFingerprint: "input",
+		LastOutputFingerprint: "output", LastViolationFingerprint: "violation",
+		StartedAt: now, UpdatedAt: now,
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, runID, "writer_root", want); err != nil {
+		t.Fatalf("SetRunOutputCorrection: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after: %v", err)
+	}
+	if episode, ok := got.OutputCorrections["writer_root"]; !ok || episode.EpisodeID != want.EpisodeID || episode.Attempts != 1 || episode.Status != "active" || !episode.StartedAt.Equal(now) {
+		t.Fatalf("output correction round-trip = %+v, present=%t", episode, ok)
+	}
+	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error || got.Checkpoint == nil || got.Checkpoint.NodeID != "writer" {
+		t.Fatalf("granular correction write replaced peer fields: before=%+v after=%+v", before, got)
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, "missing-output-correction", "writer_root", want); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("missing run error = %v, want ErrRunNotFound", err)
+	}
 }
 
 func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
