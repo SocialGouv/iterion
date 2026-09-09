@@ -320,6 +320,7 @@ type cancelAwareStore struct {
 	armedAt      time.Time
 	calls        int
 	blockCircuit bool
+	successes    int
 }
 
 func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, error) {
@@ -363,7 +364,25 @@ func (c *cancelAwareStore) RetryCircuitOpen(context.Context, string, time.Time) 
 }
 
 func (c *cancelAwareStore) RecordRetrySuccess(context.Context, string, time.Time) error {
+	c.successes++
 	return nil
+}
+
+func TestRetryCircuitResetRequiresDurableFinishedStatus(t *testing.T) {
+	st := &cancelAwareStore{run: &store.Run{
+		ID: "run-review-reply", WorkflowHash: "rev-1", Status: store.RunStatusPausedWaitingHuman,
+	}}
+	r := &Runner{cfg: Config{Store: st}}
+	r.resetRetryCircuitAfterSuccessfulExecution(context.Background(), st.run.ID)
+	if st.successes != 0 {
+		t.Fatalf("paused review reply reset retry circuit %d times, want 0", st.successes)
+	}
+
+	st.run.Status = store.RunStatusFinished
+	r.resetRetryCircuitAfterSuccessfulExecution(context.Background(), st.run.ID)
+	if st.successes != 1 {
+		t.Fatalf("finished run reset retry circuit %d times, want 1", st.successes)
+	}
 }
 
 func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {

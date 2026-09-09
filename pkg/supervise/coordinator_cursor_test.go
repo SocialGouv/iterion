@@ -185,6 +185,26 @@ func TestCoordinatorDeliversRecurringEvidenceAfterAnotherEpisode(t *testing.T) {
 	}
 }
 
+func TestCoordinatorEvaluatesRecurringMonitorAfterUnevaluatedProgress(t *testing.T) {
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: false}, {Intervene: false}}}
+	c := newBareCoordinator(t, Spec{MaxEvals: 5}, eval, nil)
+	first := &store.Event{Seq: 1, Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "connection refused"}}
+	c.ingest(first)
+	c.evaluate("monitor matched: "+RenderEvent(first), true)
+
+	// Successful activity is progress even when it does not itself wake the
+	// evaluator. The same failure after that transition is a new occurrence,
+	// not a replay of the first delivery.
+	c.ingest(&store.Event{Seq: 2, Type: store.EventToolCalled, NodeID: "agent", Data: map[string]any{"tool": "healthcheck", "result": "ok"}})
+	recurrence := &store.Event{Seq: 3, Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "connection refused"}}
+	c.ingest(recurrence)
+	c.evaluate("monitor matched: "+RenderEvent(recurrence), true)
+
+	if got := eval.calls(); got != 2 {
+		t.Fatalf("new occurrence after intervening progress evaluated %d times, want 2", got)
+	}
+}
+
 func TestWatcherCursorIDIsSafeForMongoUpdatePaths(t *testing.T) {
 	id := watcherCursorID(Spec{Name: "review.$where", Watches: []string{"node.with.dot", "$node"}})
 	if strings.ContainsAny(id, ".$") {

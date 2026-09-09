@@ -102,8 +102,20 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		}
 	} else if episode.Budget < e.outputCorrectionBudget {
 		// A launch may raise the budget, but never lower an already consumed
-		// episode's bound. The persisted value remains the audit contract.
+		// episode's bound. Re-open only a budget-exhausted episode: unchanged
+		// output is semantic convergence and an explicit raise must not turn it
+		// back into a loop.
+		previousBudget := episode.Budget
 		episode.Budget = e.outputCorrectionBudget
+		if episode.Status == correctionStatusExhausted && episode.Attempts >= previousBudget && episode.Attempts < episode.Budget {
+			episode.Status = correctionStatusActive
+			episode.LastError = ""
+			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, "budget_raised")
+			if err := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); err != nil {
+				return output, fmt.Errorf("output correction budget raise: %w (original validation: %v)", err, validationErr)
+			}
+		}
 	}
 
 	if episode.Status == correctionStatusUnchanged || episode.Status == correctionStatusExhausted {
@@ -199,6 +211,22 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			}
 			return candidate, candidateErr
 		}
+		// The caller records the aggregate node metadata once, after this
+		// helper returns. Inspect that prospective total without mutating the
+		// shared tracker so another correction call cannot start after token or
+		// cost spend has reached the same 90% boundary as any other model call.
+		if spendErr := e.outputCorrectionSpendError(rs, nodeID, candidate); spendErr != nil {
+			episode.Status = correctionStatusExhausted
+			episode.LastOutputFingerprint = candidateFP
+			episode.LastViolationFingerprint = candidateViolationFP
+			episode.LastError = spendErr.Error()
+			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
+				return candidate, fmt.Errorf("output correction spend limit reached: %v; ledger: %w", spendErr, persistErr)
+			}
+			return candidate, spendErr
+		}
 
 		current = candidate
 		currentErr = candidateErr
@@ -214,6 +242,34 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
 	}
 	return current, currentErr
+}
+
+func (e *Engine) outputCorrectionSpendError(rs *runState, nodeID string, output map[string]any) error {
+	if rs == nil || rs.budget == nil {
+		return nil
+	}
+	tokens, costUSD := extractUsage(output)
+	status := rs.budget.Status()
+	type axis struct {
+		name        string
+		used, limit float64
+	}
+	for _, candidate := range []axis{
+		{name: "tokens", used: float64(status.Tokens + tokens), limit: float64(status.MaxTokens)},
+		{name: "cost_usd", used: status.CostUSD + costUSD, limit: status.MaxCostUSD},
+	} {
+		if candidate.limit <= 0 || candidate.used/candidate.limit < budgetHardThreshold {
+			continue
+		}
+		return &RuntimeError{
+			Code:    ErrCodeBudgetExceeded,
+			Message: fmt.Sprintf("output correction for node %q reached the %s budget boundary (%.0f/%.0f)", nodeID, candidate.name, candidate.used, candidate.limit),
+			NodeID:  nodeID,
+			Hint:    fmt.Sprintf("increase the %s budget or reduce correction attempts", candidate.name),
+			Cause:   ErrBudgetExceeded,
+		}
+	}
+	return nil
 }
 
 func (e *Engine) emitOutputCorrectionEvent(rs *runState, nodeID string, episode store.OutputCorrectionEpisode, phase string) {

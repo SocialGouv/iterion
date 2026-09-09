@@ -269,6 +269,71 @@ func TestSchemaValidation_UsageOnlyCorrectorIsReachable(t *testing.T) {
 	t.Fatal("my_agent node_finished event not found")
 }
 
+func TestSchemaValidation_CorrectionStopsAtProspectiveSpendLimit(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 50}, nil
+	})
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "changed but invalid", "score": "still-bad"}, OutputCorrectionUsage{Tokens: 100}, nil
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 100, CapImposed: true}
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correction-budget", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1 after prospective spend crossed the cap", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-budget")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 150 {
+		t.Fatalf("charged correction spend = %+v, want 150 tokens", run.Checkpoint)
+	}
+}
+
+func TestSchemaValidation_RaisedBudgetReopensExhaustedEpisode(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-raised-correction", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.LoadRun(ctx, "run-val-raised-correction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+		"my_agent": {
+			EpisodeID: "my_agent", NodeID: "my_agent", Budget: 1, Attempts: 1,
+			Status: correctionStatusExhausted, InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
+		},
+	}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "fixed", "score": 1}, nil
+	}
+	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	out, validationErr := eng.correctAndValidateNodeOutput(ctx, &runState{ctx: ctx, runID: run.ID}, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "bad", "score": "x"})
+	if validationErr != nil || exec.calls != 1 || out["score"] != 1 {
+		t.Fatalf("raised budget result = (%+v, %v), calls=%d", out, validationErr, exec.calls)
+	}
+	persisted, err := st.LoadRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode := persisted.OutputCorrections["my_agent"]
+	if episode.Budget != 2 || episode.Attempts != 2 || episode.Status != correctionStatusSucceeded {
+		t.Fatalf("raised correction episode = %+v, want succeeded 2/2", episode)
+	}
+}
+
 func TestSchemaValidation_UnchangedSemanticPayloadChargesFailedCorrection(t *testing.T) {
 	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
 	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {

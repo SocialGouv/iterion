@@ -2617,6 +2617,10 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	}
 	if recordArtifactCompatibility {
 		r.ArtifactCompatibilityRevision = e.workflowHash
+		if r.ExecutionContext != nil {
+			r.ExecutionContext = r.ExecutionContext.Clone()
+			r.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
+		}
 	}
 	// Re-read before writing. BOTH call sites run AFTER the resume CAS
 	// flipped the run to `running` — and the claim helpers mutate their
@@ -2640,6 +2644,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	fresh.WorkflowSource = r.WorkflowSource
 	fresh.WorkflowHash = r.WorkflowHash
 	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
+	fresh.ExecutionContext = r.ExecutionContext.Clone()
 	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}

@@ -400,13 +400,23 @@ func (c *Coordinator) ingest(evt *store.Event) {
 		progressAt = time.Now()
 	}
 	progressFP := watcherProgressFingerprintWithData(evt, dataJSON)
-	if c.cursor.LastProgressFingerprint == progressFP {
-		c.cursor.ConsecutiveNoProgress++
-	} else {
-		c.cursor.ConsecutiveNoProgress = 0
+	// ObserveRun may replay the durable history when a supervisor restarts.
+	// Do not append events already covered by the persisted cursor to the
+	// semantic sequence. Events received after attachment are still accepted
+	// even if an upstream clock is skewed; only known historical records use
+	// the timestamp cut-off.
+	historicalAlreadyObserved := !c.startedAt.IsZero() && evt.Timestamp.Before(c.startedAt) &&
+		!c.cursor.LastProgressAt.IsZero() && !progressAt.After(c.cursor.LastProgressAt)
+	if !historicalAlreadyObserved {
+		if c.cursor.LastProgressFingerprint == progressFP {
+			c.cursor.ConsecutiveNoProgress++
+		} else {
+			c.cursor.ConsecutiveNoProgress = 0
+			c.cursor.ProgressSequence++
+		}
+		c.cursor.LastProgressFingerprint = progressFP
+		c.cursor.LastProgressAt = progressAt
 	}
-	c.cursor.LastProgressFingerprint = progressFP
-	c.cursor.LastProgressAt = progressAt
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
 	}
@@ -487,7 +497,7 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		// redelivery gets a new seq, but it is not new evidence.
 		triggerReason = "monitor_matched"
 	}
-	triggerFP := supervisorFingerprint(triggerReason + "|" + c.cursor.LastProgressFingerprint)
+	triggerFP := supervisorFingerprint(triggerReason + "|" + strconv.Itoa(c.cursor.ProgressSequence) + "|" + c.cursor.LastProgressFingerprint)
 	// A redelivered event or a watcher restart must not re-run the same
 	// correction merely because a high-signal monitor bypasses the ordinary
 	// cooldown. New progress produces a different fingerprint and remains

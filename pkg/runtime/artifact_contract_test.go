@@ -78,7 +78,10 @@ func TestForcedArtifactCompatibilitySurvivesWorkflowRestamp(t *testing.T) {
 	run.WorkflowHash = "rev-old"
 	run.WorkflowSource = "old source"
 	run.ArtifactIndex = map[string]int{"writer": 0}
-	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		Workflow: store.WorkflowContext{WorkflowRevision: "rev-old"},
+	}
 	if err := s.SaveRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +110,9 @@ func TestForcedArtifactCompatibilitySurvivesWorkflowRestamp(t *testing.T) {
 	}
 	if persisted.WorkflowHash != "rev-new" || persisted.ArtifactCompatibilityRevision != "rev-new" {
 		t.Fatalf("restamped migration = hash %q compatibility %q", persisted.WorkflowHash, persisted.ArtifactCompatibilityRevision)
+	}
+	if persisted.ExecutionContext == nil || persisted.ExecutionContext.Workflow.WorkflowRevision != "rev-new" {
+		t.Fatalf("restamped execution context = %+v, want workflow revision rev-new", persisted.ExecutionContext)
 	}
 	if err := ValidateArtifactContracts(ctx, s, persisted, wf, "rev-new", false); err != nil {
 		t.Fatalf("ordinary resume demanded --force again after accepted migration: %v", err)

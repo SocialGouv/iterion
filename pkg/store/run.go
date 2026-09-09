@@ -477,6 +477,11 @@ type WatcherCursor struct {
 	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
 	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`
 	ConsecutiveNoProgress   int        `json:"consecutive_no_progress,omitempty" bson:"consecutive_no_progress,omitempty"`
+	// ProgressSequence advances on each semantic transition in the observed
+	// event stream. Replayed copies of one event retain the sequence, while an
+	// A-B-A recurrence gets a fresh trigger identity even though A's payload is
+	// byte-for-byte identical.
+	ProgressSequence int `json:"progress_sequence,omitempty" bson:"progress_sequence,omitempty"`
 	// InterventionSequence advances only after a steering message is accepted.
 	// It scopes delivery deduplication to one progress episode while remaining
 	// stable across a crash between inbox insertion and cursor persistence.

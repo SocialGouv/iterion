@@ -2654,6 +2654,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "progress_sequence": {
+            "type": "integer"
+          },
           "updated_at": {
             "format": "date-time",
             "type": "string"

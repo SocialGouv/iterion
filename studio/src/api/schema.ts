@@ -6483,6 +6483,7 @@ export interface components {
             last_trigger_fingerprint?: string;
             /** Format: date-time */
             next_evaluation_at?: string;
+            progress_sequence?: number;
             /** Format: date-time */
             updated_at?: string;
             watcher_id?: string;
