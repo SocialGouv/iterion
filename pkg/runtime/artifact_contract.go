@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -18,14 +21,51 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int) *
 	if logicalRef == "" {
 		return nil
 	}
+	schema := ir.NodeOutputSchema(node)
 	return &store.ArtifactContract{
-		LogicalRef:       logicalRef,
-		ProducerNode:     nodeID,
-		ProducerRevision: e.workflowHash,
-		Version:          version,
-		Schema:           ir.NodeOutputSchema(node),
-		Effects:          []string{"persist"},
+		LogicalRef:        logicalRef,
+		ProducerNode:      nodeID,
+		ProducerRevision:  e.workflowHash,
+		Version:           version,
+		Schema:            schema,
+		SchemaFingerprint: schemaFingerprint(e.workflow, schema),
+		Effects:           []string{"persist"},
 	}
+}
+
+// schemaFingerprint canonicalises a RESOLVED output schema so a change to
+// its body is visible even when the node still references the same name —
+// which is what ir.NodeOutputSchema returns, and the most common shape of
+// an incompatible edit. Empty when there is no schema to resolve; that
+// reads as "unknown" and skips the comparison rather than inventing one.
+func schemaFingerprint(wf *ir.Workflow, name string) string {
+	if name == "" || wf == nil {
+		return ""
+	}
+	schema, ok := wf.Schemas[name]
+	if !ok || schema == nil {
+		return ""
+	}
+	fields := make([]string, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		if f == nil {
+			continue
+		}
+		// An enum is a membership set, so its declaration order is not
+		// part of the shape either.
+		enum := append([]string(nil), f.EnumValues...)
+		sort.Strings(enum)
+		// The type goes in through String(), NEVER its iota value:
+		// inserting a member into the FieldType enum would otherwise
+		// invalidate every artifact ever written, fleet-wide, on an
+		// engine upgrade that changed nothing about the workflow.
+		fields = append(fields, f.Name+":"+f.Type.String()+"("+strings.Join(enum, ",")+")")
+	}
+	// Node outputs are maps, so a pure reordering of the declaration is
+	// not an incompatibility and must not fire.
+	sort.Strings(fields)
+	sum := sha256.Sum256([]byte(name + "\n" + strings.Join(fields, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // ArtifactContractCheck carries the inputs of ValidateArtifactContracts. A
@@ -93,8 +133,16 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		if got := nodePublish(node); got != contract.LogicalRef {
 			violations = append(violations, fmt.Sprintf("artifact %q is now published as %q", contract.LogicalRef, got))
 		}
-		if schema := ir.NodeOutputSchema(node); schema != contract.Schema {
+		schema := ir.NodeOutputSchema(node)
+		switch {
+		case schema != contract.Schema:
 			violations = append(violations, fmt.Sprintf("artifact %q schema changed from %q to %q", contract.LogicalRef, contract.Schema, schema))
+		case contract.SchemaFingerprint == "":
+			// Legacy artifact, written before the body was fingerprinted.
+		default:
+			if got := schemaFingerprint(wf, schema); got != "" && got != contract.SchemaFingerprint {
+				violations = append(violations, fmt.Sprintf("artifact %q was written against a different definition of schema %q", contract.LogicalRef, schema))
+			}
 		}
 		// Provenance drift is ADVISORY, never a refusal. It is the same
 		// coarse signal as the run-level source hash, which every resume

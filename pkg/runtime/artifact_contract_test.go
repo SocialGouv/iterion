@@ -103,6 +103,100 @@ func TestValidateArtifactContractsSkipsInvalidatedNodes(t *testing.T) {
 	}
 }
 
+// reportSchema is the workflow shape the fingerprint tests vary.
+func reportSchema(fields ...*ir.SchemaField) *ir.Workflow {
+	return &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"writer": &ir.ToolNode{
+				BaseNode:     ir.BaseNode{ID: "writer"},
+				SchemaFields: ir.SchemaFields{OutputSchema: "Report"},
+				Publish:      "report",
+			},
+		},
+		Schemas: map[string]*ir.Schema{"Report": {Name: "Report", Fields: fields}},
+	}
+}
+
+// The schema NAME is only a reference: editing the body of `schema Report`
+// while the node still declares `output: Report` is the most common
+// incompatible edit, and the name comparison alone cannot see it. Force
+// does not waive it — that is precisely the assertion force makes.
+func TestValidateArtifactContractsRefusesChangedSchemaBody(t *testing.T) {
+	ctx := context.Background()
+	written := reportSchema(
+		&ir.SchemaField{Name: "summary", Type: ir.FieldTypeString},
+		&ir.SchemaField{Name: "score", Type: ir.FieldTypeInt},
+	)
+	s, run := seedContractRun(t, "artifact-schema-body", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+		Schema: "Report", SchemaFingerprint: schemaFingerprint(written, "Report"),
+	})
+
+	// Same fields in another declaration order: outputs are maps, so this
+	// is not an incompatibility and must be admitted.
+	reordered := reportSchema(
+		&ir.SchemaField{Name: "score", Type: ir.FieldTypeInt},
+		&ir.SchemaField{Name: "summary", Type: ir.FieldTypeString},
+	)
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: reordered, Revision: "rev-new",
+	}); err != nil {
+		t.Fatalf("reordered schema fields refused: %v", err)
+	}
+
+	// A field whose type changed, under the same schema name.
+	retyped := reportSchema(
+		&ir.SchemaField{Name: "summary", Type: ir.FieldTypeString},
+		&ir.SchemaField{Name: "score", Type: ir.FieldTypeString},
+	)
+	for _, force := range []bool{false, true} {
+		if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+			Store: s, Run: run, Workflow: retyped, Revision: "rev-new", Force: force,
+		}); err == nil {
+			t.Fatalf("force=%v: changed schema body accepted", force)
+		}
+	}
+}
+
+// An artifact written before the fingerprint existed carries none, and must
+// keep resuming: the rollout cannot break every run already on disk.
+func TestValidateArtifactContractsAdmitsUnfingerprintedSchema(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-schema-legacy", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+		Schema: "Report",
+	})
+	wf := reportSchema(&ir.SchemaField{Name: "other", Type: ir.FieldTypeBool})
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+	}); err != nil {
+		t.Fatalf("artifact without a schema fingerprint refused: %v", err)
+	}
+}
+
+// The fingerprint must survive an engine upgrade that renumbers the
+// FieldType enum, so it is taken over the type's name, never its integer.
+func TestSchemaFingerprintNamesTheFieldType(t *testing.T) {
+	wf := reportSchema(&ir.SchemaField{Name: "score", Type: ir.FieldTypeInt, EnumValues: []string{"b", "a"}})
+	fp := schemaFingerprint(wf, "Report")
+	if fp == "" {
+		t.Fatal("resolved schema produced no fingerprint")
+	}
+	if same := schemaFingerprint(reportSchema(
+		&ir.SchemaField{Name: "score", Type: ir.FieldTypeInt, EnumValues: []string{"a", "b"}},
+	), "Report"); same != fp {
+		t.Fatal("enum declaration order changed the fingerprint")
+	}
+	if other := schemaFingerprint(reportSchema(
+		&ir.SchemaField{Name: "score", Type: ir.FieldTypeFloat, EnumValues: []string{"a", "b"}},
+	), "Report"); other == fp {
+		t.Fatal("a changed field type left the fingerprint identical")
+	}
+	if unknown := schemaFingerprint(wf, "Missing"); unknown != "" {
+		t.Fatalf("unresolvable schema fingerprinted as %q", unknown)
+	}
+}
+
 func TestValidateArtifactContractsIgnoresLegacyArtifact(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

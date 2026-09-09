@@ -1468,14 +1468,20 @@ type ArtifactDependency struct {
 // "external" are understood); it is metadata for admission, never a request
 // to replay an external side effect.
 type ArtifactContract struct {
-	LogicalRef       string               `json:"logical_ref" bson:"logical_ref"`
-	ProducerNode     string               `json:"producer_node" bson:"producer_node"`
-	ProducerRevision string               `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
-	Version          int                  `json:"version" bson:"version"`
-	Schema           string               `json:"schema,omitempty" bson:"schema,omitempty"`
-	Dependencies     []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
-	Mutable          bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
-	Effects          []string             `json:"effects,omitempty" bson:"effects,omitempty"`
+	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int    `json:"version" bson:"version"`
+	Schema           string `json:"schema,omitempty" bson:"schema,omitempty"`
+	// SchemaFingerprint canonicalises the RESOLVED output schema — its
+	// fields, their types and their enum values — so a change to the BODY
+	// of a schema whose name did not change is still visible. The name
+	// alone is only a reference. Empty is the legacy/unknown shape and
+	// skips the comparison.
+	SchemaFingerprint string               `json:"schema_fingerprint,omitempty" bson:"schema_fingerprint,omitempty"`
+	Dependencies      []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+	Mutable           bool                 `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects           []string             `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

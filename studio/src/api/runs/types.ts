@@ -627,6 +627,9 @@ export interface ArtifactContract {
   producer_revision?: string;
   version: number;
   schema?: string;
+  // Canonical digest of the RESOLVED schema body, so a change under an
+  // unchanged schema name is still visible. Absent on legacy artifacts.
+  schema_fingerprint?: string;
   dependencies?: ArtifactDependency[];
   mutable?: boolean;
   effects?: string[];
