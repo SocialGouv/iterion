@@ -1,12 +1,15 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -284,6 +287,31 @@ func TestValidateArtifactContractsRefusesMisboundIdentity(t *testing.T) {
 				t.Fatalf("contract claiming %s accepted", name)
 			}
 		})
+	}
+}
+
+// The report tier exists so a deployment can measure the enforce flip
+// before making it. Returning nil in silence made it inert: nothing
+// downstream ever learned a resume would have been refused.
+func TestValidateArtifactContractsReportsWhatEnforceWouldRefuse(t *testing.T) {
+	ctx := context.Background()
+	s, run := seedContractRun(t, "artifact-report", &store.ArtifactContract{
+		LogicalRef: "report", ProducerNode: "writer", ProducerRevision: "rev-new", Version: 0,
+	})
+	run.ExecutionContext.Policy = store.ContextPolicyReport
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "summary"},
+	}}
+	var out bytes.Buffer
+	if err := ValidateArtifactContracts(ctx, ArtifactContractCheck{
+		Store: s, Run: run, Workflow: wf, Revision: "rev-new",
+		Logger: iterlog.New(iterlog.LevelWarn, &out),
+	}); err != nil {
+		t.Fatalf("report policy refused the resume: %v", err)
+	}
+	if !strings.Contains(out.String(), "would be refused under the enforce policy") ||
+		!strings.Contains(out.String(), `is now published as "summary"`) {
+		t.Fatalf("report tier said nothing about what enforce would refuse; log = %q", out.String())
 	}
 }
 

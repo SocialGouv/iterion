@@ -99,8 +99,9 @@ type ArtifactContractCheck struct {
 
 // ValidateArtifactContracts checks persisted artifact metadata before a
 // resume or rewind can mutate the run. Legacy artifacts without a contract
-// are accepted; report/legacy context policies record the mismatch through
-// the caller while enforce refuses it nondestructively.
+// are accepted; report and legacy context policies LOG what enforce would
+// have refused, so the rollout can measure the flip before making it, while
+// enforce refuses it nondestructively.
 func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck) error {
 	s, run, wf := check.Store, check.Run, check.Workflow
 	if run == nil || s == nil || wf == nil || len(run.ArtifactIndex) == 0 {
@@ -202,6 +203,12 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 			}
 		}
 	}
+	// Both lists are built by ranging run.ArtifactIndex, a map, so they are
+	// sorted before joining: the same incompatibility must produce the same
+	// message twice in a row, or an operator diffing two refusals reads a
+	// reordering as a change.
+	sort.Strings(advisories)
+	sort.Strings(violations)
 	if len(advisories) > 0 && check.Logger != nil {
 		check.Logger.Warn("runtime: run %s carries artifacts from another workflow revision: %s", run.ID, strings.Join(advisories, "; "))
 	}
@@ -213,6 +220,14 @@ func ValidateArtifactContracts(ctx context.Context, check ArtifactContractCheck)
 		policy = run.ExecutionContext.Policy
 	}
 	if policy != store.ContextPolicyEnforce {
+		// The point of the report tier is to show what enforce WOULD refuse
+		// before the policy is flipped. Returning nil in silence made it
+		// inert and made this function's own doc comment false: nothing
+		// downstream ever saw the violations to record them.
+		if check.Logger != nil {
+			check.Logger.Warn("runtime: run %s would be refused under the enforce policy (current policy %q): artifact contract incompatible: %s",
+				run.ID, policy, strings.Join(violations, "; "))
+		}
 		return nil
 	}
 	return fmt.Errorf("artifact contract incompatible: %s", strings.Join(violations, "; "))
