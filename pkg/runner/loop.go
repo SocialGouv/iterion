@@ -1997,19 +1997,6 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 	}
 }
 
-// executeRun hydrates the IR from the message, builds the runtime
-// engine + Claw executor, then dispatches to Run or Resume based on
-// the message shape.
-//
-// The return is named so the deferred spend accounting can see how the
-// attempt ended: a credential pool must know whether it was a provider
-// quota window or a rejected credential that stopped the run, not merely
-// how much it cost.
-// usageOut, when non-nil, receives the run's metrics emitter as soon as it
-// exists so the CALLER can report pool spend once it knows the delivery's
-// real disposition. The pool report cannot live in this function's defer:
-// whether an attempt is the last one — parked on the DLQ rather than
-// redelivered — is decided above, after this returns.
 // closeRetryCircuit clears the shared workflow breaker after a run the
 // engine completed. That reset is the half of the circuit contract which
 // makes it safe to open one at all — without it a recovered provider keeps
@@ -2046,6 +2033,19 @@ func (r *Runner) closeRetryCircuit(ctx context.Context, runID string, logger *it
 	}
 }
 
+// executeRun hydrates the IR from the message, builds the runtime
+// engine + Claw executor, then dispatches to Run or Resume based on
+// the message shape.
+//
+// The return is named so the deferred spend accounting can see how the
+// attempt ended: a credential pool must know whether it was a provider
+// quota window or a rejected credential that stopped the run, not merely
+// how much it cost.
+// usageOut, when non-nil, receives the run's metrics emitter as soon as it
+// exists so the CALLER can report pool spend once it knows the delivery's
+// real disposition. The pool report cannot live in this function's defer:
+// whether an attempt is the last one — parked on the DLQ rather than
+// redelivered — is decided above, after this returns.
 func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
