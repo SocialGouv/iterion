@@ -138,6 +138,26 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, sk
 	return at.UTC(), source, true
 }
 
+// usageWindowCircuitAt moves a per-run retry behind an open shared circuit
+// without discarding the policy guarantees already applied by
+// usageWindowRetryAt. A shared OpenUntil is deliberately jittered again:
+// otherwise every run participating in the circuit wakes at the same instant.
+// The max-wait ceiling remains authoritative even when the deployment-level
+// circuit cooldown is longer than the run's resolved retry policy.
+func usageWindowCircuitAt(at time.Time, state *store.RetryCircuitState, pol retrypolicy.Policy, now time.Time) (time.Time, bool) {
+	if state == nil || state.OpenUntil == nil || !state.OpenUntil.After(at) {
+		return at, false
+	}
+	at = state.OpenUntil.UTC()
+	if j := pol.JitterDuration(); j > 0 {
+		at = at.Add(rand.N(j))
+	}
+	if ceiling := now.UTC().Add(pol.MaxWaitDuration()); at.After(ceiling) {
+		at = ceiling
+	}
+	return at.UTC(), true
+}
+
 // reservesLastAttempt reports that the arming about to happen is the LAST one
 // the budget allows and the authoritative reset is still reachable — the two
 // conditions under which the speculative wake must be declined.
@@ -324,7 +344,8 @@ func (r *Runner) armUsageWindowRetry(
 	if runMeta.RetryState != nil {
 		attemptsSpent = runMeta.RetryState.Attempts
 	}
-	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped, attemptsSpent)
+	decisionNow := time.Now().UTC()
+	at, source, ok := usageWindowRetryAt(execErr, pol, decisionNow, skipped, attemptsSpent)
 	if !ok {
 		return usageRetryNotApplicable
 	}
@@ -335,13 +356,13 @@ func (r *Runner) armUsageWindowRetry(
 	// ledger remains authoritative for the attempt bound; the shared circuit
 	// only moves the next wake-up out of a provider-wide failure storm.
 	if key := retrycoord.Key(runMeta); key != "" {
-		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, time.Now().UTC(), retrycoord.FromEnv())
+		circuitState, circuitErr := retrycoord.RecordFailure(ctx, r.cfg.Store, key, runID, decisionNow, retrycoord.FromEnv())
 		if circuitErr != nil {
 			// A circuit-store outage must not drop a durable per-run retry. The
 			// existing ScheduleRunRetry below still provides the safe fallback.
 			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
-		} else if circuitState != nil && circuitState.OpenUntil != nil && circuitState.OpenUntil.After(at) {
-			at = circuitState.OpenUntil.UTC()
+		} else if coordinatedAt, delayed := usageWindowCircuitAt(at, circuitState, pol, decisionNow); delayed {
+			at = coordinatedAt
 			source += "+circuit_open"
 		}
 	}
