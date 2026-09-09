@@ -2010,6 +2010,42 @@ func (r *Runner) fireOutcomeEvent(msg *queue.RunMessage, execErr error) {
 // real disposition. The pool report cannot live in this function's defer:
 // whether an attempt is the last one — parked on the DLQ rather than
 // redelivered — is decided above, after this returns.
+// closeRetryCircuit clears the shared workflow breaker after a run the
+// engine completed. That reset is the half of the circuit contract which
+// makes it safe to open one at all — without it a recovered provider keeps
+// padding every retry of this revision until the streak decays on its own.
+//
+// Best-effort, but never silent: it is called on the way out of a run that
+// already succeeded, so nothing downstream can surface a failure here, and
+// these two log lines are the only place a breaker nobody can reset would
+// ever be visible.
+func (r *Runner) closeRetryCircuit(ctx context.Context, runID string, logger *iterlog.Logger) {
+	// The capability probe comes FIRST because the reset needs the run
+	// document for its workflow revision: on a store with no circuit, that
+	// LoadRun would be a round trip per successful run to reach a no-op.
+	if store.AsRetryCircuitStore(r.cfg.Store) == nil {
+		return
+	}
+	// Detached short context: the caller's cleanup and cancellation must not
+	// strand a recovered circuit open after the run has already finished.
+	// WithoutCancel keeps the tenant identity the Mongo filter needs.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	runMeta, err := r.cfg.Store.LoadRun(ctx, runID)
+	if err != nil {
+		logger.Warn("runner: run %s: cannot read the run to reset the retry circuit: %v", runID, err)
+		return
+	}
+	key := retrycoord.Key(runMeta)
+	if key == "" {
+		return // no workflow revision and no name: nothing to key a breaker on
+	}
+	if err := retrycoord.RecordSuccess(ctx, r.cfg.Store, key, time.Now().UTC()); err != nil {
+		logger.Warn("runner: run %s: retry circuit reset failed: %v", runID, err)
+	}
+}
+
 func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut **metricsEmitter) (execErr error) {
 	// Honour the publisher's per-run wall-clock budget. Without this,
 	// queue.RunMessage.TimeoutSec — wired from `iterion run --timeout`
@@ -2421,30 +2457,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
-	// A successful run closes the shared workflow breaker. The capability
-	// probe comes FIRST because the reset needs the run document for its
-	// workflow revision: on a store with no circuit that LoadRun would be a
-	// round trip per successful run to reach a no-op.
-	if runErr == nil && store.AsRetryCircuitStore(r.cfg.Store) != nil {
-		// Detached short context: the cleanup and cancellation below must not
-		// strand a recovered circuit open after the run has already finished.
-		// WithoutCancel keeps the tenant identity the Mongo filter needs.
-		resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, msg.RunID)
-		switch {
-		case loadErr != nil:
-			// Best-effort, but not silent: a breaker nobody can reset keeps
-			// padding this revision's retries for a provider that recovered,
-			// and this log line is the only place that would be visible.
-			runLogger.Warn("runner: run %s: cannot read the run to reset the retry circuit: %v", msg.RunID, loadErr)
-		default:
-			if key := retrycoord.Key(runMeta); key != "" {
-				if resetErr := retrycoord.RecordSuccess(resetCtx, r.cfg.Store, key, time.Now().UTC()); resetErr != nil {
-					runLogger.Warn("runner: run %s: retry circuit reset failed: %v", msg.RunID, resetErr)
-				}
-			}
-		}
-		resetCancel()
+	// Only a run the engine COMPLETED may clear the shared streak: a failure
+	// is evidence for the breaker, not against it.
+	if runErr == nil {
+		r.closeRetryCircuit(ctx, msg.RunID, runLogger)
 	}
 
 	// Persist the run's git metadata (commits + modified files vs the
