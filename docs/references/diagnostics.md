@@ -2,6 +2,8 @@
 
 All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`ir.Validate`), plus the bundle-consistency codes (`C2xx`) that `iterion validate` reports for a packaged bot. Diagnostics are either **errors** (block execution) or **warnings** (informational).
 
+The compiler carries its own copy of each row's *Fix* ([`pkg/dsl/ir/diag_catalog.go`](../../pkg/dsl/ir/diag_catalog.go)): `iterion validate` prints it as the `fix:` line under every finding, the studio shows it in the diagnostic badge, and the MCP `local_validate` result carries it as `hint`. A code the compiler can emit that has no catalogue entry fails `TestDiagCatalogCoversEveryCode`, so a finding never arrives without a next step. Parse-stage codes (`E0xx`, [`pkg/dsl/parser/diagnostic.go`](../../pkg/dsl/parser/diagnostic.go)) carry a fix line the same way.
+
 ## Compilation Diagnostics
 
 | Code | Severity | Description | Cause | Fix |
@@ -30,7 +32,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | Code | Severity | Description | Cause | Fix |
 |------|----------|-------------|-------|-----|
 | **C009** | error | Session at convergence point | A node with `await:` (or multiple incoming sources) uses `session: inherit` or `session: fork` | Change to `session: fresh`, `session: artifacts_only`, or `session: persist` |
-| **C010** | error | Multiple unconditional edges | A non-router node has more than one unconditional outgoing edge | Keep only one default edge, or use a router for fan-out |
+| **C010** | error | Multiple unconditional edges | A non-router node has more than one unconditional outgoing edge. A loop back-edge (`as name(N)`) does not count: `src -> body as name(N)` next to a bare `src -> exit` is the **loop-exhaustion exit** — the bare edge fires once the loop has spent its iterations — and is the one allowed shape with two unconditional edges from a node | Keep only one default edge (plus a loop back-edge and its exhaustion exit), or use a router for fan-out |
 | **C011** | error | Ambiguous conditions | Same condition field appears twice with same polarity from the same source | Remove the duplicate edge or use different conditions |
 | **C012** | error | Missing fallback | A node has conditional edges but no unconditional fallback and conditions aren't exhaustive | Add `when not X` to complement `when X`, or add an unconditional edge |
 | **C013** | error | Condition field not boolean | A `when` clause references a field that isn't `bool` in the source output schema | Change the schema field to `bool` |
@@ -83,7 +85,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C091** | error | Secret / var name collision | A secret name collides with a declared `vars:` entry | Rename one — secrets and vars share a template namespace |
 | **C092** | error | Invalid secret host | A secret's egress host scoping (Layer 2 `hosts:`) is ill-formed | Use valid host entries (hostnames / domains) |
 | **C093** | error | Unknown secret reference | `{{secrets.X}}` references a secret not declared in the `secrets:` block | Declare the secret, or fix the name |
-| **C094** | error | Malformed file secret | An `as: file` secret declaration is malformed | Provide a valid `value:`/`env:` and file-mount form |
+| **C094** | error | Malformed file secret | An `as: file` secret declaration is malformed (a bad `mount_path:`, an `env:` that is not an identifier) | Fix the offending property. A bare `as: file` (optionally `optional: true`) is complete on its own — it resolves the stored secret by name and mounts it; `value:`/`env:`/`mount_path:` are additions, not requirements |
 | **C095** | error | Unsupported secret sub-field | `{{secrets.X.<subfield>}}` uses a sub-field the runtime does not expose | Drop the sub-field, or reference `{{secrets.X}}` directly |
 | **C097** | error | Unbounded loop without fuel | An `as name(unbounded)` loop has no fuel ceiling (neither a per-loop `unbounded <N>` nor a workflow `budget.max_iterations`) — the "no silent infinity" invariant | Add a per-loop fuel (`as name(unbounded 200)`) or a workflow `budget.max_iterations` |
 | **C098** | warning | Unbounded loop without exit | An `unbounded` loop's body has no edge leaving the loop — only fuel/liveness can stop it | Add a `when`-exit (convergence condition) so the loop terminates by its own logic |
@@ -207,8 +209,8 @@ phrasing template and are all warnings, so a skill gap never fails validation.
 
 **"I get C019 (undeclared cycle)"**
 Every back-edge (edge that creates a cycle) needs `as loop_name(N)`. Example:
-```iter
-judge -> agent when not approved as retry(3) with { ... }
+```iter fragment:edges
+evaluator -> worker when not approved as retry(3) with { feedback: "{{outputs.evaluator.summary}}" }
 ```
 
 **"I get C009 (session at convergence)"**

@@ -45,6 +45,7 @@ func (p *parser) addError(code DiagCode, t Token, msg string) {
 		File:     p.file,
 		Line:     t.Line,
 		Column:   t.Column,
+		Hint:     HintFor(code),
 	})
 }
 

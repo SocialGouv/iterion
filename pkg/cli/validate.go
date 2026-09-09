@@ -31,6 +31,63 @@ type ValidateResult struct {
 	// (bundlelint, C2xx). Kept separate from CompileDiagnostics so the
 	// studio can distinguish DSL-level from manifest-level issues.
 	BundleDiagnostics []string `json:"bundle_diagnostics,omitempty"`
+	// Diagnostics is the structured form of the three lists above: one
+	// object per finding with its stage, code, severity, source position,
+	// message and fix line — what a validate loop (an agent, an editor, the
+	// MCP local_validate tool) acts on. The string lists stay for readers
+	// that only print.
+	Diagnostics []ValidateDiagnostic `json:"diagnostics,omitempty"`
+}
+
+// ValidateDiagnostic is one finding of `iterion validate` in the shape a
+// tool can act on: where (file:line:column when the stage could attribute
+// one), what (code + message) and the one-line fix.
+type ValidateDiagnostic struct {
+	Source   string `json:"source"` // parse | compile | bundle
+	Code     string `json:"code,omitempty"`
+	Severity string `json:"severity"` // error | warning
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Column   int    `json:"column,omitempty"`
+	Message  string `json:"message"`
+	Hint     string `json:"hint,omitempty"`
+	NodeID   string `json:"node_id,omitempty"`
+	EdgeID   string `json:"edge_id,omitempty"`
+}
+
+// formatDiagnostic renders one finding for the human output: the
+// position when known, then severity, code and message on one line, and
+// the fix line indented beneath it.
+func formatDiagnostic(d ValidateDiagnostic) []string {
+	var b strings.Builder
+	if d.Line > 0 {
+		fmt.Fprintf(&b, "%s:%d:%d: ", d.File, d.Line, d.Column)
+	}
+	b.WriteString(d.Severity)
+	if d.Code != "" {
+		fmt.Fprintf(&b, " [%s]", d.Code)
+	}
+	b.WriteString(": ")
+	b.WriteString(d.Message)
+	lines := []string{b.String()}
+	if d.Hint != "" {
+		lines = append(lines, "    fix: "+d.Hint)
+	}
+	return lines
+}
+
+// printDiagnostics writes the structured findings under a heading.
+func printDiagnostics(p *Printer, diags []ValidateDiagnostic) {
+	if len(diags) == 0 {
+		return
+	}
+	p.Blank()
+	p.Line("  Diagnostics:")
+	for _, d := range diags {
+		for _, l := range formatDiagnostic(d) {
+			p.Line("    %s", l)
+		}
+	}
 }
 
 // RunValidate parses, compiles, and validates a .bot file or `.botz`
@@ -83,6 +140,16 @@ func RunValidate(path string, p *Printer) error {
 	pr := parser.Parse(path, string(src))
 	for _, d := range pr.Diagnostics {
 		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
+		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+			Source:   "parse",
+			Code:     string(d.Code),
+			Severity: d.Severity.String(),
+			File:     d.File,
+			Line:     d.Line,
+			Column:   d.Column,
+			Message:  d.Message,
+			Hint:     d.Hint,
+		})
 		if d.Severity == parser.SeverityError {
 			result.Valid = false
 		}
@@ -102,9 +169,7 @@ func RunValidate(path string, p *Printer) error {
 			p.JSON(result)
 		} else {
 			p.Header("Validate: " + path)
-			for _, d := range result.ParseDiagnostics {
-				p.Line("  %s", d)
-			}
+			printDiagnostics(p, result.Diagnostics)
 			p.Line("  result: INVALID (no workflow found)")
 		}
 		return fmt.Errorf("validation failed")
@@ -114,6 +179,18 @@ func RunValidate(path string, p *Printer) error {
 	cr := ir.Compile(pr.File)
 	for _, d := range cr.Diagnostics {
 		result.CompileDiagnostics = append(result.CompileDiagnostics, d.Error())
+		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+			Source:   "compile",
+			Code:     string(d.Code),
+			Severity: d.Severity.String(),
+			File:     d.File,
+			Line:     d.Line,
+			Column:   d.Column,
+			Message:  d.Message,
+			Hint:     d.Hint,
+			NodeID:   d.NodeID,
+			EdgeID:   d.EdgeID,
+		})
 		if d.Severity == ir.SeverityError {
 			result.Valid = false
 		}
@@ -122,6 +199,11 @@ func RunValidate(path string, p *Printer) error {
 	if cr.Workflow != nil {
 		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "compile",
+				Severity: "error",
+				Message:  err.Error(),
+			})
 			result.Valid = false
 		}
 		result.WorkflowName = cr.Workflow.Name
@@ -146,6 +228,17 @@ func RunValidate(path string, p *Printer) error {
 		})
 		for _, d := range diags {
 			result.BundleDiagnostics = append(result.BundleDiagnostics, d.Error())
+			msg := d.Message
+			if d.Field != "" {
+				msg = d.Field + ": " + msg
+			}
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Code:     string(d.Code),
+				Severity: d.Severity.String(),
+				Message:  msg,
+				Hint:     d.Hint,
+			})
 			if d.Severity == bundlelint.SeverityError {
 				result.Valid = false
 			}
@@ -164,15 +257,7 @@ func RunValidate(path string, p *Printer) error {
 			p.KV("Nodes", fmt.Sprintf("%d", result.NodeCount))
 			p.KV("Edges", fmt.Sprintf("%d", result.EdgeCount))
 		}
-		allDiags := append(result.ParseDiagnostics, result.CompileDiagnostics...)
-		allDiags = append(allDiags, result.BundleDiagnostics...)
-		if len(allDiags) > 0 {
-			p.Blank()
-			p.Line("  Diagnostics:")
-			for _, d := range allDiags {
-				p.Line("    %s", d)
-			}
-		}
+		printDiagnostics(p, result.Diagnostics)
 		p.Blank()
 		if result.Valid {
 			p.Line("  result: OK")

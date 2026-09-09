@@ -373,7 +373,7 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	name := rc.Ref.Path[0]
 	secret, ok := w.Secrets[name]
 	if !ok {
-		c.errorf(DiagUnknownSecret,
+		c.errorfAt(DiagUnknownSecret, rc.NodeID, "",
 			"%s: reference %s targets undeclared secret %q",
 			rc.Location, rc.Ref.Raw, name)
 		return
@@ -383,13 +383,13 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	}
 	sub := rc.Ref.Path[1]
 	if sub != "path" {
-		c.errorf(DiagSecretSubfield,
+		c.errorfAt(DiagSecretSubfield, rc.NodeID, "",
 			"%s: reference %s uses unknown secret sub-field %q (expected: path)",
 			rc.Location, rc.Ref.Raw, sub)
 		return
 	}
 	if !secret.IsFile() {
-		c.errorf(DiagSecretSubfield,
+		c.errorfAt(DiagSecretSubfield, rc.NodeID, "",
 			"%s: reference %s uses .path on non-file secret %q",
 			rc.Location, rc.Ref.Raw, name)
 	}
@@ -401,7 +401,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	}
 	name := rc.Ref.Path[0]
 	if _, ok := w.Attachments[name]; !ok {
-		c.errorf(DiagUnknownAttachment,
+		c.errorfAt(DiagUnknownAttachment, rc.NodeID, "",
 			"%s: reference %s targets undeclared attachment %q",
 			rc.Location, rc.Ref.Raw, name)
 		return
@@ -409,7 +409,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) >= 2 {
 		sub := rc.Ref.Path[1]
 		if _, ok := AttachmentSubFields[sub]; !ok {
-			c.errorf(DiagAttachmentSubfieldUnknown,
+			c.errorfAt(DiagAttachmentSubfieldUnknown, rc.NodeID, "",
 				"%s: reference %s uses unknown sub-field %q (expected one of: path, url, mime, size, sha256)",
 				rc.Location, rc.Ref.Raw, sub)
 		}
@@ -425,7 +425,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C029: referenced node must exist.
 	targetNode, ok := w.Nodes[targetNodeID]
 	if !ok {
-		c.errorf(DiagUnknownRefNode,
+		c.errorfAt(DiagUnknownRefNode, rc.NodeID, "",
 			"%s: reference %s targets unknown node %q",
 			rc.Location, rc.Ref.Raw, targetNodeID)
 		return
@@ -433,7 +433,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 
 	// C036: referenced node must be reachable before consumer.
 	if !checkReachable(rc, predecessors, targetNodeID) {
-		c.errorf(DiagRefNodeNotReachable,
+		c.errorfAt(DiagRefNodeNotReachable, rc.NodeID, "",
 			"%s: reference %s targets node %q which is not reachable before %q",
 			rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
 		return
@@ -459,7 +459,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// exactly those fields are valid, anything else is a hard error.
 	if implicit := NodeImplicitOutputFields(targetNode); implicit != nil {
 		if !slices.Contains(implicit, fieldName) {
-			c.errorf(DiagRefFieldNotInSchema,
+			c.errorfAt(DiagRefFieldNotInSchema, rc.NodeID, "",
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
 				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
 		}
@@ -469,7 +469,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {
-		c.warnf(DiagRefNodeNoSchema,
+		c.warnfAt(DiagRefNodeNoSchema, rc.NodeID, "",
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
 			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
 		return
@@ -481,7 +481,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		return // already reported by C002
 	}
 	if findField(schema, fieldName) == nil {
-		c.errorf(DiagRefFieldNotInSchema,
+		c.errorfAt(DiagRefFieldNotInSchema, rc.NodeID, "",
 			"%s: reference %s accesses field %q not found in output schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, outSchema, targetNodeID)
 	}
@@ -493,7 +493,7 @@ func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
 	}
 	varName := rc.Ref.Path[0]
 	if _, ok := w.Vars[varName]; !ok {
-		c.errorf(DiagUndeclaredVar,
+		c.errorfAt(DiagUndeclaredVar, rc.NodeID, "",
 			"%s: reference %s targets undeclared variable %q",
 			rc.Location, rc.Ref.Raw, varName)
 	}
@@ -531,7 +531,7 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 
 	if findField(schema, fieldName) == nil {
-		c.errorf(DiagInputFieldNotInSchema,
+		c.errorfAt(DiagInputFieldNotInSchema, rc.NodeID, "",
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
 	}
@@ -553,7 +553,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 	if implicit := NodeImplicitOutputFields(node); implicit != nil {
 		if !slices.Contains(implicit, fieldName) {
-			c.errorf(DiagInputFieldNotInSchema,
+			c.errorfAt(DiagInputFieldNotInSchema, rc.NodeID, "",
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
 				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
 		}
@@ -571,7 +571,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 		if _, isVar := w.Vars[fieldName]; isVar {
 			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
 		}
-		c.warnf(DiagRefNodeNoSchema, "%s", msg)
+		c.warnfAt(DiagRefNodeNoSchema, rc.NodeID, "", "%s", msg)
 		return
 	}
 	schema, ok := w.Schemas[outSchema]
@@ -592,7 +592,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
 		}
 	}
-	c.errorf(DiagInputFieldNotInSchema, "%s", msg)
+	c.errorfAt(DiagInputFieldNotInSchema, rc.NodeID, "", "%s", msg)
 }
 
 // validateRouterEdgeInput is C032 for a mid-graph router whose outgoing
@@ -612,7 +612,7 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 	if _, isVar := w.Vars[fieldName]; isVar {
 		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
 	}
-	c.warnf(DiagRefNodeNoSchema, "%s", msg)
+	c.warnfAt(DiagRefNodeNoSchema, rc.NodeID, "", "%s", msg)
 }
 
 // routerPassThroughKeys is the set of keys a mid-graph router will have
@@ -662,7 +662,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	// C035: artifact must be published by some node.
 	producerID, ok := producers[artifactName]
 	if !ok {
-		c.errorf(DiagUnknownArtifact,
+		c.errorfAt(DiagUnknownArtifact, rc.NodeID, "",
 			"%s: reference %s targets artifact %q which is not published by any node",
 			rc.Location, rc.Ref.Raw, artifactName)
 		return
@@ -670,7 +670,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 
 	// C036: producer must be reachable before consumer.
 	if !checkReachable(rc, predecessors, producerID) {
-		c.errorf(DiagRefNodeNotReachable,
+		c.errorfAt(DiagRefNodeNotReachable, rc.NodeID, "",
 			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
 			rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
 	}
