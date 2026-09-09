@@ -132,8 +132,33 @@ type jsonFile struct {
 	Waits        []*jsonWaitDecl         `json:"waits,omitempty"`
 	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
 	Fails        []*jsonFailDecl         `json:"fails,omitempty"`
+	Groups       []*jsonGroupDecl        `json:"groups,omitempty"`
+	Uses         []*jsonUseDecl          `json:"uses,omitempty"`
 	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
 	Comments     []*jsonComment          `json:"comments,omitempty"`
+}
+
+// jsonGroupDecl mirrors GroupDecl — a reusable node cluster with its
+// internal edges, expanded at compile time by each `use`. It travels as
+// declared (never pre-expanded), so the runner compiles the same program
+// the author wrote and a canvas save keeps the macro.
+type jsonGroupDecl struct {
+	Name     string              `json:"name,omitempty"`
+	Params   []string            `json:"params,omitempty"`
+	Agents   []*jsonAgentDecl    `json:"agents,omitempty"`
+	Judges   []*jsonJudgeDecl    `json:"judges,omitempty"`
+	Routers  []*jsonRouterDecl   `json:"routers,omitempty"`
+	Humans   []*jsonHumanDecl    `json:"humans,omitempty"`
+	Tools    []*jsonToolNodeDecl `json:"tools,omitempty"`
+	Computes []*jsonComputeDecl  `json:"computes,omitempty"`
+	Edges    []*jsonEdge         `json:"edges,omitempty"`
+}
+
+// jsonUseDecl mirrors UseDecl (`use <group> as <prefix> with { … }`).
+type jsonUseDecl struct {
+	Group  string           `json:"group,omitempty"`
+	Prefix string           `json:"prefix,omitempty"`
+	With   []*jsonWithEntry `json:"with,omitempty"`
 }
 
 type jsonComment struct {
@@ -660,30 +685,35 @@ type jsonFailDecl struct {
 }
 
 type jsonWorkflowDecl struct {
-	Name            string                `json:"name,omitempty"`
-	Vars            *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments     *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry           string                `json:"entry,omitempty"`
-	DefaultBackend  string                `json:"default_backend,omitempty"`
-	ToolPolicy      []string              `json:"tool_policy,omitempty"`
-	Capabilities    []string              `json:"capabilities,omitempty"`
-	Skills          []string              `json:"skills,omitempty"`
-	MCP             *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget          *jsonBudgetBlock      `json:"budget,omitempty"`
-	Resources       map[string]int        `json:"resources,omitempty"`
-	Compaction      *jsonCompactionBlock  `json:"compaction,omitempty"`
-	Interaction     string                `json:"interaction,omitempty"`
-	Worktree        string                `json:"worktree,omitempty"`
-	Compress        string                `json:"compress,omitempty"`
-	AutoMemory      string                `json:"auto_memory,omitempty"`
-	LoopBudgetGuard string                `json:"loop_budget_guard,omitempty"`
-	RepoDevbox      string                `json:"repo_devbox,omitempty"`
-	Permission      string                `json:"permission,omitempty"`
-	Allow           []string              `json:"allow,omitempty"`
-	Ask             []string              `json:"ask,omitempty"`
-	Deny            []string              `json:"deny,omitempty"`
-	Sandbox         *jsonSandboxBlock     `json:"sandbox,omitempty"`
-	Edges           []*jsonEdge           `json:"edges,omitempty"`
+	Name           string                `json:"name,omitempty"`
+	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
+	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
+	Entry          string                `json:"entry,omitempty"`
+	DefaultBackend string                `json:"default_backend,omitempty"`
+	ToolPolicy     []string              `json:"tool_policy,omitempty"`
+	Capabilities   []string              `json:"capabilities,omitempty"`
+	Skills         []string              `json:"skills,omitempty"`
+	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	Resources      map[string]int        `json:"resources,omitempty"`
+	// ResourceMembers carries the named-instance pools (`godot: [s1, s2]`):
+	// Resources keeps every resource's capacity (a pool's is its size), this
+	// map the member ids a lease hands out one at a time. Absent for a
+	// counting-only resource.
+	ResourceMembers map[string][]string  `json:"resource_members,omitempty"`
+	Compaction      *jsonCompactionBlock `json:"compaction,omitempty"`
+	Interaction     string               `json:"interaction,omitempty"`
+	Worktree        string               `json:"worktree,omitempty"`
+	Compress        string               `json:"compress,omitempty"`
+	AutoMemory      string               `json:"auto_memory,omitempty"`
+	LoopBudgetGuard string               `json:"loop_budget_guard,omitempty"`
+	RepoDevbox      string               `json:"repo_devbox,omitempty"`
+	Permission      string               `json:"permission,omitempty"`
+	Allow           []string             `json:"allow,omitempty"`
+	Ask             []string             `json:"ask,omitempty"`
+	Deny            []string             `json:"deny,omitempty"`
+	Sandbox         *jsonSandboxBlock    `json:"sandbox,omitempty"`
+	Edges           []*jsonEdge          `json:"edges,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -696,12 +726,21 @@ type jsonBudgetBlock struct {
 }
 
 type jsonEdge struct {
-	From   string           `json:"from,omitempty"`
-	To     string           `json:"to,omitempty"`
-	When   *jsonWhenClause  `json:"when,omitempty"`
-	IsElse bool             `json:"is_else,omitempty"`
-	Loop   *jsonLoopClause  `json:"loop,omitempty"`
-	With   []*jsonWithEntry `json:"with,omitempty"`
+	From    string             `json:"from,omitempty"`
+	To      string             `json:"to,omitempty"`
+	When    *jsonWhenClause    `json:"when,omitempty"`
+	IsElse  bool               `json:"is_else,omitempty"`
+	Loop    *jsonLoopClause    `json:"loop,omitempty"`
+	Foreach *jsonForeachClause `json:"foreach,omitempty"`
+	With    []*jsonWithEntry   `json:"with,omitempty"`
+}
+
+// jsonForeachClause mirrors ForeachClause (`as foreach <name>(<item> in
+// <collection>)`), the sequential per-element iteration of a back-edge.
+type jsonForeachClause struct {
+	Name       string `json:"name,omitempty"`
+	Item       string `json:"item,omitempty"`
+	Collection string `json:"collection,omitempty"`
 }
 
 type jsonWhenClause struct {
@@ -783,64 +822,16 @@ func toJSON(f *File) *jsonFile {
 		jf.Judges = append(jf.Judges, judgeToJSON(j))
 	}
 	for _, r := range f.Routers {
-		jf.Routers = append(jf.Routers, &jsonRouterDecl{
-			Name:            r.Name,
-			Description:     r.Description,
-			Mode:            routerModeToStr[r.Mode],
-			Model:           r.Model,
-			Backend:         r.Backend,
-			Provider:        r.Provider,
-			System:          r.System,
-			User:            r.User,
-			Multi:           r.Multi,
-			ReasoningEffort: r.ReasoningEffort,
-			Over:            r.Over,
-			As:              r.As,
-			Key:             r.Key,
-			DependsOn:       r.DependsOn,
-			Needs:           r.Needs,
-		})
+		jf.Routers = append(jf.Routers, routerToJSON(r))
 	}
 	for _, h := range f.Humans {
 		jf.Humans = append(jf.Humans, humanToJSON(h))
 	}
 	for _, t := range f.Tools {
-		jf.Tools = append(jf.Tools, &jsonToolNodeDecl{
-			Name:           t.Name,
-			Description:    t.Description,
-			Command:        t.Command,
-			Script:         t.Script,
-			Language:       t.Language,
-			Input:          t.Input,
-			Output:         t.Output,
-			Publish:        t.Publish,
-			ArtifactLabels: t.ArtifactLabels,
-			Await:          awaitModeToStr[t.Await],
-			Sandbox:        sandboxBlockToJSON(t.Sandbox),
-			Compress:       t.Compress,
-			Permission:     t.Permission,
-			Goal:           t.Goal,
-			Postcondition:  t.Postcondition,
-			Policy:         t.Policy,
-			Recovery:       recoveryBlockToJSON(t.Recovery),
-			Needs:          t.Needs,
-			ParallelSafe:   t.ParallelSafe,
-		})
+		jf.Tools = append(jf.Tools, toolToJSON(t))
 	}
 	for _, c := range f.Computes {
-		jc := &jsonComputeDecl{
-			Name:           c.Name,
-			Description:    c.Description,
-			Input:          c.Input,
-			Output:         c.Output,
-			Publish:        c.Publish,
-			ArtifactLabels: c.ArtifactLabels,
-			Await:          awaitModeToStr[c.Await],
-		}
-		for _, e := range c.Expr {
-			jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
-		}
-		jf.Computes = append(jf.Computes, jc)
+		jf.Computes = append(jf.Computes, computeToJSON(c))
 	}
 	for _, s := range f.Subbots {
 		js := &jsonSubbotDecl{
@@ -889,6 +880,12 @@ func toJSON(f *File) *jsonFile {
 			Resumable:   fd.Resumable,
 		})
 	}
+	for _, g := range f.Groups {
+		jf.Groups = append(jf.Groups, groupToJSON(g))
+	}
+	for _, u := range f.Uses {
+		jf.Uses = append(jf.Uses, useToJSON(u))
+	}
 	for _, w := range f.Workflows {
 		jf.Workflows = append(jf.Workflows, workflowToJSON(w))
 	}
@@ -897,6 +894,104 @@ func toJSON(f *File) *jsonFile {
 	}
 
 	return jf
+}
+
+func routerToJSON(r *RouterDecl) *jsonRouterDecl {
+	return &jsonRouterDecl{
+		Name:            r.Name,
+		Description:     r.Description,
+		Mode:            routerModeToStr[r.Mode],
+		Model:           r.Model,
+		Backend:         r.Backend,
+		Provider:        r.Provider,
+		System:          r.System,
+		User:            r.User,
+		Multi:           r.Multi,
+		ReasoningEffort: r.ReasoningEffort,
+		Over:            r.Over,
+		As:              r.As,
+		Key:             r.Key,
+		DependsOn:       r.DependsOn,
+		Needs:           r.Needs,
+	}
+}
+
+func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
+	return &jsonToolNodeDecl{
+		Name:           t.Name,
+		Description:    t.Description,
+		Command:        t.Command,
+		Script:         t.Script,
+		Language:       t.Language,
+		Input:          t.Input,
+		Output:         t.Output,
+		Publish:        t.Publish,
+		ArtifactLabels: t.ArtifactLabels,
+		Await:          awaitModeToStr[t.Await],
+		Sandbox:        sandboxBlockToJSON(t.Sandbox),
+		Compress:       t.Compress,
+		Permission:     t.Permission,
+		Goal:           t.Goal,
+		Postcondition:  t.Postcondition,
+		Policy:         t.Policy,
+		Recovery:       recoveryBlockToJSON(t.Recovery),
+		Needs:          t.Needs,
+		ParallelSafe:   t.ParallelSafe,
+	}
+}
+
+func computeToJSON(c *ComputeDecl) *jsonComputeDecl {
+	jc := &jsonComputeDecl{
+		Name:           c.Name,
+		Description:    c.Description,
+		Input:          c.Input,
+		Output:         c.Output,
+		Publish:        c.Publish,
+		ArtifactLabels: c.ArtifactLabels,
+		Await:          awaitModeToStr[c.Await],
+	}
+	for _, e := range c.Expr {
+		jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
+	}
+	return jc
+}
+
+// groupToJSON encodes a group through the same node and edge converters
+// as the file's top-level declarations — one converter per kind, so a
+// property added to a node kind cannot travel at the top level and be
+// lost inside a group.
+func groupToJSON(g *GroupDecl) *jsonGroupDecl {
+	jg := &jsonGroupDecl{Name: g.Name, Params: g.Params}
+	for _, a := range g.Agents {
+		jg.Agents = append(jg.Agents, agentToJSON(a))
+	}
+	for _, j := range g.Judges {
+		jg.Judges = append(jg.Judges, judgeToJSON(j))
+	}
+	for _, r := range g.Routers {
+		jg.Routers = append(jg.Routers, routerToJSON(r))
+	}
+	for _, h := range g.Humans {
+		jg.Humans = append(jg.Humans, humanToJSON(h))
+	}
+	for _, t := range g.Tools {
+		jg.Tools = append(jg.Tools, toolToJSON(t))
+	}
+	for _, c := range g.Computes {
+		jg.Computes = append(jg.Computes, computeToJSON(c))
+	}
+	for _, e := range g.Edges {
+		jg.Edges = append(jg.Edges, edgeToJSON(e))
+	}
+	return jg
+}
+
+func useToJSON(u *UseDecl) *jsonUseDecl {
+	ju := &jsonUseDecl{Group: u.Group, Prefix: u.Prefix}
+	for _, w := range u.With {
+		ju.With = append(ju.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
+	}
+	return ju
 }
 
 func mcpServerToJSON(s *MCPServerDecl) *jsonMCPServerDecl {
@@ -1332,6 +1427,9 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	}
 	if w.Resources != nil && len(w.Resources.Capacities) > 0 {
 		jw.Resources = w.Resources.Capacities
+		if len(w.Resources.Members) > 0 {
+			jw.ResourceMembers = w.Resources.Members
+		}
 	}
 	for _, e := range w.Edges {
 		jw.Edges = append(jw.Edges, edgeToJSON(e))
@@ -1359,6 +1457,13 @@ func edgeToJSON(e *Edge) *jsonEdge {
 			MaxIterationsExpr: e.Loop.MaxIterationsExpr,
 			Unbounded:         e.Loop.Unbounded,
 			FuelCap:           e.Loop.FuelCap,
+		}
+	}
+	if e.Foreach != nil {
+		je.Foreach = &jsonForeachClause{
+			Name:       e.Foreach.Name,
+			Item:       e.Foreach.Item,
+			Collection: e.Foreach.Collection,
 		}
 	}
 	for _, w := range e.With {
@@ -1466,27 +1571,11 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, jr := range jf.Routers {
-		mode, ok := strToRouterMode[jr.Mode]
-		if !ok {
-			return nil, fmt.Errorf("astjson: unknown router mode %q", jr.Mode)
+		r, err := routerFromJSON(jr)
+		if err != nil {
+			return nil, err
 		}
-		f.Routers = append(f.Routers, &RouterDecl{
-			Name:            jr.Name,
-			Description:     jr.Description,
-			Mode:            mode,
-			Model:           jr.Model,
-			Backend:         jr.Backend,
-			Provider:        jr.Provider,
-			System:          jr.System,
-			User:            jr.User,
-			Multi:           jr.Multi,
-			ReasoningEffort: jr.ReasoningEffort,
-			Over:            jr.Over,
-			As:              jr.As,
-			Key:             jr.Key,
-			DependsOn:       jr.DependsOn,
-			Needs:           jr.Needs,
-		})
+		f.Routers = append(f.Routers, r)
 	}
 
 	for _, jh := range jf.Humans {
@@ -1498,51 +1587,19 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, jt := range jf.Tools {
-		aw, ok := strToAwaitMode[jt.Await]
-		if jt.Await != "" && !ok {
-			return nil, fmt.Errorf("astjson: unknown await mode %q", jt.Await)
+		t, err := toolFromJSON(jt)
+		if err != nil {
+			return nil, err
 		}
-		f.Tools = append(f.Tools, &ToolNodeDecl{
-			Name:           jt.Name,
-			Description:    jt.Description,
-			Command:        jt.Command,
-			Script:         jt.Script,
-			Language:       jt.Language,
-			Input:          jt.Input,
-			Output:         jt.Output,
-			Publish:        jt.Publish,
-			ArtifactLabels: jt.ArtifactLabels,
-			Await:          aw,
-			Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
-			Compress:       jt.Compress,
-			Permission:     jt.Permission,
-			Goal:           jt.Goal,
-			Postcondition:  jt.Postcondition,
-			Policy:         jt.Policy,
-			Recovery:       recoveryBlockFromJSON(jt.Recovery),
-			Needs:          jt.Needs,
-			ParallelSafe:   jt.ParallelSafe,
-		})
+		f.Tools = append(f.Tools, t)
 	}
 
 	for _, jc := range jf.Computes {
-		aw, ok := strToAwaitMode[jc.Await]
-		if jc.Await != "" && !ok {
-			return nil, fmt.Errorf("astjson: unknown await mode %q", jc.Await)
+		c, err := computeFromJSON(jc)
+		if err != nil {
+			return nil, err
 		}
-		cd := &ComputeDecl{
-			Name:           jc.Name,
-			Description:    jc.Description,
-			Input:          jc.Input,
-			Output:         jc.Output,
-			Publish:        jc.Publish,
-			ArtifactLabels: jc.ArtifactLabels,
-			Await:          aw,
-		}
-		for _, je := range jc.Expr {
-			cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
-		}
-		f.Computes = append(f.Computes, cd)
+		f.Computes = append(f.Computes, c)
 	}
 
 	for _, js := range jf.Subbots {
@@ -1597,6 +1654,18 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		})
 	}
 
+	for _, jg := range jf.Groups {
+		g, err := groupFromJSON(jg)
+		if err != nil {
+			return nil, err
+		}
+		f.Groups = append(f.Groups, g)
+	}
+
+	for _, ju := range jf.Uses {
+		f.Uses = append(f.Uses, useFromJSON(ju))
+	}
+
 	for _, jw := range jf.Workflows {
 		w, err := workflowFromJSON(jw)
 		if err != nil {
@@ -1610,6 +1679,140 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	return f, nil
+}
+
+func routerFromJSON(jr *jsonRouterDecl) (*RouterDecl, error) {
+	mode, ok := strToRouterMode[jr.Mode]
+	if !ok {
+		return nil, fmt.Errorf("astjson: unknown router mode %q", jr.Mode)
+	}
+	return &RouterDecl{
+		Name:            jr.Name,
+		Description:     jr.Description,
+		Mode:            mode,
+		Model:           jr.Model,
+		Backend:         jr.Backend,
+		Provider:        jr.Provider,
+		System:          jr.System,
+		User:            jr.User,
+		Multi:           jr.Multi,
+		ReasoningEffort: jr.ReasoningEffort,
+		Over:            jr.Over,
+		As:              jr.As,
+		Key:             jr.Key,
+		DependsOn:       jr.DependsOn,
+		Needs:           jr.Needs,
+	}, nil
+}
+
+func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
+	aw, ok := strToAwaitMode[jt.Await]
+	if jt.Await != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown await mode %q", jt.Await)
+	}
+	return &ToolNodeDecl{
+		Name:           jt.Name,
+		Description:    jt.Description,
+		Command:        jt.Command,
+		Script:         jt.Script,
+		Language:       jt.Language,
+		Input:          jt.Input,
+		Output:         jt.Output,
+		Publish:        jt.Publish,
+		ArtifactLabels: jt.ArtifactLabels,
+		Await:          aw,
+		Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
+		Compress:       jt.Compress,
+		Permission:     jt.Permission,
+		Goal:           jt.Goal,
+		Postcondition:  jt.Postcondition,
+		Policy:         jt.Policy,
+		Recovery:       recoveryBlockFromJSON(jt.Recovery),
+		Needs:          jt.Needs,
+		ParallelSafe:   jt.ParallelSafe,
+	}, nil
+}
+
+func computeFromJSON(jc *jsonComputeDecl) (*ComputeDecl, error) {
+	aw, ok := strToAwaitMode[jc.Await]
+	if jc.Await != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown await mode %q", jc.Await)
+	}
+	cd := &ComputeDecl{
+		Name:           jc.Name,
+		Description:    jc.Description,
+		Input:          jc.Input,
+		Output:         jc.Output,
+		Publish:        jc.Publish,
+		ArtifactLabels: jc.ArtifactLabels,
+		Await:          aw,
+	}
+	for _, je := range jc.Expr {
+		cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
+	}
+	return cd, nil
+}
+
+func groupFromJSON(jg *jsonGroupDecl) (*GroupDecl, error) {
+	g := &GroupDecl{Name: jg.Name, Params: jg.Params}
+	for _, ja := range jg.Agents {
+		a, err := agentFromJSON(ja)
+		if err != nil {
+			return nil, err
+		}
+		g.Agents = append(g.Agents, a)
+	}
+	for _, jj := range jg.Judges {
+		j, err := judgeFromJSON(jj)
+		if err != nil {
+			return nil, err
+		}
+		g.Judges = append(g.Judges, j)
+	}
+	for _, jr := range jg.Routers {
+		r, err := routerFromJSON(jr)
+		if err != nil {
+			return nil, err
+		}
+		g.Routers = append(g.Routers, r)
+	}
+	for _, jh := range jg.Humans {
+		h, err := humanFromJSON(jh)
+		if err != nil {
+			return nil, err
+		}
+		g.Humans = append(g.Humans, h)
+	}
+	for _, jt := range jg.Tools {
+		t, err := toolFromJSON(jt)
+		if err != nil {
+			return nil, err
+		}
+		g.Tools = append(g.Tools, t)
+	}
+	for _, jc := range jg.Computes {
+		c, err := computeFromJSON(jc)
+		if err != nil {
+			return nil, err
+		}
+		g.Computes = append(g.Computes, c)
+	}
+	for _, je := range jg.Edges {
+		e, err := edgeFromJSON(je)
+		if err != nil {
+			return nil, err
+		}
+		g.Edges = append(g.Edges, e)
+	}
+	return g, nil
+}
+
+func useFromJSON(ju *jsonUseDecl) *UseDecl {
+	u := &UseDecl{Group: ju.Group, Prefix: ju.Prefix}
+	for _, w := range ju.With {
+		u.With = append(u.With, &WithEntry{Key: w.Key, Value: w.Value})
+	}
+	return u
 }
 
 func mcpServerFromJSON(js *jsonMCPServerDecl) (*MCPServerDecl, error) {
@@ -1948,6 +2151,9 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 	}
 	if len(jw.Resources) > 0 {
 		w.Resources = &ResourcesBlock{Capacities: jw.Resources}
+		if len(jw.ResourceMembers) > 0 {
+			w.Resources.Members = jw.ResourceMembers
+		}
 	}
 	for _, je := range jw.Edges {
 		e, err := edgeFromJSON(je)
@@ -1986,6 +2192,13 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 			MaxIterationsExpr: je.Loop.MaxIterationsExpr,
 			Unbounded:         je.Loop.Unbounded,
 			FuelCap:           je.Loop.FuelCap,
+		}
+	}
+	if je.Foreach != nil {
+		e.Foreach = &ForeachClause{
+			Name:       je.Foreach.Name,
+			Item:       je.Foreach.Item,
+			Collection: je.Foreach.Collection,
 		}
 	}
 	for _, jw := range je.With {

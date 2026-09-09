@@ -412,7 +412,7 @@ func (c *compiler) validateNodeNames() {
 // In V1, exactly one workflow per file is supported.
 func Compile(file *ast.File) *CompileResult {
 	c := &compiler{
-		file:    file,
+		file:    detachForCompile(file),
 		nodes:   make(map[string]Node),
 		schemas: make(map[string]*Schema),
 		prompts: make(map[string]*Prompt),
@@ -424,6 +424,33 @@ func Compile(file *ast.File) *CompileResult {
 		Workflow:    w,
 		Diagnostics: c.diags,
 	}
+}
+
+// detachForCompile returns a copy of the file whose declaration lists and
+// workflows the compiler may extend without touching the caller's object:
+// group expansion appends the expanded nodes and edges, and a caller that
+// compiles a file and then serialises it, or compiles it again, must see the
+// program it wrote — not one with every `use` expanded twice. The
+// declarations themselves are shared (never mutated), so spans stay
+// attached; only the slices and the workflow structs are copied.
+func detachForCompile(f *ast.File) *ast.File {
+	if f == nil {
+		return nil
+	}
+	cp := *f
+	cp.Agents = append([]*ast.AgentDecl(nil), f.Agents...)
+	cp.Judges = append([]*ast.JudgeDecl(nil), f.Judges...)
+	cp.Routers = append([]*ast.RouterDecl(nil), f.Routers...)
+	cp.Humans = append([]*ast.HumanDecl(nil), f.Humans...)
+	cp.Tools = append([]*ast.ToolNodeDecl(nil), f.Tools...)
+	cp.Computes = append([]*ast.ComputeDecl(nil), f.Computes...)
+	cp.Workflows = make([]*ast.WorkflowDecl, 0, len(f.Workflows))
+	for _, w := range f.Workflows {
+		wc := *w
+		wc.Edges = append([]*ast.Edge(nil), w.Edges...)
+		cp.Workflows = append(cp.Workflows, &wc)
+	}
+	return &cp
 }
 
 func (c *compiler) compile() *Workflow {

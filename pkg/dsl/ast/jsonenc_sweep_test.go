@@ -1,0 +1,122 @@
+package ast
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// Every exported field of an AST declaration must have a counterpart in its
+// JSON mirror, or the transport silently drops it: `group`/`use`, the
+// `foreach` clause and named resource pools were lost this way for months
+// (#1012). The mirror uses the same field names, with the renames listed
+// here; `Span` never travels.
+func TestEveryASTFieldHasAJSONCounterpart(t *testing.T) {
+	pairs := []struct {
+		ast, json any
+		renames   map[string]string // AST field → JSON field, when the names differ
+	}{
+		{File{}, jsonFile{}, nil},
+		{GroupDecl{}, jsonGroupDecl{}, nil},
+		{UseDecl{}, jsonUseDecl{}, nil},
+		{WorkflowDecl{}, jsonWorkflowDecl{}, nil},
+		{Edge{}, jsonEdge{}, nil},
+		{ForeachClause{}, jsonForeachClause{}, nil},
+		{LoopClause{}, jsonLoopClause{}, nil},
+		{WhenClause{}, jsonWhenClause{}, nil},
+		{WithEntry{}, jsonWithEntry{}, nil},
+		{BudgetBlock{}, jsonBudgetBlock{}, nil},
+		{AgentDecl{}, jsonAgentDecl{}, nil},
+		{JudgeDecl{}, jsonJudgeDecl{}, nil},
+		{RouterDecl{}, jsonRouterDecl{}, nil},
+		{HumanDecl{}, jsonHumanDecl{}, nil},
+		{ToolNodeDecl{}, jsonToolNodeDecl{}, nil},
+		{ComputeDecl{}, jsonComputeDecl{}, nil},
+		{ComputeExpr{}, jsonComputeExpr{}, nil},
+		{SubbotDecl{}, jsonSubbotDecl{}, nil},
+		{EmitDecl{}, jsonEmitDecl{}, nil},
+		{WaitDecl{}, jsonWaitDecl{}, nil},
+		{AwaitAnswersDecl{}, jsonAwaitAnswersDecl{}, nil},
+		{FailDecl{}, jsonFailDecl{}, nil},
+		{PromptDecl{}, jsonPromptDecl{}, nil},
+		{SchemaDecl{}, jsonSchemaDecl{}, nil},
+		{SchemaField{}, jsonSchemaField{}, nil},
+		{SupervisorDecl{}, jsonSupervisorDecl{}, nil},
+		{CursorDecl{}, jsonCursorDecl{}, nil},
+		{CursorBlock{}, jsonCursorBlock{}, nil},
+		{FallbackDecl{}, jsonFallbackDecl{}, nil},
+		{MemoryBlock{}, jsonMemoryBlock{}, nil},
+		{CompactionBlock{}, jsonCompactionBlock{}, nil},
+		{RecoveryBlock{}, jsonRecoveryBlock{}, nil},
+		{SandboxBlock{}, jsonSandboxBlock{}, nil},
+		{SandboxBuildBlock{}, jsonSandboxBuildBlock{}, nil},
+		{SandboxNetworkBlock{}, jsonSandboxNetworkBlock{}, nil},
+		{MCPServerDecl{}, jsonMCPServerDecl{}, nil},
+		{MCPAuthDecl{}, jsonMCPAuthDecl{}, nil},
+		{MCPConfigDecl{}, jsonMCPConfigDecl{}, nil},
+		{VarsBlock{}, jsonVarsBlock{}, nil},
+		{VarField{}, jsonVarField{}, map[string]string{"EnumValues": "Enum"}},
+		{SecretsBlock{}, jsonSecretsBlock{}, nil},
+		{SecretField{}, jsonSecretField{}, nil},
+		{PresetsBlock{}, jsonPresetsBlock{}, nil},
+		{AttachmentsBlock{}, jsonAttachmentsBlock{}, nil},
+		{AttachmentField{}, jsonAttachmentField{}, nil},
+		{Literal{}, jsonLiteral{}, nil},
+	}
+	for _, p := range pairs {
+		at, jt := reflect.TypeOf(p.ast), reflect.TypeOf(p.json)
+		jsonFields := map[string]bool{}
+		for i := 0; i < jt.NumField(); i++ {
+			jsonFields[jt.Field(i).Name] = true
+		}
+		for _, f := range exportedFields(at) {
+			want := f.Name
+			if r, ok := p.renames[f.Name]; ok {
+				want = r
+			}
+			if !jsonFields[want] {
+				t.Errorf("%s.%s has no counterpart in %s — the JSON transport drops it", at.Name(), f.Name, jt.Name())
+			}
+		}
+	}
+}
+
+// exportedFields lists a struct's exported fields, flattening embedded
+// structs (AgentDecl and JudgeDecl embed LLMDecl; their mirrors are flat)
+// and skipping Span.
+func exportedFields(t reflect.Type) []reflect.StructField {
+	var out []reflect.StructField
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Name == "Span" || !f.IsExported() {
+			continue
+		}
+		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+			out = append(out, exportedFields(f.Type)...)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// ResourcesBlock is the one declaration mirrored across two fields of the
+// workflow mirror (capacities + members) rather than by a struct of its own.
+func TestResourcesBlockIsFullyMirrored(t *testing.T) {
+	at := reflect.TypeOf(ResourcesBlock{})
+	jt := reflect.TypeOf(jsonWorkflowDecl{})
+	for _, want := range []string{"Resources", "ResourceMembers"} {
+		if _, ok := jt.FieldByName(want); !ok {
+			t.Errorf("jsonWorkflowDecl lacks %s", want)
+		}
+	}
+	var names []string
+	for i := 0; i < at.NumField(); i++ {
+		if at.Field(i).Name != "Span" {
+			names = append(names, at.Field(i).Name)
+		}
+	}
+	if got := strings.Join(names, ","); got != "Capacities,Members" {
+		t.Errorf("ResourcesBlock grew a field the workflow mirror does not know: %s", got)
+	}
+}
