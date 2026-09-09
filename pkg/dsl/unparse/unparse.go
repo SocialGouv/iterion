@@ -266,14 +266,17 @@ func ensureBlockBody(b *buf, mark int, noop string) {
 // and those are written with a no-op property instead (ensureBlockBody), so
 // nothing that carries meaning is ever silently dropped.
 //
-// lead (a separator newline) is written only when the block is.
-func writeBlock(b *buf, lead, indent, name string, body func(*buf)) {
+// leadingBlank asks for the separator newline, which is written only when
+// the block itself is.
+func writeBlock(b *buf, leadingBlank bool, indent, name string, body func(*buf)) {
 	sub := &buf{strict: b.strict, nested: b.nested}
 	body(sub)
 	if sub.Len() == 0 {
 		return
 	}
-	b.WriteString(lead)
+	if leadingBlank {
+		b.WriteByte('\n')
+	}
 	fmt.Fprintf(b, "%s%s:\n", indent, name)
 	b.WriteString(sub.String())
 	if sub.needsStrict {
@@ -1481,7 +1484,7 @@ func writeSandboxNetworkBlock(b *buf, n *ast.SandboxNetworkBlock, indent string)
 }
 
 func writeCompaction(b *buf, compaction *ast.CompactionBlock, indent string, leadingBlank bool) {
-	writeBlock(b, blankIf(leadingBlank), indent, "compaction", func(b *buf) {
+	writeBlock(b, leadingBlank, indent, "compaction", func(b *buf) {
 		if compaction.Threshold != nil {
 			fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
 		}
@@ -1491,49 +1494,37 @@ func writeCompaction(b *buf, compaction *ast.CompactionBlock, indent string, lea
 	})
 }
 
-// blankIf is the separator newline writeBlock puts before a block it writes.
-func blankIf(leading bool) string {
-	if leading {
-		return "\n"
-	}
-	return ""
-}
-
 func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
-	writeBlock(b, blankIf(leadingBlank), indent, "memory", func(b *buf) {
-		writeMemoryProps(b, m, indent)
-	})
-}
-
-func writeMemoryProps(b *buf, m *ast.MemoryBlock, indent string) {
-	if m.Enabled != nil {
-		fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
-	}
-	if m.Scope != nil {
-		fmt.Fprintf(b, "%s  scope: %s\n", indent, b.str(*m.Scope))
-	}
-	if len(m.Autoload) > 0 {
-		quoted := make([]string, len(m.Autoload))
-		for i, s := range m.Autoload {
-			quoted[i] = b.str(s)
+	writeBlock(b, leadingBlank, indent, "memory", func(b *buf) {
+		if m.Enabled != nil {
+			fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
 		}
-		fmt.Fprintf(b, "%s  autoload: [%s]\n", indent, strings.Join(quoted, ", "))
-	}
-	if m.Read != nil {
-		fmt.Fprintf(b, "%s  read: %t\n", indent, *m.Read)
-	}
-	if m.Write != nil {
-		fmt.Fprintf(b, "%s  write: %t\n", indent, *m.Write)
-	}
-	if m.PreCompactInject != nil {
-		fmt.Fprintf(b, "%s  pre_compact_inject: %t\n", indent, *m.PreCompactInject)
-	}
-	if m.ProjectRoot != nil {
-		fmt.Fprintf(b, "%s  project_root: %t\n", indent, *m.ProjectRoot)
-	}
-	if m.Visibility != nil {
-		fmt.Fprintf(b, "%s  visibility: %s\n", indent, b.str(*m.Visibility))
-	}
+		if m.Scope != nil {
+			fmt.Fprintf(b, "%s  scope: %s\n", indent, b.str(*m.Scope))
+		}
+		if len(m.Autoload) > 0 {
+			quoted := make([]string, len(m.Autoload))
+			for i, s := range m.Autoload {
+				quoted[i] = b.str(s)
+			}
+			fmt.Fprintf(b, "%s  autoload: [%s]\n", indent, strings.Join(quoted, ", "))
+		}
+		if m.Read != nil {
+			fmt.Fprintf(b, "%s  read: %t\n", indent, *m.Read)
+		}
+		if m.Write != nil {
+			fmt.Fprintf(b, "%s  write: %t\n", indent, *m.Write)
+		}
+		if m.PreCompactInject != nil {
+			fmt.Fprintf(b, "%s  pre_compact_inject: %t\n", indent, *m.PreCompactInject)
+		}
+		if m.ProjectRoot != nil {
+			fmt.Fprintf(b, "%s  project_root: %t\n", indent, *m.ProjectRoot)
+		}
+		if m.Visibility != nil {
+			fmt.Fprintf(b, "%s  visibility: %s\n", indent, b.str(*m.Visibility))
+		}
+	})
 }
 
 // writeCursorDecl renders a top-level `cursor NAME:` declaration.
