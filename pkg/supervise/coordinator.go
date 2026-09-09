@@ -560,12 +560,23 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	return false
 }
 
+// watcherCursorID keys the durable cursor on (supervisor, watched-node
+// SET). The id is the only thing tying a restarted supervisor to the
+// suppression window it already earned, so it is derived from a CANONICAL
+// form of Watches — sorted and deduplicated, on a copy. `iterion supervise
+// --node a --node b` and `--node b --node a` name the same watch set, and
+// an operator retyping the flags in another order must not silently mint a
+// fresh cursor and lose the restart suppression this whole feature exists
+// to provide.
 func watcherCursorID(spec Spec) string {
 	name := spec.Name
 	if name == "" {
 		name = "default"
 	}
-	return "supervisor:" + name + ":" + supervisorFingerprint(strings.Join(spec.Watches, ","))[:12]
+	watches := slices.Clone(spec.Watches)
+	slices.Sort(watches)
+	watches = slices.Compact(watches)
+	return "supervisor:" + name + ":" + supervisorFingerprint(strings.Join(watches, ","))[:12]
 }
 
 func supervisorFingerprint(s string) string {

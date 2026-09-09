@@ -40,6 +40,28 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	}
 }
 
+func TestWatcherCursorIDIsStableAcrossWatchOrder(t *testing.T) {
+	base := watcherCursorID(Spec{Name: "persy", Watches: []string{"implement", "campaign"}})
+	for _, spec := range []Spec{
+		{Name: "persy", Watches: []string{"campaign", "implement"}},
+		{Name: "persy", Watches: []string{"implement", "campaign", "implement"}},
+	} {
+		if got := watcherCursorID(spec); got != base {
+			t.Fatalf("watches %v produced cursor id %q, want %q — a reordered --node flag must not lose the restart suppression",
+				spec.Watches, got, base)
+		}
+	}
+	if same := watcherCursorID(Spec{Name: "persy", Watches: []string{"implement"}}); same == base {
+		t.Fatalf("a different watch set reused cursor id %q", same)
+	}
+	// Canonicalising must not mutate the caller's slice.
+	watches := []string{"implement", "campaign"}
+	_ = watcherCursorID(Spec{Name: "persy", Watches: watches})
+	if watches[0] != "implement" {
+		t.Fatalf("watcherCursorID reordered the caller's Watches: %v", watches)
+	}
+}
+
 // cursorProbeInjector snapshots the run document at the instant Inject is
 // called — the exact point a crash would leave a durable steering message
 // behind an absent trigger fingerprint.
