@@ -1268,6 +1268,11 @@ type Checkpoint struct {
 	// alone cannot recover this when several nodes share a publish name or when
 	// parallel branches allocate different versions.
 	ArtifactRevisions map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	// ArtifactRevisionsKnown distinguishes a current checkpoint whose exposed
+	// artifact set is intentionally empty (for example after rewind) from a
+	// legacy checkpoint that predates ArtifactRevisions and may use the run's
+	// ArtifactIndex as a compatibility fallback.
+	ArtifactRevisionsKnown bool `json:"artifact_revisions_known,omitempty" bson:"artifact_revisions_known,omitempty"`
 	// SelectedIncoming records, per destination node, the incoming edges
 	// that routing actually selected for the current visit of that node.
 	// buildNodeInputRS applies with-mappings only from those edges so an

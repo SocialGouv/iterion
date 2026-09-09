@@ -201,14 +201,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// resumeFromFailure path re-executes NodeID first, then walks
 	// downstream.
 	child.Checkpoint = &store.Checkpoint{
-		NodeID:            spec.NodeID,
-		Outputs:           copyOutputs(parent.Checkpoint),
-		LoopCounters:      copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
-		ArtifactVersions:  copyArtifactVersions(parent.Checkpoint),
-		ArtifactRevisions: copyArtifactRevisions(parent.Checkpoint),
-		Vars:              copyVars(parent.Checkpoint),
-		BackendName:       turn.Backend,
-		BackendSessionID:  turn.SessionID,
+		NodeID:                 spec.NodeID,
+		Outputs:                copyOutputs(parent.Checkpoint),
+		LoopCounters:           copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
+		ArtifactVersions:       copyArtifactVersions(parent.Checkpoint),
+		ArtifactRevisions:      copyArtifactRevisions(parent.Checkpoint),
+		ArtifactRevisionsKnown: parent.Checkpoint.ArtifactRevisionsKnown,
+		Vars:                   copyVars(parent.Checkpoint),
+		BackendName:            turn.Backend,
+		BackendSessionID:       turn.SessionID,
 	}
 	// Claw rehydration: when the turn checkpoint has a MessagesRef
 	// (i.e. the parent was running on the claw backend), load the
@@ -234,7 +235,8 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// Provenance is useful only while it remains resolvable in the child's
 	// run namespace. Copy every retained exact revision and its transitive
 	// contract dependencies before the child is parked for resume.
-	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, forkArtifactRevisions(child.Checkpoint)); err != nil {
+	exactArtifacts, inferredArtifacts := forkArtifactRevisions(child.Checkpoint)
+	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, exactArtifacts, inferredArtifacts); err != nil {
 		return nil, fmt.Errorf("copy retained artifacts: %w", err)
 	}
 	// WriteArtifact maintains the child run's artifact index and advances its
@@ -348,27 +350,31 @@ func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisi
 // forkArtifactRevisions returns every retained physical revision. Exact
 // logical provenance wins when present; checkpoint outputs plus the allocator
 // cursor supply a compatibility root for producers saved by older binaries.
-func forkArtifactRevisions(cp *store.Checkpoint) []store.ArtifactRevisionRef {
+func forkArtifactRevisions(cp *store.Checkpoint) (exact, inferred []store.ArtifactRevisionRef) {
 	if cp == nil {
-		return nil
+		return nil, nil
 	}
-	revisions := make([]store.ArtifactRevisionRef, 0, len(cp.ArtifactRevisions)+len(cp.Outputs))
 	represented := make(map[string]bool, len(cp.ArtifactRevisions))
 	for _, revision := range cp.ArtifactRevisions {
-		revisions = append(revisions, revision)
+		exact = append(exact, revision)
 		represented[revision.NodeID] = true
+	}
+	if cp.ArtifactRevisionsKnown {
+		return exact, nil
 	}
 	for nodeID := range cp.Outputs {
 		if represented[nodeID] || cp.ArtifactVersions[nodeID] <= 0 {
 			continue
 		}
-		revisions = append(revisions, store.ArtifactRevisionRef{NodeID: nodeID, Version: cp.ArtifactVersions[nodeID] - 1})
+		inferred = append(inferred, store.ArtifactRevisionRef{NodeID: nodeID, Version: cp.ArtifactVersions[nodeID] - 1})
 	}
-	return revisions
+	return exact, inferred
 }
 
-func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, revisions []store.ArtifactRevisionRef) error {
-	if runStore == nil || len(revisions) == 0 {
+var errInferredForkArtifactUnavailable = errors.New("inferred fork artifact unavailable")
+
+func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, exact, inferred []store.ArtifactRevisionRef) error {
+	if runStore == nil || len(exact)+len(inferred) == 0 {
 		return nil
 	}
 	type revisionKey struct {
@@ -377,8 +383,8 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 	}
 	seen := make(map[revisionKey]bool)
 	artifacts := make(map[revisionKey]*store.Artifact)
-	var collectOne func(revisionKey) error
-	collectOne = func(key revisionKey) error {
+	var collectOne func(revisionKey, bool) error
+	collectOne = func(key revisionKey, optionalRoot bool) error {
 		if key.nodeID == "" {
 			return errors.New("artifact revision has no producer node")
 		}
@@ -388,9 +394,15 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		seen[key] = true
 		artifact, err := runStore.LoadArtifact(ctx, parentRunID, key.nodeID, key.version)
 		if err != nil {
+			if optionalRoot {
+				return fmt.Errorf("%w: %s/%d: %v", errInferredForkArtifactUnavailable, key.nodeID, key.version, err)
+			}
 			return fmt.Errorf("load %s/%d from parent: %w", key.nodeID, key.version, err)
 		}
 		if artifact == nil || artifact.RunID != parentRunID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
+			if optionalRoot {
+				return fmt.Errorf("%w: %s/%d has mismatched persisted identity", errInferredForkArtifactUnavailable, key.nodeID, key.version)
+			}
 			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)
 		}
 		if artifact.Contract != nil {
@@ -402,7 +414,7 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 				if depNode == "" {
 					depNode = dependency.LogicalRef
 				}
-				if err := collectOne(revisionKey{nodeID: depNode, version: dependency.Version}); err != nil {
+				if err := collectOne(revisionKey{nodeID: depNode, version: dependency.Version}, false); err != nil {
 					return err
 				}
 			}
@@ -410,12 +422,25 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		artifacts[key] = artifact
 		return nil
 	}
-	keys := make([]revisionKey, 0, len(revisions))
-	for _, revision := range revisions {
+	keys := make([]revisionKey, 0, len(exact)+len(inferred))
+	for _, revision := range exact {
 		keys = append(keys, revisionKey{nodeID: revision.NodeID, version: revision.Version})
 	}
 	for _, key := range keys {
-		if err := collectOne(key); err != nil {
+		if err := collectOne(key, false); err != nil {
+			return err
+		}
+	}
+	for _, revision := range inferred {
+		key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+		if err := collectOne(key, true); err != nil {
+			// Checkpoint outputs are the compatibility authority for inferred
+			// legacy roots. A missing old blob therefore omits only the copy;
+			// exact roots and dependencies discovered from a loaded contract
+			// remain fail-closed above and inside collectOne.
+			if errors.Is(err, errInferredForkArtifactUnavailable) {
+				continue
+			}
 			return err
 		}
 	}

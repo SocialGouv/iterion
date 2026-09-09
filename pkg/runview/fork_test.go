@@ -240,7 +240,7 @@ func TestCopyForkArtifactsWritesEachNodeInVersionOrder(t *testing.T) {
 	if err := copyForkArtifacts(ctx, recording, parentID, childID, []store.ArtifactRevisionRef{
 		{NodeID: "a", Version: 1},
 		{NodeID: "z", Version: 0},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []store.ArtifactRevisionRef{{NodeID: "a", Version: 0}, {NodeID: "a", Version: 1}, {NodeID: "z", Version: 0}}
@@ -251,6 +251,28 @@ func TestCopyForkArtifactsWritesEachNodeInVersionOrder(t *testing.T) {
 		if recording.writes[i] != want[i] {
 			t.Fatalf("copy order = %+v, want %+v", recording.writes, want)
 		}
+	}
+}
+
+func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-optional-parent", "fork-optional-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	missing := []store.ArtifactRevisionRef{{NodeID: "legacy", Version: 0}}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, nil, missing); err != nil {
+		t.Fatalf("inferred legacy root should fall back to checkpoint outputs: %v", err)
+	}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, missing, nil); err == nil {
+		t.Fatal("exact checkpoint revision unexpectedly became optional")
 	}
 }
 

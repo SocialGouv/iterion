@@ -246,7 +246,7 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 	sort.Strings(nodeIDs)
 	for _, nodeID := range nodeIDs {
 		node, ok := e.workflow.Nodes[nodeID]
-		if !ok || nodePublish(node) == "" || versions[nodeID] <= 0 {
+		if !ok || nodePublish(node) == "" {
 			continue
 		}
 		logicalRef := nodePublish(node)
@@ -258,6 +258,9 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 			// name so a downstream artifact records a dependency that the
 			// validator can resolve after this forced migration.
 			revisions[logicalRef] = revision
+			continue
+		}
+		if versions[nodeID] <= 0 {
 			continue
 		}
 		revisions[logicalRef] = store.ArtifactRevisionRef{
@@ -292,7 +295,11 @@ func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *s
 	}
 	outputs := copyOutputs(cp.Outputs)
 	state.artifacts = e.rebuildArtifacts(outputs)
-	state.revisions = e.rebuildArtifactRevisions(outputs, cp.ArtifactVersions, cp.ArtifactRevisions)
+	versionsForInference := cp.ArtifactVersions
+	if cp.ArtifactRevisionsKnown {
+		versionsForInference = nil
+	}
+	state.revisions = e.rebuildArtifactRevisions(outputs, versionsForInference, cp.ArtifactRevisions)
 
 	required := make(map[artifactRevisionKey]bool, len(cp.ArtifactRevisions))
 	for _, revision := range cp.ArtifactRevisions {

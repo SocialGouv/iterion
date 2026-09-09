@@ -22,19 +22,20 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoint {
 	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
 	cp := &store.Checkpoint{
-		NodeID:             nodeID,
-		Outputs:            rs.outputs,
-		LoopCounters:       rs.loopCounters,
-		RoundRobinCounters: rs.roundRobinCounters,
-		LoopPreviousOutput: rs.loopPreviousOutput,
-		LoopCurrentOutput:  rs.loopCurrentOutput,
-		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
-		LoopBudgetMarksV:   loopBudgetMarksVersion,
-		ArtifactVersions:   rs.artifactVersions,
-		ArtifactRevisions:  cloneMap(rs.artifactRevisions),
-		SelectedIncoming:   cloneIncoming(rs.selectedIncoming),
-		Vars:               rs.vars,
-		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
+		NodeID:                 nodeID,
+		Outputs:                rs.outputs,
+		LoopCounters:           rs.loopCounters,
+		RoundRobinCounters:     rs.roundRobinCounters,
+		LoopPreviousOutput:     rs.loopPreviousOutput,
+		LoopCurrentOutput:      rs.loopCurrentOutput,
+		LoopBudgetMarks:        snapshotLoopBudgetMarks(rs),
+		LoopBudgetMarksV:       loopBudgetMarksVersion,
+		ArtifactVersions:       rs.artifactVersions,
+		ArtifactRevisions:      cloneMap(rs.artifactRevisions),
+		ArtifactRevisionsKnown: true,
+		SelectedIncoming:       cloneIncoming(rs.selectedIncoming),
+		Vars:                   rs.vars,
+		NodeAttempts:           serializeNodeAttempts(rs.nodeAttempts),
 		// Persist run-scoped accounting so resume continues from consumed
 		// budget/spend instead of a fresh allowance (see Checkpoint docs).
 		BudgetTokensUsed:       tokens,

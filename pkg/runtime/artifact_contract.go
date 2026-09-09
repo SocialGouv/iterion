@@ -236,7 +236,7 @@ func artifactRevisionsForValidation(run *store.Run) []artifactValidationRevision
 		return nil
 	}
 	byKey := make(map[string]artifactValidationRevision)
-	authoritative := false
+	authoritative := run.Checkpoint != nil && run.Checkpoint.ArtifactRevisionsKnown
 	add := func(revisions map[string]store.ArtifactRevisionRef) {
 		if len(revisions) == 0 {
 			return

@@ -590,6 +590,10 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 //     pivot's identities is handled at resolve time (untracked fallback).
 func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
+	// From this point the checkpoint's (possibly empty) revision map is an
+	// explicit post-rewind snapshot. Do not let a later resume resurrect
+	// invalidated producers through the run-level ArtifactIndex fallback.
+	cp.ArtifactRevisionsKnown = true
 	if cp.ArtifactVersions == nil {
 		cp.ArtifactVersions = map[string]int{}
 	}

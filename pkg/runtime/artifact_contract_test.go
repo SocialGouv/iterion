@@ -335,6 +335,19 @@ func TestArtifactRevisionsForValidationIncludesParallelBranches(t *testing.T) {
 	}
 }
 
+func TestArtifactRevisionsForValidationHonorsKnownEmptyCheckpoint(t *testing.T) {
+	run := &store.Run{
+		ArtifactIndex: map[string]int{"invalidated": 7},
+		Checkpoint: &store.Checkpoint{
+			ArtifactRevisions:      map[string]store.ArtifactRevisionRef{},
+			ArtifactRevisionsKnown: true,
+		},
+	}
+	if got := artifactRevisionsForValidation(run); len(got) != 0 {
+		t.Fatalf("known-empty checkpoint resurrected stale artifact index: %+v", got)
+	}
+}
+
 func TestMaterializeHumanArtifactKeepsIncomingArtifactDependency(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

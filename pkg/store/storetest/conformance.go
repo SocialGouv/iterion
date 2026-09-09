@@ -106,10 +106,11 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	cp := &store.Checkpoint{
-		NodeID:            "dispatch",
-		InteractionID:     "interaction-1",
-		FiredEvents:       map[string]map[string]any{"ready": {"value": "ok"}},
-		ArtifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 2}},
+		NodeID:                 "dispatch",
+		InteractionID:          "interaction-1",
+		FiredEvents:            map[string]map[string]any{"ready": {"value": "ok"}},
+		ArtifactRevisions:      map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 2}},
+		ArtifactRevisionsKnown: true,
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -157,6 +158,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if revision := r.Checkpoint.ArtifactRevisions["plan"]; revision.NodeID != "planner" || revision.Version != 2 {
 		t.Fatalf("artifact revision after round-trip = %+v", revision)
+	}
+	if !r.Checkpoint.ArtifactRevisionsKnown {
+		t.Fatal("artifact revision authority marker was lost in store round-trip")
 	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]
