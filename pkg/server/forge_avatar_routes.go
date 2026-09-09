@@ -119,7 +119,15 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 	defer cancel()
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
-		return conn, "", err
+		// Nothing has reached the forge yet, and on the only kind that gets
+		// here this call cannot: the switch above refuses every kind but
+		// KindPAT, so forgeAdminFor opens the sealed token (a nil sealer, a
+		// master key that no longer opens the blob, a payload that will not
+		// unmarshal) and builds a bearer client — all local. Unmarked, none
+		// of it carries a forge sentinel or a *url.Error, so it would fall
+		// through the handler's 502 default and blame the forge for
+		// iterion's own seal — the #969 inversion, one step earlier.
+		return conn, "", newIterionFault(err)
 	}
 	setter, ok := admin.(forge.AvatarSetter)
 	if !ok {
@@ -237,7 +245,12 @@ func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, v
 	now := time.Now().UTC()
 	recorded, err := persist(&now, "")
 	if err != nil {
-		return conn, avatarURL, fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err)
+		// The forge answered 200 to the upload; iterion's OWN store then
+		// failed to write it down. Mark it so the handler answers 500 (this
+		// really is iterion's) instead of the 502 its default arm serves
+		// for a forge that broke. Body still names the connection and the
+		// underlying cause so the operator can act on it.
+		return conn, avatarURL, newIterionFault(fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err))
 	}
 	return recorded, avatarURL, nil
 }
@@ -296,6 +309,20 @@ func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
+		// This route mixes three failure sources under one default arm.
+		// Only ONE of them is the forge's: the round-trip (502 is the true
+		// code for what the classifier does not recognise — a broken
+		// transport, a body that is not the shape pkg/forge parses). The
+		// other two are iterion's own state — the seal/client construction
+		// BEFORE any forge call (forgeAdminFor), and the persist AFTER the
+		// upload already landed — and both are marked at their wrap site,
+		// where which step failed is still known, so they answer 500
+		// instead of sharing the 502 a genuine forge outage gets. That
+		// sharing is the inversion #969 is about.
+		if isIterionFault(err) {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
 		if !writeForgeUpstreamError(w, err, "%v", err) {
 			httpError(w, http.StatusBadGateway, "%v", err)
 		}

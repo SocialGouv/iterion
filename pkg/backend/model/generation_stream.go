@@ -210,6 +210,15 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 
 			case api.EventMessageDelta:
 				res.usage.OutputTokens = event.Usage.OutputTokens
+				// The OpenAI endpoints have no message_start-shaped frame
+				// to carry a prompt count on — both learn it only in the
+				// terminal usage payload — so claw reports it here. Taken
+				// only when non-zero: Anthropic and bedrock answer on
+				// message_start and send a delta carrying nothing, which
+				// an unconditional read would erase.
+				if event.Usage.InputTokens > 0 {
+					res.usage.InputTokens = event.Usage.InputTokens
+				}
 				// Exact billed thinking tokens (raw internal reasoning,
 				// independent of thinking.display); 0 when the provider
 				// omits the breakdown.

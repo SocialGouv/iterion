@@ -52,7 +52,7 @@
     "@types/node": "^20.19.39",
     "rimraf": "^6.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "keywords": [
     "iterion",

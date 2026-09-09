@@ -133,6 +133,72 @@ func writeForgeUpstreamError(w http.ResponseWriter, err error, format string, ar
 	return true
 }
 
+// iterionFault marks an error as iterion's own state failing — a store
+// write, a marshal, a seal that will not open — on a route whose default
+// arm answers 502 to serve the forge's own failures. Without the marker,
+// the shared taxonomy cannot tell the two apart: forgeUpstreamStatus
+// returning 0 means "not an answer from the forge", which is the truth
+// AND the definition of iterion's own, but a route that ALSO makes a
+// forge call after which its own state may fail (the avatar route: upload
+// then persist) cannot safely default to 500 — an unclassified upstream
+// error would then be blamed on iterion. The marker resolves it at the
+// wrap site, where which step failed is known: mark the store-write
+// failure; leave the raw forge error alone.
+//
+// A route whose ONLY failure path is a forge round-trip does NOT need
+// this: an unclassified error there IS a forge error the classifier does
+// not yet know about, and defaulting to 502 is the safe assumption.
+//
+// That premise is far easier to assert than to establish, and asserting
+// it wrongly is how the inversion spreads. A forge CLIENT METHOD is not
+// the same thing as a forge round-trip: pkg/forge/github's App client
+// mints an installation token and signs the App JWT — parsing a stored
+// private key — before its first socket, so a key that is not parseable
+// PEM fails inside what reads like a pure `admin.ListRepos(ctx)`. Trace
+// the call to its first byte on the wire before concluding a site is
+// clean; three arms on this branch were cleared on the shorter reading
+// and were wrong (see the residuals named at each).
+//
+// Finally: the 502 default is a per-route CHOICE, not the package's
+// rule, and this marker exists for the routes that make it. A handler
+// that can enumerate the forge's refusals and treat everything left as
+// its own defaults to 500 instead and needs no marker —
+// writeForgeOAuthAppError is that shape. A handler that cannot must
+// keep 502 (an unclassified upstream error must not be blamed on
+// iterion), and the marker is then the ONLY way it can ever answer 500.
+// The two are not one doctrine: pick the default the route's error
+// surface actually supports.
+type iterionFault struct{ err error }
+
+// newIterionFault wraps err so a handler whose default arm is 502 can
+// tell iterion's own faults apart (answer 500) from a forge that
+// answered or fell silent (keep 502 / the taxonomy code).
+//
+// The mark is INERT on its own, and reading it as sufficient is the
+// mistake to avoid: forgeUpstreamStatus has no iterionFault case and
+// writeForgeUpstreamError only consults that, so a marked error still
+// falls through to whatever the caller's own default arm is — 502 on
+// every route but the avatar one, the only handler that carries the
+// isIterionFault check. Marking a new site therefore takes TWO edits,
+// and the SECOND is the one that changes an answer. A mark alone is a
+// comment.
+func newIterionFault(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &iterionFault{err: err}
+}
+
+func (e *iterionFault) Error() string { return e.err.Error() }
+func (e *iterionFault) Unwrap() error { return e.err }
+
+// isIterionFault reports whether err (or anything it wraps) was marked
+// with iterionFault, so a 502-default handler can answer 500 instead.
+func isIterionFault(err error) bool {
+	var f *iterionFault
+	return errors.As(err, &f)
+}
+
 // retryAfterHeader renders a delay as delta-seconds, the form every client
 // reads. Zero (the forge said nothing) renders empty — never a guess.
 func retryAfterHeader(d time.Duration) string {
