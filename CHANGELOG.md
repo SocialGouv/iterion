@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.123.3](https://github.com/SocialGouv/iterion/compare/v3.123.2...v3.123.3) (2026-09-09)
+
+### Bug Fixes
+
+* **server:** a tenant the store says is GONE is not a blip to launch past ([#1027](https://github.com/SocialGouv/iterion/issues/1027)) ([998baac](https://github.com/SocialGouv/iterion/commit/998baac488733577c306753513ff1ffe82bb2c0a)), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    gateLaunch is the choke point every cloud launch surface crosses — the REST launch and resume, the inbound webhooks, the retry sweeper, the board dispatcher. It read the caller's team and, on ANY error, admitted the launch: quotas are operator policy, and a transient Mongo blip must not wedge a whole deployment.
+
+    </details>
+
 ## [3.123.2](https://github.com/SocialGouv/iterion/compare/v3.123.1...v3.123.2) (2026-09-09)
 
 ### Bug Fixes
