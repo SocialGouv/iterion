@@ -40,6 +40,68 @@ func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	}
 }
 
+// ctxSensitiveStore refuses a read/write whose context is already spent,
+// the way the Mongo twin does. The filesystem store takes `_ context.Context`
+// and ignores it, so a plain store is structurally incapable of catching a
+// cursor write issued on a cancelled context. It also records the tenant it
+// saw, because the detach must drop the CANCELLATION and keep the VALUES —
+// pkg/store/mongo panics on a tenant-less context.
+type ctxSensitiveStore struct {
+	store.RunStore
+	savedTenant *string
+}
+
+func (s ctxSensitiveStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.RunStore.LoadRun(ctx, id)
+}
+
+func (s ctxSensitiveStore) SaveRun(ctx context.Context, r *store.Run) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tenant, ok := store.TenantFromContext(ctx); ok {
+		*s.savedTenant = tenant
+	}
+	return s.RunStore.SaveRun(ctx, r)
+}
+
+func TestPersistCursorOutlivesACancelledCoordinatorContextAndKeepsTenancy(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	tenantCtx := store.WithTenant(context.Background(), "team-42")
+	if _, err := st.CreateRun(tenantCtx, "cursor-run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	savedTenant := ""
+	inj := &StoreInjector{Store: ctxSensitiveStore{RunStore: st, savedTenant: &savedTenant}}
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, inj, "cursor-run",
+		Spec{Name: "watch", Cooldown: time.Minute}, &scriptedEval{decisions: []*Decision{{}}}, nil)
+
+	ctx, cancel := context.WithCancel(tenantCtx)
+	c.ctx = ctx
+	c.ingest(&store.Event{RunID: "cursor-run", Type: store.EventNodeStarted, NodeID: "agent", Seq: 1, Timestamp: time.Now().UTC()})
+	// The run tore down: this is the state an evaluation cancelled at run
+	// end defers into, and the one write that matters most for a restart.
+	cancel()
+	c.persistCursor()
+
+	run, err := st.LoadRun(tenantCtx, "cursor-run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(run.WatcherCursors) != 1 {
+		t.Fatalf("watcher cursors = %#v, want the cursor persisted despite the spent coordinator context", run.WatcherCursors)
+	}
+	if savedTenant != "team-42" {
+		t.Fatalf("detached cursor write carried tenant %q, want team-42 — dropping ctx VALUES panics the Mongo store", savedTenant)
+	}
+}
+
 // countingPayload counts how often it is JSON-marshalled. RenderEvent
 // marshals evt.Data, so this makes "how many times did ingest render this
 // event" a deterministic assertion instead of a code-reading exercise.

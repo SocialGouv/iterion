@@ -577,26 +577,65 @@ func (c *Coordinator) restoreCursor() {
 	}
 }
 
+// cursorSaveAttempts bounds the CAS retry loop. The run document is
+// written at every node boundary, so losing a race is ordinary; losing
+// four in a row is not, and is worth an operator line.
+const cursorSaveAttempts = 4
+
+// cursorWriteTimeout bounds one detached cursor write so a shutting-down
+// pod cannot hang on an unreachable store.
+const cursorWriteTimeout = 5 * time.Second
+
+// cursorWriteCtx detaches the coordinator context's CANCELLATION while
+// keeping its VALUES. persistCursor runs on paths where c.ctx is already
+// spent — an evaluation cancelled at run end defers straight into it —
+// and the filesystem store ignores ctx while the Mongo twin honours it,
+// so inheriting the cancellation would drop exactly the last write before
+// a pod goes down, silently and only on cloud. context.Background() is
+// not the alternative: the Mongo store reads tenant identity off the
+// context and PANICS on a tenant-less one (pkg/store/mongo/tenant.go),
+// so detaching the values would turn a silent no-op into a crash in the
+// supervisor goroutine.
+func (c *Coordinator) cursorWriteCtx() (context.Context, context.CancelFunc) {
+	base := c.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(base), cursorWriteTimeout)
+}
+
 func (c *Coordinator) persistCursor() {
 	if c.cursorStore == nil || c.runID == "" || c.cursorID == "" {
 		return
 	}
+	ctx, cancel := c.cursorWriteCtx()
+	defer cancel()
 	c.cursor.UpdatedAt = time.Now().UTC()
-	for attempt := 0; attempt < 4; attempt++ {
-		run, err := c.cursorStore.LoadRun(c.ctx, c.runID)
-		if err != nil || run == nil {
+	for attempt := 0; attempt < cursorSaveAttempts; attempt++ {
+		run, err := c.cursorStore.LoadRun(ctx, c.runID)
+		if err != nil {
+			c.warn("supervise[%s]: watcher cursor not persisted on run %s: load failed: %v", c.spec.Name, c.runID, err)
+			return
+		}
+		if run == nil {
+			c.warn("supervise[%s]: watcher cursor not persisted on run %s: run document missing", c.spec.Name, c.runID)
 			return
 		}
 		if run.WatcherCursors == nil {
 			run.WatcherCursors = make(map[string]store.WatcherCursor)
 		}
 		run.WatcherCursors[c.cursorID] = c.cursor
-		if err := c.cursorStore.SaveRun(c.ctx, run); err == nil {
+		if err := c.cursorStore.SaveRun(ctx, run); err == nil {
 			return
 		} else if !errors.Is(err, store.ErrRunConflict) {
+			c.warn("supervise[%s]: watcher cursor save failed on run %s: %v", c.spec.Name, c.runID, err)
 			return
 		}
 	}
+	// Every failure above degrades supervision to the pre-change in-memory
+	// cooldown. Say so: the alternative is an operator inferring a lost
+	// cursor from a supervisor that re-steers after a restart.
+	c.warn("supervise[%s]: watcher cursor not persisted on run %s after %d CAS conflicts", c.spec.Name, c.runID, cursorSaveAttempts)
 }
 
 // applyDecision registers any new monitors and enqueues the steering
