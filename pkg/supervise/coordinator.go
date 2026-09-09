@@ -395,6 +395,15 @@ func (c *Coordinator) ingest(evt *store.Event) {
 	}
 	rendered, dataJSON := renderEvent(evt)
 	c.recent = append(c.recent, rendered)
+	if len(c.recent) > recentEventsCap {
+		c.recent = c.recent[len(c.recent)-recentEventsCap:]
+	}
+	// Inbox lifecycle events echo the supervisor's own action. They belong in
+	// the prompt context, but are not workflow progress: counting them would
+	// let the same failure wake another evaluation immediately after steering.
+	if isInboxEvent(evt.Type) {
+		return
+	}
 	progressAt := evt.Timestamp
 	if progressAt.IsZero() {
 		progressAt = time.Now()
@@ -416,9 +425,6 @@ func (c *Coordinator) ingest(evt *store.Event) {
 		}
 		c.cursor.LastProgressFingerprint = progressFP
 		c.cursor.LastProgressAt = progressAt
-	}
-	if len(c.recent) > recentEventsCap {
-		c.recent = c.recent[len(c.recent)-recentEventsCap:]
 	}
 }
 
@@ -523,7 +529,6 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	now := c.lastEvalAt
 	c.cursor.LastEvaluationAt = &now
 	c.cursor.NextEvaluationAt = timePtr(now.Add(c.spec.Cooldown))
-	c.cursor.LastTriggerFingerprint = triggerFP
 	defer c.persistCursor()
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
@@ -534,14 +539,12 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		if c.ctx != nil && c.ctx.Err() != nil &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			c.info("supervise[%s]: evaluation cancelled at run end (wake=%s)", c.spec.Name, reason)
-			c.cursor.LastTriggerFingerprint = ""
 			return false
 		}
 		c.evalFailures++
 		// A failed evaluation did not consume the signal. Leave the trigger
 		// eligible so a later retry can recover the evaluator, while the
 		// consecutive-failure cap still bounds the loop.
-		c.cursor.LastTriggerFingerprint = ""
 		c.warn("supervise[%s]: evaluation failed on run %s (wake=%s): %v", c.spec.Name, c.runID, reason, err)
 		if c.evalFailures >= maxEvalFailures {
 			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
@@ -550,7 +553,6 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	}
 	if dec == nil {
 		c.evalFailures++
-		c.cursor.LastTriggerFingerprint = ""
 		c.warn("supervise[%s]: evaluator returned a nil decision on run %s (wake=%s)", c.spec.Name, c.runID, reason)
 		if c.evalFailures >= maxEvalFailures {
 			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
@@ -569,9 +571,9 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		// The action did not land. Do not commit either the trigger or a
 		// successful intervention fingerprint: the same signal must remain
 		// eligible for a bounded later evaluation.
-		c.cursor.LastTriggerFingerprint = ""
 		return false
 	}
+	c.cursor.LastTriggerFingerprint = triggerFP
 	if dec.Intervene {
 		c.cursor.LastAction = "intervene"
 	} else if dec.Done {
@@ -651,8 +653,17 @@ func (c *Coordinator) restoreCursor() {
 }
 
 func (c *Coordinator) persistCursor() {
+	if err := c.saveCursor(); err != nil {
+		c.warn("supervise[%s]: watcher cursor save failed on run %s: %v", c.spec.Name, c.runID, err)
+	}
+}
+
+// saveCursor is the synchronous cursor write used by the delivery protocol.
+// The ordinary evaluation path wraps it with warning-only persistence, while
+// an intervention must fail closed if its delivery reservation is not durable.
+func (c *Coordinator) saveCursor() error {
 	if c.cursorWriter == nil || c.runID == "" || c.cursorID == "" {
-		return
+		return nil
 	}
 	c.cursor.UpdatedAt = time.Now().UTC()
 	baseCtx := c.ctx
@@ -664,8 +675,9 @@ func (c *Coordinator) persistCursor() {
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), 5*time.Second)
 	defer cancel()
 	if err := c.cursorWriter.SetWatcherCursor(saveCtx, c.runID, c.cursorID, c.cursor); err != nil {
-		c.warn("supervise[%s]: watcher cursor save failed on run %s: %v", c.spec.Name, c.runID, err)
+		return err
 	}
+	return nil
 }
 
 // applyDecision registers any new monitors and enqueues the steering
@@ -715,15 +727,32 @@ func (c *Coordinator) inject(text, triggerFP string) error {
 	}
 	var err error
 	if inj, ok := c.inj.(IdempotentInjector); ok {
-		// A semantic trigger can legitimately recur after other progress. The
-		// sequence makes that a new delivery while remaining crash-safe: it is
-		// advanced only after insertion, then persisted by evaluate's deferred
-		// cursor write. A crash in between reuses the same next sequence and ID.
+		// Reserve and persist the exact delivery identity before insertion. A
+		// crash after InsertOnce can then replay the pending ID, while a cursor
+		// failure aborts before the side effect and cannot create duplicates.
 		nextSequence := c.cursor.InterventionSequence + 1
-		deliveryID := "msg_supervisor_" + supervisorFingerprint(c.cursorID+"|"+strconv.Itoa(nextSequence)+"|"+triggerFP)
+		deliveryID := c.cursor.PendingInterventionID
+		if deliveryID == "" || c.cursor.PendingInterventionTrigger != triggerFP {
+			if c.cursor.PendingInterventionSequence > c.cursor.InterventionSequence {
+				// A different trigger superseded an unresolved reservation. Consume
+				// its sequence (gaps are harmless) so IDs are never recycled.
+				c.cursor.InterventionSequence = c.cursor.PendingInterventionSequence
+				nextSequence = c.cursor.InterventionSequence + 1
+			}
+			deliveryID = "msg_supervisor_" + supervisorFingerprint(c.cursorID+"|"+strconv.Itoa(nextSequence)+"|"+triggerFP)
+			c.cursor.PendingInterventionID = deliveryID
+			c.cursor.PendingInterventionTrigger = triggerFP
+			c.cursor.PendingInterventionSequence = nextSequence
+		}
+		if err := c.saveCursor(); err != nil {
+			return fmt.Errorf("supervise: persist intervention reservation: %w", err)
+		}
 		err = inj.InjectOnce(c.ctx, c.runID, scopeNode, body, deliveryID)
 		if err == nil {
-			c.cursor.InterventionSequence = nextSequence
+			c.cursor.InterventionSequence = c.cursor.PendingInterventionSequence
+			c.cursor.PendingInterventionID = ""
+			c.cursor.PendingInterventionTrigger = ""
+			c.cursor.PendingInterventionSequence = 0
 		}
 	} else {
 		err = c.inj.Inject(c.ctx, c.runID, scopeNode, body)

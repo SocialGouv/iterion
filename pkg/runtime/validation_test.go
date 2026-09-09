@@ -296,6 +296,36 @@ func TestSchemaValidation_CorrectionStopsAtProspectiveSpendLimit(t *testing.T) {
 	}
 }
 
+func TestSchemaValidation_CorrectionDoesNotStartAfterOriginalSpendLimit(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 150}, nil
+	})
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "corrected", "score": 1}, OutputCorrectionUsage{Tokens: 100}, nil
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 100, CapImposed: true}
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correction-original-spend", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 after original output exhausted the cap", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-original-spend")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 150 {
+		t.Fatalf("charged original spend = %+v, want 150 tokens", run.Checkpoint)
+	}
+	if episode := run.OutputCorrections["my_agent"]; episode.Status != correctionStatusExhausted || episode.Attempts != 0 {
+		t.Fatalf("correction episode = %+v, want exhausted before attempt 1", episode)
+	}
+}
+
 func TestSchemaValidation_RaisedBudgetReopensExhaustedEpisode(t *testing.T) {
 	ctx := context.Background()
 	st := tmpStore(t)

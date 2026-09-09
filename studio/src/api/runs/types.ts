@@ -121,6 +121,9 @@ export interface WatcherCursor {
   consecutive_no_progress?: number;
   progress_sequence?: number;
   intervention_sequence?: number;
+  pending_intervention_id?: string;
+  pending_intervention_trigger?: string;
+  pending_intervention_sequence?: number;
   updated_at?: string;
 }
 

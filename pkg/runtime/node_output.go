@@ -127,6 +127,24 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	current := output
 	currentErr := validationErr
+	// The original node call is accounted by the caller after this helper
+	// returns. A usage-reporting corrector is another paid model call, so refuse
+	// to start even the first attempt when that prospective original usage has
+	// already reached the same hard boundary that gates ordinary node calls.
+	if hasUsageCorrector {
+		if spendErr := e.outputCorrectionSpendError(rs, nodeID, current); spendErr != nil {
+			episode.Status = correctionStatusExhausted
+			episode.LastOutputFingerprint = correctionSemanticFingerprint(current)
+			episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
+			episode.LastError = spendErr.Error()
+			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
+			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, ledgerKey, episode); persistErr != nil {
+				return current, fmt.Errorf("output correction spend limit reached: %v; ledger: %w", spendErr, persistErr)
+			}
+			return current, spendErr
+		}
+	}
 	correctionCtx, cancelCorrection, budgetDeadline, deadlineErr := e.outputCorrectionContext(ctx, rs, nodeID)
 	if deadlineErr != nil {
 		return current, deadlineErr

@@ -483,10 +483,15 @@ type WatcherCursor struct {
 	// byte-for-byte identical.
 	ProgressSequence int `json:"progress_sequence,omitempty" bson:"progress_sequence,omitempty"`
 	// InterventionSequence advances only after a steering message is accepted.
-	// It scopes delivery deduplication to one progress episode while remaining
-	// stable across a crash between inbox insertion and cursor persistence.
-	InterventionSequence int       `json:"intervention_sequence,omitempty" bson:"intervention_sequence,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	InterventionSequence int `json:"intervention_sequence,omitempty" bson:"intervention_sequence,omitempty"`
+	// PendingIntervention* reserves the exact delivery identity before the
+	// message is inserted. If the process dies after insertion but before the
+	// cursor is finalized, the next coordinator reuses the same ID and the
+	// inbox's insert-once contract turns the replay into a no-op.
+	PendingInterventionID       string    `json:"pending_intervention_id,omitempty" bson:"pending_intervention_id,omitempty"`
+	PendingInterventionTrigger  string    `json:"pending_intervention_trigger,omitempty" bson:"pending_intervention_trigger,omitempty"`
+	PendingInterventionSequence int       `json:"pending_intervention_sequence,omitempty" bson:"pending_intervention_sequence,omitempty"`
+	UpdatedAt                   time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
 }
 
 // RunCredStamp is what one credential resolution leaves on the run

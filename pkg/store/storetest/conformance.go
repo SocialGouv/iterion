@@ -127,7 +127,9 @@ func testWatcherCursorStore(t *testing.T, s store.RunStore) {
 		WatcherID: "supervisor:conformance", LastProgressFingerprint: "progress",
 		LastProgressAt: now, LastEvaluationAt: &now,
 		LastAction: "observe", LastTriggerFingerprint: "trigger", NextEvaluationAt: &next,
-		ConsecutiveNoProgress: 2, ProgressSequence: 4, InterventionSequence: 3, UpdatedAt: now,
+		ConsecutiveNoProgress: 2, ProgressSequence: 4, InterventionSequence: 3,
+		PendingInterventionID: "msg_pending", PendingInterventionTrigger: "pending-trigger", PendingInterventionSequence: 4,
+		UpdatedAt: now,
 	}
 	if err := cursors.SetWatcherCursor(ctx, runID, want.WatcherID, want); err != nil {
 		t.Fatalf("SetWatcherCursor: %v", err)
@@ -139,7 +141,8 @@ func testWatcherCursorStore(t *testing.T, s store.RunStore) {
 	cursor, ok := got.WatcherCursors[want.WatcherID]
 	if !ok || cursor.WatcherID != want.WatcherID || cursor.LastProgressFingerprint != "progress" ||
 		cursor.LastEvaluationAt == nil || !cursor.LastEvaluationAt.Equal(now) || cursor.NextEvaluationAt == nil ||
-		!cursor.NextEvaluationAt.Equal(next) || cursor.ConsecutiveNoProgress != 2 || cursor.ProgressSequence != 4 || cursor.InterventionSequence != 3 {
+		!cursor.NextEvaluationAt.Equal(next) || cursor.ConsecutiveNoProgress != 2 || cursor.ProgressSequence != 4 || cursor.InterventionSequence != 3 ||
+		cursor.PendingInterventionID != "msg_pending" || cursor.PendingInterventionTrigger != "pending-trigger" || cursor.PendingInterventionSequence != 4 {
 		t.Fatalf("watcher cursor round-trip = %+v, present=%t", cursor, ok)
 	}
 	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error ||

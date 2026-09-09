@@ -24,6 +24,25 @@ func (s *cursorContextStore) SetWatcherCursor(ctx context.Context, _, _ string, 
 
 type cursorlessRunStore struct{ store.RunStore }
 
+type cursorWriteStore struct {
+	store.RunStore
+	base   *store.FilesystemRunStore
+	writes int
+	failAt map[int]bool
+}
+
+func (s *cursorWriteStore) SetWatcherCursor(ctx context.Context, runID, watcherID string, cursor store.WatcherCursor) error {
+	s.writes++
+	if s.failAt[s.writes] {
+		return errors.New("cursor write failed")
+	}
+	return s.base.SetWatcherCursor(ctx, runID, watcherID, cursor)
+}
+
+func (s *cursorWriteStore) AppendQueuedMessageOnce(ctx context.Context, runID string, msg store.QueuedUserMessage) (bool, error) {
+	return s.base.AppendQueuedMessageOnce(ctx, runID, msg)
+}
+
 func TestCoordinatorPersistsCursorAndSuppressesDuplicateWake(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -182,6 +201,93 @@ func TestCoordinatorDeliversRecurringEvidenceAfterAnotherEpisode(t *testing.T) {
 	}
 	if c.cursor.InterventionSequence != 3 {
 		t.Fatalf("intervention sequence = %d, want 3", c.cursor.InterventionSequence)
+	}
+}
+
+func TestCoordinatorInboxEchoDoesNotCreateProgress(t *testing.T) {
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: false}, {Intervene: false}}}
+	c := newBareCoordinator(t, Spec{MaxEvals: 5}, eval, nil)
+	trigger := &store.Event{Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "stuck"}}
+	c.ingest(trigger)
+	c.evaluate("monitor matched: "+RenderEvent(trigger), true)
+
+	c.ingest(&store.Event{Type: store.EventUserMessageQueued, NodeID: "agent", Data: map[string]any{"text": "[supervisor watch] fix it"}})
+	c.ingest(trigger)
+	c.evaluate("monitor matched: "+RenderEvent(trigger), true)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("same evidence evaluated %d times with only an inbox echo between deliveries, want 1", got)
+	}
+}
+
+func TestCoordinatorPersistsDeliveryReservationBeforeInsert(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.CreateRun(context.Background(), "reservation-run", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &cursorWriteStore{RunStore: base, base: base, failAt: map[int]bool{1: true, 2: true}}
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: true, Message: "fix it"}}}
+	c := New(&fakeObserver{ch: make(chan *store.Event)}, &StoreInjector{Store: wrapped}, "reservation-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	c.ctx = context.Background()
+	trigger := &store.Event{Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "stuck"}}
+	c.ingest(trigger)
+	c.evaluate("monitor matched: "+RenderEvent(trigger), true)
+
+	pending, err := base.LoadPendingQueuedMessages(context.Background(), "reservation-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("inserted %d intervention(s) without a durable delivery reservation", len(pending))
+	}
+}
+
+func TestCoordinatorReusesPendingDeliveryAfterFinalCursorWriteFailure(t *testing.T) {
+	base, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.CreateRun(context.Background(), "pending-delivery-run", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Write 1 reserves the delivery, write 2 is the post-insert finalization.
+	// Its failure models a crash after the inbox append has landed.
+	wrapped := &cursorWriteStore{RunStore: base, base: base, failAt: map[int]bool{2: true}}
+	eval := &scriptedEval{decisions: []*Decision{
+		{Intervene: true, Message: "fix it"},
+		{Intervene: true, Message: "fix it"},
+	}}
+	trigger := &store.Event{Type: store.EventToolError, NodeID: "agent", Data: map[string]any{"error": "stuck"}}
+	c := New(NewEventHub(), &StoreInjector{Store: wrapped}, "pending-delivery-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	c.ctx = context.Background()
+	c.ingest(&store.Event{Type: store.EventNodeStarted, NodeID: "agent"})
+	c.ingest(trigger)
+	c.evaluate("monitor matched: "+RenderEvent(trigger), true)
+
+	// EventHub has no catch-up replay. The restarted watcher sees only the
+	// repeated failure and must still recover the pending delivery identity.
+	c2 := New(NewEventHub(), &StoreInjector{Store: wrapped}, "pending-delivery-run", Spec{Name: "watch", MaxEvals: 5}, eval, nil)
+	c2.ctx = context.Background()
+	c2.restoreCursor()
+	c2.ingest(trigger)
+	c2.evaluate("monitor matched: "+RenderEvent(trigger), true)
+
+	pending, err := base.LoadPendingQueuedMessages(context.Background(), "pending-delivery-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("same pending delivery inserted %d times after restart, want 1", len(pending))
+	}
+	run, err := base.LoadRun(context.Background(), "pending-delivery-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := run.WatcherCursors[c2.cursorID]
+	if cursor.PendingInterventionID != "" || cursor.PendingInterventionTrigger != "" || cursor.PendingInterventionSequence != 0 {
+		t.Fatalf("finalized cursor retained pending delivery: %+v", cursor)
 	}
 }
 

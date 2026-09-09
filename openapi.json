@@ -2654,6 +2654,15 @@
             "format": "date-time",
             "type": "string"
           },
+          "pending_intervention_id": {
+            "type": "string"
+          },
+          "pending_intervention_sequence": {
+            "type": "integer"
+          },
+          "pending_intervention_trigger": {
+            "type": "string"
+          },
           "progress_sequence": {
             "type": "integer"
           },
