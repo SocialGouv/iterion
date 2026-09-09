@@ -301,17 +301,6 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
 	}
-	// Refuse an incompatible persisted artifact before claiming the run or
-	// mutating its checkpoint/workspace. Legacy/report contexts remain
-	// compatible during rollout; enforce contexts fail closed.
-	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
-		Store:    s.store,
-		Run:      run,
-		Workflow: wf,
-		Logger:   s.logger,
-	}); err != nil {
-		return nil, err
-	}
 	// Nodes this run actually executed — the search space for --auto and
 	// the validity domain for an explicit --node.
 	executed := map[string]bool{}
@@ -384,6 +373,31 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
+
+	// Refuse an incompatible SURVIVING artifact before claiming the run or
+	// mutating its checkpoint/workspace. Deliberately after the pivot is
+	// resolved, and skipping everything the rewind is about to invalidate:
+	// the operator rewinds precisely because they edited that node, so
+	// checking the output it is about to discard would refuse the repair
+	// with the damage as the reason — and this is also the escape hatch a
+	// resume points at when a publish reference or a schema did change.
+	// (The tombstone written for a rewound node carries no contract, so the
+	// resume that follows re-validates only what survived here too.)
+	// Legacy/report contexts stay compatible during rollout; enforce fails
+	// closed. No revision is asserted: the hash guard belongs to resume.
+	skip := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		skip[id] = true
+	}
+	if err := runtime.ValidateArtifactContracts(ctx, runtime.ArtifactContractCheck{
+		Store:    s.store,
+		Run:      run,
+		Workflow: wf,
+		Skip:     skip,
+		Logger:   s.logger,
+	}); err != nil {
+		return nil, err
+	}
 
 	// Claim the run BEFORE touching anything, the workspace included. The
 	// CAS exists to make a concurrent resume safe; reverting first defeats

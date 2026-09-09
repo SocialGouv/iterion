@@ -999,3 +999,103 @@ func TestRewind_KeepsTheFinishedAtTheClaimStamped(t *testing.T) {
 			"the save dropped it, so the studio duration ticker runs forever")
 	}
 }
+
+// publishBot is linearBot with a published artifact on an upstream node
+// and on the node a rewind will pivot on.
+const publishBot = `schema out:
+  value: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: out
+  publish: survey_report
+
+agent implement:
+  model: "claude-opus-4-7"
+  output: out
+  publish: implementation
+
+agent verify:
+  model: "claude-opus-4-7"
+  output: out
+
+workflow linear:
+  entry: survey
+  survey -> implement
+  implement -> verify
+  verify -> done
+`
+
+// seedContractArtifact stamps one artifact + index entry on a seeded run,
+// and puts the run under the enforce context policy.
+func seedContractArtifact(t *testing.T, st store.RunStore, runID, nodeID string, contract *store.ArtifactContract) {
+	t.Helper()
+	ctx := context.Background()
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if run.ArtifactIndex == nil {
+		run.ArtifactIndex = map[string]int{}
+	}
+	run.ArtifactIndex[nodeID] = 0
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: nodeID, Version: 0,
+		Contract: contract,
+		Data:     map[string]any{"value": nodeID},
+	}); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+}
+
+// A rewind is the repair for an edited node, so the artifact it is about to
+// invalidate must not be what refuses it — otherwise the operator has no way
+// out of an incompatible artifact under the enforce policy, and the escape
+// hatch a refused resume points at does not exist.
+func TestRewind_NotRefusedByTheArtifactItInvalidates(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, publishBot, cp, store.RunStatusFailedResumable)
+	// The pivot's own artifact was published under a name the bot no
+	// longer uses — exactly the edit the operator is rewinding for.
+	seedContractArtifact(t, st, runID, "implement", &store.ArtifactContract{
+		LogicalRef: "old_implementation", ProducerNode: "implement", Version: 0,
+		ProducerRevision: "hash-original",
+	})
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind refused by the artifact it invalidates: %v", err)
+	}
+}
+
+// The artifacts that SURVIVE the rewind are still checked: the run resumes
+// on them, so an incompatible one is a real refusal.
+func TestRewind_RefusedByAnIncompatibleSurvivingArtifact(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "implement", "verify"),
+	}
+	svc, st, runID := seedRun(t, publishBot, cp, store.RunStatusFailedResumable)
+	seedContractArtifact(t, st, runID, "survey", &store.ArtifactContract{
+		LogicalRef: "old_survey_report", ProducerNode: "survey", Version: 0,
+		ProducerRevision: "hash-original",
+	})
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err == nil {
+		t.Fatal("rewind accepted an incompatible artifact it keeps and resumes on")
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %q, want the refusal to leave the run untouched at failed_resumable", run.Status)
+	}
+}
