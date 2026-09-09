@@ -1028,6 +1028,28 @@ func (s *FilesystemRunStore) SetRunLLMIdle(_ context.Context, runID string, idle
 	return s.writeRun(r)
 }
 
+// SetRunOutputCorrection updates one node's correction episode under the
+// filesystem store mutex. It is intentionally granular: a correction call
+// must not replace a run document that an operator or runner concurrently
+// transitioned.
+func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, nodeID string, episode OutputCorrectionEpisode) error {
+	if nodeID == "" {
+		return fmt.Errorf("store: output correction node id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.OutputCorrections == nil {
+		r.OutputCorrections = make(map[string]OutputCorrectionEpisode)
+	}
+	r.OutputCorrections[nodeID] = episode
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // SetRunBudgetOverrides persists the operator's launch-time budget ask
 // (see RunStore). Load-modify-save under the store mutex, like
 // SetRunBudgetSnapshot below, so a status transition racing this write

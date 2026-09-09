@@ -1240,11 +1240,6 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		return true, nil
 	}
 
-	// Record budget usage.
-	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
-		return false, err
-	}
-
 	// Inspect the needs_human_input flag.
 	needsHuman := false
 	if v, ok := output["needs_human_input"]; ok {
@@ -1257,23 +1252,27 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	delete(output, "needs_human_input")
 
 	if needsHuman {
+		if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+			return false, err
+		}
 		if err := e.persistPause(rs, nodeID); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
 
-	// LLM decided no human input needed — store output and continue.
-	rs.outputs[nodeID] = output
-
-	// Validate output against the declared schema, preserving the same
-	// bounded correction ledger used by the normal execution path.
+	// LLM decided no human input needed — validate/correct before recording
+	// budget usage so repaired metadata and optional correction usage are
+	// included in the node's accounting.
 	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
 	if validationErr != nil {
 		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 	output = validatedOutput
 	rs.outputs[nodeID] = output
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return false, err
+	}
 
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
@@ -1903,6 +1902,14 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
 	}
 
+	// Validate/correct before committing session state, so a discarded invalid
+	// payload cannot leave a durable slot that describes it.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	if validationErr != nil {
+		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
+	}
+	output = validatedOutput
+
 	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
 		return err
 	}
@@ -1911,14 +1918,6 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	}
 
 	// Store the output and continue execution normally.
-	rs.outputs[nodeID] = output
-
-	// Validate output, continuing any durable bounded correction episode.
-	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
-	if validationErr != nil {
-		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
-	}
-	output = validatedOutput
 	rs.outputs[nodeID] = output
 
 	// Record budget.

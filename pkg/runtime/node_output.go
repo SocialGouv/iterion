@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -97,7 +97,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		episode.Budget = e.outputCorrectionBudget
 	}
 
-	if (episode.Status == correctionStatusExhausted || episode.Status == correctionStatusUnchanged) && episode.Attempts >= episode.Budget {
+	if episode.Status == correctionStatusUnchanged || episode.Status == correctionStatusExhausted {
 		return output, validationErr
 	}
 	if episode.Budget <= 0 {
@@ -113,6 +113,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		episode.LastViolationFingerprint = correctionFingerprint(currentErr.Error())
 		episode.LastError = currentErr.Error()
 		episode.UpdatedAt = time.Now().UTC()
+		e.emitOutputCorrectionEvent(rs, nodeID, episode, "attempt")
 		if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
 			// Losing the durable ledger is safer than pretending an unbounded
 			// correction is allowed: surface the original validation failure and
@@ -120,7 +121,14 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			return current, fmt.Errorf("output correction ledger: %w (original validation: %v)", err, currentErr)
 		}
 
-		candidate, correctionErr := corrector.CorrectOutput(ctx, node, current, currentErr)
+		var candidate map[string]any
+		var correctionUsage OutputCorrectionUsage
+		var correctionErr error
+		if usageCorrector, usageOK := e.executor.(OutputCorrectorWithUsage); usageOK {
+			candidate, correctionUsage, correctionErr = usageCorrector.CorrectOutputWithUsage(ctx, node, current, currentErr)
+		} else {
+			candidate, correctionErr = corrector.CorrectOutput(ctx, node, current, currentErr)
+		}
 		if correctionErr != nil || candidate == nil {
 			episode.Status = correctionStatusExhausted
 			if correctionErr != nil {
@@ -129,11 +137,13 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 				episode.LastError = "corrector returned a nil output"
 			}
 			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
 			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
 				return current, fmt.Errorf("output correction failed: %v; ledger: %w", episode.LastError, persistErr)
 			}
 			return current, currentErr
 		}
+		candidate = preserveCorrectionMetadata(current, candidate, correctionUsage)
 
 		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
 		candidateFP := correctionFingerprint(candidate)
@@ -147,6 +157,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			episode.LastViolationFingerprint = ""
 			episode.LastError = ""
 			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
 			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
 				return candidate, fmt.Errorf("output correction succeeded but ledger could not be persisted: %w", persistErr)
 			}
@@ -161,6 +172,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 			episode.LastViolationFingerprint = candidateViolationFP
 			episode.LastError = candidateErr.Error()
 			episode.UpdatedAt = time.Now().UTC()
+			e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
 			if persistErr := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); persistErr != nil {
 				return candidate, fmt.Errorf("unchanged output correction; ledger: %w", persistErr)
 			}
@@ -176,10 +188,58 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 
 	episode.Status = correctionStatusExhausted
 	episode.UpdatedAt = time.Now().UTC()
+	e.emitOutputCorrectionEvent(rs, nodeID, episode, episode.Status)
 	if err := e.persistCorrectionEpisode(ctx, rs.runID, nodeID, episode); err != nil {
 		return current, fmt.Errorf("output correction budget exhausted; ledger: %w", err)
 	}
 	return current, currentErr
+}
+
+func (e *Engine) emitOutputCorrectionEvent(rs *runState, nodeID string, episode store.OutputCorrectionEpisode, phase string) {
+	if rs == nil {
+		return
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeRecovery, nodeID, map[string]any{
+		"strategy": "schema_output_correction",
+		"phase":    phase,
+		"attempt":  episode.Attempts,
+		"budget":   episode.Budget,
+		"status":   episode.Status,
+	}); err != nil && e.logger != nil {
+		e.logger.Warn("output correction: failed to emit event for node %q: %v", nodeID, err)
+	}
+}
+
+// preserveCorrectionMetadata carries load-bearing underscore fields from the
+// original node call onto a corrected payload. A corrector can override a
+// field deliberately; absent fields are inherited. When usage is reported,
+// the correction call is added to the original totals before normal budget
+// accounting runs.
+func preserveCorrectionMetadata(original, candidate map[string]any, usage OutputCorrectionUsage) map[string]any {
+	if candidate == nil {
+		return nil
+	}
+	out := make(map[string]any, len(candidate)+4)
+	for key, value := range candidate {
+		out[key] = value
+	}
+	for key, value := range original {
+		if !strings.HasPrefix(key, "_") {
+			continue
+		}
+		if _, exists := out[key]; !exists {
+			out[key] = value
+		}
+	}
+	if usage.Tokens > 0 {
+		previous, _ := extractUsage(original)
+		out["_tokens"] = previous + usage.Tokens
+	}
+	if usage.CostUSD > 0 {
+		_, previous := extractUsage(original)
+		out["_cost_usd"] = previous + usage.CostUSD
+	}
+	return out
 }
 
 func correctionFingerprint(value any) string {
@@ -211,25 +271,11 @@ func (e *Engine) loadCorrectionEpisode(ctx context.Context, runID, nodeID string
 }
 
 func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, nodeID string, episode store.OutputCorrectionEpisode) error {
-	if e.store == nil {
-		return nil
+	correctionStore := store.AsOutputCorrectionStore(e.store)
+	if correctionStore == nil {
+		return fmt.Errorf("store does not implement granular output-correction persistence")
 	}
-	for attempt := 0; attempt < 4; attempt++ {
-		r, err := e.store.LoadRun(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if r.OutputCorrections == nil {
-			r.OutputCorrections = make(map[string]store.OutputCorrectionEpisode)
-		}
-		r.OutputCorrections[nodeID] = episode
-		if err := e.store.SaveRun(ctx, r); err == nil {
-			return nil
-		} else if !errors.Is(err, store.ErrRunConflict) {
-			return err
-		}
-	}
-	return store.ErrRunConflict
+	return correctionStore.SetRunOutputCorrection(ctx, runID, nodeID, episode)
 }
 
 // ---------------------------------------------------------------------------
