@@ -270,9 +270,18 @@ tool_prop = "description" ":" STRING_LIT NEWLINE
           | "goal" ":" STRING_LIT NEWLINE
           | "postcondition" ":" STRING_LIT NEWLINE
           | "policy" ":" action_policy NEWLINE
+          | "action" ":" connector_op_id NEWLINE
+          | "connection" ":" IDENT NEWLINE
+          | "retry" ":" STRING_LIT NEWLINE
+          | "timeout" ":" STRING_LIT NEWLINE
+          | action_params_block
           | recovery_block | sandbox_decl ;
 script_language = "js" | "py" | "sh" | "bash" ;
 action_policy = "required" | "recover" | "best_effort" ;
+(* A connector operation id: connector.resource.verb (ADR-098, C260). *)
+connector_op_id = IDENT "." IDENT "." IDENT { "." IDENT } ;
+action_params_block = "params" ":" NEWLINE [ INDENT { action_param } DEDENT ] ;
+action_param = IDENT ":" STRING_LIT NEWLINE ;
 recovery_block = "recovery" ":" NEWLINE [ INDENT { recovery_prop } DEDENT ] ;
 recovery_prop = "max_repair_attempts" ":" INT_LIT NEWLINE
               | "max_agent_attempts" ":" INT_LIT NEWLINE

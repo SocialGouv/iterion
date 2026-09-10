@@ -338,7 +338,7 @@ A node: `human <name>:` at the top level or inside a `group`.
 
 ### tool
 
-Direct shell execution, no LLM: `command:` runs through bash -c, `script:` through the interpreter `language:` names; with `output:` the command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044).
+The deterministic node, no LLM. One of three recipes: `command:` runs through bash -c, `script:` through the interpreter `language:` names, `action:` calls a connector operation (ADR-098). With `output:` a command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044), which an `action:` refuses (C262/C263).
 
 A node: `tool <name>:` at the top level or inside a `group`.
 
@@ -362,6 +362,19 @@ A node: `tool <name>:` at the top level or inside a `group`.
 | `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
 | `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
 | `recovery` | block → [recovery](#recovery) | Verified action: the self-heal ladder's bounds |
+| `action` | ident | Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260) |
+| `connection` | ident | The connection binding that authenticates the action (C261) |
+| `params` | block → [params](#params) | The action's arguments, by the operation's own parameter keys |
+| `retry` | string | Action: attempt count or duration; empty takes the package default (C265) |
+| `timeout` | string | Action: bound on one call, e.g. "30s" (C265) |
+
+### params
+
+The arguments of a connector action, keyed by the operation's own parameter names.
+
+A block opened by `params:` inside `tool`.
+
+Entries: `key: "value"` — A {{…}} template is rendered and then coerced to the type the operation declares, so an integer field receives a number.
 
 ### recovery
 

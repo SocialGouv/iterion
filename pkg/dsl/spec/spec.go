@@ -345,7 +345,7 @@ var Kinds = []Kind{
 			prop("merge_into", StringOrIdent, "review: current (default), none or a branch name"),
 			prop("max_turns", Int, "review: conversation turns before the gate escalates"),
 		}},
-	{Name: "tool", Role: Node, Doc: "Direct shell execution, no LLM: `command:` runs through bash -c, `script:` through the interpreter `language:` names; with `output:` the command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044).",
+	{Name: "tool", Role: Node, Doc: "The deterministic node, no LLM. One of three recipes: `command:` runs through bash -c, `script:` through the interpreter `language:` names, `action:` calls a connector operation (ADR-098). With `output:` a command prints schema-shaped JSON on stdout. A Verified Action adds goal + postcondition + policy + recovery (ADR-044), which an `action:` refuses (C262/C263).",
 		Properties: []Property{
 			pDescription,
 			prop("command", String, "Shell command, run through bash -c (exclusive with script)"),
@@ -362,7 +362,14 @@ var Kinds = []Kind{
 			prop("postcondition", String, "Verified action: command whose exit code is the truth oracle at every rung"),
 			checked("policy", "Verified action: required (default), recover or best_effort (C103–C106)", "required", "recover", "best_effort"),
 			block("recovery", "recovery", "Verified action: the self-heal ladder's bounds"),
+			prop("action", Ident, "Connector operation to call, `connector.resource.verb` — exclusive with command:/script: (ADR-098, C260)"),
+			prop("connection", Ident, "The connection binding that authenticates the action (C261)"),
+			block("params", "params", "The action's arguments, by the operation's own parameter keys"),
+			prop("retry", String, "Action: attempt count or duration; empty takes the package default (C265)"),
+			prop("timeout", String, "Action: bound on one call, e.g. \"30s\" (C265)"),
 		}},
+	{Name: "params", Role: BlockRole, Opener: "params", Hosts: []string{"tool"}, Doc: "The arguments of a connector action, keyed by the operation's own parameter names.",
+		Entries: &Entries{Shape: `key: "value"`, Doc: "A {{…}} template is rendered and then coerced to the type the operation declares, so an integer field receives a number"}},
 	{Name: "recovery", Role: BlockRole, Opener: "recovery", Hosts: []string{"tool"}, Doc: "Bounds of a Verified Action's recovery ladder (idempotent-skip → recipe → self-repair → agent → policy).",
 		Properties: []Property{
 			prop("max_repair_attempts", Int, "Self-repair rungs before the agent rung"),

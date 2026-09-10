@@ -107,9 +107,21 @@ func (p *parser) atLineEnd() bool {
 func (p *parser) parseActionParamsBlock() []ast.ActionParam {
 	p.expect(TokenColon)
 	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
+	// A bare `params:` declares an EMPTY block, like every other block since
+	// #1067: the studio saves a declaration the moment it is created, so a
+	// header with no body yet has a written form. What an empty one MEANS is
+	// the compiler's call — here it is an action with no arguments, which the
+	// executor refuses at call time if the operation requires any.
+	if p.peek().Type != TokenIndent {
+		// Whatever followed the colon is not an indented body. Consume the
+		// rest of the line rather than leaving it: an unconsumed token would
+		// be read by the property loop as the NEXT property name, and the
+		// author would get "unknown tool property '1'" — a diagnostic naming
+		// something they never wrote.
+		p.skipToNewline()
 		return nil
 	}
+	p.next()
 
 	var out []ast.ActionParam
 	for {
