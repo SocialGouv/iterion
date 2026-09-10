@@ -3,7 +3,6 @@ package runner
 import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
-	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 )
 
 // verifyTenantOrTerm refuses a delivery whose message tenant doesn't
@@ -16,7 +15,7 @@ import (
 // the operator to purge the JetStream subject manually — the generic
 // logDeliveryErr breadcrumb wouldn't surface it. Returns true to proceed,
 // false when the caller must abandon the delivery.
-func (r *Runner) verifyTenantOrTerm(pre preconditionOutcome, msg *queue.RunMessage, delivery *natsq.Delivery, logger *iterlog.Logger) bool {
+func (r *Runner) verifyTenantOrTerm(pre preconditionOutcome, msg *queue.RunMessage, delivery jsDelivery, logger *iterlog.Logger) bool {
 	if pre.preRun.TenantID == msg.TenantID {
 		return true
 	}

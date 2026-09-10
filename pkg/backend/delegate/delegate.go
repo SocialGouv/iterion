@@ -1069,6 +1069,47 @@ type TaskHooks struct {
 	//
 	// Runs on the stream-handling goroutine: must not block.
 	OnUsageWindow func(usagecap.Reading) error
+
+	// OnUsageProgress fires when the backend observes token usage
+	// accumulating MID-CALL (claude_code: each streamed assistant API
+	// message, deduplicated by message id). The payload is CUMULATIVE
+	// for the current delegate call, not a delta. Observational only —
+	// the authoritative spend is still recorded once at node end; this
+	// stream exists so a supervisor's cost_gt monitor can fire while
+	// there is still a turn left to steer. Runs on the stream-handling
+	// goroutine: must not block.
+	OnUsageProgress func(UsageProgress)
+
+	// OnOrchestrationStall fires when the backend classifies a silent
+	// session as blocked on an orchestration tool (TaskOutput / Monitor)
+	// with no background work to wait on, and says how the stall ended:
+	// Recovered when the in-place interrupt + follow-up got the session
+	// moving again, not recovered when it was aborted for the executor's
+	// retry. The metering seam for that failure class (delegate_stall event
+	// → the runner's iterion_delegate_idle_deadlock_total counter). Runs on
+	// the stream-handling goroutine: must not block.
+	OnOrchestrationStall func(OrchestrationStall)
+}
+
+// OrchestrationStall describes one classified orchestration deadlock.
+type OrchestrationStall struct {
+	Backend   string        // backend that classified it
+	Tool      string        // the blocking tool the session sat on
+	Model     string        // effective model serving the session, "" when unknown
+	IdleFor   time.Duration // silence that triggered the classification
+	Recovered bool          // true when the session continued in place
+}
+
+// UsageProgress is the cumulative token usage of an in-flight delegate
+// call, by billing class. Model is the effective model serving the call
+// (from the stream's system/init), which is what prices the estimate —
+// empty when the backend has not observed it yet.
+type UsageProgress struct {
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished
@@ -1090,9 +1131,12 @@ type TurnFinishedInfo struct {
 	// this delegate call. Used for the TextDigest fingerprint.
 	Text string
 	// InputTokens / OutputTokens come from the CLI's Result.Usage and
-	// feed the per-turn store.TurnUsage.
-	InputTokens  int
-	OutputTokens int
+	// feed the per-turn store.TurnUsage. AggregateTokens carries a total
+	// the CLI reported WITHOUT a split — filed apart so neither direction
+	// is claimed on evidence that does not exist.
+	InputTokens     int
+	OutputTokens    int
+	AggregateTokens int
 }
 
 // BuildSystemPrompt returns the task's SystemPrompt augmented with
@@ -1367,6 +1411,31 @@ func (e *ErrAuthFailed) Error() string {
 	return "authentication failed: " + e.Detail
 }
 
+// ErrSchemaUnusable marks a node whose DECLARED output schema the
+// serving backend cannot read — not output that failed to validate
+// against it (that is SCHEMA_VALIDATION, and the next sample may
+// conform), but the schema itself, which the request is built from. The
+// schema rides the IR: it is the same on every attempt, and the request
+// is never sent, so no sample and no wait exist to help.
+//
+// Measured on run 01a07db7 (2026-09-07): a `json` field emits a JSON
+// Schema type UNION (`["object","array",…]`, the shape that keeps a
+// type key without narrowing the value), which the claw API types read
+// into a single string. The node failed five times, four pods, on
+// `parse ExplicitSchema: json: cannot unmarshal array into Go struct
+// field InputSchema.properties.verdicts.type of type string`.
+type ErrSchemaUnusable struct {
+	Schema string // the schema block's name, when known
+	Detail string // the parse failure, for diagnostics
+}
+
+func (e *ErrSchemaUnusable) Error() string {
+	if e.Schema != "" {
+		return "output schema " + e.Schema + " is unusable by this backend: " + e.Detail
+	}
+	return "the declared output schema is unusable by this backend: " + e.Detail
+}
+
 // ErrTransient marks a backend failure the dispatcher should retry
 // (subprocess killed by OOM, peer reset, network blip, …). CLI
 // backends wrap stderr-matched indicators in this type so the executor's
@@ -1497,7 +1566,16 @@ const (
 	SessionStateBlobKey = "_session_state_blob"
 	// SessionFingerprintKey is the provider fingerprint of a CLI session.
 	SessionFingerprintKey = "_session_fingerprint"
-	BackendNameKey        = "_backend"
+	// SessionOptionalKey marks a SessionIDKey whose backing transcript may
+	// no longer exist, so the node may run fresh instead of failing on it
+	// (Task.SessionOptional). Set by the engine when the id was recovered
+	// from a PAUSE: the CLI transcript that backs it lives on the host
+	// that ran the node, and a resume can arrive on another one — a fresh
+	// cloud pod with an empty ~/.claude — hours later. That is a property
+	// of the pause, not of the node's declared `session:` mode, which is
+	// why it travels as its own key.
+	SessionOptionalKey = "_session_optional"
+	BackendNameKey     = "_backend"
 )
 
 // AwaitPendingInteractionsKey is the reserved Interaction.Questions key
@@ -1532,7 +1610,23 @@ type Result struct {
 	Output map[string]any
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
+	// It counts THIS call only: every shipped backend accumulates its own
+	// per-turn usage (claude_code and codex add the resumed formatting
+	// pass's Usage onto pass 1's; pi keeps the collector's per-turn numbers
+	// on a resumed session), so two calls that share a session report
+	// disjoint token counts and their totals SUM.
 	Tokens int
+
+	// CostIsSessionTotal reports that the `_cost_usd` on Output came from a
+	// provider figure covering the WHOLE session, not this call alone —
+	// claude_code's ResultMessage.TotalCostUSD being the one shipped case
+	// (annotateCost, which MAXes it across a session's result messages for
+	// exactly this reason). It is the discriminator Tokens does not need:
+	// a token-derived estimate is per-call and must be summed, while two
+	// calls resuming one session each report the same running total and
+	// must be folded at their MAX. False is the correct default — every
+	// other cost path is cost.Annotate's estimate over per-call tokens.
+	CostIsSessionTotal bool
 
 	// Duration is the wall-clock time of the subprocess execution.
 	Duration time.Duration

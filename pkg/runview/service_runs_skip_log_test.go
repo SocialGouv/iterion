@@ -116,6 +116,32 @@ func TestLogSkippedRunDoesNotMemoizeTransientErrors(t *testing.T) {
 	}
 }
 
+// A run deleted between the list and the load answers ErrRunDeleted, not
+// ErrRunNotFound: it is gone all the same — a stale index entry, logged
+// once at Debug — never the Warn a genuinely unreadable document rates.
+func TestLogSkippedRunTreatsATombstoneAsGone(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelDebug, &buf)
+	svc := &Service{logger: logger}
+
+	deletedErr := fmt.Errorf("store: load run run-deleted: %w", store.ErrRunDeleted)
+	for i := 0; i < 3; i++ {
+		svc.logSkippedRun("run-deleted", deletedErr)
+	}
+	lineCount := 0
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if strings.Contains(line, "run-deleted") {
+			lineCount++
+			if strings.Contains(line, "⚠️") {
+				t.Errorf("a tombstoned run is gone, not unreadable — must not rate a Warn, got: %s", line)
+			}
+		}
+	}
+	if lineCount != 1 {
+		t.Errorf("a tombstoned run logged %d times over 3 calls, want 1 (gone, logged once)\nlog:\n%s", lineCount, buf.String())
+	}
+}
+
 // The Warn dedup is time-boxed, not once-forever: a transient blip
 // (mongo server-selection, EMFILE) that marked an id must not silence
 // its diagnostic for the process lifetime — after the interval, the

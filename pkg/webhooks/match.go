@@ -158,3 +158,28 @@ func matchProjectPattern(pat, path string) bool {
 	}
 	return pat == path
 }
+
+// ReplierRoleRank maps a MinReplierRole value (gitlab vocabulary: guest |
+// reporter | developer | maintainer | owner) to an ordered rank AS THE GATES
+// READ IT: empty — never set — defaults to developer, and an unknown string
+// reads as that same default rather than silently opening the gate. Shared
+// by pkg/server's replier gates and the provision carry's stricter-of
+// comparison. NOT used by the provision's own derivation, whose table
+// deliberately ranks "" as zero ("no bot requires anything yet") so a
+// manifest can land a sub-developer floor — a caller comparing a
+// possibly-unset value must guard the empty string itself.
+func ReplierRoleRank(role string) int {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "owner":
+		return 5
+	case "maintainer":
+		return 4
+	case "developer", "":
+		return 3
+	case "reporter":
+		return 2
+	case "guest":
+		return 1
+	}
+	return 3
+}

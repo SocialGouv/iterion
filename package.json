@@ -1,16 +1,22 @@
 {
   "name": "iterion",
-  "version": "3.73.0",
+  "version": "3.131.0",
   "private": true,
   "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e",
   "devDependencies": {
     "@release-it/conventional-changelog": "^12",
+    "conventional-changelog": "^8",
+    "conventional-changelog-conventionalcommits": "^10",
     "release-it": "^21"
   },
   "pnpm": {
     "overrides": {
       "lodash": "^4.18.0",
-      "lodash-es": "^4.18.0"
+      "lodash-es": "^4.18.0",
+      "js-yaml": "^4.3.2",
+      "browserslist": "^4.28.7",
+      "baseline-browser-mapping": "^2.11.0",
+      "dompurify": "^3.4.13"
     }
   }
 }

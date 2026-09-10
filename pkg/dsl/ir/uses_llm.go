@@ -113,6 +113,15 @@ func (w *Workflow) AlwaysReachesLLM() bool {
 	return true
 }
 
+// NodeUsesLLM reports whether one node can call a model — the per-node
+// half of UsesLLM, exported for the walks outside this package that must
+// stay CONSERVATIVE about spend (a credential-wants derivation that
+// narrows a pool request, a usage-cap wire predicate): a node this answers
+// true for but that exposes no LLMFields (a human node answering with a
+// model, a Verified Action's agent rung, a subbot) cannot be resolved to
+// a provider, and a caller must widen rather than assume it spends nothing.
+func NodeUsesLLM(n Node) bool { return nodeUsesLLM(n) }
+
 // nodeUsesLLM answers for one node. Kept separate so the reasoning per node
 // kind stays readable, and each `true` names why it is one.
 func nodeUsesLLM(n Node) bool {

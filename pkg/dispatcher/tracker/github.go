@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -41,7 +42,17 @@ type GitHubOptions struct {
 	// the issue's WorkflowState. Map iteration order is unspecified
 	// in Go, so callers should treat ordering as best-effort and
 	// design label predicates so at most one matches per issue.
+	//
+	// Ignored in BOARD MODE (see Project): a bound project's Status
+	// field is the state, and a parallel label convention would be a
+	// second answer to the same question.
 	StateMapping map[string]LabelSelector
+
+	// Project, when non-nil, puts the adapter in BOARD MODE: the workflow
+	// state is read from (and written to) a Projects v2 board's Status
+	// field instead of labels (ADR-097). The claim stays a label either
+	// way — a project item has nothing to fence a lease with.
+	Project *GitHubProjectOptions
 
 	// ClaimedLabel is added by Claim and removed by Release. Issues
 	// carrying this label are filtered out of ListCandidates.
@@ -70,6 +81,15 @@ type LabelSelector struct {
 // pagination come for free from gh; iterion only deals with JSON.
 type GitHubAdapter struct {
 	opts GitHubOptions
+
+	// claimedLabelEnsured memoises, per adapter, that the repository
+	// carries ClaimedLabel: `gh issue edit --add-label` refuses a label
+	// the repo does not have, so the first claim bootstraps it (the
+	// Forgejo twin's resolveLabelID). Dropped when a claim finds the
+	// label gone again, so an operator deleting it does not put the repo
+	// back into the every-tick claim failure.
+	labelMu             sync.Mutex
+	claimedLabelEnsured bool
 }
 
 // NewGitHub returns a configured adapter. Returns an error if the
@@ -77,6 +97,11 @@ type GitHubAdapter struct {
 func NewGitHub(opts GitHubOptions) (*GitHubAdapter, error) {
 	if err := ValidateRepoPath(opts.Repo); err != nil {
 		return nil, fmt.Errorf("github tracker: %w", err)
+	}
+	if opts.Project != nil {
+		if err := opts.Project.validate(); err != nil {
+			return nil, err
+		}
 	}
 	opts.ClaimedLabel = defaultClaimedLabel(opts.ClaimedLabel)
 	if opts.Command == nil {
@@ -121,6 +146,11 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	if len(raw) >= ghCandidateListLimit && a.opts.Logger != nil {
 		a.opts.Logger.Warn("github tracker: ListCandidates hit the %d-issue cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters",
 			ghCandidateListLimit, a.opts.Repo)
+	}
+	if a.boardMode() {
+		// The issue list stays the source of CONTENT; the board decides the
+		// state and the eligibility.
+		return a.listCandidatesFromBoard(ctx, raw)
 	}
 	// Open-issue set for fail-open blocker resolution (all open issues this
 	// list returned, before eligibility filtering).
@@ -171,6 +201,10 @@ func (a *GitHubAdapter) authorAllowed(login string) bool {
 func (a *GitHubAdapter) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
 	if len(ids) == 0 {
 		return map[string]string{}, nil
+	}
+	if a.boardMode() {
+		// One board read answers the whole set — no per-issue REST call.
+		return a.refreshStatesFromBoard(ctx, ids)
 	}
 	wanted := make(map[int]string, len(ids))
 	for _, id := range ids {
@@ -254,9 +288,13 @@ func (a apiIssue) toGhIssue() ghIssue {
 }
 
 // UpdateState transitions an issue by adjusting labels per the
-// matching state mapping. Best-effort: if newState has no label
-// mapping configured, returns ErrTransitionRejected.
+// matching state mapping — or, in board mode, by writing the project's
+// Status field. Best-effort: if newState maps to neither, returns
+// ErrTransitionRejected.
 func (a *GitHubAdapter) UpdateState(ctx context.Context, id, newState string) error {
+	if a.boardMode() {
+		return a.updateStateOnBoard(ctx, id, newState)
+	}
 	sel, err := resolveLabelSelector(a.opts.StateMapping, newState)
 	if err != nil {
 		return err
@@ -291,22 +329,100 @@ func (a *GitHubAdapter) Comment(ctx context.Context, id, body string) error {
 	return nil
 }
 
-// Claim adds the ClaimedLabel and a marker comment (so multiple
-// dispatchers against the same repo can observe each other's markers).
+// Claim adds the ClaimedLabel. The marker is NOT persisted anywhere on
+// the issue (labels carry no host/pid — see the Tracker interface note),
+// which is why the boot journal is this adapter's only claim-recovery
+// path.
+//
+// The label is created on first use when the repository lacks it: `gh
+// issue edit --add-label` refuses an unknown label ('<label>' not
+// found), which on a fresh repo failed every issue's claim at every
+// tick, for ever. A refusal of that exact shape on a later claim means
+// the label was deleted behind the adapter's back: the memo is dropped,
+// the label re-created, the claim retried once.
 func (a *GitHubAdapter) Claim(ctx context.Context, id, marker string) error {
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {
 		return ErrNotFound
 	}
+	if err := a.ensureClaimedLabel(ctx); err != nil {
+		return err
+	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--add-label", a.opts.ClaimedLabel}
-	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
+	_, err := a.opts.Command(ctx, args, a.env())
+	if err != nil && a.ghClaimedLabelMissing(err) {
+		a.labelMu.Lock()
+		a.claimedLabelEnsured = false
+		a.labelMu.Unlock()
+		if err := a.ensureClaimedLabel(ctx); err != nil {
+			return err
+		}
+		_, err = a.opts.Command(ctx, args, a.env())
+	}
+	if err != nil {
 		return fmt.Errorf("gh issue edit (claim): %w", err)
 	}
 	return nil
 }
 
+// ensureClaimedLabel makes sure the repository carries ClaimedLabel,
+// creating it when absent — once per adapter. Listing first and creating
+// only on absence (never `--force`) keeps an operator's own colour and
+// description on a label that already exists; the created one takes the
+// neutral grey the Forgejo twin uses. A failure here is the claim's
+// failure: it surfaces with the label and the cause, and nothing is
+// memoised, so the next claim tries again.
+func (a *GitHubAdapter) ensureClaimedLabel(ctx context.Context) error {
+	a.labelMu.Lock()
+	defer a.labelMu.Unlock()
+	if a.claimedLabelEnsured {
+		return nil
+	}
+	list := []string{"label", "list", "--repo", a.opts.Repo, "--search", a.opts.ClaimedLabel, "--json", "name", "--limit", "100"}
+	out, err := a.opts.Command(ctx, list, a.env())
+	if err != nil {
+		return fmt.Errorf("gh label list (ensure claim label %q): %w", a.opts.ClaimedLabel, err)
+	}
+	var labels []struct {
+		Name string `json:"name"`
+	}
+	if len(bytes.TrimSpace(out)) > 0 {
+		if err := json.Unmarshal(out, &labels); err != nil {
+			return fmt.Errorf("gh label list (ensure claim label %q): decode: %w", a.opts.ClaimedLabel, err)
+		}
+	}
+	for _, l := range labels {
+		if l.Name == a.opts.ClaimedLabel {
+			a.claimedLabelEnsured = true
+			return nil
+		}
+	}
+	create := []string{"label", "create", a.opts.ClaimedLabel, "--repo", a.opts.Repo,
+		"--color", "888888", "--description", "Claimed by an iterion dispatcher"}
+	if _, err := a.opts.Command(ctx, create, a.env()); err != nil {
+		return fmt.Errorf("gh label create %q (the dispatcher's claim label is missing from %s and could not be created): %w",
+			a.opts.ClaimedLabel, a.opts.Repo, err)
+	}
+	a.claimedLabelEnsured = true
+	return nil
+}
+
+// ghClaimedLabelMissing recognises gh 2.x's refusal of an --add-label for
+// a label the repository does not carry, anchored on the exact configured
+// label name so an unrelated not-found cannot match.
+func (a *GitHubAdapter) ghClaimedLabelMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), strings.ToLower("'"+a.opts.ClaimedLabel+"' not found"))
+}
+
 // Release removes the ClaimedLabel. Idempotent — gh ignores
-// remove-label for a label that isn't present.
+// remove-label for a label that isn't present, and a MISSING issue
+// (deleted, transferred) maps to ErrNotFound like the Forgejo twin:
+// callers treat that absence as benign, and without the mapping a
+// deleted issue's claim-journal entry was retried and warned at every
+// boot, for ever.
 func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {
@@ -314,9 +430,63 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	}
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--remove-label", a.opts.ClaimedLabel}
 	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
+		if a.ghReleaseGone(err, num) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("gh issue edit (release): %w", err)
 	}
 	return nil
+}
+
+// ghReleaseGone recognises the gh CLI error texts that mean the release
+// target is PERMANENTLY absent: the issue itself (GraphQL resolve
+// failure, or a REST 404 whose URL names THIS issue), or the claim LABEL
+// deleted from the repo — the second member of the same class: either
+// way the claim cannot exist any more, and a non-benign error would keep
+// the journal entry retried and warned at every boot, for ever.
+//
+// Both absence arms are scoped to the issue on purpose. GitHub answers
+// 404 (not 403) for a repository a token can no longer see, so a bare
+// "404" would read a permission regression as a gone issue and drop the
+// journal entry — this adapter's only recovery path — while the claim
+// label stayed on the issue. The label form is anchored on the exact
+// configured label name (gh 2.x prints `'<label>' not found`), so an
+// unrelated not-found in the message cannot match. Text matching is
+// brittle but the CLI offers no typed channel.
+func (a *GitHubAdapter) ghReleaseGone(err error, num int) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "could not resolve to an issue") ||
+		ghIssueScoped404(msg, num) ||
+		a.ghClaimedLabelMissing(err)
+}
+
+// ghIssueScoped404 matches gh's REST failure form (`HTTP 404: Not Found
+// (<url>)`) only when the URL's path names issue `num` — `/issues/638`
+// followed by a path or query separator, or the closing parenthesis, so
+// issue 6380 never matches 638.
+func ghIssueScoped404(lowerMsg string, num int) bool {
+	if !strings.Contains(lowerMsg, "http 404") {
+		return false
+	}
+	needle := fmt.Sprintf("/issues/%d", num)
+	for start := 0; ; {
+		i := strings.Index(lowerMsg[start:], needle)
+		if i < 0 {
+			return false
+		}
+		end := start + i + len(needle)
+		if end == len(lowerMsg) {
+			return true
+		}
+		switch lowerMsg[end] {
+		case '/', ')', '?', ' ', '\n':
+			return true
+		}
+		start = end
+	}
 }
 
 // HasLinkedPR reports whether an OPEN pull request already references this

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"slices"
 	"time"
 
@@ -28,17 +29,68 @@ import (
 // partial-progress contract native documents on a mid-cascade failure.
 var _ native.BoardAdmin = (*Store)(nil)
 
+// sweepCtx is the parent context of a CASCADE — the O(N) walks below that
+// rewrite every card of the board (migrateState, applyFieldRewrite,
+// applyLabelRewrite). It deliberately carries NO deadline: opTimeout prices
+// ONE round-trip, so a whole walk priced at one round-trip renames the first
+// cards, errors on the rest, and hands the operator a half-applied
+// vocabulary change. Every Mongo call inside a walk derives its own bounded
+// context from this one (callCtx), which is what bounds a hung server
+// without bounding the walk. The BoardAdmin interface carries no context, so
+// the sweep's own bound is the caller's process.
+func sweepCtx() context.Context { return context.Background() }
+
+// callCtx bounds ONE Mongo round-trip inside a cascade while keeping the
+// sweep's own cancellation.
+func callCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, opTimeout)
+}
+
+// The cascade walks read and write through these: each derives a fresh
+// per-round-trip budget from the sweep parent, so the walk's length never
+// eats the budget of the write that follows it.
+
+func (s *Store) cascadeListAll(parent context.Context) ([]native.Issue, error) {
+	ctx, cancel := callCtx(parent)
+	defer cancel()
+	return s.listAll(ctx)
+}
+
+func (s *Store) cascadeReplace(parent context.Context, iss *native.Issue, changed ...string) error {
+	ctx, cancel := callCtx(parent)
+	defer cancel()
+	return s.replace(ctx, iss, changed...)
+}
+
+func (s *Store) cascadeReplaceGuarded(parent context.Context, iss *native.Issue, guard bson.M, changed ...string) (bool, error) {
+	ctx, cancel := callCtx(parent)
+	defer cancel()
+	return s.replaceGuarded(ctx, iss, guard, changed...)
+}
+
+func (s *Store) cascadeGet(parent context.Context, id string) (*native.Issue, error) {
+	ctx, cancel := callCtx(parent)
+	defer cancel()
+	return s.get(ctx, id)
+}
+
 // persistBoard is the Mongo twin of native's setBoardLocked: it validates the
 // candidate board and writes it WITHOUT emitting an event. Each config mutator
 // emits its own precise op-discriminated EvtBoardUpdated after any per-issue
 // cascade completes (matching native's emit ordering exactly). SetBoard, by
 // contrast, emits the bare EvtBoardUpdated — so the config ops must not route
 // through it or they'd double-emit.
-func (s *Store) persistBoard(ctx context.Context, b *native.Board) error {
+//
+// parent is the caller's scope, not the write's budget: the single ReplaceOne
+// gets its own opTimeout so a config mutator that also runs a cascade prices
+// this write like any other round-trip.
+func (s *Store) persistBoard(parent context.Context, b *native.Board) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
 	b.UpdatedAt = time.Now().UTC()
+	ctx, cancel := callCtx(parent)
+	defer cancel()
 	if _, err := s.config.ReplaceOne(ctx, bson.M{"_id": s.tenant}, configDoc{Tenant: s.tenant, Board: *b}, options.Replace().SetUpsert(true)); err != nil {
 		return fmt.Errorf("boardmongo: persist board: %w", err)
 	}
@@ -53,10 +105,10 @@ func (s *Store) persistBoard(ctx context.Context, b *native.Board) error {
 // migrateState rewrites every tenant issue in state `from` to `to`, emitting
 // one EvtIssueState per touched issue with the given reason. Mirrors native's
 // migrateStateLocked, including the per-issue partial-progress contract.
-func (s *Store) migrateState(ctx context.Context, from, to, reason string) (int, error) {
-	all, err := s.listAll(ctx)
+func (s *Store) migrateState(parent context.Context, from, to, reason string) (int, error) {
+	all, err := s.cascadeListAll(parent)
 	if err != nil {
-		return 0, err
+		return 0, cascadeErrf(0, "", "state migration", "read the board", err)
 	}
 	touched := 0
 	for i := range all {
@@ -65,20 +117,33 @@ func (s *Store) migrateState(ctx context.Context, from, to, reason string) (int,
 			continue
 		}
 		iss.State = to
+		iss.StateReason = reason
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
-			return touched, fmt.Errorf("boardmongo: write %s during state migration: %w", iss.ID, err)
+		if err := s.cascadeReplace(parent, &iss, "state"); err != nil {
+			return touched, cascadeErrf(touched, iss.ID, "state migration", "write", err)
 		}
 		if err := s.emit(native.Event{
 			Type:    native.EvtIssueState,
 			IssueID: iss.ID,
 			Payload: map[string]any{"from": from, "to": to, "reason": reason},
 		}); err != nil {
-			return touched, err
+			return touched, cascadeErrf(touched, iss.ID, "state migration", "record the event for", err)
 		}
 		touched++
 	}
 	return touched, nil
+}
+
+// cascadeErrf wraps a cascade failure with the progress an operator needs to
+// resume by hand: how many cards the walk already rewrote, and which one it
+// stopped at. A cascade is a partial write with no rollback, so a bare driver
+// error ("context deadline exceeded") leaves the board in a state nobody can
+// name. card may be empty when the walk failed before reaching one.
+func cascadeErrf(touched int, card, op, what string, err error) error {
+	if card == "" {
+		return fmt.Errorf("boardmongo: %s stopped after %d card(s): could not %s: %w", op, touched, what, err)
+	}
+	return fmt.Errorf("boardmongo: %s stopped after %d card(s): could not %s %s: %w", op, touched, what, card, err)
 }
 
 // AddState appends a new column to the board. Rejects an empty or duplicate
@@ -89,7 +154,10 @@ func (s *Store) AddState(st native.State) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	if board.StateByName(st.Name) != nil {
 		return fmt.Errorf("boardmongo: state %q already exists", st.Name)
 	}
@@ -114,9 +182,11 @@ func (s *Store) RenameState(from, to string) (int, error) {
 	if from == to {
 		return 0, nil
 	}
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	board := s.Board()
+	sweep := sweepCtx()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := stateIndex(board, from)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown state %q", from)
@@ -125,10 +195,10 @@ func (s *Store) RenameState(from, to string) (int, error) {
 		return 0, fmt.Errorf("boardmongo: target state %q already exists; delete-with-migrate to merge columns", to)
 	}
 	board.States[idx].Name = to
-	if err := s.persistBoard(ctx, board); err != nil {
+	if err := s.persistBoard(sweep, board); err != nil {
 		return 0, err
 	}
-	touched, err := s.migrateState(ctx, from, to, "state_rename")
+	touched, err := s.migrateState(sweep, from, to, tracker.ReasonStateRename)
 	if err != nil {
 		return touched, err
 	}
@@ -143,18 +213,20 @@ func (s *Store) RenameState(from, to string) (int, error) {
 // the last column. Issues are migrated first, then the column is dropped.
 // Mirrors native.Store.DeleteState.
 func (s *Store) DeleteState(name, migrateTo string) (int, error) {
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	board := s.Board()
+	sweep := sweepCtx()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	if stateIndex(board, name) < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown state %q", name)
 	}
 	if len(board.States) <= 1 {
 		return 0, errors.New("boardmongo: cannot delete the last column")
 	}
-	all, err := s.listAll(ctx)
+	all, err := s.cascadeListAll(sweep)
 	if err != nil {
-		return 0, err
+		return 0, cascadeErrf(0, "", "state delete", "read the board", err)
 	}
 	count := 0
 	for i := range all {
@@ -173,14 +245,24 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 		if board.StateByName(migrateTo) == nil {
 			return 0, fmt.Errorf("boardmongo: unknown migration target %q", migrateTo)
 		}
-		touched, err = s.migrateState(ctx, name, migrateTo, "state_delete")
+		// A terminal column emptied into a working one is a bulk reopen —
+		// held to the same dependents check as the single-card Reopen, on
+		// both twins.
+		ptrs := make([]*native.Issue, len(all))
+		for i := range all {
+			ptrs[i] = &all[i]
+		}
+		if err := native.ReopenMigrationAllowed(board, ptrs, name, migrateTo); err != nil {
+			return 0, err
+		}
+		touched, err = s.migrateState(sweep, name, migrateTo, tracker.ReasonStateDelete)
 		if err != nil {
 			return touched, err
 		}
 	}
 	idx := stateIndex(board, name)
 	board.States = append(board.States[:idx], board.States[idx+1:]...)
-	if err := s.persistBoard(ctx, board); err != nil {
+	if err := s.persistBoard(sweep, board); err != nil {
 		return touched, err
 	}
 	return touched, s.emit(native.Event{
@@ -194,7 +276,10 @@ func (s *Store) DeleteState(name, migrateTo string) (int, error) {
 func (s *Store) UpdateState(name string, p native.StatePatch) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := stateIndex(board, name)
 	if idx < 0 {
 		return fmt.Errorf("boardmongo: unknown state %q", name)
@@ -227,7 +312,10 @@ func (s *Store) UpdateState(name string, p native.StatePatch) error {
 func (s *Store) ReorderStates(order []string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	reordered, err := reorderByName(board.States, order, func(st native.State) string { return st.Name }, "state")
 	if err != nil {
 		return err
@@ -250,10 +338,10 @@ func (s *Store) ReorderStates(order []string) error {
 // applyFieldRewrite rewrites each tenant issue's Fields map via transform,
 // persisting + emitting EvtIssueUpdated per changed issue. Mirrors native's
 // applyFieldRewriteLocked, including the partial-progress contract.
-func (s *Store) applyFieldRewrite(ctx context.Context, transform func(fields map[string]any) (map[string]any, bool), reason string) (int, error) {
-	all, err := s.listAll(ctx)
+func (s *Store) applyFieldRewrite(parent context.Context, transform func(fields map[string]any) (map[string]any, bool), reason string) (int, error) {
+	all, err := s.cascadeListAll(parent)
 	if err != nil {
-		return 0, err
+		return 0, cascadeErrf(0, "", reason, "read the board", err)
 	}
 	touched := 0
 	for i := range all {
@@ -267,15 +355,15 @@ func (s *Store) applyFieldRewrite(ctx context.Context, transform func(fields map
 		}
 		iss.Fields = nextFields
 		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
-			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, reason, err)
+		if err := s.cascadeReplace(parent, &iss, "fields"); err != nil {
+			return touched, cascadeErrf(touched, iss.ID, reason, "write", err)
 		}
 		if err := s.emit(native.Event{
 			Type:    native.EvtIssueUpdated,
 			IssueID: iss.ID,
 			Payload: map[string]any{"changed": []string{"fields"}, "reason": reason},
 		}); err != nil {
-			return touched, err
+			return touched, cascadeErrf(touched, iss.ID, reason, "record the event for", err)
 		}
 		touched++
 	}
@@ -291,7 +379,10 @@ func (s *Store) AddField(f native.Field) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	if board.FieldByName(f.Name) != nil {
 		return fmt.Errorf("boardmongo: field %q already exists", f.Name)
 	}
@@ -311,7 +402,10 @@ func (s *Store) AddField(f native.Field) error {
 func (s *Store) UpdateField(name string, p native.FieldPatch) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := fieldIndex(board, name)
 	if idx < 0 {
 		return fmt.Errorf("boardmongo: unknown field %q", name)
@@ -348,9 +442,11 @@ func (s *Store) RenameField(from, to string) (int, error) {
 	if from == to {
 		return 0, nil
 	}
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	board := s.Board()
+	sweep := sweepCtx()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := fieldIndex(board, from)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown field %q", from)
@@ -359,10 +455,10 @@ func (s *Store) RenameField(from, to string) (int, error) {
 		return 0, fmt.Errorf("boardmongo: target field %q already exists", to)
 	}
 	board.Fields[idx].Name = to
-	if err := s.persistBoard(ctx, board); err != nil {
+	if err := s.persistBoard(sweep, board); err != nil {
 		return 0, err
 	}
-	touched, err := s.applyFieldRewrite(ctx, func(fields map[string]any) (map[string]any, bool) {
+	touched, err := s.applyFieldRewrite(sweep, func(fields map[string]any) (map[string]any, bool) {
 		v, ok := fields[from]
 		if !ok {
 			return fields, false
@@ -376,7 +472,7 @@ func (s *Store) RenameField(from, to string) (int, error) {
 		}
 		out[to] = v
 		return out, true
-	}, "field_rename")
+	}, tracker.ReasonFieldRename)
 	if err != nil {
 		return touched, err
 	}
@@ -389,14 +485,16 @@ func (s *Store) RenameField(from, to string) (int, error) {
 // DeleteField removes a field definition and strips its key from every issue.
 // Mirrors native.Store.DeleteField.
 func (s *Store) DeleteField(name string) (int, error) {
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	board := s.Board()
+	sweep := sweepCtx()
+	board, err := s.Board()
+	if err != nil {
+		return 0, err
+	}
 	idx := fieldIndex(board, name)
 	if idx < 0 {
 		return 0, fmt.Errorf("boardmongo: unknown field %q", name)
 	}
-	touched, err := s.applyFieldRewrite(ctx, func(fields map[string]any) (map[string]any, bool) {
+	touched, err := s.applyFieldRewrite(sweep, func(fields map[string]any) (map[string]any, bool) {
 		if _, ok := fields[name]; !ok {
 			return fields, false
 		}
@@ -407,12 +505,12 @@ func (s *Store) DeleteField(name string) (int, error) {
 			}
 		}
 		return out, true
-	}, "field_delete")
+	}, tracker.ReasonFieldDelete)
 	if err != nil {
 		return touched, err
 	}
 	board.Fields = append(board.Fields[:idx], board.Fields[idx+1:]...)
-	if err := s.persistBoard(ctx, board); err != nil {
+	if err := s.persistBoard(sweep, board); err != nil {
 		return touched, err
 	}
 	return touched, s.emit(native.Event{
@@ -427,7 +525,10 @@ func (s *Store) DeleteField(name string) (int, error) {
 func (s *Store) ReorderFields(order []string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	reordered, err := reorderByName(board.Fields, order, func(f native.Field) string { return f.Name }, "field")
 	if err != nil {
 		return err
@@ -454,7 +555,10 @@ func (s *Store) SaveView(v native.View) error {
 	}
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	replaced := false
 	for i := range board.Views {
 		if board.Views[i].Name == v.Name {
@@ -480,7 +584,10 @@ func (s *Store) SaveView(v native.View) error {
 func (s *Store) DeleteView(name string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	board := s.Board()
+	board, err := s.Board()
+	if err != nil {
+		return err
+	}
 	idx := -1
 	for i := range board.Views {
 		if board.Views[i].Name == name {
@@ -513,29 +620,77 @@ func (s *Store) DeleteView(name string) error {
 // and a per-issue label event is appended. Mirrors native's
 // applyLabelRewriteLocked, including its event payload shape ({issue_id} +
 // the op fields).
-func (s *Store) applyLabelRewrite(ctx context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (int, error) {
-	all, err := s.listAll(ctx)
+func (s *Store) applyLabelRewrite(parent context.Context, transform func(labels []string) ([]string, bool), eventType native.EventType, payload map[string]any) (touched int, err error) {
+	all, err := s.cascadeListAll(parent)
 	if err != nil {
-		return 0, err
+		return 0, cascadeErrf(0, "", string(eventType), "read the board", err)
 	}
-	touched := 0
+	var lost []string
+	// The lost report survives EVERY exit: an I/O error later in the walk
+	// must not swallow the names of the cards that kept the label the
+	// operator asked to remove (possibly a consume_labels trigger).
+	defer func() {
+		if len(lost) > 0 {
+			err = errors.Join(err, fmt.Errorf("boardmongo: %s: %d card(s) lost the label CAS on every attempt — re-run the operation for %v", eventType, len(lost), lost))
+		}
+	}()
 	for i := range all {
 		iss := all[i]
-		newLabels, changed := transform(iss.Labels)
-		if !changed {
-			continue
+		// CAS-guarded on the labels this sweep READ, re-read + re-transform
+		// on a miss: the sweep's listAll snapshot ages for the whole walk,
+		// and an unguarded write re-applied it — resurrecting a one-shot
+		// label the trigger spine had atomically consumed in the window
+		// (same class as Update; the transform is pure over labels, so the
+		// replay is exact).
+		wrote := false
+		exhausted := false
+		const attempts = 3
+		for attempt := 0; attempt < attempts; attempt++ {
+			newLabels, changed := transform(iss.Labels)
+			if !changed {
+				break // nothing (left) to do: converged, or someone got there first
+			}
+			preLabels := append([]string(nil), iss.Labels...)
+			iss.Labels = newLabels
+			iss.UpdatedAt = time.Now().UTC()
+			matched, err := s.cascadeReplaceGuarded(parent, &iss, bson.M{"issue.labels": preLabels}, "labels")
+			if err != nil {
+				return touched, cascadeErrf(touched, iss.ID, string(eventType), "write", err)
+			}
+			if matched {
+				wrote = true
+				break
+			}
+			fresh, err := s.cascadeGet(parent, iss.ID)
+			if err != nil {
+				if errors.Is(err, tracker.ErrNotFound) {
+					break // deleted mid-sweep — a benign race, like the FS twin
+				}
+				return touched, cascadeErrf(touched, iss.ID, string(eventType), "re-read", err)
+			}
+			iss = *fresh
+			exhausted = attempt == attempts-1
 		}
-		iss.Labels = newLabels
-		iss.UpdatedAt = time.Now().UTC()
-		if err := s.replace(ctx, &iss); err != nil {
-			return touched, fmt.Errorf("boardmongo: write %s during %s: %w", iss.ID, eventType, err)
+		if !wrote {
+			if exhausted {
+				// The sweep WANTED to rewrite this card and lost the CAS
+				// on every attempt — swallowing that leaves a label the
+				// operator asked to remove (possibly a consume_labels
+				// trigger) on the card, under a green return. Recorded,
+				// not returned: aborting here lets ONE perpetually
+				// contended card keep every later card unswept, on every
+				// retry. The walk finishes (the FS twin's semantics) and
+				// names the losers at the end.
+				lost = append(lost, iss.ID)
+			}
+			continue
 		}
 		evtPayload := map[string]any{"issue_id": iss.ID}
 		for k, v := range payload {
 			evtPayload[k] = v
 		}
 		if err := s.emit(native.Event{Type: eventType, IssueID: iss.ID, Payload: evtPayload}); err != nil {
-			return touched, err
+			return touched, cascadeErrf(touched, iss.ID, string(eventType), "record the event for", err)
 		}
 		touched++
 	}
@@ -552,9 +707,8 @@ func (s *Store) RenameLabel(from, to string) (int, error) {
 	if from == to {
 		return 0, nil
 	}
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	return s.applyLabelRewrite(ctx, func(labels []string) ([]string, bool) {
+	sweep := sweepCtx()
+	return s.applyLabelRewrite(sweep, func(labels []string) ([]string, bool) {
 		out := make([]string, 0, len(labels))
 		changed := false
 		seenTo := slices.Contains(labels, to)
@@ -585,9 +739,8 @@ func (s *Store) MergeLabels(from, to string) (int, error) {
 	if from == to {
 		return 0, nil
 	}
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	return s.applyLabelRewrite(ctx, func(labels []string) ([]string, bool) {
+	sweep := sweepCtx()
+	return s.applyLabelRewrite(sweep, func(labels []string) ([]string, bool) {
 		out := make([]string, 0, len(labels))
 		changed := false
 		seenTo := slices.Contains(labels, to)
@@ -612,9 +765,8 @@ func (s *Store) DeleteLabel(label string) (int, error) {
 	if label == "" {
 		return 0, native.ErrLabelEmpty
 	}
-	ctx, cancel := ctxWithTimeout()
-	defer cancel()
-	return s.applyLabelRewrite(ctx, func(labels []string) ([]string, bool) {
+	sweep := sweepCtx()
+	return s.applyLabelRewrite(sweep, func(labels []string) ([]string, bool) {
 		out := make([]string, 0, len(labels))
 		changed := false
 		for _, l := range labels {

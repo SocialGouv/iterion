@@ -333,6 +333,10 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 	// jobs spawned by `run_in_background` / Monitor) on close. Without this
 	// a hung subtree blocks cmd.Wait() indefinitely.
 	setProcessGroup(cmd)
+	// …and make ctx cancellation reach that subtree, not just the leader:
+	// close() is the shutdown path, but it only runs once the read loop
+	// returns, which a descendant holding stdout can hold off indefinitely.
+	terminateGroupOnCancel(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude: start: %w", err)

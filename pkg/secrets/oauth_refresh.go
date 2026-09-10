@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,12 +19,25 @@ import (
 // rotated server-side before its access_token expires.
 //
 // The values are the documented endpoints at the time of writing
-// (2026-05). Operators can override via env on a per-deployment
-// basis when an OEM repackages the CLI.
+// (2026-05).
 const (
-	anthropicTokenURL = "https://console.anthropic.com/v1/oauth/token"
-	codexTokenURL     = "https://auth.openai.com/oauth/token"
+	defaultAnthropicTokenURL = "https://console.anthropic.com/v1/oauth/token"
+	defaultCodexTokenURL     = "https://auth.openai.com/oauth/token"
 )
+
+// anthropicTokenURL is the endpoint both halves of the Anthropic flow
+// POST to — the auth-code exchange and the server-side refresh. It goes
+// through envOr like its three siblings (authorize URL, redirect URI,
+// scopes) so an OEM-repackaged CLI or a proxying deployment moves the
+// whole flow, not three quarters of it.
+func anthropicTokenURL() string {
+	return envOr("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", defaultAnthropicTokenURL)
+}
+
+// codexTokenURL is the Codex half of the same override family.
+func codexTokenURL() string {
+	return envOr("ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL", defaultCodexTokenURL)
+}
 
 // ErrNotRefreshable marks a credential whose sealed payload carries no
 // refresh token: no refresh exchange can ever succeed for it, so callers
@@ -58,7 +73,7 @@ func RefreshAnthropic(ctx context.Context, hc *http.Client, clientID, refreshTok
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("secrets: build refresh req: %w", err)
 	}
@@ -164,6 +179,10 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		rec.Fingerprint = SubscriptionFingerprint(rec.Kind, payload)
 	}
 	now := time.Now().UTC()
+	// A refresh decides the record's next-sweep schedule from scratch: any
+	// cool-down a previous one left is answered by this exchange, and
+	// carrying it forward would hold the sweep off a record that is due.
+	rec.RefreshNotBefore = nil
 	switch rec.Kind {
 	case OAuthKindClaudeCode:
 		view, perr := ParseAnthropicView(payload)
@@ -205,9 +224,15 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		if strings.TrimSpace(view.Tokens.RefreshToken) == "" {
 			return fmt.Errorf("codex: %w", ErrNotRefreshable)
 		}
+		// The credential names its own client, so a deployment that
+		// configured nothing still refreshes. An explicit setting stays
+		// the operator's override and wins.
 		clientID := strings.TrimSpace(codexClientID)
 		if clientID == "" {
-			return fmt.Errorf("secrets: codex oauth client id not configured")
+			clientID = view.OAuthClientID()
+		}
+		if clientID == "" {
+			return fmt.Errorf("secrets: codex oauth client id neither configured nor present in the credential")
 		}
 		res, rerr := RefreshCodex(ctx, hc, clientID, view.Tokens.RefreshToken)
 		if rerr != nil {
@@ -222,9 +247,32 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 			return serr
 		}
 		rec.SealedPayload = sealed
-		if !res.ExpiresAt.IsZero() {
-			t := res.ExpiresAt
+		// Stamping the new expiry is what keeps the record SELECTABLE: the
+		// worker sweeps ExpiringBefore, which skips any record whose
+		// access_token_expires_at is absent. Leaving it unchanged after a
+		// successful refresh would refresh the record once and then lose
+		// sight of it — the token endpoint is not required to return
+		// expires_in, and nothing else recomputes the value.
+		//
+		// So fall back to the access token's own `exp` claim, which is the
+		// blob's only self-contained deadline (`expires_in` is relative to
+		// an exchange that may be old, and `last_refresh` dates the write,
+		// not the token).
+		//
+		// When NEITHER is readable the expiry is left as it stands, which
+		// is emphatically not "unstamped": the record was selected because
+		// its stored expiry is already past, so leaving it means the record
+		// stays inside the sweep's window and every 10-minute tick runs
+		// this exchange again — rotating the refresh token at OpenAI
+		// forever. Truth is not invented to escape that (the field is the
+		// token's actual deadline, exposed under that name); the record
+		// gets a SCHEDULING cool-down instead, which is a retry cadence and
+		// says nothing about how long the token lives.
+		if t := codexRefreshedExpiry(res, updated); !t.IsZero() {
 			rec.AccessTokenExpiresAt = &t
+		} else {
+			next := now.Add(undatableRefreshBackoff)
+			rec.RefreshNotBefore = &next
 		}
 	default:
 		return fmt.Errorf("secrets: RefreshRecord unsupported kind %q", rec.Kind)
@@ -251,7 +299,7 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexTokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("secrets: build codex refresh req: %w", err)
 	}
@@ -293,6 +341,58 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 		out.Scopes = strings.Fields(tok.Scope)
 	}
 	return out, nil
+}
+
+// RefreshClaimTTL bounds how long one holder may keep a record's refresh
+// claim (OAuthStore.ClaimRefresh). Two ends to size it between:
+//
+//   - It must outlast the slowest exchange, or a live refresher would be
+//     superseded mid-flight — the thing the claim exists to prevent. Worst
+//     case is refreshRetrySchedule's three attempts at the server's 15s
+//     client timeout plus its 0.8s of backoff, ~46s.
+//   - It must stay well under the 10-minute sweep interval, so a replica
+//     that died holding a claim costs at most one skipped cycle instead of
+//     a credential nothing may touch.
+//
+// Two minutes sits between them with room on both sides.
+const RefreshClaimTTL = 2 * time.Minute
+
+// NewRefreshClaimOwner mints the fencing token for ONE refresh attempt —
+// the value both the sweep and the manual endpoint claim with, and commit
+// conditionally on. Deliberately per attempt rather than per replica: the
+// token's job is to bind the commit to the exchange that produced it, so
+// the same process's next attempt must not be able to commit the previous
+// one's result.
+func NewRefreshClaimOwner() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("secrets: mint refresh claim owner: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// undatableRefreshBackoff is how long the sweep leaves a record alone after
+// a refresh that SUCCEEDED but yielded no readable deadline. It is a retry
+// cadence, not a claimed token lifetime — the record keeps its truthful
+// (past) expiry, so nothing downstream is told the token lives an hour.
+// An hour keeps such a credential rotating often enough to stay usable
+// while removing 5 of every 6 exchanges the 10-minute sweep would run.
+const undatableRefreshBackoff = time.Hour
+
+// codexRefreshedExpiry resolves the access-token deadline to store after a
+// codex refresh: the provider's own expires_in when it sent one, otherwise
+// the `exp` claim of the token it just issued. Returns the zero time when
+// neither is readable, which callers treat as "leave the stored value
+// alone" rather than as "expired".
+func codexRefreshedExpiry(res RefreshResult, updated []byte) time.Time {
+	if !res.ExpiresAt.IsZero() {
+		return res.ExpiresAt
+	}
+	view, err := ParseCodexView(updated)
+	if err != nil {
+		return time.Time{}
+	}
+	return view.AccessTokenExpiry()
 }
 
 // ApplyCodexRefresh updates an auth.json blob with fresh tokens.

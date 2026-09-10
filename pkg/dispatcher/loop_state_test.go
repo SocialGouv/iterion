@@ -740,7 +740,7 @@ func TestRevertTransition_SkipsWhenStateMovedExternally(t *testing.T) {
 	ft.updateCallsMu.Store([]stateUpdate{})
 	ft.updateMu.Unlock()
 
-	c.revertTransition(context.Background(), "fake:t7", "fake#t7", "ready", "in_progress")
+	c.revertTransition(context.Background(), "fake:t7", "fake#t7", "ready", "in_progress", nil)
 
 	if got := ft.issueState("fake:t7"); got != "review" {
 		t.Fatalf("issue state = %q after revert attempt, want review (untouched)", got)

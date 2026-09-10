@@ -77,6 +77,9 @@ type usageView struct {
 	CostUSD      float64 `json:"cost_usd"`
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
+	// A CLI delegate's unsplittable total. A donor reading zero across all
+	// three sees "not observed", never "nothing spent" (#992).
+	AggregateTokens int64 `json:"aggregate_tokens"`
 }
 
 // leaseView is one entry of a donor's history: which bot ran, for which
@@ -507,7 +510,7 @@ func (s *Server) toPledgeView(r *http.Request, p credpool.Pledge, now time.Time,
 }
 
 func toUsageView(u credpool.Usage) usageView {
-	return usageView{Runs: u.Runs, CostUSD: u.CostUSD, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+	return usageView{Runs: u.Runs, CostUSD: u.CostUSD, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, AggregateTokens: u.AggregateTokens}
 }
 
 // ---------------------------------------------------------------------------

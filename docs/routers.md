@@ -22,14 +22,14 @@ flowchart LR
 
 ## Syntax
 
-```iter
+```text
 router <name>:
   mode: fan_out_all | fan_out_each | condition | round_robin | llm
 ```
 
 LLM routers accept additional properties:
 
-```iter
+```iter fragment
 router fix_router:
   mode: llm
   model: "anthropic/claude-sonnet-4-6"   # or backend: "claude_code"
@@ -52,9 +52,9 @@ router uses its built-in fallback model.
 
 ## `fan_out_all` — parallel dispatch
 
-This is the default mode. The router sends execution to **every** outgoing edge simultaneously. Each target runs in its own branch, and branches converge at a downstream node that declares `await: wait_all` or `await: best_effort`.
+This is the default mode. The router sends execution to **every** outgoing edge simultaneously. Each target runs in its own branch, and branches converge at a downstream node that declares `await: wait_all` or `await: best_effort` — executed once, after every branch has settled (see [Convergence with `await`](#convergence-with-await)).
 
-```iter
+```iter fragment
 router review_fanout:
   mode: fan_out_all
 
@@ -64,7 +64,7 @@ agent synthesize_reviews:
   await: wait_all
 
 workflow example:
-  ...
+  # …
   review_fanout -> claude_review
   review_fanout -> gpt_review
   claude_review -> synthesize_reviews
@@ -74,7 +74,11 @@ workflow example:
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
 
-A bounded loop or `as foreach` **inside** a branch is a compile error (**C244**): parallel bodies have no local loop counters. A back-edge from the join into a body node is the same class. On a multi-edge fan the walk stops at structural joins, not at a loop head elected only by its own back-edge; on `fan_out_each` (one template path) that election is a real join. A loop after a non-elected `await:` in a sibling branch is not claimed. A loop that re-enters the *router* from the join is on the trunk and is allowed.
+A bounded loop or `as foreach` wholly contained in one branch runs with branch-local counters and outputs. Different branches may consume different numbers of iterations; `wait_all` and `best_effort` do not converge until each relevant local lifecycle finishes. Plain human gates pause and resume in that same branch scope — and if the answered branch then fails before advancing past its gate (an answer that satisfies no outgoing edge, a store write failure), the gate is handed back: the branch parks at the gate without the consumed answer, the next resume asks again, and siblings are never left waiting on it; `interaction: review` and `interaction: llm_or_human` remain trunk-only (**C245**) and belong after the collector. **C244** still rejects iteration on the router itself, collector-to-body re-entry, sibling-crossing cycles, and other shapes without one unambiguous branch owner — including a loop or foreach *name* reused by a trunk back-edge and a branch-local one (or by two sibling branches): edges sharing a name fold into one loop, and a branch-local counter would shadow the enclosing trunk counter in `iteration_path`, gate interaction ids, and artifact execution keys, so give each scope its own name. A loop that re-enters the *router* from the join is on the trunk and remains allowed.
+
+**One edge per target.** A branch is identified by `branch_<router>_<target>`, so two edges to the same node produce two goroutines wearing one branch id: they collapse onto one output slot at convergence and onto one durable branch checkpoint whose cursor each overwrites, which lets a resume restart one execution at the other's position. Validation emits warning **C249** for that shape on `fan_out_all` and on an `llm multi: true` router — a warning, not a refusal, since the shape has always compiled. When the intent is N executions of the *same* node, use `fan_out_each`: its branch ids are item-indexed (`branch_<router>_<i>`), so the executions stay distinct. `round_robin` is exempt — it selects one edge per traversal, so a repeated target is a rotation weight, not a collision.
+
+An `llm multi: true` router is checked more tightly than the other two. `fan_out_all` dispatches every declared outgoing edge without evaluating its condition and `fan_out_each` dispatches its single template edge, so the collector the compiler elects is the collector `execBranch` stops at. An llm router dispatches only the subset the model selected, and the runtime elects the collector from that subset — which can be an EARLIER node than the full declared set elects. **C244** therefore bounds each llm-multi branch by the collector its own edge would elect alone (the case where the model selects only that edge), so a cycle that straddles that boundary is rejected instead of being valid for one selection and broken for another.
 
 ---
 
@@ -82,7 +86,7 @@ A bounded loop or `as foreach` **inside** a branch is a compile error (**C244**)
 
 `fan_out_each` resolves `over:` to an array at runtime and replays its single outgoing template branch once per item. The current item is exposed on the router output under the binding named by `as:` (default `item`).
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -112,7 +116,7 @@ The router must have exactly one unconditional outgoing edge: it is the head of 
 
 Optional `key:` and `depends_on:` fields turn the array into a dependency DAG. `key` names the unique-id field on each item; `depends_on` names an array field containing prerequisite ids. Independent items run concurrently, dependants wait, failed prerequisites skip their dependants, and a dependency cycle fails the run.
 
-```iter
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -121,7 +125,15 @@ router dispatch:
   depends_on: deps
 ```
 
-Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A loop or `as foreach` inside the template is **C244** — per-item retry belongs in a `subbot`, not inlined in the branch; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
+Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A bounded loop or `as foreach` may be inlined in the template: each item gets its own counters, output history, checkpoint cursor, and human-gate resume scope. Predictive loop-budget pricing is disabled inside these branches because sibling consumption shares the run budget and cannot price one item's next iteration; the shared pre-execution and hard budget limits still apply, and branch nodes cannot use exit grace after the cap is spent. Use a `subbot` for a genuine capability/isolation boundary; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
+
+Migration note: bounded back-edges no longer count as evidence of fan-out convergence. A node previously elected as an implicit collector only because its loop back-edge supplied a second predecessor now runs once per branch; validation emits warning C246 for this shape. Add `await: wait_all` or `await: best_effort` to the intended collector to preserve one trunk execution, or leave it unmarked when the loop is intentionally branch-local.
+
+Migration note: prompt bodies and tool `command:` / `script:` / `postcondition:` templates now resolve `{{run.*}}`, `{{outputs.*}}`, `{{loop.*}}`, `{{artifacts.*}}` and `{{attachments.*}}` inside branch bodies too — a node renders identically whether reached by a plain edge or by a fan-out router. Older runtimes attached the template snapshot on the trunk dispatch path only, so the same node left `{{outputs.x.y}}` as literal braces in a prompt and substituted an EMPTY string for `{{run.id}}` in a shell command. `{{outputs.*}}` resolves against the branch's own view (its upstream trunk outputs, what the branch has produced, and the `fan_out_each` item binding), never a sibling's. Revalidate branch prompts that were written against the literal.
+
+Migration note: quoted expression guards such as `when "outputs.check.score > 0"` are now evaluated inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branch bodies. Older runtimes skipped expression-form branch edges and fell through to `else` or an unconditional edge. Revalidate workflows that used quoted `when` inside a parallel branch and confirm that the newly active route is intended.
+
+When item paths reconverge into one collector, declare `await: wait_all` or `await: best_effort` on that collector. A bounded back-edge is local to each item branch and does not prove convergence; without an explicit await marker, a single-predecessor node remains part of every item replay.
 
 ---
 
@@ -129,12 +141,12 @@ Workspace safety remains fail-closed. Concurrent template replays may contain re
 
 A condition router picks a single target based on boolean fields in the upstream node's output. The routing logic is expressed on the edges, not in the router itself.
 
-```iter
+```iter fragment
 router decision:
   mode: condition
 
 workflow example:
-  ...
+  # …
   judge -> decision
   decision -> fix_agent when not approved
   decision -> done when approved
@@ -150,12 +162,12 @@ When the `judge` node produces `{ "approved": true }`, the edge `decision -> don
 
 Each time the router is traversed, it selects the **next** outgoing edge in declaration order, wrapping around after the last one.
 
-```iter
+```iter fragment
 router refine_selector:
   mode: round_robin
 
 workflow example:
-  ...
+  # …
   val_judge -> refine_selector when not ready as refine_loop(4)
   refine_selector -> claude_refine
   refine_selector -> gpt_refine
@@ -187,7 +199,7 @@ An LLM reads the workflow context and decides which route to take. This is the o
 
 ### Single route example
 
-```iter
+```iter fragment
 prompt routing_prompt:
   Based on the review findings, decide whether
   the code, the docs, or the tests need fixing.
@@ -198,7 +210,7 @@ router fix_router:
   system: routing_prompt
 
 workflow example:
-  ...
+  # …
   fix_router -> fix_code
   fix_router -> fix_docs
   fix_router -> fix_tests
@@ -206,9 +218,9 @@ workflow example:
 
 ### Multi route example
 
-With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies are the same `execBranch` path as `fan_out_all`: a loop or `as foreach` inside a selected branch is **C244**.
+With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies use the same branch-local bounded-loop semantics as `fan_out_all`; on restart the persisted route selection and branch cursors are reused instead of asking the model to route again.
 
-```iter
+```iter fragment
 router fix_router:
   mode: llm
   backend: "claude_code"
@@ -216,7 +228,7 @@ router fix_router:
   multi: true
 
 workflow example:
-  ...
+  # …
   fix_router -> fix_code
   fix_router -> fix_docs
   fix_router -> fix_tests
@@ -247,6 +259,15 @@ credentials. `codex` is also available as an explicit CLI backend.
 ## Convergence with `await`
 
 Parallel branches — whether from `fan_out_all`, `fan_out_each`, or `llm` multi-mode — converge at a real downstream node (agent, judge, human, tool, or compute) with multiple incoming edges. That target node declares `await: wait_all` to require every branch, or `await: best_effort` to continue with successful branches while tolerating failures.
+
+**The collector fires exactly once, after every branch has settled** (finished, failed, or was cancelled) — under both modes. Neither mode fires on the first arrival, and no branch runs anything past the collector: the trunk executes the collector and everything downstream of it once, with every branch's outputs merged. The two modes differ only in what a failed branch means:
+
+- `wait_all` — any failed branch fails the run (`failed_resumable`, with the failing branch's error); the collector never runs.
+- `best_effort` — the collector runs with the successful branches' outputs. The failures are listed on the `join_ready` event (`failed_branches`) and exposed as `_failed_branches` on the collector's own output, so a `with` mapping or a downstream gate can fail closed on a missing branch.
+
+One `join_ready` event is emitted per convergence, on the collector, naming the strategy — a second `join_ready`, or a second execution of the collector, is an engine defect, never a mode.
+
+**Which node is the collector.** A node that declares `await:` is the collector for the branches that reach it. Without the annotation, the engine elects the first node (breadth-first from the router's targets) that has more than one distinct predecessor, bounded back-edges excluded. For the router's **direct targets** — the branch heads — only predecessors inside the fan-out count (the router itself, or a node it reaches): the mono/dual topology, where a `condition` router reaches the same reviewer directly *or* through a `fan_out_all` router, gives that reviewer two predecessors, and it is still an ordinary branch head, not the collector. Below the heads every predecessor counts, including a trunk edge that bypasses the fan-out (`plan -> collect else` for the no-items case) — that bypass is what makes `collect` the implicit collector of a linear `fan_out_each` template. Declare `await:` on the intended collector rather than relying on the implicit election.
 
 Routers are fan-out sources and do not declare `await:` themselves.
 

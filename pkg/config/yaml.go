@@ -37,6 +37,7 @@ type yamlConfig struct {
 	Mongo   *yamlMongoConfig   `yaml:"mongo"`
 	S3      *yamlS3Config      `yaml:"s3"`
 	Runner  *yamlRunnerConfig  `yaml:"runner"`
+	Rollout *yamlRolloutConfig `yaml:"rollout"`
 	Server  *yamlServerConfig  `yaml:"server"`
 	Metrics *yamlMetricsConfig `yaml:"metrics"`
 	Log     *yamlLogConfig     `yaml:"log"`
@@ -99,10 +100,11 @@ type yamlOAuthForfaitConfig struct {
 }
 
 type yamlNATSConfig struct {
-	URL       *string `yaml:"url"`
-	Stream    *string `yaml:"stream"`
-	KVBucket  *string `yaml:"kv_bucket"`
-	DLQStream *string `yaml:"dlq_stream"`
+	URL            *string `yaml:"url"`
+	Stream         *string `yaml:"stream"`
+	KVBucket       *string `yaml:"kv_bucket"`
+	DLQStream      *string `yaml:"dlq_stream"`
+	StreamReplicas *int    `yaml:"stream_replicas"`
 
 	MaxAckPending *int    `yaml:"max_ack_pending"`
 	AckWait       *string `yaml:"ack_wait"`
@@ -137,6 +139,11 @@ type yamlRunnerConfig struct {
 	SchemaMismatchDelay *string `yaml:"schema_mismatch_delay"`
 }
 
+type yamlRolloutConfig struct {
+	RunnerEpoch        *uint64 `yaml:"runner_epoch"`
+	EpochMismatchDelay *string `yaml:"epoch_mismatch_delay"`
+}
+
 type yamlServerConfig struct {
 	ShutdownDelay    *string `yaml:"shutdown_delay"`
 	ShutdownTeardown *string `yaml:"shutdown_teardown"`
@@ -160,6 +167,7 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 		applyString(y.NATS.Stream, &cfg.NATS.Stream)
 		applyString(y.NATS.KVBucket, &cfg.NATS.KVBucket)
 		applyString(y.NATS.DLQStream, &cfg.NATS.DLQStream)
+		applyInt(y.NATS.StreamReplicas, &cfg.NATS.StreamReplicas)
 		applyInt(y.NATS.MaxAckPending, &cfg.NATS.MaxAckPending)
 		applyInt(y.NATS.MaxDeliver, &cfg.NATS.MaxDeliver)
 		applyInt(y.NATS.MaxPayload, &cfg.NATS.MaxPayload)
@@ -231,6 +239,18 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 				return fmt.Errorf("runner.schema_mismatch_delay: %w", err)
 			}
 			cfg.Runner.SchemaMismatchDelay = d
+		}
+	}
+	if y.Rollout != nil {
+		if y.Rollout.RunnerEpoch != nil {
+			cfg.Rollout.RunnerEpoch = *y.Rollout.RunnerEpoch
+		}
+		if y.Rollout.EpochMismatchDelay != nil {
+			d, err := time.ParseDuration(*y.Rollout.EpochMismatchDelay)
+			if err != nil {
+				return fmt.Errorf("rollout.epoch_mismatch_delay: %w", err)
+			}
+			cfg.Rollout.EpochMismatchDelay = d
 		}
 	}
 	if y.Server != nil {

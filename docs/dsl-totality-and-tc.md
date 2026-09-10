@@ -17,7 +17,7 @@ Expressive power is decided independently at two layers:
 
 | Layer | Construct | Posture | What bounds it |
 |-------|-----------|---------|----------------|
-| **Expression** (`compute`, `when`) | `map`/`filter`/`reduce`, indexing, `sort/keys/values/slice/sum/min/max/flatten`, arithmetic | **Always total** (terminating) | Non-first-class lambdas (no constructible fixpoint) + `maxEvalVisits = 100_000` work budget + parse-depth 256 |
+| **Expression** (`compute`, `when`) | `map`/`filter`/`reduce`, indexing, `sort/keys/values/slice/sum/min/max/flatten/floor/round`, arithmetic | **Always total** (terminating) | Non-first-class lambdas (no constructible fixpoint) + `maxEvalVisits = 100_000` work budget + parse-depth 256 |
 | **Graph** (nodes + edges) | bounded loop `as name(N)` | **Total by default** | Mandatory literal/expr iteration cap; **C019** rejects any undeclared cycle |
 | **Graph** | unbounded loop `as name(unbounded [<fuel>])` | **Turing-complete (opt-in)** | Runtime **fuel** + a **liveness monitor**, not a static proof |
 

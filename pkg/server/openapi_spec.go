@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 
@@ -11,7 +13,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
@@ -44,6 +48,25 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		return nil, fmt.Errorf("temp run store: %w", err)
 	}
 
+	// A REAL auth service over a memory identity store, not a bare
+	// &auth.Service{}: the team-scoped families (team OAuth-forfait, …)
+	// register only when authStore() resolves, and a nil store silently
+	// left every one of them out of the published spec and the generated
+	// client. Nothing here is ever invoked; the store only has to exist.
+	signer, err := auth.NewJWTSigner(strings.Repeat("0", 43), 15*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("spec signer: %w", err)
+	}
+	authSvc, err := auth.NewService(auth.Config{
+		Store:      identity.NewMemoryStore(),
+		Sessions:   auth.NewMemorySessionStore(),
+		Signer:     signer,
+		RefreshTTL: time.Hour,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("spec auth service: %w", err)
+	}
+
 	cfg := Config{
 		StoreDir:                tmp,
 		WorkDir:                 tmp,
@@ -52,36 +75,40 @@ func BuildOpenAPISpec() (map[string]any, error) {
 
 		// Gate fields — non-nil stubs so every register*() fires. None are
 		// invoked here (registration only calls s.mux.Handle).
-		AuthService:       &auth.Service{},
-		Sealer:            specNoopSealer{},
-		ApiKeys:           secrets.NewMemoryApiKeyStore(),
-		GenericSecrets:    secrets.NewMemoryGenericSecretStore(),
-		BotBindings:       secrets.NewMemoryBotSecretBindingStore(),
-		OAuthForfait:      secrets.NewMemoryOAuthStore(),
-		OAuthPending:      secrets.NewMemoryOAuthPendingStore(),
-		ModelPrefs:        modelprefs.NewMemStore(),
-		WebhookConfigs:    webhooks.NewMemoryConfigStore(),
-		WebhookDeliveries: webhooks.NewMemoryDeliveryStore(),
-		WebhookCounter:    webhooks.NewMemoryCounter(),
-		ForgeConnections:  forge.NewMemoryConnectionStore(),
-		ForgeIntegrations: forge.NewMemoryRepoIntegrationStore(),
-		ForgeOAuthApps:    forge.NewMemoryOAuthAppStore(),
-		OrgSSO:            orgsso.NewMemoryStore(),
-		OrgDomains:        orgsso.NewMemoryDomainStore(),
-		PATs:              pat.NewMemoryStore(),
-		TriggerStore:      trigger.NewMemorySubscriptionStore(),
-		OrgUsage:          orgusage.NewMemoryCounter(),
-		CredPoolPools:     credpool.NewMemoryPoolStore(),
-		CredPoolPledges:   credpool.NewMemoryPledgeStore(),
-		CredPoolLeases:    credpool.NewMemoryLeaseStore(),
-		CredPoolLedger:    credpool.NewMemoryLedger(),
-		Audit:             audit.NewMemoryStore(),
-		UsageCapSettings:  usagecap.NewMemorySettingsStore(),
-		BotSources:        botsource.NewMemoryStore(),
-		BotRolesSettings:  platformcfg.NewMemoryStore[platformcfg.BotRoles](),
-		SandboxSettings:   platformcfg.NewMemoryStore[platformcfg.Sandbox](),
-		BotVarsSettings:   platformcfg.NewMemoryStore[platformcfg.BotVars](),
-		Store:             runStore,
+		AuthService:        authSvc,
+		Sealer:             specNoopSealer{},
+		ApiKeys:            secrets.NewMemoryApiKeyStore(),
+		GenericSecrets:     secrets.NewMemoryGenericSecretStore(),
+		BotBindings:        secrets.NewMemoryBotSecretBindingStore(),
+		OAuthForfait:       secrets.NewMemoryOAuthStore(),
+		OAuthPending:       secrets.NewMemoryOAuthPendingStore(),
+		WebhookConfigs:     webhooks.NewMemoryConfigStore(),
+		WebhookDeliveries:  webhooks.NewMemoryDeliveryStore(),
+		WebhookCounter:     webhooks.NewMemoryCounter(),
+		ForgeConnections:   forge.NewMemoryConnectionStore(),
+		ForgeIntegrations:  forge.NewMemoryRepoIntegrationStore(),
+		BoardBindings:      forge.NewMemoryBoardBindingStore(),
+		ProvisionApprovals: forge.NewMemoryProvisionApprovalStore(),
+		ForgeOAuthApps:     forge.NewMemoryOAuthAppStore(),
+		OrgSSO:             orgsso.NewMemoryStore(),
+		OrgDomains:         orgsso.NewMemoryDomainStore(),
+		PATs:               pat.NewMemoryStore(),
+		TriggerStore:       trigger.NewMemorySubscriptionStore(),
+		OrgUsage:           orgusage.NewMemoryCounter(),
+		CredUsage:          credusage.NewMemoryCounter(),
+		CredPoolPools:      credpool.NewMemoryPoolStore(),
+		CredPoolPledges:    credpool.NewMemoryPledgeStore(),
+		CredPoolLeases:     credpool.NewMemoryLeaseStore(),
+		CredPoolLedger:     credpool.NewMemoryLedger(),
+		Audit:              audit.NewMemoryStore(),
+		UsageCapSettings:   usagecap.NewMemorySettingsStore(),
+		UsageCaps:          usagecap.NewMemStore(),
+		BotSources:         botsource.NewMemoryStore(),
+		BotRolesSettings:   platformcfg.NewMemoryStore[platformcfg.BotRoles](),
+		SandboxSettings:    platformcfg.NewMemoryStore[platformcfg.Sandbox](),
+		BotVarsSettings:    platformcfg.NewMemoryStore[platformcfg.BotVars](),
+		Store:              runStore,
+		ModelPrefs:         modelprefs.NewMemStore(),
 	}
 
 	s := New(cfg, iterlog.New(iterlog.LevelError, nil))

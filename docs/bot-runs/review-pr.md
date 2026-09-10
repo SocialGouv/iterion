@@ -8,6 +8,488 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
+
+- Status: **validated locally**; the cloud half arrives on its own once 0.9.0 is baked.
+- Versions: bot review-pr **0.9.0** (local) · engine `f633a830` (v3.122.3)
+- Why the change at all — a measurement, not an intuition: `tracker_api_base`
+  was set on **0 of the 16** connected GitHub repos. Ticket conformance had
+  shipped in 0.6.0 and, outside demat-amiante, **had never run once**. A PR
+  saying "Fixes #123" was reviewed without anyone reading #123, and nothing
+  said so. Everything the check needed was already in the run (the PR URL, a
+  `forge_token` bound at provisioning), so the per-repo var was an artificial
+  limit for the common case.
+- Method: `iterion run` on this very branch with `--var pr_url=<PR #1017>` and
+  `scope_notes` carrying the PR title+body (what the webhook supplies), NO
+  `tracker_api_base` — i.e. the forge-native path. 18 min, **$3.31** for the
+  run (converge $0.29).
+- Result: **`1014: covered`** — the first `covered` verdict ever observed here
+  (every earlier test produced `not covered` or `unverifiable`), so the check
+  is now known to bite in **both** directions rather than only rejecting. It
+  named the four deliverables of the issue and anchored each in the diff, and
+  it reported having read the issue *through the very path the PR builds*.
+- What the events prove rather than assert: `api.github.com/repos/SocialGouv/
+  iterion/issues/1014` was fetched with no `tracker_api_base` anywhere — the
+  base was derived from the PR URL.
+- **Three real defects found by Revi in this feature, on its own PR** (bot
+  0.8.1 reviewing 0.9.0 — the reviewer that does not yet have the feature
+  reviewing the one that adds it):
+  - `[high] requirements` — the manifest declared no `issues` scope. A GitHub
+    App provisioned from it cannot read issues, so every fetch 403s and every
+    verdict degrades to `unverifiable`. **The feature could have shipped
+    INERT**, and its failure mode reads like "no ticket" rather than "the
+    token was not allowed to look" — the exact shape of a guard that looks
+    like it works.
+  - `[medium]` — the linked-issue GraphQL POSTed to `api.github.com`
+    unconditionally, while the API-base table right above it derives
+    `https://<host>/api/v3` for GitHub Enterprise: a self-hosted instance's
+    token handed to a third party.
+  - `[medium]` — the forge token can WRITE (that is why it exists), and the
+    change put its path in front of a judge whose two inputs (diff, ticket
+    body) are attacker-controlled on a public repo.
+  All three fixed in the same session; the re-review then went green.
+- Lessons for next run: (a) a capability that needs a token scope must declare
+  it in the manifest — the runtime does not read `token_scopes`, the
+  PROVISIONER does, so an undeclared scope is a feature that installs itself
+  disabled; (b) when a skill derives a host, every other URL in that skill has
+  to derive it too, or the one hardcoded line becomes the exfiltration path;
+  (c) reviewing a feature with the version that predates it is a cheap and
+  honest adversary — it has no stake in the design.
+
+## 2026-09-08 — ticket conformance validated on a REAL private Jira, and the cross-tenant write it exposed (runs 01a082a0 / 01a082a8 / 01a082b2)
+
+- Status: **validated** — the feature works end-to-end on the cloud instance
+  against a real, private Jira Cloud ticket. One engine defect found on the way.
+- Versions: bot review-pr 0.6.0 (baked, prod) · instance
+  iterion.fabrique.social.gouv.fr
+- Method, in three runs:
+  1. `01a082a0` — **probe** on `SocialGouv/iterion-test-appy-e2e` (GitHub) with
+     `tracker_api_base=https://api.github.com` pinned in the integration's
+     `launch_vars`, no credential bound. Proved the half the local dogfood
+     could not: the ref is extracted from the PR body with no `ticket_refs`,
+     the tracker is reachable **from the k8s sandbox**, and the
+     `### Ticket conformance` section lands on a real PR. It also reported,
+     unprompted, that `/run/iterion/secrets/tracker_token` was absent and that
+     the authenticated attempt 401'd — i.e. it named the limit of my own probe.
+  2. `01a082a8` — **first real Jira run** on the GitLab MR
+     `…/dematamiante/code/demat-amiante!2` (ticket `DAM-1978`, private Jira
+     Cloud `jira-mcas.atlassian.net`). Verdict: `unverifiable — tracker token
+     file does not exist; anonymous GET returned HTTP 404`. **The canary was
+     red**, and it was right: the secret was not reaching the run (see below).
+  3. `01a082b2` — same MR, same ticket, after fixing the wiring. Verdict:
+     `DAM-1978: not covered — ticket demands cutting the multi-hour
+     Elasticsearch reindexation runtime to enable a daily run; the branch adds
+     only a readme.md changelog template and changes no Java, batch, or
+     configuration code, while the PR body claims "Closes DAM-1978"` — content
+     it could only know by reading the private ticket. Plus a `[high]
+     requirements` finding and four sharp questions, one of them load-bearing
+     (*does `Closes DAM-1978` actually drive a Jira transition here? the
+     blocking severity hinges on it*).
+- Value: red-then-green on the SAME MR and the SAME ticket. The verdict flips
+  only because the credential arrives, so this is a test that bites in both
+  directions rather than a screenshot of a success.
+- Secret hygiene, measured (not asserted): over the run's 112 KB of events,
+  where the Jira host appears 5× and `DAM-1978` 112×, the token appears **0×**
+  — verbatim, as an 8-char fragment, as the base64 of the `Basic` header, and
+  as its `ATATT` prefix. The positive controls are what make that zero mean
+  something.
+- **Engine defect found (the reason run 2 was red): a team-scoped write goes
+  to the tenant of the CALLER'S TOKEN, not the team in the path.**
+  `POST /api/teams/{id}/secrets` and `POST /api/teams/{id}/bots/{bot}/bindings`
+  authorize on the path team (`canManageTeam`, which a super-admin or org admin
+  passes for any team) but never re-scope the request context —
+  `generic_secrets_routes.go` and `bot_bindings_routes.go` contain **zero**
+  `store.WithTenant`, where `forge_provisioning_routes.go` has four. The row is
+  written into the JWT's tenant partition carrying the path team's scope, so it
+  is invisible from BOTH teams' list endpoints and can never be resolved for a
+  run — and every call returns 200/201. `iterion remote secrets set --team X`
+  inherits the same fate. Reproduced twice here (secret, then binding); the
+  workaround is `iterion remote teams switch <target>` **before** creating
+  either. Issue #997.
+- Lessons for next run: (a) wire secret + binding from the target team, never
+  by path/`--team` from another one, until #997 lands; (b) `/revi` on a note is
+  the fidelity path — it applies the integration's `launch_vars`, a manual
+  launch does not; (c) `iterion remote runs list` is scoped to the active team,
+  so a run launched on another team is simply absent — switch before concluding
+  it never started.
+
+## 2026-09-08 — a green gate is one pass, not a property: 1 finding → 0 across a docs-only commit, and four defects still there (#851)
+
+- Status: **observation**, not a bilan of a launched run — recorded because it
+  bears directly on how much a `revi/review: success` is worth.
+- The measurement. PR #851 was reviewed twice, 21 minutes apart:
+
+  | head | reviewed | verdict |
+  |---|---|---|
+  | `6f08d55f1` | 05:13:15Z | **1 finding (medium)** |
+  | `fd61efe93` | 05:34:51Z | **0 findings** → `revi/review: success` |
+
+  The only commit between them adds ten lines of prose to
+  `docs/bot-runs/review-pr.md` — **no Go changed**. The severity floor is
+  `medium`, so the earlier finding would have been kept had it been raised
+  again. The PR merged on that green gate at 05:57Z.
+- What makes it falsifiable rather than a hunch: a `branch-improve-loop`
+  campaign was reading the same branch at the same time, in an independent
+  context. It re-verified the dropped finding **still present at the current
+  head** ("the branch moved twice since that review but this anchor is
+  untouched") and found three more defects plus two comments the branch's own
+  commits had inverted. Four real defects survived the pass that reported none.
+- Not a same-sha pair, so it still does not measure run-to-run variance — the
+  heads differ by one commit. But it is the closest approach in the data, and
+  it constrains the shape: what varies between passes is **the finding set**,
+  on input that is identical where it matters.
+- Consequence for the gate. `revi/review: success` is a statement about one
+  pass ("this reading found nothing ≥ `gate_severity`"), never about the
+  branch. That is the honest reading of a deterministic count over a
+  non-deterministic input, and it is why the gate blocks merges rather than
+  certifying code. Do not read a green gate as "reviewed clean"; on a change
+  that matters, a second reader is a second sample, and the campaign bots are
+  the cheaper one to add.
+- Open question this sharpens rather than answers (#685): whether the 0.7.0
+  frugality clause ("triage, don't sweep") is what drops findings between
+  passes. The experiment is unchanged — re-review with the clause disabled and
+  diff the finding sets — but the target is now the *finding set*, not the cost.
+
+## 2026-09-05 — two guard-tier reviews die at the cost cap, no verdict (#780, #785)
+
+- Runs: `01a072d6-24ab` (#780, head `4aee1d641`) — `budget exceeded: cost_usd (36/12)`,
+  superseded by the automatic relaunch `01a072eb-067d`, itself dead at `(30/12)`;
+  #785 (head `ecca4b03c`) dead at `(14/12)`. Push → final failure status: 84 min
+  for the two runs of #780, 53 min for #785 (the runs are not in the campaign
+  store; the timestamps are the head commit and the `revi/review` status).
+- Outcome: the merge gate posted a synthetic `failure` twice with no review — a
+  7-file PR and a 12-file one (7 of them vendor), both open since.
+- Reading: the cap (12, sized 2026-09-03 on median $3.6 / p95 $10.5) is 3× short
+  of the guard tier that reproduces its findings and answers the fixer's rounds;
+  the engine refuses new nodes at 90% of the cap with no grace, so the usable
+  spend was $10.8 — and the $36 is a lower bound (the run died there).
+- Change: `max_cost_usd` 12 → 48 (0.9 × 48 = $43 usable), `max_duration` 90m →
+  120m (same wall on the duration axis), pacer 12 evals / 6m with `cost_gt=32`
+  (manifest 0.8.1). Re-run on both PRs after the catalogue is deployed.
+
+## 2026-09-05 — what a Revi review COSTS: 33 production reviews, and the model that fits them
+- Status: validated (measurement, not a dogfood run — 33 organic
+  webhook-launched reviews on this repo, 11:57Z → 16:42Z, no run launched
+  for the purpose)
+- Versions: bot **0.7.0 throughout** · iterion `d57851fb` then `2defa1a0`
+  (v3.103.0 → v3.104.0). The dataset is homogeneous *because* of the
+  override described in the entry below: 0.8.0's tiers never served during
+  the window, so no bot-version change straddles these numbers.
+- Method: default guard-shaped run — `reviewer_claude` (opus-5, effort
+  high), `converge` on sonnet, `severity_threshold: medium`,
+  `max_cost_usd: 12`. Cost read from each run's checkpoint (the run's
+  `budget_cost_usd` field reads 0); diff sizes from `gh pr view --json
+  additions`.
+
+### The model
+
+Not linear. **It saturates.**
+
+| added lines | rule | evidence |
+|---|---|---|
+| < ~500 | `$2.24 + $0.00072 × added`, ±15% on a SHORT pass (1–2 findings, <8 min) | #754 −8.6%, #756 −13.8%, #757 +4.1% |
+| ~500–1500 | same rule, +6% to +29% | #758 +7.6% / +5.9%, #760 +29% |
+| > ~1500 | **predict $3.5–$6.0 and ignore size** | see below |
+
+Above ~1500 lines the line count stops carrying information — it does not
+even order the plateaus:
+
+| PR | added | hand-written | observed |
+|---|---|---|---|
+| #764 | +1598 | — | $4.81, $4.81, $4.28, $5.36 |
+| #761 | +2738 | — | $4.47, $5.82 |
+| #745 | +10078 | 4804 | $3.96, $3.99, $4.01 |
+
+**The largest PR is the cheapest.** The cause is the 0.7.0 frugality
+contract working as designed: `review_system` tells the reviewer to read
+`git diff --stat` first, prioritise the risky hunks and stop sweeping, so a
+10k-line diff becomes a triage rather than a linear read. The findings
+support that reading — all four on #745 were `medium` and all four sat in
+the files carrying the new logic (`board_project.go` ×2,
+`board_binding_store.go`, `projects_app.go`).
+
+The floor is ~**$1.95–2.00** (#766 at 4.4 min), and `converge` is the most
+stable quantity in the whole dataset: **$0.61–$0.71** across all 33 runs.
+
+### Two claims of mine that did NOT survive more data
+
+- *"Cost is a stable property of a given PR"* — I measured #764 twice at
+  0.12% apart and said so publicly. Two further passes landed at $4.28 and
+  $5.36: the real spread is **25%**, and the 0.12% was a two-point
+  coincidence. Keep **±30%** as the per-PR predictor's band.
+- *"Excellent reproducibility"* — withdrawn outright. **There is no
+  same-sha pair anywhere in this dataset**; every repeat straddles at least
+  one commit (#758 gained `3f27d71c5`, #745 four commits, #761
+  `2c9c06385`). Nothing here measures run-to-run variance on identical
+  input. Measuring it needs two reviews launched on the same head.
+- *"Cost saturates at $3.5–$6.0"* — true of the reviews that **finished**,
+  and only of those. Every one of the 33 was sampled from `runs list` as a
+  `finished` row, so the population is conditioned on completion and the
+  expensive tail is invisible by construction. The #780/#785 entry above
+  measures that tail on the SAME day: `(36/12)`, `(30/12)`, `(14/12)` —
+  three reviews that died at the cap, none of which could appear here.
+  So the shape is **bimodal**, not saturating: most reviews land at $2–6,
+  a few explode past the cap and take the run with them.
+  **Do not size a budget from the table above** — it describes survivors.
+  The cap that the tail actually required is 48 (that entry's change).
+
+### Open question — do NOT close it with cost
+
+Does frugality cost *coverage* on very large PRs? Cost alone cannot answer
+it: absence of findings is not evidence of absence of defects. The
+experiment that would answer it: re-review #745 with the frugality clause
+disabled and diff the two finding sets.
+
+### Lessons for next run
+- Read cost from the checkpoint, not `budget_cost_usd` (which reads 0).
+- Predict from a prior review of the SAME PR when one exists — it beats any
+  function of the diff, but only to ±30%.
+- Before attributing a cost shift to a bot change, verify which bundle
+  actually served (`GET /api/admin/bots`, and look for the version-specific
+  nodes in the run's checkpoint outputs). That check is what turned this
+  window's apparent version straddle into a homogeneous dataset.
+
+## 2026-09-05 — review tiers shipped (0.8.0, SocialGouv/iterion#685) — design note, live measurement pending
+- Status: implemented + covered by DSL-level tests (stub executor + expr-level
+  unit tests); **not yet dogfooded live** — no LLM credentials in this
+  session, so the cost/quality claims below are the design's PREDICTION,
+  not a measured result. Flag this entry's status back to `validated` once
+  a real glance-tier run on a small PR is measured against the guard-tier
+  baseline documented in the 2026-09-03/04 entry below.
+- Versions: bot 0.7.0 → 0.8.0 · iterion `c6f8bac0f` (v3.102.1) at write time
+- Landed: SocialGouv/iterion#742 (merged 2026-09-05 11:54Z, in v3.102.6);
+  prod runners carry the ENGINE since 12:25Z (`edd5b9dcf`).
+- **Correction (2026-09-06 16:50Z): the tiers did not serve a single
+  production review for the first 29 hours.** Carrying the engine is not
+  carrying the bot. A platform bot override for `review-pr`, pushed
+  2026-09-04 06:52Z for the 0.7.0 cost pass, still held the 0.7.0 bundle —
+  and a platform override outranks the baked catalog at every launch
+  surface, by design. Measured: prod review graphs on both 09-05 and 09-06
+  ran `diff_precheck → topology → reviewer_claude → merge_reviews →
+  converge → pr_gate` with **no `tier_expand` node**, and
+  `GET /api/admin/bots/review-pr` returned manifest version `0.7.0` whose
+  `main.bot` contained `TOKEN FRUGALITY` and `supervisor pacer` but none of
+  `tier_expand` / `review_tier` / `reviewer_claude_glance`. The override was
+  deleted at 17:00Z after verifying the repo's 0.8.0 is a strict superset
+  (it carries all three 0.7.0 markers plus #758 and #816); the effective
+  bundle then read `version 0.8.0` from `/opt/iterion/bots/review-pr`. The
+  first real tier measurement is still owed — record it here.
+- What shipped: `review_tier` (glance/guard/audit), a deterministic
+  `tier_expand` compute node resolving severity_threshold/max_findings/
+  post_to_board/effective_review_mode from sentinel-defaulted vars (any
+  explicit `--var` still wins), two new judge nodes
+  (`reviewer_claude_glance` / `reviewer_gpt_glance`) the `topology` router
+  picks for the glance tier, and audit's dual fan-out forced independently
+  of `review_mode`. Full design + preset table:
+  [docs/merge-gate.md#review-tiers](../merge-gate.md#review-tiers).
+- What to measure after a real glance run: (1) actual $ on a small PR
+  (<500 lines) against the guard-tier baseline (median $1.8–3.6 per the
+  0.7.0 bilan) — the floor argument in the issue predicts the gap will be
+  SMALLER than a naive "cheaper model ⇒ proportionally cheaper" reading,
+  since claude_code's own context-file injection floor is untouched by
+  this pass; (2) whether the glance prompt's "skip exploratory reads"
+  instruction measurably shortens the reviewer's tool-call count without
+  degrading finding quality on a PR with a real, catchable bug (reuse the
+  live fixture in `e2e/live_bot_review_pr_test.go`); (3) that
+  `reviewer_claude_glance`'s sonnet-level findings don't regress silently
+  below what a maintainer would want gated (compare against a guard-tier
+  review of the SAME diff).
+- Engine finding (worth keeping in view, out of scope for this ticket): a
+  stub e2e test of review-pr's real dual path (`fan` → `reviewer_claude` /
+  `reviewer_gpt` → `merge_reviews` with `await: best_effort`) showed
+  `merge_reviews`/`converge`/`pr_gate` firing TWICE in one run when the two
+  reviewer branches complete asynchronously — `best_effort` appears to
+  trigger once per ARRIVING branch rather than once overall. Pre-existing
+  (unrelated to tiers — the same fan/merge/converge graph, unchanged by
+  #685; audit's forced dual just reaches it a second way), and easy to miss
+  with real LLM latencies serialising the two branches' completion further
+  apart. Worth a dedicated look before leaning harder on dual-mode reviews.
+  **Root-caused and fixed as #741**: not `best_effort` at all — the collector
+  election counted `topology -> reviewer_claude` (the mono edge) as a second
+  predecessor of the fan-out target, elected `reviewer_claude` itself as the
+  collector, so its branch executed nothing while the gpt branch ran the whole
+  `merge_reviews -> converge -> pr_gate` tail inside its branch, and the trunk
+  then ran `reviewer_claude` + the same tail again. Only predecessors inside
+  the fan-out count now (`ir.ExecBranchConvergencePoint`); evolve's
+  `review_fanout` had the identical shape. Guarded by
+  `e2e/review_pr_convergence_test.go`.
+
+## 2026-09-03/04 — cost-reduction pass (0.7.0) shipped through 4 rounds of its own review (PR #651)
+- Status: validated (the review loop itself; the cost delta is measured over the following days)
+- Versions: bot 0.6.0 reviewing → 0.7.0 shipped · iterion `2bd3bbca3` (v3.100.0)
+- Method: the PR that ships the cost levers was reviewed BY the pre-change bot
+  (mono/claude, opus/high) — 4 rounds, webhook-launched on each push, merge
+  queue at the end. Baseline measured first on prod (9 finished runs,
+  2026-09-03 morning): reviewer_claude = 85–93% of $1.42–$10.54/run
+  (median ~$3.6), ~28 runs/3h, ~18% cancelled "superseded" mid-flight.
+- Result: merged through the queue after rounds of 7 → 2 → 3(medium-only,
+  gate green) → 0-blocking findings. Round-1 review cost ~$3.6 (46k tok) on a
+  31-file diff — consistent with the baseline. One queue ejection (silent,
+  during an unrelated merge) and one Anthropic session-limit parking
+  (USAGE_LIMIT_BLOCKED, reset on the 5h window) crossed the loop; the
+  usage-window retry machinery resumed the parked review on its own.
+- Value: every round produced REAL findings. Round 1: the debounce subject
+  key missed the project path (cross-repo collision on an org webhook,
+  [high]) + 6 mediums/lows all legitimate. Round 2 caught the pacer being
+  SILENTLY INERT (unexpanded `${VAR:-…}` model pin split into a garbage
+  provider — the exact "declared capability dead with green tests" class) and
+  GitLab having no closed-MR lane at all. Round 3's mediums (redelivery
+  self-supersede, denial-drop, arrival-order parking) were all real too.
+- Findings / misses: nothing false-positive across 12 findings; the
+  open-questions channel (6 + 1) was sharp (cost_gt mono/dual semantics,
+  audit of debounced pushes, lease/batch sizing). The reviewer twice found
+  defects OUTSIDE its diff impossible (supersede ProjectPath class, fixed
+  proactively by grep; arrival-order, deferred then fixed by the night
+  fixer).
+- Engine hardening: the whole PR — source-level severity floor
+  (`severity_threshold` default medium), TOKEN FRUGALITY contract, pacer
+  supervisor (haiku, cost_gt=8), mid-node `usage_progress` events feeding a
+  now-live cost_gt, `ITERION_VIBE_MODEL_EMIT` (converge → sonnet), budget
+  20→12 / findings 40→15, and the 3-min synchronize debounce
+  (`ITERION_WEBHOOK_SYNC_DEBOUNCE`). Plus C190 widened to judge nodes and
+  supervisor model env expansion.
+- Zero-touch loop note: the red gate auto-launched Billy twice. The first
+  died on the provider session limit ($5.75 spent, work stranded in the pod
+  workspace — cancelled, hand-fixed instead). The second (after the queue
+  ejection) rebased the branch and fixed all 3 round-3 findings overnight,
+  including one (R4f7eab) already carded as follow-up — card closed.
+- Lessons for next run: (1) a supervisor/model pin with `${…}` must be
+  proven by a LIVE eval, not a unit test that hands it pre-expanded;
+  (2) when the merge queue holds the branch, park local fixes — the fixer
+  may land them first; (3) the deploy is three layers (platform bot push =
+  instant; server follows :edge on rollout; runner needs the infra-apps
+  digest bump) and a lever is only live when ITS layer rolled.
+
+## 2026-09-02 — ticket conformance (v0.6.0) first dogfood: fetch + verdict + 3 real findings on its own feature branch (run 01a06405)
+- Status: validated (local half — the PR-summary section and the forge publish path stay for the prod e2e)
+- Versions: bot 0.6.0 · iterion 754321763 (worktree revi-ticket-context)
+- Method: mono/claude (claude_code, opus, effort high), `--var base_ref=main`
+  on the feature branch itself, `--var tracker_api_base=https://api.github.com`,
+  `--var ticket_refs=627` (explicit ref — extraction not exercised), no
+  `tracker_token` bound (the no-credential path), `post_to_board=false`, no
+  `pr_url`, `ITERION_SANDBOX_DEFAULT=none` (a *linked git worktree* workspace:
+  its `.git` is a file pointing into the main repo's `.git/worktrees/`, which a
+  sandbox bind-mount would break — a real limitation to know when dogfooding
+  from a Claude worktree).
+- Result: converged; first pass died `BUDGET_EXCEEDED` at pr_gate on a too-tight
+  `--max-cost-usd 5` (opus review of a 4-commit multi-surface diff ≈ $6) —
+  `iterion resume --max-cost-usd 8` finished it in seconds (only deterministic
+  nodes remained). Total ≈ $6.
+- Value: the whole new chain proved live — the reviewer read the skill, curled
+  `api.github.com/repos/SocialGouv/iterion/issues/627` unauthenticated (token
+  file absent → the skill's fetch-without-auth fallback), returned the exact
+  verdict `#627: not covered — <the ticket's real demand, correctly summarised,
+  vs what the branch actually delivers>`, filed it as a `requirements` finding,
+  and `ticket_conformance` threaded converge → pr_gate → done intact.
+- Findings / misses: on top of the expected requirements verdict, Revi returned
+  **3 real findings on the feature branch it was reviewing** (its own new
+  capability's diff): [high] the delegated org-admin caps PATCH could raise a
+  team ABOVE the platform default (`orValue` semantics — any non-zero team value
+  wins), [medium] the update-path approval gate keyed only on the bot set, so
+  `auto_fix_on_gate_failure:true` with an unchanged bot set bypassed the org
+  approval, [low] the approver UI showed repo+bots but not the automation
+  switches it was approving. All three fixed in the same session (platform
+  ceiling 422, `expandsProvisionSurface` predicate, `approvalExtras` rendering)
+  with regression tests.
+- Engine hardening: none needed — the budget-exceeded → raise-cap → resume
+  recovery worked exactly as documented.
+- Lessons for next run: budget an opus mono review of a real feature branch at
+  ~$6–8, not $5; prod e2e must exercise the two halves this run could not — the
+  PR review summary's "Ticket conformance" section and a real authenticated
+  Jira fetch through a bound `tracker_token` (egress `AllowedHosts` observed).
+
+## 2026-09-02 — 🔁 re-request lane live pilot on questions-ecrites (runs 01a0620c / 01a0620f / 01a06211)
+
+- Status: **validated** — the three behaviours of the GitHub re-request lane
+  (#605, `review_request_logins`) proven end-to-end on the production
+  instance, on a real repo, through the real GitHub events.
+- Versions: iterion cloud prod v3.88.0 (`9ff26bc47`, deployed minutes
+  before) · bot `review-pr` via the provisioned webhook lane
+  (`overlap: supersede`, `review_on_sync: true`, PAT connection posting as
+  the `iterion-bot` User account).
+- Method: throwaway PR SocialGouv/questions-ecrites#64 (one added doc file);
+  reviewer re-requests driven by the API equivalent of the sidebar 🔁 button
+  (`POST …/requested_reviewers`). No board writes (`post_to_board=false`).
+- Result, all three lanes:
+  1. **open → auto-review** (`01a0620c`): launched 3 s after the PR opened,
+     review posted in ~3 min **as `iterion-bot`** — which clears the pending
+     request, i.e. re-arms the button;
+  2. **🔁 after a posted review** (`01a0620f`): click → new run in 5 s (the
+     salted-key lane — the button is repeatable per head);
+  3. **🔁 during a live review** (`01a06211`): the in-flight run was
+     cancelled with `superseded by a newer delivery for the same subject`
+     and replaced 3 s later (the round-5 supersede-defer fix, observed
+     verbatim).
+- Value: this is the UX the whole migration existed to reproduce (the Revu
+  App's re-request button, on a bot **User** identity — a GitHub App cannot
+  be a requested reviewer). Generalised the same day to vao / domifa /
+  code-du-travail-numerique / qe-front / egapro.
+- Findings / misses: none on the lane itself. The **cost of the road** was
+  upstream, on #605's own gate: round 7 (`01a06146`) computed a clean
+  0-finding verdict in 41.4 min then died at `converge` on the 45 m
+  duration budget — the verdict was in the checkpoint but never published,
+  and the gate's supersede net relaunched a full ~$11 re-review of an
+  unchanged diff. The operator published the checkpoint verdict manually
+  (PR comment + `revi/review` status) rather than pay another round.
+- Engine hardening (cards): `native:85d7752d` (a review bot whose PUBLISH
+  node can be refused by the duration budget wastes the entire run —
+  exit-grace carve-out or a reviewer budget share); `native:3b3562ad`
+  (claude.ai "monthly spend limit" text misclassified as
+  `EXECUTION_FAILED: structured output invalid` → 9 futile retries → DLQ
+  instead of `USAGE_LIMIT_BLOCKED` + usage-window retry; and the claw
+  structured-output recovery is dead on the review schema's union-typed
+  `findings`).
+- Lessons for next run: budget elapsed rides the checkpoint — a run whose
+  clock was eaten by infra failures cannot be rescued by resume (cloud
+  `ResumeSpec` has no budget override); relaunch fresh instead. And a
+  22-second "structured output invalid" failure is a dead credential
+  wearing a schema-error costume: read the run log before blaming the
+  schema.
+
+## 2026-09-01 — four passes as closure judge of an adversarial loop (runs 01a05daf / 01a05e57 / 01a05e6f)
+
+- Status: **validated** — Revi as the external reviewer closing a `::loop`
+  on the re-request-review + gate-opt-out engine work (PR #604, follow-up
+  PR #608).
+- Versions: iterion cloud prod v3.83.1→v3.84.0 · bot `review-pr` (webhook
+  lane on github.com/SocialGouv/iterion, mono topology, `revi/review`
+  required by the merge queue).
+- Method: the PRs went through 3 parallel adversarial subagents + 1
+  verification agent BEFORE each Revi pass; Revi reviewed what that
+  internal loop had already declared clean. 4 passes total (open +
+  re-review-on-push on #604; open + re-review on #608).
+- Result: **every pass found real defects the internal loop had missed; 0
+  false positives across all four.** Retained findings, each
+  mutation-proven red before fixing: R7e050f (the new GitLab
+  re-request lane bypassed the replier authorization gate `/revi` has),
+  R6a15fe (the SAME gap on the twin prforge/GitHub lane — the internal
+  loop had fixed GitLab only), R34eb8c (an authz ERROR 502'd the delivery
+  and stranded a co-riding gate resync), R0c3aab (the authz gate ran
+  before the scope filters, spending forge calls on out-of-scope events),
+  R68edf4 (comments describing the pre-gate behaviour on both lanes).
+  Passes 1–2 folded into #604 before merge (`c5eb31847`); passes 3–4
+  shipped as #608.
+- Value: the external-family pass is what caught the **twin-site class
+  miss** three separate times (a guard added to one lane but not its
+  structural sibling). Four internal agents staring at the same diff
+  shared the same blind spot; Revi did not.
+- Findings / misses: none of Revi's findings were noise. Its one
+  over-reach (fear of "review-per-push returning through
+  AddedReviewers") was refuted by a live GitLab payload probe rather
+  than argued — a push emits no reviewers diff.
+- Engine hardening: whole feature is engine work; see #604/#608. One
+  operational gotcha surfaced by Revi's own machinery: **its pending
+  claim ejects a PR from the merge queue** — the `mirror-revi-verdict`
+  job read `revi/review=pending` on #608's head (a re-review was in
+  flight after a usage-cap unblock) and rejected the queue entry twice.
+  Don't enqueue while a re-review is pending on the head; re-enqueue
+  once the verdict lands.
+- Lessons for next run: keep Revi as the closure judge of adversarial
+  loops — it is measurably a different failure-mode detector than N
+  same-family internal agents. Two passes stalled on
+  `USAGE_LIMIT_BLOCKED` at 99% of the weekly window; the runtime-mutable
+  cap (`iterion remote admin caps set`) unblocked them without a deploy.
+
 ## 2026-08-13 — first review on a self-hosted GitLab, and the two engine gaps it surfaced (runs 019ffad9 / 019ffadb / 019ffb04)
 
 - Status: **validated on the direct-launch path** (webhook lanes still blocked
@@ -416,3 +898,6 @@ way to perform. Mono now says so in as many words.
   dry-run.
 - Use Revi as a routine second pass over Willy/Featurly/Billy output — it catches
   second-order issues the implementer's own review loop can miss.
+
+<!-- Live probe note: this very PR exercised the 0.7.0 stack end to end —
+     PR-open review (immediate), then this push (debounced). -->

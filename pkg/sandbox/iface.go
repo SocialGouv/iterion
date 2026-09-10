@@ -300,6 +300,18 @@ type Builder interface {
 	Build(ctx context.Context, prepared PreparedSpec, info RunInfo) (PreparedSpec, error)
 }
 
+// SchedulingPolicyReporter is implemented by drivers that stamp a
+// deployment-level scheduling policy (resource requests, placement) on the
+// sandboxes they create. The runtime records the summary on the
+// sandbox_started event so a resume on another runner (a mixed fleet during
+// a rollout) is auditable, and the doctor reports the configuration error a
+// misconfigured policy would otherwise only raise at the first Start.
+type SchedulingPolicyReporter interface {
+	// SchedulingPolicy returns a one-line summary of the policy, or the
+	// configuration error every Start will return.
+	SchedulingPolicy() (string, error)
+}
+
 // RunInfo carries per-run metadata that drivers may need to label
 // containers/pods, scope mounts, or compute run-specific paths.
 type RunInfo struct {

@@ -3,12 +3,14 @@ package dispatcher
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -202,33 +204,80 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngineRunner: %v", err)
 	}
-	defer func() { _ = runner.Close() }()
+	t.Cleanup(func() { _ = runner.Close() })
 	runID, err := store.GenerateRunID()
 	if err != nil {
 		t.Fatalf("GenerateRunID: %v", err)
 	}
 
+	// Every event the parent AND the child persist flows through the
+	// dispatcher's OnEvent seam (the heartbeat store wraps the one store both
+	// engines share). Recording the sequence costs nothing and, on a stall,
+	// says how far the run got — the difference between "the parent never
+	// reached the node" and "the child is alive and the probe cannot see it".
+	var seenMu sync.Mutex
+	var seen []string
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	var dispatchErr error
+	dispatched := false
+	t.Cleanup(func() {
+		cancel()
+		if !dispatched {
+			<-done
+		}
+	})
 	go func() {
-		done <- runner.Dispatch(context.Background(), DispatchSpec{
+		done <- runner.Dispatch(ctx, DispatchSpec{
 			RunID:         runID,
 			WorkspacePath: workspace,
 			StoreDir:      storeDir,
 			Issue:         &IssueRef{ID: "native:" + runID, Identifier: runID, Title: "subbot lock"},
+			OnEvent: func(typ string) {
+				seenMu.Lock()
+				seen = append(seen, typ)
+				seenMu.Unlock()
+			},
 		})
 	}()
 
 	// Catch the child mid-pass and prove its lock is held. The child blocks
-	// until release-lock-probe exists, so there is no timing window to race —
-	// the deadline only bounds engine spawn on a loaded runner. Cleanup writes
-	// the release file even on a Fatal path, so the dispatch goroutine always
-	// drains instead of leaking a forever-polling child into the next test.
+	// until release-lock-probe exists, so there is no timing window to race.
+	// Cleanup cancels AND joins the dispatch on a Fatal path. Merely writing
+	// the sentinel does not join the shell before TempDir removes its workspace.
 	release := filepath.Join(workspace, "release-lock-probe")
-	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o644) })
 	childID := ""
 	held := false
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) && !held {
+	// Watch the dispatch goroutine while polling. The child blocks until the
+	// release file exists, so Dispatch returning here means it never reached
+	// the subbot node — and its error is the diagnosis.
+	// The wait is bounded by the HARNESS's budget, never by a clock of this
+	// test's own: nothing here is timing-sensitive (the child blocks on the
+	// release file), so a bound only covers the parent reaching the subbot
+	// node — and when it does not, the evidence that matters is WHERE the
+	// run sat, which the diagnosis below dumps while the binary is still
+	// alive. A test-local budget once ran out and reported "no child
+	// appeared" for a parent that was healthy and a child that was alive:
+	// the probe's own LoadRun had written the child's run.json back and
+	// erased its parent link (a store read that wrote — fixed in pkg/store,
+	// TestLoadRunDoesNotWriteBack), so the probe could never match it.
+	probeStart := time.Now()
+	deadline, bounded := t.Deadline()
+	if bounded {
+		deadline = deadline.Add(-30 * time.Second)
+	}
+	for !held {
+		if bounded && !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case dispatchErr = <-done:
+			dispatched = true
+		default:
+		}
+		if dispatched {
+			break
+		}
 		ids, lerr := probe.ListRuns(context.Background())
 		if lerr != nil {
 			t.Fatalf("ListRuns: %v", lerr)
@@ -272,15 +321,46 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	if err := os.WriteFile(release, []byte("go"), 0o644); err != nil {
 		t.Fatalf("write release file: %v", err)
 	}
+	if dispatched && childID == "" {
+		t.Fatalf("Dispatch returned before any child run appeared — the subbot node was never reached: %v", dispatchErr)
+	}
 	if childID == "" {
-		t.Fatal("never observed a child run — the subbot node did not spawn one")
+		// Name WHICH of the two it is: a parent still running never reached
+		// the node, a terminal one reached the end without spawning (a real
+		// defect) — and dump what the store and the scheduler hold, so a
+		// stall carries its own cause instead of only its symptom.
+		parentStatus := "unknown"
+		if p, perr := probe.LoadRun(context.Background(), runID); perr == nil {
+			parentStatus = string(p.Status)
+		}
+		seenMu.Lock()
+		trace := strings.Join(seen, " ")
+		seenMu.Unlock()
+		t.Logf("events persisted so far: %s", trace)
+		if ids, lerr := probe.ListRuns(context.Background()); lerr == nil {
+			for _, id := range ids {
+				r, rerr := probe.LoadRun(context.Background(), id)
+				if rerr != nil {
+					t.Logf("run %s: LoadRun: %v", id, rerr)
+					continue
+				}
+				t.Logf("run %s: status=%s parent=%q name=%q", id, r.Status, r.ParentRunID, r.Name)
+			}
+		}
+		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+		t.Fatalf("never observed a child run linked to the parent (parent %s is %q after %s)",
+			runID, parentStatus, time.Since(probeStart).Truncate(time.Second))
 	}
 	if !held {
 		t.Fatal("never caught the child mid-pass — its lock was never observed held while it was blocked on the release file")
 	}
 
-	if derr := <-done; derr != nil {
-		t.Fatalf("Dispatch: %v", derr)
+	if !dispatched {
+		dispatchErr = <-done
+		dispatched = true
+	}
+	if dispatchErr != nil {
+		t.Fatalf("Dispatch: %v", dispatchErr)
 	}
 	lock, err := probe.LockRun(context.Background(), childID)
 	if err != nil {
@@ -372,18 +452,10 @@ func TestEngineRunner_SubbotChildNeverAdoptsParentWorktree(t *testing.T) {
 		{"config", "user.name", "T"},
 		{"commit", "-q", "--allow-empty", "-m", "seed"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = mainRepo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
+		gittest.Run(t, mainRepo, args...)
 	}
 	workspace := filepath.Join(t.TempDir(), "issue-ws")
-	cmd := exec.Command("git", "worktree", "add", "--detach", workspace, "HEAD")
-	cmd.Dir = mainRepo
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v (%s)", err, out)
-	}
+	gittest.Run(t, mainRepo, "worktree", "add", "--detach", workspace, "HEAD")
 	marker := `{"validated":true,"echoed":"from-workspace"}`
 	if err := os.WriteFile(filepath.Join(workspace, "marker.json"), []byte(marker), 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)

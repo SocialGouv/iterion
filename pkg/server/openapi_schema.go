@@ -24,6 +24,9 @@ import (
 type routeOp struct {
 	request  any
 	response any
+	// requestOptional marks a body the handler accepts EMPTY (every field has
+	// a default); the spec must not declare it required.
+	requestOptional bool
 }
 
 // routeSchemas maps "METHOD /pattern" (matching the recorded route key) to the
@@ -69,16 +72,23 @@ func routeSchemas() map[string]routeOp {
 		"PATCH /api/admin/llm/api-keys/{key_id}":  {request: updateApiKeyReq{}, response: apiKeyView{}},
 		"DELETE /api/admin/llm/api-keys/{key_id}": {},
 
+		// Usage-window readings (super-admin) — forget one credential's
+		// stored readings after a provider reset the ledger cannot see.
+		"DELETE /api/admin/usage-readings/{fingerprint}": {response: usageReadingsClearedView{}},
+
 		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
-		"GET /api/admin/bots": {
-			response: struct {
-				BotSources []botSourceMetaView `json:"bot_sources"`
-			}{},
-		},
+		"GET /api/admin/bots":              {response: botSourceListView{}},
 		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
 		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
 		"DELETE /api/admin/bots/{slug}":    {},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
+
+		// Team bot sources — the SAME handler (listBotSourcesFor), so the same
+		// payload, including the shadow fields docs/platform-bots.md promises
+		// on this endpoint. Left untyped, that promise had no spec behind it:
+		// documented-but-unverifiable is the exact shape this family exists
+		// to end.
+		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
 
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
@@ -92,6 +102,13 @@ func routeSchemas() map[string]routeOp {
 				Repos []forge.RepoSummary `json:"repos"`
 			}{},
 		},
+		// The team ⇄ project-board binding (ADR-097). Typed so the generated
+		// client sees the effective status map and the coverage report, which
+		// the settings card renders rather than re-deriving.
+		"GET /api/teams/{id}/board-binding":    {response: forge.BoardBinding{}},
+		"PUT /api/teams/{id}/board-binding":    {request: boardBindingReq{}, response: forge.BoardBinding{}},
+		"DELETE /api/teams/{id}/board-binding": {},
+
 		"GET /api/teams/{id}/forge/oauth-apps": {
 			response: struct {
 				Apps []forge.ForgeOAuthApp `json:"apps"`
@@ -109,7 +126,8 @@ func routeSchemas() map[string]routeOp {
 				Runs []runview.RunSummary `json:"runs"`
 			}{},
 		},
-		"GET /api/runs/{id}": {response: runview.RunSnapshot{}},
+		"GET /api/runs/{id}":            {response: runview.RunSnapshot{}},
+		"GET /api/runs/{id}/diagnostic": {response: runview.DiagnosticProjection{}},
 		"GET /api/runs/{id}/children": {
 			response: struct {
 				Runs []runview.RunSummary `json:"runs"`
@@ -147,6 +165,13 @@ func routeSchemas() map[string]routeOp {
 		},
 		"PATCH /api/v1/pipeline-board/tasks/{id}": {
 			request:  pipelineBoardUpdateRequest{},
+			response: native.Issue{},
+		},
+		// The reset body is optional; `fresh` is what makes the restart
+		// deterministic (the last-run pointer is dropped, so no launch
+		// authority can resume the run being discarded).
+		"POST /api/v1/pipeline-board/tasks/{id}/reset": {
+			request:  pipelineBoardResetRequest{},
 			response: native.Issue{},
 		},
 		"GET /api/v1/pipeline-board/tasks/{id}/dependency-graph": {response: DependencyGraphResponse{}},
@@ -189,6 +214,7 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/teams/{id}/forge/connections/{conn_id}/health": {
 			response: forgeConnectionHealth{},
 		},
+		"POST /api/teams/{id}/forge/connections/{conn_id}/avatar": {request: forgeAvatarReq{}, response: forgeAvatarResp{}, requestOptional: true},
 	}
 }
 

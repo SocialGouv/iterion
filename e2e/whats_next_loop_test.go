@@ -61,6 +61,7 @@ import (
 //   - nexie keeps `interaction` enabled (ask_user) and an inheriting
 //     session mode.
 func TestWhatsNextV2_GraphContract(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "whats-next/main.bot")
 
 	if wf.Worktree != "none" {
@@ -121,6 +122,7 @@ func TestWhatsNextV2_GraphContract(t *testing.T) {
 // operator's answer re-invokes nexie WITH the message and the prior
 // turn's session id; turn 2 closes explicitly and the run finishes.
 func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
 	exec := newScenarioExecutor()
 
@@ -152,7 +154,7 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-nexie-chat", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
@@ -202,6 +204,7 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 // persisted, and the resume re-invokes the SAME node with the picked
 // option riding the prior-interaction keys.
 func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
 	exec := newScenarioExecutor()
 
@@ -237,7 +240,7 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-nexie-askuser", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
@@ -352,6 +355,7 @@ func newSmokeDispatcherFixture(t *testing.T, polling time.Duration) (
 // finish → transition), then 5× polling for the no-reloop watch.
 // At 50ms polling that's ~400ms; the deadline is 3s for slow CI.
 func TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop(t *testing.T) {
+	t.Parallel()
 	const polling = 50 * time.Millisecond
 	c, ns, runner, cleanup := newSmokeDispatcherFixture(t, polling)
 	defer cleanup()
@@ -443,6 +447,7 @@ func titlesOf(issues []*native.Issue) []string {
 // 5× polling for the no-reloop watch. At 50ms polling that's well under
 // the 3s deadline used for slow CI.
 func TestWhatsNext_Loop_FindingsInboxSurvivesDispatch(t *testing.T) {
+	t.Parallel()
 	const polling = 50 * time.Millisecond
 	c, ns, runner, cleanup := newSmokeDispatcherFixture(t, polling)
 	defer cleanup()

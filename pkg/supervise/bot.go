@@ -69,7 +69,7 @@ const decisionSchema = `{
           "node_id":       {"type": "string"},
           "tool_name":     {"type": "string", "description": "Match a tool by name, e.g. Bash, Edit."},
           "text_contains": {"type": "string", "description": "Case-insensitive substring matched against the rendered event."},
-          "cost_gt":       {"type": "number", "description": "Fire when a budget_warning reports used > this value."}
+          "cost_gt":       {"type": "number", "description": "Fire when a budget_warning or a mid-node usage_progress sample reports used > this value (USD)."}
         }
       }
     },
@@ -79,12 +79,13 @@ const decisionSchema = `{
 
 // EvalInput is everything the bot sees for one evaluation.
 type EvalInput struct {
-	Spec         Spec
-	ActiveNode   string    // the node currently armed (being supervised)
-	WakeReason   string    // "turn_boundary" or a monitor description
-	RecentEvents []string  // rendered recent events (oldest first)
-	Monitors     []Monitor // currently-registered monitors
-	Last         *Decision // the previous decision, for monotonic context
+	Spec                  Spec
+	ActiveNode            string    // the node currently armed (being supervised)
+	WakeReason            string    // "turn_boundary" or a monitor description
+	RecentEvents          []string  // rendered recent events (oldest first)
+	Monitors              []Monitor // currently-registered monitors
+	Last                  *Decision // the previous decision, for monotonic context
+	ConsecutiveNoProgress int       // repeated deliveries of identical semantic evidence
 }
 
 // Evaluator decides what (if anything) the supervisor should do for one
@@ -127,7 +128,15 @@ func NewLLMEvaluator() *LLMEvaluator {
 // detector's first suggestion. Returns ErrNoSupervisorModel when none
 // resolve.
 func resolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
-	if specModel != "" {
+	// The DSL pin may be an env form ("${ITERION_VIBE_MODEL_X:-a/b}") —
+	// expand it exactly like the executor expands a node's model
+	// (executor_build_task.go resolvedModel). Unexpanded, the raw string
+	// reaches ParseModelSpec, which splits at the first "/" into a
+	// garbage provider — every eval then soft-fails and supervision
+	// parks: a declared supervisor silently inert. An expansion that
+	// comes back empty (unset var, no default) falls through to the
+	// env/family resolution below, same as no pin at all.
+	if specModel = strings.TrimSpace(ir.ExpandEnvWithDefault(specModel)); specModel != "" {
 		return specModel, nil
 	}
 	if env := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
@@ -171,22 +180,34 @@ func resolveModelWith(specModel, providerHint string, providers []detect.Provide
 
 // ctxFundsProvider maps the run's ctx credentials onto claw providers: a
 // per-provider API key funds its provider (ResolveWithContext →
-// providersWithKey), and the codex ChatGPT forfait funds openai
-// (Registry.openAIFromCtxForfait reads OAuthDir("codex")), mirroring
-// that path's env kill-switches. Anthropic's OAuth forfait is
-// deliberately NOT mapped: it is usable only by the claude_code CLI —
-// claw's anthropic factory reads env vars alone and ResolveWithContext
-// has no anthropic OAuth-dir branch — so claiming it funds the
-// anthropic provider would resolve an unauthenticated client.
+// providersWithKey), and each subscription forfait funds the provider its
+// ctx branch in Registry.ResolveWithContext can build a client from —
+// codex → openai (openAIFromCtxForfait), claude_code → anthropic
+// (anthropicFromCtxForfait) — mirroring each path's kill-switches.
+//
+// Keeping this in step with those branches is the whole job: a provider
+// claimed as funded but with no ctx branch behind it resolves an
+// UNAUTHENTICATED client, which fails 401 per eval instead of parking
+// supervision on a clean ErrNoSupervisorModel.
 func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 	return func(provider string) bool {
 		if creds.APIKeys[secrets.Provider(provider)] != "" {
 			return true
 		}
-		if provider == "openai" &&
-			os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" &&
-			os.Getenv("OPENAI_BASE_URL") == "" {
-			return creds.OAuthCredentialFiles["codex"] != ""
+		switch provider {
+		case "openai":
+			if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" || os.Getenv("OPENAI_BASE_URL") != "" {
+				return false
+			}
+			return creds.OAuthCredentialFiles[string(secrets.OAuthKindCodex)] != ""
+		case "anthropic":
+			// Same predicate the registry's two anthropic factories use, so a
+			// hint can never resolve a wire they will decline.
+			if secrets.ForbidSubscriptionOAuth() ||
+				!secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+				return false
+			}
+			return creds.OAuthCredentialFiles[string(secrets.OAuthKindClaudeCode)] != ""
 		}
 		return false
 	}
@@ -222,7 +243,12 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 	res, err := model.GenerateObjectDirect[Decision](ctx, e.client, opts)
 	if err != nil {
-		return nil, EvalUsage{}, fmt.Errorf("supervise: evaluation call: %w", err)
+		// Name the model that failed: a supervisor's model can come from a DSL
+		// pin, an env override, the supervised nodes' provider or the host
+		// detector, and an auth error says nothing about which of those was
+		// taken. Reading "anthropic: API error 401" with no spec is what made a
+		// dead pacer look like a provider outage rather than a resolution bug.
+		return nil, EvalUsage{}, fmt.Errorf("supervise: evaluation call (model %s): %w", e.modelSpec, err)
 	}
 	usage := EvalUsage{
 		InputTokens:  res.TotalUsage.InputTokens,
@@ -254,6 +280,9 @@ func buildUserPrompt(in EvalInput) string {
 	fmt.Fprintf(&b, "Wake reason: %s\n", in.WakeReason)
 	if in.ActiveNode != "" {
 		fmt.Fprintf(&b, "Supervised node: %s\n", in.ActiveNode)
+	}
+	if in.ConsecutiveNoProgress > 0 {
+		fmt.Fprintf(&b, "Repeated unchanged evidence: %d consecutive event(s)\n", in.ConsecutiveNoProgress)
 	}
 	if len(in.Monitors) > 0 {
 		if data, err := json.Marshal(in.Monitors); err == nil {

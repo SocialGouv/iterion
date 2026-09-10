@@ -205,6 +205,7 @@ requires membership. Sources:
 | `DELETE` | `/api/teams/{id}/forge/connections/{conn_id}` | team admin | Remove a connection |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/health` | team member | Connection health / token probe |
 | `POST` | `/api/teams/{id}/forge/connections/{conn_id}/refresh` | team member | GitHub App only: re-probe live installation grants, persist them, and force a fresh token mint |
+| `POST` | `/api/teams/{id}/forge/connections/{conn_id}/avatar` | team admin | Upload the iterion-bot avatar onto the account behind a PAT connection (`{variant?, force?}`); 422 on OAuth (a person), on GitHub (no API — names the App's settings page) and on a token the forge rejects (the connection is marked `revoked`; reconnect first), 409 `needs_force` on an account the forge does not flag as a bot or would not describe at all, 502 when the forge did not answer the identity read or refused the upload. See [brand.md](brand.md) |
 | `GET` | `/api/teams/{id}/forge/connections/{conn_id}/repos` | team member | Repos visible to the connection |
 | `GET` | `/api/teams/{id}/forge/repos` | team member | Team's forge-linked repos |
 | `POST` | `/api/teams/{id}/forge/repos` | team admin | Create a repo (opt-in `RepoCreator` capability) |
@@ -224,6 +225,44 @@ requires membership. Sources:
 The OAuth handshake completes on public callbacks the SPA is redirected to:
 `GET /api/forge/oauth/callback`, `GET /api/forge/github/app/callback`, and
 `GET /api/forge/github/app-manifest/callback`.
+
+## Project-board binding (GitHub Projects v2)
+
+One board per team (ADR-097). Binding it makes the board's `Status` column
+two-way with the native board's columns and imports `Area`/`Mode`/`Priority`
+onto cards as `area:`/`mode:`/`prio:` labels. Runbook:
+[docs/github-board-sync.md](github-board-sync.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/board-binding` | team member | The binding, incl. the effective status map and the last sync |
+| `PUT` | `/api/teams/{id}/board-binding` | team admin | Bind / re-bind (resolves the board and caches its ids) |
+| `DELETE` | `/api/teams/{id}/board-binding` | team admin | Unbind |
+
+`PUT` takes the board's **address**, never its ids — every id in the stored
+binding comes from reading the board with the team's own credential, so a
+caller cannot point a team at a board it has no rights on:
+
+```jsonc
+{
+  "owner": "SocialGouv",
+  "number": 203,
+  "owner_kind": "org",              // or "user"; default "org"
+  "connection_id": "conn_123",
+  "status_map": {                   // optional; default = the shipped five
+    "Todo": "ready",
+    "Doing": "in_progress",
+    "Shipped": "done"
+  },
+  "sync_every_seconds": 120         // absent = default (120); 0 = off; floor 60
+}
+```
+
+Every rejection is a `400` naming the cause: a malformed ref, a non-injective
+`status_map` (two columns on one state), an interval under the floor, a board
+the credential cannot resolve, or a map matching none of the board's columns
+(the real column names are listed in the message). `GET`/`DELETE` on an unbound
+team are `404`, never a silent success.
 
 ## Inbound webhooks
 
@@ -255,13 +294,21 @@ Full reference: [webhooks.md](webhooks.md).
 | `POST` | `/api/me/oauth/{kind}/authorize/complete` | member | Finish that handshake |
 | `POST` | `/api/me/oauth/{kind}/credentials` | member | Upload pasted `credentials.json` / `auth.json` |
 | `POST` | `/api/me/oauth/{kind}/refresh` | member | Refresh stored access token against the IdP |
+| `PATCH` | `/api/me/oauth/{kind}` | member | Name the account behind the credential (`{"account_label": "…"}`, `""` clears; ≤ 120 characters) — metadata only, the sealed credential is untouched |
 | `DELETE` | `/api/me/oauth/{kind}` | member | Disconnect |
+
+`authorize/complete` and `credentials` take an optional `?account_label=`
+query parameter to name the account at connect time. The listing exposes
+`account_label` beside `fingerprint`, the same string the publisher logs
+when it picks a credential (see
+[cloud-llm-credentials.md](cloud-llm-credentials.md#name-the-account-behind-every-credential)).
 
 Every route above has a team-scoped mirror at
 `/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
-`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`, and
-`DELETE {kind}`) for a forfait the whole team draws on rather than one
-operator.
+`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`,
+`PATCH {kind}`, and `DELETE {kind}`) for a forfait the whole team draws
+on rather than one operator, and a platform mirror at
+`/api/admin/llm/oauth/…` (super-admin).
 
 Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
 [pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).

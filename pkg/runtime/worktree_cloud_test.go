@@ -22,11 +22,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -53,12 +53,11 @@ func (w *workDirProbeExecutor) SetWorkDir(dir string) { w.workDir = dir }
 // resolved repo top or the full git error (which carries the
 // "not a git repository: <gitdir>" detail on a severed worktree).
 func gitToplevel(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
-	out, err := cmd.CombinedOutput()
+	out, err := gittest.Try(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse --show-toplevel in %s: %v: %s", dir, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git rev-parse --show-toplevel in %s: %v: %s", dir, err, out)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
 
 // TestCloudRun_WorktreeAuto_GitWorksAcrossDeliveries reproduces the
@@ -89,7 +88,7 @@ func TestCloudRun_WorktreeAuto_GitWorksAcrossDeliveries(t *testing.T) {
 		if err := os.RemoveAll(clone); err != nil {
 			t.Fatalf("remove clone: %v", err)
 		}
-		mustRun(t, pod, "git", "clone", "--quiet", seed, clone)
+		gittest.Run(t, pod, "clone", "--quiet", seed, clone)
 	}
 	cloneFresh()
 
@@ -279,8 +278,8 @@ func TestResume_RefusesSeveredWorktreeLinkage(t *testing.T) {
 func TestCheckWorktreeLinkage(t *testing.T) {
 	repo, _ := initBareishRepo(t)
 	linked := filepath.Join(t.TempDir(), "linked")
-	mustRun(t, repo, "git", "worktree", "add", "--detach", linked, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", linked).Run() })
+	gittest.Run(t, repo, "worktree", "add", "--detach", linked, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", linked) })
 
 	severed := t.TempDir()
 	writeFile(t, filepath.Join(severed, ".git"), "gitdir: "+filepath.Join(t.TempDir(), "nope", ".git", "worktrees", "x"))

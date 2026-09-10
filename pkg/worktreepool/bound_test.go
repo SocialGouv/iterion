@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -51,15 +51,7 @@ func (f *poolFixture) git(dir string, args ...string) string {
 }
 
 func (f *poolFixture) gitErr(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()),
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
-		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com",
-		"LC_ALL=C", "LANG=C")
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return gittest.Try(dir, args...)
 }
 
 // idle is the shape the incident produced and the one the bound exists

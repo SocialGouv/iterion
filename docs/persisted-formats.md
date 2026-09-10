@@ -68,6 +68,40 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`failure_code` (ADR-095) is the machine-readable classification of `error`
+on a failure status (`failed` / `failed_resumable` / `cancelled`), written
+atomically with the status and cleared by every transition to a non-failure
+status. Absent/empty means UNKNOWN (legacy rows, unclassified writers) —
+never "no failure". The vocabulary is open-world: readers must accept codes
+they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)) —
+and it is open in practice, not just in principle: a workflow's own
+`fail <name>:` declaration supplies the code and the `error` text
+([DSL](dsl.md#typed-terminal-failure--fail-name)), so a deployment sees
+whatever vocabulary its bots define. The engine's constants remain the
+fallback: an untyped `-> fail` still writes `FAIL_NODE` /
+"workflow reached fail node". A `fail` node that declares
+`resumable: true` writes its code on `failed_resumable` instead of
+`failed`; the code says WHY, never whether the run may continue.
+
+`outcome_seq` counts the run's terminal EPISODES: it increments on every
+TRANSITION into `finished` / `failed` / `failed_resumable` / `cancelled`
+(never on a same-status rewrite — a drain's re-flip or the publisher's
+resume rollback must not invent an episode). `(run_id, outcome_seq)` is the
+stable per-episode key an outcome consumer claims on; the event-derived id
+cannot serve (second-truncated timestamps collide, and every save refreshes
+`updated_at`). `continuation_state` says who owns the run's future after a
+park: `redelivery_pending` (the RUNNER promoted it at an actual queue Nak),
+`retry_armed` (a quota-window retry exists — promotion happens when
+`ScheduleRunRetry` arms, demotion to `final` when it abandons), or `final`
+(nobody — acting is the consumer's decision). Empty = UNKNOWN, which a
+consumer must never read as final. Engine writers state only the CAUSE
+(`failure_code`); continuation is runner/server-side knowledge. Both fields
+are store-owned bookkeeping: full-document saves can neither rewind the
+counter nor resurrect a stale continuation. **Deploy-order constraint**: an
+old binary's `SaveRun` drops the fields entirely (rewinding the episode key
+for its consumers), so a release adding an `outcome_seq` CONSUMER must ship
+only after the fleet fully carries the writer.
+
 `nodes_served` maps each LLM node's id to the last `(backend, model)` that
 served it (`model` is the provider-reported effective model; `declared_model`
 is what the node asked for). It is the run-record half of making a finished
@@ -77,6 +111,20 @@ and for workflows that never delegated. The event stream is the full history
 `delegate_error` add `effective_model` / `context_window` /
 `max_output_tokens`; `model_drift` fires when the two model fields name
 different models).
+
+`fingerprint` on each entry is the backend's provider-routing label for that
+session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or
+`facade:<base url>`. An Anthropic-shaped facade answers a `claude-*` id with
+whatever it aliases it to, so the two model fields agree and `model_drift`
+stays silent; the fingerprint is the only evidence, and
+`model_served_via_facade` is the event half of it. It names the route that
+SERVED on a success and the one ATTEMPTED on a failure that still reported a
+model — the same reading as `model` beside it, and last-write-wins with it.
+Empty means the backend reported none (claw and the CLI-agent backends report
+no fingerprint), i.e. "route unknown", never "not a facade". The base URL is
+stripped of userinfo/query/fragment before it is recorded — it is operator
+input, so it can embed a credential, and this record is readable by anyone
+with run-read access.
 
 ### Run statuses
 
@@ -99,9 +147,11 @@ though an explicit resume can transition them back to `running`.
 The checkpoint embedded in `run.json` is the source of truth for resume.
 `events.jsonl` is an audit/observation stream and is never replayed to rebuild
 execution state. A checkpoint may be present while a run is still `running`
-because it is saved best-effort after successful node boundaries; it is
-preserved for resumable/cancelled/paused states and cleared on ordinary
-finished/failed transitions.
+because it is saved best-effort after successful node boundaries. **A status
+transition never destroys it** (ADR-095): only `DeleteRun` and the rewind
+machinery remove one, and resumability is decided by `Status` alone — a
+terminal run keeps its checkpoint (`iterion fork` reads a finished
+parent's).
 
 ```jsonc
 {
@@ -113,12 +163,20 @@ finished/failed transitions.
   "loop_previous_output": {},
   "loop_current_output": {},
   "artifact_versions": { "inspect": 3 },
+  "artifacts": {}, // inspection equals outputs.inspect, so its body is omitted
+  "artifact_owners": { "inspection": "inspect" },
+  "artifacts_known": true,
+  "artifact_revisions": {
+    "inspection": { "node_id": "inspect", "version": 2 }
+  },
+  "artifact_revisions_known": true,
   "selected_incoming": {
     "gate": [{ "from": "validate", "to": "gate" }]
   },
   "vars": { "scope": "pkg/runtime" },
   "interaction_questions": { "approved": "Ship?" },
   "backend_session_id": "session-id",
+  "backend_session_fingerprint": "anthropic-oauth",
   "backend_name": "claude_code",
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
@@ -132,6 +190,8 @@ finished/failed transitions.
   },
   "backend_session_state_ref": "",
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
+  "recovery_pause": true,
+  "recovery_code": "AUTH_FAILED",
   "budget_tokens_used": 42000,
   "budget_cost_usd": 1.25,
   "budget_iterations_used": 7,
@@ -143,6 +203,38 @@ finished/failed transitions.
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+The union of `artifact_owners` and `artifacts` is the authoritative logical
+publish-name snapshot. `artifact_owners` is the complete catalog: when a
+logical value is identical to its producer's `outputs` entry, the body is
+omitted from `artifacts` and reconstructed from that owner on resume. This
+keeps large published outputs from appearing twice in Mongo's size-limited run
+document. Historical aliases whose value differs from the producer's newest
+output stay behind their immutable revision with `value_from_revision: true`;
+unverified revisions and ownerless values remain explicit in `artifacts`.
+`artifact_owners` also keeps invalidation ownership when report mode cannot
+verify a blob; `artifact_revisions` independently records physical provenance.
+The corresponding `*_known` markers distinguish an intentionally empty current
+snapshot from a checkpoint written by an older binary, which is rebuilt
+conservatively from outputs without inventing provenance.
+Parallel branch checkpoints keep their `artifacts` bodies expanded for V1
+mixed-version compatibility. Older runners do not understand
+`artifact_owners`, so compacting a completed branch would make its published
+values disappear when that runner resumes it.
+An artifact revision marked `"unverified": true` retains only its producer
+binding after report mode could not read the physical body. It is excluded
+from newly written dependency contracts until a later resume verifies it.
+`backend_session_fingerprint` is the provider fingerprint of
+`backend_session_id`, checkpointed beside it because the id alone is not
+usable: a `session: fork` resume drops a session whose parent provider it
+cannot identify (cross-provider thinking blocks 400). Absent on checkpoints
+written before the field existed, which reads as "unknown" — the same
+conservative outcome as before.
+`recovery_pause` / `recovery_code` mark a pause the recovery dispatcher wrote
+for a node whose execution **failed** (`AUTH_FAILED`, `BUDGET_EXCEEDED`, …):
+the node still owes its work, so the answer that resumes the run is an
+acknowledgement, never the node's output, and resume re-executes the node
+(the interaction is written with `kind: "recovery"`). Both are cleared with
+the pause pointer once a resume claims the run.
 `selected_incoming` is the set of incoming edges routing actually fired
 into each node for its current visit, so a resume of that node applies
 the same with-mappings (issue #484). Missing fields on historical
@@ -175,9 +267,18 @@ emitter when a consumer needs an exact payload contract.
 
 | Family | Persisted event types |
 |---|---|
-| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
+| Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_retry_skipped`, `run_workspace_reset`, `run_workspace_bank_restored`, `run_redelivery_deferred`, `run_delivery_exhausted`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
+
+`run_started` carries the run's **execution provenance**: `engine_version` /
+`engine_commit` (the build executing the workflow), `workflow_hash` (the
+source revision), and `launched_by_version` — present **only when the build
+that compiled the IR differs from the one running it**, which in cloud is two
+deployments that move independently. The same pair is on the run document as
+`iterion_version` (the launcher) and `runner_version` (the executor); a runner
+that finds them different logs a WARN and keeps going, because skew is normal
+for the length of every rolling deploy.
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `delegate_stall`, `model_fallback`, `model_drift`, `model_served_via_facade` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |

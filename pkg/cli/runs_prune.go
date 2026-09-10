@@ -21,6 +21,10 @@ type PruneOptions struct {
 	Statuses  []string
 	DryRun    bool
 	Now       func() time.Time // test seam; nil = time.Now
+	// beforeDelete is a test seam invoked with each run id right before
+	// its delete — the window between the scan and the delete, where a
+	// run's status can change under the sweep. Nil in production.
+	beforeDelete func(runID string)
 }
 
 // pruneAllowedStatuses is the closed set of statuses eligible for
@@ -64,6 +68,12 @@ type PruneResult struct {
 	// (partial delete, crash before the first write). They are never
 	// deleted — the operator inspects or removes them by hand.
 	Unreadable []string `json:"unreadable,omitempty"`
+	// Refused lists runs the scan selected but the delete declined: their
+	// status had left the terminal set by the time the delete re-read them
+	// (a failed_resumable run resumed in the window). A tombstone on a
+	// live run reads as proof of absence to every board launch authority,
+	// so the delete never trusts the scan's snapshot.
+	Refused []string `json:"refused,omitempty"`
 	// TombstonesReaped counts the deletion markers older than the
 	// retention horizon that this sweep removed for good.
 	TombstonesReaped int `json:"tombstones_reaped,omitempty"`
@@ -185,6 +195,7 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 	})
 
 	pruned := make([]PrunedRun, 0, len(candidates))
+	var refused []string
 	nowT := now()
 	for _, c := range candidates {
 		age := nowT.Sub(c.ts)
@@ -201,6 +212,23 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 			Timestamp:    c.ts,
 		}
 		if !opts.DryRun {
+			if opts.beforeDelete != nil {
+				opts.beforeDelete(c.run.ID)
+			}
+			// The scan is a snapshot; the delete crosses the same lifecycle
+			// guard as every other delete authority (store.RunDeletable)
+			// on a FRESH read. A failed_resumable run resumed in the window
+			// is running now, and its tombstone would be read as proof of
+			// absence by the board launch authorities.
+			cur, err := s.LoadRun(ctx, c.run.ID)
+			if err != nil {
+				return fmt.Errorf("re-read run %s before delete: %w", c.run.ID, err)
+			}
+			if err := store.RunDeletable(cur); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: not pruning run %s: %v\n", c.run.ID, err)
+				refused = append(refused, c.run.ID)
+				continue
+			}
 			if err := s.DeleteRun(ctx, c.run.ID); err != nil {
 				return fmt.Errorf("delete run %s: %w", c.run.ID, err)
 			}
@@ -251,6 +279,7 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 		PrunedCount:             len(pruned),
 		SkippedCount:            scanned - len(pruned),
 		Unreadable:              unreadable,
+		Refused:                 refused,
 		TombstonesReaped:        tombstonesReaped,
 		WorkspaceObjectsPruned:  wsObjects,
 		WorkspaceBytesReclaimed: wsBytes,

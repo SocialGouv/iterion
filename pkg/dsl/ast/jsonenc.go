@@ -131,6 +131,7 @@ type jsonFile struct {
 	Emits        []*jsonEmitDecl         `json:"emits,omitempty"`
 	Waits        []*jsonWaitDecl         `json:"waits,omitempty"`
 	AwaitAnswers []*jsonAwaitAnswersDecl `json:"await_answers,omitempty"`
+	Fails        []*jsonFailDecl         `json:"fails,omitempty"`
 	Workflows    []*jsonWorkflowDecl     `json:"workflows,omitempty"`
 	Comments     []*jsonComment          `json:"comments,omitempty"`
 }
@@ -650,31 +651,40 @@ type jsonAwaitAnswersDecl struct {
 	Timeout     string `json:"timeout,omitempty"`
 }
 
+type jsonFailDecl struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Code        string `json:"code,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Resumable   bool   `json:"resumable,omitempty"`
+}
+
 type jsonWorkflowDecl struct {
-	Name            string                `json:"name,omitempty"`
-	Vars            *jsonVarsBlock        `json:"vars,omitempty"`
-	Attachments     *jsonAttachmentsBlock `json:"attachments,omitempty"`
-	Entry           string                `json:"entry,omitempty"`
-	DefaultBackend  string                `json:"default_backend,omitempty"`
-	ToolPolicy      []string              `json:"tool_policy,omitempty"`
-	Capabilities    []string              `json:"capabilities,omitempty"`
-	Skills          []string              `json:"skills,omitempty"`
-	MCP             *jsonMCPConfigDecl    `json:"mcp,omitempty"`
-	Budget          *jsonBudgetBlock      `json:"budget,omitempty"`
-	Resources       map[string]int        `json:"resources,omitempty"`
-	Compaction      *jsonCompactionBlock  `json:"compaction,omitempty"`
-	Interaction     string                `json:"interaction,omitempty"`
-	Worktree        string                `json:"worktree,omitempty"`
-	Compress        string                `json:"compress,omitempty"`
-	AutoMemory      string                `json:"auto_memory,omitempty"`
-	LoopBudgetGuard string                `json:"loop_budget_guard,omitempty"`
-	RepoDevbox      string                `json:"repo_devbox,omitempty"`
-	Permission      string                `json:"permission,omitempty"`
-	Allow           []string              `json:"allow,omitempty"`
-	Ask             []string              `json:"ask,omitempty"`
-	Deny            []string              `json:"deny,omitempty"`
-	Sandbox         *jsonSandboxBlock     `json:"sandbox,omitempty"`
-	Edges           []*jsonEdge           `json:"edges,omitempty"`
+	Name                string                `json:"name,omitempty"`
+	Vars                *jsonVarsBlock        `json:"vars,omitempty"`
+	Attachments         *jsonAttachmentsBlock `json:"attachments,omitempty"`
+	Entry               string                `json:"entry,omitempty"`
+	DefaultBackend      string                `json:"default_backend,omitempty"`
+	ToolPolicy          []string              `json:"tool_policy,omitempty"`
+	Capabilities        []string              `json:"capabilities,omitempty"`
+	Skills              []string              `json:"skills,omitempty"`
+	MCP                 *jsonMCPConfigDecl    `json:"mcp,omitempty"`
+	Budget              *jsonBudgetBlock      `json:"budget,omitempty"`
+	Resources           map[string]int        `json:"resources,omitempty"`
+	Compaction          *jsonCompactionBlock  `json:"compaction,omitempty"`
+	Interaction         string                `json:"interaction,omitempty"`
+	Worktree            string                `json:"worktree,omitempty"`
+	Compress            string                `json:"compress,omitempty"`
+	AutoMemory          string                `json:"auto_memory,omitempty"`
+	LoopBudgetGuard     string                `json:"loop_budget_guard,omitempty"`
+	RepoDevbox          string                `json:"repo_devbox,omitempty"`
+	WorkspaceCheckpoint string                `json:"workspace_checkpoint,omitempty"`
+	Permission          string                `json:"permission,omitempty"`
+	Allow               []string              `json:"allow,omitempty"`
+	Ask                 []string              `json:"ask,omitempty"`
+	Deny                []string              `json:"deny,omitempty"`
+	Sandbox             *jsonSandboxBlock     `json:"sandbox,omitempty"`
+	Edges               []*jsonEdge           `json:"edges,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -869,6 +879,15 @@ func toJSON(f *File) *jsonFile {
 			Description: aa.Description,
 			From:        aa.From,
 			Timeout:     aa.Timeout,
+		})
+	}
+	for _, fd := range f.Fails {
+		jf.Fails = append(jf.Fails, &jsonFailDecl{
+			Name:        fd.Name,
+			Description: fd.Description,
+			Code:        fd.Code,
+			Message:     fd.Message,
+			Resumable:   fd.Resumable,
 		})
 	}
 	for _, w := range f.Workflows {
@@ -1274,24 +1293,25 @@ func humanToJSON(h *HumanDecl) *jsonHumanDecl {
 
 func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	jw := &jsonWorkflowDecl{
-		Name:            w.Name,
-		Entry:           w.Entry,
-		DefaultBackend:  w.DefaultBackend,
-		ToolPolicy:      w.ToolPolicy,
-		Capabilities:    w.Capabilities,
-		Skills:          w.Skills,
-		MCP:             mcpConfigToJSON(w.MCP),
-		Compaction:      compactionToJSON(w.Compaction),
-		Worktree:        w.Worktree,
-		Compress:        w.Compress,
-		AutoMemory:      w.AutoMemory,
-		LoopBudgetGuard: w.LoopBudgetGuard,
-		RepoDevbox:      w.RepoDevbox,
-		Permission:      w.Permission,
-		Allow:           w.Allow,
-		Ask:             w.Ask,
-		Deny:            w.Deny,
-		Sandbox:         sandboxBlockToJSON(w.Sandbox),
+		Name:                w.Name,
+		Entry:               w.Entry,
+		DefaultBackend:      w.DefaultBackend,
+		ToolPolicy:          w.ToolPolicy,
+		Capabilities:        w.Capabilities,
+		Skills:              w.Skills,
+		MCP:                 mcpConfigToJSON(w.MCP),
+		Compaction:          compactionToJSON(w.Compaction),
+		Worktree:            w.Worktree,
+		Compress:            w.Compress,
+		AutoMemory:          w.AutoMemory,
+		LoopBudgetGuard:     w.LoopBudgetGuard,
+		RepoDevbox:          w.RepoDevbox,
+		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
+		Permission:          w.Permission,
+		Allow:               w.Allow,
+		Ask:                 w.Ask,
+		Deny:                w.Deny,
+		Sandbox:             sandboxBlockToJSON(w.Sandbox),
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
@@ -1566,6 +1586,16 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Description: ja.Description,
 			From:        ja.From,
 			Timeout:     ja.Timeout,
+		})
+	}
+
+	for _, jfd := range jf.Fails {
+		f.Fails = append(f.Fails, &FailDecl{
+			Name:        jfd.Name,
+			Description: jfd.Description,
+			Code:        jfd.Code,
+			Message:     jfd.Message,
+			Resumable:   jfd.Resumable,
 		})
 	}
 
@@ -1868,24 +1898,25 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 	w := &WorkflowDecl{
-		Name:            jw.Name,
-		Entry:           jw.Entry,
-		DefaultBackend:  jw.DefaultBackend,
-		ToolPolicy:      jw.ToolPolicy,
-		Capabilities:    jw.Capabilities,
-		Skills:          jw.Skills,
-		MCP:             mcpConfigFromJSON(jw.MCP),
-		Compaction:      compactionFromJSON(jw.Compaction),
-		Worktree:        jw.Worktree,
-		Compress:        jw.Compress,
-		AutoMemory:      jw.AutoMemory,
-		LoopBudgetGuard: jw.LoopBudgetGuard,
-		RepoDevbox:      jw.RepoDevbox,
-		Permission:      jw.Permission,
-		Allow:           jw.Allow,
-		Ask:             jw.Ask,
-		Deny:            jw.Deny,
-		Sandbox:         sandboxBlockFromJSON(jw.Sandbox),
+		Name:                jw.Name,
+		Entry:               jw.Entry,
+		DefaultBackend:      jw.DefaultBackend,
+		ToolPolicy:          jw.ToolPolicy,
+		Capabilities:        jw.Capabilities,
+		Skills:              jw.Skills,
+		MCP:                 mcpConfigFromJSON(jw.MCP),
+		Compaction:          compactionFromJSON(jw.Compaction),
+		Worktree:            jw.Worktree,
+		Compress:            jw.Compress,
+		AutoMemory:          jw.AutoMemory,
+		LoopBudgetGuard:     jw.LoopBudgetGuard,
+		RepoDevbox:          jw.RepoDevbox,
+		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,
+		Permission:          jw.Permission,
+		Allow:               jw.Allow,
+		Ask:                 jw.Ask,
+		Deny:                jw.Deny,
+		Sandbox:             sandboxBlockFromJSON(jw.Sandbox),
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)

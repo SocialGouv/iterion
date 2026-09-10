@@ -71,7 +71,8 @@ Call `create_issue` once per proposal with:
   `feature-dev` plus its `feature_prompt`). When no bot clearly fits, omit
   both and add `needs-manual-triage`.
 
-`set_bot` / `set_labels` remain available for correcting a ticket after
+`set_bot` / `add_labels` / `remove_labels` (or the absolute `set_labels`
+for a full rewrite) remain available for correcting a ticket after
 creation, but the create call accepts those typed fields directly.
 
 ### The body IS the dispatch prompt

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -15,7 +17,7 @@ import (
 func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult) (string, error) {
 	convNode, ok := e.workflow.Nodes[convergenceNodeID]
 	if !ok {
-		return "", fmt.Errorf("convergence node %q not found", convergenceNodeID)
+		return "", &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: convergenceNodeID, Message: fmt.Sprintf("convergence node %q not found", convergenceNodeID)}
 	}
 
 	// Determine await strategy: use node's explicit setting, default to wait_all.
@@ -26,12 +28,28 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 
 	// Collect failed branches metadata.
 	var failedBranches []map[string]any
+	// budgetFailures/otherFailures classify why the branches died. A budget
+	// refusal cancels its siblings (cancelOnFirstFailure), so a fan-out killed
+	// by a spent budget yields one budget error plus N cancellations — the
+	// cancellations carry no verdict of their own and must not mask it.
+	budgetFailures, otherFailures := 0, 0
+	var firstBudgetErr error
 	for _, r := range results {
 		if r.err != nil {
 			failedBranches = append(failedBranches, map[string]any{
 				"branch_id": r.branchID,
 				"error":     r.err.Error(),
 			})
+			switch {
+			case errors.Is(r.err, ErrBudgetExceeded):
+				budgetFailures++
+				if firstBudgetErr == nil {
+					firstBudgetErr = r.err
+				}
+			case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, ErrRunCancelled):
+			default:
+				otherFailures++
+			}
 		}
 	}
 
@@ -39,8 +57,36 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	switch strategy {
 	case ir.AwaitWaitAll:
 		if len(failedBranches) > 0 {
-			return "", fmt.Errorf("convergence at %s (wait_all): %d branch(es) failed: %v",
+			if budgetFailures > 0 && otherFailures == 0 {
+				// A branch never gets the exit grace (withinBudgetGrace), so a
+				// fan-out reached on a spent budget refuses every branch and
+				// wait_all kills the run here. That death has to keep carrying
+				// the sentinel: the cloud runner's terminal-ack carve-out
+				// matches errors.Is(err, ErrBudgetExceeded), and a naked error
+				// goes back to JetStream as retryable — a resume/refail loop
+				// re-provisioning a sandbox to re-hit the same spent budget.
+				// It is also what tells the operator to raise the cap and
+				// resume rather than hunt a branch bug.
+				return "", &RuntimeError{
+					Code:    ErrCodeBudgetExceeded,
+					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
+					NodeID:  convergenceNodeID,
+					Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
+					Cause:   ErrBudgetExceeded,
+				}
+			}
+			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
 				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
+			// When every failed branch carries the SAME typed code, the
+			// aggregate keeps it — a fan-out hitting one deterministic
+			// wall (a ghost node after a source edit) must not launder
+			// NODE_NOT_FOUND into the EXECUTION_FAILED catch-all — the
+			// in-process auto-resume gate retries the latter and
+			// refuses the former.
+			if code := commonBranchFailureCode(results); code != "" {
+				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg}
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
 	case ir.AwaitBestEffort:
 		// Proceed even with failures — failed branch metadata is exposed.
@@ -63,6 +109,17 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					convergenceNodeID, name)
 			}
 			rs.artifacts[name] = output
+			if owner := r.artifactOwners[name]; owner != "" {
+				rs.artifactOwners[name] = owner
+			} else {
+				delete(rs.artifactOwners, name)
+			}
+			if revision, ok := r.artifactRevisions[name]; ok {
+				rs.artifactRevisions[name] = revision
+				rs.artifactOwners[name] = revision.NodeID
+			} else {
+				delete(rs.artifactRevisions, name)
+			}
 		}
 		for nodeID, version := range r.artifactVersions {
 			// Max-merge (not last-write-wins): every branch copies the full
@@ -103,17 +160,29 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	return convergenceNodeID, nil
 }
 
-// processConvergenceTerminal handles the best_effort all-done topology
-// (every branch ran to its own *ir.DoneNode and no branch failed).
+// processConvergenceTerminal handles an all-done topology (every branch ran
+// to its own *ir.DoneNode and no branch failed), including an implicit
+// wait_all fan whose bounded local cycle leaves no structural collector.
 // Merges branch outputs/artifacts into the run state and hands back one
 // of the terminal node IDs so the engine's main loop emits run_finished.
-func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult) (string, error) {
+func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult, strategy ir.AwaitMode) (string, error) {
 	for _, r := range results {
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output
 		}
 		for name, output := range r.artifacts {
 			rs.artifacts[name] = output
+			if owner := r.artifactOwners[name]; owner != "" {
+				rs.artifactOwners[name] = owner
+			} else {
+				delete(rs.artifactOwners, name)
+			}
+			if revision, ok := r.artifactRevisions[name]; ok {
+				rs.artifactRevisions[name] = revision
+				rs.artifactOwners[name] = revision.NodeID
+			} else {
+				delete(rs.artifactRevisions, name)
+			}
 		}
 		for nodeID, version := range r.artifactVersions {
 			// Max-merge (not last-write-wins): every branch copies the full
@@ -131,7 +200,7 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	// node as run_finished, so picking one is unambiguous.
 	terminal := results[0].terminalNodeID
 	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]any{
-		"strategy":       ir.AwaitBestEffort.String(),
+		"strategy":       strategy.String(),
 		"terminal_join":  true,
 		"branches_total": len(results),
 	}); err != nil {
@@ -140,63 +209,16 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	return terminal, nil
 }
 
-// findConvergencePoint walks outgoing edges from the router's targets to
-// find a downstream convergence point (a node with AwaitMode != AwaitNone,
-// or a node that receives edges from multiple distinct sources).
-// Terminal nodes (done/fail) can be convergence points when multiple
-// branches target them directly.
-// This is also called pre-emptively before branches start so that each
-// branch knows where to stop.
+// findConvergencePoint elects the downstream node where the router's branches
+// reconverge — a node declaring `await:`, or one reached by several distinct
+// predecessors INSIDE the fan-out (a predecessor outside it, such as a
+// condition router that also reaches a fan-out target directly, is not a
+// reconvergence). Terminal nodes (done/fail) can be convergence points when
+// multiple branches target them directly. Computed before branches start so
+// that each branch knows where to stop; the election is shared with the
+// compiler (ir.ExecBranchConvergencePoint) so C243/C244 see the same node.
 func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) string {
-	// Build in-degree map: count distinct sources per target.
-	inSources := make(map[string]map[string]bool)
-	for _, edge := range e.workflow.Edges {
-		if _, ok := inSources[edge.To]; !ok {
-			inSources[edge.To] = make(map[string]bool)
-		}
-		inSources[edge.To][edge.From] = true
-	}
-
-	// BFS from each fan-out target to find a convergence point.
-	// maxVisits guards against a malformed graph where a cycle slipped
-	// past compile-time validation (C012/C013): without it the queue
-	// could grow without bound. Cap at the workflow's node count —
-	// any honest BFS visits each node at most once.
-	maxVisits := len(e.workflow.Nodes) + 1
-	for _, startEdge := range fanEdges {
-		visited := map[string]bool{}
-		queue := []string{startEdge.To}
-		for len(queue) > 0 {
-			if len(visited) > maxVisits {
-				if e.logger != nil {
-					e.logger.Warn("findConvergencePoint: BFS exceeded %d visits — likely an undetected graph cycle, aborting search", maxVisits)
-				}
-				break
-			}
-			nodeID := queue[0]
-			queue = queue[1:]
-			if visited[nodeID] {
-				continue
-			}
-			visited[nodeID] = true
-
-			node, ok := e.workflow.Nodes[nodeID]
-			if !ok {
-				continue
-			}
-			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
-			if nodeAwaitMode(node) != ir.AwaitNone || len(inSources[nodeID]) > 1 {
-				return nodeID
-			}
-			// Follow outgoing edges.
-			for _, edge := range e.workflow.Edges {
-				if edge.From == nodeID {
-					queue = append(queue, edge.To)
-				}
-			}
-		}
-	}
-	return ""
+	return ir.ExecBranchConvergencePoint(e.workflow, routerNodeID, fanEdges)
 }
 
 // ---------------------------------------------------------------------------
@@ -256,4 +278,26 @@ func deepCopyValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// commonBranchFailureCode returns the typed failure code shared by
+// EVERY failed branch result, or "" when they disagree (or none is
+// typed) — partial agreement stays the catch-all, never a guess.
+func commonBranchFailureCode(results []*branchResult) ErrorCode {
+	var code ErrorCode
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var rtErr *RuntimeError
+		if !errors.As(r.err, &rtErr) || rtErr.Code == "" {
+			return ""
+		}
+		if code == "" {
+			code = rtErr.Code
+		} else if code != rtErr.Code {
+			return ""
+		}
+	}
+	return code
 }

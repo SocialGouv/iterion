@@ -27,7 +27,7 @@ func TestSupersede(t *testing.T) {
 		  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
 		  "pull_request": {"number": 7, "title": "T", "body": "b",
 		    "html_url": "https://github.com/acme/widgets/pull/7", "state": "open",
-		    "head": {"ref": "feature/x", "sha": "` + sha + `"}, "base": {"ref": "main"}},
+		    "head": {"ref": "feature/x", "sha": "` + sha + `", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 		  "sender": {"login": "alice"}
 		}`
 	}
@@ -36,7 +36,7 @@ func TestSupersede(t *testing.T) {
 	  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
 	  "pull_request": {"number": 9, "title": "T", "body": "b",
 	    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
-	    "head": {"ref": "feature/y", "sha": "yyy111"}, "base": {"ref": "main"}},
+	    "head": {"ref": "feature/y", "sha": "yyy111", "repo": {"full_name": "acme/widgets"}}, "base": {"ref": "main"}},
 	  "sender": {"login": "alice"}
 	}`
 

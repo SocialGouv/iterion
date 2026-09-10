@@ -9,7 +9,8 @@ import (
 func StructuredOutputTool() api.Tool {
 	return api.Tool{
 		Name: "structured_output",
-		Description: "Return structured data as the final output. " +
+		Description: "Return structured data as the final output. Calling this tool ENDS the session. " +
+			"Call it ONLY after the mission is fully complete; NEVER use it to describe planned or remaining work. " +
 			"Pass your structured object under the \"payload\" key " +
 			"(e.g. {\"payload\": {\"key\": \"value\"}}); the input is " +
 			"echoed back as-is.",

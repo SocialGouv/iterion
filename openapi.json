@@ -1,6 +1,64 @@
 {
   "components": {
     "schemas": {
+      "AdmissionDecision": {
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "context_version": {
+            "type": "integer"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "checked_at"
+        ],
+        "type": "object"
+      },
+      "ArtifactRevisionRef": {
+        "properties": {
+          "contract_logical_ref": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "unverified": {
+            "type": "boolean"
+          },
+          "value_from_revision": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "version"
+        ],
+        "type": "object"
+      },
       "AuthMeResponse": {
         "properties": {
           "access_token": {
@@ -137,6 +195,252 @@
         ],
         "type": "object"
       },
+      "BoardBinding": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
+          "label_fields": {
+            "items": {
+              "$ref": "#/components/schemas/BoundLabelField"
+            },
+            "type": "array"
+          },
+          "last_synced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "missing_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_title": {
+            "type": "string"
+          },
+          "project_url": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status_field_id": {
+            "type": "string"
+          },
+          "status_mapping": {
+            "items": {
+              "$ref": "#/components/schemas/StatusMapping"
+            },
+            "type": "array"
+          },
+          "status_options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sync_conflict_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sync_conflict_reason": {
+            "type": "string"
+          },
+          "sync_every": {
+            "type": "integer"
+          },
+          "sync_every_seconds": {
+            "type": "integer"
+          },
+          "sync_lease_owner": {
+            "type": "string"
+          },
+          "sync_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "unresolved_at_bind": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "provider",
+          "owner",
+          "owner_kind",
+          "number",
+          "connection_id",
+          "project_id",
+          "sync_every",
+          "sync_every_seconds",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "BoundLabelField": {
+        "properties": {
+          "field_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field_id",
+          "name",
+          "prefix"
+        ],
+        "type": "object"
+      },
+      "BranchCheckpoint": {
+        "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
+          "artifact_versions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "type": "number"
+          },
+          "current_node_id": {
+            "type": "string"
+          },
+          "join_node_id": {
+            "type": "string"
+          },
+          "loop_budget_marks": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "loop_counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "loop_current_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "loop_previous_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "resume_answered": {
+            "type": "boolean"
+          },
+          "resume_answers": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "start_node_id": {
+            "type": "string"
+          },
+          "terminal_node_id": {
+            "type": "string"
+          },
+          "terminated_at_done": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "start_node_id"
+        ],
+        "type": "object"
+      },
       "Catalog": {
         "properties": {
           "backends": {
@@ -180,11 +484,36 @@
       },
       "Checkpoint": {
         "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
+          "artifact_revisions_known": {
+            "type": "boolean"
+          },
           "artifact_versions": {
             "additionalProperties": {
               "type": "integer"
             },
             "type": "object"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "artifacts_known": {
+            "type": "boolean"
           },
           "backend_conversation": {
             "format": "byte",
@@ -194,6 +523,9 @@
             "type": "string"
           },
           "backend_pending_tool_use_id": {
+            "type": "string"
+          },
+          "backend_session_fingerprint": {
             "type": "string"
           },
           "backend_session_id": {
@@ -223,6 +555,13 @@
           "cost_usd_total": {
             "type": "number"
           },
+          "fired_events": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
           "interaction_id": {
             "type": "string"
           },
@@ -238,6 +577,9 @@
               "type": "object"
             },
             "type": "object"
+          },
+          "loop_budget_marks_v": {
+            "type": "integer"
           },
           "loop_counters": {
             "additionalProperties": {
@@ -283,6 +625,15 @@
               "type": "object"
             },
             "type": "object"
+          },
+          "parallel": {
+            "$ref": "#/components/schemas/ParallelCheckpoint"
+          },
+          "recovery_code": {
+            "type": "string"
+          },
+          "recovery_pause": {
+            "type": "boolean"
           },
           "round_robin_counters": {
             "additionalProperties": {
@@ -346,10 +697,20 @@
           "account_id": {
             "type": "string"
           },
+          "account_kind": {
+            "type": "string"
+          },
           "account_login": {
             "type": "string"
           },
           "app_slug": {
+            "type": "string"
+          },
+          "avatar_applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "avatar_error": {
             "type": "string"
           },
           "created_at": {
@@ -420,6 +781,9 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
           }
         },
         "required": [
@@ -431,6 +795,30 @@
           "created_by",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "ContextRef": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
         ],
         "type": "object"
       },
@@ -574,6 +962,79 @@
         ],
         "type": "object"
       },
+      "DiagnosticEvidence": {
+        "properties": {
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "type"
+        ],
+        "type": "object"
+      },
+      "DiagnosticProjection": {
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticEvidence"
+            },
+            "type": "array"
+          },
+          "failure_code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "next_action": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "recoverable": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "run_id",
+          "status",
+          "outcome",
+          "recoverable",
+          "next_action"
+        ],
+        "type": "object"
+      },
       "Entry": {
         "properties": {
           "backends": {
@@ -657,6 +1118,45 @@
         ],
         "type": "object"
       },
+      "ExecutionContext": {
+        "properties": {
+          "business_stores": {
+            "items": {
+              "$ref": "#/components/schemas/ContextRef"
+            },
+            "type": "array"
+          },
+          "launch_surface": {
+            "type": "string"
+          },
+          "lineage": {
+            "$ref": "#/components/schemas/LineageContext"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "run_store": {
+            "$ref": "#/components/schemas/ContextRef"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowContext"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceContext"
+          }
+        },
+        "required": [
+          "version",
+          "run_store",
+          "workspace",
+          "workflow",
+          "lineage"
+        ],
+        "type": "object"
+      },
       "ExecutionState": {
         "properties": {
           "branch_id": {
@@ -713,6 +1213,38 @@
         ],
         "type": "object"
       },
+      "ExternalProject": {
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "reopened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sync_conflict": {
+            "$ref": "#/components/schemas/ProjectSyncConflict"
+          }
+        },
+        "type": "object"
+      },
       "ExternalRef": {
         "properties": {
           "author": {
@@ -723,6 +1255,9 @@
           },
           "number": {
             "type": "integer"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ExternalProject"
           },
           "provider": {
             "type": "string"
@@ -798,6 +1333,9 @@
           "installable": {
             "type": "boolean"
           },
+          "logo_upload_url": {
+            "type": "string"
+          },
           "owner_login": {
             "type": "string"
           },
@@ -847,6 +1385,12 @@
           },
           "attempts": {
             "type": "integer"
+          },
+          "launch": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
           },
           "run_id": {
             "type": "string"
@@ -937,6 +1481,17 @@
           "claim": {
             "type": "string"
           },
+          "claim_epoch": {
+            "type": "integer"
+          },
+          "claim_lease_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "comments": {
             "items": {
               "$ref": "#/components/schemas/Comment"
@@ -972,6 +1527,9 @@
           "last_workdir": {
             "type": "string"
           },
+          "launch_refusal": {
+            "$ref": "#/components/schemas/LaunchRefusal"
+          },
           "parent_id": {
             "type": "string"
           },
@@ -985,6 +1543,13 @@
             "type": "array"
           },
           "state": {
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state_reason": {
             "type": "string"
           },
           "title": {
@@ -1002,6 +1567,43 @@
           "created_at",
           "updated_at"
         ],
+        "type": "object"
+      },
+      "LaunchRefusal": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_reason": {
+            "type": "string"
+          },
+          "not_before": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "last_at"
+        ],
+        "type": "object"
+      },
+      "LineageContext": {
+        "properties": {
+          "parent_node_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "root_run_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "MembershipView": {
@@ -1039,6 +1641,9 @@
             "type": "integer"
           },
           "declared_model": {
+            "type": "string"
+          },
+          "fingerprint": {
             "type": "string"
           },
           "max_output_tokens": {
@@ -1106,6 +1711,103 @@
           "org_slug",
           "org_role",
           "teams"
+        ],
+        "type": "object"
+      },
+      "OutputCorrectionEpisode": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "budget": {
+            "type": "integer"
+          },
+          "episode_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string"
+          },
+          "invocation_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_output_fingerprint": {
+            "type": "string"
+          },
+          "last_violation_fingerprint": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "retired_reason": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ParallelCheckpoint": {
+        "properties": {
+          "artifact_allocations": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "branches": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BranchCheckpoint"
+            },
+            "type": "object"
+          },
+          "invocation_key": {
+            "type": "string"
+          },
+          "next_artifact_version": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "pending_branch_id": {
+            "type": "string"
+          },
+          "pending_interaction_id": {
+            "type": "string"
+          },
+          "pending_interaction_questions": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "pending_node_id": {
+            "type": "string"
+          },
+          "router_node_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "router_node_id",
+          "invocation_key",
+          "branches"
         ],
         "type": "object"
       },
@@ -1470,6 +2172,34 @@
         ],
         "type": "object"
       },
+      "ProjectSyncConflict": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
       "ProviderStatus": {
         "properties": {
           "available": {
@@ -1558,6 +2288,45 @@
         ],
         "type": "object"
       },
+      "RoutingPolicy": {
+        "properties": {
+          "allowed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "block_when": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "max_relaunches": {
+            "type": "integer"
+          },
+          "merge_into": {
+            "type": "string"
+          },
+          "merge_strategy": {
+            "type": "string"
+          },
+          "success_when": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "success_when"
+        ],
+        "type": "object"
+      },
       "RunBudget": {
         "properties": {
           "max_cost_usd": {
@@ -1586,6 +2355,9 @@
           "active_duration_ms": {
             "type": "integer"
           },
+          "admission": {
+            "$ref": "#/components/schemas/AdmissionDecision"
+          },
           "auto_merge": {
             "type": "boolean"
           },
@@ -1594,6 +2366,12 @@
               "$ref": "#/components/schemas/BackendUsage"
             },
             "type": "array"
+          },
+          "bot_source_tenant": {
+            "type": "string"
+          },
+          "bot_source_tier": {
+            "type": "string"
           },
           "budget": {
             "$ref": "#/components/schemas/RunBudget"
@@ -1607,9 +2385,18 @@
           "checkpoint": {
             "$ref": "#/components/schemas/Checkpoint"
           },
+          "continuation_state": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "cred_fingerprints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "current_run_start": {
             "format": "date-time",
@@ -1618,7 +2405,16 @@
           "deployment": {
             "$ref": "#/components/schemas/DeploymentReport"
           },
+          "end_reason": {
+            "type": "string"
+          },
           "error": {
+            "type": "string"
+          },
+          "execution_context": {
+            "$ref": "#/components/schemas/ExecutionContext"
+          },
+          "failure_code": {
             "type": "string"
           },
           "fallbacks_used": {
@@ -1649,6 +2445,10 @@
           "inputs": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "llm_idle_since": {
+            "format": "date-time",
+            "type": "string"
           },
           "loc_added": {
             "type": "integer"
@@ -1689,6 +2489,21 @@
             },
             "type": "object"
           },
+          "outcome_seq": {
+            "type": "integer"
+          },
+          "output_correction_history": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "array"
+          },
+          "output_corrections": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "object"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -1704,6 +2519,9 @@
           "queue_position": {
             "type": "integer"
           },
+          "routing_policy": {
+            "$ref": "#/components/schemas/RoutingPolicy"
+          },
           "shard_count": {
             "type": "integer"
           },
@@ -1711,6 +2529,10 @@
             "type": "integer"
           },
           "shard_label": {
+            "type": "string"
+          },
+          "skipped_cred_reopens_at": {
+            "format": "date-time",
             "type": "string"
           },
           "source": {
@@ -1729,6 +2551,12 @@
             },
             "type": "array"
           },
+          "watcher_cursors": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WatcherCursor"
+            },
+            "type": "object"
+          },
           "work_dir": {
             "type": "string"
           },
@@ -1737,6 +2565,9 @@
           },
           "workflow_name": {
             "type": "string"
+          },
+          "workspace_checkpoint": {
+            "$ref": "#/components/schemas/WorkspaceCheckpoint"
           },
           "worktree": {
             "type": "boolean"
@@ -1814,6 +2645,9 @@
       },
       "RunSnapshot": {
         "properties": {
+          "diagnostic": {
+            "$ref": "#/components/schemas/DiagnosticProjection"
+          },
           "executions": {
             "items": {
               "$ref": "#/components/schemas/ExecutionState"
@@ -1875,7 +2709,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "end_reason": {
+            "type": "string"
+          },
           "error": {
+            "type": "string"
+          },
+          "failure_code": {
             "type": "string"
           },
           "file_path": {
@@ -1970,6 +2810,21 @@
         ],
         "type": "object"
       },
+      "StatusMapping": {
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "state"
+        ],
+        "type": "object"
+      },
       "Token": {
         "properties": {
           "created_at": {
@@ -2043,6 +2898,57 @@
           "status",
           "is_super_admin"
         ],
+        "type": "object"
+      },
+      "WatcherCursor": {
+        "properties": {
+          "consecutive_no_progress": {
+            "type": "integer"
+          },
+          "intervention_sequence": {
+            "type": "integer"
+          },
+          "last_action": {
+            "type": "string"
+          },
+          "last_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_fingerprint": {
+            "type": "string"
+          },
+          "last_trigger_fingerprint": {
+            "type": "string"
+          },
+          "next_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pending_intervention_id": {
+            "type": "string"
+          },
+          "pending_intervention_sequence": {
+            "type": "integer"
+          },
+          "pending_intervention_trigger": {
+            "type": "string"
+          },
+          "progress_sequence": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "watcher_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "WireEdge": {
@@ -2176,8 +3082,78 @@
         ],
         "type": "object"
       },
+      "WorkflowContext": {
+        "properties": {
+          "bundle_revision": {
+            "type": "string"
+          },
+          "workflow_revision": {
+            "type": "string"
+          },
+          "workflow_root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WorkspaceCheckpoint": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "event_seq": {
+            "type": "integer"
+          },
+          "fetch_command": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "commit",
+          "source",
+          "event_seq",
+          "recorded_at",
+          "fetch_command",
+          "warning"
+        ],
+        "type": "object"
+      },
+      "WorkspaceContext": {
+        "properties": {
+          "declared_mode": {
+            "type": "string"
+          },
+          "declared_root": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "apiKeyView": {
         "properties": {
+          "alive_runs": {
+            "type": "integer"
+          },
           "created_at": {
             "type": "string"
           },
@@ -2196,10 +3172,19 @@
           "last_used_at": {
             "type": "string"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
           "provider": {
+            "type": "string"
+          },
+          "refused_reason": {
+            "type": "string"
+          },
+          "refused_until": {
             "type": "string"
           },
           "scope_user_id": {
@@ -2215,6 +3200,37 @@
         ],
         "type": "object"
       },
+      "boardBindingReq": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string"
+          },
+          "status_map": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "sync_every_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "owner",
+          "number",
+          "connection_id"
+        ],
+        "type": "object"
+      },
       "botSourceForkReq": {
         "properties": {
           "from": {
@@ -2226,8 +3242,28 @@
         ],
         "type": "object"
       },
+      "botSourceListView": {
+        "properties": {
+          "bot_sources": {
+            "items": {
+              "$ref": "#/components/schemas/botSourceMetaView"
+            },
+            "type": "array"
+          },
+          "shadow_check_unavailable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bot_sources"
+        ],
+        "type": "object"
+      },
       "botSourceMetaView": {
         "properties": {
+          "bundle_version": {
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -2249,6 +3285,12 @@
           },
           "origin": {
             "type": "string"
+          },
+          "shadowed_version": {
+            "type": "string"
+          },
+          "shadows_newer_version": {
+            "type": "boolean"
           },
           "slug": {
             "type": "string"
@@ -2355,6 +3397,9 @@
           "is_default": {
             "type": "boolean"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -2404,6 +3449,28 @@
         "required": [
           "name"
         ],
+        "type": "object"
+      },
+      "forgeAvatarReq": {
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "variant": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "forgeAvatarResp": {
+        "properties": {
+          "avatar_url": {
+            "type": "string"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/Connection"
+          }
+        },
         "type": "object"
       },
       "forgeConnectReq": {
@@ -2484,6 +3551,12 @@
           },
           "manage_install_url": {
             "type": "string"
+          },
+          "missing_ci_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "missing_permissions": {
             "items": {
@@ -2570,6 +3643,9 @@
             "type": "string"
           },
           "allow_app_delivery": {
+            "type": "boolean"
+          },
+          "allow_project_board": {
             "type": "boolean"
           },
           "allow_repo_creation": {
@@ -2812,6 +3888,17 @@
         },
         "required": [
           "ready"
+        ],
+        "type": "object"
+      },
+      "pipelineBoardResetRequest": {
+        "properties": {
+          "fresh": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "fresh"
         ],
         "type": "object"
       },
@@ -3203,6 +4290,9 @@
           "is_default": {
             "type": "boolean"
           },
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -3230,6 +4320,21 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "usageReadingsClearedView": {
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "deleted"
+        ],
         "type": "object"
       }
     }
@@ -3277,18 +4382,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "bot_sources": {
-                      "items": {
-                        "$ref": "#/components/schemas/botSourceMetaView"
-                      },
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "bot_sources"
-                  ],
-                  "type": "object"
+                  "$ref": "#/components/schemas/botSourceListView"
                 }
               }
             },
@@ -3458,6 +4552,20 @@
         ]
       }
     },
+    "/api/admin/credentials/usage": {
+      "get": {
+        "operationId": "getAdminCredentialsUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/credentials/usage",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/llm/api-keys": {
       "get": {
         "operationId": "getAdminLlmApiKeys",
@@ -3608,7 +4716,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchAdminLlmOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/admin/llm/oauth/{kind}",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/llm/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -4069,6 +5189,37 @@
           "admin"
         ]
       }
+    },
+    "/api/admin/usage-readings/{fingerprint}": {
+      "delete": {
+        "operationId": "deleteAdminUsageReadingsByFingerprint",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/usageReadingsClearedView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/admin/usage-readings/{fingerprint}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "fingerprint",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/admin/users": {
       "get": {
@@ -4581,6 +5732,20 @@
         ]
       }
     },
+    "/api/files/dependency": {
+      "post": {
+        "operationId": "postFilesDependency",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/files/dependency",
+        "tags": [
+          "files"
+        ]
+      }
+    },
     "/api/files/open": {
       "post": {
         "operationId": "postFilesOpen",
@@ -4865,7 +6030,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchMeOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/oauth/{kind}",
+        "tags": [
+          "me"
+        ]
+      }
     },
     "/api/me/oauth/{kind}/authorize/complete": {
       "parameters": [
@@ -5442,6 +6619,86 @@
         ]
       }
     },
+    "/api/orgs/{id}/api-keys": {
+      "get": {
+        "operationId": "getOrgsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/api-keys",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/api-keys",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/api-keys/{key_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/api-keys/{key_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
     "/api/orgs/{id}/audit": {
       "get": {
         "operationId": "getOrgsByIdAudit",
@@ -5465,6 +6722,42 @@
           }
         }
       ]
+    },
+    "/api/orgs/{id}/credential-audience": {
+      "get": {
+        "operationId": "getOrgsByIdCredentialAudience",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/credential-audience",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdCredentialAudience",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/credential-audience",
+        "tags": [
+          "orgs"
+        ]
+      }
     },
     "/api/orgs/{id}/invitations": {
       "get": {
@@ -5597,6 +6890,338 @@
           }
         },
         "summary": "PATCH /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "put": {
+        "operationId": "putOrgsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/connections": {
+      "get": {
+        "operationId": "getOrgsByIdOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/oauth/connections",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/oauth/{kind}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/oauth/{kind}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/authorize/complete",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/authorize/start",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/credentials",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/provision-approvals": {
+      "get": {
+        "operationId": "getOrgsByIdProvisionApprovals",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/provision-approvals",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/provision-approvals/{approval_id}/approve": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "approval_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdProvisionApprovalsByApprovalIdApprove",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/approve",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/provision-approvals/{approval_id}/reject": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "approval_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdProvisionApprovalsByApprovalIdReject",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/provision-approvals/{approval_id}/reject",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/settings": {
+      "get": {
+        "operationId": "getOrgsByIdSettings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/settings",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdSettings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/settings",
         "tags": [
           "orgs"
         ]
@@ -5845,6 +7470,38 @@
           }
         },
         "summary": "POST /api/orgs/{id}/teams",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/teams/{team_id}/caps": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "team_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdTeamsByTeamIdCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/teams/{team_id}/caps",
         "tags": [
           "orgs"
         ]
@@ -6644,6 +8301,37 @@
         }
       ]
     },
+    "/api/runs/{id}/diagnostic": {
+      "get": {
+        "operationId": "getRunsByIdDiagnostic",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticProjection"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/runs/{id}/diagnostic",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/events": {
       "get": {
         "operationId": "getRunsByIdEvents",
@@ -7420,6 +9108,30 @@
         ]
       }
     },
+    "/api/runs/{id}/route-decisions": {
+      "get": {
+        "operationId": "getRunsByIdRouteDecisions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/route-decisions",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/session-board": {
       "get": {
         "operationId": "getRunsByIdSessionBoard",
@@ -7691,6 +9403,54 @@
         ]
       }
     },
+    "/api/teams/{id}": {
+      "delete": {
+        "operationId": "deleteTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/api-keys": {
       "get": {
         "operationId": "getTeamsByIdApiKeys",
@@ -7795,12 +9555,91 @@
         }
       ]
     },
+    "/api/teams/{id}/board-binding": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBoardBinding",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBoardBinding",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardBinding"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBoardBinding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/boardBindingReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardBinding"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/board-binding",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/bot-sources": {
       "get": {
         "operationId": "getTeamsByIdBotSources",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceListView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/bot-sources",
@@ -8331,6 +10170,30 @@
         ]
       }
     },
+    "/api/teams/{id}/credentials/usage": {
+      "get": {
+        "operationId": "getTeamsByIdCredentialsUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/credentials/usage",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/teams/{id}/forge/connections": {
       "get": {
         "operationId": "getTeamsByIdForgeConnections",
@@ -8441,6 +10304,55 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}/avatar": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeConnectionsByConnIdAvatar",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeAvatarReq"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/forgeAvatarResp"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/connections/{conn_id}/avatar",
         "tags": [
           "teams"
         ]
@@ -9046,6 +10958,214 @@
         "tags": [
           "teams"
         ]
+      },
+      "put": {
+        "operationId": "putTeamsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/connections": {
+      "get": {
+        "operationId": "getTeamsByIdOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/oauth/connections",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/oauth/{kind}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/oauth/{kind}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/authorize/complete",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/authorize/start",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/credentials",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "teams"
+        ]
       }
     },
     "/api/teams/{id}/plugin-sources": {
@@ -9164,6 +11284,30 @@
         ]
       }
     },
+    "/api/teams/{id}/provision-approvals": {
+      "get": {
+        "operationId": "getTeamsByIdProvisionApprovals",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/provision-approvals",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/teams/{id}/secrets": {
       "get": {
         "operationId": "getTeamsByIdSecrets",
@@ -9239,6 +11383,30 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/secrets/{secret_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/status": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdStatus",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/status",
         "tags": [
           "teams"
         ]
@@ -10200,9 +12368,26 @@
       ],
       "post": {
         "operationId": "postV1PipelineBoardTasksByIdReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks/{id}/reset",

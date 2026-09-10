@@ -98,7 +98,7 @@ func newForgeTestServer(t *testing.T) *Server {
 	return s
 }
 
-func testForgeBotLookup(botID string) (*bundle.ForgeRequirements, error) {
+func testForgeBotLookup(_ context.Context, _, botID string) (*bundle.ForgeRequirements, error) {
 	if botID == "review-pr" {
 		return &bundle.ForgeRequirements{
 			Events:      []string{bundle.ForgeEventPullRequest, bundle.ForgeEventPullRequestComment},

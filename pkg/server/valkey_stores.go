@@ -197,6 +197,21 @@ func (s *valkeyForgePublishTokenStore) Revoke(token string) {
 	}
 }
 
+// expireIn shortens the key's TTL. ExpireLT, so a call can only bring the
+// expiry forward — never extend a grant that was already reaped or shortened.
+// Best-effort like Revoke: the original TTL is the backstop.
+func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
+	ctx, cancel := valkeyCtx()
+	defer cancel()
+	if err := s.rdb.ExpireLT(ctx, forgePublishTokenKeyPrefix+token, d).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("forge publish: shorten token %s… to %s: %v (best-effort — Redis TTL %s is the backstop)", prefix, d, err, forgePublishDefaultTTL)
+	}
+}
+
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()

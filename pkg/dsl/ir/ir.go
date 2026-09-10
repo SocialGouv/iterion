@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -51,12 +52,21 @@ type Workflow struct {
 	// RepoDevbox switches provisioning of the TARGET REPO's devbox.json —
 	// the toolchain that repo pins to build ITSELF: on|off ("" = unset →
 	// ITERION_REPO_DEVBOX → on). The BOT's own devbox.json is unaffected.
-	RepoDevbox      string
-	Permission      string       // permission gate mode: off|ask|deny ("" = unset → off)
-	PermissionAllow []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
-	PermissionAsk   []string     // ask rules
-	PermissionDeny  []string     // deny rules
-	Sandbox         *SandboxSpec // workflow-level sandbox spec (nil = inherit global / no sandbox)
+	RepoDevbox string
+	// WorkspaceCheckpoint switches the mid-run preservation of a copy-based
+	// sandbox's workspace — the periodic commit-and-push of the pod's tree
+	// to `iterion/run-<id>-checkpoint` on the run's OWN remote: on|off
+	// ("" = unset → ITERION_WORKSPACE_CHECKPOINT → on).
+	//
+	// Off is for the run that produces no commit for the repo it reads: the
+	// net would hold nothing, and it writes a branch to a repository the
+	// operator may only have meant to read.
+	WorkspaceCheckpoint string
+	Permission          string       // permission gate mode: off|ask|deny ("" = unset → off)
+	PermissionAllow     []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
+	PermissionAsk       []string     // ask rules
+	PermissionDeny      []string     // deny rules
+	Sandbox             *SandboxSpec // workflow-level sandbox spec (nil = inherit global / no sandbox)
 	// Cursors map of cursor name → resolved definition. Populated from
 	// top-level `cursor NAME:` declarations. Agent/judge `cursors:`
 	// invocations are resolved against this map at runtime.
@@ -487,9 +497,25 @@ type DoneNode struct {
 func (n *DoneNode) NodeKind() NodeKind { return NodeDone }
 
 // FailNode is a terminal failure node.
+//
+// The implicit `fail` target carries none of the fields below and keeps
+// the engine's generic outcome. A `fail <name>:` declaration fills them,
+// which is what puts the bot's own diagnosis on the RUN — its
+// `failure_code` and `error` — instead of leaving every deliberate
+// refusal indistinguishable from every other.
 type FailNode struct {
 	BaseNode
 	AwaitMode AwaitMode // convergence strategy when multiple branches arrive
+	// Code is the UPPER_SNAKE failure code stamped on the run
+	// (store.FailureCode). Empty = the generic FAIL_NODE.
+	Code string
+	// Message is the operator-facing reason, resolved against the run's
+	// namespaces at fail time. Empty = the generic wording.
+	Message *DataMapping
+	// Resumable parks the run failed_resumable (checkpoint kept, the
+	// retry machinery may pick it up) instead of terminal failed. Opt-in:
+	// a fail node is intentional termination by default.
+	Resumable bool
 }
 
 // NodeKind implements Node.
@@ -743,6 +769,97 @@ func NodePromptRefs(node Node) []string {
 			refs = append(refs, n.Instructions)
 		}
 	}
+	return refs
+}
+
+// NodeArtifactRefs returns every logical artifact name that can feed a node,
+// either directly from its body/prompts or through an incoming edge mapping.
+// Runtime callers that know which incoming edges fired should use
+// NodeArtifactRefsForEdges to exclude unselected alternatives.
+func NodeArtifactRefs(w *Workflow, nodeID string) []string {
+	return NodeArtifactRefsForEdges(w, nodeID, nil)
+}
+
+// NodeArtifactRefsForEdges is NodeArtifactRefs with an optional incoming-edge
+// predicate. A nil predicate includes all incoming mappings.
+func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*Edge) bool) []string {
+	if w == nil || nodeID == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	addArtifactRef := func(ref *Ref) {
+		if ref == nil || ref.Kind != RefArtifacts {
+			return
+		}
+		if len(ref.Path) > 0 {
+			seen[ref.Path[0]] = struct{}{}
+			return
+		}
+		// Expressions may index the namespace dynamically (`artifacts[name]`)
+		// or consume it wholesale. The exact key is then a runtime value, so
+		// conservatively bind the produced artifact revisions that are present
+		// when the node executes. artifactContractFor applies that presence
+		// filter; enumerating names here keeps the immutable contract complete.
+		for _, producer := range w.Nodes {
+			if name := NodePublish(producer); name != "" {
+				seen[name] = struct{}{}
+			}
+		}
+	}
+	// Artifact dependency discovery needs reference ownership, not source
+	// positions. The compiler supplies span maps for diagnostics; nil maps keep
+	// this runtime-facing helper independent of parser metadata.
+	for _, rc := range collectAllRefs(w, nil, nil) {
+		if rc.NodeID != nodeID || rc.EdgeTo != "" {
+			continue
+		}
+		addArtifactRef(rc.Ref)
+	}
+	// These runtime-rendered fields deliberately sit outside collectAllRefs'
+	// compiler diagnostics today, but they consume the same artifact values
+	// and therefore belong in the producer's durable dependency contract.
+	addArtifactRefs := func(refs []*Ref) {
+		for _, ref := range refs {
+			addArtifactRef(ref)
+		}
+	}
+	addImageArtifactRefs := func(fields *LLMFields) {
+		if fields == nil {
+			return
+		}
+		for _, image := range fields.Images {
+			refs, err := ParseRefs(image)
+			if err == nil {
+				addArtifactRefs(refs)
+			}
+		}
+	}
+	if node, ok := w.Nodes[nodeID].(LLMNode); ok {
+		addImageArtifactRefs(node.GetLLMFields())
+	} else if node, ok := w.Nodes[nodeID].(*RouterNode); ok {
+		addImageArtifactRefs(&node.LLMFields)
+	}
+	switch node := w.Nodes[nodeID].(type) {
+	case *ToolNode:
+		addArtifactRefs(node.PostcondRefs)
+	case *HumanNode:
+		addArtifactRefs(node.ReviewURLRefs)
+	}
+	for _, edge := range w.Edges {
+		if edge == nil || edge.To != nodeID || (includeIncoming != nil && !includeIncoming(edge)) {
+			continue
+		}
+		for _, mapping := range edge.With {
+			for _, ref := range mapping.Refs {
+				addArtifactRef(ref)
+			}
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
 	return refs
 }
 
@@ -1439,6 +1556,11 @@ type Fallback struct {
 	Metered  bool     // the author's acknowledgement that this route spends a metered credential
 	Action   string   // "" = route; FallbackActionSkip = terminal degrade (zero-value output, loudly marked)
 	When     string   // optional expr over vars gating the route ("" = always active), evaluated at dispatch
+	// RunStage identifies this route's zero-based position in a launch-time
+	// fallback chain. RunStageSet distinguishes stage zero from authored
+	// routes; the compiler never sets either field.
+	RunStage    int
+	RunStageSet bool
 }
 
 // FallbackActionSkip is the `action: skip` terminal route: instead of

@@ -44,6 +44,9 @@ type RunStore interface {
 	Root() string
 	CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*Run, error)
 	LoadRun(ctx context.Context, id string) (*Run, error)
+	// SaveRun creates a version-zero document or replaces the loaded version.
+	// A successful save advances r.CASVersion. ErrRunConflict means another
+	// writer won; reload and reapply the edit rather than retrying the copy.
 	SaveRun(ctx context.Context, r *Run) error
 	ListRuns(ctx context.Context) ([]string, error)
 
@@ -66,6 +69,66 @@ type RunStore interface {
 	// ascending, empty slice (no error) when nothing matches or
 	// scheduleID is empty.
 	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
+
+	// Credential-concurrency meter (secrets.ApiKey.MaxConcurrentRuns).
+	//
+	// SetRunCredStamp stamps the run with what its credential resolution
+	// produced (RunCredStamp): the stable audit identities of the
+	// credentials the publisher sealed for it — never secrets — and when
+	// the earliest credential it passed over reopens. Re-stamped on every
+	// resume: re-resolution may pick different credentials, and a stale
+	// stamp would meter a key the run no longer holds, or arm a retry on
+	// a credential that is no longer the one it was refused.
+	//
+	// SetRunLLMIdle marks the run as executing no model-calling node
+	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince.
+	// SetRunCredStamp also clears the marker: a re-resolution is a fresh
+	// attempt, which counts until it proves idle.
+	//
+	// CountAliveRunsWithCredFingerprint counts runs in the queued or
+	// running states stamped with fingerprint whose LLMIdleSince is nil,
+	// excluding excludeRunID (the run being resolved is already persisted
+	// and must not count itself toward its own ceiling). Deliberately NOT
+	// tenant-scoped: a platform key serves every tenant on one ceiling,
+	// and a tenant key's runs all live in one tenant anyway.
+	SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error
+	SetRunLLMIdle(ctx context.Context, runID string, idleSince *time.Time) error
+	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
+
+	// SetRunBudgetOverrides updates the persisted launch-time budget
+	// ask on the run — the resume path's replay source. Called by
+	// SubmitResume when the operator raises a cap on THIS resume, so
+	// a subsequent unattended auto-retry keeps the raised cap rather
+	// than reverting to the launch ask that already killed the run
+	// (E4, #652 review round 1). Nil clears the field. Granular:
+	// touches only budget_overrides + updated_at, no other field is
+	// disturbed — SaveRun's whole-doc replace is unsafe here because
+	// the resume has already CAS-transitioned the doc to `queued`.
+	SetRunBudgetOverrides(ctx context.Context, runID string, o *RunBudgetOverrides) error
+
+	// SetRunnerVersion records the iterion build that EXECUTED the run,
+	// beside the launcher's own (Run.IterionVersion). In cloud the two are
+	// separate deployments that move independently, and the pair is what
+	// makes a version skew readable FROM THE RUN instead of by comparing
+	// two healthz endpoints. Granular for the same reason as the budget
+	// setters: the claiming runner's copy of the doc is stale by the time
+	// it writes, and a whole-doc SaveRun from it would revert a cancel or a
+	// peer's terminal write that landed in between.
+	SetRunnerVersion(ctx context.Context, runID, version string) error
+
+	// SetRunBudgetSnapshot updates the persisted EFFECTIVE caps
+	// (Run.Budget, the studio Overview's denominator) — the display twin
+	// of the ask above. Written by every resume surface that raises a
+	// cap, right after its own status transition — so the doc stops
+	// showing the launch-time figure before a pod even claims the
+	// attempt — and by the engine itself once the attempt begins
+	// (stampEffectiveBudget), which is the only reading that includes
+	// the pod-side platform ceiling. Nil clears the field. Granular for the same reason as
+	// SetRunBudgetOverrides: the doc copy a resume loaded at its top is
+	// stale by the time the caps are known, and a whole-doc SaveRun from
+	// it would revert any transition (a cancel, a runner's terminal
+	// write, the sweeper's flip) that landed in between.
+	SetRunBudgetSnapshot(ctx context.Context, runID string, b *RunBudget) error
 
 	// PatchRunSteering persists the live-steering state (accumulated
 	// loop grants + absolute budget raises) on the run record so a
@@ -104,6 +167,12 @@ type RunStore interface {
 	AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 	RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 
+	// SetAwaitAnswersWait records one active await_answers invocation. The
+	// token isolates parallel/repeated invocations. Nil removes only that
+	// token; additions require a running run. Both forms are granular writes
+	// and fence stale SaveRun copies through the run version.
+	SetAwaitAnswersWait(ctx context.Context, runID, token string, wait *AwaitAnswersWait) error
+
 	// Subbot re-attach map (subbot restart-safety). SetSubbotChild records
 	// childRunID under key in the parent run's SubbotChildren map;
 	// ClearSubbotChild removes it. Both are atomic per-key writes so
@@ -115,8 +184,14 @@ type RunStore interface {
 	SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error
 	ClearSubbotChild(ctx context.Context, parentRunID, key string) error
 
-	// Status & checkpoint
+	// Status & checkpoint. The Coded variants carry the typed
+	// FailureCode (ADR-095) in the SAME write as the status — never a
+	// separate read-modify-write; the plain forms delegate with an
+	// empty (unknown) code. Every transition to a non-failure status
+	// clears the code, which is the invariant that keeps a resumed run
+	// from lying about a past failure.
 	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
+	UpdateRunStatusCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode) error
 	// UpdateRunStatusIf is a compare-and-set on the status field: the
 	// write only lands when the current status is in expectedFrom.
 	// Returns changed=true when the write applied, false when the
@@ -124,13 +199,45 @@ type RunStore interface {
 	// firing concurrently with a Resume republish). Used by the
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
+	UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (changed bool, err error)
+	// UpdateRunOutcome is the typed status transition: UpdateRunStatusIf
+	// plus the outcome metadata (failure classification + continuation
+	// ownership) persisted atomically with it. nil expectedFrom makes
+	// the write unconditional. This is the RUNNER-side choke point that
+	// stops the class of "the run document says failed_resumable and
+	// nothing else" — a consumer reads WHY and WHO owns the continuation
+	// from the document, not from event-prose archaeology. Engine paths
+	// keep the code-only writers below (the engine cannot know the queue
+	// topology, so it never states a continuation — F3 of the
+	// adversarial gate).
+	UpdateRunOutcome(ctx context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (changed bool, err error)
+	// ClaimMerge is the compare-and-set entry to the merge state
+	// machine: it flips MergeStatus to "merging" and stamps
+	// MergeClaimedAt, iff the current status is claimable — "",
+	// "pending", "failed", "skipped" or "conflicted", or a "merging"
+	// whose MergeClaimedAt is before staleBefore or unset (the previous
+	// claimant crashed; a wedged claim must not block the run forever).
+	// Returns the status the run held before the claim so an aborted
+	// attempt can restore it, plus the claim token (the exact
+	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
+	// every exit so a stolen claim cannot consume its successor's), and
+	// claimed=false (with the current status) when someone else holds a
+	// fresh claim or the run is already merged.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// UpdateRunMergeIf is the compare-and-set exit from the merge state
+	// machine: it persists upd's merge fields iff the current
+	// MergeStatus is in expectedFrom (empty string matches an unset
+	// field). Returns changed=false when the state drifted — the caller
+	// lost its claim or raced another writer — in which case nothing
+	// was written.
+	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
-	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 	// FailRunTerminal is FailRunResumable's terminal counterpart: status
 	// failed (no auto-resume) but the checkpoint is kept so the run stays
 	// rewindable on an explicit operator action.
-	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 
 	// Events (append-only, monotonic seq per run)
 	AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error)
@@ -206,7 +313,13 @@ type QueuedAttemptStore interface {
 	// FailQueuedRunIfAttempt moves a queued run to failed_resumable only when
 	// its current QueuedAt is not newer than the delivery's PublishedAt. The
 	// comparison and status transition are one atomic store operation.
-	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (changed bool, err error)
+	//
+	// meta is the typed WHY of the flip, persisted with it exactly like
+	// UpdateRunOutcome's: the queue's admission park is a DLQ park
+	// (FailureDLQParked, ContinuationFinal — nothing wakes the run but an
+	// operator's replay), and every reader of the code must see the same
+	// value whichever of the two DLQ writers flipped the doc.
+	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (changed bool, err error)
 }
 
 // AsQueuedAttemptStore returns the attempt-aware status capability, or nil

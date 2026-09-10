@@ -8,17 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=2024-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-01T00:00:00Z")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	gittest.Run(t, dir, args...)
 }
 
 func TestBuildRunGitMeta(t *testing.T) {
@@ -35,13 +31,7 @@ func TestBuildRunGitMeta(t *testing.T) {
 	gitRun(t, dir, "add", "a.txt")
 	gitRun(t, dir, "commit", "-q", "-m", "base")
 
-	baseCmd := exec.Command("git", "rev-parse", "HEAD")
-	baseCmd.Dir = dir
-	baseOut, err := baseCmd.Output()
-	if err != nil {
-		t.Fatalf("rev-parse: %v", err)
-	}
-	base := string(baseOut[:len(baseOut)-1])
+	base := gittest.Run(t, dir, "rev-parse", "HEAD")
 
 	// No commits yet beyond base → empty snapshot.
 	meta, err := BuildRunGitMeta(dir, base)

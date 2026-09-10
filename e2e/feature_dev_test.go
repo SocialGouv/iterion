@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -33,6 +32,11 @@ type featureDevState struct {
 // override a node afterward (later .on wins) to exercise a red verify pass
 // or the MR path.
 func stubFeatureDevCampaign(exec *scenarioExecutor, st *featureDevState) {
+	// The entry precondition passes and the plan phase (on by default)
+	// authors a plan; plan_review is unresolved (auto → off) in this
+	// harness, so the peer never runs.
+	stubWorkspaceProbeOK(exec)
+	stubPlanAuthor(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
@@ -92,13 +96,14 @@ func stubFeatureDevCampaign(exec *scenarioExecutor, st *featureDevState) {
 // the run converges immediately — one campaign pass, straight to done
 // (open_mr defaults false → no MR).
 func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1}
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-first", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -123,6 +128,7 @@ func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
 // loops back to the campaign; pass 2 the review is clean and it converges.
 // Two campaign passes — the review is a genuine convergence gate, not decorative.
 func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1} // campaign claims complete every pass
@@ -138,7 +144,7 @@ func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-review", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -162,13 +168,14 @@ func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
 // on pass 2, the deterministic gate is green both times, and the continuation
 // loop runs a second campaign pass before converging.
 func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 2}
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -201,6 +208,7 @@ func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
 // must route back to campaign WITH the failure log even though the agent
 // claimed completion.
 func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1} // the agent claims done every pass
@@ -218,7 +226,7 @@ func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -241,13 +249,14 @@ func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
 // open_mr=true a converged run opens the MR/PR (finalize_mr) before
 // finishing — the issue-label → PR lineage.
 func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 1}
 	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"open_mr": true}
 	if err := eng.Run(context.Background(), "run-fd-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -271,13 +280,18 @@ func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
 // commit machinery). Drift here — e.g. reintroducing a blocking upfront
 // plan node or a reviewer — breaks the ADR-058 mechanism silently.
 func TestVibeFeatureDev_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 
-	// Entry is the plan-phase gate (ADR-091), whose off branch routes
-	// STRAIGHT to the campaign — the v2 "start working immediately" shape
-	// is preserved whenever plan_review resolves off.
-	if wf.Entry != "plan_topology" {
-		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; its off branch is the v2 immediate-campaign shape)", wf.Entry, "plan_topology")
+	// Entry is the deterministic workspace precondition (a tool node, no
+	// LLM), then the plan-phase gate (ADR-091) — on by default, its off
+	// branch (plan_phase=off) being the v2 "start working immediately"
+	// shape.
+	if wf.Entry != "workspace_probe" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic precondition ahead of any LLM node)", wf.Entry, "workspace_probe")
+	}
+	if _, ok := wf.Nodes["workspace_probe"].(*ir.ToolNode); !ok {
+		t.Errorf("workspace_probe is %T, want *ir.ToolNode (deterministic precondition)", wf.Nodes["workspace_probe"])
 	}
 	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
 		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])
@@ -329,6 +343,7 @@ func TestVibeFeatureDev_Structural(t *testing.T) {
 // (observed live on the 2026-07-22 treatment runs: probe reason stuck on
 // "first pass of this run" across 4 passes).
 func TestVibeFeatureDev_ProbeSeesLoopIteration(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
 	st := &featureDevState{completeBy: 3}
@@ -353,7 +368,7 @@ func TestVibeFeatureDev_ProbeSeesLoopIteration(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-fd-iter", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

@@ -97,6 +97,24 @@ const (
 	// DiagSkillNameDuplicate: two skill files in the bundle declare the same
 	// `name:`, so one silently clobbers the other when mirrored.
 	DiagSkillNameDuplicate Code = "C234"
+
+	// Engine contract (C250–C251). The manifest may declare the engine build
+	// the bundle needs (`requires.iterion`); these hold it against the build
+	// doing the validating. The family lives here rather than in ir because
+	// the requirement is a MANIFEST fact — ir.Compile only ever sees the
+	// .bot AST, which carries no manifest at all.
+
+	// DiagEngineRequirementUnmet: the manifest declares a `requires.iterion`
+	// floor this build is below. An error: every node the bundle was written
+	// for may reach an evaluator that cannot serve it, and the failure lands
+	// mid-run rather than here.
+	DiagEngineRequirementUnmet Code = "C250"
+	// DiagEngineRequirementUnchecked: a `requires.iterion` is declared but
+	// this build carries no orderable version (a `dev` build, a fork's naming
+	// scheme), so the comparison could not run. A warning, never silence — an
+	// unchecked contract that reads as satisfied is the failure mode the
+	// declaration exists to close.
+	DiagEngineRequirementUnchecked Code = "C251"
 )
 
 // minRoutableDescription is the shortest `description:` the skill lint treats
@@ -157,6 +175,12 @@ type Input struct {
 	// I/O-free: the caller scans the files (via skilllib.ScanFrontmatter) and
 	// passes the results in, mirroring how Frontmatter is supplied.
 	Skills []SkillDoc
+	// EngineBuild is the iterion build the bundle is being validated against,
+	// for the `requires.iterion` check (C250/C251). Empty skips it — the
+	// caller supplies appinfo.FullVersion(); bundlelint stays I/O-free and
+	// never reads its own binary's identity, so a caller that has no build to
+	// hold the bundle against simply does not ask the question.
+	EngineBuild string
 }
 
 // SkillDoc is one bundle skill file's routability-relevant frontmatter. Path
@@ -185,6 +209,7 @@ func CheckConsistency(in Input) []Diag {
 	checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
 	checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
 	checkSkills(&diags, in.Skills)
+	checkEngineRequirement(&diags, m, in.EngineBuild)
 
 	sort.SliceStable(diags, func(i, j int) bool {
 		if diags[i].Code != diags[j].Code {
@@ -573,4 +598,32 @@ func sameStringSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// checkEngineRequirement holds the manifest's declared engine floor against
+// the build validating it (C250/C251).
+//
+// It is the LOCAL half of a guard that also lives at the push admission
+// (pkg/server) and at the launch (pkg/runner) — three surfaces, one predicate
+// in pkg/bundle, so an author, an operator and a pod cannot read the same
+// manifest three different ways.
+func checkEngineRequirement(diags *[]Diag, m *bundle.Manifest, build string) {
+	if strings.TrimSpace(build) == "" {
+		return
+	}
+	verdict, reason := bundle.CheckManifestEngine(m, build)
+	switch verdict {
+	case bundle.EngineTooOld:
+		*diags = append(*diags, Diag{
+			Code: DiagEngineRequirementUnmet, Severity: SeverityError,
+			Field: "requires.iterion", Message: reason,
+			Hint: "upgrade iterion, or lower requires.iterion to a build that carries what the bot uses",
+		})
+	case bundle.EngineUnknown:
+		*diags = append(*diags, Diag{
+			Code: DiagEngineRequirementUnchecked, Severity: SeverityWarning,
+			Field: "requires.iterion", Message: reason,
+			Hint: "validate with a released build (or one built through `task build`, which injects the version) to check the requirement",
+		})
+	}
 }

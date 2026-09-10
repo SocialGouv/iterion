@@ -77,6 +77,64 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// Re-run the same context admission before any resume claim, workspace
+	// restoration or answer side effect. A denial leaves the resumable status
+	// untouched so the operator can repair the declaration and retry.
+	if err := e.admitRun(ctx, runID, r); err != nil {
+		return err
+	}
+	// Preserve the established source-change classification before the
+	// artifact guard reports derivative publish/schema mismatches. Dispatchers
+	// use this typed error to park the run for an explicit forced resume.
+	if err := e.checkWorkflowHash(ctx, r); err != nil {
+		return err
+	}
+	// Engine.Resume is also a public execution boundary (the CLI calls it
+	// directly), so it repeats the policy-aware physical guard used by
+	// runview's synchronous preflight. Enforce checks every exact revision,
+	// including in-flight parallel branches; report/legacy remain non-blocking.
+	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, e.forceResume)
+	// The handoff is one-shot on both match and mismatch. consume also clears
+	// the shared payload so aliases outside Engine cannot retain artifact bodies.
+	e.artifactResumePreflight = nil
+	if !preflightMatches {
+		checkpointArtifacts, err = loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
+		if err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
+	}
+	if checkpointArtifacts == nil {
+		// Report and legacy policies skip the enforce-only availability pass.
+		// Give contract validation and reconstruction one shared cache so report
+		// mode does not issue two S3 GETs for every immutable artifact body.
+		checkpointArtifacts = make(map[artifactRevisionKey]*store.Artifact)
+	}
+	if !preflightMatches && !e.artifactContractsChecked {
+		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts, false); err != nil {
+			// Refuse before claiming the checkpoint or touching the workspace.
+			if errors.Is(err, ErrArtifactContractUnavailable) {
+				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
+			}
+			return &RuntimeError{
+				Code:    store.FailureResumeInvalid,
+				Message: "persisted artifact contract is incompatible with this workflow",
+				Hint:    "resume with --force to accept a deliberate publish, schema or workflow-revision edit; producer-identity and dependency violations are not waivable",
+				Cause:   err,
+			}
+		}
+	}
+	// Reconstructing {{artifacts.*}} must use the checkpoint's physical
+	// revisions, not the producer's latest output. Prepare the complete
+	// snapshot before any resume claim and carry it through the selected
+	// resume path: a second S3 read after the claim could fail transiently
+	// and otherwise strand the run in `running` with no executor.
+	var preparedArtifacts *resumeArtifactState
+	if r.Checkpoint != nil {
+		preparedArtifacts, err = e.prepareResumeArtifactsWithLoaded(ctx, r, r.Checkpoint, checkpointArtifacts)
+		if err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
+	}
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
@@ -88,14 +146,28 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			return fmt.Errorf("runtime: resume run %q: %w", runID, linkErr)
 		}
 	}
+	// A child that executed in its parent's copy-based sandbox is resumed
+	// through the parent, never on its own: refused before the claim, so
+	// the run keeps the resumable status the parent's resume relies on.
+	if rerr := e.refuseResumeOfSharedChild(ctx, r); rerr != nil {
+		return rerr
+	}
+	// The bundle may declare an engine this build is below. Refused BEFORE
+	// the claim, like the two guards above: the run keeps the resumable
+	// status it had, so an operator who then aligns the build can resume it —
+	// nothing is lost by asking, and re-executing on this build could only
+	// reach the same verdict at the first node.
+	if rerr := e.refuseBundleRequiringNewerEngine(); rerr != nil {
+		return rerr
+	}
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
-		return e.resumeFromPause(ctx, r, answers)
+		return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
 	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
 		// paused_operator resumes via the same machinery as cancelled
 		// runs: checkpoint preserved, no pending interaction, restart
 		// from the node about to execute when the pause fired.
-		return e.resumeFromFailure(ctx, r)
+		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	case store.RunStatusQueued:
 		// Cloud resume: the publisher flips the run to queued BEFORE the
 		// message reaches a runner (queue-depth visibility + cooperative-
@@ -111,9 +183,9 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		// pre-first-node failure (e.g. a runner-side clone-prep error) left
 		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
-			return e.resumeFromPause(ctx, r, answers)
+			return e.resumeFromPause(ctx, r, answers, preparedArtifacts)
 		}
-		return e.resumeFromFailure(ctx, r)
+		return e.resumeFromFailure(ctx, r, preparedArtifacts)
 	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
 	}
@@ -171,30 +243,622 @@ func shortWorkflowHash(hash string) string {
 
 // rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.
 func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]map[string]any {
+	artifacts, _ := e.rebuildArtifactsAndOwners(outputs)
+	return artifacts
+}
+
+func (e *Engine) rebuildArtifactsAndOwners(outputs map[string]map[string]any) (map[string]map[string]any, map[string]string) {
 	artifacts := make(map[string]map[string]any)
-	for nodeID, output := range outputs {
+	owners := make(map[string]string)
+	nodeIDs := make([]string, 0, len(outputs))
+	for nodeID := range outputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		output := outputs[nodeID]
 		if n, ok := e.workflow.Nodes[nodeID]; ok {
 			if pub := nodePublish(n); pub != "" {
 				artifacts[pub] = output
+				owners[pub] = nodeID
 			}
 		}
 	}
-	return artifacts
+	return artifacts, owners
+}
+
+// rebuildArtifactRevisions restores the logical-to-physical mapping persisted
+// by current checkpoints. When a forced source change renames publish:, the
+// current alias points at the same immutable revision and keeps the contract's
+// original logical name. Legacy checkpoints fall back to the last allocated
+// revision; prepareResumeArtifacts only retains that best-effort provenance
+// when the corresponding blob can actually be loaded.
+func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, versions map[string]int, persisted map[string]store.ArtifactRevisionRef) map[string]store.ArtifactRevisionRef {
+	revisions := make(map[string]store.ArtifactRevisionRef)
+	persistedByNode := make(map[string]store.ArtifactRevisionRef)
+	persistedNames := make([]string, 0, len(persisted))
+	for name := range persisted {
+		persistedNames = append(persistedNames, name)
+	}
+	sort.Strings(persistedNames)
+	for _, name := range persistedNames {
+		revision := persisted[name]
+		if _, ok := outputs[revision.NodeID]; ok {
+			if revision.ContractLogicalRef == "" {
+				revision.ContractLogicalRef = name
+			}
+			revisions[name] = revision
+			if current, exists := persistedByNode[revision.NodeID]; !exists || revision.Version > current.Version {
+				persistedByNode[revision.NodeID] = revision
+			}
+		}
+	}
+	nodeIDs := make([]string, 0, len(outputs))
+	for nodeID := range outputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		node, ok := e.workflow.Nodes[nodeID]
+		if !ok || nodePublish(node) == "" {
+			continue
+		}
+		logicalRef := nodePublish(node)
+		if revision, ok := persistedByNode[nodeID]; ok {
+			if current, occupied := revisions[logicalRef]; occupied {
+				// An unchanged publisher owns the authoritative persisted alias,
+				// including workflows where several nodes intentionally publish the
+				// same name. It only yields when that producer itself moved away.
+				// The one exception is another alias retained for THIS producer:
+				// restoring an older publish name must expose the producer's newest
+				// retained revision, not silently resurrect the pre-rename body.
+				// This also keeps swapped aliases bound to their current producers.
+				if current.NodeID != nodeID {
+					if currentNode, exists := e.workflow.Nodes[current.NodeID]; exists && nodePublish(currentNode) == logicalRef {
+						continue
+					}
+				} else if current.Version >= revision.Version {
+					continue
+				}
+			}
+			// Expose the new workflow alias, but keep the immutable contract
+			// name so a downstream artifact records a dependency that the
+			// validator can resolve after this forced migration.
+			revisions[logicalRef] = revision
+			continue
+		}
+		if _, authoritative := revisions[logicalRef]; authoritative {
+			continue
+		}
+		if versions[nodeID] <= 0 {
+			continue
+		}
+		revisions[logicalRef] = store.ArtifactRevisionRef{
+			NodeID: nodeID, Version: versions[nodeID] - 1, ContractLogicalRef: logicalRef,
+		}
+	}
+	return revisions
+}
+
+type resumeArtifactState struct {
+	artifacts map[string]map[string]any
+	owners    map[string]string
+	revisions map[string]store.ArtifactRevisionRef
+	parallel  *store.ParallelCheckpoint
+}
+
+type artifactRevisionKey struct {
+	nodeID  string
+	version int
+}
+
+// prepareResumeArtifacts builds the one immutable artifact snapshot used by a
+// complete resume attempt. Exact checkpoint provenance is fail-closed under
+// enforce. Legacy keeps checkpoint outputs authoritative and reads only
+// explicitly referenced historical bodies, best-effort; report falls back to
+// checkpoint values when an observational read fails.
+func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *store.Checkpoint) (*resumeArtifactState, error) {
+	return e.prepareResumeArtifactsWithLoaded(ctx, r, cp, nil)
+}
+
+func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.Run, cp *store.Checkpoint, preloaded map[artifactRevisionKey]*store.Artifact) (*resumeArtifactState, error) {
+	state := &resumeArtifactState{
+		artifacts: make(map[string]map[string]any),
+		owners:    make(map[string]string),
+		revisions: make(map[string]store.ArtifactRevisionRef),
+	}
+	if cp == nil {
+		return state, nil
+	}
+	state.parallel = cloneParallelCheckpoint(cp.Parallel)
+	outputs := copyOutputs(cp.Outputs)
+	if cp.ArtifactsKnown {
+		state.artifacts = copyOutputs(cp.Artifacts)
+		state.owners = cloneMap(cp.ArtifactOwners)
+		if state.owners == nil {
+			state.owners = make(map[string]string)
+		}
+		hydrateArtifactState(state.artifacts, state.owners, cp.ArtifactRevisions, outputs)
+		for name, revision := range cp.ArtifactRevisions {
+			if _, present := state.artifacts[name]; present && state.owners[name] == "" {
+				state.owners[name] = revision.NodeID
+			}
+		}
+		inferArtifactOwners(state.artifacts, outputs, state.owners)
+	} else {
+		state.artifacts, state.owners = e.rebuildArtifactsAndOwners(outputs)
+	}
+	versionsForInference := cp.ArtifactVersions
+	if cp.ArtifactRevisionsKnown {
+		versionsForInference = nil
+	}
+	state.revisions = e.rebuildArtifactRevisions(outputs, versionsForInference, cp.ArtifactRevisions)
+	if cp.ArtifactsKnown {
+		// Checkpoints written during the compatibility window can have an exact
+		// logical value and owner but no physical revision. Forced publish:
+		// renames must still expose that retained value under the new name. Use
+		// the immutable checkpoint snapshot as the source so alias swaps cannot
+		// feed values assigned earlier in this loop back into one another.
+		checkpointArtifacts := copyOutputs(state.artifacts)
+		checkpointOwners := cloneMap(state.owners)
+		ownerNames := make(map[string][]string)
+		ownersWithRevision := make(map[string]bool)
+		for name, owner := range checkpointOwners {
+			if _, present := checkpointArtifacts[name]; owner != "" && present {
+				ownerNames[owner] = append(ownerNames[owner], name)
+			}
+		}
+		for _, revision := range cp.ArtifactRevisions {
+			ownersWithRevision[revision.NodeID] = true
+		}
+		nodeIDs := make([]string, 0, len(outputs))
+		for nodeID := range outputs {
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+		sort.Strings(nodeIDs)
+		synthesizedTargets := make(map[string]bool)
+		for _, nodeID := range nodeIDs {
+			if ownersWithRevision[nodeID] {
+				continue
+			}
+			node, present := e.workflow.Nodes[nodeID]
+			if !present || nodePublish(node) == "" {
+				continue
+			}
+			target := nodePublish(node)
+			names := ownerNames[nodeID]
+			sort.Strings(names)
+			source := ""
+			for _, name := range names {
+				if name == target {
+					source = name
+					break
+				}
+			}
+			if source == "" && len(names) == 1 {
+				source = names[0]
+			}
+			if source == "" {
+				// Successive forced renames leave equivalent owner-only aliases
+				// behind. The producer output identifies which retained binding
+				// is current even when more than one historical name remains.
+				for _, name := range names {
+					if ArtifactValuesEqual(checkpointArtifacts[name], outputs[nodeID]) {
+						source = name
+						break
+					}
+				}
+			}
+			if source == "" {
+				// A forced edit may add publish: to an already completed node,
+				// and a fork may remove the selected producer while retaining an
+				// earlier publisher. In both cases there is no historical owner
+				// alias to copy, but the retained node output is the only value
+				// this newly exposed name can have. Keep it owner-only: an output
+				// cannot prove that a physical artifact revision was written.
+				if len(names) == 0 {
+					_, exposed := state.artifacts[target]
+					canClaimTarget := !exposed || synthesizedTargets[target]
+					if exposed && !synthesizedTargets[target] {
+						existingOwner := checkpointOwners[target]
+						existingNode, ownerStillPresent := e.workflow.Nodes[existingOwner]
+						canClaimTarget = existingOwner != "" && existingOwner != nodeID &&
+							(!ownerStillPresent || nodePublish(existingNode) != target)
+					}
+					if canClaimTarget {
+						state.artifacts[target] = outputs[nodeID]
+						state.owners[target] = nodeID
+						synthesizedTargets[target] = true
+					}
+				}
+				continue
+			}
+			if existingOwner := checkpointOwners[target]; existingOwner != "" && existingOwner != nodeID {
+				if existingNode, exists := e.workflow.Nodes[existingOwner]; exists && nodePublish(existingNode) == target {
+					continue
+				}
+			}
+			if value, present := checkpointArtifacts[source]; present {
+				state.artifacts[target] = value
+				state.owners[target] = nodeID
+			}
+		}
+		// A mixed-provenance alias swap can move an owner-only value onto an
+		// old exact alias. Once that current publisher owns the name, the old
+		// producer's revision must not overwrite it during exact restoration.
+		for name, revision := range state.revisions {
+			owner := state.owners[name]
+			if owner == "" || owner == revision.NodeID {
+				continue
+			}
+			if ownerNode, exists := e.workflow.Nodes[owner]; exists && nodePublish(ownerNode) == name {
+				delete(state.revisions, name)
+			}
+		}
+
+		// A forced source edit can expose an existing immutable revision under a
+		// new alias. Carry its checkpointed logical value with the revision; do
+		// not substitute the producer's latest output, which may now belong to
+		// an invocation that no longer publishes anything.
+		checkpointNames := make([]string, 0, len(cp.ArtifactRevisions))
+		for name := range cp.ArtifactRevisions {
+			checkpointNames = append(checkpointNames, name)
+		}
+		sort.Strings(checkpointNames)
+		for name, revision := range state.revisions {
+			bound := false
+			candidates := make([]string, 0, len(checkpointNames)+1)
+			candidates = append(candidates, name)
+			for _, checkpointName := range checkpointNames {
+				if checkpointName != name {
+					candidates = append(candidates, checkpointName)
+				}
+			}
+			for _, checkpointName := range candidates {
+				checkpointRevision := cp.ArtifactRevisions[checkpointName]
+				if checkpointRevision.NodeID != revision.NodeID || checkpointRevision.Version != revision.Version {
+					continue
+				}
+				if value, present := checkpointArtifacts[checkpointName]; present {
+					state.artifacts[name] = value
+					state.owners[name] = revision.NodeID
+					bound = true
+					break
+				}
+			}
+			if !bound {
+				delete(state.artifacts, name)
+				delete(state.owners, name)
+			}
+		}
+	}
+
+	required := make(map[artifactRevisionKey]bool, len(cp.ArtifactRevisions))
+	checkpointOutputVersion := make(map[string]int, len(cp.ArtifactRevisions))
+	checkpointOutputVersionKnown := make(map[string]bool, len(cp.ArtifactRevisions))
+	for _, revision := range cp.ArtifactRevisions {
+		required[artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}] = true
+		if !checkpointOutputVersionKnown[revision.NodeID] || revision.Version > checkpointOutputVersion[revision.NodeID] {
+			checkpointOutputVersion[revision.NodeID] = revision.Version
+			checkpointOutputVersionKnown[revision.NodeID] = true
+		}
+	}
+	bindCheckpointOutput := func(name string, revision store.ArtifactRevisionRef) bool {
+		// Outputs has one value per producer, so it can represent only that
+		// producer's newest exact revision. An older retained alias needs its
+		// immutable body; substituting the newest output would attach false
+		// provenance to the value.
+		if !checkpointOutputVersionKnown[revision.NodeID] || checkpointOutputVersion[revision.NodeID] != revision.Version {
+			return false
+		}
+		output, ok := outputs[revision.NodeID]
+		if !ok {
+			return false
+		}
+		state.artifacts[name] = output
+		state.owners[name] = revision.NodeID
+		return true
+	}
+	clearProvisionalBinding := func(name string) {
+		delete(state.artifacts, name)
+		delete(state.owners, name)
+	}
+	policy := artifactContractPolicy(r)
+	loaded := make(map[artifactRevisionKey]*store.Artifact, len(preloaded))
+	for key, artifact := range preloaded {
+		loaded[key] = artifact
+	}
+	if err := e.prepareResumeParallelArtifacts(ctx, r.ID, policy, state.parallel, loaded); err != nil {
+		return nil, err
+	}
+	if policy == store.ContextPolicyLegacy {
+		// The common legacy path performs no artifact-store reads. A compacted
+		// historical value is the exception: its marker says the immutable
+		// revision is the body, so load it best-effort. Failure remains
+		// non-blocking and drops only that alias, matching pre-snapshot legacy
+		// behavior rather than turning compatibility mode into an availability
+		// gate. Older checkpoints fall back to Outputs but cannot prove which
+		// invocation supplied an exact revision.
+		for name, revision := range state.revisions {
+			key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+			if !required[key] {
+				delete(state.revisions, name)
+				continue
+			}
+			if cp.ArtifactsKnown && revision.ValueFromRevision {
+				var artifact *store.Artifact
+				var loadErr error
+				if e.store != nil {
+					artifact, loadErr = e.store.LoadArtifact(ctx, r.ID, revision.NodeID, revision.Version)
+				}
+				if loadErr != nil || artifact == nil || artifact.RunID != r.ID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+					failure := "is temporarily unavailable"
+					detail := any(loadErr)
+					switch {
+					case loadErr != nil && errors.Is(loadErr, os.ErrNotExist):
+						failure = "is absent"
+					case loadErr == nil && artifact == nil:
+						failure = "is absent"
+						detail = "store returned no artifact and no error"
+					case loadErr == nil:
+						failure = "has mismatched persisted identity"
+						detail = fmt.Sprintf("got run=%q node=%q version=%d", artifact.RunID, artifact.NodeID, artifact.Version)
+					}
+					e.logger.Warn(
+						"runtime: resume %s: compacted artifact %q at %s/%d %s (%v); {{artifacts.%s}} stays unresolved under legacy policy",
+						r.ID, name, revision.NodeID, revision.Version, failure, detail, name,
+					)
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				state.artifacts[name] = artifact.Data
+				state.owners[name] = revision.NodeID
+				revision.ValueFromRevision = false
+				if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
+					revision.ContractLogicalRef = artifact.Contract.LogicalRef
+				}
+				state.revisions[name] = revision
+				continue
+			}
+			if !cp.ArtifactsKnown {
+				if bindCheckpointOutput(name, revision) {
+					revision.Unverified = true
+					state.revisions[name] = revision
+				} else {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+				}
+				continue
+			}
+			if _, present := state.artifacts[name]; !present {
+				delete(state.revisions, name)
+			}
+		}
+		return state, nil
+	}
+	strictAvailability := policy == store.ContextPolicyEnforce
+	names := make([]string, 0, len(state.revisions))
+	for name := range state.revisions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		revision := state.revisions[name]
+		key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+		if !required[key] {
+			// ArtifactVersions is only an allocation cursor. In a legacy
+			// parallel checkpoint it cannot prove which invocation supplied
+			// Outputs, so do not promote the guessed revision into the next
+			// checkpoint as exact provenance.
+			delete(state.revisions, name)
+			continue
+		}
+		artifact, ok := loaded[key]
+		if !ok {
+			var loadErr error
+			artifact, loadErr = e.store.LoadArtifact(ctx, r.ID, revision.NodeID, revision.Version)
+			if loadErr != nil {
+				if strictAvailability && required[key] {
+					return nil, fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version, loadErr)
+				}
+				// Report mode observes missing bodies through contract telemetry
+				// but remains non-blocking. A current checkpoint already supplies
+				// the exact logical value; older checkpoints use the recorded
+				// producer's output as a one-time compatibility fallback. The next
+				// checkpoint persists that logical binding with explicitly
+				// unverified provenance.
+				if revision.ValueFromRevision {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				if !cp.ArtifactsKnown && !bindCheckpointOutput(name, revision) {
+					clearProvisionalBinding(name)
+				}
+				revision.Unverified = true
+				state.revisions[name] = revision
+				continue
+			}
+			if artifact == nil || artifact.RunID != r.ID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+				if strictAvailability && required[key] {
+					return nil, fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version)
+				}
+				if revision.ValueFromRevision {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				if !cp.ArtifactsKnown && !bindCheckpointOutput(name, revision) {
+					clearProvisionalBinding(name)
+				}
+				revision.Unverified = true
+				state.revisions[name] = revision
+				continue
+			}
+			loaded[key] = artifact
+		}
+		// Exact persisted revisions (including aliases rebound during a forced
+		// migration) restore their immutable artifact body. Inferred legacy
+		// revisions were discarded above, leaving Outputs authoritative.
+		state.artifacts[name] = artifact.Data
+		state.owners[name] = revision.NodeID
+		revision.Unverified = false
+		revision.ValueFromRevision = false
+		state.revisions[name] = revision
+		if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
+			revision.ContractLogicalRef = artifact.Contract.LogicalRef
+			state.revisions[name] = revision
+		}
+	}
+	return state, nil
+}
+
+func (e *Engine) prepareResumeParallelArtifacts(ctx context.Context, runID string, policy store.ContextPolicy, parallel *store.ParallelCheckpoint, loaded map[artifactRevisionKey]*store.Artifact) error {
+	if parallel == nil || policy == store.ContextPolicyLegacy {
+		return nil
+	}
+	strict := policy == store.ContextPolicyEnforce
+	branchIDs := make([]string, 0, len(parallel.Branches))
+	for branchID := range parallel.Branches {
+		branchIDs = append(branchIDs, branchID)
+	}
+	sort.Strings(branchIDs)
+	for _, branchID := range branchIDs {
+		branch := parallel.Branches[branchID]
+		if branch == nil {
+			continue
+		}
+		if branch.ArtifactOwners == nil {
+			branch.ArtifactOwners = make(map[string]string)
+		}
+		names := make([]string, 0, len(branch.ArtifactRevisions))
+		for name := range branch.ArtifactRevisions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			revision := branch.ArtifactRevisions[name]
+			key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+			artifact, ok := loaded[key]
+			if !ok {
+				var err error
+				artifact, err = e.store.LoadArtifact(ctx, runID, revision.NodeID, revision.Version)
+				if err != nil {
+					if strict {
+						return fmt.Errorf("%w: load branch %q artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, branchID, name, revision.NodeID, revision.Version, err)
+					}
+					revision.Unverified = true
+					branch.ArtifactRevisions[name] = revision
+					branch.ArtifactOwners[name] = revision.NodeID
+					continue
+				}
+				if artifact == nil || artifact.RunID != runID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+					if strict {
+						return fmt.Errorf("%w: branch %q artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, branchID, name, revision.NodeID, revision.Version)
+					}
+					revision.Unverified = true
+					branch.ArtifactRevisions[name] = revision
+					branch.ArtifactOwners[name] = revision.NodeID
+					continue
+				}
+				loaded[key] = artifact
+			}
+			branch.Artifacts[name] = artifact.Data
+			branch.ArtifactOwners[name] = revision.NodeID
+			revision.Unverified = false
+			if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
+				revision.ContractLogicalRef = artifact.Contract.LogicalRef
+			}
+			branch.ArtifactRevisions[name] = revision
+		}
+	}
+	return nil
+}
+
+func checkpointWithPreparedParallel(cp *store.Checkpoint, state *resumeArtifactState) *store.Checkpoint {
+	if cp == nil || state == nil || state.parallel == nil {
+		return cp
+	}
+	prepared := *cp
+	prepared.Parallel = cloneParallelCheckpoint(state.parallel)
+	CompactCheckpointArtifactValues(&prepared)
+	return &prepared
+}
+
+func cloneResumeArtifactState(state *resumeArtifactState) *resumeArtifactState {
+	if state == nil {
+		return &resumeArtifactState{
+			artifacts: make(map[string]map[string]any),
+			owners:    make(map[string]string),
+			revisions: make(map[string]store.ArtifactRevisionRef),
+		}
+	}
+	return &resumeArtifactState{
+		artifacts: cloneMap(state.artifacts),
+		owners:    cloneMap(state.owners),
+		revisions: cloneMap(state.revisions),
+		parallel:  cloneParallelCheckpoint(state.parallel),
+	}
+}
+
+func (e *Engine) rebuildArtifactsWithRevisions(ctx context.Context, runID string, outputs map[string]map[string]any, revisions map[string]store.ArtifactRevisionRef) (map[string]map[string]any, error) {
+	artifacts := e.rebuildArtifacts(outputs)
+	type revisionKey struct {
+		nodeID  string
+		version int
+	}
+	loaded := make(map[revisionKey]map[string]any)
+	names := make([]string, 0, len(revisions))
+	for name := range revisions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		revision := revisions[name]
+		key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+		data, ok := loaded[key]
+		if !ok {
+			artifact, err := e.store.LoadArtifact(ctx, runID, revision.NodeID, revision.Version)
+			if err != nil {
+				return nil, fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version, err)
+			}
+			if artifact == nil || artifact.RunID != runID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+				return nil, fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version)
+			}
+			data = artifact.Data
+			loaded[key] = data
+		}
+		artifacts[name] = data
+	}
+	return artifacts, nil
 }
 
 // resumeFromPause resumes a paused run by recording human answers and
 // continuing execution from the node after the human checkpoint.
-func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any) error {
+func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any, prepared ...*resumeArtifactState) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(ctx, r); err != nil {
-		return err
-	}
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
 	}
 
 	cp := r.Checkpoint
+	artifactState := (*resumeArtifactState)(nil)
+	if len(prepared) > 0 {
+		artifactState = prepared[0]
+	}
+	if artifactState == nil {
+		var err error
+		artifactState, err = e.prepareResumeArtifacts(ctx, r, cp)
+		if err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
+	}
+	cp = checkpointWithPreparedParallel(cp, artifactState)
 	humanNodeID := cp.NodeID
+	if cp.Parallel != nil && cp.Parallel.PendingBranchID != "" && cp.Parallel.PendingNodeID != "" {
+		return e.resumeParallelPause(ctx, r, cp, answers, artifactState)
+	}
 
 	// A review gate (interaction: review) resumes through a dedicated path:
 	// the answers carry a __review_action (reply / approve_merge /
@@ -203,7 +867,15 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// resumeReviewGate does its own turn recording, claim, rebuild, and
 	// action handling, so we return before the single-shot answer machinery.
 	if hn, ok := e.workflow.Nodes[humanNodeID].(*ir.HumanNode); ok && hn.Interaction == ir.InteractionReview {
-		return e.resumeReviewGate(ctx, r, cp, hn, answers)
+		return e.resumeReviewGate(ctx, r, cp, hn, answers, artifactState)
+	}
+
+	// A recovery pause (the dispatcher parked a FAILED node for a human)
+	// resumes by re-executing that node. It must leave before the
+	// human-output path below, which would record the acknowledgement as
+	// the node's output and walk on to its successors.
+	if cp.RecoveryPause {
+		return e.resumeFromRecoveryPause(ctx, r, cp, answers, artifactState)
 	}
 
 	// Coerce string-typed answers (from `iterion resume --answer key=value`,
@@ -267,9 +939,17 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
 	// bumps it in place, and the engine mutates it further during the run —
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneMap(cp.ArtifactVersions))
+	artifactVersions := cloneMap(cp.ArtifactVersions)
+	artifactState = cloneResumeArtifactState(artifactState)
+	artifactRevisions := artifactState.revisions
+	artifacts := artifactState.artifacts
+	artifactOwners := artifactState.owners
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp.SelectedIncoming)
 	if err != nil {
 		return err
+	}
+	if pub := nodePublish(e.workflow.Nodes[humanNodeID]); pub != "" {
+		artifactOwners[pub] = humanNodeID
 	}
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
@@ -278,7 +958,8 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// publisher flips the run to queued before the runner claims the
 	// resume message (Resume's queued case routed here on the pending
 	// interaction evidence). The CAS still serializes concurrent claims.
-	if err := e.claimForResume(ctx, runID, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+	// The claim also CONSUMES the pause pointer — see claimForResume.
+	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
 		return err
 	}
 
@@ -292,7 +973,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// `rewind --auto` re-report edits that already ran — the same
 	// monotonically-growing pivot the failure path restamps to avoid.
 	e.restampWorkflowSource(ctx, r)
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifactOwners, artifacts)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -315,16 +996,17 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	if cp.BackendName != "" {
 		node, ok := e.workflow.Nodes[humanNodeID]
 		if !ok {
-			return fmt.Errorf("runtime: paused node %q not found in workflow", humanNodeID)
+			return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: paused node %q not found in workflow", humanNodeID)}
 		}
 		ni := &model.ErrNeedsInteraction{
-			NodeID:           humanNodeID,
-			Questions:        cp.InteractionQuestions,
-			SessionID:        cp.BackendSessionID,
-			Backend:          cp.BackendName,
-			Conversation:     cp.BackendConversation,
-			PendingToolUseID: cp.BackendPendingToolUseID,
-			SessionStateRef:  cp.BackendSessionStateRef,
+			NodeID:             humanNodeID,
+			Questions:          cp.InteractionQuestions,
+			SessionID:          cp.BackendSessionID,
+			SessionFingerprint: cp.BackendSessionFingerprint,
+			Backend:            cp.BackendName,
+			Conversation:       cp.BackendConversation,
+			PendingToolUseID:   cp.BackendPendingToolUseID,
+			SessionStateRef:    cp.BackendSessionStateRef,
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
@@ -372,6 +1054,133 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	return loopErr
 }
 
+// resumeFromRecoveryPause continues a run the recovery dispatcher parked on a
+// FAILED node (RecoveryPauseForHuman: an auth rotation, a budget bump, a
+// rate-limit reset). The operator's answer is an acknowledgement that the
+// cause is addressed — it is recorded on the interaction for the audit
+// trail, then the node RE-EXECUTES from its own dispatch, exactly as a
+// failed_resumable resume would restart it. It never becomes the node's
+// output: the pause's question promises a retry, and a gate downstream
+// cannot tell "the agent changed nothing" from "the agent never ran".
+//
+// The restored NodeAttempts keep the dispatcher's per-(node, code) budget
+// counting across the pause, so a second identical failure is judged as
+// the second attempt, not a fresh first one.
+func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any, artifactState *resumeArtifactState) error {
+	runID := r.ID
+	nodeID := cp.NodeID
+	if _, ok := e.workflow.Nodes[nodeID]; !ok {
+		return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: nodeID, Message: fmt.Sprintf("runtime: recovery-paused node %q not found in workflow", nodeID)}
+	}
+	if err := e.recordHumanAnswers(ctx, r, cp, answers); err != nil {
+		return err
+	}
+	resumeData := map[string]any{
+		"resumed_from": "recovery_pause",
+		"restart_node": nodeID,
+	}
+	if cp.RecoveryCode != "" {
+		resumeData["recovery_code"] = cp.RecoveryCode
+	}
+	if err := e.claimForResumeWithData(ctx, r, cp, resumeData, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+		return err
+	}
+	// A budget pause resumed without a raised cap would re-run the node
+	// straight into the same wall; the same pre-flight the failure path
+	// applies refuses it with the real cause instead.
+	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
+		return err
+	}
+	// The node's own output slot stays empty: it produced nothing.
+	outputs := copyOutputs(cp.Outputs)
+	if outputs == nil {
+		outputs = make(map[string]map[string]any)
+	}
+	artifactVersions := cloneMap(cp.ArtifactVersions)
+	if artifactVersions == nil {
+		artifactVersions = make(map[string]int)
+	}
+	artifactState = cloneResumeArtifactState(artifactState)
+	artifactRevisions := artifactState.revisions
+	e.restampWorkflowSource(ctx, r)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifactState.owners, artifactState.artifacts)
+	if rbErr != nil {
+		return rbErr
+	}
+	defer sandboxCleanup()
+	rs.ctx = ctx
+	if e.logger != nil {
+		e.logger.Info("resume %s: recovery pause on node %q (%s) acknowledged — re-executing the node", runID, nodeID, cp.RecoveryCode)
+	}
+
+	loopErr := e.execLoop(ctx, rs, nodeID)
+	e.evictRunSessions(runID, loopErr)
+	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
+		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
+	}
+	return loopErr
+}
+
+// resumeParallelPause answers a human node owned by one fan-out branch, then
+// restarts at the router. The durable branch cursors make completed siblings
+// return immediately and the answered branch consumes ResumeAnswers exactly
+// once before continuing with its private loop counters.
+func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any, artifactState *resumeArtifactState) error {
+	runID := r.ID
+	humanNodeID := cp.Parallel.PendingNodeID
+	branchID := cp.Parallel.PendingBranchID
+	answers = e.coerceAnswersToSchema(humanNodeID, answers)
+	e.seedRepoRootForResume(r)
+	e.resolveFileAnswers(ctx, runID, answers)
+
+	answerCP := *cp
+	answerCP.NodeID = humanNodeID
+	if err := e.recordHumanAnswers(ctx, r, &answerCP, answers); err != nil {
+		return err
+	}
+
+	parallel := newParallelExecutionState(cp.Parallel)
+	if err := parallel.setResumeAnswers(branchID, answers); err != nil {
+		return err
+	}
+	persisted := *cp
+	persisted.Parallel = parallel.snapshot()
+	// Persist the consumed answer while the run is still paused. If the
+	// process dies immediately after the subsequent claim, orphan recovery
+	// still resumes the exact branch instead of asking the question again.
+	if err := e.store.PauseRun(ctx, runID, &persisted); err != nil {
+		return fmt.Errorf("runtime: persist parallel resume answer: %w", err)
+	}
+	if err := e.claimForResume(ctx, r, &persisted, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+		return err
+	}
+
+	e.restampWorkflowSource(ctx, r)
+	outputs := copyOutputs(persisted.Outputs)
+	if outputs == nil {
+		outputs = make(map[string]map[string]any)
+	}
+	artifactVersions := cloneMap(persisted.ArtifactVersions)
+	if artifactVersions == nil {
+		artifactVersions = make(map[string]int)
+	}
+	artifactState = cloneResumeArtifactState(artifactState)
+	artifactRevisions := artifactState.revisions
+	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions, artifactRevisions, artifactState.owners, artifactState.artifacts)
+	if err != nil {
+		return err
+	}
+	defer sandboxCleanup()
+	rs.ctx = ctx
+
+	loopErr := e.execLoop(ctx, rs, persisted.Parallel.RouterNodeID)
+	e.evictRunSessions(runID, loopErr)
+	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
+		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
+	}
+	return loopErr
+}
+
 // recordHumanAnswers loads the pending interaction (falling back to the
 // checkpoint's embedded questions if the on-disk file is missing), stamps
 // the operator's answers + AnsweredAt, writes the interaction back, and
@@ -409,26 +1218,36 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int, outputs, artifacts map[string]map[string]any, artifactRevisions map[string]store.ArtifactRevisionRef, selectedIncoming map[string][]store.IncomingEdge) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
-		return nil, fmt.Errorf("runtime: human node %q not found in workflow", humanNodeID)
+		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
 	}
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
+	if artifactRevisions == nil {
+		artifactRevisions = make(map[string]store.ArtifactRevisionRef)
+	}
+	contractState := &runState{
+		outputs: outputs, artifacts: artifacts, artifactVersions: artifactVersions,
+		artifactRevisions: artifactRevisions, selectedIncoming: cloneIncoming(selectedIncoming),
+	}
 	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{
-			RunID:   runID,
-			NodeID:  humanNodeID,
-			Version: version,
-			Data:    answers,
+			RunID:    runID,
+			NodeID:   humanNodeID,
+			Version:  version,
+			Data:     answers,
+			Contract: e.artifactContractFor(humanNodeID, humanNode, version, contractState),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return nil, fmt.Errorf("runtime: write human artifact: %w", err)
 		}
 		artifactVersions[humanNodeID] = version + 1
+		artifacts[pub] = answers
+		artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: humanNodeID, Version: version, ContractLogicalRef: pub}
 		// The artifact itself is durably written; the event is
 		// observational. Best-effort emit — log the failure so the
 		// observability gap is visible rather than swallowing it
@@ -449,21 +1268,81 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 }
 
 // claimForResume atomically claims a run for resume via a compare-and-set
-// on the run status, then emits run_resumed (no data). Returns a clear
-// error when the CAS rejects the transition — typically a second concurrent
-// resume racing the first, which we refuse rather than spawn a duplicate
-// execution clobbering run.json. Used by the human-pause path; the
-// failed-resumable path claims via claimForFailureResume because it
-// carries resume-data on the emit.
-func (e *Engine) claimForResume(ctx context.Context, runID string, allowed ...store.RunStatus) error {
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", allowed)
+// on the run status, consumes the pause pointer, then emits run_resumed
+// (no data). Returns a clear error when the CAS rejects the transition —
+// typically a second concurrent resume racing the first, which we refuse
+// rather than spawn a duplicate execution clobbering run.json. The single
+// choke point for BOTH human-pause resume paths (single-shot answers and
+// the review gate) — a claim without the consumption reopens the
+// stale-pointer window on that path alone. The failed-resumable path
+// claims via claimForFailureResume because it carries resume-data on the
+// emit (its checkpoint holds no pause pointer: failure boundaries never
+// set one, and a pause's pointer was consumed by the resume that used it).
+func (e *Engine) claimForResume(ctx context.Context, r *store.Run, cp *store.Checkpoint, allowed ...store.RunStatus) error {
+	return e.claimForResumeWithData(ctx, r, cp, nil, allowed...)
+}
+
+// claimForResumeWithData is claimForResume carrying a run_resumed payload
+// — the recovery-pause resume stamps {resumed_from, restart_node,
+// recovery_code} the way the failure path stamps {resumed_from,
+// restart_node}, so the trace names the retry. nil data keeps the plain
+// human-pause shape.
+func (e *Engine) claimForResumeWithData(ctx context.Context, r *store.Run, cp *store.Checkpoint, data map[string]any, allowed ...store.RunStatus) error {
+	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, r.ID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
 	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", runID)
+		return fmt.Errorf("runtime: run %q is already being executed (status no longer paused); refusing duplicate resume", r.ID)
 	}
-	return e.emit(ctx, runID, store.EventRunResumed, "", nil)
+	e.consumePausePointer(ctx, r, cp)
+	return e.markResumed(ctx, r.ID, data)
+}
+
+// markResumed is the tail every resume claim shares once the CAS names
+// this engine the owner: refresh the doc's effective-caps snapshot for
+// the attempt about to run (the budget is re-resolved per attempt, and
+// the platform ceiling is only known here — see stampEffectiveBudget),
+// then emit run_resumed. One tail, so a second resume path cannot ship
+// without the stamp the first one needs.
+func (e *Engine) markResumed(ctx context.Context, runID string, data map[string]any) error {
+	e.stampEffectiveBudget(ctx, runID)
+	return e.emit(ctx, runID, store.EventRunResumed, "", data)
+}
+
+// consumePausePointer clears the interaction evidence off the persisted
+// checkpoint right after a resume claim. The checkpoint survives the
+// running claim (ADR-095: a status transition never destroys it), so
+// leaving the evidence in place would hand a STALE InteractionID to
+// Resume's `queued` router after a later park (drain, orphan sweep): that
+// re-entry would route back into the pause path and overwrite the
+// operator's recorded answers with the retry's empty ones — silently
+// crossing the human gate. With the pointer cleared, a park inside this
+// window resumes through resumeFromFailure anchored on cp.NodeID: the
+// gate re-pauses and re-asks, answers intact.
+func (e *Engine) consumePausePointer(ctx context.Context, r *store.Run, cp *store.Checkpoint) {
+	if cp == nil || (cp.InteractionID == "" && len(cp.InteractionQuestions) == 0) {
+		return
+	}
+	// The caller's cp stays whole: the delegate-pause and review-gate
+	// paths still read its InteractionID in memory.
+	consumed := *cp
+	consumed.InteractionID = ""
+	consumed.InteractionQuestions = nil
+	consumed.RecoveryPause = false
+	consumed.RecoveryCode = ""
+	err := e.store.SaveCheckpoint(ctx, r.ID, &consumed)
+	if err != nil {
+		// One retry: a failed consumption reopens the human-gate window,
+		// while aborting here would wedge a run already claimed running.
+		err = e.store.SaveCheckpoint(ctx, r.ID, &consumed)
+	}
+	if err != nil && e.logger != nil {
+		e.logger.Error("resume %s: could not clear the consumed pause pointer — a later park may replay interaction %q over the operator's answers: %v", r.ID, cp.InteractionID, err)
+	}
+	// Align the in-memory run with what is persisted, so a future
+	// SaveRun(r) on this path cannot resurrect the pointer.
+	r.Checkpoint = &consumed
 }
 
 // seedRepoRootForResume fills e.repoRoot from the run record when it has
@@ -496,7 +1375,7 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 // On a sandbox-start failure it persists failed_resumable (PRESERVING the
 // rich checkpoint so the next resume doesn't restart from entry) and
 // returns the error with a nil runState and a no-op cleanup.
-func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int) (*runState, func(), error) {
+func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int, artifactRevisions map[string]store.ArtifactRevisionRef, artifactOwners map[string]string, artifacts map[string]map[string]any) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
 
@@ -557,35 +1436,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		// Same rationale as resumeFromFailure: a sandbox-start failure
-		// at resume time is almost always recoverable (stale container,
-		// docker hiccup, image pull race). Marking failed_resumable
-		// preserves the captured human answers + checkpoint so a
-		// follow-up /resume can complete once docker is unblocked.
-		//
-		// PRESERVE the rich checkpoint (outputs, loop counters, artifact
-		// versions) — a NodeID-only stub would wipe everything the bot
-		// accumulated and force the next resume to restart from entry,
-		// defeating the failed_resumable contract. Observed 2026-05-25
-		// during the issue #5 dogfood (finding `resume-orphan-gap.md`):
-		// repeated sandbox-failure resumes silently nil'd Outputs across
-		// 4 attempts before a watchexec restart re-fired the entire bot
-		// from `plan`, wasting 1.5h of prior work.
-		preservedCp := r.Checkpoint
-		if preservedCp == nil {
-			preservedCp = &store.Checkpoint{NodeID: humanNodeID}
-		}
-		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); err != nil {
-			// FailRunResumable failed too — fall back to a hard
-			// "failed" status flip so the run doesn't appear stuck.
-			// If even that fails, log loudly: the store is in a bad
-			// state and silently dropping the second failure would
-			// leave the run in `running` forever.
-			if uerr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error()); uerr != nil && e.logger != nil {
-				e.logger.Warn("runtime: resume: failed both FailRunResumable (%v) and UpdateRunStatus (%v) for run %s after sandbox error: %v", err, uerr, runID, sbErr)
-			}
-		}
-		return nil, nil, fmt.Errorf("runtime: sandbox: %w", sbErr)
+		return nil, nil, e.parkResumeSandboxFailure(ctx, runID, r.Checkpoint, humanNodeID, sbErr)
 	}
 
 	rs := e.newRunState(runID, r.Inputs)
@@ -598,7 +1449,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// startSandbox, so attachmentPath reads the settled sandbox state.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	rs.outputs = outputs
-	rs.artifacts = e.rebuildArtifacts(outputs)
+	rs.artifactRevisions = artifactRevisions
+	rs.artifactOwners = artifactOwners
+	rs.artifacts = artifacts
 	rs.loopCounters = loopCounters
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
@@ -608,9 +1461,13 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
 	rs.pauseSessionRef = cp.BackendSessionStateRef
+	if cp.Parallel != nil {
+		rs.parallel = newParallelExecutionState(cp.Parallel)
+	}
 	restoreLoopSnapshots(rs, cp)
-	restoreBudgetAccounting(rs, cp)
+	e.restoreCheckpointBudget(rs, cp)
 	restoreSelectedIncoming(rs, cp)
+	restoreRunEvents(rs, cp)
 	// Do not EvictRun here: pause-resume must keep in-process claw
 	// message history (evictRunSessions already skips ErrRunPaused).
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
@@ -634,6 +1491,128 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	return rs, sandboxCleanup, nil
 }
 
+// parkResumeSandboxFailure records a sandbox-start failure met on a
+// resume arm — the one place both arms (pause, failure) write it, so a
+// resumed run's park cannot drift from a launched run's.
+//
+// The run stays RESUMABLE whatever the cause: a stale container, a
+// docker hiccup, an image-pull race clear from the operator's side, and
+// a terminal `failed` would force a fresh launch that loses every
+// committed node. The rich checkpoint is PRESERVED (outputs, loop
+// counters, artifact versions) — a NodeID-only stub would wipe
+// everything the bot accumulated and restart the next resume from the
+// entry; fallbackNode only serves a run that never earned one.
+//
+// The cause is TYPED through the classification the launch path uses
+// (setupFailureStatus), so the runner's retry lane reads a resumed run
+// exactly as a launched one: a sandbox phase timeout lands as
+// SANDBOX_SETUP_TIMEOUT (a redelivery to a fresh pod routinely clears
+// the stall), a pod the cluster had no room for as SANDBOX_CAPACITY, a
+// drain as INTERRUPTED. An operator cancel is honoured as
+// `cancelled` with the checkpoint kept — the same CAS shape the node
+// loop uses, so a reason the publisher already recorded is never
+// overwritten. Every write is loud on failure: a park that does not
+// land leaves the run `running` until the orphan reconcile catches it,
+// and that must be said, not swallowed.
+//
+// The writes ride a DETACHED, bounded context: on the cancel and drain
+// arms the run ctx is the very ctx that was just cancelled, and a store
+// that honours it (Mongo) would refuse every write — the run would read
+// `running` forever with the park logged as "context canceled". Same
+// convention as the node loop's handleContextDoneWithCheckpoint and the
+// launch path's markFailedBestEffort.
+//
+// The returned error is what the runner classifies, so it carries the
+// same sentinel the status carries — ErrRunCancelled for an operator
+// cancel (acked, never redelivered), ErrRunInterrupted for a drain
+// (naked, exempt from the DLQ park), the driver's own
+// sandbox.ErrPhaseTimeout for a stall and sandbox.ErrCapacity for a pod
+// that never got placed (both naked with a delay) — mirroring setupErr on the launch
+// path. A bare wrap would read as a generic failure: an operator cancel
+// burning a delivery, a drain parked on the DLQ.
+func (e *Engine) parkResumeSandboxFailure(ctx context.Context, runID string, cp *store.Checkpoint, fallbackNode string, sbErr error) error {
+	if cp == nil {
+		cp = &store.Checkpoint{NodeID: fallbackNode}
+	}
+	status, msg, code := setupFailureStatus(ctx, "sandbox start", sbErr)
+	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), resumeParkWriteBudget)
+	defer cancelWrite()
+	if status == store.RunStatusCancelled {
+		if err := e.store.SaveCheckpoint(writeCtx, runID, cp); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: resume: save checkpoint on cancel during sandbox start for run %s: %v", runID, err)
+		}
+		changed, err := e.store.UpdateRunStatusIfCoded(writeCtx, runID, store.RunStatusCancelled, msg, code,
+			[]store.RunStatus{store.RunStatusRunning})
+		if changed {
+			// Only when THIS write landed: a declined CAS means a peer
+			// already recorded the stop and emitted for it.
+			e.emitSetupFailure(writeCtx, runID, "sandbox start", store.RunStatusCancelled, msg, code)
+		}
+		switch {
+		case err != nil && e.logger != nil:
+			e.logger.Warn("runtime: resume: could not record the cancel during sandbox start for run %s: %v — run left non-terminal", runID, err)
+		case !changed && e.logger != nil:
+			// The nominal cloud shape: the publisher CASes the doc to
+			// `cancelled` with the operator's reason BEFORE the cancel
+			// subject reaches this engine, so the decline is expected and
+			// the recorded reason stands. Anything else that moved the doc
+			// off `running` is worth a look.
+			cur, lerr := e.store.LoadRun(writeCtx, runID)
+			switch {
+			case lerr == nil && cur != nil && cur.Status == store.RunStatusCancelled:
+				e.logger.Info("runtime: resume: cancel during sandbox start for run %s already recorded (%q) — keeping that reason", runID, cur.Error)
+			case lerr == nil && cur != nil:
+				e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running` for %s (a peer wrote its terminal status first; that status stands)", runID, cur.Status)
+			default:
+				e.logger.Warn("runtime: resume: cancel during sandbox start for run %s not recorded — the doc had already left `running`, and re-reading it failed (%v)", runID, lerr)
+			}
+		}
+		return fmt.Errorf("%w: sandbox start: %v", ErrRunCancelled, sbErr)
+	}
+	if err := e.store.FailRunResumable(writeCtx, runID, cp, msg, code); err != nil {
+		// Fall back to a plain terminal status so the run does not linger
+		// as `running`. On its OWN short budget: the park's budget is what
+		// a wedged store has just consumed, and a fallback sharing it
+		// would be dead code on exactly the timeout it exists for. If THAT
+		// fails too the run is stuck non-terminal until the runner's
+		// redelivery adopts the `running` doc under the lock, so say so.
+		fbCtx, cancelFb := context.WithTimeout(context.WithoutCancel(ctx), resumeParkFallbackBudget)
+		uerr := e.store.UpdateRunStatusCoded(fbCtx, runID, store.RunStatusFailed, msg, code)
+		switch {
+		case uerr != nil:
+			if e.logger != nil {
+				e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, err, uerr)
+			}
+			// Nothing terminal was recorded: an event claiming otherwise
+			// would be the only thing on the timeline, and false.
+		default:
+			// The fallback landed a TERMINAL failed, not the park the
+			// status line promised — say that, not `status`. On the
+			// FALLBACK's budget, never the park's: this branch is reached
+			// only because writeCtx expired, so an emit riding it would be
+			// dead code on exactly the path it exists for.
+			e.emitSetupFailure(fbCtx, runID, "sandbox start", store.RunStatusFailed, msg, code)
+		}
+		cancelFb()
+	} else {
+		e.emitSetupFailure(writeCtx, runID, "sandbox start", status, msg, code)
+	}
+	if code == store.FailureInterrupted {
+		return fmt.Errorf("%w: sandbox start: %v", ErrRunInterrupted, sbErr)
+	}
+	return fmt.Errorf("runtime: sandbox: %w", sbErr)
+}
+
+// resumeParkWriteBudget bounds the resume-arm park's writes (the same 5s
+// teardown-write convention as the node loop); resumeParkFallbackBudget
+// is the terminal fallback's own, shorter bound — separate because the
+// first is what a wedged store has just spent. Vars so a test can shrink
+// them.
+var (
+	resumeParkWriteBudget    = 5 * time.Second
+	resumeParkFallbackBudget = 2 * time.Second
+)
+
 // resumeFromFailure resumes a failed_resumable run by re-executing from
 // the failing node (with checkpoint) or by restarting from the workflow
 // entry node (no checkpoint). The "no checkpoint" path matters when a
@@ -641,19 +1620,31 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // network cuts during plan, claude_code subprocess crashes, etc. Without
 // it, those runs are dead-on-arrival because validateResumable lets
 // them through but the engine refuses to resume.
-func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
+func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared ...*resumeArtifactState) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(ctx, r); err != nil {
-		return err
-	}
 
 	cp := r.Checkpoint
+	artifactState := (*resumeArtifactState)(nil)
+	if len(prepared) > 0 {
+		artifactState = prepared[0]
+	}
+	if artifactState == nil {
+		var err error
+		artifactState, err = e.prepareResumeArtifacts(ctx, r, cp)
+		if err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
+	}
+	cp = checkpointWithPreparedParallel(cp, artifactState)
 	restartNodeID := e.workflow.Entry
 	if cp != nil {
 		restartNodeID = cp.NodeID
 	}
 
 	if err := e.claimForFailureResume(ctx, runID, cp, restartNodeID); err != nil {
+		return err
+	}
+	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
 		return err
 	}
 
@@ -676,35 +1667,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	}
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, resolveWorktreeGitDir(repoRoot, r.WorkDir), r.Inputs)
 	if sbErr != nil {
-		// Sandbox-start failures on resume are almost always recoverable
-		// from the operator's side: stale containers (force-removable),
-		// docker daemon hiccups, image pull races, etc. Marking the run
-		// `failed_resumable` instead of `failed` keeps the door open for
-		// a second /resume after the operator addresses the underlying
-		// cause — the alternative (status=failed) is terminal and forces
-		// a fresh launch that loses all committed per-package work.
-		// PRESERVE the rich checkpoint — same rationale as the sister
-		// branch in resumeFromPause: a NodeID-only stub here would wipe
-		// Outputs/LoopCounters/etc and force the next resume to restart
-		// from entry. Issue #5's 2026-05-25 dogfood showed this in
-		// practice: 4 sandbox-related sub-failures across the run
-		// silently degraded the checkpoint until a final watchexec
-		// restart re-ran the bot from `plan`, throwing away 1.5h of
-		// fix_claude iterations.
-		preservedCp := cp
-		if preservedCp == nil {
-			preservedCp = &store.Checkpoint{NodeID: e.workflow.Entry}
-		}
-		if frErr := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); frErr != nil {
-			// FailRunResumable failed — fall back to a plain terminal status so
-			// the run doesn't linger as `running`. If THAT also fails the run is
-			// stuck non-terminal (an orphan the operator must hand-hack), so
-			// surface it instead of swallowing the error.
-			if usErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error()); usErr != nil && e.logger != nil {
-				e.logger.Warn("runtime: resume: could not finalize run %s after sandbox failure (FailRunResumable: %v; UpdateRunStatus fallback: %v) — run left non-terminal", runID, frErr, usErr)
-			}
-		}
-		return fmt.Errorf("runtime: sandbox: %w", sbErr)
+		return e.parkResumeSandboxFailure(ctx, runID, cp, e.workflow.Entry, sbErr)
 	}
 	defer sandboxCleanup()
 
@@ -714,7 +1677,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// {{attachments.<name>}} reference silently resolves to nothing for
 	// the rest of a resumed run.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
-	e.restoreCheckpointState(rs, cp)
+	e.restoreCheckpointState(rs, cp, artifactState)
 	e.adoptCheckpointSessions(rs)
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
@@ -767,7 +1730,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 	if cp == nil {
 		resumeData["from_entry"] = true
 	}
-	return e.emit(ctx, runID, store.EventRunResumed, "", resumeData)
+	return e.markResumed(ctx, runID, resumeData)
 }
 
 // restoreResumeWorkspace re-establishes the per-run working environment on
@@ -806,7 +1769,7 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 // rehydration pin. A nil cp is a no-op — rs keeps the empty maps from
 // newRunState (same state shape as a fresh launch; only the run_id is
 // preserved so the studio's snapshot continuity stays intact).
-func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
+func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint, artifactState *resumeArtifactState) {
 	if cp == nil {
 		return
 	}
@@ -818,7 +1781,10 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	if rs.outputs == nil {
 		rs.outputs = make(map[string]map[string]any)
 	}
-	rs.artifacts = e.rebuildArtifacts(rs.outputs)
+	artifactState = cloneResumeArtifactState(artifactState)
+	rs.artifactRevisions = artifactState.revisions
+	rs.artifactOwners = artifactState.owners
+	rs.artifacts = artifactState.artifacts
 	// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
 	// mutate loopCounters/roundRobinCounters and artifactVersions in
 	// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
@@ -838,14 +1804,18 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	}
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
-	restoreBudgetAccounting(rs, cp)
+	e.restoreCheckpointBudget(rs, cp)
 	restoreSelectedIncoming(rs, cp)
+	restoreRunEvents(rs, cp)
 	pinBackendRehydration(rs, cp)
 	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
 	if rs.nodeSessions == nil {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
 	rs.pauseSessionRef = cp.BackendSessionStateRef
+	if cp.Parallel != nil {
+		rs.parallel = newParallelExecutionState(cp.Parallel)
+	}
 }
 
 // pinBackendRehydration pins a checkpoint's backend conversation (claw) or
@@ -931,8 +1901,11 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 
 	// Build input and execute LLM.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
-	execCtx := model.WithLoopIteration(ctx, iter)
+	execCtx := e.execContext(ctx, rs, nodeID)
+	execCtx = model.WithLoopIteration(execCtx, iter)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
 		// the routine case so a human is only pulled in for a real decision.
@@ -945,6 +1918,13 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		// human half — the same pause the LLM produces when it declines to
 		// answer. Cancellation still propagates: a run being stopped is not
 		// a helper failure.
+		//
+		// Either way the attempt is over and its spend is final — the human
+		// half answers next, and a human reports no tokens — so book before
+		// BOTH exits below write (failRunWithCheckpoint, persistPause):
+		// after either, the checkpoint a resume reads its carry from is
+		// already on disk without this pass.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		if ctx.Err() != nil {
 			return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
 		}
@@ -959,11 +1939,6 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		return true, nil
 	}
 
-	// Record budget usage.
-	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
-		return false, err
-	}
-
 	// Inspect the needs_human_input flag.
 	needsHuman := false
 	if v, ok := output["needs_human_input"]; ok {
@@ -976,34 +1951,48 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	delete(output, "needs_human_input")
 
 	if needsHuman {
+		if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+			return false, err
+		}
 		if err := e.persistPause(rs, nodeID); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
 
-	// LLM decided no human input needed — store output and continue.
-	rs.outputs[nodeID] = output
-
-	// Validate output against declared schema (optional).
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
-		return false, e.failRunErrWithCheckpoint(rs, nodeID, err)
+	// LLM decided no human input needed — validate/correct before recording
+	// budget usage so repaired metadata and optional correction usage are
+	// included in the node's accounting.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	output = validatedOutput
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return false, err
 	}
+	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return false, e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
+		return false, e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
+	}
+	rs.outputs[nodeID] = output
 
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
 		version := rs.artifactVersions[nodeID]
 		artifact := &store.Artifact{
-			RunID:   rs.runID,
-			NodeID:  nodeID,
-			Version: version,
-			Data:    output,
+			RunID:    rs.runID,
+			NodeID:   nodeID,
+			Version:  version,
+			Data:     output,
+			Contract: e.artifactContractFor(nodeID, node, version, rs),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactOwners[pub] = nodeID
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
@@ -1457,6 +2446,11 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 	fields := interactionFields(node)
 	answers, _, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
+		// The auto-answer is a billed model call of its own, and on this
+		// exit `answers` carries its spend rather than answers. Terminal for
+		// the attempt, so book before failRunWithCheckpoint writes the
+		// checkpoint a resume reads its carry from.
+		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}
@@ -1477,6 +2471,9 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 	fields := interactionFields(node)
 	answers, needsHuman, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
+		// Same as handleInteractionLLM: `answers` is the failed call's spend
+		// on this exit, and this is the last frame that holds it.
+		e.recordFailedNodeSpend(rs, nodeID, answers)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
 	}
@@ -1573,6 +2570,25 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 
 	if ni.SessionID != "" {
 		nodeInput[delegate.SessionIDKey] = ni.SessionID
+		// An id recovered from a pause is best-effort by construction:
+		// the CLI transcript behind it lives on the host that ran the
+		// node, and a human gate can outlive that host (a cloud resume
+		// gets a fresh pod with an empty ~/.claude). Declaring it
+		// droppable lets the executor degrade to a fresh session once,
+		// loudly, instead of re-issuing `--resume <gone>` and failing the
+		// node identically on every attempt for the rest of the run.
+		nodeInput[delegate.SessionOptionalKey] = true
+		// The fingerprint travels with the id, and REPLACES whatever the
+		// edge carried: the pause's id is this node's own session, so an
+		// upstream node's fingerprint left beside it would describe a
+		// different session. Absent (a checkpoint written before the
+		// field existed) means unknown, which is what the backend's fork
+		// guard already treats conservatively.
+		if ni.SessionFingerprint != "" {
+			nodeInput[delegate.SessionFingerprintKey] = ni.SessionFingerprint
+		} else {
+			delete(nodeInput, delegate.SessionFingerprintKey)
+		}
 	}
 	if ni.SessionStateRef != "" || rs.pauseSessionRef != "" {
 		ref := ni.SessionStateRef
@@ -1584,9 +2600,10 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Re-execute the node. The executor will use the session ID for
 	// delegate re-invocation if the backend supports it.
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
-	execCtx = model.WithRunID(execCtx, rs.runID)
-	execCtx = model.WithNodeID(execCtx, nodeID)
+	execCtx = e.execContext(execCtx, rs, nodeID)
+	execStart := time.Now()
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1
 		// so the maxInteractionDepth guard in handleNeedsInteraction
@@ -1594,10 +2611,34 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		// exhaustion.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(err, &needsInput) {
+			// Still not booked: the call parks again and the NEXT
+			// re-invocation reports the session, exactly as the first one
+			// deferred to this one.
 			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput, depth+1)
 		}
+		// Terminal, and the end of the chain the main loop's interaction exit
+		// defers to: the call that raised ErrNeedsInteraction was deliberately
+		// not booked because "its spend is the resumed call's to report" —
+		// this IS the resumed call, so dropping the figure here loses both
+		// sessions, not one. Booked before failRunWithCheckpoint, which
+		// writes the checkpoint a resume reads its budget carry from.
+		e.recordFailedNodeSpend(rs, nodeID, output)
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
+	}
+
+	// Validate/correct before committing session state, so a discarded invalid
+	// payload cannot leave a durable slot that describes it.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, nodeID, node, output)
+	output = validatedOutput
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return err
+	}
+	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return e.handleContextDoneWithCheckpoint(rs, nodeID, ctxErr)
+		}
+		return e.failRunErrWithCheckpoint(rs, nodeID, validationErr)
 	}
 
 	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
@@ -1610,30 +2651,23 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// Store the output and continue execution normally.
 	rs.outputs[nodeID] = output
 
-	// Validate output.
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
-		return e.failRunErrWithCheckpoint(rs, nodeID, err)
-	}
-
-	// Record budget.
-	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
-		return err
-	}
-
 	// Persist artifact if node has publish.
 	if pub := nodePublish(node); pub != "" {
 		version := rs.artifactVersions[nodeID]
 		artifact := &store.Artifact{
-			RunID:   rs.runID,
-			NodeID:  nodeID,
-			Version: version,
-			Data:    output,
+			RunID:    rs.runID,
+			NodeID:   nodeID,
+			Version:  version,
+			Data:     output,
+			Contract: e.artifactContractFor(nodeID, node, version, rs),
 		}
 		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactOwners[pub] = nodeID
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
@@ -1687,10 +2721,11 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		"backend": ni.Backend,
 	}
 	pi := pauseInfo{
-		BackendSessionID:        ni.SessionID,
-		BackendName:             ni.Backend,
-		BackendConversation:     ni.Conversation,
-		BackendPendingToolUseID: ni.PendingToolUseID,
+		BackendSessionID:          ni.SessionID,
+		BackendSessionFingerprint: ni.SessionFingerprint,
+		BackendName:               ni.Backend,
+		BackendConversation:       ni.Conversation,
+		BackendPendingToolUseID:   ni.PendingToolUseID,
 	}
 	if len(ni.SessionStateBlob) > 0 {
 		ref := newSessionRef()
@@ -1725,11 +2760,16 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 // the backend with the original session ID (CLI backends) or replay the
 // persisted conversation (claw).
 type pauseInfo struct {
-	BackendSessionID        string
-	BackendName             string
-	BackendConversation     json.RawMessage
-	BackendPendingToolUseID string
-	BackendSessionStateRef  string
+	BackendSessionID string
+	// BackendSessionFingerprint is the provider fingerprint of
+	// BackendSessionID: without it a `session: fork` resume is refused
+	// the session the pause just recorded (shouldDropSessionFork drops a
+	// fork of unknown provenance).
+	BackendSessionFingerprint string
+	BackendName               string
+	BackendConversation       json.RawMessage
+	BackendPendingToolUseID   string
+	BackendSessionStateRef    string
 	// Kind tags the written Interaction (store.InteractionKindAwait for
 	// an await_answers tool escalation, "" for ordinary blocking pauses).
 	Kind string
@@ -1738,6 +2778,12 @@ type pauseInfo struct {
 	// Interaction so the whole thread re-renders on resume. Nil for
 	// ordinary single-shot human pauses.
 	Turns []store.InteractionTurn
+	// RecoveryPause marks a pause the recovery dispatcher wrote for a node
+	// whose execution failed (RecoveryPauseForHuman). The node still owes
+	// its work, so resume re-executes it instead of taking the answers as
+	// its output. RecoveryCode is the classified failure (AUTH_FAILED, …).
+	RecoveryPause bool
+	RecoveryCode  ErrorCode
 }
 
 // drainOperatorMessagesForPause empties the run's operator-queued
@@ -1842,10 +2888,13 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.InteractionID = interactionID
 	cp.InteractionQuestions = questions
 	cp.BackendSessionID = info.BackendSessionID
+	cp.BackendSessionFingerprint = info.BackendSessionFingerprint
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
 	cp.BackendSessionStateRef = info.BackendSessionStateRef
+	cp.RecoveryPause = info.RecoveryPause
+	cp.RecoveryCode = string(info.RecoveryCode)
 	if err := e.store.PauseRun(rs.ctx, rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}
@@ -1988,16 +3037,37 @@ func (e *Engine) ctxWithIteration(ctx context.Context, nodeID string, loopCounte
 // one was needed, the third more, and the cost grows monotonically —
 // precisely the loop the feature exists to cheapen.
 //
-// Only refreshed when the engine holds a source AND it actually differs,
-// so a plain resume touches nothing.
+// The source is refreshed only when the engine holds a different value. A
+// forced resume also persists its artifact-compatibility acknowledgement for
+// the target revision; an ordinary unchanged resume still touches nothing.
 func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	src := e.resolveWorkflowSource()
-	if src == "" || r == nil || src == r.WorkflowSource {
+	if r == nil {
 		return
 	}
-	r.WorkflowSource = src
-	if e.workflowHash != "" {
+	sourceChanged := src != "" && src != r.WorkflowSource
+	recordArtifactCompatibility := e.forceResume && e.workflowHash != ""
+	if !sourceChanged && !recordArtifactCompatibility {
+		return
+	}
+	if sourceChanged {
+		r.WorkflowSource = src
+		if e.workflowHash != "" {
+			r.WorkflowHash = e.workflowHash
+		}
+	}
+	if recordArtifactCompatibility {
+		// A forced migration accepts one coherent target revision. Cloud
+		// runners may know only its hash (the source text and file path are
+		// intentionally absent). Clear any stale source in that case: keeping
+		// revision A's text beside revision B's hash would make rewind --auto
+		// diff against the wrong baseline. An empty source makes auto-rewind
+		// fail safely while still allowing later resumes at the accepted hash.
+		if src == "" && r.WorkflowHash != e.workflowHash {
+			r.WorkflowSource = ""
+		}
 		r.WorkflowHash = e.workflowHash
+		r.ArtifactCompatibilityRevision = e.workflowHash
 	}
 	// Re-read before writing. BOTH call sites run AFTER the resume CAS
 	// flipped the run to `running` — and the claim helpers mutate their
@@ -2005,10 +3075,12 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	// which therefore still carries the pre-claim status. SaveRun writes
 	// the whole document, so saving `r` verbatim would silently undo the
 	// claim: the run persists as cancelled/paused_* for its entire
-	// execution, the Checkpoint and FinishedAt that the `running`
-	// transition deliberately cleared come back, and — worst — the
+	// execution, the FinishedAt that the `running` transition
+	// deliberately cleared comes back, and — worst — the
 	// duplicate-resume guard falls, letting a second concurrent resume
-	// claim the same run id and spawn a second engine on it.
+	// claim the same run id and spawn a second engine on it. (The
+	// Checkpoint is NOT part of that argument: a status transition never
+	// destroys it — ADR-095 §5.)
 	fresh, lerr := e.store.LoadRun(ctx, r.ID)
 	if lerr != nil {
 		if e.logger != nil {
@@ -2018,6 +3090,16 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	}
 	fresh.WorkflowSource = r.WorkflowSource
 	fresh.WorkflowHash = r.WorkflowHash
+	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
+	// Preserve every execution-context field from the freshly loaded record.
+	// A resume-side authority may have updated that context after the entry
+	// snapshot was read. A forced source migration owns only the workflow
+	// revision, so patch that one field instead of replacing the whole context
+	// with the stale entry copy.
+	if recordArtifactCompatibility && fresh.ExecutionContext != nil {
+		fresh.ExecutionContext = fresh.ExecutionContext.Clone()
+		fresh.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
+	}
 	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}

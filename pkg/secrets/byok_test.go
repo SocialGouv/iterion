@@ -50,7 +50,7 @@ func TestResolve_PrioritizesUserOverTeam(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team-default", true)
 	user := mkKey(t, store, sealer, "team", "alice", ProviderOpenAI, "alice-default", "sk-alice-default", true)
 
-	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer)
+	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestResolve_FallsBackToTeam(t *testing.T) {
 	sealer := newSealer(t)
 	team := mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team-default", true)
 
-	got, _ := Resolve(context.Background(), store, "team", "bob", []Provider{ProviderOpenAI}, nil, sealer)
+	got, _ := Resolve(context.Background(), store, "team", "bob", []Provider{ProviderOpenAI}, nil, sealer, nil)
 	r := got[ProviderOpenAI]
 	if r.KeyID != team.ID || string(r.Plaintext) != "sk-team-default" || r.SourceScope != "team" {
 		t.Fatalf("expected team default, got %+v", r)
@@ -84,7 +84,7 @@ func TestResolve_OverrideWins(t *testing.T) {
 	got, _ := Resolve(context.Background(), store, "team", "alice",
 		[]Provider{ProviderOpenAI},
 		map[Provider]string{ProviderOpenAI: other.ID},
-		sealer)
+		sealer, nil)
 	r := got[ProviderOpenAI]
 	if r.KeyID != other.ID || string(r.Plaintext) != "sk-other" {
 		t.Fatalf("override should win: got %s, default was %s", r.KeyID, def.ID)
@@ -96,7 +96,7 @@ func TestResolve_HidesOtherUsersKeys(t *testing.T) {
 	sealer := newSealer(t)
 	mkKey(t, store, sealer, "team", "carol", ProviderOpenAI, "carol-only", "sk-carol", true)
 
-	got, _ := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer)
+	got, _ := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer, nil)
 	if _, ok := got[ProviderOpenAI]; ok {
 		t.Fatalf("alice should not see carol's user-scoped key")
 	}
@@ -108,7 +108,7 @@ func TestResolve_OmitsProviderWhenNoKey(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team", "sk-t", true)
 
 	got, _ := Resolve(context.Background(), store, "team", "alice",
-		[]Provider{ProviderOpenAI, ProviderAnthropic}, nil, sealer)
+		[]Provider{ProviderOpenAI, ProviderAnthropic}, nil, sealer, nil)
 	if _, ok := got[ProviderAnthropic]; ok {
 		t.Fatal("anthropic should be omitted (no key)")
 	}
@@ -211,7 +211,7 @@ func TestResolve_UserNonDefaultBeatsTeamDefault(t *testing.T) {
 	mkKey(t, store, sealer, "team", "", ProviderOpenAI, "team-default", "sk-team", true)
 	user := mkKey(t, store, sealer, "team", "alice", ProviderOpenAI, "alice-plain", "sk-alice", false)
 
-	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer)
+	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderOpenAI}, nil, sealer, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -244,4 +244,102 @@ func TestSealRunBundleRoundTrip(t *testing.T) {
 	if _, err := OpenRunBundle(sealer, "run-999", sealed); err == nil {
 		t.Fatal("expected AAD mismatch failure when run id changes")
 	}
+}
+
+// The usable predicate turns several keys of one provider into an ordered
+// fallback chain: a refused key is passed over and the walk yields the
+// NEXT one. Measured need (2026-09-02): a provider froze one key's account
+// and the resolver kept sealing it into every fresh run.
+func TestResolve_UsablePredicateWalksToTheNextKey(t *testing.T) {
+	store := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	first := mkKey(t, store, sealer, "team", "", ProviderZAI, "primary", "sk-zai-1", true)
+	second := mkKey(t, store, sealer, "team", "", ProviderZAI, "backup", "sk-zai-2", false)
+
+	refuse := map[string]bool{first.ID: true}
+	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderZAI}, nil, sealer,
+		func(k ApiKey) bool { return !refuse[k.ID] })
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r := got[ProviderZAI]; r.KeyID != second.ID {
+		t.Fatalf("expected the backup key after the primary was refused, got %+v", r)
+	}
+
+	// Every key refused: the provider is OMITTED, so the later credential
+	// tiers get their turn — an empty slot beats a poisoned one.
+	got, err = Resolve(context.Background(), store, "team", "alice", []Provider{ProviderZAI}, nil, sealer,
+		func(ApiKey) bool { return false })
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, ok := got[ProviderZAI]; ok {
+		t.Fatalf("expected no resolution when every key is refused, got %+v", got[ProviderZAI])
+	}
+}
+
+// An explicit override pin is NOT filtered by the predicate: the operator
+// named that key, and honouring the pin over the optimisation is what
+// keeps the predicate an optimisation.
+func TestResolve_UsablePredicateDoesNotFilterPins(t *testing.T) {
+	store := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	pinned := mkKey(t, store, sealer, "team", "", ProviderZAI, "pinned", "sk-zai-pinned", false)
+
+	got, err := Resolve(context.Background(), store, "team", "alice", []Provider{ProviderZAI},
+		map[Provider]string{ProviderZAI: pinned.ID}, sealer,
+		func(ApiKey) bool { return false })
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if r := got[ProviderZAI]; r.KeyID != pinned.ID {
+		t.Fatalf("expected the pinned key despite the predicate, got %+v", r)
+	}
+}
+
+// MarkFingerprintUsed bumps last_used_at on every row whose stable audit
+// identity matches — the seam the runner drives at metering time so a
+// key currently serving is distinguishable from an idle one (#659 pt 2).
+// The launch-grant-only MarkUsed(id, ...) never moved after admission,
+// leaving the studio with a frozen last_used_at on keys actively being
+// spent — measured live 2026-09-03.
+func TestMemoryApiKey_MarkFingerprintUsed(t *testing.T) {
+	store := NewMemoryApiKeyStore()
+	sealer := newSealer(t)
+	k1 := mkKey(t, store, sealer, "team-a", "u1", ProviderAnthropic, "k1", "sk-ant-live", false)
+	k2 := mkKey(t, store, sealer, "team-b", "u2", ProviderAnthropic, "k2", "sk-ant-other", false)
+
+	if k1.LastUsedAt != nil || k2.LastUsedAt != nil {
+		t.Fatalf("fresh keys must have no last_used_at: %v %v", k1.LastUsedAt, k2.LastUsedAt)
+	}
+
+	t.Run("empty fingerprint is a no-op", func(t *testing.T) {
+		if err := store.MarkFingerprintUsed(context.Background(), "", time.Now()); err != nil {
+			t.Fatalf("empty fp errored: %v", err)
+		}
+		if got, _ := store.Get(context.Background(), k1.ID); got.LastUsedAt != nil {
+			t.Fatalf("empty fp bumped a row: %v", got.LastUsedAt)
+		}
+	})
+
+	t.Run("unknown fingerprint is a no-op", func(t *testing.T) {
+		if err := store.MarkFingerprintUsed(context.Background(), "no-such-fp", time.Now()); err != nil {
+			t.Fatalf("unknown fp errored: %v", err)
+		}
+	})
+
+	t.Run("matching fingerprint bumps THAT key, not the sibling", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Second)
+		if err := store.MarkFingerprintUsed(context.Background(), k1.Fingerprint, now); err != nil {
+			t.Fatalf("mark: %v", err)
+		}
+		got1, _ := store.Get(context.Background(), k1.ID)
+		got2, _ := store.Get(context.Background(), k2.ID)
+		if got1.LastUsedAt == nil || !got1.LastUsedAt.Equal(now) {
+			t.Fatalf("k1.last_used_at = %v, want %v (the metering bump did not land)", got1.LastUsedAt, now)
+		}
+		if got2.LastUsedAt != nil {
+			t.Fatalf("k2.last_used_at = %v, want nil (only k1's fingerprint was metered)", got2.LastUsedAt)
+		}
+	})
 }

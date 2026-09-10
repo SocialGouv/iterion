@@ -86,6 +86,9 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("PATCH /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateMember)))
 	s.mux.Handle("DELETE /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveMember)))
 
+	// Team lifecycle (rename / status / delete / place an existing member).
+	s.registerTeamLifecycleRoutes()
+
 	// Org self-service (members / invitations / usage / teams). SSO and
 	// audit org routes are registered by their own files.
 	s.registerOrgRoutes()

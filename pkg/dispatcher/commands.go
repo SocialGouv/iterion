@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
@@ -350,6 +351,41 @@ const (
 // these fields plus dispatcher-immutables (c.tracker, c.logger, c.hostMarker).
 // This is the anti-race boundary for ADR-028 Step 3: cfg-derived transition
 // targets are captured here on the actor, never re-read by the worker.
+// cmdClaimLost is posted by a claimSession whose lease renewal found the
+// claim superseded: another owner (a reaper's recovery claim, a manual
+// re-claim) holds the card now. The only correct behaviour is to stop
+// the local worker — its fenced writes would all be refused anyway, and
+// letting the run keep burning tokens toward refusals helps nobody. The
+// cancel cause is ErrRunInterrupted (an INTERNAL stop): the run persists
+// failed_resumable, and whoever owns the card decides what happens next.
+type cmdClaimLost struct {
+	issueID string
+	// runID names the run whose session observed the loss. The message is
+	// queued and applied later, and the card is re-claimable the instant
+	// the previous claim goes — so by the time this lands, running[issueID]
+	// may already be a NEW run for the same card. Matching on the issue
+	// alone cancelled that innocent successor with ErrRunInterrupted.
+	runID string
+}
+
+func (m cmdClaimLost) apply(c *Dispatcher, _ context.Context) {
+	r, ok := c.state.running[m.issueID]
+	if !ok || r.Cancel == nil {
+		return
+	}
+	if m.runID != "" && r.RunID != m.runID {
+		// A different run holds the card now: the loss belonged to a run
+		// that has already gone. Cancelling here would kill work that has
+		// nothing to do with the superseded claim.
+		return
+	}
+	if r.CancelIssuedAt.IsZero() {
+		c.logger.Warn("dispatcher: %s claim superseded while the run was live (run=%s) — cancelling the worker", r.Identifier, r.RunID)
+		r.Cancel(runtime.ErrRunInterrupted)
+		r.CancelIssuedAt = time.Now().UTC()
+	}
+}
+
 type finishPlan struct {
 	kind           finishKind
 	issueID        string
@@ -361,6 +397,10 @@ type finishPlan struct {
 	attemptCount   int    // r.Attempt+1, for give-up logging only
 	runID          string // for give-up logging only
 	runErrText     string // for give-up logging only
+	// session is the claim's heartbeat, carried into the worker so it
+	// outlives the actor's entry and stops only AFTER the last write
+	// (release). nil when the tracker has no lease backend.
+	session *claimSession
 }
 
 // finishRun is the actor-goroutine-side teardown for a running entry.
@@ -416,32 +456,37 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// sibling from entry would replay the prefix (agents, tools,
 		// already-paid artefacts). Park: keep the claim, keep last_run,
 		// do not retry. The operator resumes THIS run with --force; cancel
-		// is not an escape because cancelled last_runs remain resumable and
-		// still forbid a fresh sibling. Same operator
+		// is not an escape because a cancelled last_run still forbids a
+		// fresh sibling (the way out is --clear-last-run). Same operator
 		// visibility as the pause arm below — badge, awaiting-input
 		// column, and a dashboard skip entry — otherwise the ticket
 		// strands invisibly: claimed, no live worker, no badge, and
 		// absent from the snapshot's running and retry tables.
 		c.stampLastRun(issueID, r)
-		c.setAwaitingInput(issueID, true)
-		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.setAwaitingInput(issueID, true, r.claim)
+		c.moveToAwaitingInput(issueID, r.Identifier, r.claim)
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
-			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket because a cancelled last_run is resumed from its checkpoint")
-		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch because a cancelled last_run is resumed from its checkpoint.", r.Identifier, r.RunID)
+			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket (a cancelled last_run still holds it; use --clear-last-run)")
+		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch (a cancelled last_run still holds the ticket; use --clear-last-run).", r.Identifier, r.RunID)
+		c.stopClaimSession(r)
 		c.fireSnapshot()
 		return
 	}
 
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
-		c.setAwaitingInput(issueID, true)
+		c.setAwaitingInput(issueID, true, r.claim)
 		// Move the card into the dedicated "awaiting input" column so the
 		// board shows "this pipeline needs me" at the column level (not only
 		// the per-card badge). Best-effort: a custom board without the state,
 		// or an external tracker that rejects it, keeps the card in place (the
 		// retained claim already blocks re-dispatch either way).
-		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.moveToAwaitingInput(issueID, r.Identifier, r.claim)
 		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — moved to awaiting-input, kept claimed, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
+		// The claim is deliberately RETAINED (ADR-014) but the heartbeat
+		// stops: a parked claim is protected by the reaper's paused-run
+		// exemption, not by a lease no live worker could renew anyway.
+		c.stopClaimSession(r)
 		c.fireSnapshot()
 		return
 	}
@@ -483,7 +528,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	case err == nil:
 		// A clean terminal run is no longer awaiting input — clear the
 		// denormalized board badge (best-effort HINT; see setAwaitingInput).
-		c.setAwaitingInput(issueID, false)
+		c.setAwaitingInput(issueID, false, r.claim)
 		// Honesty guard: a "clean" finish with no commit produced nothing
 		// directly mergeable, yet the transition below still moves the
 		// issue to CompletedState (default "review") — where an operator
@@ -524,15 +569,60 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// before postFinished — so a shell hook can't block the actor and
 		// the directory is gone before the claim is released. See
 		// cleanupWorkspace + runWorker.
+	case errors.Is(err, runtime.ErrRunCancelled):
+		// OPERATOR cancel — terminal for the retry policy on EVERY tracker.
+		// This choke point is what makes the invariant tracker-agnostic:
+		// the last_run guards below only exist on the native tracker, so
+		// without this arm a github/forgejo card would schedule a retry
+		// whose empty PrevRunID minted a FRESH run from the workflow entry
+		// — replaying the operator's cancelled work. Keep the claim + a
+		// visible skip (the source-changed arm's shape); the way out is an
+		// explicit resume (or, on native, --clear-last-run).
+		c.stampLastRun(issueID, r)
+		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
+			"run cancelled by the operator — resume it explicitly to continue; the ticket stays held")
+		c.logger.Info("dispatcher: %s cancelled by the operator (run=%s) — NOT retried; the ticket stays held until an explicit resume", r.Identifier, r.RunID)
+		c.stopClaimSession(r)
+		c.fireSnapshot()
+		return
 	case errors.Is(err, context.Canceled):
-		// Cancellation is a soft stop. Keep the workspace and any
-		// pending retry entry so the next tick can re-pick the issue.
-		// Revert the in-progress transition so the next dispatch sees
-		// the issue back in its source state (typically "ready"). The
-		// safety check inside revertTransition skips when the workflow
-		// or operator already moved the state elsewhere.
+		// Only the force-reap paths pass a literal context.Canceled
+		// (finishRun(ctx, id, context.Canceled) after a worker refused to
+		// exit): soft-stop bookkeeping — keep the workspace and any pending
+		// retry entry so the next tick can re-pick the issue, revert the
+		// in-progress transition. Engine outcomes never land here: an
+		// operator cancel arrives as ErrRunCancelled (above), an internal
+		// stop as ErrRunInterrupted (default arm → retry).
 		c.logger.Info("dispatcher: %s cancelled (run=%s)", r.Identifier, r.RunID)
 		plan.kind = finishRevert
+	case cfg.Agent.FailedState != "" && retrypolicy.IsDeterministic(runtimeFailureCode(err)):
+		// A failure the shared classification says a resume cannot cure:
+		// the same step, the same checkpoint, the same verdict. Retrying it
+		// to the attempt ceiling spends a workspace and a model budget per
+		// attempt to be told the same thing, and only then shows the
+		// operator a blocked card. Give up NOW — same terminal move, same
+		// board signal, without the burn.
+		//
+		// Gated on a REPRESENTABLE terminal state, exactly as `exhausted`
+		// is: `failed_state: none` resolves to "" (defaultOrNone) as an
+		// explicit opt-out, and a give-up plan carrying "" moves the ticket
+		// nowhere — the worker reverts it, and without a retry entry the
+		// next tick re-picks it immediately, backoff-free. When the board
+		// cannot say "failed", the ordinary bounded ladder below is the
+		// honest fallback.
+		c.logger.Warn("dispatcher: %s failed deterministically (run=%s, %s): %v — NOT retrying (re-executing would reach the same verdict); moving to %q",
+			r.Identifier, r.RunID, runtimeFailureCode(err), err, cfg.Agent.FailedState)
+		// OPTIMISTIC, like the exhausted arm: the retry entry is the
+		// in-memory re-dispatch guard (isClaimed) that blocks a tick from
+		// re-picking the issue while the worker's give-up HTTP is in
+		// flight. The worker drops it on a successful move and PRESERVES it
+		// when the tracker refuses one — the legacy fallback.
+		c.scheduleRetry(issueID, r, err)
+		plan.kind = finishGiveUp
+		plan.failedState = cfg.Agent.FailedState
+		plan.attemptCount = r.Attempt + 1
+		plan.runID = r.RunID
+		plan.runErrText = err.Error()
 	default:
 		// Non-cancellation failure → retry, unless the attempt ceiling is
 		// reached. On exhaustion, give up: move the issue to a terminal
@@ -574,8 +664,19 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	// could read the slot as used while Release is in flight. The paused
 	// branch above already publishes before returning; the worker reads only
 	// the immutable plan, so publishing first is safe.
+	plan.session = r.claim
 	c.fireSnapshot()
 	c.launchFinish(plan)
+}
+
+// stopClaimSession detaches and stops an entry's lease heartbeat on the
+// park/hold paths (claim retained, no worker left to renew for). Runs on
+// the actor; Stop is quick (the session goroutine exits on the signal).
+func (c *Dispatcher) stopClaimSession(r *runningEntry) {
+	if r.claim != nil {
+		r.claim.Stop()
+		r.claim = nil
+	}
 }
 
 // exhausted reports whether a failing issue has reached the configured
@@ -634,27 +735,45 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 		c.beforeFinishWorker(plan)
 	}
 
-	relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer relCancel()
+	// SEPARATE budgets, the shutdown pattern (a slow revert must not eat
+	// the release's deadline) — and this site runs at EVERY finished run,
+	// not only at shutdown, so the starvation it prevents is the common
+	// case, not the drain.
+	trCtx, trCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownRevertBudget, 5*time.Second))
+	defer trCancel()
+	// The release + heartbeat stop are what free the card, so they run in
+	// a defer: a panic in the transition switch (recovered upstream) must
+	// not skip them — a session left beating renews the lease for ever on
+	// a card whose run is over, which hides it from the reaper for good.
+	defer func() {
+		relCtx, relCancel := context.WithTimeout(context.Background(), c.budget(c.shutdownReleaseBudget, 5*time.Second))
+		defer relCancel()
+		c.releaseClaimSess(relCtx, plan.issueID, plan.identifier, plan.session)
+		if plan.session != nil {
+			// After the LAST write — stopping earlier would let the lease
+			// lapse exactly while this worker was still writing.
+			plan.session.Stop()
+		}
+	}()
 
 	switch plan.kind {
 	case finishCompleted:
-		c.maybeTransitionToCompleted(relCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState)
+		c.maybeTransitionToCompleted(trCtx, plan.issueID, plan.identifier, plan.runningTarget, plan.completedState, plan.session)
 	case finishRevert:
 		// Revert the in-progress transition so the next retry/dispatch tick
 		// sees the issue eligible again from its source state. Without it the
 		// issue would sit in `in_progress` (no longer eligible) until the
 		// operator dragged it back.
-		c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget)
+		c.revertTransition(trCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 	case finishGiveUp:
-		if err := c.tracker.UpdateState(relCtx, plan.issueID, plan.failedState); err != nil {
+		if err := c.fencedUpdateState(trCtx, plan.issueID, plan.failedState, plan.session); err != nil {
 			// The board can't represent "failed" (state undefined, transition
 			// rejected, or a transient tracker error) — preserve the legacy
 			// unbounded retry rather than freeze the ticket: revert to the
 			// source state and KEEP the retry finishRun optimistically
 			// scheduled (no cmdDropRetry).
 			c.logger.Warn("dispatcher: %s exhausted %d attempts but the move to failed state %q failed (%v) — keeping retry behaviour", plan.identifier, plan.attemptCount, plan.failedState, err)
-			c.revertTransition(relCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget)
+			c.revertTransition(trCtx, plan.issueID, plan.identifier, plan.sourceState, plan.runningTarget, plan.session)
 		} else {
 			// Terminal move succeeded — the give-up is final, so drop the
 			// optimistic retry guard the actor scheduled.
@@ -667,8 +786,6 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 			c.postCmd(cmdDropRetry{issueID: plan.issueID})
 		}
 	}
-
-	c.releaseClaim(relCtx, plan.issueID, plan.identifier)
 }
 
 // releaseClaim releases the tracker claim, tolerating the benign races where
@@ -677,14 +794,64 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 // by the finish worker; the issue is re-pickable by the next tick once this
 // returns (subject to the issue's final tracker state and any retry guard).
 func (c *Dispatcher) releaseClaim(ctx context.Context, issueID, identifier string) {
-	if err := c.tracker.Release(ctx, issueID, c.hostMarker); err != nil &&
+	err := c.tracker.Release(ctx, issueID, c.hostMarker)
+	c.dropJournalAfterRelease(issueID, identifier, err)
+}
+
+// dropJournalAfterRelease removes the journal entry ONLY when the claim
+// is verifiably no longer ours: a successful release, or the benign
+// races (already gone, held by someone else). On any other error — a
+// forge 503, a blown shutdown budget — the claim is STILL POSTED, and on
+// an external tracker the journal is the only recovery path (the claim
+// label carries no host/pid, no lease, no reaper): dropping the entry
+// there stranded the label for ever on one transient error, with no
+// crash involved. sweepJournalledClaims already kept its entry for
+// exactly this reason; the release sites now follow the same rule.
+func (c *Dispatcher) dropJournalAfterRelease(issueID, identifier string, err error) {
+	if err != nil &&
 		!errors.Is(err, tracker.ErrNotFound) &&
 		!errors.Is(err, tracker.ErrClaimConflict) {
-		c.logger.Warn("dispatcher: release %s: %v", identifier, err)
+		c.logger.Warn("dispatcher: release %s failed (%v) — keeping the claim journal entry so the next boot retries", identifier, err)
+		return
 	}
-	// Drop the journal entry even on the benign races above — in all of
-	// them the claim is no longer ours to recover at the next boot.
 	c.claims.Remove(issueID)
+}
+
+// ownedFromUpdater is the fenced CAS-from-state write a lease backend
+// offers (native.Adapter does, over BoardStore.SetStateOwnedFrom). It is
+// what lets the finish worker's auto-transition be ONE write instead of
+// a state probe followed by a fenced overwrite.
+type ownedFromUpdater interface {
+	UpdateStateOwnedFrom(ctx context.Context, id, from, to string, tok tracker.ClaimToken) (bool, error)
+}
+
+// fencedUpdateState routes a state move through the claim fence when a
+// session token is available (UpdateStateOwned), else the legacy path.
+// The fence is what makes a superseded holder's late move a typed
+// refusal instead of a clobber; sites with no token (unclaimed-card
+// reconcilers, legacy trackers) keep the unfenced semantics they had.
+func (c *Dispatcher) fencedUpdateState(ctx context.Context, issueID, state string, sess *claimSession) error {
+	if sess != nil && c.leaser != nil {
+		return c.leaser.UpdateStateOwned(ctx, issueID, state, sess.Token())
+	}
+	return c.tracker.UpdateState(ctx, issueID, state)
+}
+
+// releaseClaimSess is releaseClaim through the fence when a session
+// exists. The benign races (already gone, superseded) stay benign: in
+// both, the claim is no longer ours to release.
+func (c *Dispatcher) releaseClaimSess(ctx context.Context, issueID, identifier string, sess *claimSession) {
+	// Announce the release BEFORE it lands: a heartbeat already in flight
+	// will see it as ErrClaimConflict, and without this it read as a
+	// supersession — warning "claim lost, stopping the worker" on an
+	// ordinary finish and firing the cancel path for a run already over.
+	sess.Releasing()
+	if sess != nil && c.leaser != nil {
+		err := c.leaser.ReleaseOwned(ctx, issueID, sess.Token())
+		c.dropJournalAfterRelease(issueID, identifier, err)
+		return
+	}
+	c.releaseClaim(ctx, issueID, identifier)
 }
 
 // stampLastRun records the (run_id, workdir) pair on the tracker
@@ -710,6 +877,16 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 	if workdir == "" {
 		workdir = r.WorkspacePath
 	}
+	if r.claim != nil {
+		if owned, ok := c.tracker.(interface {
+			SetLastRunOwned(id, runID, workdir string, tok tracker.ClaimToken) error
+		}); ok {
+			if err := owned.SetLastRunOwned(issueID, r.RunID, workdir, r.claim.Token()); err != nil {
+				c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
+			}
+			return
+		}
+	}
 	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
 		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
 	}
@@ -727,7 +904,17 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 // HINT — a console-only resume the dispatcher never observes leaves the
 // flag stale until the next card touch corrects it; the modal's
 // authoritative check stays getRun(last_run_id).status.
-func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
+func (c *Dispatcher) setAwaitingInput(issueID string, v bool, sess *claimSession) {
+	if sess != nil {
+		if owned, ok := c.tracker.(interface {
+			SetAwaitingInputOwned(id string, v bool, tok tracker.ClaimToken) error
+		}); ok {
+			if err := owned.SetAwaitingInputOwned(issueID, v, sess.Token()); err != nil {
+				c.logger.Warn("dispatcher: set awaiting-input on %s: %v", issueID, err)
+			}
+			return
+		}
+	}
 	setter, ok := c.tracker.(interface {
 		SetAwaitingInput(id string, v bool) error
 	})
@@ -773,6 +960,14 @@ func (c *Dispatcher) stampGiveUp(plan finishPlan) {
 		Attempts: plan.attemptCount,
 		At:       time.Now().UTC(),
 	}
+	if plan.session != nil {
+		if owned, ok := c.tracker.(ownedGiveUpStamper); ok {
+			if err := owned.SetGaveUpOwned(plan.issueID, stamp, plan.session.Token()); err != nil {
+				c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
+			}
+			return
+		}
+	}
 	if err := setter.SetGaveUp(plan.issueID, stamp); err != nil {
 		c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
 	}
@@ -783,8 +978,8 @@ func (c *Dispatcher) stampGiveUp(plan finishPlan) {
 // external tracker that rejects the transition leaves the card in place — the
 // retained claim already blocks re-dispatch, so this is a display-only
 // refinement, never load-bearing.
-func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) bool {
-	if err := c.tracker.UpdateState(context.Background(), issueID, native.StateAwaitingInput); err != nil {
+func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string, sess *claimSession) bool {
+	if err := c.fencedUpdateState(context.Background(), issueID, native.StateAwaitingInput, sess); err != nil {
 		c.logger.Info("dispatcher: %s stays in place (no awaiting-input column): %v", identifier, err)
 		return false
 	}
@@ -806,12 +1001,38 @@ func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) bool {
 //
 // The motivation lives in the cfg.Agent.CompletedState comment in
 // config.go; this helper is just the application path. Detached
-// ctx is the caller's relCtx so a winding-down dispatcher still
-// completes the move (parallels the Release path).
-func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget, completed string) {
+// ctx is the caller's transition budget so a winding-down dispatcher
+// still completes the move (parallels the Release path).
+func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget, completed string, sess *claimSession) {
 	if completed == "" || completed == runningTarget {
 		return
 	}
+	if sess != nil && c.leaser != nil {
+		if fu, ok := c.leaser.(ownedFromUpdater); ok {
+			// ONE fenced CAS: "still in the running column" and the move
+			// are the same write. A probe followed by a fenced overwrite
+			// lost an operator move that landed in between — while the
+			// watchdog, judging on the CAS-observed state, honoured it.
+			changed, err := fu.UpdateStateOwnedFrom(ctx, issueID, runningTarget, completed, sess.Token())
+			switch {
+			case errors.Is(err, tracker.ErrNotFound):
+				// Issue disappeared from the tracker — refreshRunningStates'
+				// tombstone path already handled its cleanup.
+			case errors.Is(err, tracker.ErrTransitionRejected) || errors.Is(err, tracker.ErrNotSupported):
+				c.logger.Info("dispatcher: %s stayed in %s (tracker rejected move to %q): %v", identifier, runningTarget, completed, err)
+			case err != nil:
+				c.logger.Warn("dispatcher: completed-state move %s → %s: %v", identifier, completed, err)
+			case !changed:
+				// Workflow (or operator) already moved the state. Honor it.
+				c.logger.Info("dispatcher: %s already left %s before the auto-transition — leaving it where it was moved", identifier, runningTarget)
+			default:
+				c.logger.Info("dispatcher: %s moved %s → %s (workflow didn't change state, default auto-transition)", identifier, runningTarget, completed)
+			}
+			return
+		}
+	}
+	// Tokenless trackers (forge labels) carry no CAS: probe, then write —
+	// the window stays open exactly where no store can close it.
 	states, err := c.tracker.RefreshStates(ctx, []string{issueID})
 	if err != nil {
 		c.logger.Debug("dispatcher: completed-state probe %s: %v", identifier, err)
@@ -827,7 +1048,7 @@ func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, id
 		// Workflow (or operator) already moved the state. Honor it.
 		return
 	}
-	if err := c.tracker.UpdateState(ctx, issueID, completed); err != nil {
+	if err := c.fencedUpdateState(ctx, issueID, completed, sess); err != nil {
 		if errors.Is(err, tracker.ErrTransitionRejected) || errors.Is(err, tracker.ErrNotSupported) {
 			c.logger.Info("dispatcher: %s stayed in %s (tracker rejected move to %q): %v", identifier, runningTarget, completed, err)
 			return
@@ -1108,8 +1329,10 @@ func (m cmdCancel) apply(c *Dispatcher, _ context.Context) {
 	if !ok {
 		return
 	}
+	// Operator cancel: nil cause → the engine persists terminal `cancelled`,
+	// which the dispatcher never auto-resumes (resume is an explicit gesture).
 	if r.Cancel != nil {
-		r.Cancel()
+		r.Cancel(nil)
 	}
 	c.logger.Info("dispatcher: %s cancel requested", r.Identifier)
 	// Belt-and-braces: after a short grace period for the engine's
@@ -1136,7 +1359,7 @@ func (m cmdCancelByRunID) apply(c *Dispatcher, _ context.Context) {
 			continue
 		}
 		if r.Cancel != nil {
-			r.Cancel()
+			r.Cancel(nil) // operator cancel — terminal, never auto-resumed
 		}
 		c.logger.Info("dispatcher: %s cancel requested (run %s)", r.Identifier, m.runID)
 		scheduleForceRemoveSandboxContainer(c.logger, r.RunID)

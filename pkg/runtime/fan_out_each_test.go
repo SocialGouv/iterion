@@ -265,6 +265,70 @@ func TestFanOutEach_EmptyArray(t *testing.T) {
 	}
 }
 
+func TestFanOutEach_EmptyArrayClearsRestoredParallelCheckpoint(t *testing.T) {
+	wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 0)
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-fe-empty-restored-parallel"
+	if _, err := s.CreateRun(ctx, runID, wf.Name, nil); err != nil {
+		t.Fatal(err)
+	}
+	stale := newParallelInvocation("dispatch", "dispatch@root", map[string]string{
+		"branch_dispatch_0": "handle",
+	}, nil)
+	rs := &runState{
+		ctx:              ctx,
+		runID:            runID,
+		outputs:          map[string]map[string]any{"entry": {"items": []any{}}},
+		artifacts:        map[string]map[string]any{},
+		loopCounters:     map[string]int{},
+		selectedIncoming: map[string][]store.IncomingEdge{},
+		parallel:         stale,
+	}
+	eng := New(wf, s, newStubExecutor())
+	next, err := eng.execFanOutEach(ctx, rs, "dispatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != "collect" {
+		t.Fatalf("next node = %q, want collect", next)
+	}
+	if rs.parallel != nil {
+		t.Fatal("empty fan_out_each retained a stale restored parallel checkpoint")
+	}
+}
+
+func TestFanOutEachWaitAllAllDoneStillRunsDeclaredCollector(t *testing.T) {
+	wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 0)
+	wf.Nodes["branch_done"] = &ir.DoneNode{BaseNode: ir.BaseNode{ID: "branch_done"}}
+	for _, edge := range wf.Edges {
+		if edge.From == "handle" && edge.To == "collect" {
+			edge.Condition = "nothing"
+			edge.Negated = true
+		}
+	}
+	wf.Edges = append(wf.Edges, &ir.Edge{From: "handle", To: "branch_done", Condition: "nothing"})
+
+	var collectCalls int64
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B")}}, nil
+	})
+	exec.on("handle", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"nothing": true}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		atomic.AddInt64(&collectCalls, 1)
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "fe-wait-all-all-done-collector", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt64(&collectCalls); got != 1 {
+		t.Fatalf("collector calls = %d, want 1", got)
+	}
+}
+
 // TestResourceSemaphore_BoundsConcurrency: a fan_out_each over N items whose
 // branch node declares `needs: slot` never runs more than the resource's
 // capacity at once — even with NO max_parallel_branches (all N branches are

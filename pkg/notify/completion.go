@@ -142,18 +142,12 @@ func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID stri
 }
 
 // shouldNotify reports whether a status warrants a completion callback.
-// Running and the two paused states are excluded — they are not
-// terminal-for-notification.
+// It deliberately BORROWS IsTerminal (the stop-polling contract):
+// delivery-finality and polling share the same set today, and this
+// comment is the tripwire — if IsTerminal ever moves for a polling
+// reason, delivery needs its own predicate, not a silent ride-along.
 func shouldNotify(s store.RunStatus) bool {
-	switch s {
-	case store.RunStatusFinished,
-		store.RunStatusFailed,
-		store.RunStatusFailedResumable,
-		store.RunStatusCancelled:
-		return true
-	default:
-		return false
-	}
+	return s.IsTerminal()
 }
 
 // resolveFinalAnswer extracts the run's user-facing answer string.

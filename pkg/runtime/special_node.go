@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -175,14 +176,37 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 	for _, ce := range cn.Exprs {
 		v, err := evalComputeExpr(ce.AST, exprCtx)
 		if err != nil {
+			// EXPRESSION_FAILED, not EXECUTION_FAILED: a compute node runs
+			// no LLM and no shell, and its inputs come from a checkpoint
+			// that does not move, so re-executing it reaches the same
+			// verdict. That is what keeps an automatic resume from
+			// re-burning a pod per attempt on it (pkg/retrypolicy).
 			return nil, &RuntimeError{
-				Code:    ErrCodeExecutionFailed,
+				Code:    ErrCodeExpressionFailed,
 				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
 				NodeID:  nodeID,
 				Hint:    "check the compute node's expressions for type mismatches or unknown references",
 			}
 		}
 		output[ce.Key] = v
+	}
+	// The output is typed by the declared schema HERE, on the body the
+	// trunk and the fan-out branch share — not behind WithOutputValidation,
+	// which no product entry point enables. An expression's value is
+	// Go-shaped (an integer division yields an int64, a float one a
+	// float64), so the representation is normalised to the declared type
+	// and a value that cannot be — a fractional float under `int`, a
+	// string under `bool` — fails the node instead of travelling on under
+	// the wrong label.
+	if schema := e.workflow.Schemas[cn.OutputSchema]; schema != nil {
+		if err := model.ConformComputeOutput(output, schema); err != nil {
+			return nil, &RuntimeError{
+				Code:    ErrCodeSchemaValidation,
+				Message: fmt.Sprintf("compute %q: output does not conform to schema %q: %v", nodeID, cn.OutputSchema, err),
+				NodeID:  nodeID,
+				Hint:    "a compute output is typed by its schema: make a rounding explicit with floor(...) / round(...), or change the declared type",
+			}
+		}
 	}
 	return output, nil
 }
@@ -230,6 +254,8 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		NodeID:      nodeID,
 		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
 		WorkDir:     e.workDir,
+		// The child executes where THIS run executes.
+		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
 		return nil, &RuntimeError{

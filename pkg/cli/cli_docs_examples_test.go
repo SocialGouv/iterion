@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestNoIterExtensionAnywhere is the zero-trace guard for the deprecated
@@ -29,12 +31,17 @@ import (
 // vendor/ is excluded: third-party code (otel `oi.iter`, sqlite
 // `ctx.iter`, the tiktoken `.iter` BPE token) legitimately contains the
 // substring and is not ours to rewrite.
+//
+// The generated changelog is excluded for the same reason: it quotes the
+// subjects of past commits verbatim — including the one that removed `.iter`
+// support — so purging the token there would falsify the record rather than
+// fix anything. Those files describe history, never a live reference.
 func TestNoIterExtensionAnywhere(t *testing.T) {
 	root := repoRootForDocsTest(t)
 
-	cmd := exec.Command("git", "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
-		"--", ".", ":(exclude)vendor/")
-	cmd.Dir = root
+	cmd := gittest.Cmd(root, "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
+		"--", ".", ":(exclude)vendor/",
+		":(exclude)CHANGELOG.md", ":(exclude)docs/changelog/")
 	out, err := cmd.Output()
 	// git grep exits 1 with no output when there are no matches — the
 	// success case. A real match exits 0 with the offending lines.

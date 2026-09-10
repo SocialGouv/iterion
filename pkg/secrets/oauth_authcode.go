@@ -30,7 +30,10 @@ import (
 //
 // All values are env-overridable because this is an undocumented,
 // reverse-engineered surface: if Anthropic rotates the client/flow,
-// an operator can re-point it without a rebuild.
+// an operator can re-point it without a rebuild. The family is
+// ITERION_OAUTH_FORFAIT_ANTHROPIC_{CLIENT_ID,AUTHORIZE_URL,
+// REDIRECT_URI,SCOPES,TOKEN_URL} — the token endpoint (shared with the
+// refresh, pkg/secrets/oauth_refresh.go) included.
 // DefaultAnthropicOAuthClientID is the public Claude Code OAuth client
 // id. It is a PUBLIC PKCE client (no client secret), the same id the
 // `claude` CLI embeds — not a confidential value. Shipping it as a
@@ -132,7 +135,7 @@ func ExchangeAnthropicCode(ctx context.Context, hc *http.Client, clientID, code,
 	if state != "" {
 		form.Set("state", state)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicTokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return RefreshResult{}, fmt.Errorf("secrets: build code-exchange req: %w", err)
 	}

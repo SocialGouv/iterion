@@ -42,12 +42,21 @@ func TestQueueBotBundleRef(t *testing.T) {
 	if got == nil || got.TenantID != "platform:" || got.Slug != "review-pr" || got.Version != 7 {
 		t.Fatalf("wire ref = %+v", got)
 	}
+	ref := &runview.BotBundleRef{Slug: "catalog", Snapshot: []byte(`{"root":"catalog"}`), SnapshotDigest: "digest"}
+	got = queueBotBundleRef(ref)
+	if string(got.Snapshot) != string(ref.Snapshot) || got.SnapshotDigest != ref.SnapshotDigest {
+		t.Fatal("snapshot lost in wire conversion")
+	}
+	ref.Snapshot[0] = 'x'
+	if got.Snapshot[0] != '{' {
+		t.Fatal("wire snapshot aliases mutable launch bytes")
+	}
 }
 
 // Without a resolver the publisher keeps its previous local-only behaviour, so
 // non-cloud and un-migrated deployments are unaffected.
 func TestResolveContributionsFor_NilResolverIsLocalOnly(t *testing.T) {
-	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "team-1", nil, nil)
+	got, err := resolveContributionsFor(context.Background(), nil, t.TempDir(), "team-1", "run-x", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

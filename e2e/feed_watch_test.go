@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"time"
 )
@@ -166,6 +165,7 @@ func runPlan(t *testing.T, wf *ir.Workflow, ws, mode, category string) map[strin
 // cross-source dedup, queue snapshot semantics, webhook delivery
 // (httptest) and archive-based semantic-dedup context all run for real.
 func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -417,6 +417,7 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 // ends the run before the LLM step, and a full digest runs
 // synthesize → notify → commit_state in order.
 func TestFeedWatch_GraphRouting(t *testing.T) {
+	t.Parallel()
 	planOut := func(collect bool) map[string]any {
 		return map[string]any{
 			"collect": collect, "digest": !collect, "category": "demo",
@@ -436,7 +437,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"new_count": 0, "duplicate_count": 0, "pending_totals": map[string]any{}, "committed": false, "summary": "s", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-collect", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-collect", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-collect")
@@ -460,7 +461,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-empty", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-empty", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-empty")
@@ -495,7 +496,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"posted": false, "dry_run": true, "delivered": 0, "targets": []any{}, "summary": "dry", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-dry", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-dry", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-dry")
@@ -533,7 +534,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{"cleared": 1, "archived": true, "committed": false, "summary": "s", "_tokens": 1}, nil
 		})
 		s := tmpStore(t)
-		if err := runtime.New(wf, s, exec).Run(context.Background(), "fw-full", nil); err != nil {
+		if err := newEngine(t, wf, s, exec).Run(context.Background(), "fw-full", nil); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 		r, _ := s.LoadRun(context.Background(), "fw-full")
@@ -554,6 +555,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 // an injected editorial produces to phish or exfiltrate — hard-fails the
 // run before delivery.
 func TestFeedWatch_VerifyMessageBlocksInjectedLinks(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -596,6 +598,7 @@ func TestFeedWatch_VerifyMessageBlocksInjectedLinks(t *testing.T) {
 // loudly rather than yielding an empty-but-green collect. No network is
 // touched: the addresses are rejected at resolution or scheme check.
 func TestFeedWatch_FetchRejectsSSRF(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -746,6 +749,7 @@ func (s *notifySink) texts(channel string) []string {
 // cannot open. Covers the per-sink budget override, the max_messages
 // ceiling, and the intra-sink partial failure.
 func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -995,4 +999,85 @@ func tail(s string) string {
 		return s
 	}
 	return "…" + s[len(s)-120:]
+}
+
+// TestFeedWatch_OverflowItemsSurviveCommit: snapshot_ids must name only
+// the items actually handed to the LLM. Before the fix, load_pending
+// snapshotted the WHOLE queue and then truncated to max_items, so
+// commit_state purged overflow items that were never synthesized nor
+// published — silent data loss on any backlog larger than max_items.
+func TestFeedWatch_OverflowItemsSurviveCommit(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	ws, _ := feedWatchWorkspace(t)
+
+	// Seed 5 pending items, newest-first ids i5..i1 by ts.
+	cdir := filepath.Join(ws, ".feed-watch", "demo")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, fmt.Sprintf(`{"id":"i%d","title":"t%d","url":"https://x.test/%d","ts":%d}`, i, i, i, 1000+i))
+	}
+	if err := os.WriteFile(filepath.Join(cdir, "pending.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := runPlan(t, wf, ws, "digest", "demo")
+	loadScript := feedWatchTool(t, wf, "load_pending").Script
+	loadInputs := map[string]any{
+		"category": "demo", "editorial": plan["editorial"], "digest_title": plan["digest_title"],
+		"sinks": plan["sinks"], "workspace": ws, "state_dir": ".feed-watch", "max_items": 3,
+		"silence_alert_days": 3,
+	}
+	pending, stderr, err := runPy(t, ws, subScript(t, loadScript, loadInputs, ""))
+	if err != nil {
+		t.Fatalf("load_pending failed: %v\nstderr: %s", err, stderr)
+	}
+	if pending["items_count"].(float64) != 3 || pending["overflow_count"].(float64) != 2 {
+		t.Fatalf("load_pending = %v items / %v overflow, want 3/2", pending["items_count"], pending["overflow_count"])
+	}
+	snapshot := pending["snapshot_ids"].([]any)
+	if len(snapshot) != 3 {
+		t.Fatalf("snapshot_ids must name only the items handed to the LLM: %v", snapshot)
+	}
+	got := map[string]bool{}
+	for _, id := range snapshot {
+		got[id.(string)] = true
+	}
+	// Newest 3 by ts are i5,i4,i3; the overflow (i1,i2) must NOT be
+	// snapshotted, or commit_state would purge them unpublished.
+	for _, want := range []string{"i5", "i4", "i3"} {
+		if !got[want] {
+			t.Fatalf("snapshot_ids missing %s: %v", want, snapshot)
+		}
+	}
+	if got["i1"] || got["i2"] {
+		t.Fatalf("overflow items leaked into snapshot_ids: %v", snapshot)
+	}
+
+	commitScript := feedWatchTool(t, wf, "commit_state").Script
+	commitInputs := map[string]any{
+		"category": "demo", "snapshot_ids": snapshot, "message_markdown": "**digest**",
+		"headline": "Demo headline", "state_commit": false, "workspace": ws, "state_dir": ".feed-watch",
+	}
+	out, stderr, err := runPy(t, ws, subScript(t, commitScript, commitInputs, ""))
+	if err != nil {
+		t.Fatalf("commit_state failed: %v\nstderr: %s", err, stderr)
+	}
+	if out["cleared"].(float64) != 3 {
+		t.Fatalf("cleared = %v, want 3", out["cleared"])
+	}
+	raw, err := os.ReadFile(filepath.Join(cdir, "pending.jsonl"))
+	if err != nil {
+		t.Fatalf("pending.jsonl gone after commit: %v", err)
+	}
+	kept := strings.Count(strings.TrimSpace(string(raw)), "\n") + 1
+	if kept != 2 || !strings.Contains(string(raw), `"i1"`) || !strings.Contains(string(raw), `"i2"`) {
+		t.Fatalf("overflow items must survive the commit, pending.jsonl = %s", raw)
+	}
 }

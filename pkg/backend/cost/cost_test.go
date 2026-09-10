@@ -266,3 +266,28 @@ func TestGLMIsPricedByTheLiveRegistryNotTheTable(t *testing.T) {
 		t.Errorf("effective rate %v/%v: output tokens cost more than input on every provider", in, out)
 	}
 }
+
+// The gpt-5.6 line is the model the campaign bots' cross-family plan review
+// runs on (openai/gpt-5.6-sol), and a sandboxed runner prices from a cold
+// container where neither live source has a cache yet — so the committed
+// table must carry it. Rates are OpenAI's published standard tier
+// (developers.openai.com/api/docs/pricing); the bare `gpt-5.6` alias routes
+// to sol and carries sol's rate.
+func TestStaticTable_PricesTheGPT56Family(t *testing.T) {
+	cases := map[string][2]float64{
+		"gpt-5.6-sol":   {4.00, 20.00},
+		"gpt-5.6":       {4.00, 20.00},
+		"gpt-5.6-terra": {2.00, 12.00},
+		"gpt-5.6-luna":  {0.20, 1.20},
+	}
+	for model, want := range cases {
+		in, out, ok := StaticRate("openai/" + model)
+		if !ok {
+			t.Errorf("%s: no committed rate — a cold sandboxed runner prices it at nothing", model)
+			continue
+		}
+		if in != want[0] || out != want[1] {
+			t.Errorf("%s: committed rate %v/%v, want %v/%v", model, in, out, want[0], want[1])
+		}
+	}
+}

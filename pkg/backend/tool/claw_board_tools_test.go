@@ -26,8 +26,8 @@ func TestRegisterClawBoardTools_AllCapabilitiesExposesEveryTool(t *testing.T) {
 		t.Fatalf("RegisterClawBoardTools: %v", err)
 	}
 	for _, name := range []string{
-		"assign_issue", "close_issue", "comment_issue", "create_issue",
-		"get_issue", "list_issues", "list_labels", "set_bot",
+		"add_labels", "assign_issue", "close_issue", "comment_issue", "create_issue",
+		"get_issue", "list_issues", "list_labels", "remove_labels", "set_bot",
 		"set_labels", "transition_issue",
 	} {
 		if _, err := reg.Resolve("mcp.iterion_board." + name); err != nil {

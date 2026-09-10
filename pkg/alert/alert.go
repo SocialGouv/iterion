@@ -38,6 +38,22 @@ const (
 	KindBudgetExceeded Kind = "budget_exceeded"
 	// KindRunFailed fires when a run transitions to a failed status.
 	KindRunFailed Kind = "run_failed"
+	// KindRunParked fires when a run parks failed_resumable — waiting out a
+	// provider/usage window (an armed retry, with an ETA in the reason) or
+	// waiting for an operator resume (no retry armed). The 2026-08 pattern
+	// this closes: five digests parked on a usage cap over a whole morning
+	// with nobody told.
+	KindRunParked Kind = "run_parked"
+	// KindRouteEscalated fires when the outcome router decides a
+	// terminal run needs an operator — the contract said escalate, or
+	// said merge on a run whose state forbids it. Escalate is the
+	// router's DEFAULT decision; without this alert it is invisible.
+	KindRouteEscalated Kind = "route_escalated"
+	// KindRouteActionFailed fires when the router decided an action it
+	// could not perform (merge error, relaunch not wired, a claim whose
+	// holders kept dying) — the run's automation is stopped and only an
+	// operator restarts it.
+	KindRouteActionFailed Kind = "route_action_failed"
 )
 
 // Alert is the structured payload delivered to every sink. It carries
@@ -45,15 +61,19 @@ const (
 // human-readable reason, and the budget axis + percentage consumed when
 // the trigger is budget-related.
 type Alert struct {
-	Kind      Kind      `json:"kind"`
-	RunID     string    `json:"run_id"`
-	RunName   string    `json:"run_name,omitempty"`
-	NodeID    string    `json:"node_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
-	Axis      string    `json:"axis,omitempty"`       // budget dimension (tokens/cost_usd/...)
-	BudgetPct float64   `json:"budget_pct,omitempty"` // 0..100, budget alerts only
-	Link      string    `json:"link,omitempty"`       // <baseURL>/runs/<id>
-	Timestamp time.Time `json:"timestamp"`
+	Kind    Kind   `json:"kind"`
+	RunID   string `json:"run_id"`
+	RunName string `json:"run_name,omitempty"`
+	NodeID  string `json:"node_id,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// FailureCode is the run's persisted typed classification (ADR-095)
+	// when one exists — a machine consumer reads it here, never by
+	// parsing Reason.
+	FailureCode string    `json:"failure_code,omitempty"`
+	Axis        string    `json:"axis,omitempty"`       // budget dimension (tokens/cost_usd/...)
+	BudgetPct   float64   `json:"budget_pct,omitempty"` // 0..100, budget alerts only
+	Link        string    `json:"link,omitempty"`       // <baseURL>/runs/<id>
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 // Title is a short one-line headline suitable for a toast or
@@ -74,6 +94,12 @@ func (a Alert) Title() string {
 		return fmt.Sprintf("Budget exceeded: %s", name)
 	case KindRunFailed:
 		return fmt.Sprintf("Run failed: %s", name)
+	case KindRunParked:
+		return fmt.Sprintf("Run parked: %s", name)
+	case KindRouteEscalated:
+		return fmt.Sprintf("Run escalated to operator: %s", name)
+	case KindRouteActionFailed:
+		return fmt.Sprintf("Run routing action failed: %s", name)
 	default:
 		return fmt.Sprintf("Run alert: %s", name)
 	}
@@ -90,6 +116,13 @@ func (a Alert) WebhookText() string {
 	}
 	if a.Reason != "" {
 		fmt.Fprintf(&b, "\nReason: %s", a.Reason)
+		if a.FailureCode != "" {
+			fmt.Fprintf(&b, " [%s]", a.FailureCode)
+		}
+	} else if a.FailureCode != "" {
+		// No prose to annotate — the code gets its own line rather
+		// than visually qualifying the node or the run name above.
+		fmt.Fprintf(&b, "\nCode: %s", a.FailureCode)
 	}
 	// Only when there IS a ratio. A dimension whose budget_warning payload
 	// carries no used/limit pair (cost_usd_unpriced: tokens burned at an
@@ -125,6 +158,9 @@ func (a Alert) AsEventData() map[string]any {
 	}
 	if a.Reason != "" {
 		d["reason"] = a.Reason
+	}
+	if a.FailureCode != "" {
+		d["failure_code"] = a.FailureCode
 	}
 	if a.Axis != "" {
 		d["axis"] = a.Axis

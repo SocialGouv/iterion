@@ -19,6 +19,7 @@ import (
 	"time"
 
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -284,10 +285,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
 	// Initialize a git repo so claude_code can read git context (status/diff).
-	gitInit := exec.Command("git", "init", workspaceDir)
-	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
-		t.Fatalf("git init failed: %v\n%s", gitErr, out)
-	}
+	gittest.Run(t, workspaceDir, "init")
 
 	installValidateSyntax(t, workspaceDir)
 
@@ -637,10 +635,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
-	gitInit := exec.Command("git", "init", workspaceDir)
-	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
-		t.Fatalf("git init failed: %v\n%s", gitErr, out)
-	}
+	gittest.Run(t, workspaceDir, "init")
 
 	installValidateSyntax(t, workspaceDir)
 
@@ -910,10 +905,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
-	gitInit := exec.Command("git", "init", workspaceDir)
-	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
-		t.Fatalf("git init failed: %v\n%s", gitErr, out)
-	}
+	gittest.Run(t, workspaceDir, "init")
 
 	installValidateSyntax(t, workspaceDir)
 
@@ -1246,10 +1238,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
-	gitInit := exec.Command("git", "init", workspaceDir)
-	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
-		t.Fatalf("git init failed: %v\n%s", gitErr, out)
-	}
+	gittest.Run(t, workspaceDir, "init")
 
 	storeDir := resolveLiveStoreDir(t, workspaceDir)
 	s, storeErr := store.New(storeDir)
@@ -3087,14 +3076,14 @@ func liveRunResultAcceptableReal(err error) (bool, string) {
 // both shapes.
 func workspaceCommitCount(t *testing.T, dir string) int {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "rev-list", "--count", "--all").Output()
+	out, err := gittest.Try(dir, "rev-list", "--count", "--all")
 	if err != nil {
 		t.Logf("git rev-list failed in %s: %v", dir, err)
 		return 0
 	}
-	n, parseErr := strconv.Atoi(strings.TrimSpace(string(out)))
+	n, parseErr := strconv.Atoi(out)
 	if parseErr != nil {
-		t.Logf("could not parse commit count %q: %v", string(out), parseErr)
+		t.Logf("could not parse commit count %q: %v", out, parseErr)
 		return 0
 	}
 	return n
@@ -3110,8 +3099,8 @@ func requireWorkspaceCommitGrowth(t *testing.T, workspaceDir string, before int)
 	if after <= before {
 		// Dump recent commits across every ref so failure diagnostics
 		// surface storage-branch work too.
-		recent, _ := exec.Command("git", "-C", workspaceDir, "log", "--all", "--oneline", "-10").CombinedOutput()
-		t.Fatalf("expected ≥1 new commit on any ref, got before=%d after=%d (no work landed).\nRecent log (all refs):\n%s", before, after, string(recent))
+		recent, _ := gittest.Try(workspaceDir, "log", "--all", "--oneline", "-10")
+		t.Fatalf("expected ≥1 new commit on any ref, got before=%d after=%d (no work landed).\nRecent log (all refs):\n%s", before, after, recent)
 	}
 	t.Logf("Workspace commits across all refs: %d → %d (Δ=%d)", before, after, after-before)
 }

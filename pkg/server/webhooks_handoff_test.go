@@ -338,13 +338,13 @@ func TestRenderReviewLedger(t *testing.T) {
 func TestHandoffConsumersComeFromTheManifest(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
-	if got := s.handoffConsumersFor("fixer-bot"); len(got) != 1 || got[0].Var != "prior_review" {
+	if got := s.handoffConsumersFor(context.Background(), "", "fixer-bot"); len(got) != 1 || got[0].Var != "prior_review" {
 		t.Fatalf("the fixture bot's declaration did not load: %+v", got)
 	}
 
 	s2 := newWebhookTestServer(t)
 	s2.cfg.WorkDir = writeConsumerBotFixture(t, "other-fixer", "upstream_notes")
-	got := s2.handoffConsumersFor("other-fixer")
+	got := s2.handoffConsumersFor(context.Background(), "", "other-fixer")
 	if len(got) != 1 || got[0].Var != "upstream_notes" {
 		t.Fatalf("a bot consuming into its own var name must be honoured, got %+v", got)
 	}

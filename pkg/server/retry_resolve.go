@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -27,10 +29,14 @@ import (
 // machine default and the platform ceiling are appended here so no launch
 // site has to remember them, and so a site that passes nothing still gets a
 // correct policy rather than an empty one.
-func (s *Server) resolveRunRetryPolicy(botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy {
+// teamID is the tenant the launch is FOR: the bot layer is read from the
+// tier that will SERVE it (that team's own row first, then platform over
+// baked). A fork declaring `retry: usage_window: off` must not be retried on
+// its origin's policy — the run being retried is the fork's.
+func (s *Server) resolveRunRetryPolicy(ctx context.Context, teamID, botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy {
 	layers := make([]retrypolicy.Layer, 0, len(higher)+2)
 	layers = append(layers, higher...)
-	if m := s.botManifest(botID); m != nil {
+	if m := s.botManifestFor(ctx, teamID, botID); m != nil {
 		layers = append(layers, retrypolicy.Layer{Source: retrypolicy.SourceBot, Policy: m.RetryPolicy()})
 	}
 	layers = append(layers, retrypolicy.Layer{Source: retrypolicy.SourceEnv, Policy: retrypolicy.FromEnv()})

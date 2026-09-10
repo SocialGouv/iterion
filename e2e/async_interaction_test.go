@@ -38,6 +38,7 @@ func seedAsyncInteraction(t *testing.T, s store.RunStore, runID, nodeID, id, que
 // await node runs → it passes immediately (level-triggered predicate,
 // no park).
 func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-answered"
@@ -47,7 +48,7 @@ func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
 		t.Fatalf("answer interaction: %v", err)
 	}
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -66,6 +67,10 @@ func TestAwaitAnswersAlreadyAnswered(t *testing.T) {
 // AnswerInteractionCtx / the CLI do) releases the branch and the run
 // converges. Also proves branch isolation: the sibling compute finished
 // while the question was still pending.
+// Serial: its ceiling is read against the await_answers level-poll's DEFAULT
+// cadence, and TestAwaitAnswersDoorbellNeverMissed retunes that cadence
+// through a pkg/runtime package global — in parallel the two contradict each
+// other (both rows failed together at -parallel 32).
 func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
@@ -74,7 +79,7 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 
 	seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 
 	done := make(chan error, 1)
 	go func() { done <- eng.Run(context.Background(), runID, nil) }()
@@ -126,11 +131,24 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 // were dropped, the test would deadline instead of converging. Repeat
 // the launch/answer cycle many times to stress every possible
 // interleaving of the ring with the branch scheduler.
+// doorbellFallbackPoll is where this row parks the await_answers level-poll,
+// and doorbellFloor is the earliest a poll-released run could appear (one
+// poll period minus the slack a loaded scheduler adds to a timer). Between
+// "converged" and doorbellFloor there is no mechanism but the doorbell, which
+// is what makes the assertion a statement about the product rather than about
+// the machine.
+const (
+	doorbellFallbackPoll = 60 * time.Second
+	doorbellFloor        = 50 * time.Second
+)
+
+// Serial: it retunes the await_answers level-poll through a pkg/runtime
+// package global, which its sibling rows read at its default value.
 func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
-	// Force the fallback poll well outside the test's convergence
-	// budget. If the doorbell is missed, nothing else releases the
-	// gate within 3s.
-	prev := runtime.SetAwaitAnswersPollInterval(60 * time.Second)
+	// Push the fallback poll far out, so a run that converges QUICKLY can
+	// only have been released by the doorbell. The assertion below reads
+	// that gap rather than a hand-picked ceiling.
+	prev := runtime.SetAwaitAnswersPollInterval(doorbellFallbackPoll)
 	t.Cleanup(func() { runtime.SetAwaitAnswersPollInterval(prev) })
 
 	wf := compileFixture(t, "async_await_mini.bot")
@@ -146,7 +164,7 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 		iid := runID + "_asker_async_1"
 		seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
 
-		eng := runtime.New(wf, s, newScenarioExecutor())
+		eng := newEngine(t, wf, s, newScenarioExecutor())
 		done := make(chan error, 1)
 		go func() { done <- eng.Run(context.Background(), runID, nil) }()
 
@@ -160,19 +178,29 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 		}
 		eng.NotifyInteractionAnswered()
 
+		// What this row asserts is a MECHANISM, so it measures the
+		// mechanism instead of racing a hand-picked ceiling. The engine
+		// lifecycle around the wake costs seconds on a loaded runner, and a
+		// 15s window it could reach turned a load spike into "doorbell
+		// missed" — a merge-queue ejector that named the wrong culprit.
+		// The gap is what discriminates: the fallback poll and the node
+		// timeout are both far out, so a run that converges before
+		// doorbellFloor can only have been released by the doorbell, and
+		// one that converges at the poll proves the doorbell WAS missed.
+		started := time.Now()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Fatalf("iter %d: run: %v", i, err)
 			}
-		// The ceiling bounds a FULL engine lifecycle, not just the doorbell
-		// wake: under -race on a loaded CI runner one iteration takes
-		// several seconds before the gate node even parks (observed: 3s
-		// tripped on iter 0 in CI while 30 local -race runs stayed <2s).
-		// 15s keeps the discriminant intact — the poll is at 60s and the
-		// node timeout at 30s, so only the doorbell can release in time.
-		case <-time.After(15 * time.Second):
-			t.Fatalf("iter %d: run did not converge in 15s — doorbell missed (poll=60s and node timeout=30s both well outside this window)", i)
+			if elapsed := time.Since(started); elapsed >= doorbellFloor {
+				t.Fatalf("iter %d: converged after %s, at or past the %s fallback poll — the doorbell was MISSED and the level-poll released the branch; this is the product invariant, not a slow machine",
+					i, elapsed.Round(time.Millisecond), doorbellFallbackPoll)
+			} else if elapsed > 15*time.Second {
+				t.Logf("iter %d: converged in %s — released by the doorbell, but the lifecycle around it is slow", i, elapsed.Round(time.Millisecond))
+			}
+		case <-time.After(waitBudget(t, doorbellFallbackPoll+30*time.Second)):
+			t.Fatalf("iter %d: run never converged, not even at the %s fallback poll — the branch is parked for good", i, doorbellFallbackPoll)
 		}
 
 		r, err := s.LoadRun(context.Background(), runID)
@@ -189,6 +217,7 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 // the node's mandatory timeout and fails the run with an explicit
 // timeout error naming the pending interaction.
 func TestAwaitAnswersTimeout(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_timeout.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-timeout"
@@ -196,7 +225,7 @@ func TestAwaitAnswersTimeout(t *testing.T) {
 
 	seedAsyncInteraction(t, s, runID, "asker", iid, "never answered")
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	err := eng.Run(context.Background(), runID, nil)
 	if err == nil {
 		t.Fatal("run succeeded, want timeout failure")
@@ -219,11 +248,12 @@ func TestAwaitAnswersTimeout(t *testing.T) {
 // workflow with an unconditional sync point does not hang when the
 // agent had nothing to ask.
 func TestAwaitAnswersNoQuestions(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "async_await_mini.bot")
 	s := tmpStore(t)
 	runID := "e2e-async-noq"
 
-	eng := runtime.New(wf, s, newScenarioExecutor())
+	eng := newEngine(t, wf, s, newScenarioExecutor())
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}

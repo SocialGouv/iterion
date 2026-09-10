@@ -2,16 +2,18 @@ package delegate
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 func resolveMaxConsecutiveToolErrors() int {
@@ -76,6 +78,29 @@ func strictMCPFromEnv() bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// orchestrationTools is the claude_code tool surface that spawns background
+// work (Agent, and Task on older CLIs) or waits on it (TaskOutput, Monitor).
+// Withheld as one unit by ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS:
+// a waiter without a spawner is only a way to deadlock, and a spawner
+// without a waiter leaves background results unreadable.
+var orchestrationTools = []string{"Agent", "Task", "TaskOutput", "Monitor"}
+
+// workflowOrchestrationTools is the multi-agent surface ultracode grants:
+// withheld from every node that is not in ultracode mode, knob or not.
+var workflowOrchestrationTools = []string{"Workflow"}
+
+// disallowOrchestrationToolsFromEnv reads
+// ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS (unset/other → false;
+// "1"/"true"/"on"/"yes" → true).
+func disallowOrchestrationToolsFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -224,13 +249,15 @@ func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) 
 // sessions produced under one provider can be detected (and dropped)
 // when a later run targets a different one. Key values are NOT
 // included — fingerprints are safe to log and to ferry through the
-// recipe output map.
+// recipe output map. The one component that is operator-supplied text
+// rather than a fixed label, the facade base URL, goes through
+// facadeLabel first for exactly that reason.
 func providerFingerprint(env map[string]string) string {
 	if env == nil {
 		return "anthropic-env"
 	}
 	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
-		return "facade:" + base
+		return "facade:" + facadeLabel(base)
 	}
 	if env["ANTHROPIC_API_KEY"] != "" {
 		return "anthropic-direct"
@@ -242,6 +269,86 @@ func providerFingerprint(env map[string]string) string {
 	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
 	// from the process env", which is also Anthropic-direct semantically.
 	return "anthropic-env"
+}
+
+// facadeLabel renders an operator-supplied ANTHROPIC_BASE_URL as a
+// fingerprint component that carries no credential.
+//
+// The URL is operator input and may embed one — https://<token>@host/…,
+// or ?api_key=… — and the fingerprint is not a debug string: it rides
+// the node's output map (SessionFingerprintKey), the session slots in
+// run.json, NodeServed.Fingerprint, events.jsonl and a usagecap
+// Reading.Source, all readable by anyone with run-read access. The
+// secret guard is no backstop: it masks values it was SEEDED with, and
+// a token typed into a base URL never passed through the secret
+// plumbing, so it is unredacted on the event path too. Hence the fix
+// here, at the single point that builds the value.
+//
+// Two properties are load-bearing, because this value is an equality key
+// for session reuse (shouldDropSessionFork):
+//   - STABLE — one URL always renders one label, or every call decides
+//     the parent session came from a different provider and drops it.
+//   - NON-COLLIDING — two distinct URLs never render alike, or a session
+//     built on one facade is resumed on another and its provider-signed
+//     thinking blocks 400. So the stripped components are replaced by a
+//     digest of the WHOLE original rather than simply dropped.
+//
+// scheme+host+path survives verbatim: it is the readable half, it is
+// what distinguishes facades in practice, and a URL carrying none of
+// the three credential-bearing components — the ordinary case — is
+// returned unchanged, so sessions stay forkable across this change.
+// A secret in the PATH itself is out of reach of this (stripping the
+// path would collapse facades that differ only there); the three
+// components handled are the ones a URL is credential-bearing by
+// convention.
+func facadeLabel(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		// Unparseable: keep none of it. The digest alone is still
+		// stable and still tells two different values apart.
+		return redactedLabel("unparseable-url", base)
+	}
+	if u.User == nil && u.RawQuery == "" && u.Fragment == "" {
+		return base
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return redactedLabel(u.String(), base)
+}
+
+// redactedLabel joins what survived redaction to the collision guard for
+// what did not: enough bits that two facade URLs never share one, one-way
+// so the original is not recoverable from a run record.
+//
+// Deliberately NOT url-shaped. An operator reading a run record has to be
+// able to tell what they typed from what iterion removed, and a bare
+// "#<hex>" suffix would read as a fragment they wrote themselves — on a
+// value that exists precisely to answer "what actually served this node"
+// without ambiguity.
+func redactedLabel(kept, original string) string {
+	sum := sha256.Sum256([]byte(original))
+	return kept + " [redacted:" + hex.EncodeToString(sum[:6]) + "]"
+}
+
+// stampUsageSource wraps an OnUsageWindow hook so every reading leaving a
+// session names the provider routing it ran on — the runner's meter then
+// charges a refusal to the credential that was actually spent. Task and
+// TaskHooks travel by value, so the wrap lives and dies with one Execute
+// call: a fallback attempt that re-enters with a different provider stamps
+// its own label. A reading that already names its source keeps it.
+func stampUsageSource(inner func(usagecap.Reading) error, fingerprint string) func(usagecap.Reading) error {
+	if inner == nil {
+		return nil
+	}
+	return func(r usagecap.Reading) error {
+		if r.Source == "" {
+			r.Source = fingerprint
+		}
+		return inner(r)
+	}
 }
 
 // anthropicCredEnvForCLI is the testable core: it returns the env
@@ -292,11 +399,19 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 	// env can shadow it, so the CLI reports "Not logged in" despite a valid
 	// materialised forfait. Reading it here from the materialised file (kept
 	// fresh by the runner's refresh worker; re-read per spawn) makes the env
-	// token deterministically win. Best-effort: on any read/parse failure we
-	// fall back to the file path alone (prior behaviour).
-	if tok := readForfaitAccessToken(dir); tok != "" {
-		env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
-	}
+	// token deterministically win.
+	//
+	// ALWAYS write the key, empty when there is no usable token. Leaving it
+	// ABSENT is not neutral: this variable outranks the credentials file, the
+	// host spawn inherits os.Environ(), and a prod runner pod carries an
+	// ambient CLAUDE_CODE_OAUTH_TOKEN of its own — the PLATFORM forfait. An
+	// absent key therefore lets that platform token serve in place of the
+	// per-run CLAUDE_CONFIG_DIR just pointed at, so a tenant whose blob is
+	// missing or stale (the refresh worker lagged) authenticates and bills
+	// against someone else's Claude account instead of failing. The three
+	// ANTHROPIC_* siblings above are cleared for exactly this reason; this one
+	// is the same class.
+	env["CLAUDE_CODE_OAUTH_TOKEN"] = readForfaitAccessToken(dir)
 	return env
 }
 
@@ -304,24 +419,29 @@ func claudeForfaitEnv(dir string, sandboxed bool) map[string]string {
 // materialised Claude Code credentials.json in dir. Returns "" (never an error)
 // when the file is absent or malformed — the caller degrades to the file path.
 func readForfaitAccessToken(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
-	if err != nil {
-		return ""
-	}
-	var v struct {
-		ClaudeAIOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return ""
-	}
-	return v.ClaudeAIOauth.AccessToken
+	return secrets.AnthropicForfaitAccessToken(dir)
 }
 
 // sandboxed reports that the CLI subprocess will execute inside a REAL
 // sandbox container (docker/kubernetes — not the host-passthrough noop), so
 // forfait credential paths must resolve to in-container locations.
+// zaiEnv is the ONE place a z.ai key becomes CLI env, so the endpoint it is
+// sent to cannot depend on where the key came from. An operator's
+// ANTHROPIC_BASE_URL is an explicit routing choice — a self-hosted
+// z.ai-compatible endpoint, a regional facade, a debugging proxy — and it
+// applies to a tenant-provisioned key exactly as it does to one read from the
+// process env. Unset, the vendor default stands.
+func zaiEnv(key string) map[string]string {
+	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+	if baseURL == "" {
+		baseURL = secrets.ZAIDefaultBaseURL
+	}
+	return map[string]string{
+		"ANTHROPIC_BASE_URL":   baseURL,
+		"ANTHROPIC_AUTH_TOKEN": key,
+	}
+}
+
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) map[string]string {
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -361,21 +481,11 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if providerHint == "zai" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderZAI); k != "" {
-				return map[string]string{
-					"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
-					"ANTHROPIC_AUTH_TOKEN": k,
-				}
+				return zaiEnv(k)
 			}
 		}
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-			if baseURL == "" {
-				baseURL = secrets.ZAIDefaultBaseURL
-			}
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   baseURL,
-				"ANTHROPIC_AUTH_TOKEN": zai,
-			}
+			return zaiEnv(zai)
 		}
 		// No z.ai key reachable — clear hostile env and let downstream
 		// surface the "no credential" error rather than silently
@@ -390,10 +500,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	if hasCreds {
 		switch {
 		case creds.APIKey(secrets.ProviderZAI) != "":
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
-				"ANTHROPIC_AUTH_TOKEN": creds.APIKey(secrets.ProviderZAI),
-			}
+			return zaiEnv(creds.APIKey(secrets.ProviderZAI))
 		case creds.APIKey(secrets.ProviderAnthropic) != "":
 			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
 		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
@@ -406,14 +513,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 	// from the inherited env stays authoritative.
 	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
 		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
-			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-			if baseURL == "" {
-				baseURL = secrets.ZAIDefaultBaseURL
-			}
-			return map[string]string{
-				"ANTHROPIC_BASE_URL":   baseURL,
-				"ANTHROPIC_AUTH_TOKEN": zai,
-			}
+			return zaiEnv(zai)
 		}
 	}
 	// Host path: nil = let the spawned CLI inherit whatever ambient

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestDepUpdateGuardPrepareClassifies guards the deterministic bump detector
@@ -58,10 +60,7 @@ func TestDepUpdateGuardPrepareClassifies(t *testing.T) {
 
 	git := func(t *testing.T, ws string, args ...string) {
 		t.Helper()
-		full := append([]string{"-C", ws}, args...)
-		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v (%s)", args, err, out)
-		}
+		gittest.Run(t, ws, args...)
 	}
 
 	// bumpRepo builds a repo with a `main` baseline and a PR commit on top

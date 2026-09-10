@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 )
 
@@ -77,6 +78,24 @@ func TestExchangeAnthropicCode_HappyPath(t *testing.T) {
 	}
 	if gotForm["code_verifier"] != "the-verifier" {
 		t.Errorf("code_verifier: got %q", gotForm["code_verifier"])
+	}
+}
+
+// The auth-code exchange POSTs to the same token endpoint as the
+// refresh, so an operator who re-points the deployment must move both
+// halves of the flow with one variable — not the authorize URL alone.
+func TestExchangeAnthropicCode_HonoursTokenURLOverride(t *testing.T) {
+	freshRetrySchedule(t)
+	srv := newFakeOAuthServer(`{"access_token":"sk-ant-exchanged1234567890abcd","refresh_token":"rf-x","expires_in":3600}`, http.StatusOK)
+	defer srv.Close()
+	t.Setenv("ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL", srv.URL+"/v1/oauth/token")
+
+	_, err := ExchangeAnthropicCode(context.Background(), pinnedClient(t, srv.URL), "client-xyz", "the-code", "the-verifier", "https://example.test/cb", "state-abc")
+	if err != nil {
+		t.Fatalf("ExchangeAnthropicCode: %v", err)
+	}
+	if got := atomic.LoadInt32(&srv.hits); got != 1 {
+		t.Fatalf("overridden endpoint hits = %d, want 1", got)
 	}
 }
 

@@ -266,7 +266,7 @@ func cloudIdentity(team, user string) context.Context {
 	})
 }
 
-func seedTeamKey(t *testing.T, store *secrets.MemoryApiKeyStore, team, user string, p secrets.Provider, secret string) {
+func seedModelRouteTeamKey(t *testing.T, store *secrets.MemoryApiKeyStore, team, user string, p secrets.Provider, secret string) {
 	t.Helper()
 	id := secrets.NewApiKeyID()
 	if err := store.Create(context.Background(), secrets.ApiKey{
@@ -305,7 +305,7 @@ func TestGetModels_CloudTenantBYOKIsNotAFalseUnreachable(t *testing.T) {
 	// regression: it must not erase the tenant-scoped presence report.
 	srv, keys, _ := newCloudModelsServer(t, newFakeDLQQueue())
 	const tenantSecret = "sk-tenant-openai-never-on-the-server"
-	seedTeamKey(t, keys, "team-a", "", secrets.ProviderOpenAI, tenantSecret)
+	seedModelRouteTeamKey(t, keys, "team-a", "", secrets.ProviderOpenAI, tenantSecret)
 
 	rec, cat := getModels(t, srv, "?spec=openai/gpt-5.5&spec=anthropic/claude-opus-5", cloudIdentity("team-a", "alice"))
 	if rec.Code != http.StatusOK {
@@ -386,7 +386,7 @@ func TestGetModels_CloudIgnoresControlPlaneEnv(t *testing.T) {
 func TestGetModels_CloudWithoutIdentityStaysUnknown(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-control-plane-only")
 	srv, keys, _ := newCloudModelsServer(t)
-	seedTeamKey(t, keys, "team-a", "", secrets.ProviderAnthropic, "sk-tenant")
+	seedModelRouteTeamKey(t, keys, "team-a", "", secrets.ProviderAnthropic, "sk-tenant")
 
 	_, cat := getModels(t, srv, "?spec=anthropic/claude-opus-5")
 	claude, _ := cat.Find("anthropic/claude-opus-5")

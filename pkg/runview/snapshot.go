@@ -60,6 +60,18 @@ type ExecutionState struct {
 // RunHeader is the run-level metadata embedded in a snapshot.
 type RunHeader struct {
 	ID string `json:"id"`
+	// ExecutionContext is the resolved, versioned launch contract. It is
+	// absent on legacy runs created before context persistence was enabled.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	// Admission is the durable pre-model launch decision, if one has been
+	// recorded for this run.
+	Admission *store.AdmissionDecision `json:"admission,omitempty"`
+	// OutputCorrections, OutputCorrectionHistory and WatcherCursors expose the reliability ledgers so
+	// the studio can distinguish a bounded repair from a repeated watcher
+	// loop without scraping events or run errors.
+	OutputCorrections       map[string]store.OutputCorrectionEpisode `json:"output_corrections,omitempty"`
+	OutputCorrectionHistory []store.OutputCorrectionEpisode          `json:"output_correction_history,omitempty"`
+	WatcherCursors          map[string]store.WatcherCursor           `json:"watcher_cursors,omitempty"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
 	Name         string `json:"name,omitempty"`
@@ -83,6 +95,20 @@ type RunHeader struct {
 	// (operator override when set, otherwise workflow declaration). The studio
 	// badges ask/deny. See docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty"`
+	// CredFingerprints are the audit identities of the credentials the run
+	// can spend (store.Run.CredFingerprints — the same fingerprints the key
+	// and connection views show, never secrets), stamped at launch and at
+	// every resume. This is what the per-key concurrency ceiling counts, so
+	// an operator can audit a key's occupancy from the run list instead of
+	// the server logs. Empty for local runs and runs that sealed nothing.
+	CredFingerprints []string `json:"cred_fingerprints,omitempty"`
+	// LLMIdleSince is set while the run executes no model-calling node —
+	// it then holds none of its credentials' concurrency slots.
+	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty"`
+	// SkippedCredReopensAt is when the earliest credential the launch's
+	// resolution passed over reopens — the instant a usage-window retry may
+	// arm on instead of the failed credential's own reset.
+	SkippedCredReopensAt *time.Time `json:"skipped_cred_reopens_at,omitempty"`
 	// ModelOverrides are the launch-time per-node/-group model/backend
 	// pins captured on the run, surfaced so the studio Overview can show
 	// what the run was launched with. Empty when none were set.
@@ -97,12 +123,19 @@ type RunHeader struct {
 	// overrides + cloud ceiling clamp), surfaced so the studio Overview
 	// draws budget meters with a denominator. Nil when the workflow
 	// declared no budget: block. See store.RunBudget.
-	Budget     *store.RunBudget  `json:"budget,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	FinishedAt *time.Time        `json:"finished_at,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	Checkpoint *store.Checkpoint `json:"checkpoint,omitempty"`
+	Budget     *store.RunBudget `json:"budget,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	FinishedAt *time.Time       `json:"finished_at,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	// FailureCode is Error's machine-readable classification (ADR-095);
+	// empty = unknown/legacy.
+	FailureCode store.FailureCode `json:"failure_code,omitempty"`
+	// EndReason is the typed WHY the run ended, of which Error is the
+	// human sentence — what tells "cancelled because its pull request
+	// closed" from an operator's click. Empty = unknown/legacy.
+	EndReason  store.RunEndReason `json:"end_reason,omitempty"`
+	Checkpoint *store.Checkpoint  `json:"checkpoint,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -112,6 +145,20 @@ type RunHeader struct {
 	// targets — the cloud run's repo identity (WorkDir is a runner-pod
 	// path there). Empty for local and repo-less runs.
 	ProjectPath string `json:"project_path,omitempty"`
+	// BotSourceTier is which tier resolved this run's bundle at launch:
+	// store.BotSourceTierTeam (the launching team's own row), …Platform (a
+	// deployment override) or …Baked (the catalog in the image). It answers
+	// "did my fork actually serve this run?" — the question that went
+	// unanswerable while the team tier was inert on four launch surfaces.
+	//
+	// ABSENT, never defaulted: a local run and a run predating the stamp
+	// record no tier, and an unresolved tier must not read as a positive
+	// `baked` claim. Consumers render nothing when it is empty.
+	BotSourceTier string `json:"bot_source_tier,omitempty"`
+	// BotSourceTenant is the owner of the stored row BotSourceTier names —
+	// the team id, or the platform sentinel. Empty on the baked tier (there
+	// is no row) and on an unstamped run.
+	BotSourceTenant string `json:"bot_source_tenant,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
 	// WorktreeAvailable is true when WorkDir still exists on THIS server's
@@ -126,14 +173,24 @@ type RunHeader struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
-	FinalCommit      string              `json:"final_commit,omitempty"`
-	FinalBranch      string              `json:"final_branch,omitempty"`
-	FinalBranchError string              `json:"final_branch_error,omitempty"`
-	MergedInto       string              `json:"merged_into,omitempty"`
-	MergedCommit     string              `json:"merged_commit,omitempty"`
-	MergeStrategy    store.MergeStrategy `json:"merge_strategy,omitempty"`
-	MergeStatus      store.MergeStatus   `json:"merge_status,omitempty"`
-	AutoMerge        bool                `json:"auto_merge,omitempty"`
+	FinalCommit      string `json:"final_commit,omitempty"`
+	FinalBranch      string `json:"final_branch,omitempty"`
+	FinalBranchError string `json:"final_branch_error,omitempty"`
+	// WorkspaceCheckpoint is the last successful checkpoint push observed in
+	// the persisted timeline. It is not a completed delivery bank.
+	WorkspaceCheckpoint *WorkspaceCheckpoint `json:"workspace_checkpoint,omitempty"`
+	// Outcome bookkeeping (see store.Run): the episode counter, the
+	// typed cause of the last terminal transition, and who owns the
+	// continuation. This is what lets an outcome consumer act on the
+	// DOCUMENT instead of parsing error prose or replaying events.
+	RoutingPolicy     *store.RoutingPolicy    `json:"routing_policy,omitempty"`
+	OutcomeSeq        int64                   `json:"outcome_seq,omitempty"`
+	ContinuationState store.ContinuationState `json:"continuation_state,omitempty"`
+	MergedInto        string                  `json:"merged_into,omitempty"`
+	MergedCommit      string                  `json:"merged_commit,omitempty"`
+	MergeStrategy     store.MergeStrategy     `json:"merge_strategy,omitempty"`
+	MergeStatus       store.MergeStatus       `json:"merge_status,omitempty"`
+	AutoMerge         bool                    `json:"auto_merge,omitempty"`
 	// LocAdded / LocDeleted aggregate the three-dot numstat of the
 	// run's commits against its fork point (merge-base of the merge
 	// target and FinalCommit), computed server-side with a cache.
@@ -317,6 +374,10 @@ type RunSnapshot struct {
 	Run        RunHeader        `json:"run"`
 	Executions []ExecutionState `json:"executions"`
 	LastSeq    int64            `json:"last_seq"`
+	// Diagnostic is the common, versioned operator projection. It is
+	// additive and derived from the same run/events stream; callers may
+	// ignore it when they have not adopted the contract yet.
+	Diagnostic *DiagnosticProjection `json:"diagnostic,omitempty"`
 }
 
 // SnapshotBuilder is a stateful incremental reducer: feed it events in
@@ -336,10 +397,11 @@ type RunSnapshot struct {
 const NoEventsSeq int64 = -1
 
 type SnapshotBuilder struct {
-	header    RunHeader
-	execs     map[string]*ExecutionState
-	order     []string                  // execution_id in first-seen order; defines snapshot.Executions order
-	nodeCount map[string]map[string]int // branch_id → ir_node_id → next iteration index (LEGACY, for fallback int-iter path)
+	header     RunHeader
+	diagnostic *DiagnosticProjection
+	execs      map[string]*ExecutionState
+	order      []string                  // execution_id in first-seen order; defines snapshot.Executions order
+	nodeCount  map[string]map[string]int // branch_id → ir_node_id → next iteration index (LEGACY, for fallback int-iter path)
 	// lastExecID maps (branch → nodeID → exec_id) to the most recent
 	// node_started exec_id for that node. currentExec uses it to find
 	// the in-flight execution for downstream events (node_finished,
@@ -406,7 +468,8 @@ type SnapshotBuilder struct {
 	// deployTraceCommit is the commit the traceability gate resolved from
 	// git. Held separately from deployment.Commit so the two groups can
 	// arrive in either order; buildDeployment applies the precedence.
-	deployTraceCommit string
+	deployTraceCommit   string
+	workspaceCheckpoint *WorkspaceCheckpoint
 }
 
 // backendAgg accumulates one (backend, model) pair while folding events.
@@ -432,6 +495,7 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
+		b.diagnostic = newDiagnosticProjection(run)
 	}
 	return b
 }
@@ -450,6 +514,11 @@ func (b *SnapshotBuilder) SetRun(run *store.Run) {
 	prevAnchor := b.header.CurrentRunStart
 	hadEventDerivedTimer := b.lastSeq != NoEventsSeq
 	b.header = headerFromRun(run)
+	if b.diagnostic == nil {
+		b.diagnostic = newDiagnosticProjection(run)
+	} else {
+		b.diagnostic.refreshRun(run)
+	}
 	if hadEventDerivedTimer {
 		b.header.ActiveDurationMs = prevDuration
 		b.header.CurrentRunStart = prevAnchor
@@ -468,6 +537,9 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		return
 	}
 	b.lastSeq = evt.Seq
+	if b.diagnostic != nil {
+		b.diagnostic.observeEvent(evt)
+	}
 
 	// Authoritative monotonic active-duration base (BUG A fix): when the
 	// engine stamped Event.ActiveMs (SharedBudget CLOCK_MONOTONIC
@@ -490,6 +562,10 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	}
 
 	switch evt.Type {
+	case store.EventRunWorkspaceCheckpoint:
+		if cp := workspaceCheckpointFromEvent(evt); cp != nil {
+			b.workspaceCheckpoint = cp
+		}
 	case store.EventNodeStarted:
 		b.handleNodeStarted(evt, branch)
 	case store.EventNodeFinished:
@@ -550,11 +626,39 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	// snapshot already handed out under the documented incremental usage.
 	header.FallbacksUsed = append([]FallbackUsage(nil), b.fallbacksUsed...)
 	header.Deployment = b.buildDeployment()
+	if b.workspaceCheckpoint != nil {
+		cp := *b.workspaceCheckpoint
+		header.WorkspaceCheckpoint = &cp
+	}
+	var diagnostic *DiagnosticProjection
+	if b.diagnostic != nil {
+		copyOfDiagnostic := *b.diagnostic
+		copyOfDiagnostic.Evidence = cloneDiagnosticEvidence(b.diagnostic.Evidence)
+		diagnostic = &copyOfDiagnostic
+	}
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,
 		LastSeq:    b.lastSeq,
+		Diagnostic: diagnostic,
 	}
+}
+
+func cloneDiagnosticEvidence(in []DiagnosticEvidence) []DiagnosticEvidence {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]DiagnosticEvidence, len(in))
+	for i, evidence := range in {
+		out[i] = evidence
+		if evidence.Details != nil {
+			out[i].Details = make(map[string]string, len(evidence.Details))
+			for key, value := range evidence.Details {
+				out[i].Details[key] = value
+			}
+		}
+	}
+	return out
 }
 
 // buildLoopProgress assembles the run-level named-loop indicator from
@@ -1401,44 +1505,59 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 
 func headerFromRun(r *store.Run) RunHeader {
 	h := RunHeader{
-		ID:                r.ID,
-		Name:              r.Name,
-		WorkflowName:      r.WorkflowName,
-		WorkflowHash:      r.WorkflowHash,
-		FilePath:          r.FilePath,
-		BundleName:        r.BundleName,
-		BundleDisplayName: r.BundleDisplayName,
-		Status:            r.Status,
-		Inputs:            r.Inputs,
-		PermissionMode:    r.PermissionMode,
-		ModelOverrides:    r.ModelOverrides,
-		NodesServed:       r.NodesServed,
-		Budget:            r.Budget,
-		CreatedAt:         r.CreatedAt,
-		UpdatedAt:         r.UpdatedAt,
-		FinishedAt:        r.FinishedAt,
-		Error:             r.Error,
-		Checkpoint:        r.Checkpoint,
-		WorkDir:           r.WorkDir,
-		ProjectPath:       r.ProjectPath,
-		Worktree:          r.Worktree,
-		WorktreeAvailable: worktreeAvailable(r.WorkDir),
-		FinalCommit:       r.FinalCommit,
-		FinalBranch:       r.FinalBranch,
-		FinalBranchError:  r.FinalBranchError,
-		MergedInto:        r.MergedInto,
-		MergedCommit:      r.MergedCommit,
-		MergeStrategy:     r.MergeStrategy,
-		MergeStatus:       r.MergeStatus,
-		AutoMerge:         r.AutoMerge,
-		Source:            r.Source,
-		ParentRunID:       r.ParentRunID,
-		ParentNodeID:      r.ParentNodeID,
-		ShardIndex:        r.ShardIndex,
-		ShardCount:        r.ShardCount,
-		ShardLabel:        r.ShardLabel,
-		WatchedIssueIDs:   r.WatchedIssueIDs,
+		ID:                   r.ID,
+		ExecutionContext:     r.ExecutionContext,
+		Admission:            r.Admission,
+		OutputCorrections:    r.OutputCorrections,
+		WatcherCursors:       r.WatcherCursors,
+		Name:                 r.Name,
+		WorkflowName:         r.WorkflowName,
+		WorkflowHash:         r.WorkflowHash,
+		FilePath:             r.FilePath,
+		BundleName:           r.BundleName,
+		BundleDisplayName:    r.BundleDisplayName,
+		Status:               r.Status,
+		Inputs:               r.Inputs,
+		PermissionMode:       r.PermissionMode,
+		CredFingerprints:     r.CredFingerprints,
+		LLMIdleSince:         r.LLMIdleSince,
+		SkippedCredReopensAt: r.SkippedCredReopensAt,
+		ModelOverrides:       r.ModelOverrides,
+		NodesServed:          r.NodesServed,
+		Budget:               r.Budget,
+		CreatedAt:            r.CreatedAt,
+		UpdatedAt:            r.UpdatedAt,
+		FinishedAt:           r.FinishedAt,
+		Error:                r.Error,
+		FailureCode:          r.FailureCode,
+		EndReason:            r.EndReason,
+		Checkpoint:           r.Checkpoint,
+		WorkDir:              r.WorkDir,
+		ProjectPath:          r.ProjectPath,
+		BotSourceTier:        r.BotSourceTier,
+		BotSourceTenant:      r.BotSourceTenant,
+		Worktree:             r.Worktree,
+		WorktreeAvailable:    worktreeAvailable(r.WorkDir),
+		FinalCommit:          r.FinalCommit,
+		FinalBranch:          r.FinalBranch,
+		FinalBranchError:     r.FinalBranchError,
+		RoutingPolicy:        r.RoutingPolicy,
+		OutcomeSeq:           r.OutcomeSeq,
+		ContinuationState:    r.ContinuationState,
+		MergedInto:           r.MergedInto,
+		MergedCommit:         r.MergedCommit,
+		MergeStrategy:        r.MergeStrategy,
+		MergeStatus:          r.MergeStatus,
+		AutoMerge:            r.AutoMerge,
+		Source:               r.Source,
+		ParentRunID:          r.ParentRunID,
+		ParentNodeID:         r.ParentNodeID,
+		ShardIndex:           r.ShardIndex,
+		ShardCount:           r.ShardCount,
+		ShardLabel:           r.ShardLabel,
+		WatchedIssueIDs:      r.WatchedIssueIDs,
 	}
+	h.OutputCorrectionHistory = r.OutputCorrectionHistory
 	// Bootstrap fallback: when the run is already running but the WS
 	// catch-up hasn't yet seen the run_started event, anchor on
 	// CreatedAt so the live timer starts at 0 instead of staying frozen.

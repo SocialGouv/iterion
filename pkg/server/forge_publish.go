@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -43,23 +44,27 @@ import (
 // actually been computed. The grant therefore has to outlive the longest wait
 // the retry machinery can schedule, plus a margin for the resumed run itself.
 //
-// The cost is a wider window for a leaked token, and it is NOT offset by early
-// revocation: nothing in this tree calls Revoke outside its own test, so the
-// TTL is the only bound there is. What limits the damage is what the grant can
-// do — post a review and a commit status on ONE repo, re-enforced against the
-// grant's (team, connection, repo) at every use.
+// This is the CEILING, not the ordinary life of a grant: a run's terminal
+// outcome brings the expiry forward to forgePublishPostRunGrace
+// (expireForgePublishGrantForRun), so only a run that is genuinely waiting out
+// a quota window keeps the full window. What limits the damage meanwhile is
+// what the grant can do — post a review and a commit status on ONE repo,
+// re-enforced against the grant's (team, connection, repo) at every use.
 const forgePublishDefaultTTL = retrypolicy.DefaultMaxWait + 24*time.Hour
 
 // forgePublishMaxTokens bounds the in-memory registry (the backend used when
 // no Valkey is configured).
 //
-// It scales with the TTL because Register only evicts EXPIRED entries before
-// checking the cap, so the ceiling is really "gating launches per TTL": at a
-// flat 1024 the 9-day TTL would saturate at ~114 launches/day, and saturation
-// is not graceful — Register errors, injectForgePublishVars hands the run no
-// grant, and the run cannot publish its verdict. Worse now that the launch has
-// already claimed the check: the reconciler needs the grant to speak, so it
-// abstains (no token ⇒ "not a gating run") and the claim is never answered.
+// It scales with the TTL because Register evicts only EXPIRED entries before
+// checking the cap: the ceiling is "live grants", and a grant lives at most
+// one TTL. The terminal-outcome eviction is what keeps the steady state near
+// "gating launches in flight" instead of "gating launches per TTL", but a
+// deployment whose runs all park on a quota window still accumulates, so the
+// cap keeps the TTL's shape.
+//
+// Saturation is no longer silent: Register's error refuses the launch
+// (errForgePublishGrantUnavailable) rather than starting a run that claims the
+// gate context and can never answer it.
 const forgePublishMaxTokens = 1024 * int(forgePublishDefaultTTL/(24*time.Hour))
 
 // ForgePublishGrant scopes one run's publish token: reviews may only be
@@ -68,12 +73,75 @@ type ForgePublishGrant struct {
 	TeamID       string `json:"team_id"`
 	ConnectionID string `json:"connection_id"`
 	Repo         string `json:"repo"`
-	// Bot identifies WHICH workflow this grant was minted for. The server
-	// mints a grant for any bot launched with a pr_url, so the bot id is what
-	// separates "this run owed a merge-gate verdict" from "this run merely
-	// carried a token it never used" — see forge_gate_reconcile.go.
+	// Bot names the bot this grant was minted for. It is the FALLBACK record
+	// of which bot to relaunch when a gating run dies: the recovery reads the
+	// run's own BotID first and falls back here (gateRelaunchBotID), because
+	// an inline .bot launch persists none — and the answer is part of the
+	// relaunch claim key, so it decides whether a second death on a head is
+	// the same bot's or a peer's.
+	//
+	// It is NOT what decides that a run owed a verdict: the reconciler anchors
+	// on the repo's pinned gate_context, because a repo shares one context
+	// across several gating bots on purpose (see forge_gate_reconcile.go).
 	Bot       string    `json:"bot,omitempty"`
 	ExpiresAt time.Time `json:"-"`
+}
+
+// grantTenantMismatchReason is the typed refusal a publish grant earns when
+// it does not belong to the run carrying it. Named so a log line, an audit
+// row and a test all say the same word.
+const grantTenantMismatchReason = "grant_tenant_mismatch"
+
+// auditActionGrantTenantMismatch is the audit action the refusal records on
+// the RUN's tenant — the tenant whose run tried to speak as another.
+const auditActionGrantTenantMismatch = "forge.grant.tenant_mismatch"
+
+// runOwnsGrant proves a publish grant belongs to the run that carries it, and
+// is the ONE place that decides it: every reader holding a run funnels through
+// here, so the rule cannot hold at one surface and not the next.
+//
+// It exists because the grant token is a launch VAR. The scope checks each
+// reader already performs prove the grant is SELF-consistent — its connection
+// belongs to its team, its repo matches the pull request, its host matches the
+// connection — and a grant minted for another tenant passes every one of them.
+// What none of them asks is whether that tenant is the run's. Unasked, a run
+// carrying another tenant's token has iterion comment on that tenant's pull
+// request, post its REQUIRED commit status, and — on the auto-fix lane —
+// launch a code-pushing bot into that tenant, all under that tenant's forge
+// identity and against its budget.
+//
+// A run that states NO tenant is not refused: only the Mongo store stamps one
+// (store/mongo.stampTenant), so a filesystem-backed single-tenant deployment
+// states none — and a deployment with one tenant has no second tenant to
+// protect. A run that DOES state one must match exactly; a grant that names no
+// tenant fails that comparison, which is correct, since a cloud connection
+// always has one.
+//
+// Loud on every refusal, on purpose: a Warn (never the token — an audit trail
+// that leaks the credential is a second incident) plus an audit row on the
+// run's own tenant, so the team whose run attempted the crossing sees it. The
+// sweep re-offers a dead run for its whole lookback, so an unresolved refusal
+// repeats; that is the intended shape — a crossing that persists must stay
+// visible — and the rows collapse in one query on the run id.
+func (s *Server) runOwnsGrant(run *store.Run, grant ForgePublishGrant, what string) bool {
+	if run == nil {
+		return false
+	}
+	runTenant := strings.TrimSpace(run.TenantID)
+	if runTenant == "" || strings.EqualFold(runTenant, strings.TrimSpace(grant.TeamID)) {
+		return true
+	}
+	if s.logger != nil {
+		s.logger.Warn("forge gate: %s for run %s refused (%s): the run belongs to tenant %q but its publish grant was minted for tenant %q — nothing posted",
+			what, run.ID, grantTenantMismatchReason, runTenant, grant.TeamID)
+	}
+	s.auditSystem(runTenant, "forge-gate", auditActionGrantTenantMismatch, "run", run.ID, map[string]any{
+		"reason":       grantTenantMismatchReason,
+		"grant_tenant": grant.TeamID,
+		"grant_repo":   grant.Repo,
+		"surface":      what,
+	})
+	return false
 }
 
 // ForgePublishTokenStore is the per-run forge-publish token registry. The
@@ -83,6 +151,11 @@ type ForgePublishGrant struct {
 type ForgePublishTokenStore interface {
 	Register(token string, g ForgePublishGrant) error
 	Revoke(token string)
+	// expireIn brings a live grant's expiry forward to now+d, never pushes it
+	// out, and does nothing for an unknown token. It is how a grant stops
+	// outliving its run without being revoked outright — the merge-gate
+	// repair still needs to read it for its own window after the run dies.
+	expireIn(token string, d time.Duration)
 	lookup(token string) (ForgePublishGrant, bool)
 }
 
@@ -121,6 +194,20 @@ func (r *ForgePublishTokenRegistry) Revoke(token string) {
 	r.mu.Lock()
 	delete(r.tokens, token)
 	r.mu.Unlock()
+}
+
+// expireIn brings the grant's expiry forward. Never later: a caller shortening
+// a window must not be able to extend one.
+func (r *ForgePublishTokenRegistry) expireIn(token string, d time.Duration) {
+	at := r.now().Add(d)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.tokens[token]
+	if !ok || !at.Before(g.ExpiresAt) {
+		return
+	}
+	g.ExpiresAt = at
+	r.tokens[token] = g
 }
 
 func (r *ForgePublishTokenRegistry) lookup(token string) (ForgePublishGrant, bool) {
@@ -235,6 +322,11 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
 		return
 	}
+	// No runOwnsGrant here, and that is the contract rather than an omission:
+	// the request names no run — the token IS the authority on this endpoint —
+	// so there is no run tenant to compare the grant against. The crossing is
+	// refused where both facts exist instead, at injectForgePublishVars, which
+	// is why a run can never be handed a grant of another team to present here.
 
 	var req publishReviewRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
@@ -383,6 +475,23 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		GateSHA:           gate.sha,
 		GateError:         gate.errText,
 	})
+
+	// Self-assign the connection's identity as an MR reviewer — what makes
+	// the forge-native "Re-request review" button exist on the reviewed MR
+	// (clicking it on the bot reviewer relaunches the review through the
+	// inbound webhook's on-demand lane). STRICTLY behind the gate status and
+	// the response: it is cosmetic, and its up-to-three forge round-trips
+	// must never sit in front of a required check (a client disconnect in
+	// that window used to kill the gate post on a review that had landed).
+	// Detached from the request context (a disconnect must not cancel it),
+	// bounded, and recover-carrying via goSafe. Providers whose admin client
+	// doesn't carry the capability are a deliberate non-implementation — see
+	// forge.ReviewerAssigner.
+	saCtx, saCancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	s.goSafe("forge-publish-self-assign", func() {
+		defer saCancel()
+		s.selfAssignReviewer(saCtx, conn, grant.Repo, number)
+	})
 }
 
 // defaultGateContext is the commit-status check name the merge gate posts
@@ -398,6 +507,44 @@ const defaultGateContext = "merge-gate"
 type forgeGateClient interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error)
 	SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error
+}
+
+// selfAssignReviewer adds the connection's own identity to the PR/MR
+// reviewer set through the forge.ReviewerAssigner capability, when the
+// provider's admin client carries it. Best-effort by contract: the review
+// already landed, so nothing here may fail the publish — a capability miss
+// is a Debug (deliberate non-implementation), a forge refusal a Warn.
+// The forgeReviewerAssignerFor field is a test seam; nil uses the real
+// admin client.
+func (s *Server) selfAssignReviewer(ctx context.Context, conn forge.Connection, repo string, number int) {
+	var ra forge.ReviewerAssigner
+	if s.forgeReviewerAssignerFor != nil {
+		ra = s.forgeReviewerAssignerFor(ctx, conn)
+	} else {
+		admin, err := s.forgeAdminFor(ctx, conn)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("forge publish: %s %s#%d: cannot resolve admin client for reviewer self-assign: %v", conn.Provider, repo, number, err)
+			}
+			return
+		}
+		ra, _ = admin.(forge.ReviewerAssigner)
+	}
+	if ra == nil {
+		if s.logger != nil {
+			s.logger.Debug("forge publish: %s carries no reviewer self-assign capability — the re-request-review button rides the forge's own reviewer handling (see forge.ReviewerAssigner)", conn.Provider)
+		}
+		return
+	}
+	if err := ra.AddSelfAsPullReviewer(ctx, repo, number); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("forge publish: %s %s#%d: reviewer self-assign failed (re-request button may be absent; /revi still re-reviews): %v", conn.Provider, repo, number, err)
+		}
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("forge publish: %s %s#%d: bot self-assigned as reviewer", conn.Provider, repo, number)
+	}
 }
 
 // gateClientFor resolves a connection's forgeGateClient. The forgeGateClientFor
@@ -457,6 +604,21 @@ func (s *Server) postGateStatus(ctx context.Context, conn forge.Connection, repo
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
 		out.errText = "forge returned no head sha for the PR"
+		return out
+	}
+	// A pull request that already merged or closed takes no verdict. The head
+	// resolved above is the PRE-merge revision — nobody merges it any more,
+	// nothing consults the check, and the branch it describes is scheduled for
+	// deletion — so a status there is a statement about a revision that left
+	// the merge decision. This is the ONE place every bot's gate status
+	// crosses, which is what keeps the rule out of each bot's tail.
+	//
+	// An EMPTY state is a provider that does not report one, never a closure:
+	// the same predicate the relaunch, auto-fix and reconcile lanes use, for
+	// the same reason — suppressing a required check on a guess deadlocks the
+	// pull request.
+	if pr.State != "" && pr.State != "open" {
+		out.errText = "pull request is " + pr.State + " — no gate status on a head that left the merge decision"
 		return out
 	}
 	out.sha = pr.HeadSHA
@@ -531,9 +693,13 @@ func hostOfURL(raw string) string {
 // forgePublishVarURL / forgePublishVarToken are the launch vars the server
 // injects; a bot opts in by declaring them in its vars: block (undeclared
 // launch vars are dropped by the IR, so blind injection is safe).
+// forgePublishVarPRState is the read half's endpoint, injected alongside them
+// and authenticated by the SAME token: a delivery tail asks it whether the
+// pull request is still open before it pushes onto its branch.
 const (
-	forgePublishVarURL   = "forge_publish_url"
-	forgePublishVarToken = "forge_publish_token"
+	forgePublishVarURL     = "forge_publish_url"
+	forgePublishVarToken   = "forge_publish_token"
+	forgePublishVarPRState = "forge_pr_state_url"
 )
 
 // injectForgePublishVars mints a per-run forge-publish grant and injects the
@@ -545,55 +711,81 @@ const (
 //
 // preferredConnID pins the connection (repo-targeted launches); empty falls
 // back to the team's repo integrations, then to a connection host match.
-func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+//
+// A caller-pinned token is honoured rather than overwritten — but only for the
+// launching team. The publish endpoint holds no run, so there the token IS the
+// authority and it cannot tell whose run presents it; this is the only place
+// the two facts (which team launches, which team the grant names) are both in
+// hand, which makes it the door. A pin resolving to ANOTHER team's grant is
+// refused and nothing launches.
+//
+// An UNRESOLVABLE pin is not a crossing and stays honoured: the default token
+// registry is in-memory, so a restart empties it, and refusing there would
+// turn a stale token into a failed launch instead of a run that merely cannot
+// publish (the endpoint answers 401).
+func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	if s == nil || s.forgePublishTokens == nil || s.forgeConnections == nil {
-		return vars
+		return vars, nil
 	}
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if strings.TrimSpace(vars[forgePublishVarToken]) != "" {
+	if pinned := strings.TrimSpace(vars[forgePublishVarToken]); pinned != "" {
+		if grant, ok := s.forgePublishTokens.lookup(pinned); ok &&
+			!strings.EqualFold(strings.TrimSpace(grant.TeamID), strings.TrimSpace(teamID)) {
+			return vars, fmt.Errorf("%w: the launch pins a forge publish grant minted for team %q, but this launch belongs to team %q",
+				errForgePublishGrantTenant, grant.TeamID, teamID)
+		}
 		// The caller pinned its own grant — don't overwrite.
-		return vars
+		return vars, nil
 	}
 	base := s.publicBaseURL(r)
 	if base == "" {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no public base URL (set PublicURL); deterministic review publishing disabled for this launch")
 		}
-		return vars
+		return vars, nil
 	}
 	host, repo, _, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: %v; deterministic review publishing disabled for this launch", err)
 		}
-		return vars
+		return vars, nil
 	}
 	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
 	if !ok {
 		if s.logger != nil {
 			s.logger.Warn("forge publish: no team %s connection covers %s/%s; deterministic review publishing disabled for this launch", teamID, host, repo)
 		}
-		return vars
+		return vars, nil
 	}
 	token := newBoardMCPToken()
 	if token == "" {
-		return vars
+		return vars, nil
 	}
 	if err := s.forgePublishTokens.Register(token, ForgePublishGrant{TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo}); err != nil {
+		// A launch that reaches here has a connection covering the PR: it is
+		// gating-shaped, and the caller is about to claim the repo's gate
+		// context on this head. Proceeding without a grant is the "pending
+		// forever" shape — the run cannot publish its verdict, and the
+		// reconciler that repairs a dead claim reads the grant to know where
+		// to speak, so it abstains ("not a gating run") and nothing ever
+		// answers the claim. Refuse instead: the claim is posted AFTER the
+		// launch, so a launch refused here leaves nothing to release.
 		if s.logger != nil {
-			s.logger.Error("forge publish: %v; deterministic review publishing disabled for this launch", err)
+			s.logger.Error("forge publish: %v; refusing the launch on %s/%s rather than starting a run that cannot publish its verdict", err, host, repo)
 		}
-		return vars
+		return vars, fmt.Errorf("%w: %s/%s: %w", errForgePublishGrantUnavailable, host, repo, err)
 	}
 	if vars == nil {
 		vars = map[string]string{}
 	}
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
+	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
 	vars[forgePublishVarToken] = token
-	return vars
+	return vars, nil
 }
 
 // applyPRLaunchContext gives a launch that targets a pull request the two
@@ -619,12 +811,17 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // authenticated team surfaces, and the grant is scoped to the (team,
 // connection, repo) the team is provisioned on and re-enforced at the publish
 // endpoint.
-func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) map[string]string {
+//
+// The fork guard, however, IS shared with the webhook lanes: the launch pair
+// is the same (<base>.CloneURL + the PR's head branch), so a PR whose head
+// is not proven to live in the base repo is refused here too — the returned
+// error carries the refusal, and the caller launches nothing.
+func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConnID, botID string, vars map[string]string, r *http.Request) (map[string]string, error) {
 	prURL := strings.TrimSpace(vars["pr_url"])
 	if prURL == "" {
-		return vars
+		return vars, nil
 	}
-	if host, repo, _, err := forge.ParsePullURL(prURL); err == nil {
+	if host, repo, number, err := forge.ParsePullURL(prURL); err == nil {
 		if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
 			if preferredConnID == "" {
 				// Pin the grant to the connection the policy came from.
@@ -632,8 +829,104 @@ func (s *Server) applyPRLaunchContext(ctx context.Context, teamID, preferredConn
 			}
 			fillVarGaps(vars, s.repoLaunchPolicy(ctx, ri, botID))
 		}
+		conn, proven, err := s.prLaunchForkGuard(ctx, teamID, preferredConnID, prURL, host, repo, number)
+		if err != nil {
+			return vars, err
+		}
+		if proven {
+			// The grant is minted on the connection the PR was proven
+			// through, so the identity that read the head is the one that
+			// posts the verdict.
+			preferredConnID = conn.ID
+		}
 	}
 	return s.injectForgePublishVars(ctx, teamID, preferredConnID, botID, vars, r)
+}
+
+// errForgePublishGrantTenant marks a launch that pinned a forge publish grant
+// belonging to another team — the operator's request is inadmissible, not a
+// forge that could not be asked, so the HTTP lane answers 422.
+var errForgePublishGrantTenant = errors.New("forge publish grant tenant mismatch")
+
+// errPRLaunchForkGuard marks a launch the fork guard refused — the operator's
+// pull request is not admissible, as opposed to a forge that could not be
+// asked — so the HTTP lane answers 422 rather than 502.
+var errPRLaunchForkGuard = errors.New("fork guard")
+
+// errPRLaunchNoPullCapability marks a launch pinned to a connection whose
+// provider cannot read pull requests at all: same-repo can never be proven
+// through it, so no retry helps and the answer is not 502.
+var errPRLaunchNoPullCapability = errors.New("connection cannot read pull requests")
+
+// prLaunchContextStatus maps a refusal from applyPRLaunchContext onto the HTTP
+// status a launch surface answers with. The whole table lives here because the
+// FALL-THROUGH is the dangerous half: 502 tells the caller "the forge could not
+// be asked, try again", so a refusal a retry can never fix has to be named or
+// it reads as an outage the operator hammers.
+//
+//	errPRLaunchForkGuard             422  the pull request is not admissible
+//	errForgePublishGrantTenant       422  the launch pins ANOTHER team's grant
+//	errPRLaunchNoPullCapability      422  the connection cannot prove same-repo
+//	errForgePublishGrantUnavailable  503  the server's own grant capacity, retriable as-is
+//	anything else                    502  a forge that could not be asked
+//
+// The webhook lane already answers the tenant crossing 422
+// (insertAndLaunchWebhook); this is the same verdict on the surfaces that hold
+// no delivery.
+func prLaunchContextStatus(err error) int {
+	switch {
+	case errors.Is(err, errPRLaunchForkGuard),
+		errors.Is(err, errForgePublishGrantTenant),
+		errors.Is(err, errPRLaunchNoPullCapability):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, errForgePublishGrantUnavailable):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// prLaunchForkGuard is the fork guard of the launch surfaces that hold no
+// webhook payload — the studio/API launch and the cloud board coordinator —
+// over the same launch pair the webhook lanes guard: <base>.CloneURL + the
+// PR's head branch. It reads the PR through the team connection covering the
+// PR's host+repo (the one the publish grant is minted on) and requires the
+// head branch to be PROVEN to live in the base repo, refused with the webhook
+// lanes' own wording (forkGuardRefusal): on a fork PR the checkout misses, or
+// worse hits a same-named branch of the BASE repo and a code-pushing bot
+// commits onto it. Fail-CLOSED on resolution: a PR the forge cannot answer
+// for is refused, never launched on a guess.
+//
+// Returns the connection the proof was read through (proven=true), or
+// proven=false with no error when no team connection covers the PR's host:
+// the server then makes no launch pair for that host — a repo-targeted
+// launch needs a connection on the repo's host, and a board card's repo rides
+// the webhook lane that already guarded it — so there is nothing to decide
+// and the launch keeps its shape (no policy, no grant), said at Debug.
+func (s *Server) prLaunchForkGuard(ctx context.Context, teamID, preferredConnID, prURL, host, repo string, number int) (forge.Connection, bool, error) {
+	conn, ok := s.forgeConnectionForPR(ctx, teamID, preferredConnID, host, repo)
+	if !ok {
+		if s.logger != nil {
+			s.logger.Debug("fork guard: no team %s connection covers %s/%s — nothing to prove for %s", teamID, host, repo, prURL)
+		}
+		return forge.Connection{}, false, nil
+	}
+	gc, err := s.gateClientFor(ctx, conn)
+	if err != nil {
+		return conn, false, fmt.Errorf("fork guard: %s: cannot read the pull request through connection %s: %w", prURL, conn.ID, err)
+	}
+	if gc == nil {
+		return conn, false, fmt.Errorf("%w: fork guard: %s: provider %s cannot read pull requests, so same-repo cannot be proven",
+			errPRLaunchNoPullCapability, prURL, conn.Provider)
+	}
+	pr, err := gc.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		return conn, false, fmt.Errorf("fork guard: %s: PR resolution: %w", prURL, err)
+	}
+	if reason := forkGuardRefusalFor(pr, repo); reason != "" {
+		return conn, false, fmt.Errorf("%w: %s: %s", errPRLaunchForkGuard, prURL, reason)
+	}
+	return conn, true, nil
 }
 
 // repoLaunchPolicy composes a repo's launch-var layers for ONE bot, in the
@@ -667,7 +960,12 @@ func (s *Server) repoLaunchPolicy(ctx context.Context, ri forge.RepoIntegration,
 // repoIntegrationFor finds a team's integration for a repo on a given forge
 // host. The host is part of the identity: the same slug on another forge is a
 // different repo, and applying its policy — or minting a grant on its
-// connection — would cross two unrelated projects.
+// connection — would cross two unrelated projects. A watch-only
+// connection's row is not a candidate either: the security-read App is
+// provisioned on the repos it watches, and its row carries neither a launch
+// policy nor a connection that can post — selecting it would hand
+// forgeConnectionForPR a connection it must reject, and the host-wide
+// fallback then lands on a connection that does not cover the repo at all.
 func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo string) (forge.RepoIntegration, bool) {
 	if s.forgeIntegrations == nil || s.forgeConnections == nil || strings.TrimSpace(repo) == "" {
 		return forge.RepoIntegration{}, false
@@ -683,7 +981,7 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 			continue
 		}
 		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
-		if cerr != nil || conn.TenantID != teamID || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
+		if cerr != nil || conn.TenantID != teamID || conn.IsSecurityReadOnly() || !strings.EqualFold(hostOfURL(conn.BaseURL()), host) {
 			continue
 		}
 		// One repo provisioned twice on the same host — through two connections,
@@ -701,10 +999,15 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 }
 
 // forgeConnectionForPR picks the team connection to publish through:
-// the pinned connection when given, else the connection of a repo
-// integration matching the repo slug, else the first team connection on the
-// PR's forge host.
+// the pinned connection when given, else the connection of the repo's
+// LATEST integration on the PR's forge host, else the LATEST team
+// connection on that host. A nil forgeConnections store yields (empty, false):
+// every caller (approve, publish, pending, reconcile) inherits the guard
+// here instead of repeating it.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
+	if s == nil || s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
 	matches := func(c forge.Connection) bool {
 		// A watch-only connection sits on the same host and would be picked by
 		// the "first connection on this host" fallback below — then every
@@ -724,26 +1027,37 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
-	if s.forgeIntegrations != nil {
-		if ris, err := s.forgeIntegrations.ListByTenant(ctx, teamID); err == nil {
-			for _, ri := range ris {
-				if !strings.EqualFold(ri.RepoFullName, repo) {
-					continue
-				}
-				if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
-					return c, true
-				}
-			}
+	// The repo's integration, LATEST provisioning first — the same choice
+	// repoIntegrationFor makes for the policy, so a repo re-provisioned onto
+	// a newer connection posts under that one and not the row left behind.
+	if ri, ok := s.repoIntegrationFor(ctx, teamID, host, repo); ok {
+		if c, err := s.forgeConnections.Get(ctx, ri.ConnectionID); err == nil && matches(c) {
+			return c, true
 		}
 	}
 	conns, err := s.forgeConnections.ListByTenant(ctx, teamID)
 	if err != nil {
 		return forge.Connection{}, false
 	}
+	// The LATEST matching connection wins, not the first: ListByTenant sorts
+	// created_at ascending on both stores, so a repo re-provisioned onto a
+	// newer connection would otherwise inherit the stale one — the rule
+	// repoIntegrationForRepo applies to the integration lookup. Id breaks an
+	// exact created_at tie. Publish, pending and reconcile all read through
+	// this helper.
+	var best forge.Connection
+	found := false
 	for _, c := range conns {
-		if matches(c) {
-			return c, true
+		if !matches(c) {
+			continue
 		}
+		if !found || c.CreatedAt.After(best.CreatedAt) ||
+			(c.CreatedAt.Equal(best.CreatedAt) && c.ID < best.ID) {
+			best, found = c, true
+		}
+	}
+	if found {
+		return best, true
 	}
 	return forge.Connection{}, false
 }

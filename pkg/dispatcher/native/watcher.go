@@ -2,13 +2,19 @@ package native
 
 import (
 	"errors"
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
+
+// newFSWatcher is the seam through which a test can make the host refuse
+// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Production
+// always gets fsnotify's own constructor.
+var newFSWatcher = fsnotify.NewWatcher
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
 // out-of-process writers (typically the `iterion __mcp-board` stdio
@@ -48,7 +54,7 @@ type indexWatcher struct {
 // environment); the Store still works, it just can't see out-of-
 // process writes — same as before this watcher existed.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
-	w, err := fsnotify.NewWatcher()
+	w, err := newFSWatcher()
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +93,19 @@ func (iw *indexWatcher) Close() error {
 	return iw.closeErr
 }
 
+// lost is called when a channel closed under the loop. Close closes the
+// stop channel BEFORE it closes the fsnotify watcher, so a closed channel
+// with no stop pending is a watch that went away on its own: hand the
+// store over to the fallback net.
+func (iw *indexWatcher) lost(s *Store) {
+	select {
+	case <-iw.stop:
+		return
+	default:
+	}
+	s.watchLost(iw)
+}
+
 func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 	defer close(iw.done)
 	var mu sync.Mutex // guards seenErr only — store mutex covers index access.
@@ -97,6 +116,7 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			return
 		case ev, ok := <-iw.w.Events:
 			if !ok {
+				iw.lost(s)
 				return
 			}
 			if !relevantEvent(ev) {
@@ -109,20 +129,29 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 			applyEvent(s, id, ev.Op)
 		case err, ok := <-iw.w.Errors:
 			if !ok {
+				iw.lost(s)
 				return
 			}
-			// fsnotify error channel drains rare kernel queue-full
-			// signals. Don't spam: log once per session, keep the
-			// watcher alive — a missed event simply means the
-			// daemon's view stays stale until the next event for
-			// that file forces a refresh, or the next restart
-			// repopulates from disk. Wrap the flag in a tiny mutex
-			// because the events + errors selects run on the same
-			// goroutine but the linter cannot prove that.
+			// fsnotify's error channel carries the kernel queue-full
+			// signal: events were DROPPED, and nothing will resend
+			// them. The watcher stays alive and the index is rebuilt
+			// from disk — the second lossy carrier gets the same net
+			// as a refused watch. Log once per session so a host that
+			// overflows every second does not flood the log. Wrap the
+			// flag in a tiny mutex because the events + errors selects
+			// run on the same goroutine but the linter cannot prove that.
 			mu.Lock()
 			first := !seenErr
 			seenErr = true
 			mu.Unlock()
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				if rerr := s.Reconcile(); rerr != nil {
+					s.getLogger().Error("native index watcher: kernel event queue overflowed and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", rerr)
+				} else if first {
+					s.getLogger().Warn("native index watcher: kernel event queue overflowed; index rebuilt from disk (further overflows rebuild silently this session)")
+				}
+				continue
+			}
 			if first {
 				s.getLogger().Error("native index watcher: fsnotify error: %v — board index may serve stale reads until the next write event or restart (further watcher errors suppressed this session)", err)
 			}
@@ -186,7 +215,10 @@ func applyEvent(s *Store, id string, op fsnotify.Op) {
 		// out, or someone hand-edited it). Drop the cached entry
 		// on ErrNotFound; leave it alone on other errors so the
 		// stale-but-readable cached value beats a forced 404.
-		if errors.Is(err, fs.ErrNotExist) {
+		// readIssueFromDisk maps a missing file to tracker.ErrNotFound,
+		// which does not wrap fs.ErrNotExist — matching on the latter
+		// never fires and leaves the tombstone in the index.
+		if errors.Is(err, tracker.ErrNotFound) {
 			delete(s.index, id)
 		}
 		return

@@ -1,7 +1,16 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.2.1
+version: 0.3.0
+## 0.3.0 — the plan phase runs by default on every deployment: `plan_review`
+## gates ONLY the cross-model peer review (the plan_topology gate no longer
+## skips planning when it resolves off); the new `plan_phase` (on|off) is
+## the phase's own switch, and the campaign receives the authored build
+## plan stamped with its provenance (`plan_provenance`). No workspace
+## precondition: this bot starts from an empty directory and git-inits
+## from slice 0. Persy, the perseverance-coach supervisor on the campaign
+## node + the contract's PERSISTENCE clause (fleet-wide, from feature-dev
+## 2.2.0).
 ## 0.2.1 — plan_review_policy defaults to "skip": the cross-model plan peer
 ## is an optional enrichment, and the primary family alone must always
 ## suffice. A dead/parked peer credential (401, shut forfait window,

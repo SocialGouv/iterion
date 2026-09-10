@@ -50,6 +50,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		// comment. Routes through the command registry to its bot.
 		s.handlePRForgeComment(ctx, w, r, cfg, webhooks.ProviderGitHub, body, payloadHash, srcIP)
 		return
+	case prforge.EventHeaderReviewComment:
+		// Conversational path: a reply inside one of the bot's review threads
+		// IS a question — routes to the converse bot, which answers in the
+		// same thread. GitHub-only (Forgejo's dispatch does not route here).
+		s.handlePRForgeReviewThreadReply(ctx, w, r, cfg, webhooks.ProviderGitHub, body, payloadHash, srcIP)
+		return
 	case prforge.EventHeaderIssues:
 		// Issue lifecycle path: labeling an issue (e.g. "implement") — or, with
 		// AutoImplementOnOpen, opening one — launches an implementer bot
@@ -86,26 +92,83 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 	meta := prforgePRMeta(p)
 
+	// A CLOSED or MERGED pull request ends every review it still owes.
+	// Two costs otherwise, both paid in production: a run in flight keeps
+	// burning provider quota to judge a diff nobody will merge, and a run
+	// PARKED on a usage window wakes up hours later — after the retry the
+	// gate reconciler is deliberately waiting on — to review, and comment
+	// on, a dead PR. Stopping is not launching, so it runs before the fork
+	// guard: a fork PR's `/command` runs must stop too — they are reached
+	// through the delivery's ParentSubjectID, since a command records the
+	// COMMENT's id as its own subject.
+	if p.IsClosed() {
+		stopped := s.stopRunsForDeadPR(ctx, cfg, meta)
+		reason := "pull request closed — no runs to stop"
+		if stopped > 0 {
+			reason = fmt.Sprintf("pull request closed — stopped %d run(s) still bound to it", stopped)
+		}
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	// Fork guard (UNCONDITIONAL on the auto path): a fork PR (head repo != base
 	// repo) is untrusted — an adversary can open one to run code in our runner
 	// with the forge token and to exhaust the tenant's budget. So an inbound PR
-	// event NEVER auto-launches a bot on a fork, regardless of block_fork_prs.
+	// event NEVER auto-launches a bot on a fork — there is no config that lifts it.
 	// A repo-authorized collaborator can still run one DELIBERATELY by issuing a
 	// `/command` on the PR: that path (handlePRForgeComment) gates on the
 	// commenter's CollaboratorPermission, so only a trusted user, manually,
 	// triggers a run against fork code. Filtered as a clean 200 so the forge
 	// keeps the hook enabled.
-	if p.IsCrossRepo() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)")
+	// Fail CLOSED, not merely "not a proven fork": an empty head repo means
+	// the payload omitted the field OR the head repo was deleted/blocked, and
+	// `head.repo: null` is exactly the shape a fork takes once it is deleted.
+	// Reading that as same-repo admitted the one case that most needs gating,
+	// and aimed the bot at repoURL=<base> repoRef=<fork-controlled branch> —
+	// a reviewer grounded in the wrong code, and for the auto-heal lane below
+	// a fixer pushing LLM commits onto the base repo's branch of that name.
+	if reason := forkGuardRefusal(p.SameRepoAsBase(), p.HeadRepoWithheld(), p.HeadRepoFullName); reason != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
+
+	// A review request explicitly targeting iterion's own forge identity —
+	// the "Re-request review" button (or first "Request review") on the bot
+	// reviewer — is the button form of `/revi`: a deliberate on-demand
+	// re-review, only on an OPEN PR (reviewer edits arrive freely on
+	// closed/merged ones). Never when the actor IS the bot: its own
+	// reviewer-write echoing back must not launch a review of itself. The
+	// identity matched is iterionBotLogins — the connection-derived App bot
+	// login PLUS cfg.ReviewRequestLogins, and on GitHub only the latter can
+	// arm the lane (a GitHub App cannot be a requested reviewer at all; a
+	// PAT/OAuth account may be a HUMAN's, so it is never derived either).
+	// The gesture is PROVISIONAL until the replier gate below the scope
+	// filter confirms it (R6a15fe).
+	reviewRequested := strings.EqualFold(p.State, "open") &&
+		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
+		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
+
+	// The merge gate opts synchronize (a push to the head) back into review
+	// so the revi/review status re-evaluates on the new head SHA. Never on a
+	// closed/merged PR (a push to a dead PR's branch still delivers
+	// synchronize); fail-open on a payload without `state` — a filtered
+	// resync strands the required check.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
 	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
 	// — the operator's escape hatch to pause automation on one PR. Placed before
 	// any launch decision so it covers all of them. A human can still trigger a
 	// bot manually via a `/command`.
+	//
+	// A review re-request is NOT exempt, unlike a command. The forge emits the
+	// same event for a CODEOWNERS auto-request, which needs no permission from
+	// the requester and carries no field distinguishing it from a click — so
+	// "a re-request is a deliberate human gesture" is not a property this
+	// handler can rely on. And the label's whole purpose is to freeze every
+	// automation on one PR: an operator who set it has to be able to trust it.
 	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
@@ -131,24 +194,35 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 			return
 		}
-		healIdem := knowledge.ChecksumHex([]byte(fmt.Sprintf("heal|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
-		mission := fmt.Sprintf(
-			"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
-				"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
-				"with the current `%s` (a compile break, a stale generated file, a test broken by an "+
-				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
-				"Push so the PR can re-enter the merge queue.\n\n%s",
-			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
+		healIdem := healIdempotencyKey(cfg, p)
+		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}
 
-	// The merge gate opts synchronize (a push to the head) back into review so
-	// the revi/review status re-evaluates on the new head SHA; otherwise only
-	// opened/reopened/ready_for_review review (on-demand re-review on push).
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
-	reviewable := p.IsReviewable() || gateResync
+	// The closing half of the auto-heal loop. A heal is a means to ONE end:
+	// carry an ejected pull request back into the merge queue. Once the PR
+	// is queued again — by GitHub itself, by another PR merging ahead, or by
+	// an operator re-enqueuing it — the heal has no end left to serve, and
+	// its own delivery tail becomes destructive: it force-pushes the branch,
+	// which cancels the queue build in flight and ejects the PR a second
+	// time. So the heal is stopped the moment the queue takes the PR back.
+	//
+	// The trigger is the queue's own `enqueued` event rather than a poll, so
+	// the window between "queued again" and "the heal pushes" is closed by
+	// the same authority that opened the heal.
+	if p.IsRequeued() {
+		stopped := s.stopHealRunForRequeuedPR(ctx, cfg, p)
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+			fmt.Sprintf("pull request re-entered the merge queue; auto-heal runs stopped: %d", stopped))
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
+	// Auto-review on opened/reopened/ready_for_review, plus the resync and
+	// re-request lanes resolved above.
+	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -159,6 +233,50 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
+	}
+
+	// Replier authorization (R6a15fe — the GitLab twin's R7e050f gate,
+	// applied to this lane too): a manual gesture rides the same
+	// AuthorizedRepliers/MinReplierRole controls as every `/command`.
+	// Deliberately AFTER the event/project/author scope filter (R0c3aab):
+	// an out-of-scope delivery must never cost a forge API call, nor be
+	// able to 502 the endpoint. An unauthorized click DEMOTES the gesture —
+	// the delivery then rides whatever automatic lane still admits it, or
+	// is filtered (the hold gate already ran unconditionally above — the
+	// re-request has no exemption to lose). An authz ERROR demotes too
+	// when an automatic lane co-rides the event (R34eb8c — a transient
+	// members-API failure must not strand a merge-gate resync), and records a launch error
+	// when the click was the delivery's sole reason.
+	if reviewRequested {
+		botID := ""
+		if rr := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author()); len(rr) > 0 {
+			botID = rr[0].BotID
+		}
+		gate := s.webhookPRForgeReviewRequestGate
+		if gate == nil {
+			gate = s.realWebhookPRForgeReviewRequestGate
+		}
+		authorized, reason, gerr := gate(ctx, cfg, p, botID)
+		switch {
+		case gerr != nil && (p.IsReviewable() || gateResync):
+			if s.logger != nil {
+				s.logger.Warn("webhooks: %s re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", cfg.Provider, gerr)
+			}
+			reviewRequested = false
+		case gerr != nil:
+			s.failWebhookAuthorization(ctx, w, cfg, meta, payloadHash, srcIP, "re-request authz check", gerr)
+			return
+		case !authorized:
+			reviewRequested = false
+			if !p.IsReviewable() && !gateResync {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+		}
+		// No post-demote hold re-check here: the hold gate above runs
+		// unconditionally (the re-request lost its exemption — see the
+		// CODEOWNERS rationale there), so a held PR never reaches this block.
 	}
 
 	// Iterion-bot guard: a PR opened by iterion's OWN forge bot (Doki/Willy/
@@ -177,7 +295,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// on the SAME pull request"). Filtering here left the fixer's self-verdict
 	// as the last word on a head no reviewer had read, and on a head where a
 	// bot pushed without gating at all, it left the required check absent.
-	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
+	// (A reviewRequested delivery is exempt: its own actor guard already
+	// excluded a bot sender, and a human's re-request on a bot-authored PR
+	// is deliberate, so it reviews.)
+	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
@@ -200,12 +321,104 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Idempotency base: one launch per (tenant, webhook, repo, PR#, head sha)
 	// — per bot once the delivery fans out (see forgeIdemKey).
 	idemBase := fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)
+	extra := map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
+	// !gateResync mirrors the GitLab lane; here the two are already mutually
+	// exclusive by action (review_requested vs synchronize) — the guard pins
+	// the invariant against a forge overloading one action with both.
+	if reviewRequested && !gateResync {
+		// With the identity in CODEOWNERS — the setup this lane targets — a
+		// single PR open delivers BOTH `opened` and an automatic
+		// `review_requested`, and an unconditionally salted key would launch
+		// a second full review of a head whose review just started (2× spend
+		// per PR, two runs racing on one commit status). The payload cannot
+		// tell that auto-request from a click, but the STATE can. Three-way
+		// choice on the ordinary per-head claim:
+		//   - claimed and still in flight → the request is already being
+		//     served; collapse this delivery onto it (filtered, with the
+		//     reason in the audit row);
+		//   - claimed and finished → the ordinary re-review gesture: salt
+		//     with updated_at so each click is its own delivery, disjoint
+		//     "rereq|" space, and again on a second click;
+		//   - unclaimed → first review of this head: keep the per-head key,
+		//     so a concurrent or late `opened` for the same head dedupes
+		//     against it instead of double-launching (order-independent).
+		// re_review marks the posted summary like the `/revi` comment path.
+		//
+		// Under an explicit `overlap: supersede` the collapse is SKIPPED and
+		// the click salts unconditionally: that policy is the operator saying
+		// "newest request wins", so the launch tail's supersede pass cancels
+		// the stale run and the fresh one replaces it — collapsing would
+		// silently override that choice. The CODEOWNERS double is then
+		// bounded by that policy, not eliminated: an auto-request landing
+		// after the open's launch supersedes it, while a tight concurrent
+		// pair can briefly double-run (the supersede pass only sees
+		// LAUNCHED rows, not one still in its accepted window) — the
+		// pre-existing supersede semantics, not a new exposure.
+		if overlapSupersedes(cfg) {
+			idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+		} else {
+			claimed, inFlight := s.headReviewClaim(ctx, cfg, rules, idemBase)
+			if inFlight {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
+					"re-request collapsed — a review of this head is already in flight")
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+			if claimed {
+				idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+			}
+		}
+		extra["re_review"] = "true"
+	}
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra)
 
+	// Push debounce: a synchronize launch waits out a quiet window so a
+	// volley of pushes costs one review of the final head (a re-request
+	// click stays immediate — a human is waiting on it).
+	if s.shouldDeferSyncLaunch(gateResync && !reviewRequested) {
+		s.deferSyncLaunch(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
+		return
+	}
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
+}
+
+// autoHealMission is the task the merge-queue auto-heal hands whichever bot
+// serves the brancher role. It names a ROLE and an OUTCOME, never a bot.
+//
+// The second paragraph is the whole of #706. The first one presumes the defect
+// exists — "rebase, resolve, fix whatever breaks" — and a mission that presumes
+// its own premise leaves "there is nothing to fix" un-returnable: a bot that
+// reaches that conclusion can only state it and then act against it. Measured
+// on #682, a GREEN pull request a flaky test had ejected: the fixer concluded
+// "no code issue in the diff, this is a re-queue not a fix", recorded that a
+// queue build was in flight and that pushing would cancel it — and its mission
+// said push. Run to completion it would have destroyed the merge it was sent to
+// protect.
+//
+// The queue cannot tell "this branch breaks combined with the base" from "an
+// unrelated flaky test failed on the queue branch" (docs/merge-gate.md), so a
+// fixer dispatched on the second case will keep happening; the refusal is what
+// makes that harmless. The engine's half is generic: a run ending DECLINED is a
+// no-op nothing relaunches, and its reason is posted on the pull request
+// (forge_gate_decline_notice.go).
+func autoHealMission(dequeueReason, targetBranch, title, description string) string {
+	return fmt.Sprintf(
+		"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
+			"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
+			"with the current `%s` (a compile break, a stale generated file, a test broken by an "+
+			"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
+			"Push so the PR can re-enter the merge queue.\n\n"+
+			"An eject is not proof that this branch is at fault: the queue cannot distinguish a real "+
+			"combined-build break from an unrelated flaky test on the queue branch. So if you find "+
+			"nothing attributable to this branch — the diff is sound, the failure is elsewhere, or the "+
+			"pull request has meanwhile been taken back into the queue and a build is in flight — then "+
+			"DECLINE: push nothing, change nothing, and report what you checked and why you concluded "+
+			"there is nothing to fix. A needless push moves the head and cancels whatever the forge is "+
+			"building on the old one, which is strictly worse than doing nothing. Declining is a "+
+			"first-class outcome here, not a failure.\n\n%s",
+		dequeueReason, targetBranch, targetBranch, strings.TrimSpace(title+"\n\n"+description))
 }
 
 // handleGitHubIssues handles a verified inbound GitHub `issues` delivery. Two
@@ -282,7 +495,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// still launches (or a board coordinator owns it). repoRef empty → the
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
-	route := s.boardRouteForLabel(botID)
+	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
 	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
 }
@@ -332,11 +545,12 @@ func prforgePRMeta(p prforge.Parsed) webhookEventMeta {
 		subject = p.SubjectID()
 	}
 	return webhookEventMeta{
-		Kind:         "pull_request",
-		Action:       p.Action,
-		ProjectPath:  p.ProjectPath,
-		SubjectID:    subject,
-		SubjectSHA:   p.HeadSHA,
-		SenderHandle: p.SenderLogin,
+		Kind:           "pull_request",
+		Action:         p.Action,
+		ProjectPath:    p.ProjectPath,
+		SubjectID:      subject,
+		SubjectSHA:     p.HeadSHA,
+		SenderHandle:   p.SenderLogin,
+		EventUpdatedAt: p.UpdatedAt,
 	}
 }

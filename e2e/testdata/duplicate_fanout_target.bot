@@ -1,0 +1,39 @@
+## C249 fixture — a fan_out_all router that names the same target twice.
+##
+## The author's intent reads as "run `probe` twice, once per region", and the
+## per-edge `with {}` mappings say so. The runtime cannot honour it: both
+## branches are identified by branch_fan_probes_probe, so they share one output
+## slot and one durable checkpoint. `iterion validate` warns (C249) and still
+## compiles the workflow — the shape has always been accepted.
+
+schema region_in:
+  region: string
+
+schema probe_out:
+  ok: bool
+
+tool probe:
+  command: `echo "probing ${REGION:-unset}"`
+  input: region_in
+  output: probe_out
+
+tool other:
+  command: `echo other`
+  output: probe_out
+
+tool collect:
+  command: `echo collect`
+  output: probe_out
+  await: wait_all
+
+router fan_probes:
+  mode: fan_out_all
+
+workflow duplicate_fanout_target:
+  entry: fan_probes
+  fan_probes -> probe with { region: "eu-west" }
+  fan_probes -> probe with { region: "us-east" }
+  fan_probes -> other
+  probe -> collect
+  other -> collect
+  collect -> done

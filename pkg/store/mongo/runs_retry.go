@@ -62,10 +62,15 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	})
 	update := bson.M{
 		"$set": bson.M{
-			retryPath("retry_after"): at.UTC(),
-			retryPath("reason"):      reason,
-			retryPath("code"):        code,
-			"updated_at":             now,
+			retryPath("retry_after"):  at.UTC(),
+			retryPath("scheduled_at"): now,
+			retryPath("reason"):       reason,
+			retryPath("code"):         code,
+			// Arming IS the promotion: continuation_state must only say
+			// retry_armed once a retry actually exists (the block point
+			// stamps unknown), and this write is the one that creates it.
+			"continuation_state": store.ContinuationRetryArmed,
+			"updated_at":         now,
 		},
 		"$unset": bson.M{
 			// A fresh arming supersedes the previous failure note and claim.
@@ -77,7 +82,7 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	var updated struct {
 		RetryState *store.RunRetryState `bson:"retry_state"`
 	}
-	err := s.runs.FindOneAndUpdate(ctx, filter, update,
+	err := s.runs.FindOneAndUpdate(ctx, filter, versionRunUpdate(update),
 		options.FindOneAndUpdate().
 			SetReturnDocument(options.After).
 			SetProjection(bson.M{retryStateField: 1}),
@@ -95,6 +100,34 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 		attempt = updated.RetryState.Attempts
 	}
 	return true, attempt, nil
+}
+
+// DelayRunRetry moves an existing intent behind a shared circuit without
+// charging a new attempt. The exact retry_after CAS means a stale sweeper can
+// neither overwrite a newer arm nor resurrect an operator-resumed run.
+func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusFailedResumable),
+		retryPath("retry_after"): expectedAfter.UTC(),
+	})
+	// Runs armed by versions predating ScheduledAt need a fixed anchor on the
+	// first deferral. Use the CAS-protected old retry_after as the best durable
+	// origin and preserve it on every later delay.
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		retryPath("retry_after"): delayedUntil.UTC(),
+		retryPath("scheduled_at"): bson.M{"$ifNull": bson.A{
+			"$" + retryPath("scheduled_at"), expectedAfter.UTC(),
+		}},
+		retryPath("claimed_at"): "$$REMOVE",
+		"updated_at":            now,
+	}}}}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // ClaimRunRetry leases an armed retry, conditioning on the retry_after value
@@ -124,7 +157,7 @@ func (s *Store) ClaimRunRetry(ctx context.Context, runID string, expectedAfter t
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	res, err := s.runs.UpdateOne(ctx, filter, update)
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: claim retry %s: %w", runID, err)
 	}
@@ -141,7 +174,7 @@ func (s *Store) ClearRunRetry(ctx context.Context, runID string) error {
 		"$set":   bson.M{"updated_at": time.Now().UTC()},
 		"$inc":   bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), update); err != nil {
+	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: clear retry %s: %w", runID, err)
 	}
 	return nil
@@ -155,12 +188,17 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 	update := bson.M{
 		"$set": bson.M{
 			retryPath("last_error"): reason,
-			"updated_at":            now,
+			// Nothing is armed any more — the run's future belongs to a
+			// human/consumer decision. Leaving retry_armed here would
+			// make an outcome consumer wait forever on a retry that
+			// will never fire.
+			"continuation_state": store.ContinuationFinal,
+			"updated_at":         now,
 		},
 		"$unset": bson.M{retryPath("retry_after"): ""},
 		"$inc":   bson.M{"version": 1},
 	}
-	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), update); err != nil {
+	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": runID}), versionRunUpdate(update)); err != nil {
 		return fmt.Errorf("store/mongo: abandon retry %s: %w", runID, err)
 	}
 	return nil

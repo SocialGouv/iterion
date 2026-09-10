@@ -4,10 +4,12 @@
 // the cloud Mongo collections, then the identity records (teams, memberships,
 // invitations, the org) via the auth-service cascade.
 //
-// Safety: every collection delete matches on the team/org's unique ID, so a
-// missing or renamed collection (or a wrong tenant-field name) can only
-// UNDER-purge — it can never touch another tenant's data. New tenant-scoped
-// collections should be appended to the tables below.
+// Safety: every collection delete matches on the team/org's unique ID (or on
+// a reserved scope derived from it), so a missing or renamed collection (or a
+// wrong tenant-field name) can only UNDER-purge — it can never touch another
+// tenant's data. New tenant-scoped collections should be appended to the
+// tables below; rows owned by a RESERVED scope rather than a plain tenant id
+// cannot live in those tables and are purged explicitly in PurgeOrg.
 package orgsweep
 
 import (
@@ -21,6 +23,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // teamScopedCollections are partitioned by team (tenant_id or team_id == the
@@ -95,6 +98,26 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 			deleted += p.deleteMany(ctx, coll, filter)
 		}
 	}
+	// Sealed credentials owned by a RESERVED scope rather than by a plain
+	// tenant id. Neither loop above can reach them: an org-tier row carries
+	// tenant_id "orgtier:<org>" (not the org id, not any team id), and an
+	// OAuth record is keyed by an owner in its own namespace — which is why
+	// oauth_credentials is absent from teamScopedCollections entirely, and
+	// why a team forfait survived every purge before this.
+	//
+	// A PERSONAL forfait is deliberately NOT purged here: it belongs to a
+	// user, and a user outlives the org (they may hold others). Only the
+	// two owner keys this org actually owns are removed.
+	for _, t := range teams {
+		deleted += p.deleteMany(ctx, secrets.OAuthCollectionName,
+			bson.M{"user_id": secrets.OrgOwnerKey(t.ID)})
+	}
+	orgTier := secrets.OrgTierTenantID(orgID)
+	deleted += p.deleteMany(ctx, "api_keys",
+		bson.M{"$or": bson.A{bson.M{"tenant_id": orgTier}, bson.M{"scope_team": orgTier}}})
+	deleted += p.deleteMany(ctx, secrets.OAuthCollectionName,
+		bson.M{"user_id": secrets.OrgTierOwnerKey(orgID)})
+
 	orgFilter := bson.M{"$or": bson.A{bson.M{"org_id": orgID}, bson.M{"tenant_id": orgID}}}
 	for _, coll := range orgScopedCollections {
 		deleted += p.deleteMany(ctx, coll, orgFilter)

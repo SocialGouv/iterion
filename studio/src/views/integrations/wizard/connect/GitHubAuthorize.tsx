@@ -19,6 +19,7 @@ import {
   DEFAULT_BASE,
   canonicalBase,
 } from "@/views/teams/tabs/integrations/forgeShared";
+import { GitHubAppLogoHint } from "@/views/teams/tabs/integrations/GitHubAppLogoHint";
 
 import CreateGitHubAppCard from "./CreateGitHubAppCard";
 import { RETURN_PATH } from "./model";
@@ -106,10 +107,15 @@ export default function GitHubAuthorize({
       </header>
 
       {installedAppID && (
-        <InlineBanner tone="success" layout="inline" title="GitHub App created">
-          The app is registered for this team. Install it on GitHub next to
-          pick which repositories it can act on.
-        </InlineBanner>
+        <>
+          <InlineBanner tone="success" layout="inline" title="GitHub App created">
+            The app is registered for this team. Install it on GitHub next to
+            pick which repositories it can act on.
+          </InlineBanner>
+          <GitHubAppLogoHint
+            logoUploadURL={oauthApps.find((a) => a.id === installedAppID)?.logo_upload_url}
+          />
+        </>
       )}
 
       {appAvailable ? (

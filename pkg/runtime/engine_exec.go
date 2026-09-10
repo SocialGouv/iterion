@@ -62,8 +62,15 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
-			return e.failRunWithCheckpoint(rs, currentNodeID,
-				fmt.Sprintf("node %q not found", currentNodeID))
+			// Typed, not the EXECUTION_FAILED catch-all: this is the
+			// resume-after-source-edit wall. The in-process auto-resume
+			// gate refuses it through the typed error; persisted-code
+			// readers are follow-up.
+			return e.failRunErrWithCheckpoint(rs, currentNodeID, &RuntimeError{
+				Code:    ErrCodeNodeNotFound,
+				Message: fmt.Sprintf("node %q not found", currentNodeID),
+				NodeID:  currentNodeID,
+			})
 		}
 
 		// A specially-dispatched node (fan-out, round-robin, LLM router,
@@ -155,7 +162,7 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		if emErr := e.emitTerminalNodeEvents(rs, currentNodeID); emErr != nil {
 			return true, true, "", emErr
 		}
-		return true, true, "", e.failRunDeliberate(rs, currentNodeID, "workflow reached fail node")
+		return true, true, "", e.failRunDeliberate(rs, currentNodeID, e.failOutcome(rs, n))
 
 	case *ir.HumanNode:
 		switch n.Interaction {
@@ -203,12 +210,18 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		case ir.RouterFanOutAll:
 			nextNodeID, fErr := e.execFanOut(ctx, rs, currentNodeID)
 			if fErr != nil {
+				if errors.Is(fErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
 		case ir.RouterFanOutEach:
 			nextNodeID, fErr := e.execFanOutEach(ctx, rs, currentNodeID)
 			if fErr != nil {
+				if errors.Is(fErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
@@ -221,6 +234,9 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		case ir.RouterLLM:
 			nextNodeID, lErr := e.execLLMRouter(ctx, rs, currentNodeID)
 			if lErr != nil {
+				if errors.Is(lErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, lErr)
 			}
 			return true, false, nextNodeID, nil
@@ -356,14 +372,10 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		rs.resumeBackend = resumeBackendState{}
 	}
 
-	// Thread the run ID into ctx so the executor can locate per-node
-	// session state (used by Compactor implementations to find the
-	// right messages list to compact + retry). Also attach a
-	// template-data snapshot so the executor can resolve `outputs.*`,
-	// `loop.*`, `artifacts.*`, and `run.*` refs in prompt bodies.
-	execCtx := model.WithRunID(ctx, rs.runID)
-	execCtx = model.WithNodeID(execCtx, currentNodeID)
-	execCtx = model.WithTemplateData(execCtx, e.buildTemplateData(rs))
+	// Run/node identity (a Compactor locates per-node session state by it)
+	// + the template snapshot prompts and tool commands render from. The
+	// trunk's share of execContext, which every dispatch path uses.
+	execCtx := e.execContext(ctx, rs, currentNodeID)
 	// Per-node span: inherits the runner-side or server-side root
 	// span via ctx (W3C trace propagated through NATS in cloud mode).
 	spanCtx, span := otel.Tracer(tracerName).Start(execCtx, "iterion.node.execute",
@@ -387,6 +399,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// a resumable BUDGET_EXCEEDED(duration) failure. Recompute after resource
 	// acquisition so time spent waiting for a busy slot cannot exhaust the
 	// run's max_duration and then start execution with no deadline.
+	var budgetDeadline time.Time
 	if rem, bounded := rs.budget.RemainingDuration(); bounded {
 		if rem <= 0 {
 			// Inside the duration grace (the gate above let this node
@@ -406,17 +419,42 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			}
 		}
 		var cancel context.CancelFunc
-		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
+		// Remembered so the expiry below is attributed by FACT — this is the
+		// instant we cut the node at — instead of being inferred from how
+		// close the run sits to its cap. Proximity answers a different
+		// question the moment an operator raises that cap.
+		budgetDeadline = time.Now().Add(rem)
+		spanCtx, cancel = context.WithDeadline(spanCtx, budgetDeadline)
 		defer cancel()
 	}
 
+	execStart := time.Now()
 	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)
+	stampNodeDuration(output, execStart)
 	if execErr != nil {
 		span.RecordError(execErr)
 		span.SetStatus(codes.Error, execErr.Error())
 	}
 	span.End()
 	if execErr != nil {
+		// A node that FAILED still spent: the delegate stamps the pass's
+		// cost on the result it returns with the error, and until now
+		// nothing read it — `recordBudget` runs only on the success path, so
+		// the run's budget and the daily cap both missed whatever the failing
+		// node burned. On a long agent node that is a whole session.
+		// recordFailedNodeSpend's doc states the reach and where it stops.
+		//
+		// NOT recorded when this node will run again in the SAME session: an
+		// in-place retry continues a session whose usage is cumulative, so
+		// counting the failed attempt and then the retry would bill the same
+		// tokens twice, and an interaction pause resumes the very call that
+		// asked the question. Both set the flag before returning; every other
+		// exit here is terminal for this attempt, and a resume re-executes
+		// the node in a FRESH session whose usage is genuinely additional.
+		// Booked at each TERMINAL exit below rather than deferred: a
+		// deferred call runs AFTER the return expression, so the failure
+		// handlers would already have written the checkpoint a resume reads
+		// its budget carry from (measured — the checkpoint showed zero).
 		// If the RUN's own context is done, the run is being torn down —
 		// cancelled by a drain/operator/heartbeat, or past its wall-clock
 		// deadline — WHILE this node was executing. Route through the
@@ -432,11 +470,26 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// own internal Canceled error with a live run ctx still takes the
 		// normal recovery path below.
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			e.recordFailedNodeSpend(rs, currentNodeID, output)
 			return nil, false, e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
 		}
 		// Check if the delegate needs user interaction.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(execErr, &needsInput) {
+			// NOT booked: the paused call resumes where it stopped, and its
+			// spend is the resumed call's to report.
+			//
+			// Same caveat as the retry branch below, and for the same
+			// reason: that holds on a backend with real session resume.
+			// claw never reads SessionID (it replays from the run's own
+			// store), and kimi/grok resume is not wired — on those the
+			// parked call's spend is DROPPED rather than deferred. The rule
+			// is the same conservative one: these totals are ENFORCEMENT, so
+			// an under-count is the safe error and a double-bill kills runs
+			// that still had budget. Booking here would double-bill every
+			// backend that does resume, which is the common case.
+			// TestFailedReInvocationBooksTheWholeSession pins the deferral's
+			// other half — that the resumed call books the whole session.
 			ierr := e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput, 0)
 			if ierr == nil {
 				// interaction: llm / llm_or_human auto-answered and
@@ -452,12 +505,40 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// the wall-clock deadline derived from max_duration, surface it as a
 		// resumable BUDGET_EXCEEDED(duration) failure rather than routing
 		// through retry/recovery — retrying a node that already exhausted the
-		// run's duration budget would just hang or burn the budget again. The
-		// budgetHardThreshold guard ensures an unrelated DeadlineExceeded that
-		// originated inside the node (some shorter internal timeout) is NOT
-		// misclassified as a budget stop.
-		if errors.Is(execErr, context.DeadlineExceeded) {
-			if used, limit, bounded := rs.budget.DurationStatus(); bounded && limit > 0 && used >= limit*budgetHardThreshold {
+		// run's duration budget would just hang or burn the budget again.
+		//
+		// Attribution is a FACT, not a proximity guess: `budgetDeadline` is the
+		// instant WE cut this node at, so an unrelated DeadlineExceeded raised
+		// by some shorter timeout inside the node arrives before it and is left
+		// to ordinary recovery. The previous test — "is the run within 10% of
+		// its cap?" — answered a different question, and answered it wrongly in
+		// both directions: it claimed an internal timeout at 95% of budget as a
+		// budget stop, and (measured on a real run: used 36001s, cap 36000s) it
+		// kept parking the run for every raise below 11.112h, so the obvious
+		// operator gesture — "give it another hour" — silently did nothing
+		// while a raise to 12h worked. A grant whose effect turns on an
+		// undisclosed 11% line is not a grant.
+		if errors.Is(execErr, context.DeadlineExceeded) &&
+			!budgetDeadline.IsZero() && !time.Now().Before(budgetDeadline) {
+			// Steering is drained BEFORE this verdict, because this return
+			// never reaches the node boundary where the other drain sits. A
+			// raise posted while THIS node was running is still in the
+			// channel, and classifying against the un-raised cap parks the
+			// run on a ceiling the operator has already lifted — which is the
+			// very case raise_budget exists for on a long node, answered with
+			// a 202 and a dead run.
+			//
+			// The node's death is NOT repairable here: its deadline was
+			// frozen into the ctx when the node started, so no later grant
+			// moves it. The VERDICT is. The question asked after the drain is
+			// the only one that matters — is the run STILL out of time under
+			// the cap as it now stands? — so any raise that buys real room
+			// lets the expiry fall through to ordinary recovery dispatch,
+			// instead of a budget stop naming a limit that no longer exists.
+			e.drainOverrides(rs)
+			if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+				used, limit, _ := rs.budget.DurationStatus()
+				e.recordFailedNodeSpend(rs, currentNodeID, output)
 				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
 					exceeded: true, dimension: "duration", used: used, limit: limit,
 				})
@@ -469,11 +550,33 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		// failure produces failed_resumable as before. The run-ID-
 		// enriched ctx is passed so Compact() can locate the per-
 		// node session.
-		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr)
+		// The output travels in: the two decisions that end the attempt by
+		// writing a checkpoint (a recovery pause, a teardown during the
+		// retry backoff) have to book the spend BEFORE that write, and only
+		// handleNodeFailure knows which decision it took. Booking here on
+		// the way out would be too late — the checkpoint a resume reads its
+		// budget carry from is already on disk by then, with this pass
+		// missing from it.
+		retry, code, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, execErr, output)
 		if recoveryErr != nil {
 			return nil, false, recoveryErr
 		}
 		if retry {
+			// NOT booked: the node runs again, and a recovery retry can
+			// continue the same session — whose usage is cumulative, so
+			// booking this attempt and then the retry bills it twice.
+			//
+			// "Can", not "always does": claude_code is session-cumulative by
+			// construction (annotateCost takes the MAX across result
+			// messages, never the sum), while a backend that starts a fresh
+			// session on retry reports only its own invocation, and this
+			// attempt's spend is then lost. The rule is deliberately the
+			// conservative one — under-count rather than double-bill: these
+			// totals are ENFORCEMENT (max_cost_usd, a donor's clamped
+			// allowance), so an over-count kills runs that still had budget.
+			// Charging every attempt exactly needs the backend to declare
+			// which semantics it reports; until it does, this is the safe
+			// error, and TestFailedNodeSpendReachesTheRunOnlyOnce pins it.
 			return nil, true, nil
 		}
 		// Fail terminally carrying BOTH the classified code and the
@@ -485,6 +588,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		if code == "" {
 			code = ErrCodeExecutionFailed
 		}
+		e.recordFailedNodeSpend(rs, currentNodeID, output)
 		return nil, false, e.failRunErrWithCheckpoint(rs, currentNodeID, &RuntimeError{
 			Code:    code,
 			NodeID:  currentNodeID,
@@ -540,16 +644,19 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 	// verdict), deduped — so explicit and heuristic labels coexist.
 	labels := dedupeLabels(append(nodePublishLabels(node), artifactlabels.Classify(output)...))
 	if err := e.store.WriteArtifact(ctx, &store.Artifact{
-		RunID:   rs.runID,
-		NodeID:  nodeID,
-		Version: version,
-		Data:    output,
-		Labels:  labels,
+		RunID:    rs.runID,
+		NodeID:   nodeID,
+		Version:  version,
+		Data:     output,
+		Labels:   labels,
+		Contract: e.artifactContractFor(nodeID, node, version, rs),
 	}); err != nil {
 		return fmt.Errorf("runtime: write artifact: %w", err)
 	}
 	rs.artifactVersions[nodeID] = version + 1
 	rs.artifacts[pub] = output
+	rs.artifactOwners[pub] = nodeID
+	rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 
 	evtData := map[string]any{
 		"publish": pub,
@@ -571,6 +678,24 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 // effort), snapshots the worktree at the node boundary, and selects
 // the outgoing edge. Returns the next node ID.
 func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNodeID string, node ir.Node, output map[string]any) (string, error) {
+	// Validate/correct before committing session state or emitting verified
+	// action evidence. A rejected payload must not leave durable metadata that
+	// describes work the run ultimately discarded.
+	validatedOutput, validationErr := e.correctAndValidateNodeOutput(ctx, rs, currentNodeID, node, output)
+	output = validatedOutput
+	// Model spend is real even when validation/correction ultimately fails.
+	// Charge it before taking the failure path; the checkpoint then carries
+	// the consumed budget into any resume.
+	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
+		return "", err
+	}
+	if validationErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(validationErr, ctxErr) {
+			return "", e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctxErr)
+		}
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, validationErr)
+	}
+
 	// Verified Action (ADR-044): a tool node that escalated through the
 	// recovery ladder stamps a private `_verified_action` key. Emit the
 	// node_verified_action event for observability, then strip the key so
@@ -582,16 +707,6 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	}
 
 	rs.outputs[currentNodeID] = output
-
-	// Validate output against declared schema (optional).
-	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
-	}
-
-	// Record budget usage and check limits.
-	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
-		return "", err
-	}
 
 	// Persist artifact if node has publish.
 	if err := e.persistArtifactIfPublished(ctx, rs, currentNodeID, node, output); err != nil {
@@ -633,6 +748,22 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// redelivered onto the same spent budget. With no successor the run
 	// has nowhere to go, so it stops where it stands.
 	if rs.budget != nil {
+		// Steering is drained HERE too, not only at the top of the loop: a
+		// raise_budget posted while the run is busy inside a long node lands
+		// in the channel during that node, and the node's own overrun is
+		// consumed a few lines below — before the loop ever returns to the
+		// top. Draining only there made the operator's grant arrive one edge
+		// too late for the single case it exists to serve, while the API had
+		// already answered "queued … it is not lost". Same goroutine as the
+		// top-of-loop drain, so it needs no more locking than that one does.
+		//
+		// The position is load-bearing, not incidental: AFTER selectEdgeRS. A
+		// drain a few lines higher would also apply a queued bump_loop before
+		// the edge is chosen, so a back-edge the loop guard had declined for
+		// want of budget would start being funded one edge earlier than it is
+		// today — a behaviour change on a DIFFERENT command, invisible in
+		// this one's tests.
+		e.drainOverrides(rs)
 		if exc := rs.budget.takeExceeded(); exc != nil {
 			anchor := nextNodeID
 			if edgeErr != nil || anchor == "" {
@@ -676,7 +807,7 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePost)
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	ref := nodeSnapshotRef(rs.runID, nodeID, loopIter)
 	commit, err := snapshotWorktree(e.workDir, ref)
 	if err != nil {
@@ -724,7 +855,7 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 		e.aliasWorkspacePre(rs, nodeID)
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	// Several dispatch paths bracket the same node: execLoop brackets every
 	// isSpecialDispatch kind, then execSpecialNode brackets the compute /
 	// subbot / emit / wait / await_answers kinds again, and the human path
@@ -854,18 +985,29 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	// when a parent iteration legitimately re-enters.
 	if selected.LoopName == "" {
 		for loopName, loop := range e.workflow.Loops {
-			if loop == nil || len(loop.Entries) == 0 {
-				continue
-			}
-			if !loop.Entries[selected.To] || loop.Body[selected.From] {
+			if loop == nil || len(loop.Body) == 0 || loop.Body[selected.From] || !loop.Body[selected.To] {
 				continue
 			}
 			// Entering the body from outside re-bases the loop's price:
 			// its first back-edge crossing must cost one iteration, not
-			// everything the run spent before this loop existed. Outside
-			// the re-entry branch below — a FIRST entry needs the
-			// baseline just as much, and leaves the counter at 0.
+			// everything the run spent before this loop existed. At ANY
+			// body node — a loop that shares its verify/gate nodes with a
+			// sibling loop is entered there, off its own head, and a mark
+			// left at run start would price its first crossing at the
+			// whole run and decline it. A FIRST entry needs the baseline
+			// just as much as a re-entry, and leaves the counter at 0.
+			// Never while the loop is iterating, unless at one of its entries:
+			// a body computed over non-loop edges can leave a node of the
+			// cycle outside it, and the edge from that node back into the
+			// body fires every iteration — re-basing there would price the
+			// iteration at its tail alone and never decline the back-edge.
+			if rs.loopCounters[loopName] > 0 && !loop.Entries[selected.To] {
+				continue
+			}
 			markLoopBudget(rs, loopName)
+			if !loop.Entries[selected.To] {
+				continue
+			}
 			if prior, ok := rs.loopCounters[loopName]; ok && prior > 0 {
 				e.logger.Debug("loop %q: re-entered via edge %s→%s — counter reset from %d", loopName, selected.From, selected.To, prior)
 				rs.loopCounters[loopName] = 0
@@ -939,7 +1081,7 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 	if e.workspaceTracker == nil {
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, workspacetrack.Label(phase, nodeID, loopIter))
 	if err != nil {
 		if e.logger != nil {
@@ -1018,7 +1160,7 @@ func (e *Engine) captureStopBoundary(rs *runState, nodeID, phase string) {
 		// boundaries and the tracker is not consulted.
 		return
 	}
-	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, rs.loopCounters))
+	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, runStateIterationCounters(rs)))
 	if rs.stopCaptured == nil {
 		rs.stopCaptured = make(map[string]bool)
 	}
@@ -1038,7 +1180,7 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	if e.workspaceTracker == nil {
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
 	_, hasPre := e.workspaceTracker.Resolve(rs.runID, label)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Environment variables. The cap is a property of the CREDENTIAL and of the
@@ -21,6 +22,15 @@ const (
 	EnvFiveMode = "ITERION_USAGE_CAP_5H_MODE"   // off|soft|hard (default soft)
 	EnvWeek     = "ITERION_USAGE_CAP_WEEK_PCT"  // 0–100, 0/unset = no cap
 	EnvWeekMode = "ITERION_USAGE_CAP_WEEK_MODE" // off|soft|hard (default hard)
+	// EnvTrustWindow bounds how long a stored reading is believed after it
+	// was observed (a Go duration, default DefaultTrustWindow). Governs the
+	// cap pre-flights AND the credential-skip evidence: both read the same
+	// ledger, and both must forget a pre-reset reading at the same moment.
+	EnvTrustWindow = "ITERION_USAGE_CAP_TRUST_WINDOW"
+	// EnvRefusalRestMax caps the escalating rest an account-level refusal
+	// earns (a Go duration, default DefaultMaxRefusalRest). "off" / "0"
+	// disables the escalation, restoring the flat one-hour re-probe.
+	EnvRefusalRestMax = "ITERION_USAGE_CAP_REFUSAL_REST_MAX"
 )
 
 // Default enforcement postures, applied when only a percentage is set.
@@ -33,9 +43,15 @@ const (
 //
 // A malformed value is an ERROR, not a fallback: every wrong answer here
 // fails open (no cap), and a guard that silently stopped guarding because of
-// a typo is worse than one that refuses to start. Callers surface it.
+// a typo is worse than one that refuses to start. Callers surface it. The
+// trust window is validated here too, so a typo in it refuses to start on
+// every surface that already refuses a malformed percentage — the callers
+// that consume it (TrustFromEnv) run after this check.
 func FromEnv() (Policy, error) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv(EnvEnabled)), "off") {
+		if _, err := TrustFromEnv(); err != nil {
+			return Policy{}, err
+		}
 		return Policy{}, nil
 	}
 	var errs []error
@@ -47,10 +63,49 @@ func FromEnv() (Policy, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	if _, err := TrustFromEnv(); err != nil {
+		errs = append(errs, err)
+	}
 	if len(errs) > 0 {
 		return Policy{}, errors.Join(errs...)
 	}
 	return Policy{FiveHour: five, Week: week}, nil
+}
+
+// TrustFromEnv resolves the reading-trust bound: DefaultTrust with the
+// window replaced by ITERION_USAGE_CAP_TRUST_WINDOW when set. A malformed
+// or non-positive duration is an error, never a silent default — the same
+// rule as the percentages, for the same reason.
+func TrustFromEnv() (Trust, error) {
+	t := DefaultTrust()
+	if raw := strings.TrimSpace(os.Getenv(EnvTrustWindow)); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Trust{}, fmt.Errorf("%s: %q is not a duration (want e.g. 3h, 90m)", EnvTrustWindow, raw)
+		}
+		if d <= 0 {
+			return Trust{}, fmt.Errorf("%s: %s must be positive (a reading must be trusted for SOME time)", EnvTrustWindow, d)
+		}
+		t.Window = d
+	}
+	raw := strings.TrimSpace(os.Getenv(EnvRefusalRestMax))
+	switch {
+	case raw == "":
+	case strings.EqualFold(raw, "off"), raw == "0":
+		// Negative, not zero: zero is "unset" and Normalized would refill
+		// it with the default, silently re-enabling what was turned off.
+		t.MaxRefusalRest = -1
+	default:
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Trust{}, fmt.Errorf("%s: %q is not a duration (want e.g. 6h, 90m, or off)", EnvRefusalRestMax, raw)
+		}
+		if d <= 0 {
+			return Trust{}, fmt.Errorf("%s: %s must be positive (use \"off\" to disable the escalation)", EnvRefusalRestMax, d)
+		}
+		t.MaxRefusalRest = d
+	}
+	return t, nil
 }
 
 func windowFromEnv(pctVar, modeVar string, defMode Mode) (WindowPolicy, error) {

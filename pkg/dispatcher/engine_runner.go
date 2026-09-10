@@ -409,7 +409,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// failing node, reuses the worktree, and skips re-execution of
 	// already-completed upstream nodes. The dispatcher only sets
 	// ResumeFromRunID when the prior run is actually resumable
-	// (failed_resumable / cancelled / paused_operator); a fresh runID
+	// (failed_resumable / paused_operator); a fresh runID
 	// means a clean start.
 	if spec.ResumeFromRunID != "" {
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)

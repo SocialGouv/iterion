@@ -145,7 +145,10 @@ tracked-out caps "ITERION" followed by a discreet accent caret (a static
 terminal cursor). Pure text + a CSS bar — crisp at any size and
 theme-perfect via `currentColor` / `text-accent-text`, replacing the
 previous rasterised favicon + `dark:invert` crutch. The collapsed sidebar
-shows the compact "I" monogram + caret. No icon, no logotype.
+shows the compact "I" monogram + caret. The wordmark is paired with
+`BrandMark` (`components/ui/BrandMark`): a raster of the iterion-bot mascot
+in its badge form — an illustration, not a glyph — whose dark disc carries
+its own background, so it needs no theme trick either.
 
 ## Brand voice — a gentle cyberpunk/hacker nod
 

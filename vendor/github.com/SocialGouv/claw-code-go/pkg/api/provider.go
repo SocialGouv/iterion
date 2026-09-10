@@ -7,6 +7,11 @@ import (
 // ProviderConfig holds the credentials and settings needed to create a provider client.
 type ProviderConfig = api.ProviderConfig
 
+// ChatGPTClientVersion is the codex-cli release claw presents on the
+// ChatGPT-Codex wire when ProviderConfig.OpenAIClientVersion is empty; a
+// caller probing a real Codex CLI should send the newer of the two.
+const ChatGPTClientVersion = api.ChatGPTClientVersion
+
 // APIClient is the interface all provider clients must implement.
 type APIClient = api.APIClient
 

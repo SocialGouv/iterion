@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -83,6 +84,32 @@ const (
 	fallbackContainerPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
+// devboxSkip is a devbox source that EXISTS on the host and was
+// deliberately not installed. Reported so a decision is never
+// indistinguishable from a source nobody declared — the failure mode
+// this type exists to close is a bot whose `devbox.json` provisions
+// nothing and says nothing, leaving the operator to read a missing
+// binary as an agent bug.
+type devboxSkip struct {
+	// label names the source ("repo" | "bot").
+	label string
+	// config is the host path of the declined devbox.json.
+	config string
+	// reason says why, in terms an operator can act on.
+	reason string
+}
+
+// Reasons a devbox source is declined. Named so the event payload and
+// the log line cannot drift apart.
+const (
+	devboxSkipRepoOff = "repo_devbox off"
+	// devboxSkipNoBundleMount: the bot's bundle is a host bind mount and
+	// this driver has no host filesystem to honour it (the pod backend).
+	// The staged copy the install prologue would run reads from a path
+	// the container never had, so the source cannot be installed at all.
+	devboxSkipNoBundleMount = "no host bind mount on this driver"
+)
+
 // devboxProject is one resolved devbox source: where its config lives
 // inside the container and how it got there.
 type devboxProject struct {
@@ -137,18 +164,15 @@ func applyDevboxProvisioning(
 	if spec == nil {
 		return
 	}
-	projects, skippedRepo := resolveDevboxProjects(spec, p, bundleContainerPath, logger)
+	projects, skipped := resolveDevboxProjects(spec, p, bundleContainerPath, logger)
 	if len(projects) == 0 {
-		if skippedRepo != "" {
+		if len(skipped) > 0 {
 			// Nothing to install, but something WAS declared and
 			// deliberately not installed. Saying so is the difference
 			// between a decision and a missing binary nobody explains.
-			_ = emitEvent(store.EventSandboxDevboxProvisioned, map[string]any{
-				"target":          "sandbox",
-				"skipped_sources": []string{"repo"},
-				"skipped_configs": []string{skippedRepo},
-				"reason":          "repo_devbox off",
-			})
+			payload := map[string]any{"target": "sandbox"}
+			addDevboxSkips(payload, skipped)
+			_ = emitEvent(store.EventSandboxDevboxProvisioned, payload)
 		}
 		return
 	}
@@ -184,12 +208,33 @@ func applyDevboxProvisioning(
 		"bin_dirs": binDirs,
 		"path":     spec.Env["PATH"],
 	}
-	if skippedRepo != "" {
-		payload["skipped_sources"] = []string{"repo"}
-		payload["skipped_configs"] = []string{skippedRepo}
-		payload["reason"] = "repo_devbox off"
-	}
+	addDevboxSkips(payload, skipped)
 	_ = emitEvent(store.EventSandboxDevboxProvisioned, payload)
+}
+
+// addDevboxSkips records the declined sources on the provisioning event:
+// three parallel arrays plus the joined `reason` its single-skip form
+// always carried, so a reader can tell WHICH source was declined and WHY.
+func addDevboxSkips(payload map[string]any, skipped []devboxSkip) {
+	if len(skipped) == 0 {
+		return
+	}
+	labels := make([]string, 0, len(skipped))
+	configs := make([]string, 0, len(skipped))
+	reasons := make([]string, 0, len(skipped))
+	distinct := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		labels = append(labels, s.label)
+		configs = append(configs, s.config)
+		reasons = append(reasons, s.reason)
+		if !slices.Contains(distinct, s.reason) {
+			distinct = append(distinct, s.reason)
+		}
+	}
+	payload["skipped_sources"] = labels
+	payload["skipped_configs"] = configs
+	payload["skipped_reasons"] = reasons
+	payload["reason"] = strings.Join(distinct, "; ")
 }
 
 // resolveDevboxProjects lists the devbox sources this run carries, in
@@ -197,25 +242,26 @@ func applyDevboxProvisioning(
 // pins its own toolchain stays authoritative for building itself; the
 // bot's packages fill in what the repo does not provide.
 //
-// The second return is the host path of a repo devbox.json that EXISTS but
-// was declined by `repo_devbox: off` — "" when there was none to decline.
-// The caller reports it: a source dropped in silence is indistinguishable
-// from a source nobody declared.
+// The second return lists the sources that EXIST and were deliberately
+// not installed — `repo_devbox: off` for the repo's, an unmounted bundle
+// for the bot's. The caller reports them: a source dropped in silence is
+// indistinguishable from a source nobody declared.
 func resolveDevboxProjects(
 	spec *sandbox.Spec,
 	p SandboxParams,
 	bundleContainerPath string,
 	logger *iterlog.Logger,
-) ([]devboxProject, string) {
+) ([]devboxProject, []devboxSkip) {
 	var out []devboxProject
-	skippedRepo := ""
+	var skipped []devboxSkip
 
 	repoCfg := devboxConfigIn(p.WorkspacePath, "workspace", logger)
 	if repoCfg != "" && !resolveRepoDevbox(p.RepoDevboxOverride, p.Workflow) {
 		if logger != nil {
 			logger.Info("runtime: sandbox devbox: repo_devbox is off — %s is NOT installed for this run; the packages the target repo pins are unavailable (the bot's own devbox.json still is)", repoCfg)
 		}
-		skippedRepo, repoCfg = repoCfg, ""
+		skipped = append(skipped, devboxSkip{label: "repo", config: repoCfg, reason: devboxSkipRepoOff})
+		repoCfg = ""
 	}
 	if cfg := repoCfg; cfg != "" {
 		// Installs in place: the workspace bind is read-write, and a
@@ -229,8 +275,20 @@ func resolveDevboxProjects(
 			dir:        containerWorkspaceFolder(spec, p.WorkspacePath),
 		})
 	}
-	if bundleContainerPath != "" {
-		if cfg := devboxConfigIn(p.BundleHostDir, "bundle", logger); cfg != "" {
+	if cfg := devboxConfigIn(p.BundleHostDir, "bundle", logger); cfg != "" {
+		if bundleContainerPath == "" {
+			// The bundle reaches the container as a host bind mount and
+			// this driver has none, so the staged copy the install
+			// prologue runs would read a path the container never had.
+			// The snippet fails soft, so the run would proceed on
+			// whatever the image happens to bake — a bot's declared
+			// toolchain silently absent. Decline it and say so.
+			if logger != nil {
+				logger.Warn("runtime: sandbox devbox: the bot's %s (%s) is NOT installed for this run — %s, so the bundle it lives in cannot be read from inside the sandbox; the packages it declares are unavailable and the run proceeds on what the image ships",
+					devboxConfigName, cfg, devboxSkipNoBundleMount)
+			}
+			skipped = append(skipped, devboxSkip{label: "bot", config: cfg, reason: devboxSkipNoBundleMount})
+		} else {
 			out = append(out, devboxProject{
 				label:      "bot",
 				hostConfig: cfg,
@@ -253,7 +311,7 @@ func resolveDevboxProjects(
 		}
 		kept = append(kept, pr)
 	}
-	return kept, skippedRepo
+	return kept, skipped
 }
 
 // devboxConfigIn returns the host path of dir's devbox.json, or "" when

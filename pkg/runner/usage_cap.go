@@ -3,9 +3,11 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -29,39 +31,99 @@ import (
 // The operator's ceiling therefore inherits, for free, the one property
 // that matters — a capped run is not lost, it is waiting.
 
-// usageCapKey identifies the credential whose windows a run draws on.
+// runCredKeys is the per-run credential identity the meter draws on: the
+// scope (tenant-own vs platform) plus one fingerprint per credential SHAPE
+// the bundle holds. A reading is keyed by the shape the node actually
+// exercised — the delegate stamps its provider-routing label on each
+// Reading (usagecap.Reading.Source) — because a bundle may carry both a
+// z.ai token and an Anthropic key, and a node pinned `provider: anthropic`
+// spends the Anthropic key while the bundle-default precedence points at
+// z.ai. Charging that refusal to the z.ai fingerprint would make the
+// evidence-based skip park the healthy key and keep the frozen one.
+type runCredKeys struct {
+	scope       string
+	zaiFP       string
+	anthropicFP string
+	oauthFP     string
+}
+
+// usageCapCredKeys reads the run's resolved credentials once. Scope: a
+// bundle carrying any credential the TENANT resolved is the tenant's own;
+// anything else shares a cross-tenant meter — a slot the publisher filled
+// from the DB-backed platform tier (the deployment's single subscription),
+// one the credential POOL filled with a contributor's lent one (the
+// donor's single subscription, borrowed by several tenants in turn), and
+// one the ORG tier filled with the org's own key (one subscription serving
+// every team of its audience). All three ride the bundle exactly like a
+// tenant credential and none is one; metering a shared credential per
+// borrower would open one ledger per borrower of the SAME account, so what
+// one of them measured — a refusal, a window at 95% — would reach none of
+// the others.
 //
-// A tenant that brought its own subscription must not be blocked by what
-// another tenant spent, and runs that fall back to the deployment's own
-// credential must be pooled together — they really are one meter. The run's
-// resolved credentials answer both: a bundle carrying an Anthropic key or
-// OAuth dir the TENANT resolved is the tenant's own; anything else —
-// including a bundle slot the publisher filled from the DB-backed platform
-// tier, which rides the bundle exactly like a tenant credential but is the
-// deployment's single meter — is the platform's.
-func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
-	scope := usagecap.ScopePlatform
-	credFP := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
-			!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
-		tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
-			!creds.IsPlatformSourced(delegate.BackendClaudeCode)
-		if tenantOwnKey || tenantOwnOAuth {
-			scope = usagecap.TenantScope(msg.TenantID)
+// The org tier gets its OWN scope rather than the platform one: its
+// subscription is the org's, and merging it with the deployment's would
+// make one org's exhausted window park every other tenant's runs.
+func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
+	k := runCredKeys{scope: usagecap.ScopePlatform}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return k
+	}
+	held := func(slot string, present bool) (tenant, org bool) {
+		if !present {
+			return false, false
 		}
-		// The meter follows the CREDENTIAL: same preference order as the
-		// delegate (a ctx API key outranks an OAuth dir), so the
-		// fingerprint names the credential the run will actually spend.
-		// A rotated token therefore opens a fresh meter instead of
-		// inheriting the readings of the account it replaced.
-		if fp := creds.Fingerprint(string(secrets.ProviderAnthropic)); fp != "" {
-			credFP = fp
-		} else if fp := creds.Fingerprint(delegate.BackendClaudeCode); fp != "" {
-			credFP = fp
+		return creds.IsTenantOwned(slot), creds.IsOrgSourced(slot)
+	}
+	tenantZai, orgZai := held(string(secrets.ProviderZAI), creds.APIKey(secrets.ProviderZAI) != "")
+	tenantKey, orgKey := held(string(secrets.ProviderAnthropic), creds.APIKey(secrets.ProviderAnthropic) != "")
+	tenantOAuth, orgOAuth := held(delegate.BackendClaudeCode, creds.OAuthDir(delegate.BackendClaudeCode) != "")
+	switch {
+	case tenantZai || tenantKey || tenantOAuth:
+		k.scope = usagecap.TenantScope(msg.TenantID)
+	case orgZai || orgKey || orgOAuth:
+		k.scope = usagecap.OrgScope(msg.OrgID)
+	}
+	k.zaiFP = creds.Fingerprint(string(secrets.ProviderZAI))
+	k.anthropicFP = creds.Fingerprint(string(secrets.ProviderAnthropic))
+	k.oauthFP = creds.Fingerprint(delegate.BackendClaudeCode)
+	return k
+}
+
+// forSource keys a reading under the credential its session actually ran
+// on. The source labels are providerFingerprint's vocabulary: a facade URL
+// is the z.ai token, "anthropic-direct" the Anthropic API key,
+// "anthropic-oauth" the OAuth dir. An empty label (older binary) and
+// "anthropic-env" (inherited pod env — no bundle credential at all) fall
+// back to the bundle-default precedence: z.ai AUTH_TOKEN over an Anthropic
+// API key over an OAuth dir, anthropicCredEnvForCLI's contract. A rotated
+// token therefore opens a fresh meter instead of inheriting the readings
+// of the account it replaced.
+func (k runCredKeys) forSource(source string) string {
+	fp := ""
+	switch {
+	case strings.HasPrefix(source, "facade:") && k.zaiFP != "":
+		fp = k.zaiFP
+	case source == "anthropic-direct" && k.anthropicFP != "":
+		fp = k.anthropicFP
+	case source == "anthropic-oauth" && k.oauthFP != "":
+		fp = k.oauthFP
+	default:
+		if k.zaiFP != "" {
+			fp = k.zaiFP
+		} else if k.anthropicFP != "" {
+			fp = k.anthropicFP
+		} else if k.oauthFP != "" {
+			fp = k.oauthFP
 		}
 	}
-	return usagecap.Key(delegate.BackendClaudeCode, scope, credFP)
+	return usagecap.Key(delegate.BackendClaudeCode, k.scope, fp)
+}
+
+// usageCapKey is the run's DEFAULT credential key — what the pre-flight
+// consults before any node has run (no session, so no source label yet).
+func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
+	return usageCapCredKeys(ctx, msg).forSource("")
 }
 
 // usageGuardFor builds the guard for one run: the machine-wide policy
@@ -70,22 +132,43 @@ func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 // tightened at runtime (the DB-backed settings record) bites a run already
 // in flight — which is also why a LIVE source that answers "nothing capped
 // right now" still gets a guard: the answer can change before the run
-// ends. Only when no cap could ever apply — no source at all, or a STATIC
-// policy with no cap — is the guard skipped, keeping the feature out of
-// the way of a deployment that never asked for it.
+// ends.
+//
+// RECORDING IS NOT ENFORCING, and the guard is the only path either
+// travels. A deployment that configured no cap still needs the provider's
+// refusals on the shared ledger: the credential-tier skips (a frequency
+// refusal, a rejected credential) read nothing else, and route the next
+// run around a credential the provider will not serve. Gating the guard on
+// the cap policy made every one of them inert on exactly the deployments
+// that never asked for a ceiling. So a ledger alone is reason enough; only
+// with neither a policy source nor a store — nothing to enforce, nobody to
+// tell — is there no guard.
 func (r *Runner) usageGuardFor(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) *usagecap.Guard {
-	if r.cfg.UsageCapSource == nil {
-		return nil
-	}
-	if pol, static := r.cfg.UsageCapSource.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
-		return nil
-	}
-	key := usageCapKey(ctx, msg)
+	src := r.cfg.UsageCapSource
 	store := r.cfg.UsageCaps
-	return usagecap.NewGuardWithSource(r.cfg.UsageCapSource, func(reading usagecap.Reading) {
+	// A static policy with no cap can never block; a live source can start
+	// blocking mid-run, so it always counts as enforceable.
+	enforceable := src != nil
+	if pol, static := src.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
+		enforceable = false
+	}
+	if !enforceable && store == nil {
+		return nil
+	}
+	if src == nil {
+		// Inert policy: the guard observes and publishes, and blocks nothing.
+		src = usagecap.StaticPolicy(usagecap.Policy{})
+	}
+	keys := usageCapCredKeys(ctx, msg)
+	return usagecap.NewGuardWithSource(src, func(reading usagecap.Reading) {
 		if store == nil {
 			return
 		}
+		// Keyed per reading, not per run: the session's provider-routing
+		// label names the credential the node actually spent, and a run
+		// whose nodes pin different providers must not charge one key's
+		// refusal to another's meter.
+		key := keys.forSource(reading.Source)
 		// Detached: the reading that stops a run arrives exactly as that
 		// run's context is about to be cancelled, and it is the single
 		// most valuable thing to publish.
@@ -135,6 +218,24 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		}
 		return nil
 	}
+	// The cap meters the Anthropic wire — its readings come from the
+	// claude_code delegate and nowhere else — and the key below is built
+	// from the run's anthropic-wire credentials (or the platform's). A run
+	// whose every route is pinned off that wire (claw/openai, codex) can
+	// never spend what the cap protects: parking it for the anthropic
+	// weekly reset strands it for nothing, which is how a fully pinned
+	// two-node rite froze for five days while its single-node sibling
+	// sailed through (#668). Read under the launch's own overrides, on
+	// PRIMARY routes only — a rescue `fallbacks:` route onto the wire
+	// fires on a failure the mid-run guard already refuses, and cannot
+	// justify refusing the run before it starts. Every uncertainty
+	// answers "reachable".
+	if !model.AnthropicWireReachable(wf, modelOverridesFromMsg(msg.ModelOverrides)) {
+		if logger != nil {
+			logger.Debug("runner: run %s targets no anthropic-wire route — usage cap not applied", msg.RunID)
+		}
+		return nil
+	}
 	rctx, cancel := context.WithTimeout(ctx, usageCapStoreTimeout)
 	defer cancel()
 	key := usageCapKey(ctx, msg)
@@ -145,7 +246,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		}
 		return nil
 	}
-	d := usagecap.Preflight(readings, pol, time.Now().UTC(), usagecap.DefaultMaxAge)
+	d := usagecap.Preflight(readings, pol, time.Now().UTC(), r.cfg.UsageCapTrust)
 	if !d.Blocked {
 		return nil
 	}
@@ -160,8 +261,15 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
 		defer scancel()
 		sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunStatusIf(sctx, msg.RunID, store.RunStatusFailedResumable,
+		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 			d.Reason,
+			// Continuation deliberately unknown here: the arming
+			// decision happens later (armUsageWindowRetry), and three
+			// of its branches arm nothing — the document must not say
+			// retry_armed before a retry actually exists. Promotion to
+			// retry_armed lives with ScheduleRunRetry; demotion to
+			// final with AbandonRunRetry.
+			store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked},
 			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil && logger != nil {
 			logger.Warn("runner: usage-cap status flip for %s: %v", msg.RunID, serr)
 		}
@@ -173,4 +281,21 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		ResetAt:     d.ResetsAt,
 		SelfImposed: true,
 	}
+}
+
+// admitAttempt is the last gate before an attempt can spend anything, and
+// the moment it takes hold of what it will spend. The pre-flight decides
+// whether the run may start at all; only once it has, the attempt stamps
+// its credentials as held, so a multi-hour attempt does not read as an
+// idle key for its whole duration (#659 pt 2).
+//
+// The order is the point, both ways: a run parked on a ceiling never held
+// anything (stamping it would date a key that served nothing), and a run
+// that starts must not wait until it ends to say which key it is spending.
+func (r *Runner) admitAttempt(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) error {
+	if err := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); err != nil {
+		return err
+	}
+	r.markCredFingerprintsUsed(ctx, msg, time.Now().UTC())
+	return nil
 }

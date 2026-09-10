@@ -45,8 +45,10 @@ schema verdict:
   confidence: string
 
 prompt my_system:
-  Imperative-voice instructions. Reference {{vars.feature_prompt}}
-  or {{input.field}} or {{outputs.upstream_node.field}}.
+  Imperative-voice instructions. Reference a var as {{vars.feature_prompt}};
+  the node's own input lives under the input namespace and an upstream
+  node's output under outputs.<node>.<field> (every reference is checked
+  at validate time, so a prompt may only name what exists).
 
 cursor ambition:                  # optional prompt-engineering dial (see docs/cursors.md)
   values:
@@ -56,7 +58,8 @@ cursor ambition:                  # optional prompt-engineering dial (see docs/c
 agent worker:
   backend: "claw"
   model:   "openai/gpt-5.5"
-  ...
+  system:  my_system
+  output:  verdict
 
 workflow my_workflow:
   entry: worker
@@ -80,11 +83,36 @@ workflow my_workflow:
 | `wait` | Block a branch until an event fires | `event: "<name>"` + **mandatory** `timeout: "30s"` (the bornage, C197) + optional `output:` schema for the payload. Pair with `emit` in a parallel `fan_out_all` branch for reactive coordination. |
 | `await_answers` | Sync point for async human questions (ADR-081) | Optional `from: <node>` + **mandatory** `timeout:` (C241). Parks its branch until every pending `ask_user_async` question is answered; output is `{answers: [...]}`. The asking agent declares `interaction: async` (grants `ask_user_async` + `await_answers` tools — the agent keeps working while questions are pending, answers arrive in its message queue). |
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
-| `done` / `fail` | Built-in terminals | Never declare them |
+| `done` / `fail` | Built-in terminals | Never declare `done`. A bare `-> fail` is the untyped terminal (`FAIL_NODE`, non-resumable); declare `fail <name>:` when the refusal must carry a code — see below |
 
 Every declarable node kind accepts an optional `description: "…"` — a human-readable
 label the run console shows instead of the humanized node id (the raw id stays
 available as tooltip/suffix).
+
+### Typed terminal failure — `fail <name>:`
+
+A bot-declared refusal (a budget guard, a precondition, a non-actionable lot)
+should end the run with a code the operator, `iterion remote runs list`, the
+gate notice and the alert sinks can act on — not "workflow reached fail node":
+
+```iter fragment
+fail plan_exhausted:
+  code: PLAN_BUDGET_EXHAUSTED         ## UPPER_SNAKE identifier (C247 otherwise)
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  resumable: true                     ## default false = intentional, non-resumable end
+
+workflow w:
+  entry: plan_budget_gate
+  plan_budget_gate -> plan_exhausted when over_budget
+```
+
+The engine stamps `code` as the run's `failure_code` and the rendered
+`message` as its `error`. Declare one `fail <name>:` per reason. `resumable:
+true` anchors the checkpoint on the GUARD that routed in (never on the fail
+node, which a resume would only re-enter), so `iterion resume --run-id ID
+--max-cost-usd 10` re-evaluates the guard against the new caps and takes the
+other edge. It is never picked up by auto-resume or the cloud retry: a
+deliberate refusal only changes verdict when an operator changes something.
 
 ## Reuse & iteration (see docs/groups-iteration-subbots.md)
 
@@ -93,7 +121,8 @@ available as tooltip/suffix).
   is substituted from the bindings.
 - **`router mode: fan_out_each` + `over:`/`as:`/`key:`/`depends_on:`** — one parallel branch
   per element of a collection, topologically scheduled by `key`/`depends_on`; element exposed
-  as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node.
+  as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node — it fires
+  ONCE, after every branch has settled, with the survivors' outputs (`wait_all` fails the run instead).
   A loop or `as foreach` **inside** that template (or a `fan_out_all` / llm `multi` branch)
   is C244 — use a `subbot` for per-item retry, or wrap the router from the join.
 - **`src -> dst as foreach name(item in "{{coll}}")`** — ordered, stateful iteration; element
@@ -103,7 +132,7 @@ available as tooltip/suffix).
 
 ## Agent/judge properties
 
-```iter
+```iter fragment
 agent w:
   backend: "claw"               # or claude_code / codex / pi / kimi / grok
   model:   "openai/gpt-5.5"     # claw with openai/* prefix
@@ -197,6 +226,9 @@ Backend rules:
   boundary with an empty `tools:` list, is refused (C176); and a claw
   route whose declared tools claw cannot resolve is refused too (C135 —
   the list is inert on a CLI primary but load-bearing on the route).
+  A sandboxed claw route CAN serve a gated node when the policy is
+  deny-shaped (the policy crosses the sandbox IPC); only an ask-capable
+  policy (mode `ask`, or any `ask:` rule) is refused there — C136 warns.
   See ADR-087.
 
 Session-mode notes:
@@ -217,7 +249,7 @@ Session-mode notes:
 
 ## Edges
 
-```iter
+```iter fragment:edges
 src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
@@ -248,7 +280,7 @@ Rules:
 
 ## Human node
 
-```iter
+```iter fragment
 human ask_priorities:
   input:  ask_schema
   output: ask_schema
@@ -277,7 +309,7 @@ A `file`-typed schema field renders a drop zone at the gate; the
 operator's upload becomes a run attachment and the answer is a
 descriptor (`path` / `filename` / `mime` / `size` / `sha256`).
 
-```iter
+```iter fragment
 schema music_gate:
   approved: bool
   music: file
@@ -287,7 +319,7 @@ human pick_soundtrack:
   output: music_gate
 ```
 
-```iter
+```iter fragment
 prompt mix:
   Master the track at {{outputs.pick_soundtrack.music.path}}
 ```
@@ -312,7 +344,7 @@ prompt mix:
 
 ### Review-&-merge gate (`interaction: review`)
 
-```iter
+```iter fragment
 human ship_review:
   interaction: review
   model: "anthropic/claude-sonnet-4-6"   # the companion (writes test steps + verdict)
@@ -325,7 +357,7 @@ human ship_review:
   max_turns: 8                           # dialogue asymptote backstop
 ```
 
-```iter
+```iter fragment:edges
 ship_review -> done   when "decision == 'approved'"
 ship_review -> implement when "decision == 'changes_requested'" as fix_loop(5)
 ship_review -> fail    # default fallback
@@ -342,18 +374,25 @@ commits when approved. Reference: `examples/review-merge-gate.bot`,
 
 ## Tool node
 
-```iter
+```iter fragment
 tool commit_changes:
-  command: sh
-  args: ["-c", "git add -A && git commit -m {{input.msg}}"]
-  readonly: false                # opt-out of workspace-safety read-only mode
-  await: wait_all                # only when the node has multiple incoming edges
+  command: `git add -A && git commit -m {{input.msg}}`   # one string, run through `bash -c`
+  input:   commit_request         # schema declaring `msg: string`
+  output:  commit_result          # the command prints JSON matching this schema on stdout
+  await:   wait_all               # only when the node has multiple incoming edges
 ```
 
-Tool commands run via `sh -c` (POSIX). Template substitutions
-auto-escape strings, but `string[]` substitutions split into
-multiple argv tokens — use positional argv + `--` sentinels
-when passing multi-element arrays.
+A tool node has ONE `command:` string (or a `script:` + `language:`). A
+`command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
+interpreter its `language:` names (`sh` is dash on Debian-derived images —
+keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
+runtime — never wrap it in quotes of your own (C137). **A tool's stdout IS its
+output**: print a JSON object matching the `output:` schema; any other stdout is
+silently wrapped as `{"result": "…"}` and the declared fields are absent
+downstream, while a non-zero exit fails the node (wrap a command whose failure
+is a result — a failing test suite — so it exits 0 and reports `passed: false`).
+A `json`-typed input renders as one JSON token; an output list referenced
+directly space-joins into several words.
 
 Add `publish: <name>` to a `tool` (or `compute`, or agent/human)
 node to persist its output as a versioned artifact — surfaced in the
@@ -375,7 +414,7 @@ opt into a recovery ladder so a brittle recipe self-heals instead of
 hard-blocking. Add the optional quad — `goal` + recipe (`command`/`script`)
 + `postcondition` + `policy`:
 
-```iter
+```iter fragment
 tool commit_changes:
   command: `git add -A && git commit -F - <<< {{input.msg}}`
   goal: "Commit the upgrade; working tree clean except known caches."
@@ -424,6 +463,17 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 | `{{loop.<name>.previous_output}}` | last iter's output of the loop's tail |
 | `{{artifacts.name}}` | published artifact |
 | `${ENV_VAR}` | compile-time env substitution |
+| `{{run.id}}` | the run id |
+| `{{run.elapsed_seconds}}` `{{run.cost_usd}}` `{{run.tokens}}` `{{run.iterations}}` | the run's own consumption so far |
+| `{{run.max_duration_seconds}}` `{{run.max_cost_usd}}` `{{run.max_tokens}}` `{{run.max_iterations}}` | the caps IN FORCE (after `--max-*` flags, recipe, platform ceiling, `raise_budget`). `0` = unbounded on that axis. No `budget:` block ⇒ no tracker: consumption and caps read `0`, only `elapsed_seconds` advances |
+
+Inside a fan-out branch every form resolves as on the trunk;
+`{{outputs.*}}` reads the branch's own view (its upstream trunk
+outputs + what this branch produced + a `fan_out_each` item),
+never a sibling's. A tool `command:`/`script:`/`postcondition:`
+resolves `input`/`vars`/`secrets`/`run` AND `outputs.<node>.<field>`
+(shell-escaped like an input; an output not yet produced keeps its
+`{{…}}` placeholder in a shell body, renders `null` in a script).
 
 `{{...}}` is parsed in every prompt block. Even literal examples
 inside markdown code-fences trigger validation. Avoid example
@@ -435,7 +485,7 @@ instead.
 When you need to thread a value through a human node or
 across a loop boundary:
 
-```iter
+```iter fragment
 schema carry:
   payload: json
 
@@ -448,7 +498,15 @@ compute pass_through:
 
 `expr:` values are quoted expressions (CEL-like), NOT templates.
 Reference `input.x`, `outputs.x.y`, `loop.<name>.previous_output.x`
-directly without `{{...}}`.
+directly without `{{...}}`. The same `run.*` members are readable bare — the
+**phase-budget guard** is one `compute`:
+
+```iter fragment
+compute plan_budget_gate:
+  output: gate
+  expr:
+    over_budget: "run.max_duration_seconds > 0 && run.elapsed_seconds > run.max_duration_seconds * 0.3"
+```
 
 ### Expression operators & builtins
 
@@ -456,7 +514,10 @@ directly without `{{...}}`.
 - Indexing: `arr[0]`, `m["key"]`, `people[0].name` (OOB / missing key → nil).
 - Builtins: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
   `if(cond, then, else)`, `sort`, `keys`, `values`, `slice(arr, start, end)`,
-  `sum`, `min`, `max`, `flatten`.
+  `sum`, `min`, `max`, `flatten`, `floor(x)`, `round(x)`.
+- A compute output is TYPED by its schema: an integral number under `int`
+  is stored as an int, a fractional one (a division) FAILS the node — wrap
+  it in `floor(...)` / `round(...)`; a string under `bool`/`int` fails too.
 - Bounded combinators (lambda, applied once per element of a finite list):
   - `map(arr, x => x.field)`
   - `filter(arr, x => x.score > 5)`
@@ -466,7 +527,7 @@ directly without `{{...}}`.
 
 ## Workflow block
 
-```iter
+```iter fragment
 workflow my_wf:
   entry: first_node
   default_backend: "claude_code"      # default backend for every node
@@ -484,23 +545,24 @@ workflow my_wf:
     threshold: 0.9
     preserve_recent: 8
 
-  mcp:                                # workflow-wide MCP server registry
-    servers:
-      - name: my_server
-        transport: stdio
-        command: my-mcp-server
-        args: []
+  mcp:                                # workflow-wide MCP servers, by name
+    servers: [my_server]              # each one a top-level `mcp_server` declaration
 
   worktree: auto                      # see "Worktree and sandbox" below
   sandbox:  auto
 
   ## Edges go here
   first_node -> done
+
+mcp_server my_server:                 # declared at top level, referenced above
+  transport: stdio
+  command: "my-mcp-server"
+  args: []
 ```
 
 ## Worktree and sandbox
 
-```iter
+```iter fragment
 workflow safe:
   worktree: auto                      # fresh git worktree per run
   sandbox:  auto                      # reads .devcontainer/devcontainer.json
@@ -509,7 +571,7 @@ workflow safe:
 
 Block-form sandbox:
 
-```iter
+```iter fragment
 workflow isolated:
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-slim:v0.13"
@@ -519,12 +581,10 @@ workflow isolated:
     #   args: { BASE: "alpine:3.20" }
     user: "1000:1000"
     network:
-      mode: allowlist                 # allowlist | inherit | none
+      mode: allowlist                 # open (default) | allowlist | denylist
       preset: default                 # LLM + npm/pypi/golang + git hosts
       inherit: false                  # add to (not replace) the preset
-      rules:
-        - host: "registry.example.com"
-          port: 443
+      rules: ["registry.example.com", "!evil.site"]   # host globs, inline; `!` denies
 ```
 
 Sandbox top-level modes: `auto`, `none`, or the block form

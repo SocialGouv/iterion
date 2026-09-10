@@ -12,7 +12,7 @@ It is a fourth `interaction:` mode on `human` nodes, alongside `human`,
 
 ## At a glance
 
-```iter
+```iter fragment
 human ship_review:
   interaction: review
   model: "anthropic/claude-sonnet-4-6"   # the companion (writes test steps + verdict)

@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
@@ -26,6 +29,27 @@ var (
 	_ forgeGateClient = (*forgeforgejo.AdminClient)(nil)
 )
 
+// ReviewerAssigner (the reviewer self-assign behind the re-request-review
+// button) is gitlab-only BY DESIGN: GitHub lists a review's author as
+// reviewer by itself, a GitHub App cannot be a PR reviewer at all, and
+// Forgejo is an accepted gap. This pins the NEGATIVE — an accidental
+// AddSelfAsPullReviewer on another client would silently start
+// self-assigning (and on a GitHub App, erroring) at every publish.
+func TestReviewerAssignerCapabilityIsGitLabOnly(t *testing.T) {
+	if _, ok := any(&forgegithub.AdminClient{}).(forge.ReviewerAssigner); ok {
+		t.Error("github AdminClient must not implement forge.ReviewerAssigner (GitHub adds the review author as reviewer by itself)")
+	}
+	if _, ok := any(&forgegithub.AppClient{}).(forge.ReviewerAssigner); ok {
+		t.Error("github AppClient must not implement forge.ReviewerAssigner (a GitHub App cannot be a PR reviewer)")
+	}
+	if _, ok := any(&forgeforgejo.AdminClient{}).(forge.ReviewerAssigner); ok {
+		t.Error("forgejo AdminClient must not implement forge.ReviewerAssigner (accepted gap — wire the trigger docs first)")
+	}
+	if _, ok := any(&forgegitlab.AdminClient{}).(forge.ReviewerAssigner); !ok {
+		t.Error("gitlab AdminClient must implement forge.ReviewerAssigner")
+	}
+}
+
 // fakeGateClient records the merge-gate calls (head-SHA lookup + commit-status
 // write) — the seam the gate tests use instead of a live forge.
 type fakeGateClient struct {
@@ -40,10 +64,24 @@ type fakeGateClient struct {
 	// correct hand-off from a status that overwrote something it should not.
 	posted   []forge.CommitStatus
 	setCalls int
+	// headRepo overrides HeadRepoFullName on the returned PullRef. Empty
+	// defaults to the base repo the endpoint is called with (i.e. a
+	// same-repo PR), so pre-#642 fixtures pass the fork-guard fail-CLOSED
+	// check without editing every callsite; a fork test sets it explicitly.
+	headRepo string
+	// noHeadRepo returns an EMPTY HeadRepoFullName — the shape a provider
+	// emits once a fork was deleted or blocked (head.repo: null).
+	noHeadRepo bool
+	// state is the PR state the stub reports; empty reads as open.
+	state string
 }
 
-func (f *fakeGateClient) GetPullRequest(context.Context, string, int) (forge.PullRef, error) {
-	return forge.PullRef{HeadSHA: f.headSHA}, f.getErr
+func (f *fakeGateClient) GetPullRequest(_ context.Context, repo string, _ int) (forge.PullRef, error) {
+	head := f.headRepo
+	if head == "" && !f.noHeadRepo {
+		head = repo
+	}
+	return forge.PullRef{HeadSHA: f.headSHA, HeadRepoFullName: head, State: f.state}, f.getErr
 }
 
 func (f *fakeGateClient) SetCommitStatus(_ context.Context, _, sha string, st forge.CommitStatus) error {
@@ -177,4 +215,174 @@ func TestForgePublishReview_GateMissingHeadSHA(t *testing.T) {
 	if resp.GatePosted || gc.setCalls != 0 || resp.GateError == "" {
 		t.Fatalf("missing head sha must skip status with an error: %+v (calls=%d)", resp, gc.setCalls)
 	}
+}
+
+// A verdict on a pull request that already merged names a revision nobody
+// merges any more: the check is gone from the merge decision, the head the
+// status lands on is pre-merge, and the branch it describes is scheduled for
+// deletion. Observed in production (run 01a07840): a fixer kept working for
+// half an hour past the squash and posted `revi/review=success` on the
+// pre-merge head. The chokepoint is here — every campaign bot's gate status
+// crosses postGateStatus, which already resolves the pull request.
+func TestForgePublishReview_GateRefusedOnAClosedPullRequest(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			s, _ := newForgePublishTestServer(t)
+			registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+			gc := &fakeGateClient{headSHA: "deadbeefcafe", state: state}
+			s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+			w := httptest.NewRecorder()
+			s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"context":"revi/review","blocking_count":0}`)))
+			if w.Code != http.StatusOK {
+				t.Fatalf("the review itself still lands: code=%d body=%s", w.Code, w.Body.String())
+			}
+			var resp publishReviewResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if gc.setCalls != 0 {
+				t.Fatalf("no status may be written on a %s pull request's head, got %d write(s): %+v", state, gc.setCalls, gc.last)
+			}
+			if resp.GatePosted {
+				t.Fatalf("gate_posted must be false on a %s pull request: %+v", state, resp)
+			}
+			if !strings.Contains(resp.GateError, state) {
+				t.Fatalf("gate_error must name the state the bot's tail has to route on, got %q", resp.GateError)
+			}
+			if !resp.Published {
+				t.Fatalf("the review comment is the one thing still worth posting: %+v", resp)
+			}
+		})
+	}
+}
+
+// An empty state is a provider that does not report one, never a closure:
+// suppressing a required check on a guess is how a pull request deadlocks.
+func TestForgePublishReview_GatePostedWhenTheStateIsUnknown(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "deadbeefcafe"} // state "" — unreported
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"blocking_count":0}`)))
+	if gc.setCalls != 1 {
+		t.Fatalf("an unreported state must not suppress the verdict, writes=%d", gc.setCalls)
+	}
+}
+
+// fakeReviewerAssigner records self-assign calls — the seam behind the
+// forge-native re-request-review button. Concurrency-safe: the production
+// call site runs detached behind the response.
+type fakeReviewerAssigner struct {
+	mu    sync.Mutex
+	calls int
+	repo  string
+	num   int
+	err   error
+	block chan struct{} // when non-nil, the call parks here first
+	done  chan struct{} // signalled once per completed call
+}
+
+func (f *fakeReviewerAssigner) AddSelfAsPullReviewer(_ context.Context, repo string, number int) error {
+	if f.block != nil {
+		<-f.block
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.repo, f.num = repo, number
+	if f.done != nil {
+		f.done <- struct{}{}
+	}
+	return f.err
+}
+
+// A successful publish self-assigns the bot as reviewer (what makes the
+// re-request-review button exist on the PR) — strictly BEHIND the response:
+// the call is detached, so a slow/failing/absent assigner never delays the
+// publish response nor the merge-gate status.
+//
+// This also closes the SECOND open item from SocialGouv/iterion#621 (the
+// re-request affordance re-arming after a NOTE-triggered `/revi` review, not
+// only after the reviewer-request button): handleForgePublishReview has no
+// notion of which webhook lane produced the review it is publishing — the
+// self-assign call fires unconditionally on every successful publish, so a
+// dedicated "note-triggered" variant of this test would exercise the exact
+// same code path under a different label. The genuinely open question — does
+// GitLab's OWN sidebar visually re-arm the button once the bot holds the
+// reviewer role again — is UI state on the forge's side, outside anything
+// iterion's code decides; it is confirmed at the next real click.
+func TestForgePublishReview_SelfAssignsReviewer(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fra := &fakeReviewerAssigner{done: make(chan struct{}, 8)}
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return fra }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("publish: code=%d body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-fra.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("self-assign never ran after the publish")
+	}
+	fra.mu.Lock()
+	if fra.calls != 1 || fra.repo != "o/r" || fra.num != 42 {
+		t.Fatalf("self-assign not called with the PR: calls=%d repo=%q num=%d", fra.calls, fra.repo, fra.num)
+	}
+	fra.err = context.DeadlineExceeded
+	fra.mu.Unlock()
+
+	// A forge refusal is best-effort — the publish already landed.
+	w2 := httptest.NewRecorder()
+	s.handleForgePublishReview(w2, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("self-assign failure must not degrade the publish: code=%d", w2.Code)
+	}
+	<-fra.done
+
+	// Capability absent (nil assigner) — publish untouched.
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return nil }
+	w3 := httptest.NewRecorder()
+	s.handleForgePublishReview(w3, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w3.Code != http.StatusOK {
+		t.Fatalf("absent capability must not degrade the publish: code=%d", w3.Code)
+	}
+}
+
+// The regression this ordering exists for: a HUNG self-assign (a stalled
+// forge) must not sit in front of the required merge-gate status or the
+// publish response. Before the fix the call ran synchronously between the
+// review post and the gate post, so this test hung and the gate was hostage
+// to a cosmetic call.
+func TestForgePublishReview_SelfAssignNeverBlocksGateOrResponse(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	gc := &fakeGateClient{headSHA: "abc"}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) { return gc, nil }
+	fra := &fakeReviewerAssigner{block: make(chan struct{}), done: make(chan struct{}, 1)}
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return fra }
+
+	respDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		s.handleForgePublishReview(w, publishReq("tok1", publishBodyWithGate(`{"enabled":true,"blocking_count":0}`)))
+		respDone <- w
+	}()
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-respDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("publish response is hostage to a hung self-assign")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("publish: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gc.setCalls != 1 || gc.last.State != forge.CommitStateSuccess {
+		t.Fatalf("gate must be posted before/despite the hung self-assign: setCalls=%d last=%+v", gc.setCalls, gc.last)
+	}
+	close(fra.block) // release the parked goroutine
+	<-fra.done
 }

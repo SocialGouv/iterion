@@ -29,6 +29,41 @@ func decodeLikeCursor(t *testing.T, in, out any) {
 	}
 }
 
+func TestRunFallbackBSONAcceptsObjectAndArray(t *testing.T) {
+	legacy := bson.D{
+		{Key: "_id", Value: "legacy-fallback"},
+		{Key: "fallback", Value: bson.D{
+			{Key: "backend", Value: "codex"},
+			{Key: "model", Value: "gpt-5.5"},
+		}},
+	}
+	var fromObject store.Run
+	decodeLikeCursor(t, legacy, &fromObject)
+	if len(fromObject.Fallback) != 1 || fromObject.Fallback[0].Backend != "codex" || fromObject.Fallback[0].Model != "gpt-5.5" {
+		t.Fatalf("legacy BSON fallback = %+v, want one promoted stage", fromObject.Fallback)
+	}
+
+	canonical := store.Run{
+		ID: "array-fallback",
+		Fallback: store.RunFallback{
+			{Backend: "codex", Model: "gpt-5.5"},
+			{Backend: "claw", Model: "openai/gpt-5.5"},
+		},
+	}
+	var fromArray store.Run
+	decodeLikeCursor(t, canonical, &fromArray)
+	if len(fromArray.Fallback) != 2 || fromArray.Fallback[1].Backend != "claw" {
+		t.Fatalf("array BSON fallback = %+v, want two ordered stages", fromArray.Fallback)
+	}
+	raw, err := bson.Marshal(canonical)
+	if err != nil {
+		t.Fatalf("marshal canonical run: %v", err)
+	}
+	if got := bson.Raw(raw).Lookup("fallback").Type; got != bson.TypeArray {
+		t.Fatalf("canonical BSON fallback type = %s, want array", got)
+	}
+}
+
 // TestEventDataDecodeShape pins the store's decode contract for the
 // open-shaped Event.Data payload: nested documents surface as plain
 // map[string]any, nested arrays as plain []any, and int32-width wire
@@ -128,5 +163,31 @@ func TestCheckpointOutputsDecodeShape(t *testing.T) {
 	}
 	if _, ok := detail["nested"].(map[string]any); !ok {
 		t.Fatalf("detail.nested decoded as %T, want map[string]any", detail["nested"])
+	}
+}
+
+// TestFailureCodeBSONRoundTrip pins the ADR-095 field's wire shape:
+// a known code, an UNKNOWN future code (open-world contract), and the
+// legacy document with no field at all (zero value, never an error).
+func TestFailureCodeBSONRoundTrip(t *testing.T) {
+	coded := store.Run{ID: "fc", Status: store.RunStatusFailedResumable, FailureCode: store.FailureUsageLimitBlocked}
+	var back store.Run
+	decodeLikeCursor(t, coded, &back)
+	if back.FailureCode != store.FailureUsageLimitBlocked {
+		t.Fatalf("known code = %q", back.FailureCode)
+	}
+
+	future := store.Run{ID: "fc2", Status: store.RunStatusFailed, FailureCode: "SOME_FUTURE_CODE_V9"}
+	var back2 store.Run
+	decodeLikeCursor(t, future, &back2)
+	if back2.FailureCode != "SOME_FUTURE_CODE_V9" {
+		t.Fatalf("unknown code mangled: %q", back2.FailureCode)
+	}
+
+	legacy := bson.D{{Key: "_id", Value: "old"}, {Key: "status", Value: "failed"}}
+	var back3 store.Run
+	decodeLikeCursor(t, legacy, &back3)
+	if back3.FailureCode != "" {
+		t.Fatalf("legacy row grew a code: %q", back3.FailureCode)
 	}
 }

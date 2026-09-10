@@ -68,6 +68,13 @@ type state struct {
 	// dispatch proceeds, or pruned when the issue leaves the candidate set.
 	// Actor-goroutine-owned; no mutex needed.
 	lastRunHoldWarned map[string]string
+	// degradedWarned dedups the Warn for decision-changing degradations
+	// (run store unreachable, unreadable run record): the FIRST failure of
+	// an episode warns, repeats stay Debug, and recovery clears the key
+	// with an Info. Without it these paths logged Debug only — invisible
+	// at production log levels while they silently changed dispatch
+	// decisions. Actor-goroutine-owned; no mutex needed.
+	degradedWarned map[string]bool
 }
 
 func newState() *state {
@@ -78,6 +85,7 @@ func newState() *state {
 		tombstones:        map[string]struct{}{},
 		dispatchSkips:     map[string]DispatchSkipView{},
 		lastRunHoldWarned: map[string]string{},
+		degradedWarned:    map[string]bool{},
 	}
 }
 
@@ -122,13 +130,27 @@ type runningEntry struct {
 	LastEventAt               time.Time
 	LastEventName             string
 	Attempt                   int
-	Cancel                    context.CancelFunc
+	// Cancel tears down the run's context WITH a cause. The cause is the
+	// contract with the engine's interruption classifier
+	// (runtime.handleContextDoneWithCheckpoint): runtime.ErrRunInterrupted
+	// marks an INTERNAL stop (stall reap, external state change, dispatcher
+	// shutdown) and persists failed_resumable so the ticket auto-resumes;
+	// a nil cause is an OPERATOR cancel and persists terminal `cancelled`,
+	// which the dispatcher never auto-resumes.
+	Cancel context.CancelCauseFunc
 
 	// CancelIssuedAt is non-zero once reconcileStalled has called
 	// Cancel(); subsequent ticks suppress the cancel + warn re-spam
 	// while the worker drains (F-CD-12). The actor goroutine is the
 	// single writer so no mutex is needed.
 	CancelIssuedAt time.Time
+
+	// parkedNoticed brackets the log episode for a run the stall watchdog
+	// is exempting because a subbot descendant awaits human input (see
+	// exemptParkedFromStall). Without it a weekend-long review would emit
+	// one line per tick; without any line at all, the exemption would be
+	// indistinguishable from a hung watchdog. Actor-owned; no mutex.
+	parkedNoticed bool
 
 	// setupPending is true between claim-time allocation (dispatch, on the
 	// actor) and the off-actor setup worker reporting the in-progress
@@ -161,6 +183,13 @@ type runningEntry struct {
 	// observability (LastEventName, snapshot rendering), but stall
 	// detection now reads this atomic.
 	lastEventAtomicNano atomic.Int64
+
+	// claim is the lease heartbeat session for this dispatch (nil when
+	// the tracker has no lease backend). Actor-owned pointer; the session
+	// itself is goroutine-safe. It OUTLIVES the entry on the finish path
+	// (rides finishPlan into the worker) and is stopped on the park/hold
+	// paths by stopClaimSession.
+	claim *claimSession
 
 	// issueSnapshot is the tracker.Issue snapshot used to render
 	// dispatch.vars. Kept so the dispatcher can render a fresh prompt

@@ -75,21 +75,33 @@ schema verdict:
   approved: bool
   notes: string
 
+prompt plan_system:
+  Turn the request into a concrete plan: files, steps, constraints.
+
+prompt implement_system:
+  Implement the plan, then run the tests.
+
+prompt review_system:
+  Approve only if the change is complete and the tests pass.
+
 agent plan:
-  system: "Turn the request into a concrete plan: files, steps, constraints."
+  model: "anthropic/claude-sonnet-4-6"
+  system: plan_system
 
 agent implement:
   backend: "claude_code"
-  system: "Implement the plan, then run the tests."
+  system: implement_system
 
 judge review:
+  model: "anthropic/claude-sonnet-4-6"
   output: verdict
-  system: "Approve only if the change is complete and the tests pass."
+  system: review_system
 
 workflow ship_it:
   entry: plan
-  plan -> implement -> review
-  review -> implement as fix(3) when not approved
+  plan -> implement
+  implement -> review
+  review -> implement when not approved as fix(3)
   review -> done when approved
 ```
 

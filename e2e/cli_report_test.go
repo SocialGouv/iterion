@@ -55,6 +55,7 @@ func runReportFixture(t *testing.T, runID string) string {
 }
 
 func TestReportRendersChronologicalRunReport(t *testing.T) {
+	t.Parallel()
 	runID := "e2e-report-basic"
 	storeDir := runReportFixture(t, runID)
 
@@ -118,6 +119,7 @@ func TestReportRendersChronologicalRunReport(t *testing.T) {
 // TestReportHonoursOutputPathAndJSON: `--output` redirects the markdown,
 // and `--json` yields the same report as a machine-readable object.
 func TestReportHonoursOutputPathAndJSON(t *testing.T) {
+	t.Parallel()
 	runID := "e2e-report-output"
 	storeDir := runReportFixture(t, runID)
 
@@ -151,6 +153,7 @@ func TestReportHonoursOutputPathAndJSON(t *testing.T) {
 // TestReportRejectsUnknownRun: reporting on a run that does not exist is
 // a clear error, never an empty-but-plausible report.
 func TestReportRejectsUnknownRun(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	if _, err := store.New(storeDir); err != nil {
 		t.Fatalf("create store: %v", err)

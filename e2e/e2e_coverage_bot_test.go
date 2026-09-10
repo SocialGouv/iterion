@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -39,6 +38,11 @@ type endyState struct {
 // verify_run (suite green + matrix contract satisfied). Individual tests
 // override a node afterward (later .on wins).
 func stubEndyCampaign(exec *scenarioExecutor, st *endyState) {
+	// The entry precondition passes and the plan phase (on by default)
+	// authors a plan; plan_review is unresolved (auto → off) in this
+	// harness, so the peer never runs.
+	stubWorkspaceProbeOK(exec)
+	stubPlanAuthor(exec)
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
@@ -84,6 +88,7 @@ func stubEndyCampaign(exec *scenarioExecutor, st *endyState) {
 // empty fail_log both times (green gates; the loop-back is remaining WORK,
 // not a failure).
 func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -98,7 +103,7 @@ func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -127,6 +132,7 @@ func TestE2ECoverage_ContinuesUntilComplete(t *testing.T) {
 // coverage_complete does not converge the run while the matrix still counts
 // uncovered rows — the deterministic count outranks the agent's claim.
 func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -141,7 +147,7 @@ func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-block", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -162,6 +168,7 @@ func TestE2ECoverage_WholeAppRunBlocksOnUncoveredRows(t *testing.T) {
 // completion even though out-of-scope matrix rows remain uncovered — they
 // are the next run's backlog, not this run's failure.
 func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -172,7 +179,7 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"target": "persistence & resume lifecycle"}
 	if err := eng.Run(context.Background(), "run-endy-scoped", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -195,6 +202,7 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 // run and cannot converge while uncovered rows remain. (The trimming
 // itself is proven at the gate in bots/e2e_coverage_matrix_gate_test.go.)
 func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{
@@ -210,7 +218,7 @@ func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	inputs := map[string]any{"target": "   "}
 	if err := eng.Run(context.Background(), "run-endy-blank", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -226,6 +234,7 @@ func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
 // matrix-problems log, even though the suite itself is green and the agent
 // claimed completion.
 func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
@@ -250,7 +259,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-orphan", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -273,6 +282,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 // floor shared with the fleet: a red suite routes back to the campaign with
 // the real failure log.
 func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
@@ -295,7 +305,7 @@ func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-red", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -317,13 +327,14 @@ func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
 // TestE2ECoverage_EventTrace establishes the event-coherence baseline: a
 // happy-path run persists node lifecycle events for the core nodes.
 func TestE2ECoverage_EventTrace(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 	exec := newScenarioExecutor()
 	st := &endyState{completeBy: 1}
 	stubEndyCampaign(exec, st)
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-endy-events", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -349,14 +360,23 @@ func TestE2ECoverage_EventTrace(t *testing.T) {
 	}
 }
 
-// TestE2ECoverage_Structural pins the v2 IR shape: campaign entry, the two
-// adaptive agents, the deterministic verify_run tool + gate compute, and the
-// single bounded continuation loop.
+// TestE2ECoverage_Structural pins the v2 IR shape: the deterministic
+// workspace precondition as entry, then the plan-phase gate (ADR-091 — on
+// by default; plan_phase=off routes straight to campaign, the inventory as
+// its own first move), the two adaptive agents, the deterministic
+// verify_run tool + gate compute, and the single bounded continuation loop.
 func TestE2ECoverage_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
 
-	if wf.Entry != "campaign" {
-		t.Errorf("workflow entry = %q, want %q (the inventory is the campaign's own first move)", wf.Entry, "campaign")
+	if wf.Entry != "workspace_probe" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic precondition ahead of any LLM node)", wf.Entry, "workspace_probe")
+	}
+	if _, ok := wf.Nodes["workspace_probe"].(*ir.ToolNode); !ok {
+		t.Errorf("workspace_probe is %T, want *ir.ToolNode (deterministic precondition)", wf.Nodes["workspace_probe"])
+	}
+	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
+		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])
 	}
 	for _, id := range []string{"campaign", "verify_build"} {
 		node, ok := wf.Nodes[id]

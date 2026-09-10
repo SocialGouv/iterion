@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // RunLifecycle executes a plugin's lifecycle command ("index" or "refresh") in
@@ -47,6 +49,9 @@ func RunLifecycle(ctx context.Context, reg *Registry, name, phase, workspace str
 		return cdErr
 	}
 	c := exec.CommandContext(ctx, "sh", "-c", expanded)
+	// An index/refresh command walks the workspace and often forks helpers.
+	// Cancelling the request has to end that walk, not just stop reading it.
+	proc.TerminateGroupOnCancel(c)
 	c.Dir = workspace
 	c.Stdout = stdout
 	c.Stderr = stderr

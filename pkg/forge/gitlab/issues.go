@@ -211,4 +211,29 @@ func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int,
 	}, nil
 }
 
+// CommentPullRequest posts a note on a MERGE REQUEST — the counterpart to
+// CommentIssue for a caller that knows its subject is an MR, not a bare
+// issue. Unlike GitHub/Forgejo, whose issues endpoint already serves PRs,
+// GitLab addresses merge requests as a resource SEPARATE from issues (an MR
+// and an issue can share the same iid in one project), so CommentIssue
+// would land on — or 404 against — the wrong resource. Satisfies the
+// package-server-local gitlabPullCommenter capability the /revi approve
+// reply lane resolves.
+func (c *AdminClient) CommentPullRequest(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	var n gitlabNote
+	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number)+"/notes", map[string]any{"body": body}, &n)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.CommentRef{}, statusErr("create mr note", code)
+	}
+	return forge.CommentRef{
+		ID:        strconv.FormatInt(n.ID, 10),
+		Body:      n.Body,
+		Author:    n.Author.Username,
+		CreatedAt: n.CreatedAt,
+	}, nil
+}
+
 var _ forge.IssueClient = (*AdminClient)(nil)

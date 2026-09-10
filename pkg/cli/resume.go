@@ -167,12 +167,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	resumingFromFailure := false
-	switch r.Status {
-	case store.RunStatusPausedWaitingHuman:
-		// OK — requires answers
-	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+	switch {
+	case r.Status.RequiresResumeAnswers():
+		// OK — the pause path
+	case r.Status.CanOperatorResume():
 		resumingFromFailure = true
-	case store.RunStatusRunning:
+	case r.Status == store.RunStatusRunning:
 		// Status=running on a run whose engine actually died is the
 		// classic orphan case. The server-boot sweep handles most of
 		// these automatically; --force-stale lets the operator unstick
@@ -188,7 +188,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 				return fmt.Errorf("run %q has events.jsonl flushed %s ago (< %s) — engine may still be alive; refusing to force-stale resume. Wait, or use `iterion inspect` to confirm the engine is gone", opts.RunID, age.Truncate(time.Second), forceStaleStaleAfter)
 			}
 		}
-		if changed, casErr := s.UpdateRunStatusIf(ctx, opts.RunID, store.RunStatusFailedResumable, "engine subprocess died abnormally; status auto-promoted via `iterion resume --force-stale`", []store.RunStatus{store.RunStatusRunning}); casErr != nil {
+		if changed, casErr := s.UpdateRunStatusIfCoded(ctx, opts.RunID, store.RunStatusFailedResumable, "engine subprocess died abnormally; status auto-promoted via `iterion resume --force-stale`", store.FailureProcessOrphaned, []store.RunStatus{store.RunStatusRunning}); casErr != nil {
 			return fmt.Errorf("force-stale promote: %w", casErr)
 		} else if !changed {
 			// Reload — something else changed it between LoadRun and now.
@@ -212,7 +212,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	pausedNode := ""
 	if r.Checkpoint != nil {
-		pausedNode = r.Checkpoint.NodeID
+		pausedNode = r.Checkpoint.PausedNodeID()
 	}
 
 	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile, opts.Force)
@@ -245,10 +245,27 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// CLI budget overrides — applied before buildResumeExecutor (which
 	// snapshots Budget), same seam as the run path. Lets an operator raise
 	// a cap and resume a budget-exceeded run without editing the .bot.
+	// The ask persisted on the run doc replays FIRST (an ask-less resume
+	// keeps the cap the run was launched with, never the .bot's own), the
+	// flags merge over it per field; a raise is persisted back so the
+	// next resume — and the doc's own snapshot — carry it. The detached
+	// studio resume reaches this same line through its subprocess.
 	if err := opts.Budget.Validate(); err != nil {
 		return UserInputError(err)
 	}
-	applyBudgetOverrides(wf, opts.Budget)
+	if merged := runtime.MergeResumeBudgetAsk(&opts.Budget, r.BudgetOverrides); merged != nil {
+		applyBudgetOverrides(wf, *merged)
+		if !opts.Budget.IsZero() {
+			if perr := s.SetRunBudgetOverrides(ctx, r.ID, runtime.RunBudgetOverridesOf(merged)); perr != nil {
+				logger.Warn("resume: persist merged budget ask on %s: %v", r.ID, perr)
+			}
+			if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+				if serr := s.SetRunBudgetSnapshot(ctx, r.ID, snap); serr != nil {
+					logger.Warn("resume: refresh budget snapshot on %s: %v", r.ID, serr)
+				}
+			}
+		}
+	}
 
 	// DSL-declared supervisors resume with the run: the resumed stretch is
 	// the same campaign the supervisor was declared to watch. Same wiring
@@ -338,10 +355,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman &&
-		r.Status != store.RunStatusFailedResumable &&
-		r.Status != store.RunStatusCancelled &&
-		r.Status != store.RunStatusPausedOperator {
+	if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
 
@@ -352,7 +366,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 		p.KV("Workflow", wf.Name)
 		if r.Checkpoint != nil {
-			p.KV("Node", r.Checkpoint.NodeID)
+			p.KV("Node", r.Checkpoint.PausedNodeID())
 		}
 		if resumingFromFailure {
 			p.KV("Resuming from", "failed (re-executing failed node)")

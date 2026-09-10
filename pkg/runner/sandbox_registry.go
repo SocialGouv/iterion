@@ -54,10 +54,60 @@ func (r *Runner) sandboxRunFor(runID string) sandbox.Run {
 // file-secret refresh loop (the previous sandboxSecretRefreshObserver
 // behaviour). The caller must defer unregisterSandboxRun(runID) and
 // cancel ctx when the run ends.
-func (r *Runner) sandboxRunObserver(ctx context.Context, runID, tenantID string, refs map[string]string) func(sandbox.Run) {
+// sandboxObserverOpts names what the observer needs about the run whose
+// sandbox it is watching. A struct rather than a parameter list because
+// the two callers differ on one field that MATTERS: a subbot child under
+// a shared sandbox is handed its PARENT's handle, and a second checkpoint
+// loop on the same pod would push the same tree twice, under two names.
+type sandboxObserverOpts struct {
+	runID    string
+	tenantID string
+	ownerID  string
+	// secretRefs are the run's refreshable file secrets (empty = none).
+	secretRefs map[string]string
+	// checkpoint preserves the sandbox workspace mid-run. True only for
+	// the run that OWNS the pod AND whose workflow did not decline the net
+	// (`workspace_checkpoint: off` — a run that writes no commit for the
+	// repository it reads, resolved at the launch site).
+	checkpoint bool
+}
+
+// checkpointsWorkspace answers the one question that decides whether this
+// run gets a safety net: is its work unreachable until teardown, and is
+// this the run that owns the pod?
+//
+// Copy-based drivers (kubernetes) are the ones whose workspace lives
+// inside the pod — the same type assertion the export path gates on, so
+// the two cannot disagree about what "copy-based" means. Bind-mount
+// drivers share the host inode: their work is already outside the
+// container and a checkpoint would preserve what cannot be lost.
+//
+// The second half is not an optimisation: a subbot child under a shared
+// sandbox is handed its PARENT's handle, so without it two loops would
+// push the same tree to two refs, doubling the cost and inventing a
+// second story about one workspace.
+func checkpointsWorkspace(run sandbox.Run, o sandboxObserverOpts) bool {
+	if !o.checkpoint {
+		return false
+	}
+	_, copyBased := run.(sandbox.WorkspaceExporter)
+	return copyBased
+}
+
+func (r *Runner) sandboxRunObserver(ctx context.Context, o sandboxObserverOpts) func(sandbox.Run) {
 	return func(run sandbox.Run) {
-		r.registerSandboxRun(runID, run)
-		if len(refs) == 0 {
+		r.registerSandboxRun(o.runID, run)
+		// A workspace that is a COPY inside a pod keeps every commit —
+		// and everything not yet committed — out of reach until the
+		// export at teardown, which is exactly the moment a dying pod
+		// stops answering. Bind-mount drivers share the host inode and
+		// need no net: their work is already outside the container.
+		if checkpointsWorkspace(run, o) {
+			errtrack.Go("runner.checkpointWorkspace", func() {
+				r.checkpointWorkspaceLoop(ctx, o, run)
+			})
+		}
+		if len(o.secretRefs) == 0 {
 			return
 		}
 		refresher, ok := run.(sandbox.SecretFileRefresher)
@@ -66,7 +116,7 @@ func (r *Runner) sandboxRunObserver(ctx context.Context, runID, tenantID string,
 			return
 		}
 		errtrack.Go("runner.refreshSandboxFileSecrets", func() {
-			r.refreshSandboxFileSecretsLoop(ctx, tenantID, refs, refresher)
+			r.refreshSandboxFileSecretsLoop(ctx, o.tenantID, o.secretRefs, refresher)
 		})
 	}
 }

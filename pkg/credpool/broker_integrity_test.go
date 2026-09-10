@@ -107,7 +107,7 @@ func TestAcquire_exhaustedDonorIsRefusedNotGrantedZero(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{MaxUSDPerDay: 5})
-	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0); err != nil {
+	if err := h.ledger.AddSpend(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now, 5, 0, 0, 0); err != nil {
 		t.Fatalf("seed spend: %v", err)
 	}
 	grant, err := h.broker.Acquire(ctx, h.request("run-1"))

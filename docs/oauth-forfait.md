@@ -74,6 +74,14 @@ values are overridable per deployment:
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_AUTHORIZE_URL` | Override the authorize endpoint (default `https://claude.ai/oauth/authorize`). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_REDIRECT_URI` | Override the headless redirect (default `https://platform.claude.com/oauth/code/callback`). |
 | `ITERION_OAUTH_FORFAIT_ANTHROPIC_SCOPES` | Override the requested scopes. |
+| `ITERION_OAUTH_FORFAIT_ANTHROPIC_TOKEN_URL` | Override the token endpoint (default `https://console.anthropic.com/v1/oauth/token`). Used by BOTH the auth-code exchange and the server-side refresh. |
+| `ITERION_OAUTH_FORFAIT_CODEX_TOKEN_URL` | Override the Codex token endpoint (default `https://auth.openai.com/oauth/token`). |
+
+Re-pointing an OEM-repackaged CLI takes the whole family: the authorize
+URL, the redirect URI and the scopes drive the browser connect, and the
+token URL drives what happens after it — a deployment that moves the
+first three and not the fourth connects against one host and refreshes
+against another.
 
 The browser connect flow is available whenever the OAuth store is wired
 (cloud mode) — the client id is defaulted, so no extra config is needed.

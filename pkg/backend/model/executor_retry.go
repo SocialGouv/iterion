@@ -194,15 +194,31 @@ func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
 // This is the no-fallback form: callers with no further chain element
 // (the schema-validation retry, direct one-shot dispatch) use it and get
 // the historical behaviour unchanged.
-func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
-	return e.retryDelegateLoopChain(ctx, nodeID, backendName, nil, fn)
+func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, sharedSession bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, sharedSession, nil, fn)
 }
 
 // retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
 // the caller has a fallback route that would take THIS failure, which
 // lets it skip a budget that cannot succeed (see shouldRetryInPlace).
 // A nil predicate means "no route will take it".
-func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
+//
+// sharedSession says the attempts CONTINUE one session — the task carries
+// a session id and does not fork it, so attempt 2 lands in the state
+// attempt 1 left. The closure re-invokes with an UNCHANGED task, so the
+// caller can answer it once for every attempt. It is computed at the call
+// site, where the task is in hand: a fork sets ForkSession beside the
+// PARENT id, and reading only the id would call two disjoint children one
+// session. It narrows exactly one thing in foldSpend — whether a
+// session-total cost may be folded at its MAX.
+//
+// carryForward, when non-nil, is handed the attempt that just failed before
+// the next one is issued — the seam through which a caller lets the retry
+// CONTINUE what the dead attempt opened instead of starting over. Nil means
+// every attempt is independent, which is what every caller but the main
+// dispatch wants. A carry makes the attempts share a session the TASK never
+// named, which is why the fold asks the results too (see foldSameSession).
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, sharedSession bool, fallbackAccepts func(error) bool, fn func() (delegate.Result, error), carryForward ...func(delegate.Result)) (delegate.Result, error) {
 	result, err := fn()
 	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
@@ -228,12 +244,140 @@ func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return delegate.Result{}, ctx.Err()
+			// Cancelled between attempts: no output survives, but what the
+			// attempts already burned is not undone by it — the caps and
+			// the ledgers read the map, not the struct.
+			return foldSpend(result, delegate.Result{}, sharedSession), ctx.Err()
 		}
 
+		prev := result
+		for _, carry := range carryForward {
+			if carry != nil {
+				carry(prev)
+			}
+		}
 		result, err = fn()
+		result = foldSpend(prev, result, foldSameSession(prev, result, sharedSession))
 	}
 	return result, err
+}
+
+// sharesSession reports whether every attempt of one retry loop lands in
+// the SAME session state — the precondition for folding two attempts'
+// session-cumulative cost at its MAX (see foldSpend).
+//
+// A FORK does not qualify, which is why this cannot be `SessionID != ""`.
+// applySessionContinuity sets ForkSession beside the PARENT id, and
+// delegate.Task records what that means: "the forked session gets a new
+// ID and does not mutate the original session". The retry closure
+// re-invokes with the unchanged task, so each attempt forks a fresh child
+// and bills its own work while the id stays non-empty throughout.
+func sharesSession(task *delegate.Task) bool {
+	return task != nil && task.SessionID != "" && !task.ForkSession
+}
+
+// foldSameSession refines that answer with what the attempts ACTUALLY did.
+// A delegation names the session it opened even when it failed, so when both
+// attempts name one, that reading is the true one: it observes where the work
+// ran, not where the task asked it to run.
+//
+// The two part company exactly when a retry RESUMES a session the task never
+// carried — what carryForward creates. There the task says "no shared
+// session" while the second report is a session total that already contains
+// the first, and folding at the SUM would bill one session twice. It also
+// separates two attempts that each opened a session of their own under a task
+// that named one, which the task alone cannot see.
+//
+// The task's answer stands when neither result names a session: a spawn that
+// never opened one, or a backend that reports none.
+func foldSameSession(prev, next delegate.Result, sharedSession bool) bool {
+	if prev.SessionID != "" && next.SessionID != "" {
+		return prev.SessionID == next.SessionID
+	}
+	return sharedSession
+}
+
+// foldSpend folds two attempts' ACCOUNTING onto the later attempt's
+// result — the answer is the later one's, the figure is what both of them
+// truly burned. Dropping the earlier attempt (the historical behaviour)
+// reports the cost of nothing when the LAST attempt is the cheap one: a
+// session spends minutes, the retry cannot even spawn, and the caps, the
+// org ledger and a lending donor all read that zero.
+//
+// The two metrics do NOT fold the same way, and no backend NAME decides
+// it — on claude_code the halves of one result disagree:
+//
+//   - TOKENS always SUM. Every shipped backend reports its own turn:
+//     claude_code and codex ADD the resumed formatting pass's Usage onto
+//     pass 1's, and pi deliberately keeps the collector's per-TURN numbers
+//     on a resumed session. Two attempts therefore report disjoint counts,
+//     and a MAX here UNDER-reports — the direction that lets a run walk
+//     past max_tokens.
+//   - COST folds at its MAX only when both figures are session-cumulative
+//     readings of ONE shared session (Result.CostIsSessionTotal, which
+//     claude_code sets from the CLI's TotalCostUSD). There attempt 2's
+//     report already contains attempt 1's spend and adding double-counts
+//     it. Everywhere else — every cost.Annotate estimate, including
+//     claude_code's own under the OAuth forfait — the figure is derived
+//     from this call's tokens and SUMS with them.
+//
+// Demanding the flag on BOTH sides is what makes the motivating case still
+// work: an attempt that could not spawn reports zero with the flag false,
+// and SUM then yields the earlier attempt's figure unchanged — the same
+// answer a MAX would give.
+//
+// The MAX rests on one further invariant, held today by construction: a
+// `prev` reaching it never already carries ANOTHER route's spend. Both
+// paths that fold chainSpend into a result also drop the session the fold
+// keys on — a route change clears SessionID/ForkSession on the rebuilt
+// task (newElementBuilder, index > 0), and the optional-session degrade
+// continues on `fresh`, whose id is empty — so sharedSession is false
+// wherever `spent` is non-empty. A new spent.add site that KEEPS the
+// session id would break that, and the MAX would then swallow a route.
+//
+// The precedents in this file agree once read this way: chainSpend adds
+// across ROUTES (always different sessions), and validateAndRetry adds
+// across its two invocations, its comment recording that dropping the
+// first attempt's usage "broke budget enforcement at the margins".
+func foldSpend(prev, next delegate.Result, sharedSession bool) delegate.Result {
+	pt, nt := prev.Tokens, next.Tokens
+	pc, nc := cost.USDFromOutput(prev.Output), cost.USDFromOutput(next.Output)
+
+	tokens := pt + nt
+	usd := pc + nc
+	if sharedSession && prev.CostIsSessionTotal && next.CostIsSessionTotal {
+		usd = nc
+		if pc > nc {
+			usd = pc
+		}
+	}
+	// The folded figure is still a session reading when every non-zero
+	// contributor to it was one — so a THIRD attempt's session total is
+	// recognised as subsuming the two already folded, instead of being
+	// summed onto a running total it already contains.
+	next.CostIsSessionTotal = (pc == 0 || prev.CostIsSessionTotal) &&
+		(nc == 0 || next.CostIsSessionTotal)
+	// Attempts run one after the other, so the time they took adds up —
+	// the same reason chainSpend sums it across routes. It is purely
+	// observational (the delegate_finished event's duration_ms and the
+	// log line; the budget clocks its own elapsed), but a node that spent
+	// five minutes before a 30s retry reported the 30s.
+	next.Duration += prev.Duration
+	if tokens == nt && usd == nc {
+		return next
+	}
+	next.Tokens = tokens
+	// An unallocated map records nothing, and the map is what the caps read.
+	if next.Output == nil {
+		next.Output = map[string]any{}
+	}
+	if tokens != nt {
+		next.Output["_tokens"] = tokens
+	}
+	if usd != nc {
+		next.Output["_cost_usd"] = usd
+	}
+	return next
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +643,14 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 	}
 	r.Tokens += s.tokens
 	r.Duration += s.duration
+	// An unallocated map records nothing, and the map is what the caps read
+	// — so the shape that loses the most is the one that had no output at
+	// all: a last element that could not even spawn, folding a whole
+	// session's spend into a struct field nobody enforces on. Allocated
+	// here for the same reason typedFailure allocates it.
+	if r.Output == nil && (s.tokens > 0 || s.costUSD > 0) {
+		r.Output = map[string]any{}
+	}
 	if r.Output != nil {
 		if s.tokens > 0 {
 			r.Output["_tokens"] = r.Tokens
@@ -669,6 +821,11 @@ func (e *ClawExecutor) newElementBuilder(
 			task.SessionID = ""
 			task.SessionFingerprint = ""
 			task.ForkSession = false
+			// Cleared with the id it qualifies: this field now has a
+			// SECOND writer (a retry that carries a session forward), so
+			// an entry left behind here is reachable from a direction it
+			// was not when only the declared modes set it.
+			task.SessionOptional = false
 		}
 		return bn, backend, task, nil
 	}
@@ -880,8 +1037,53 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend = backendName
-		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+		// Set when THIS dispatch carried a session forward, so the carry
+		// can be undone: only a session we introduced is ours to drop.
+		carriedSession := false
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(task), accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
+		}, func(prev delegate.Result) {
+			// An in-process retry stays in the SAME sandbox — the engine
+			// starts one per run, never per node (runtime: startSandbox is
+			// called from engine_run and resume only) — so the CLI session
+			// files the dead attempt wrote are still on the pod's disk.
+			// Measured 2026-09-08 on a live run: 2 node_started, 1
+			// sandbox_started, one node_recovery between them; the node
+			// began again from zero and threw away 46 minutes of context
+			// that were sitting right there.
+			//
+			// Marked OPTIONAL, not required: if the session cannot be
+			// served after all, the executor's existing degrade path
+			// retries once with it dropped and SAYS so on three channels
+			// (log, session_degraded event, _session_degraded output stamp
+			// a deterministic gate can fail closed on). One degradation
+			// path, not a second one beside it.
+			if carriedSession {
+				// It had its one chance. A CARRIED session is
+				// opportunistic — its status quo ante is a fresh start —
+				// so when the attempt that resumed it dies too, the
+				// session itself is a suspect and the remaining budget
+				// goes to a clean attempt instead of re-loading it every
+				// time. The degrade path below cannot do this job: it is
+				// gated on UNCLASSIFIED, and the failure this whole
+				// change was measured on classifies as `transient
+				// (network)` — so a poisoned carried session would be
+				// re-carried on every attempt, silently, with the only
+				// guard that would drop it switched off for its
+				// category.
+				//
+				// A DECLARED session is the opposite trade: the workflow
+				// asked for it, dropping it loses contracted continuity,
+				// and its unclassified-only rule is untouched here.
+				task.SessionID = ""
+				task.SessionOptional = false
+				return
+			}
+			if task.SessionID == "" && prev.SessionID != "" {
+				task.SessionID = prev.SessionID
+				task.SessionOptional = true
+				carriedSession = true
+			}
 		})
 		// Best-effort session degrade (inherit_if_available / persist): the
 		// upstream session id resolved, but its backing state can be gone —
@@ -927,7 +1129,7 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionID = ""
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
-				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return backend.Execute(ctx, fresh)
 				})
 				if freshErr == nil {
@@ -1090,6 +1292,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 		ToBackend:     toBackend,
 		Reason:        string(cd.Category),
 		Attempts:      0,
+		FallbackIndex: to.FallbackIndex,
 		Cooldown:      true,
 		CooldownUntil: cd.Until,
 		ToSkip:        to.Skip,
@@ -1116,17 +1319,18 @@ func (e *ClawExecutor) noteFallback(
 		return
 	}
 	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
-		BackendName: backendName,
-		From:        from.Provider,
-		To:          to.Provider,
-		FromModel:   fromModel,
-		ToModel:     toModel,
-		FromBackend: fromBackend,
-		ToBackend:   toBackend,
-		Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
-		Attempts:    e.retry.maxAttempts(),
-		Err:         err,
-		ToSkip:      to.Skip,
+		BackendName:   backendName,
+		From:          from.Provider,
+		To:            to.Provider,
+		FromModel:     fromModel,
+		ToModel:       toModel,
+		FromBackend:   fromBackend,
+		ToBackend:     toBackend,
+		Reason:        string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
+		Attempts:      e.retry.maxAttempts(),
+		FallbackIndex: to.FallbackIndex,
+		Err:           err,
+		ToSkip:        to.Skip,
 	})
 }
 

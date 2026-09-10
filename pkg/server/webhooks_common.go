@@ -11,10 +11,12 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // maxWebhookBodyBytes caps the inbound payload every provider handler
@@ -92,13 +94,25 @@ const featureDevBotID = "feature-dev"
 // provider that doesn't have e.g. a project path leaves it empty and
 // the delivery row simply omits it.
 type webhookEventMeta struct {
-	Kind         string // "merge_request" | "pull_request" | "note" | "generic"
-	Action       string // "open" | "reopen" | "comment" | …
-	ProjectPath  string // "owner/repo" or equivalent
-	SubjectID    string // "mr:7" / "pr:42" / "note:99" — stable per-event id
-	SubjectURL   string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
-	SubjectSHA   string // head SHA, when known
-	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
+	Kind        string // "merge_request" | "pull_request" | "note" | "generic"
+	Action      string // "open" | "reopen" | "comment" | …
+	ProjectPath string // "owner/repo" or equivalent
+	SubjectID   string // "mr:7" / "pr:42" / "note:99" — stable per-event id
+	// ParentSubjectID is the PR/MR a comment subject hangs off ("pr:7"),
+	// empty when the subject is the pull request itself or a plain issue.
+	// Persisted on the delivery so "every run this pull request launched"
+	// is answerable across the comment lanes.
+	ParentSubjectID string
+	SubjectURL      string // the subject's own web URL/ref (the issue/MR the comment is on) — back-linked as source_issue_ref for opens_mr commands
+	SubjectSHA      string // head SHA, when known
+	SenderHandle    string // username for audit (logged only, never in delivery audit row v1)
+	// EventUpdatedAt is the FORGE's own timestamp for the subject at this
+	// event (GitHub/Forgejo `pull_request.updated_at`, GitLab
+	// `object_attributes.updated_at`), verbatim. Not for display: it is
+	// the only ordering signal a webhook delivery carries, and forges do
+	// not guarantee delivery order — see webhooks.DeferredPayloadIsStale.
+	// Empty when the payload omits it.
+	EventUpdatedAt string
 }
 
 // applyWebhookVarLayers puts the two webhook-level var layers onto a
@@ -135,6 +149,18 @@ func (s *Server) suppressedByHoldLabel(ctx context.Context, w http.ResponseWrite
 		`held: carries hold label "`+held+`" — automation suppressed (remove the label, or trigger a bot manually via a command)`)
 	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 	return true
+}
+
+// failWebhookAuthorization acknowledges a forge error while retaining its cause
+// in the delivery audit. The caller must return: an unverified actor cannot
+// launch work or receive a forge reply, and repeated 5xx can disable the hook.
+func (s *Server) failWebhookAuthorization(ctx context.Context, w http.ResponseWriter, cfg webhooks.Config, meta webhookEventMeta, payloadHash, srcIP, operation string, err error) {
+	why := operation + ": " + err.Error()
+	if s.logger != nil {
+		s.logger.Warn("webhooks: %s %s %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, why)
+	}
+	s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, why)
+	writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusLaunchError, "reason": "authorization check failed"})
 }
 
 // mergeVarsInto copies every key from src into dst (overwriting on
@@ -291,31 +317,162 @@ func (s *Server) isIterionForgeBotAuthor(ctx context.Context, cfg webhooks.Confi
 // that connection's bot identity. See isIterionForgeBotAuthor for the contract.
 func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, login string) bool {
 	login = strings.TrimSpace(login)
-	if login == "" || s.forgeConnections == nil {
+	if login == "" {
 		return false
+	}
+	// Configured identities first, and WITHOUT a connection lookup — the other
+	// half of the pair reads them the same way. An identity only the
+	// review-request half recognised would launch on the bot's own reviewer
+	// write echoing back, which is the loop this guard exists to close.
+	for _, l := range iterionBotLogins(cfg, forge.Connection{}) {
+		if strings.EqualFold(login, l) {
+			return true
+		}
+	}
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
+		return false
+	}
+	for _, botLogin := range iterionBotLogins(cfg, conn) {
+		if strings.EqualFold(login, botLogin) {
+			return true
+		}
+	}
+	return false
+}
+
+// iterionBotAuthorPredicate gives the same verdict as isIterionForgeBotAuthor
+// as a cheap per-login comparator, for call sites that classify MANY logins in
+// one delivery (a review-thread walk): the connection store is read once, not
+// once per login. The second return reports whether ANY identity resolved —
+// on a GitHub PAT/OAuth connection with no configured logins the set is
+// legitimately empty (iterionBotLogins gates the account fallback to GitLab),
+// and a caller whose safety rests on the classification must fail closed
+// rather than read "always false" as "no bot here". Honours the
+// webhookIterionBotAuthor test seam.
+func (s *Server) iterionBotAuthorPredicate(ctx context.Context, cfg webhooks.Config) (func(string) bool, bool) {
+	if s.webhookIterionBotAuthor != nil {
+		return func(login string) bool { return s.webhookIterionBotAuthor(ctx, cfg, login) }, true
+	}
+	logins := iterionBotLogins(cfg, forge.Connection{})
+	if conn, ok := s.webhookForgeConnection(ctx, cfg); ok {
+		// The full set: iterionBotLogins starts from the configured
+		// identities, so this supersedes the zero-connection list.
+		logins = iterionBotLogins(cfg, conn)
+	}
+	return func(login string) bool {
+		login = strings.TrimSpace(login)
+		if login == "" {
+			return false
+		}
+		for _, l := range logins {
+			if strings.EqualFold(login, l) {
+				return true
+			}
+		}
+		return false
+	}, len(logins) > 0
+}
+
+// iterionBotLogins is THE definition of "iterion's own identity on this
+// webhook's forge" — the single set both consumers read: the bot-author
+// skip (is this event's actor the bot?) and the re-request-review trigger
+// (is this reviewer the bot?). One set by construction, because the two
+// checks are the two halves of the same loop guard: an identity the
+// trigger recognises but the actor check doesn't would let the bot's own
+// reviewer-write echo launch a review of itself.
+//
+//   - GitHub/Forgejo App: the bot login is the app slug suffixed with
+//     [bot].
+//   - GitLab (non-App): iterion acts as the connection's own account.
+//     Gated to GitLab: on GitHub/Forgejo a PAT/OAuth connection may be a
+//     HUMAN's personal account — treating it as the bot would make that
+//     human's PRs unreviewable on one side and turn an ordinary
+//     human-to-human review request into an LLM launch on the other.
+func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
+	// Operator-configured identities first: they are the only ones that can
+	// name a USER account, which on GitHub is the only thing that can be a
+	// requested reviewer. See Config.ReviewRequestLogins for why this is never
+	// derived from the connection.
+	var logins []string
+	for _, l := range cfg.ReviewRequestLogins {
+		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
+			logins = append(logins, l)
+		}
+	}
+	if conn.AppSlug != "" {
+		logins = append(logins, conn.AppSlug+"[bot]")
+	}
+	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" {
+		logins = append(logins, conn.AccountLogin)
+	}
+	return logins
+}
+
+// webhookForgeConnection resolves the forge Connection an
+// orchestrator-provisioned webhook rides — the identity iterion acts as on
+// that forge. false for hand-created webhooks (no provisioning marker), a
+// missing store, or a resolution miss.
+func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config) (forge.Connection, bool) {
+	if s.forgeConnections == nil {
+		return forge.Connection{}, false
 	}
 	connID := strings.TrimPrefix(cfg.ProvisionedBy, "forge:")
 	if connID == "" || connID == cfg.ProvisionedBy {
-		// Not an orchestrator-provisioned webhook → no known iterion bot identity.
-		return false
+		return forge.Connection{}, false
 	}
 	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Debug("webhooks: iterion-bot-author check: connection %s: %v", connID, err)
+			s.logger.Debug("webhooks: forge connection %s for webhook %s: %v", connID, cfg.ID, err)
 		}
+		return forge.Connection{}, false
+	}
+	return conn, true
+}
+
+// isIterionBotReviewRequest reports whether a PR/MR event explicitly asks
+// iterion's OWN forge identity for a review — the forge-native "Re-request
+// review" button (or adding the bot to the reviewer set): the button form of
+// `/revi`, a deliberate on-demand re-review. `requested` is the parser's
+// per-provider "does this event request a review from <login>?" predicate,
+// probed with the SAME identity set the actor guard reads (iterionBotLogins
+// — see its comment for which login counts on which forge).
+// Fail-safe like the author check: any resolution miss returns false and the
+// delivery stays on the normal filtered path. Routed through the
+// webhookIterionBotReviewRequest seam so handler tests need no live
+// connection store.
+func (s *Server) isIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	fn := s.webhookIterionBotReviewRequest
+	if fn == nil {
+		fn = s.realIterionBotReviewRequest
+	}
+	return fn(ctx, cfg, requested)
+}
+
+// realIterionBotReviewRequest is the production isIterionBotReviewRequest:
+// it resolves the webhook's connection and probes the parser predicate with
+// the SAME identity set the bot-author actor guard reads (iterionBotLogins)
+// — never a wider one: an identity only this half recognised would launch
+// on the bot's own reviewer-write echo (the actor guard couldn't name it)
+// and would treat a human account's review requests as bot triggers.
+func (s *Server) realIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	// A configured identity needs no connection lookup: it is the operator's
+	// explicit statement of who the button addresses, and it must arm the lane
+	// even when the provisioning marker cannot be resolved.
+	for _, l := range iterionBotLogins(cfg, forge.Connection{}) {
+		if requested(l) {
+			return true
+		}
+	}
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
 		return false
 	}
-	// GitHub/Forgejo App: the bot login is the app slug suffixed with [bot].
-	if conn.AppSlug != "" && strings.EqualFold(login, conn.AppSlug+"[bot]") {
-		return true
-	}
-	// GitLab (and other non-App forges): iterion authors MRs as the connection's
-	// own account. Gated to GitLab so a GitHub OAuth link to a human account
-	// can't render that human's PRs unreviewable.
-	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" &&
-		strings.EqualFold(login, conn.AccountLogin) {
-		return true
+	for _, botLogin := range iterionBotLogins(cfg, conn) {
+		if requested(botLogin) {
+			return true
+		}
 	}
 	return false
 }
@@ -330,29 +487,6 @@ func isDependencyBotAuthor(login string) bool {
 		return true
 	}
 	return strings.HasPrefix(l, "renovate[") || strings.HasPrefix(l, "dependabot[")
-}
-
-// resolveReviewBot picks the bot id for a forge-specific review-PR
-// delivery: the webhook's SelectBot() result, falling back to the
-// defaultWebhookBotReviewPR constant when the operator didn't pin one.
-// The chosen bot is then validated against AllowsBot; a denied bot
-// writes a terminal "invalid" delivery + 403 and ok=false (the caller
-// must return immediately).
-//
-// Returned ok=false means the response was already written; the caller
-// must not write a second response.
-func (s *Server) resolveReviewBot(
-	ctx context.Context,
-	w http.ResponseWriter,
-	cfg webhooks.Config,
-	meta webhookEventMeta,
-	payloadHash, srcIP string,
-) (string, bool) {
-	botID := cfg.SelectBot()
-	if botID == "" {
-		botID = s.roleBots().Reviewer
-	}
-	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
 }
 
 // resolveForgeEventBots returns every bot to launch for a forge EVENT
@@ -480,19 +614,20 @@ func (s *Server) checkBotPermitted(
 // row to StatusLaunched once the launch returns.
 func newWebhookDelivery(cfg webhooks.Config, meta webhookEventMeta, status, payloadHash, srcIP string) webhooks.Delivery {
 	return webhooks.Delivery{
-		ID:          uuid.NewString(),
-		TenantID:    cfg.TenantID,
-		WebhookID:   cfg.ID,
-		Provider:    cfg.Provider,
-		EventKind:   meta.Kind,
-		EventAction: meta.Action,
-		ProjectPath: meta.ProjectPath,
-		SubjectID:   meta.SubjectID,
-		SubjectSHA:  meta.SubjectSHA,
-		PayloadHash: payloadHash,
-		Status:      status,
-		SourceIP:    srcIP,
-		ReceivedAt:  time.Now().UTC(),
+		ID:              uuid.NewString(),
+		TenantID:        cfg.TenantID,
+		WebhookID:       cfg.ID,
+		Provider:        cfg.Provider,
+		EventKind:       meta.Kind,
+		EventAction:     meta.Action,
+		ProjectPath:     meta.ProjectPath,
+		SubjectID:       meta.SubjectID,
+		ParentSubjectID: meta.ParentSubjectID,
+		SubjectSHA:      meta.SubjectSHA,
+		PayloadHash:     payloadHash,
+		Status:          status,
+		SourceIP:        srcIP,
+		ReceivedAt:      time.Now().UTC(),
 	}
 }
 
@@ -607,6 +742,10 @@ type webhookLaunchResult struct {
 
 	denial     *launchDenial
 	httpStatus int
+	// attempts is the claim row's launch count after this call — what the
+	// unattended gate lanes read their failure budget from. Zero when no
+	// attempt was recorded (a replay, a denial, a delivery-store failure).
+	attempts int
 }
 
 // supersedeLiveRuns cancels the runs a fresh delivery has made obsolete, when
@@ -630,10 +769,7 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 			return s.runs.CancelWithReason(runID, supersededRunReason)
 		}
 	}
-	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
-		return
-	}
-	if decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy()); decision != schedgate.DecisionSupersede {
+	if s.webhookDeliveries == nil || cancel == nil || !overlapSupersedes(cfg) {
 		return
 	}
 	if meta.SubjectID == "" {
@@ -648,6 +784,16 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 	}
 	for _, d := range recent {
 		if d.RunID == "" || d.BotID != botID || d.SubjectID != meta.SubjectID {
+			continue
+		}
+		// The PROJECT half of the scope: a subject id ("pr:7") carries no
+		// repo, and one webhook config can serve many — without this a
+		// push to acme/b#7 would cancel the live review of acme/a#7 (the
+		// same cross-repo collision the debounce key and the dead-PR stop
+		// already guard against). Skipped only when THIS delivery has no
+		// project (a generic-webhook shape), where narrowing would break
+		// the historical behaviour rather than fix it.
+		if meta.ProjectPath != "" && d.ProjectPath != meta.ProjectPath {
 			continue
 		}
 		if d.Status != webhooks.StatusLaunched {
@@ -672,10 +818,104 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 // and an unbounded scan would put the whole delivery history on the hot path.
 const supersedeLookback = 50
 
-// supersededRunReason is recorded as the run error of a run cancelled by the
-// overlap=supersede lane. Kept short: the merge-gate synthetic description
-// quotes it within a 60-rune budget.
-const supersededRunReason = "superseded by a newer delivery for the same subject"
+// headReviewClaim reports whether the ordinary per-head key space of this
+// delivery's head is already claimed by an earlier review launch, and whether
+// EVERY fanned-out rule's claim is still in flight — the only state in which
+// the click has nothing left to serve. Rb9e7c9: with several bots on the
+// event, one live run must not swallow the re-review of a bot whose own run
+// finished, nor a retryable launch_error's relaunch — so a single not-live
+// rule declines the collapse and the delivery salts. It drives the
+// re-request lane's three-way idempotency choice (collapse / salt / claim) —
+// see the caller in handlePRForgeReview.
+//
+// Failure posture: THE BUTTON KEEPS WORKING. Absence of the deliveries store
+// reads as unclaimed, a failed RUN lookup as not-live, and a failed STORE
+// read (≠ not-found) as claimed-but-not-live — claimed is what routes the
+// delivery onto the salted key, so a store hiccup costs at most a duplicate
+// review, never a silently deduped no-op (R1545ff; a not-found miss keeps
+// the per-head key, whose row the launch tail retries or dedupes exactly).
+// A StatusLaunchError row is NOT a claim (mirrors the launch tail: a failed
+// launch is retryable via its own key); a StatusAccepted row is a launch in
+// progress — in flight by definition, but only within acceptedLaunchWindow
+// of its receipt: a process dying between the insert and the post-launch
+// update strands the row at accepted forever, and reading that as live would
+// permanently disarm the button for the head (Rf96744).
+func (s *Server) headReviewClaim(ctx context.Context, cfg webhooks.Config, rules []webhooks.BotRule, headBase string) (claimed, live bool) {
+	if s.webhookDeliveries == nil {
+		return false, false
+	}
+	live = true
+	for _, rule := range rules {
+		d, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, forgeIdemKey(headBase, rule.BotID, cfg.HasBotRules()))
+		switch {
+		case errors.Is(err, webhooks.ErrNotFound):
+			live = false
+			continue
+		case err != nil:
+			claimed, live = true, false
+			continue
+		case d.Status == webhooks.StatusLaunchError:
+			live = false
+			continue
+		}
+		claimed = true
+		switch {
+		case d.Status == webhooks.StatusAccepted && time.Since(d.ReceivedAt) < acceptedLaunchWindow:
+			// launch in progress — in flight.
+		case d.RunID != "" && s.webhookRunLive(ctx, d.RunID):
+			// run still expected to produce its review — in flight.
+		default:
+			live = false
+		}
+	}
+	return claimed, claimed && live
+}
+
+// overlapSupersedes reports whether this webhook's overlap policy resolves to
+// supersede — the single predicate shared by the launch tail's cancel pass
+// (supersedeLiveRuns) and the re-request collapse, which DEFERS to it: an
+// explicit supersede is the operator saying "newest request wins".
+func overlapSupersedes(cfg webhooks.Config) bool {
+	if cfg.Overlap == "" {
+		return false
+	}
+	decision, _ := schedgate.EvaluateOverlap([]string{"probe"}, cfg.OverlapPolicy())
+	return decision == schedgate.DecisionSupersede
+}
+
+// acceptedLaunchWindow bounds how long a StatusAccepted delivery row reads as
+// "launch in progress" to the re-request collapse. A live launch resolves to
+// launched/launch_error within seconds; a row older than this was stranded by
+// a crash and must not keep collapsing re-requests.
+const acceptedLaunchWindow = 10 * time.Minute
+
+// webhookRunLive resolves the seam: is this run still expected to produce its
+// review (queued, running, or paused)? Terminal statuses — and a run the
+// store cannot load — read as not-live, so a re-request on them relaunches.
+func (s *Server) webhookRunLive(ctx context.Context, runID string) bool {
+	if s.webhookRunIsLive != nil {
+		return s.webhookRunIsLive(ctx, runID)
+	}
+	if s.runs == nil {
+		return false
+	}
+	run, err := s.runs.LoadRunCtx(store.WithoutTenantFilter(ctx), runID)
+	if err != nil || run == nil {
+		return false
+	}
+	switch run.Status {
+	case store.RunStatusQueued, store.RunStatusRunning,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return true
+	}
+	return false
+}
+
+// supersededRunReason names the cancel of a run replaced by the
+// overlap=supersede lane. Its message is kept short in the store's
+// vocabulary: the merge-gate synthetic description quotes it within a
+// 60-rune budget.
+const supersededRunReason = store.RunEndReasonSuperseded
 
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise
@@ -852,17 +1092,39 @@ func (s *Server) launchWebhookTarget(
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
+	delivery.Attempts = 1
 	if reusePriorFailure != nil {
-		// Retry: keep the prior row's identity + received-at, clear the
-		// error, and UPDATE it (Insert would ErrDuplicate on the idemKey).
+		// Retry: keep the prior row's identity + received-at, count the
+		// attempt, clear the error, and CLAIM it (Insert would ErrDuplicate
+		// on the idemKey). A claim rather than a plain update because the
+		// row was READ in step 1: two redeliveries of the same failed event
+		// both find it there, and an unconditional write would let both go
+		// on to launch a run for one event — the storm shape a redelivery
+		// burst has. The loser answers as a duplicate, exactly as the
+		// concurrent-insert loser below does.
 		delivery.ID = reusePriorFailure.ID
 		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
+		delivery.Attempts = reusePriorFailure.Attempts + 1
 		if s.webhookDeliveries != nil {
-			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
+			claimed, err := s.webhookDeliveries.ClaimFailedRetry(ctx, delivery, reusePriorFailure.Attempts)
+			if err != nil {
 				adm.rollback(s.logger)
 				out.Status = webhooks.StatusLaunchError
 				out.Error = fmt.Sprintf("reset failed delivery: %v", err)
 				out.httpStatus = http.StatusInternalServerError
+				return out
+			}
+			if !claimed {
+				// Somebody else is retrying this event right now. Release
+				// this delivery's metered quota unit — the same reason the
+				// Insert loser does — and echo the row that won.
+				adm.rollback(s.logger)
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				out.Status = webhooks.StatusDuplicate
+				out.DeliveryID = reusePriorFailure.ID
+				if existing, gerr := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); gerr == nil {
+					out.RunID, out.DeliveryID = existing.RunID, existing.ID
+				}
 				return out
 			}
 		}
@@ -922,19 +1184,43 @@ func (s *Server) launchWebhookTarget(
 	// carries a pr_url var — mint a per-run publish grant scoped to the
 	// webhook's tenant so the bot's deterministic publish node posts
 	// through the server's live forge client (never a workspace token).
-	vars = s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	vars, verr := s.injectForgePublishVars(ctx, cfg.TenantID, "", botID, vars, r)
+	if verr != nil {
+		// The only refusal here is a launch pinning another team's publish
+		// grant (errForgePublishGrantTenant): the run would carry a
+		// credential that speaks as that team. The delivery row is already
+		// claimed, so it is marked failed like a launch that could not
+		// start — a redelivery re-enters, and the operator's pin still
+		// refuses until it is corrected.
+		failedAt := s.gateNow()
+		delivery.Status = webhooks.StatusLaunchError
+		delivery.Error = verr.Error()
+		delivery.FailedAt = &failedAt
+		s.updateWebhookDelivery(ctx, delivery)
+		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
+		adm.rollback(s.logger)
+		out.Status = webhooks.StatusLaunchError
+		out.Error = verr.Error()
+		out.DeliveryID = delivery.ID
+		out.attempts = delivery.Attempts
+		out.httpStatus = http.StatusUnprocessableEntity
+		return out
+	}
 	// meta.ProjectPath is the forge slug already parsed by the provider
 	// handler — thread it onto the launch so the run is filterable by
 	// repository in the studio.
 	runID, lerr := launch(ctx, botID, vars, t.RepoURL, t.RepoRef, meta.ProjectPath, cfg.KeyOverrides, cfg.SecretOverrides)
 	if lerr != nil {
+		failedAt := s.gateNow()
 		delivery.Status = webhooks.StatusLaunchError
 		delivery.Error = lerr.Error()
+		delivery.FailedAt = &failedAt
 		s.updateWebhookDelivery(ctx, delivery)
 		s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunchError)
 		out.Status = webhooks.StatusLaunchError
 		out.Error = fmt.Sprintf("launch failed: %v", lerr)
 		out.DeliveryID = delivery.ID
+		out.attempts = delivery.Attempts
 		out.httpStatus = http.StatusBadGateway
 		return out
 	}
@@ -962,4 +1248,252 @@ func (s *Server) launchWebhookTarget(
 	out.Status = webhooks.StatusLaunched
 	out.RunID, out.DeliveryID = runID, delivery.ID
 	return out
+}
+
+// prClosedRunReason names the cancel so the run list, and the merge-gate
+// synthetic status that quotes run.Error, say WHY. "cancelled by user"
+// there once sent operators hunting for a human who did nothing.
+// It is the TYPED store.RunEndReasonPRClosed, which is what the runner
+// admission reads to drop a redelivered message even when that message carries
+// an explicit resume — the runner never imports the webhook layer, so the
+// vocabulary lives in the store, not here.
+const prClosedRunReason = store.RunEndReasonPRClosed
+
+// forkGuardRefusal is the fork guard of the unattended payload-side lanes
+// (PR auto lane, review-thread reply lane). The decision is the payload's
+// own SameRepoAsBase predicate — the contract of forge.PullRef.SameRepoAs on
+// the API side: a head repo is admitted only when it is PROVEN to be the
+// base repo. What this helper adds is the wording for the delivery row, by
+// the state it refused, since three states collapse into one decision. The
+// /command lanes refuse the same states (same-repo only, silently), so no
+// refusal may advertise them as an escape hatch: fork work needs a branch in
+// the base repo before any bot runs on it.
+// Both sources reach it, so the wording names no source: `head.repo: null`
+// on a payload and a source project the credential may not read on an API
+// resolution are the same fact — a head repository that EXISTS and was not
+// named.
+func forkGuardRefusal(sameRepoProven, withheld bool, headRepo string) string {
+	switch {
+	case sameRepoProven:
+		return ""
+	case withheld:
+		return "head repo withheld — the forge declared one and did not name it — auto-launch blocked: a deleted or blocked fork has exactly this shape, and the launch pair would be <base>.CloneURL + a fork-chosen branch name; the /command lanes refuse it too (same-repo only)"
+	case headRepo == "":
+		return "head repo not named — auto-launch blocked: same-repo is never assumed, only proven (the launch pair would be <base>.CloneURL + a branch that may live elsewhere); the /command lanes refuse it too (same-repo only)"
+	default:
+		return "fork PR — auto-launch blocked (untrusted; the /command lanes are same-repo only too, so the fork's work needs a branch in this repo before any bot runs on it)"
+	}
+}
+
+// forkGuardRefusalFor is forkGuardRefusal for a pull request resolved through
+// the forge API, where the head repository may have taken its own request:
+// it reads the withheld flag off the ref and quotes the forge's own typed
+// refusal, which the payload lanes never hold. A refusal that cannot name why
+// the head stayed unproven sends the operator looking in the wrong place.
+func forkGuardRefusalFor(pr forge.PullRef, baseRepo string) string {
+	reason := forkGuardRefusal(pr.SameRepoAs(baseRepo), pr.HeadRepoWithheld(), pr.HeadRepoFullName)
+	if reason != "" && pr.HeadRepoErr != nil {
+		reason += " (" + pr.HeadRepoErr.Error() + ")"
+	}
+	return reason
+}
+
+// prRequeuedRunReason names the auto-heal cancel for the same reason: a
+// reader finding a stopped fixer run has to learn that the queue took the
+// pull request back, not that someone gave up on it.
+const prRequeuedRunReason = store.RunEndReasonPRRequeued
+
+// healIdempotencyKey is the identity of ONE auto-heal attempt: this
+// webhook, this pull request, this head. Both halves of the loop derive
+// the key here rather than formatting it themselves — the launch that
+// writes the delivery row and the requeue stop that looks it up must
+// agree byte for byte, and two copies of a format string drift.
+func healIdempotencyKey(cfg webhooks.Config, p prforge.Parsed) string {
+	return knowledge.ChecksumHex([]byte(fmt.Sprintf("heal|%s|%s|%s|%d|%s",
+		cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+}
+
+// stopHealRunForRequeuedPR cancels the auto-heal run launched for this
+// pull request's CURRENT head, once the merge queue has taken the PR back.
+//
+// The heal's whole job is to return an ejected PR to the queue. When the
+// PR is queued again the job is done — and a heal still running is now
+// actively harmful, because its delivery tail force-pushes the branch:
+// that push cancels the queue build in flight and ejects the PR a second
+// time, so the repair becomes the next breakage. Observed in production
+// (2026-09-04, iterion#682): a flaky test ejected a green PR, the heal
+// launched, the PR was re-enqueued, and only a manual cancel kept the
+// fixer's push from killing the queue run that went on to merge it.
+//
+// Scoped by the heal's own idempotency key, NOT by (project, subject):
+// a fixer the developer asked for with `/billy` rides a different key on
+// the same PR and must survive — this stop may only reach the run the
+// queue ejection itself started. Keyed on the head means a heal that has
+// ALREADY pushed (advancing the head, which is what re-enqueues the PR)
+// is not matched by the enqueue its own push caused: that run is finishing
+// the work this stop exists to let it finish.
+func (s *Server) stopHealRunForRequeuedPR(ctx context.Context, cfg webhooks.Config, p prforge.Parsed) int {
+	if s.webhookDeliveries == nil || p.PRNumber == 0 || p.HeadSHA == "" {
+		return 0
+	}
+	d, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, healIdempotencyKey(cfg, p))
+	if err != nil || d.RunID == "" {
+		return 0 // no heal was launched for this head — the ordinary case
+	}
+	if !s.runIsStoppable(ctx, d.RunID) {
+		return 0
+	}
+	// Disarm before cancelling, like the closed-PR stop: a retry left armed
+	// would resume the very run we just stopped.
+	if retries := store.AsRunRetryStore(s.cfg.Store); retries != nil {
+		if aerr := retries.AbandonRunRetry(ctx, d.RunID, prRequeuedRunReason.Message()); aerr != nil && s.logger != nil {
+			s.logger.Debug("webhooks: could not disarm the retry of heal run %s on a re-queued PR: %v", d.RunID, aerr)
+		}
+	}
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = func(runID string) error { return s.runs.CancelWithReason(runID, prRequeuedRunReason) }
+	}
+	if cancel == nil {
+		return 0
+	}
+	if cerr := cancel(d.RunID); cerr != nil {
+		if s.logger != nil {
+			s.logger.Debug("webhooks: re-queue stop could not cancel heal run %s (it may have just settled): %v", d.RunID, cerr)
+		}
+		return 0
+	}
+	if s.logger != nil {
+		s.logger.Info("webhooks: stopped auto-heal run %s (%s on %s #%d) — its pull request is back in the merge queue", d.RunID, d.BotID, p.ProjectPath, p.PRNumber)
+	}
+	return 1
+}
+
+// stopRunsForDeadPR ends every run still bound to a pull request that just
+// closed or merged, and disarms any usage-window retry armed for one.
+//
+// Two distinct leaks, both observed: a run in FLIGHT keeps spending
+// provider quota on a diff nobody will merge, and a run PARKED on a
+// provider window is a promise to come back — hours later, to review and
+// comment on a dead pull request. Cancelling covers the first; the retry
+// disarm covers the second, and it is the one nothing else would do (the
+// retry lives in the store, not in the run's process).
+//
+// Scoped to (project, subject) across EVERY bot, unlike supersedeLiveRuns
+// which is per-bot: supersede replaces one bot's work with newer work of
+// the same bot, while a closed PR ends everyone's. The PROJECT half is
+// load-bearing — a subject id ("pr:7") carries no repo and one webhook
+// config can serve several, so matching the subject alone would cancel a
+// same-numbered pull request of another repo.
+//
+// The scan is the EXACT by-subject query, never the recency-bounded one
+// supersede uses: the run this exists to reach is the one parked hours
+// ago, i.e. precisely the delivery a 50-row window has already dropped.
+//
+// Only runs still LIVE are touched. A merged PR's history is mostly
+// finished reviews, and disarming a retry that was never armed writes a
+// stop reason onto a run that succeeded — a lie the next person debugging
+// retries would read as fact.
+//
+// Best-effort throughout — the close event must answer 200 regardless, or
+// the forge starts disabling the hook. Returns how many runs it actually
+// stopped, for the delivery audit reason.
+func (s *Server) stopRunsForDeadPR(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta) int {
+	if meta.SubjectID == "" || meta.ProjectPath == "" {
+		return 0
+	}
+	// Purge any review PARKED for this PR's quiet window (the push
+	// debounce): push → merge within the window is the normal case on a
+	// repo whose gate goes green on that push, and without this the 20s
+	// sweep would fire a full review of a dead pull request three
+	// minutes after it merged. Unconditional (whatever generation or
+	// lease): a dead PR's parked review must never launch. Here rather
+	// than per closed-lane so every provider's close path inherits it.
+	if s.webhookDeferred != nil {
+		if err := s.webhookDeferred.DeleteBySubject(ctx, deferSubjectKey(cfg, meta)); err != nil && s.logger != nil {
+			s.logger.Warn("webhooks: could not purge parked launch for closed %s %s: %v", meta.ProjectPath, meta.SubjectID, err)
+		}
+	}
+	if s.webhookDeliveries == nil {
+		return 0
+	}
+	cancel := s.webhookCancelRun
+	if cancel == nil && s.runs != nil {
+		cancel = func(runID string) error {
+			return s.runs.CancelWithReason(runID, prClosedRunReason)
+		}
+	}
+	retries := store.AsRunRetryStore(s.cfg.Store)
+	if cancel == nil && retries == nil {
+		return 0
+	}
+	launched, err := s.webhookDeliveries.ListLaunchedBySubject(ctx, cfg.TenantID, cfg.ID, meta.ProjectPath, meta.SubjectID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("webhooks: closed-PR stop lookup failed for %s %s %s: %v", cfg.ID, meta.ProjectPath, meta.SubjectID, err)
+		}
+		return 0
+	}
+	stopped := 0
+	seen := make(map[string]bool, len(launched))
+	for _, d := range launched {
+		if d.RunID == "" || seen[d.RunID] {
+			continue // one PR has several deliveries per run's lifetime
+		}
+		seen[d.RunID] = true
+		if !s.runIsStoppable(ctx, d.RunID) {
+			continue
+		}
+		// Disarm FIRST: a cancel that lands while a retry is still armed
+		// leaves the promise standing, and the sweeper would resume the
+		// run we just cancelled.
+		if retries != nil {
+			if aerr := retries.AbandonRunRetry(ctx, d.RunID, prClosedRunReason.Message()); aerr != nil && s.logger != nil {
+				s.logger.Debug("webhooks: could not disarm the retry of run %s on a closed PR: %v", d.RunID, aerr)
+			}
+		}
+		if cancel == nil {
+			continue
+		}
+		if cerr := cancel(d.RunID); cerr != nil {
+			if s.logger != nil {
+				s.logger.Debug("webhooks: closed-PR stop could not cancel run %s (it may have just settled): %v", d.RunID, cerr)
+			}
+			continue
+		}
+		stopped++
+		if s.logger != nil {
+			s.logger.Info("webhooks: stopped run %s (%s on %s %s) — its pull request closed or merged", d.RunID, d.BotID, meta.ProjectPath, meta.SubjectID)
+		}
+	}
+	return stopped
+}
+
+// runIsStoppable reports whether a run is still live enough for the
+// closed-PR stop to touch it: running/queued/paused (cancel it) or parked
+// with an armed retry (disarm the promise). A settled run is left alone —
+// writing a stop reason onto a review that finished hours ago tells the
+// next reader something false about it.
+//
+// Fails OPEN (true) when the run cannot be read: a store blip must not
+// strand a live run on a dead pull request, and both actions are no-ops
+// on a settled run anyway.
+func (s *Server) runIsStoppable(ctx context.Context, runID string) bool {
+	if s.cfg.Store == nil {
+		return true
+	}
+	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
+	if err != nil || run == nil {
+		return true
+	}
+	switch run.Status {
+	case store.RunStatusRunning, store.RunStatusQueued,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return true
+	case store.RunStatusFailedResumable:
+		// Only the ones something will actually come back for.
+		return run.RetryState != nil && run.RetryState.RetryAfter != nil
+	default:
+		return false
+	}
 }

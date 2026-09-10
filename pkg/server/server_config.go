@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -147,12 +148,21 @@ type Config struct {
 	WebhookConfigs    webhooks.ConfigStore
 	WebhookDeliveries webhooks.DeliveryStore
 	WebhookCounter    webhooks.Counter
+	// WebhookDeferred parks synchronize-lane review launches for a quiet
+	// window (the push debounce, ITERION_WEBHOOK_SYNC_DEBOUNCE). nil →
+	// every push launches immediately, as before.
+	WebhookDeferred webhooks.DeferredLaunchStore
 
 	// OrgUsage is the per-org monthly run/cost metering counter. When
 	// non-nil, every launch (REST, resume, webhook) passes the
 	// gateLaunch quota checks and increments the month's run counter;
 	// the usage REST views read it back. nil → no metering (local mode).
 	OrgUsage orgusage.Counter
+
+	// CredUsage, when non-nil, is the per-CREDENTIAL monthly ledger the
+	// runner feeds and the /credentials/usage views read. nil leaves those
+	// routes unregistered — the org bucket stays the only usage answer.
+	CredUsage credusage.Counter
 
 	// CredPool* wire the mutualised credential pool (pkg/credpool): the
 	// contributor-lent LLM subscriptions a run with no credential of its
@@ -175,6 +185,11 @@ type Config struct {
 	// GET/PUT /api/admin/settings/usage-caps routes and switches the
 	// /healthz usage_cap echo to the EFFECTIVE (db-or-env) values.
 	UsageCapSettings usagecap.SettingsStore
+	// UsageCaps, when non-nil, is the fleet's shared ledger of usage-window
+	// readings (pkg/usagecap Store — written by every runner, read by the
+	// launch walk). Enables the super-admin
+	// DELETE /api/admin/usage-readings/{fingerprint} escape hatch.
+	UsageCaps usagecap.Store
 	// OrgDefaults are the platform-wide launch limits applied when a
 	// team has no per-org override. Zero values mean "no limit".
 	OrgDefaults OrgLimitDefaults
@@ -209,6 +224,14 @@ type Config struct {
 	// and the OAuth callback to register.
 	ForgeConnections  forge.ConnectionStore
 	ForgeIntegrations forge.RepoIntegrationStore
+	// BoardBindings ties each team to one forge PROJECT board (ADR-097).
+	// Absent (local mode) self-disables the board endpoints and the periodic
+	// reconciliation worker.
+	BoardBindings forge.BoardBindingStore
+	// ProvisionApprovals parks team-admin provisioning requests pending an
+	// org admin's decision when Org.RequireProvisionApproval is set. Nil
+	// disables the approval gate (every org behaves as if the flag were off).
+	ProvisionApprovals forge.ProvisionApprovalStore
 	// ForgeOAuthApps holds per-tenant, per-instance forge OAuth-app
 	// credentials (sealed client_secret). The connect flow resolves an app
 	// from this store for a (tenant, provider, base URL); an instance with no
@@ -218,12 +241,22 @@ type Config struct {
 	// ForgeGitHubApp is the global GitHub-App identity for the
 	// installation-token connect mode. Empty → that mode is unavailable.
 	ForgeGitHubApp ForgeGitHubAppConfig
+	// DisableForgeBrandAvatar turns off the connect-time upload of the
+	// iterion-bot avatar onto a bot identity (ITERION_FORGE_BRAND_AVATAR=off).
+	// The explicit apply action on a connection stays available.
+	DisableForgeBrandAvatar bool
 
 	// PluginSources holds team-scoped, git-hosted org-private plugins
 	// (pkg/pluginsource). Non-nil registers /api/teams/:id/plugin-sources;
 	// nil answers 501 there. The durable counterpart to a plugin installed
 	// into a pod's iterion home, which a restart silently loses.
 	PluginSources pluginsource.Store
+	// PluginSourceFetcher is what POST/PATCH /plugin-sources verify a source
+	// with before persisting it (clone + parse the manifest + read the
+	// contributions — the same materialisation a launch performs). Nil skips
+	// the verification, with a warning per registration: a source accepted
+	// unverified is only found broken by the launches that skip it.
+	PluginSourceFetcher *pluginsource.Fetcher
 
 	// BotSources holds team-authored bot bundles (pkg/botsource). Non-nil
 	// registers /api/teams/:id/bot-sources and enables cloud bot editing
@@ -252,6 +285,17 @@ type Config struct {
 	// wiring — one instance, so the admin PUT's Invalidate reaches the
 	// same replica's expansions immediately. Nil builds a private one.
 	BotVarsResolver *platformcfg.Resolver[platformcfg.BotVars]
+	// PlatformCredentialsSettings is the audience family for the PLATFORM
+	// credential tier: which tenants may draw on the deployment's own keys.
+	// Nil, or a record that does not enforce, admits every tenant — the
+	// behaviour before the family existed.
+	PlatformCredentialsSettings platformcfg.Store[platformcfg.PlatformCredentials]
+	// PlatformCredentialsResolver, when non-nil, is the SHARED TTL resolver
+	// over it, also handed to the cloud publisher. It matters more here than
+	// for its siblings: the publisher is the ONLY consumer, so a private
+	// resolver on the server would make the admin PUT's Invalidate reach
+	// nothing at all and the flip land only after the TTL.
+	PlatformCredentialsResolver *platformcfg.Resolver[platformcfg.PlatformCredentials]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode
@@ -353,6 +397,18 @@ type Config struct {
 	// that don't set it.
 	Mode string
 
+	// RunnerEpoch is the generation stamped on every published RunMessage.
+	// Superseded keeps a regressive pod live but out of Service and prevents
+	// ListenAndServe from starting background workers; the queue backend also
+	// rejects publication as a second line of defence.
+	RunnerEpoch    uint64
+	HighWaterEpoch uint64
+	Superseded     bool
+	// ClaimRunnerEpoch runs after the HTTP listener has bound but before the
+	// server starts any background worker or accepts traffic. It returns the
+	// final durable rollout state for this process. Nil is the local-mode path.
+	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
+
 	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose
 	// X-Forwarded-For headers we believe. Empty (the default) means
 	// we never trust forwarded headers — audit IPs come from
@@ -419,6 +475,14 @@ type Config struct {
 	// NotifiableRuns is the reconciliation sweep's scan seam (the Mongo
 	// store's ListNotifiableRuns). nil → no sweep (bus-only delivery).
 	NotifiableRuns usernotify.ListNotifiableRuns
+
+	// AlertsWebhookURL enables the OPERATOR alert dispatcher
+	// (alert.OpsDispatcher): parked/failed runs from the runner pods
+	// delivered to a deployment webhook (Mattermost/Slack shape) — the
+	// cloud twin of the in-process alert Manager, which only sees local
+	// runs. Requires NotificationSent (the episode-claim store) to dedup
+	// across replicas and against the sweep; empty ⇒ feature off.
+	AlertsWebhookURL string
 
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a

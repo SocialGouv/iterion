@@ -37,6 +37,7 @@ func diagramOut(t *testing.T, opts cli.DiagramOptions, format cli.OutputFormat) 
 }
 
 func TestDiagramRendersEveryNodeAndEdgeOfTheWorkflow(t *testing.T) {
+	t.Parallel()
 	out := diagramOut(t, cli.DiagramOptions{File: diagramFixture}, cli.OutputHuman)
 
 	if !strings.Contains(out, "flowchart TD") {
@@ -90,6 +91,7 @@ func TestDiagramRendersEveryNodeAndEdgeOfTheWorkflow(t *testing.T) {
 }
 
 func TestDiagramViewsDifferAndUnknownViewIsRefused(t *testing.T) {
+	t.Parallel()
 	compact := diagramOut(t, cli.DiagramOptions{File: diagramFixture, View: "compact"}, cli.OutputHuman)
 	detailed := diagramOut(t, cli.DiagramOptions{File: diagramFixture, View: "detailed"}, cli.OutputHuman)
 	full := diagramOut(t, cli.DiagramOptions{File: diagramFixture, View: "full"}, cli.OutputHuman)
@@ -138,6 +140,7 @@ func TestDiagramViewsDifferAndUnknownViewIsRefused(t *testing.T) {
 }
 
 func TestDiagramJSONCarriesTheRenderedGraph(t *testing.T) {
+	t.Parallel()
 	out := diagramOut(t, cli.DiagramOptions{File: diagramFixture, View: "detailed"}, cli.OutputJSON)
 
 	var got cli.DiagramResult

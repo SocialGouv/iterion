@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -39,6 +38,12 @@ tool deliver:
   output: deliver_out
 
 workflow loop_budget_demo:
+  ## The nodes run printf; the run needs neither a git checkout of the repo
+  ## this test lives in (worktree defaults to auto) nor its toolchain
+  ## (repo_devbox defaults to on). Both are pure latency here, and latency
+  ## is what turns a bounded wait into a flake.
+  worktree: none
+  repo_devbox: off
   budget:
     max_tokens: 10000
   entry: work
@@ -79,7 +84,7 @@ func launchLoopBudgetRun(t *testing.T, guard string) (store.RunStatus, bool) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(60 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit")
 	}
 

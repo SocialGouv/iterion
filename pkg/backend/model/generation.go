@@ -414,7 +414,13 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 
 	var inputSchema api.InputSchema
 	if err := json.Unmarshal(opts.ExplicitSchema, &inputSchema); err != nil {
-		return nil, fmt.Errorf("parse ExplicitSchema: %w", err)
+		// Typed AND worded: this call is made in-process by the executor
+		// and out-of-process by the claw runner, whose subprocess
+		// boundary flattens the type to text before it reaches the
+		// classifier.
+		return nil, fmt.Errorf("parse ExplicitSchema: %w", &delegate.ErrSchemaUnusable{
+			Schema: schemaName, Detail: err.Error(),
+		})
 	}
 
 	syntheticTool := api.Tool{
@@ -440,12 +446,28 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 
 	fireOnRequest(opts, len(messages))
 
+	// partial is the best-effort result the error paths BELOW the request
+	// return beside their error — the same contract GenerateTextDirect's
+	// result() has, and for the same reason: the provider billed the call,
+	// and this is the only place that figure exists. Consult `err` first;
+	// Object is the zero value and only TotalUsage is meaningful.
+	//
+	// The exits it serves are the expensive ones — a stream that died
+	// mid-answer, a truncated tool_use, JSON the model malformed. Returning
+	// a bare nil there made a fully-billed structured call indistinguishable
+	// from one that never left the process.
+	partial := func(u Usage) *ObjectResult[T] {
+		var zero T
+		return &ObjectResult[T]{Object: zero, TotalUsage: u}
+	}
+
 	agg, err := callAndAggregate(ctx, client, req, opts)
 	if err != nil {
+		// The stream never opened — nothing was served, nothing is owed.
 		return nil, err
 	}
 	if agg.err != nil {
-		return nil, agg.err
+		return partial(agg.usage), agg.err
 	}
 
 	var totalUsage Usage
@@ -475,7 +497,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	for _, tu := range agg.toolUses {
 		if tu.Name == schemaName {
 			if tu.PartialJSON == "" {
-				return nil, fmt.Errorf("parse structured output: model returned tool_use %q with empty input (stream may have been interrupted before content_block_stop)", schemaName)
+				return partial(totalUsage), fmt.Errorf("parse structured output: model returned tool_use %q with empty input (stream may have been interrupted before content_block_stop)", schemaName)
 			}
 			var obj T
 			if err := json.Unmarshal([]byte(tu.PartialJSON), &obj); err != nil {
@@ -485,7 +507,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 				if len(raw) > 500 {
 					raw = raw[:500] + "…"
 				}
-				return nil, fmt.Errorf("parse structured output: %w (raw: %s)", err, raw)
+				return partial(totalUsage), fmt.Errorf("parse structured output: %w (raw: %s)", err, raw)
 			}
 			return &ObjectResult[T]{
 				Object:       obj,
@@ -497,5 +519,5 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		}
 	}
 
-	return nil, fmt.Errorf("model did not produce a %q tool_use block", schemaName)
+	return partial(totalUsage), fmt.Errorf("model did not produce a %q tool_use block", schemaName)
 }

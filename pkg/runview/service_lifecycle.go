@@ -68,7 +68,7 @@ func (s *Service) reconcileSandboxContainers() {
 // the liveness probe, so without this gate a server sharing a namespace
 // with live runner pods could reap an in-flight run's sandbox. Safe when
 // not in-cluster: kubernetes.Detect returns an error we swallow.
-func (s *Service) reconcileSandboxK8sResources() {
+func (s *Service) reconcileSandboxK8sResources(parent context.Context) {
 	if !s.store.Capabilities().CrossProcessLock {
 		return
 	}
@@ -76,10 +76,11 @@ func (s *Service) reconcileSandboxK8sResources() {
 	if err != nil {
 		return // not an in-cluster runner — nothing to reconcile
 	}
-	// Boot-time admin scan: peek at runs across tenants to decide whether
-	// their kubernetes leftovers should be reaped. Reuses the exact same
-	// reapability predicate as the docker reaper (liveness-first).
-	ctx := store.WithoutTenantFilter(context.Background())
+	// Admin scan: peek at runs across tenants to decide whether their
+	// kubernetes leftovers should be reaped. Reuses the exact same
+	// reapability predicate as the docker reaper (liveness-first). parent
+	// is the shutdown's cancellation handle on the periodic path.
+	ctx := store.WithoutTenantFilter(parent)
 	reaped, err := k8ssandbox.ReapOrphanResources(ctx, namespace, func(runID string) bool {
 		return s.sandboxContainerReapable(ctx, runID)
 	})
@@ -162,12 +163,14 @@ func (s *Service) sandboxContainerReapable(ctx context.Context, runID string) bo
 // succeeds proves no other process holds the run. Held runs are left
 // untouched, so a second iterion instance running in the same store
 // dir cannot clobber the first instance's in-flight work.
-func (s *Service) reconcileOrphans() {
-	// Boot-time admin scan: no JWT, no tenant on the request. Tag the
-	// ctx so the mongo store's tenant guard allows the cross-tenant
-	// ListRuns / LoadRun / UpdateRunStatus calls that follow. The
-	// filesystem store ignores the flag (no tenant scoping there).
-	ctx := store.WithoutTenantFilter(context.Background())
+func (s *Service) reconcileOrphans(parent context.Context) {
+	// Admin scan: no JWT, no tenant on the request. Tag the ctx so the
+	// mongo store's tenant guard allows the cross-tenant ListRuns /
+	// LoadRun / UpdateRunStatus calls that follow. The filesystem store
+	// ignores the flag (no tenant scoping there). parent is the
+	// shutdown's cancellation handle on the periodic path — a scan
+	// interrupted mid-sweep resumes at the next tick or the next boot.
+	ctx := store.WithoutTenantFilter(parent)
 	// The reap uses LockRun as the liveness probe: grabbing the lock
 	// proves no other process holds the run. That is only meaningful
 	// when the store has a REAL cross-process lock (filesystem flock,
@@ -185,6 +188,12 @@ func (s *Service) reconcileOrphans() {
 		return
 	}
 	for _, id := range ids {
+		// A cancelled parent means teardown: stop writing statuses into a
+		// store the caller is about to consider settled. The stores do not
+		// all honour ctx on a write, so the sweep checks it itself.
+		if ctx.Err() != nil {
+			return
+		}
 		r, err := s.store.LoadRun(ctx, id)
 		if err != nil {
 			continue
@@ -261,9 +270,14 @@ func (s *Service) reconcileOrphans() {
 		if r2.Checkpoint != nil {
 			newStatus = store.RunStatusFailedResumable
 		}
-		if err := s.store.UpdateRunStatus(ctx, id, newStatus, ReasonProcessOrphaned); err != nil {
+		if err := s.store.UpdateRunStatusCoded(ctx, id, newStatus, ReasonProcessOrphaned, store.FailureProcessOrphaned); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
+			// The document alone is not the record: every other terminal
+			// transition writes the timeline too, and a consumer that
+			// triages by the events (the run console, a headless router)
+			// would otherwise read a run that simply stopped mid-flight.
+			s.emitOrphanReaped(ctx, id, newStatus)
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
 		}
 		_ = lock.Unlock()
@@ -314,7 +328,11 @@ func (s *Service) startPeriodicReconcile() {
 		return
 	}
 	s.reconcileStop = make(chan struct{})
+	s.reconcileDone = make(chan struct{})
+	scanCtx, cancel := context.WithCancel(context.Background())
+	s.reconcileCancel = cancel
 	go func() {
+		defer close(s.reconcileDone)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -335,22 +353,44 @@ func (s *Service) startPeriodicReconcile() {
 							s.logger.Error("runview: PANIC in periodic reconcile: %v\n%s", r, debug.Stack())
 						}
 					}()
-					s.reconcileOrphans()
-					s.reconcileSandboxK8sResources()
+					s.reconcileOrphans(scanCtx)
+					s.reconcileSandboxK8sResources(scanCtx)
 				}()
 			}
 		}
 	}()
 }
 
-// stopPeriodicReconcile ends the reconcile goroutine. Idempotent —
-// Stop and Drain may both run in one teardown.
-func (s *Service) stopPeriodicReconcile() {
+// stopPeriodicReconcile ends the reconcile goroutine and WAITS for it.
+// Idempotent — Stop and Drain may both run in one teardown, and the wait
+// is repeatable (a closed channel stays closed).
+//
+// Signalling alone would only cancel the next tick: the scan already in
+// flight keeps flipping run statuses, so it lands writes after the caller
+// has been told the service is down — a status flip racing Drain's own,
+// and in tests a write into a TempDir being removed. So: cancel the scan's
+// context, then await its goroutine.
+//
+// Bounded by ctx, which on the server is the drain's sub-budget: a scan
+// wedged in a store call degrades the promise loudly rather than hanging
+// the shutdown.
+func (s *Service) stopPeriodicReconcile(ctx context.Context) {
 	s.reconcileStopOnce.Do(func() {
 		if s.reconcileStop != nil {
 			close(s.reconcileStop)
 		}
+		if s.reconcileCancel != nil {
+			s.reconcileCancel()
+		}
 	})
+	if s.reconcileDone == nil {
+		return // the ticker is disabled (interval <= 0)
+	}
+	select {
+	case <-s.reconcileDone:
+	case <-ctx.Done():
+		s.logger.Warn("runview: orphan reconcile still running at the teardown deadline — its status writes may land after shutdown")
+	}
 }
 
 // tryReattachByPID handles the .pid path of reconcileOrphans. Returns
@@ -442,6 +482,33 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 	}
 }
 
+// StopBackground ends every PERIODIC worker the service owns — the orphan
+// reconcile ticker, the pipeline scheduler, the alert manager's stall poll —
+// and leaves the in-flight runs strictly alone.
+//
+// It exists for the caller that REPLACES a service without draining it (the
+// studio's project hot-swap): the engines that already captured this service
+// keep writing to the store they started on, which is the point, while
+// nothing keeps scanning a store the server no longer serves. Every teardown
+// goes through it, so a periodic worker added here is reaped by all three
+// paths at once instead of by the two that remembered.
+//
+// Bounded by ctx: the reconcile half AWAITS the scan in flight (see
+// stopPeriodicReconcile), so a scan wedged in a store call degrades the
+// promise loudly rather than hanging the caller.
+func (s *Service) StopBackground(ctx context.Context) {
+	s.stopPeriodicReconcile(ctx)
+	// Queued pipelines stay persisted as queued docs and are recovered by the
+	// next service built over that store, so stopping the scheduler here never
+	// strands them.
+	s.stopPipelineScheduler()
+	// Started with context.Background() so it outlives per-run contexts —
+	// nothing else reaps it.
+	if s.alertManager != nil {
+		s.alertManager.Stop()
+	}
+}
+
 // Stop cancels every active run and waits for their goroutines to
 // finish, but does not flip persisted statuses or emit any
 // observability event. Use Stop in tests or for a quiet teardown
@@ -451,8 +518,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // publishes EventRunInterrupted and flips each in-flight run to
 // failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
-	s.stopPeriodicReconcile()
-	s.stopPipelineScheduler()
+	s.StopBackground(ctx)
 	s.manager.Stop(ctx)
 }
 
@@ -477,18 +543,7 @@ func (s *Service) Stop(ctx context.Context) {
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
-	s.stopPeriodicReconcile()
-	// Queued pipelines stay persisted as queued docs and are recovered on
-	// the next boot, so stopping the scheduler here never strands them.
-	s.stopPipelineScheduler()
-
-	// Stop the alert manager's stall-poll goroutine. It was started with
-	// context.Background() (so it outlives per-run contexts), so Drain is
-	// the only place that reaps it — without this it leaks across project
-	// hot-swaps that construct a fresh Service.
-	if s.alertManager != nil {
-		s.alertManager.Stop()
-	}
+	s.StopBackground(ctx)
 
 	handles := s.manager.Snapshot()
 
@@ -563,8 +618,32 @@ func (s *Service) markInterrupted(runID string) {
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
+	}
+}
+
+// emitOrphanReaped writes the orphan sweep's verdict on the run's
+// TIMELINE. The document alone leaves a consumer that triages by the
+// events — the run console, a headless outcome router — reading a run
+// that simply stopped mid-flight, with no code and no reason: the same
+// defect as a terminal status with an empty error. Best-effort: a missed
+// event must never keep an orphan flagged `running`.
+func (s *Service) emitOrphanReaped(ctx context.Context, runID string, status store.RunStatus) {
+	data := map[string]any{
+		"error":       ReasonProcessOrphaned,
+		"code":        string(store.FailureProcessOrphaned),
+		"interrupted": true,
+	}
+	if status == store.RunStatusFailedResumable {
+		data["resumable"] = true
+	}
+	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
+		Type:  store.EventRunFailed,
+		RunID: runID,
+		Data:  data,
+	}); err != nil {
+		s.logger.Warn("runview: reconcile %s: append run_failed: %v", runID, err)
 	}
 }
 
@@ -612,7 +691,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	// entry — either way the studio can offer the resume button.
 	newStatus := store.RunStatusFailedResumable
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.store.UpdateRunStatus(context.Background(), runID, newStatus, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(context.Background(), runID, newStatus, reason, store.FailureProcessOrphaned); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}

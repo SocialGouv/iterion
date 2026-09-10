@@ -44,7 +44,15 @@ Stdlib only, deliberately: no venv, no pip, no network install. The oracle must
 run in any sandbox, including one with no egress.
 """
 
+# `import hashlib` is the FIRST line of the harness body, and three files
+# locate that body by this exact line: sync-harness.py's BODY_START, the
+# byte-identity test's bodyStart, and sync-harness.bot's own extraction
+# guard. An import added ABOVE it falls outside every inlined copy, and the
+# materialised judge dies on a NameError at the first call that needs it
+# (measured). New imports go BELOW — alphabetical order loses to that.
 import hashlib
+import base64
+import binascii
 import http.cookiejar
 import importlib.util
 import json
@@ -52,6 +60,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -200,8 +209,14 @@ class Session:
         data = None
         headers = {"Accept": "*/*", "User-Agent": "iterion-golden-master/1"}
         if fields:
-            data = urllib.parse.urlencode(fields).encode()
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            # Before EITHER encoding: both flatten a non-scalar through repr.
+            check_form_fields(fields)
+            if any(is_file_part(v) for v in fields.values()):
+                data, ctype = encode_multipart(fields)
+                headers["Content-Type"] = ctype
+            else:
+                data = urllib.parse.urlencode(fields).encode()
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         opener = self.opener if follow else self.no_redirect_opener
         try:
@@ -229,6 +244,220 @@ class Session:
                 fields[token_field] = tok
         status, _, _ = self.fetch(spec.get("method", "POST"), path, fields=fields)
         return status
+
+
+# ─── Uploads: multipart, and a boundary that does not move ─────────────────
+#
+# A corpus that declares a file field had it flattened by urlencode, which
+# serialises a structured value through its repr: the application received a
+# form field whose value was the TEXT of a Python object, the request was
+# refused for the wrong reason, and the reference recorded that refusal as
+# the behaviour. An observation point that cannot express its own request
+# does not observe anything.
+#
+# The boundary is DERIVED, never random. A random boundary is the textbook
+# way to write a multipart body and the wrong one here: two replays of one
+# request would differ byte for byte, and anything the application echoes
+# back — a validation message quoting the raw part, a stored name — moves
+# with it. The usual repair is a canonicalisation rule that erases the
+# boundary from the capture, which buys stability by making the net blind to
+# a region of every upload response. A request that is byte-identical on
+# every replay needs no rule at all.
+
+FILE_PART_BOUNDARY = "iterion-golden-master-boundary"
+
+
+def is_file_part(value):
+    """A field declared as a FILE: an object naming the file it stands for.
+
+    `{"filename": ..., "text": ...}` or `{"filename": ..., "b64": ...}`, with
+    an optional `content_type`. A SCALAR is an ordinary form field, so a
+    corpus that declares no upload is encoded exactly as before; an object or
+    a list that fails this test is neither, and `check_form_fields` refuses it
+    rather than let it reach an encoding that would repr it.
+    """
+    return isinstance(value, dict) and isinstance(value.get("filename"), str)
+
+
+FILE_PART_KEYS = ("filename", "text", "b64", "content_type")
+
+
+def check_file_part(name, value):
+    """The INSIDE of a file part: the keys it declares, and the one of them
+    the payload guards do not cover.
+
+    A key the harness does not read is not a harmless annotation, it is a
+    declaration the corpus believes it made. `content-type` with a hyphen —
+    the way the HTTP header itself is spelled — is the one that bites: the
+    part goes out as `application/octet-stream` while the corpus reads as
+    though it had asked for `text/csv`, and the reference records the
+    application answering the type nobody chose.
+    """
+    extra = sorted(k for k in value if k not in FILE_PART_KEYS)
+    if extra:
+        raise SystemExit(
+            "file field %r declares %s, which the harness does not read — a "
+            "key it ignores is a declaration you believe you made. Did you "
+            "mean `content_type` (underscore, not the header's hyphen)? "
+            "Accepted: %s"
+            % (name, ", ".join(repr(k) for k in extra), ", ".join(FILE_PART_KEYS)))
+    ctype = value.get("content_type")
+    if ctype is not None and not isinstance(ctype, str):
+        raise SystemExit("file field %r: `content_type` must be a string, got "
+                         "%s — anything else reaches the wire as a malformed "
+                         "header" % (name, type(ctype).__name__))
+
+
+def check_form_fields(fields):
+    """Every field that is not a file part must be a PRESENT SCALAR — a form
+    encoding carries nothing else, and it must carry the same thing whichever
+    encoding the rest of the form selects.
+
+    An object or a list here is either a file part that misses its `filename`
+    (a typo away from working: `file_name`, `fileName`, a filename that is a
+    number) or a shape no form can carry. Both encodings answer such a value
+    the same way — they serialise it through its repr — and that is the exact
+    defect the file-part declaration exists to end, surviving one typo to its
+    left: the application receives the TEXT of a Python object, refuses the
+    request for the wrong reason, and the reference records THAT refusal as
+    the behaviour. Refused by name instead, so the corpus line gets fixed.
+    """
+    for name, value in fields.items():
+        if value is None:
+            # The two encodings disagree on null, so the SAME corpus line
+            # would leave differently depending on whether a sibling field
+            # happens to be a file. `""` is exact and identical in both, so
+            # refusing null costs no capability — only its ambiguous spelling.
+            raise SystemExit(
+                'form field %r is null, and the two encodings disagree on '
+                'what that means: urlencoded sends the text "None", '
+                'multipart sends nothing. The same line would then go out '
+                'differently depending on whether a SIBLING field is a file. '
+                'Declare "" for an empty field — exact, and identical in '
+                'both.' % name)
+        if isinstance(value, (dict, list)) and not is_file_part(value):
+            raise SystemExit(
+                'form field %r is a %s, not a scalar. A file part is '
+                '{"filename": <string>, "text" | "b64": ...} — check that '
+                '`filename` is present and is a string. Anything else is '
+                'sent as the TEXT of a Python object, and the reference then '
+                'records the application refusing THAT'
+                % (name, type(value).__name__))
+
+
+def file_part_bytes(value):
+    """The part's payload. `text` is UTF-8 (a corpus stays readable and
+    replayable by hand); `b64` carries what text cannot."""
+    if "b64" in value and "text" in value:
+        # Two payloads declared, one silently dropped: the reference would then
+        # record how the application answers a file NOBODY chose to send. Every
+        # other ambiguity here refuses; this one is the same kind.
+        raise SystemExit("file field %r declares both `text` and `b64` — "
+                         "declare exactly one, or the reference records the "
+                         "behaviour of the payload that happened to win"
+                         % (value.get("filename"),))
+    if "b64" in value:
+        b64 = value["b64"]
+        # Typed BEFORE decoding, as `text` is: `b64decode` answers a non-string
+        # with a raw TypeError, and a traceback names the harness where a
+        # refusal must name the corpus line that has to change.
+        if not isinstance(b64, str):
+            raise SystemExit("file field %r: `b64` must be a string, got %s"
+                             % (value.get("filename"), type(b64).__name__))
+        try:
+            return base64.b64decode(b64, validate=True)
+        except (ValueError, binascii.Error) as e:
+            raise SystemExit("file field %r: `b64` is not valid base64 (%s) — "
+                             "a payload the harness cannot decode would be "
+                             "sent as its own error text"
+                             % (value.get("filename"), e))
+    text = value.get("text")
+    if text is None:
+        raise SystemExit("file field %r declares neither `text` nor `b64` — "
+                         "an upload with no payload records the refusal of an "
+                         "empty file as if it were the behaviour"
+                         % (value.get("filename"),))
+    if not isinstance(text, str):
+        raise SystemExit("file field %r: `text` must be a string, got %s"
+                         % (value.get("filename"), type(text).__name__))
+    return text.encode("utf-8")
+
+
+def header_value(s):
+    """A name or filename as it may appear in a QUOTED-STRING parameter.
+
+    RFC 7578 §5.1 — the rule browsers actually emit: %-escape the three bytes
+    that can end a header parameter early or open a line the corpus never
+    asked for. A bare `"` otherwise truncates the parameter, and the
+    application is then observed answering about a filename the corpus did
+    NOT declare; a CRLF is worse still, opening a second part out of the
+    first one's header. The declared name must reach the application AS
+    DECLARED, or the reference records the behaviour of another request.
+    """
+    return str(s).replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def header_line_value(s):
+    """A whole header VALUE, escaped for line injection only.
+
+    The quote escape above belongs to quoted-string PARAMETERS. A media type
+    is not one: `"` is legitimate syntax in it (`charset="utf-8"`, and every
+    RFC-quoted parameter), so escaping it emits a charset nobody declared and
+    the reference records the application's answer to a request the corpus
+    did not make — silently, where every other malformed declaration on this
+    path stops the run by name. CR and LF stay escaped: they open a header,
+    or a whole part, out of this one.
+    """
+    return str(s).replace("\r", "%0D").replace("\n", "%0A")
+
+
+def multipart_boundary(contents):
+    """A boundary that no part contains — derived from the parts, not drawn
+    at random, so the same request encodes to the same bytes forever.
+
+    RFC 7578 requires the delimiter to appear in no part, and a part is its
+    HEADER as much as its payload — so `contents` carries both. Checking the
+    payloads alone would leave the guard blind to the half a corpus writes by
+    hand: a filename is where the delimiter is most likely to be typed. The
+    base name is a constant (readable in a capture, and the same across every
+    net); when a content happens to contain it, a counter is appended until
+    it does not. Deterministic in both branches: the collision is a property
+    of the content, and the same content yields the same boundary.
+    """
+    boundary = FILE_PART_BOUNDARY
+    n = 0
+    while any(boundary.encode("utf-8") in c for c in contents):
+        n += 1
+        boundary = "%s-%d" % (FILE_PART_BOUNDARY, n)
+    return boundary
+
+
+def encode_multipart(fields):
+    """(body, Content-Type) for a form carrying at least one file part.
+
+    Fields are emitted in the order the corpus declares them — dicts preserve
+    insertion order, and an ordering that follows the declaration is one the
+    reader of a reference can predict.
+    """
+    payloads, heads = [], []
+    for name, value in fields.items():
+        head = 'Content-Disposition: form-data; name="%s"' % header_value(name)
+        if is_file_part(value):
+            check_file_part(name, value)
+            payloads.append(file_part_bytes(value))
+            head += '; filename="%s"' % header_value(value["filename"])
+            head += "\r\nContent-Type: %s" % header_line_value(
+                value.get("content_type") or "application/octet-stream")
+        else:
+            payloads.append(("" if value is None else str(value)).encode("utf-8"))
+        heads.append(head.encode("utf-8"))
+    # Headers are built BEFORE the boundary, and enter its derivation: they
+    # are part content too, and their escaping is what makes them so.
+    boundary = multipart_boundary(payloads + heads)
+    parts = [b"--" + boundary.encode("utf-8") + b"\r\n" + head + b"\r\n\r\n"
+             + payload + b"\r\n" for head, payload in zip(heads, payloads)]
+    parts.append(("--%s--\r\n" % boundary).encode("utf-8"))
+    return b"".join(parts), 'multipart/form-data; boundary=%s' % boundary
 
 
 def extract_input_value(body, name):
@@ -1040,6 +1269,707 @@ def pending_rebaselines(gm_dir):
             for r in requests if not closed(r["id"])]
 
 
+# ─── Net extension — additions applied by the net's own subbot ──────────────
+#
+# The additive counterpart of the re-baseline ledger, with the opposite
+# authority: a re-baseline MOVES a reference and only a human act closes it;
+# an extension ADDS an observation point and the net's own subbot may act it,
+# because an addition is checkable — it cannot mask an existing divergence,
+# it can only add a constraint. The line that keeps that true is drawn here,
+# mechanically: a delete or a rewrite wearing an addition's name is refused
+# (removing the inconvenient reference and re-adding a "fresh" one that
+# matches the broken behaviour IS the masking vector), and so is an addition
+# whose observation tuple collides with an existing entry (two references for
+# one observation resolve later by a "cleanup" that picks the masking
+# direction).
+
+def _extension_ledger_text(gm_dir):
+    path = os.path.join(gm_dir, "EXTENSIONS.md")
+    if not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _extension_blocks(text, kind):
+    """Same block idiom as the re-baseline ledger: HTML comment, one JSON
+    object. An unreadable block is an escalation, never a guess."""
+    out = []
+    for body in re.findall(r"<!-- iterion:extension-%s\n(.*?)\n-->" % kind,
+                           text, re.S):
+        try:
+            obj = json.loads(body)
+        except ValueError:
+            obj = None
+        if not isinstance(obj, dict) or \
+                not (isinstance(obj.get("id"), str) and obj.get("id")):
+            obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+        elif obj["id"].splitlines() != [obj["id"]] or not obj["id"].strip() \
+                or any(ord(c) < 0x20 or ord(c) == 0x7f for c in obj["id"]):
+            # An id reaches the gate through a LINE-ORIENTED transport
+            # (`GM_ACTED_IDS`, one id per line). One carrying a line separator
+            # arrives as two fragments and seeds the covered set with an id no
+            # subbot ever acted; one made only of whitespace cannot be told
+            # from a blank line. Refused at this single parse point rather
+            # than repaired downstream — a repair is precisely what collapses
+            # two distinct ids into one, and the collapse re-opens the
+            # smuggling this file exists to close. An INTERIOR space stays
+            # legal: it round-trips whole, and a lot-authored id may carry one.
+            #
+            # The test is stated TWICE on purpose, and neither half covers the
+            # other. `splitlines()` is the transport's own reader, so asking it
+            # to round-trip catches every separator it honours — including
+            # U+0085, U+2028 and U+2029, which are NOT control characters and
+            # which a `ord(c) < 0x20` rule lets straight through. The control
+            # rule in turn refuses TAB, NUL and DEL, which round-trip fine here
+            # but have no business in a lot-authored identifier that a human
+            # reads in a ledger and a machine compares byte for byte.
+            obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+        else:
+            # The list-shaped fields are iterated by every judgement below. A
+            # scalar here raised TypeError inside the verdict, and a verdict
+            # that cannot answer was read as "nothing to refuse" by the lot
+            # gate — the ledger disabling its own guard (adversarial finding,
+            # executed). Normalising at the single parse point makes such a
+            # block refusable instead of fatal.
+            for field in ("recorded_paths", "paths", "corpus_entries",
+                          "expected_paths", "entries"):
+                if field in obj and not isinstance(obj[field], list):
+                    obj[field] = []
+            # Two spellings of a request are read, at this single parse
+            # point, so every judgement below sees one shape. The canonical
+            # one (`paths`, `corpus_entries` with full entries) is what the
+            # doctrine teaches; the other (`expected_paths`, `entries` as
+            # ids) is the re-baseline ledger's, and a ledger header written
+            # by a worker in that idiom taught it to every request after it
+            # — measured: every conforming request of a programme was judged
+            # "smuggled", because the judge read only the first spelling.
+            if kind == "request":
+                if "paths" not in obj and isinstance(obj.get("expected_paths"), list):
+                    obj["paths"] = [p for p in obj["expected_paths"] if isinstance(p, str)]
+                if "corpus_entries" not in obj and isinstance(obj.get("entries"), list):
+                    obj["corpus_entries"] = [
+                        e if isinstance(e, dict) else {"id": e}
+                        for e in obj["entries"] if isinstance(e, (dict, str))]
+        out.append(obj)
+    return out
+
+
+def _records_extension_surface(paths):
+    """An act closes a request only by recording the SURFACE an extension can
+    reach: a reference, or the corpus. An act naming only the ledger records
+    the paperwork of its own filing — it closed the conjunction term while the
+    reference it declared did not exist (adversarial finding, executed)."""
+    if not isinstance(paths, list):
+        return False
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        rel = p.split("/", 1)[1] if p.startswith(".golden-master/") else p
+        if rel.startswith("refs/") or rel == "corpus.json":
+            return True
+    return False
+
+
+def pending_extensions(gm_dir, text=None):
+    """Extension requests no act has answered — a conjunction term, like
+    pending re-baselines, for the mirrored reason: a pending request names an
+    observation the net was ASKED to gain and does not have, so a green built
+    while it waits reports coverage its own intent knows is missing. There is
+    no `replaces` chain here: an extension that no longer applies is acted or
+    withdrawn by its requester, not superseded."""
+    if text is None:
+        text = _extension_ledger_text(gm_dir)
+    if not text:
+        return []
+    requests = _extension_blocks(text, "request")
+    acts = _extension_blocks(text, "act")
+    if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
+        return [{"id": "UNPARSEABLE",
+                 "why": "a ledger block does not parse as JSON, or carries an "
+                        "id that cannot survive the one-id-per-line "
+                        "certificate — escalate, do not guess"}]
+    # Only a WELL-FORMED act closes a request: an act with no recorded path
+    # acted nothing, and letting it close the term would let the constrained
+    # party silence the conjunction with four lines of JSON — the
+    # additions-only verdict never runs at gate time, so this shape check is
+    # the whole defence here (adversarial finding, executed).
+    acted = {b["id"] for b in acts
+             if _records_extension_surface(b.get("recorded_paths"))}
+    return [{"id": r["id"], "lot": r.get("lot", "?")}
+            for r in requests if r["id"] not in acted]
+
+
+## The fields that DECIDE what an entry observes. An allowlist, not
+## "everything but id": a stripped-everything key is defeated by one cosmetic
+## key (`note`, `comment`) that makes two identical observations compare
+## different (adversarial finding, executed). Fields outside this list do not
+## discriminate; if the harness later grows a discriminating field, the
+## failure mode is a FALSE collision — refused, escalated to the requester —
+## never a masked duplicate.
+OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
+                      "steps", "readback", "no_redirect", "csrf_field",
+                      "static_prefix", "template_prefix", "probes")
+
+
+def _entry_observation_key(entry):
+    """What an entry OBSERVES: two entries equal under this key are two
+    references for one observation — a collision, not an addition. Absent
+    and empty collapse together — a twin carrying `"query": ""` must not
+    split the key on mere PRESENCE (consolidation finding, executed)."""
+    return json.dumps({k: (entry.get(k) or None) for k in OBSERVATION_FIELDS},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def extension_verdict(ws, gm_rel, base, acted_commits=None, acted_blobs=None,
+                      acted_ids=None):
+    """Judge every ACTED extension against `base`, in git — never against the
+    acting party's word.
+
+    `acted_commits` (None, or a set of 40-hex shas) is what the NET's own
+    subbot reports having committed in this segment — read by main() from
+    GM_ACTED_COMMITS, which the parent bot defines even when empty. None
+    means the caller predates provenance (today's rule only: request and
+    act in one commit refuse); a set means STRICT: an act introduced in
+    base..HEAD by a commit outside it was written by the constrained party,
+    whatever author it carries, and is refused — unless every path it
+    records carries at HEAD the exact blob the subbot certified
+    (`acted_blobs`, path → blob id): a history rewritten after the subbot
+    ran keeps its certified content and loses its shas. Measured on a live
+    campaign: a lot filed a request in one commit and acted it in the next,
+    the same-commit rule saw nothing, and the lot's own file became a
+    reference of the net that judges it.
+
+    `acted_blobs` also bounds the exemption, on the path SET as much as on
+    the content: a certified path whose blob at HEAD moved since the act was
+    rewritten by someone after the subbot, and a recorded path the subbot
+    certified no blob for was never acted at all — the act's own block is
+    above the run's base, so append-only leaves it mutable and first-wins
+    provenance keeps naming the subbot's commit however it is edited.
+    `acted_ids` bounds WHICH act the certificate covers: the ones the subbot
+    reports having acted, and no other. Without it the content rule exempts
+    any act naming a certified path, which a lot reaches by filing two
+    requests, getting the second REFUSED, and appending its own act for it
+    recording the first one's path (review finding, executed).
+
+    Per acted request, every recorded path must be a pure addition:
+      - under refs/: absent at base, present at HEAD. A path that existed at
+        base is a rewrite wearing an addition's name; one absent at HEAD is a
+        delete — both are the masking vector and both refuse. A rename is a
+        delete plus a fresh file, judged separately, and the delete side
+        loses.
+      - corpus.json: every base entry survives equal, non-entry keys
+        untouched, every added entry is claimed by an acted request's
+        `corpus_entries`, and no addition collides — with the base corpus or
+        with a sibling addition — on its observation tuple.
+    The ledger itself must be append-only (base text is a prefix of HEAD
+    text): history in the ledger is the audit trail, and an edited trail
+    audits nothing.
+    """
+    def git(*args):
+        p = subprocess.run(["git", "-C", ws] + list(args),
+                           capture_output=True, text=True, timeout=120)
+        return p.returncode, p.stdout, p.stderr
+
+    def at(ref, path):
+        code, out, _ = git("show", "%s:%s" % (ref, path))
+        return out if code == 0 else None
+
+    def blob_mode(ref, path):
+        code, out, _ = git("ls-tree", ref, "--", path)
+        return out.split()[0] if code == 0 and out.strip() else ""
+
+    def blob_id(ref, path):
+        code, out, _ = git("ls-tree", ref, "--", path)
+        parts = out.split() if code == 0 else []
+        return parts[2] if len(parts) >= 3 else ""
+
+    ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
+    corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
+    refs_prefix = gm_rel.rstrip("/") + "/refs/"
+
+    def introducing_commits():
+        """First commit in which each ledger block id appears, oldest first.
+
+        Separation of powers is a claim about WHO wrote what, and the
+        ledger's own history is the only record of it neither party writes
+        twice. A request and its act sharing an introducing commit means the
+        constrained party filed and answered in one gesture, so the net's
+        subbot never ran — production cannot produce that shape, because the
+        parent commits its lot before the subbot starts (adversarial finding,
+        executed)."""
+        code, out, _ = git("log", "--format=%H%x00%ae", "--reverse", "--", ledger_rel)
+        if code != 0:
+            return None
+        first = {}
+        for line in out.splitlines():
+            sha, _, email = line.partition("\0")
+            sha = sha.strip()
+            if not sha:
+                continue
+            text = at(sha, ledger_rel)
+            if text is None:
+                continue
+            for kind in ("request", "act"):
+                for b in _extension_blocks(text, kind):
+                    bid = b.get("id")
+                    if isinstance(bid, str) and bid:
+                        first.setdefault((kind, bid), sha)
+                        first.setdefault(("author", kind, bid), email.strip())
+        return first
+
+    # An unresolvable base and an honest "absent at base" both read as None
+    # below, so a bad sha would certify everything as an addition — a guard
+    # whose failure mode is a full pass (adversarial finding, executed).
+    # Refuse it the way an empty base is refused.
+    code, _, err = git("rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if code != 0:
+        return {"error": "GM_BASE %r does not resolve to a commit (%s) — "
+                         "judging additions against nothing would pass by "
+                         "construction" % (base, err.strip() or "unknown ref")}
+
+    # `provenance` is the verdict SAYING which rule it applied. A net whose
+    # harness predates this feature answers `extend-verify` and passes a
+    # caller's capability probe all the same, while judging by the
+    # same-commit rule alone — the bypassable one — and nothing in its answer
+    # said so: the gate reverted to the hole in silence (review finding,
+    # executed). A caller that hands provenance asserts this echo.
+    verdict = {"acted": [], "ok_paths": [], "ledger_append_only": True,
+               "requests_added": 0, "problems": [],
+               "provenance": "strict" if acted_commits is not None else "legacy"}
+
+    head_txt = at("HEAD", ledger_rel) or ""
+    base_txt = at(base, ledger_rel) or ""
+    if base_txt and not head_txt.startswith(base_txt):
+        verdict["ledger_append_only"] = False
+        verdict["problems"].append(
+            "EXTENSIONS.md was REWRITTEN, not appended — history in the "
+            "ledger is the audit trail, and an edited trail audits nothing")
+
+    all_blocks = (_extension_blocks(head_txt, "request") +
+                  _extension_blocks(head_txt, "act"))
+    # An unreadable block is not merely REPORTED: it makes this judge unable to
+    # read the ledger it certifies from, so nothing that ledger holds is
+    # certified while the block stands — the same shape as
+    # `ledger_append_only`, for the same reason. Reported only, the readable
+    # blocks beside it went on exempting their paths, so a ledger that
+    # escalates handed out exemptions all the same, and a caller reading
+    # `ok_paths` without also reading `problems` never saw the escalation. An
+    # ESCALATION, never a forgery: the requester fixes the block, no history
+    # was rewritten.
+    ledger_readable = not any(b.get("id") == "UNPARSEABLE" for b in all_blocks)
+    if not ledger_readable:
+        verdict["problems"].append(
+            "a ledger block does not parse as JSON, or carries an id that "
+            "cannot survive the one-id-per-line certificate — escalate, do "
+            "not guess")
+    requests = {b["id"]: b for b in _extension_blocks(head_txt, "request")
+                if b.get("id") != "UNPARSEABLE"}
+    acts = [b for b in _extension_blocks(head_txt, "act")
+            if b.get("id") != "UNPARSEABLE"]
+    base_req_ids = {b.get("id") for b in _extension_blocks(base_txt, "request")}
+    verdict["requests_added"] = len(set(requests) - base_req_ids)
+
+    # The corpus is judged ONCE, globally: additions-only, every base entry
+    # intact, every addition claimed by an acted request, no collision.
+    corpus_ok, corpus_problems, added_ids = True, [], set()
+    head_corpus_txt = at("HEAD", corpus_rel)
+    base_corpus_txt = at(base, corpus_rel)
+    corpus_changed = head_corpus_txt != base_corpus_txt
+    if corpus_changed:
+        head_c = base_c = None
+        try:
+            head_c = json.loads(head_corpus_txt or "{}")
+            base_c = json.loads(base_corpus_txt or "{}")
+        except ValueError as e:
+            corpus_problems.append("corpus.json does not parse: %s" % e)
+        if head_c is not None and base_c is not None and \
+                not isinstance(head_c, dict):
+            corpus_problems.append("corpus.json is not an object")
+            head_c = base_c = None
+        if head_c is not None and base_c is not None and (
+                not isinstance(head_c.get("entries", []), list)
+                or not all(isinstance(e, dict)
+                           for e in head_c.get("entries", []))):
+            corpus_problems.append(
+                "corpus.json `entries` is not a list of objects — refused, "
+                "not crashed")
+            head_c = base_c = None
+        if head_c is not None and base_c is not None:
+            # `duplicate_groups` is the ONE key outside `entries` an extension
+            # may write, and the reason is not convenience: every other key here
+            # is frozen because it is TRUSTED, while this one is VERIFIED. A
+            # group declaration is discharged at the gate by a mutant that must
+            # really move part of the group and leave the rest still, so a lot
+            # gains nothing by writing one — a bogus separator refuses, and
+            # deleting a declaration turns its group back into an undeclared
+            # duplicate, which also refuses.
+            #
+            # Without this the gate named a remedy another judge forbade: the
+            # lot that ADDS an entry is the very lot that can create a new
+            # byte-identical pair, and it would have been told to declare a
+            # separator in a key it is refused permission to touch.
+            FREE_KEYS = {"entries", "duplicate_groups"}
+            if {k: v for k, v in head_c.items() if k not in FREE_KEYS} != \
+                    {k: v for k, v in base_c.items() if k not in FREE_KEYS}:
+                corpus_problems.append(
+                    "corpus.json keys outside `entries` changed — an "
+                    "extension adds entries and touches nothing else")
+            # Structure is judged HERE, truth at the gate. A malformed
+            # declaration would otherwise be dropped in silence by
+            # duplicate_group_decls and read as "no declaration at all".
+            #
+            # Through duplicate_group_raw / duplicate_group_decl, which is the
+            # SAME predicate the gate reads. Hand-written here, the container
+            # loop was `for g in (head_c.get("duplicate_groups") or [])` and
+            # `{"duplicate_groups": 5}` raised a TypeError — this judge runs
+            # outside the gate's try/finally, so no mutant is stranded, but the
+            # mode prints a stack trace where the campaign expects its verdict.
+            # The file's own doctrine, one screen up: refused, not crashed.
+            if head_c.get("duplicate_groups") is not None \
+                    and not isinstance(head_c.get("duplicate_groups"), list):
+                corpus_problems.append(
+                    "`duplicate_groups` is %s, not a list — every declaration in "
+                    "it is ignored whole and reads as undeclared"
+                    % type(head_c.get("duplicate_groups")).__name__)
+            for g in duplicate_group_raw(head_c):
+                if duplicate_group_decl(g) is None:
+                    corpus_problems.append(
+                        "a `duplicate_groups` entry is malformed (%r) — it needs "
+                        "at least two `ids` and a non-empty `separated_by`, or it "
+                        "is dropped in silence and reads as no declaration at all"
+                        % (g,))
+            # An id names ONE observation. Duplicated ids collapse in every
+            # by-id index (this one, the capture map, the refs map), so the
+            # equality check would read the surviving twin while the capture
+            # hands the reference to the other — an existing observation
+            # hijacked through the channel (adversarial finding, executed).
+            head_ids = [e.get("id") for e in head_c.get("entries", [])]
+            dupes = sorted({i for i in head_ids if head_ids.count(i) > 1})
+            if dupes:
+                corpus_problems.append(
+                    "duplicate entry id(s) %s — an id is one observation, "
+                    "and a twin id hands the capture to whichever entry "
+                    "wins an ordering nobody audits" % ", ".join(map(repr, dupes)))
+            base_by_id = {e.get("id"): e for e in base_c.get("entries", [])
+                          if isinstance(e, dict)}
+            head_by_id = {e.get("id"): e for e in head_c.get("entries", [])}
+            for bid, be in base_by_id.items():
+                if bid not in head_by_id:
+                    corpus_problems.append(
+                        "entry %r was REMOVED — a delete is the masking "
+                        "vector, not an extension" % bid)
+                elif head_by_id[bid] != be:
+                    corpus_problems.append(
+                        "entry %r was MODIFIED — a rewrite is the masking "
+                        "vector, not an extension" % bid)
+            added_ids = set(head_by_id) - set(base_by_id)
+            # An entry id DERIVES a reference path (refs/<id>.txt) in the
+            # record and gate paths, unvalidated there — so an added id
+            # carrying a separator is a write to an EXISTING reference
+            # wearing an addition's name, the corpus-surface twin of the
+            # refs/ symlink (consolidation finding, executed with
+            # id "../refs/1").
+            for aid in sorted(added_ids):
+                if not isinstance(aid, str) or not aid or aid in (".", "..") \
+                        or any(c in aid for c in "/\\") \
+                        or aid != os.path.basename(aid):
+                    corpus_problems.append(
+                        "added entry id %r derives a reference path outside "
+                        "refs/ — a write to an existing reference wearing an "
+                        "addition's name" % (aid,))
+            # ADDITIONS-ONLY APPLIES INSIDE THE FREED KEY TOO.
+            #
+            # `duplicate_groups` was freed from the freeze because the lot that
+            # ADDS an entry is the one that can create a new byte-identical
+            # class, and telling it to declare a separator in a key another
+            # judge refuses it is a remedy nobody can apply. That argument frees
+            # ADDING a declaration — and adding is the half that is VERIFIED: a
+            # bogus separator is refused at the gate by measurement.
+            #
+            # Rewriting or deleting one is verified by nothing. Swapping a
+            # still-valid separator for another still-valid separator silently
+            # reassigns a class this lot never touched, and a deletion only
+            # re-opens the undeclared-duplicate refusal for whoever comes next.
+            # Exempting the whole key turned "an extension adds entries and
+            # touches nothing else" into a sentence with an exception nobody
+            # bounded.
+            base_decls = duplicate_group_decls(base_c)
+            head_decls = duplicate_group_decls(head_c)
+            added_str = {str(a) for a in added_ids}
+            for key, seps in sorted(base_decls.items()):
+                if key in head_decls:
+                    if set(head_decls[key]) != set(seps):
+                        corpus_problems.append(
+                            "`duplicate_groups` for class %s was RE-ADJUDICATED "
+                            "(%s -> %s) — an extension may declare a class it "
+                            "creates, never re-decide one it did not"
+                            % (json.dumps(list(key)), json.dumps(list(seps)),
+                               json.dumps(list(head_decls[key]))))
+                    continue
+                # A pre-existing class may only disappear into a SUPERSET that
+                # an added entry joined: a new entry landing on an existing
+                # byte-identical class re-keys it, and may need more separators
+                # to keep the members pairwise distinguishable. That is the
+                # legitimate case the exemption exists for; everything else is
+                # a withdrawal.
+                if not any(set(k) > set(key) and (set(k) - set(key)) & added_str
+                           for k in head_decls):
+                    corpus_problems.append(
+                        "`duplicate_groups` for class %s was WITHDRAWN — a "
+                        "deletion re-opens the undeclared-duplicate refusal for "
+                        "whoever comes next, and it is not this lot's "
+                        "adjudication to withdraw" % json.dumps(list(key)))
+            claimed = set()
+            for act in acts:
+                req = requests.get(act.get("id"))
+                for e in (req or {}).get("corpus_entries") or []:
+                    if isinstance(e, dict) and e.get("id"):
+                        claimed.add(e["id"])
+            unclaimed = added_ids - claimed
+            if unclaimed:
+                corpus_problems.append(
+                    "%d added entr%s no acted request claims: %s — an "
+                    "addition smuggled beside an acted one is still smuggled"
+                    % (len(unclaimed), "y" if len(unclaimed) == 1 else "ies",
+                       ", ".join(sorted(unclaimed))))
+            base_keys = {_entry_observation_key(e)
+                         for e in base_by_id.values()}
+            seen_new = {}
+            for aid in sorted(added_ids):
+                key = _entry_observation_key(head_by_id[aid])
+                if key in base_keys or key in seen_new:
+                    other = seen_new.get(key, "an existing entry")
+                    corpus_problems.append(
+                        "added entry %r observes the same tuple as %s — two "
+                        "references for one observation resolve later by a "
+                        "cleanup that picks the masking direction"
+                        % (aid, other))
+                seen_new[key] = "added entry %r" % aid
+        corpus_ok = not corpus_problems
+
+    # An act already recorded in the ledger AT BASE was judged by the run
+    # that introduced it, and its additions are that base's references now:
+    # judging it again against a base that contains them reads every one as
+    # "existed at base — a rewrite wearing an addition's name" and refuses a
+    # net that did nothing wrong. Measured on a live campaign: an extension
+    # certified one day blocked every lot launched from the next day's base,
+    # and the repair was a whole re-sealing rite — for a verdict that should
+    # have said "already judged". Only acts the segment base..HEAD introduces
+    # are judged here; the rest are reported acted-at-base and left alone.
+    base_act_ids = {b.get("id") for b in _extension_blocks(base_txt, "act")
+                    if b.get("id") != "UNPARSEABLE"}
+    intro = introducing_commits()
+    # An id is acted ONCE. `introducing_commits` keys first-wins, so a SECOND
+    # act block carrying an id the subbot already acted resolves its
+    # provenance on the subbot's commit — the whole provenance branch is
+    # skipped, no certified blob exists for its paths so the rewrite check
+    # skips too, and the lot's own commit writes a reference into the net that
+    # judges it, exempted (review finding, executed: both rows came back ok
+    # and the second act's path landed in ok_paths). The ledger's ids are the
+    # audit trail's keys; a duplicate key is a refusal, like the corpus's.
+    seen_act_ids = set()
+    for act in acts:
+        row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
+        if act.get("id") in seen_act_ids:
+            # REFUSED, not forged. The duplicate block was appended during this
+            # segment, so it sits ABOVE the run's base — and ledger_append_only
+            # only pins the text below it. Removing the extra block is a legal
+            # edit, which makes this a shape a repair pass can fix: the row
+            # stays not-ok, its paths stay out of ok_paths, refs_untouched goes
+            # false and the lot does not converge. `forged` is reserved for
+            # what NO pass can undo (see the two sites below).
+            row["problems"].append(
+                "a SECOND act block for %r — an id is acted once. Its "
+                "provenance would resolve on the FIRST act's commit, so any "
+                "later block rides the subbot's certificate: remove it, and "
+                "file a new request if something more must be acted"
+                % act.get("id"))
+            verdict["acted"].append(row)
+            continue
+        seen_act_ids.add(act.get("id"))
+        if act.get("id") in base_act_ids:
+            row["ok"] = True
+            row["acted_at_base"] = True
+            verdict["acted"].append(row)
+            continue
+        req = requests.get(act.get("id"))
+        if req is None:
+            row["problems"].append("an act without a request acts nothing")
+        elif intro is None:
+            row["problems"].append(
+                "cannot read the ledger's history — provenance unproven, and "
+                "an unprovable act is refused, not assumed")
+        elif intro.get(("act", act.get("id"))) is not None \
+                and intro.get(("act", act.get("id"))) == intro.get(("request", act.get("id"))):
+            row["problems"].append(
+                "the requester acted its own request: %s introduced both the "
+                "request and the act, so the net's subbot never judged it — "
+                "filing and answering are different powers"
+                % intro[("act", act.get("id"))][:12])
+            row["forged"] = True
+        paths = [p for p in (act.get("recorded_paths") or [])
+                 if isinstance(p, str) and p]
+        row["paths"] = paths
+        act_sha = (intro or {}).get(("act", act.get("id")))
+        if act_sha:
+            row["introduced_by"] = act_sha[:12]
+            row["author"] = (intro or {}).get(("author", "act", act.get("id"))) or ""
+        # Provenance, when the parent states what the net's subbot committed:
+        # an act introduced by any other commit was written by the party the
+        # oracle constrains — whatever author it carries, an author is prose.
+        # The one way back in is the CONTENT: every recorded path carrying at
+        # HEAD the exact blob the subbot certified (a history rewritten after
+        # the subbot ran).
+        if acted_commits is not None and req is not None and act_sha \
+                and act_sha not in acted_commits:
+            # The way back in is CONTENT, so there must BE content, it must
+            # be the content of an act the subbot ACTUALLY acted, and the
+            # comparison must be over paths whose blob is expected to stand
+            # still. Each clause was a hole: an act recording only the ledger
+            # left the generator empty and `all([])` true; an act naming a
+            # path the subbot certified for ANOTHER request rode that
+            # request's certificate (the lot writes its own request, so the
+            # paths it declares are its own); corpus.json legitimately moves
+            # when a later act adds entries, so comparing its blob would
+            # refuse a rewritten history for the one file expected to change
+            # (review findings, executed).
+            surface = [p for p in paths if p not in (ledger_rel, corpus_rel)]
+            blobs_match = bool(surface) and acted_blobs is not None \
+                and act.get("id") in (acted_ids or set()) and all(
+                    acted_blobs.get(p) and blob_id("HEAD", p) == acted_blobs.get(p)
+                    for p in surface)
+            if not blobs_match:
+                row["forged"] = True
+                row["problems"].append(
+                    "the act was introduced by %s (author %s), which is not one "
+                    "of the net subbot's commits%s — an act the constrained party "
+                    "wrote is a refusal, not an extension. If the history was "
+                    "rewritten after the subbot ran, relaunch on a fresh base; "
+                    "otherwise remove the act block and file the request only."
+                    % (act_sha[:12], row.get("author") or "?",
+                       (" (%s)" % ", ".join(sorted(c[:12] for c in acted_commits)))
+                       if acted_commits else " (none reported)"))
+        if req is not None and not paths:
+            row["problems"].append(
+                "the act records no path — an extension that touched "
+                "nothing extended nothing")
+        for p in paths:
+            if p == ledger_rel:
+                continue
+            if p == corpus_rel:
+                if not corpus_changed:
+                    row["problems"].append(
+                        "corpus.json is recorded but did not change")
+                elif not corpus_ok:
+                    row["problems"].extend(corpus_problems)
+            elif p.startswith(refs_prefix):
+                if at(base, p) is not None:
+                    row["problems"].append(
+                        "%s existed at base — a rewrite wearing an "
+                        "addition's name" % p)
+                elif at("HEAD", p) is None:
+                    row["problems"].append(
+                        "%s is recorded but absent at HEAD — a recorded "
+                        "delete, and a delete is the masking vector" % p)
+                elif blob_mode("HEAD", p) not in ("100644", "100755"):
+                    # A symlink's content is its target string, so it passes
+                    # every text check while the next record pass writes
+                    # THROUGH it onto an existing reference — an addition
+                    # that masks (adversarial finding, executed).
+                    row["problems"].append(
+                        "%s is not a regular file (mode %s) — a link is a "
+                        "write to somewhere else wearing an addition's name"
+                        % (p, blob_mode("HEAD", p) or "?"))
+                elif req is not None and p not in (req.get("paths") or []) \
+                        and p not in {refs_prefix + e["id"] + ".txt"
+                                      for e in (req.get("corpus_entries") or [])
+                                      if isinstance(e, dict)
+                                      and isinstance(e.get("id"), str)
+                                      and e["id"] == os.path.basename(e["id"])}:
+                    # Added refs are claimed against the request — explicitly
+                    # in `paths` (add-file), or implicitly as the reference an
+                    # add-entry's claimed entry DERIVES (the gate demands
+                    # refs/<id>.txt for every entry, so a claimed entry claims
+                    # its reference; ids carrying separators derive nothing —
+                    # they are refused above). Anything else is smuggling.
+                    row["problems"].append(
+                        "%s is neither declared in the request's `paths` nor "
+                        "derived from a claimed corpus entry — acting more "
+                        "than was asked is smuggling" % p)
+            else:
+                row["problems"].append(
+                    "%s is outside the extension surface (refs/ and "
+                    "corpus.json) — the canon, the mutants, the harness and "
+                    "the configuration are the judge's territory" % p)
+        if req is not None and not _records_extension_surface(paths):
+            # The ledger is the paperwork of the filing, not the extension:
+            # an act recording only it certified paths the net never gained
+            # (adversarial finding, executed).
+            row["problems"].append(
+                "the act records no path on the extension surface (refs/ or "
+                "corpus.json) — filing paperwork is not an extension")
+        if acted_blobs is not None and req is not None:
+            # The certificate binds the act's recorded path SET, not only the
+            # content of the paths it happens to name. Both halves are the same
+            # masking vector, reached through the same door:
+            #   - a certified path whose blob moved was rewritten after the
+            #     act, by the lot, in its own later commit;
+            #   - a recorded path with NO certificate was never acted at all.
+            #     `introducing_commits` resolves an act FIRST-WINS on
+            #     (kind, id), so it keeps naming the subbot's commit however
+            #     the block is edited afterwards, and append-only only pins the
+            #     text below the RUN's base — the subbot's own block sits above
+            #     it, in the mutable region. Widening that block with the lot's
+            #     own path made an uncertified file a reference of the net that
+            #     judges it. The strict provenance arm already demands a
+            #     certificate for every surface path; this is that same demand
+            #     on the arm standing in for it.
+            for p in paths:
+                if p == ledger_rel or p == corpus_rel:
+                    continue
+                certified = acted_blobs.get(p)
+                if not certified:
+                    # REFUSED, not forged: the act block was appended in this
+                    # segment, so narrowing it back to the paths the subbot
+                    # certified is a legal append-only edit.
+                    row["problems"].append(
+                        "%s is recorded by the act but the subbot certified no "
+                        "blob for it — a path appended to the record after the "
+                        "act is not part of the act" % p)
+                elif blob_id("HEAD", p) != certified:
+                    # REFUSED, not forged: the repair is one commit — restore
+                    # the file to the blob the subbot certified. The trigger is
+                    # accidental and realistic (a repo-wide sweep by the lot's
+                    # own agent touching a reference after extend ran), and
+                    # ending the run there costs the whole campaign for
+                    # something the next pass undoes.
+                    row["problems"].append(
+                        "%s was rewritten after the act: HEAD carries blob %s, "
+                        "the subbot certified %s — the certificate covers the "
+                        "content it certified, not the path" % (p, (blob_id("HEAD", p) or "?")[:12], certified[:12]))
+        if not ledger_readable:
+            row["problems"].append(
+                "the ledger carries a block this judge cannot read — nothing "
+                "it holds is certified until that block is fixed")
+        row["ok"] = (req is not None and not row["problems"]
+                     and verdict["ledger_append_only"])
+        if row["ok"]:
+            verdict["ok_paths"].extend(row["paths"])
+        verdict["acted"].append(row)
+
+    # Corpus damage must surface even when NO act recorded corpus.json —
+    # otherwise a hand-run of this mode shows every row ok and an empty
+    # problems list while the corpus sits amputated, and the reader walks
+    # away reassured by the very command meant to warn them (review note).
+    if corpus_changed and corpus_problems and \
+            not any(corpus_rel in (a.get("recorded_paths") or []) for a in acts):
+        verdict["problems"].extend(corpus_problems)
+
+    verdict["ok_paths"] = sorted(set(verdict["ok_paths"]))
+    return verdict
+
+
 # ─── Route coverage — the corpus states its own perimeter ───────────────────
 
 def route_regex(pattern):
@@ -1357,10 +2287,74 @@ def sealed_dir_for(ws):
     return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
 
 
+def config_name():
+    """The net's configuration FILE — `config.json` unless GM_CONFIG names another.
+
+    One net can declare more than one ENVIRONMENT for the same corpus: a
+    second database engine, a second runtime. What differs is how the app is
+    brought up, brought down and restored, and where its URL is published;
+    the contract — the corpus, the references, the personas, the standard —
+    does not. Judging the second environment is replaying the SAME references
+    against the app booted the other way, so it is one variable, read here and
+    nowhere else.
+
+    A NAME, never a path: the declaration lives beside the corpus it declares,
+    under the net's own directory. A caller pointing the judge at a file
+    outside it would be judging one tree with another tree's declaration, and
+    the verdict would name a net it never read.
+    """
+    raw = os.environ.get("GM_CONFIG")
+    if raw is None:
+        return "config.json"
+    name = raw.strip()
+    if not name:
+        # SET and empty is not unset: it is a variable that did not expand,
+        # and falling back would judge the first environment while the caller
+        # believes it named the second — the inert check, one layer down.
+        raise SystemExit("GM_CONFIG is set but empty — name the config file to "
+                         "judge (a file under the net's directory), or leave "
+                         "the variable unset for config.json")
+    seps = [os.sep] + ([os.altsep] if os.altsep else [])
+    if name in (".", "..") or any(s in name for s in seps):
+        raise SystemExit("GM_CONFIG=%r is a path — the judge reads the "
+                         "declaration that lives WITH the corpus it declares, "
+                         "so this is a file name under the net's directory and "
+                         "nothing else" % name)
+    return name
+
+
+def config_path(gm_dir):
+    """The one place the config file is located — and checked — for every
+    reader of it.
+
+    Two readers had `config.json` written into them: the gate's own load and
+    the held-out opt-in. A second environment judged with the first one's
+    opt-in would consume a sealed set the other gate was owed, so they read
+    one helper rather than one string each.
+
+    A NAMED config that is absent refuses here, never falls back: the caller
+    asked for a verdict on one environment, and a green reported for the OTHER
+    one is the inert check this variable exists to end — measured on a
+    campaign whose `engine-target` outcome ran `GM_CONFIG=config-pg.json`
+    against a judge that read config.json, and would have reported the second
+    engine met the moment the first was green.
+    """
+    name = config_name()
+    path = os.path.join(gm_dir, name)
+    if name != "config.json" and not os.path.isfile(path):
+        raise SystemExit("GM_CONFIG names %s, which is not a file under %s — "
+                         "judging config.json in its place would report a "
+                         "verdict for an environment nobody asked about"
+                         % (name, gm_dir))
+    return path
+
+
 def seal_committed_opted_in(gm_dir):
     """The convergence gate's opt-in to consume a COMMITTED held-out set.
 
-    Two forms, either suffices: `"seal_committed": true` in config.json —
+    Two forms, either suffices: `"seal_committed": true` in the config being
+    judged (see config_path — a second environment declares its own, and a
+    gate that does not opt in leaves the set for the one that does) —
     written by the net's owner, committed, auditable, the preferred form —
     or GM_SEAL_COMMITTED=1 in the environment for a hand-run gate. The flag
     can only widen what the gate consumes, never soften a verdict, which is
@@ -1374,7 +2368,7 @@ def seal_committed_opted_in(gm_dir):
                          "spelling silently ignored would leave the operator "
                          "sure of an opt-in that never happened" % env)
     try:
-        with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+        with open(config_path(gm_dir), encoding="utf-8") as f:
             v = json.load(f).get("seal_committed", False)
     except (OSError, ValueError):
         return False
@@ -1416,6 +2410,13 @@ def seal_holdout(gm_dir, sealed_dir):
     only widen what the gate consumes, never soften a verdict.
 
     Returns True when the set now lives outside the workspace.
+
+    Sealing OUT of the tree is what makes the seal mechanical, and it is also
+    what makes a fresh set EPHEMERAL: the sealed pile is keyed on the
+    workspace path under the scratch directory, so a run whose workspace dies
+    with it — a pod — takes the set along. A set that must be scored by a
+    LATER run has exactly one durable home, the tree, and the caller says so
+    rather than letting the next gate report 0/0 for a set that was drawn.
     """
     src = os.path.join(gm_dir, "mutants", "holdout")
     if os.path.isdir(src) and holdout_committed_in_tree(gm_dir) \
@@ -1485,6 +2486,40 @@ def spent_fingerprints(gm_dir):
     return out
 
 
+def spent_cycles(gm_dir):
+    """How many held-out cycles were scored and published under mutants/audit/.
+
+    The figure is what turns a legitimate state into a DEBT: one spent cycle
+    is a set that did its work, thirteen with none pending is a campaign whose
+    strongest term has been vacuous for a while. The judge does not set the
+    policy — it publishes the count so the process that owns the cadence can.
+
+    Counted from the directory, not from `spent_fingerprints`: that map is
+    keyed by FINGERPRINT, so two cycles that drew the same mutation collapse
+    into one entry — the right behaviour for refusing a repeat, the wrong one
+    for counting history (measured: three published mutants over two cycles
+    counted as one).
+    """
+    root = os.path.join(gm_dir, "mutants", "audit")
+    if not os.path.isdir(root):
+        return 0
+    return len([c for c in sorted(os.listdir(root))
+                if os.path.isdir(os.path.join(root, c))])
+
+
+def sealed_but_ephemeral(committed_before, sealed_now):
+    """True when a held-out set left the tree WITHOUT a committed copy.
+
+    Sealing out of the tree is what makes the seal mechanical; it is also what
+    makes the set ephemeral, because the sealed pile is keyed on the workspace
+    path under the scratch directory. A workspace that dies with its run — a
+    pod — takes the set with it, and the next gate reports 0/0 for a set that
+    was drawn. A committed set is the exception: it is left in place, which is
+    the only home that crosses a run boundary.
+    """
+    return bool(sealed_now) and not committed_before
+
+
 def load_mutants(gm_dir, holdout, sealed_dir=None):
     if holdout:
         root = sealed_dir or os.path.join(gm_dir, "mutants", "holdout")
@@ -1543,7 +2578,7 @@ def tree_fingerprint(ws):
     au moins aussi discriminante que `git status` pour ce qu'on lui demande —
     savoir si un fichier a bouge. Si les DEUX echouent, on s'arrete.
     """
-    code, out = run("git status --porcelain", ws, timeout=120)
+    code, out = run("git --no-optional-locks status --porcelain", ws, timeout=120)
     if code == 0:
         return "git:" + out
     h = hashlib.sha256()
@@ -1593,18 +2628,1032 @@ def run_script(path, ws, timeout=600):
     return run("sh %s" % shlex.quote(path), ws, timeout)
 
 
+# apply_mutant's code when apply.sh was NOT run because no record could go
+# down first. A string on purpose: a returncode is an int, and a shell killed
+# by SIGHUP reports -1 — an apply that DID run and must be reverted.
+APPLY_REFUSED = "refused"
+
+
+_git_dir_cache = {}
+
+
+def git_dir_of(ws):
+    """The tree's git dir (a worktree's own, under the main repo's .git), or
+    "" when ws is not a git repository — or when git does not answer:
+    bounded and guarded, because this runs before the JSON report the
+    campaign parses. Cached per workspace path."""
+    key = os.path.realpath(ws)
+    if key not in _git_dir_cache:
+        try:
+            p = subprocess.run(["git", "-C", ws, "rev-parse", "--git-dir"],
+                               capture_output=True, text=True, timeout=60)
+            d = (p.stdout or "").strip() if p.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            d = ""
+        if d and not os.path.isabs(d):
+            d = os.path.join(key, d)
+        _git_dir_cache[key] = os.path.realpath(d) if d else ""
+    return _git_dir_cache[key]
+
+
+def applied_marker_for(ws):
+    """Where the harness notes the mutant it has applied and not yet reverted.
+
+    With the TREE, outside what is judged: in the tree's git dir, which lives
+    exactly as long as the mutated files do — a container restarted on the
+    same bind-mounted worktree keeps both, a copy-based pod's fresh copy has
+    neither — whereas a marker in a temp root outlives or predeceases the
+    tree it describes (a retry with a fresh /tmp on the same worktree would
+    keep the mutant and lose the note). A workspace that is not a git
+    repository falls back to the scratch root (GM_SCRATCH, else the system
+    temp dir), keyed on the workspace's real path. In a private directory of
+    its own: the marker names a script the next gate will execute.
+    """
+    real = os.path.realpath(ws)
+    key = hashlib.sha256(real.encode("utf-8")).hexdigest()[:12]
+    root = git_dir_of(ws) or os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+    return os.path.join(root, "gm-applied", "gm-applied-%s.json" % key)
+
+
+def _private_dir_of_ours(d):
+    """(ok, why): the marker directory is OURS and PRIVATE — a real directory,
+    not a symlink, owned by this uid, no group/other bits. On a shared temp
+    root anyone can pre-create the path; a directory that fails the test is
+    refused, never repaired: chmod on a foreign directory is EPERM anyway, and
+    repairing it would mean trusting what it already holds."""
+    try:
+        st = os.lstat(d)
+    except OSError as e:
+        return False, "%s: %s" % (d, e.strerror or e)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return False, "%s is not a directory of its own (a symlink?)" % d
+    if st.st_uid != os.geteuid():
+        return False, "%s is owned by uid %d, not %d" % (d, st.st_uid, os.geteuid())
+    if st.st_mode & 0o077:
+        return False, "%s is not private (mode %o)" % (d, stat.S_IMODE(st.st_mode))
+    return True, ""
+
+
+def read_applied_marker(ws):
+    """(meta, why). meta is None when there is no marker. A marker that cannot
+    be trusted — a directory that is not ours, a symlink, a file of another
+    uid, unreadable content — comes back as ({}, why): the caller refuses,
+    executes nothing and deletes nothing. The write side keeps the file
+    private; the read side proves it, because the file is an instruction to
+    run a script."""
+    marker = applied_marker_for(ws)
+    if not os.path.lexists(marker):
+        return None, ""
+    ok, why = _private_dir_of_ours(os.path.dirname(marker))
+    if not ok:
+        return {}, "the marker directory is not the harness's own: %s" % why
+    try:
+        fd = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as e:
+        return {}, "cannot open the marker %s: %s" % (marker, e.strerror or e)
+    try:
+        st = os.fstat(fd)
+    except OSError as e:
+        os.close(fd)
+        return {}, "cannot stat the marker %s: %s" % (marker, e.strerror or e)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+        os.close(fd)
+        return {}, "the marker %s is not a regular file of this uid" % marker
+    try:
+        with os.fdopen(fd, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError, RecursionError) as e:
+        # RecursionError too: that is what json.load raises on a deeply nested
+        # document, not ValueError, and it would escape as a traceback.
+        return {}, "the marker %s is unreadable: %s" % (marker, e)
+    if not isinstance(meta, dict):
+        return {}, "the marker %s does not hold an object" % marker
+    # The TYPES, not only the shape. `dir` goes straight into os.path.realpath
+    # and os.path.join: a number, a list or a string with an embedded NUL raises
+    # out of main(), and the harness prints a traceback where the campaign
+    # expects its one JSON verdict — read as "the harness is broken" rather than
+    # "the gate is red". Measured on the real binary with `{"id": "x", "dir": 5}`:
+    # exit 1, empty stdout, TypeError on stderr.
+    for k in ("id", "dir"):
+        v = meta.get(k)
+        if v is not None and (not isinstance(v, str) or "\0" in v):
+            return {}, "the marker %s holds a %s that is not a usable string" % (marker, k)
+    db = meta.get("dirty_before")
+    if db is not None and (not isinstance(db, list) or any(not isinstance(q, str) for q in db)):
+        return {}, "the marker %s holds a dirty_before that is not a list of paths" % marker
+    return meta, ""
+
+
+_repo_root_cache = {}
+
+
+def repo_root_of(ws):
+    """The working tree's root, which porcelain paths are relative to — ws
+    itself when git does not answer (a gate runs at the root; the fallback
+    keeps a name comparison rather than none)."""
+    key = os.path.realpath(ws)
+    if key not in _repo_root_cache:
+        try:
+            p = subprocess.run(["git", "-C", ws, "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=60)
+            top = (p.stdout or "").strip() if p.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            top = ""
+        _repo_root_cache[key] = top or ws
+    return _repo_root_cache[key]
+
+
+BIG_FILE_BYTES = 256 << 20
+
+
+def dirty_fingerprint(ws, path):
+    """What a dirty path IS, so a later sweep can tell a mutant's edit on an
+    already-dirty path from the operator's untouched work. A file: the sha1
+    of its content, or "st-<size>-<mtime>" past BIG_FILE_BYTES (a bound, not
+    a leash: hashing is local and linear — and a stat fingerprint moves when
+    identical content is rewritten, so the bound is high); a symlink: its
+    target; a directory
+    (`?? dir/`, an untracked tree collapsed to one line): the sha1 of its
+    recursive NAME listing — a file a mutant creates or removes inside moves
+    it, a build tree merely rebuilt between two runs does not, and a change
+    inside an existing untracked file is the accepted blind spot; "absent"
+    for an uncommitted deletion (a state of its own, equal to itself); "?"
+    for a FIFO or a device (opening could block, on no leash), an unreadable
+    path or a listing past 20000 entries: undecidable, not "unchanged"."""
+    full = os.path.join(repo_root_of(ws), path)
+    try:
+        if not os.path.lexists(full):
+            return "absent"
+        st = os.lstat(full)
+        if stat.S_ISDIR(st.st_mode):
+            h, n, unreadable = hashlib.sha1(), 0, []
+            for root, dirs, files in os.walk(full, onerror=unreadable.append):
+                dirs.sort()
+                for name in sorted(files):
+                    n += 1
+                    if n > 20000:
+                        return "?"
+                    h.update((os.path.relpath(os.path.join(root, name), full) + "\n").encode("utf-8", "replace"))
+            if unreadable:
+                # A subtree that could not be listed (a 0700 cache, a
+                # docker-owned build dir): the readable part is fingerprinted
+                # and marked partial — equal to itself across two reads, so
+                # an untouched tree still clears; a change inside the
+                # unreadable part is the blind spot, said by the prefix.
+                return "u-" + h.hexdigest()
+            return h.hexdigest()
+        if stat.S_ISLNK(st.st_mode):
+            return hashlib.sha1(os.readlink(full).encode("utf-8", "replace")).hexdigest()
+        if not stat.S_ISREG(st.st_mode):
+            return "?"
+        if st.st_size > BIG_FILE_BYTES:
+            return stat_form(st)
+        return content_hash(full)
+    except OSError:
+        return "?"
+
+
+def stat_form(st):
+    """The one stat fingerprint, "st-<size>-<mtime>": written by
+    dirty_fingerprint past the size bound and answered by fingerprint_like
+    for a stat record — one function, so the two cannot drift apart."""
+    return "st-%d-%d" % (st.st_size, st.st_mtime_ns)
+
+
+def content_hash(full):
+    h = hashlib.sha1()
+    with open(full, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fingerprint_like(ws, path, recorded):
+    """The path's fingerprint in the SCHEME the record used, whatever today's
+    size bound: a stat record ("st-…") is answered by the stat form, a
+    content-hash record by the content hash — a record written under one
+    bound compared under another could never match, and an untouched file
+    was permanent residue (measured with the bound raised; the mirror
+    holds when it is lowered). Any other record is answered by
+    dirty_fingerprint."""
+    if isinstance(recorded, str) and (recorded.startswith("st-") or len(recorded) == 40):
+        full = os.path.join(repo_root_of(ws), path)
+        try:
+            if not os.path.lexists(full):
+                return "absent"
+            st = os.lstat(full)
+            if not stat.S_ISREG(st.st_mode):
+                return dirty_fingerprint(ws, path)
+            return stat_form(st) if recorded.startswith("st-") else content_hash(full)
+        except OSError:
+            return "?"
+    return dirty_fingerprint(ws, path)
+
+
+def status_porcelain_z(ws):
+    """(exit, stdout) of `git status --porcelain -z`, stderr KEPT APART: run()
+    merges the two streams, and a warning git prints on stderr (a directory
+    it cannot read) would land inside the NUL entry stream and swallow a real
+    path. Bounded, guarded, without the optional index refresh."""
+    try:
+        p = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain", "-z"],
+                           capture_output=True, text=True, timeout=120)
+        return p.returncode, p.stdout or ""
+    except (OSError, subprocess.SubprocessError) as e:
+        return 124, "%s" % e
+
+
+PORCELAIN_STATUS = " MTADRCU?!"
+
+
+def porcelain_paths(out):
+    """The paths of a `git status --porcelain -z` output: NUL-separated, no
+    quoting, a rename or copy (in the index or in the work tree) followed by
+    its source entry, skipped — the destination is the path that exists. An
+    entry that is not `XY<space>path` is not an entry (a stray line that is
+    not the porcelain) and is dropped rather than decided on."""
+    entries = (out or "").split("\0")
+    paths, i = [], 0
+    while i < len(entries):
+        e = entries[i]
+        i += 1
+        if len(e) < 4 or e[2] != " " or e[0] not in PORCELAIN_STATUS or e[1] not in PORCELAIN_STATUS:
+            continue
+        paths.append(e[3:])
+        if e[0] in "RC" or e[1] in "RC":
+            i += 1
+    return sorted(set(paths))
+
+
+def dirty_paths_before_apply(ws):
+    """The paths `git status --porcelain` lists right before a mutant goes
+    down, each with its content fingerprint ("<sha1>:<path>"), recorded in
+    the marker so a later sweep can tell the mutant's residue from work that
+    was already uncommitted (an operator's, in record mode) — by content,
+    not by name: a mutant editing a file the operator had already edited is
+    residue too. None when git did not answer — unknown, which is not
+    "clean". Bounded and guarded like every git call that runs before the
+    report, and without the optional index refresh: a status that rewrites
+    the index is a write into the tree it is only meant to read (under a
+    full disk or a size limit it left a corrupt index behind, and every
+    later checkout failed)."""
+    code, out = status_porcelain_z(ws)
+    if code != 0:
+        return None
+    return ["%s:%s" % (dirty_fingerprint(ws, q), q) for q in porcelain_paths(out)]
+
+
+def split_dirty_record(entries):
+    """{path: fingerprint} from a marker's dirty_before; an entry without a
+    fingerprint (a marker written before fingerprints were recorded) maps
+    to "?": its content then is unknown, so a change cannot be ruled out."""
+    rec = {}
+    for e in entries or []:
+        fp, sep, q = e.partition(":")
+        if e.startswith("st:"):
+            # The colon form a previous harness wrote for a big file
+            # ("st:<size>:<mtime>:<path>"): read as the current form, so a
+            # marker across the upgrade still clears an untouched file.
+            parts = e.split(":", 3)
+            try:
+                size, mtime = int(parts[1]), int(parts[2])
+            except (ValueError, IndexError):
+                size = mtime = None
+            if len(parts) == 4 and parts[3] and size is not None:
+                rec[parts[3]] = "st-%d-%d" % (size, mtime)
+                continue
+        if sep and q and (fp in ("absent", "?") or fp.startswith(("st-", "u-")) or (len(fp) == 40 and all(c in "0123456789abcdef" for c in fp))):
+            rec[q] = fp
+        else:
+            # No fingerprint (a marker written before they were recorded): the
+            # whole entry is the path, a colon in it included.
+            rec[e] = "?"
+    return rec
+
+
+def write_applied_marker(ws, meta):
+    """Record the mutant about to be applied. (True, "") — or (False, why),
+    and then apply.sh MUST NOT run.
+
+    Refused when a marker is already there: the mutant it names had its
+    revert fail in this run, or another harness is gating the same tree.
+    Either way the tree is not HEAD, and overwriting the record is the one
+    way to lose a leftover for good: the next mutant's clean revert would
+    then erase a record that was never its own. Refused, too, when the
+    record cannot be written (a read-only, full or foreign scratch root): a
+    mutant the harness cannot keep track of is a mutant it must not apply —
+    the silent alternative is a net behaving exactly as before this guard,
+    with nothing to say so.
+    """
+    marker = applied_marker_for(ws)
+    d = os.path.dirname(marker)
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    except OSError as e:
+        return False, "cannot create the marker directory %s: %s" % (d, e.strerror or e)
+    ok, why = _private_dir_of_ours(d)
+    if not ok:
+        return False, "the marker directory is not usable: %s" % why
+    if os.path.lexists(marker):
+        prior, _why = read_applied_marker(ws)
+        prior = prior or {}
+        return False, ("a mutant is still recorded as applied: %s (%s) — its revert failed "
+                       "in this run, or another harness is gating this tree; the tree is not "
+                       "HEAD and nothing is applied on top of it"
+                       % (prior.get("id") or "?", prior.get("dir") or marker))
+    # Read the tree BEFORE the exclusive create: the status and the hashing
+    # take real time, and a marker that exists but is empty is read as
+    # corrupt by the next gate — the create→write window must stay as short
+    # as a single write.
+    dirty_before = dirty_paths_before_apply(ws)
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as e:
+        return False, "cannot create the marker %s: %s" % (marker, e.strerror or e)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"id": meta.get("id"), "dir": meta.get("dir"),
+                       "dirty_before": dirty_before}, f)
+    except OSError as e:
+        # The empty shell a failed write leaves behind records NOTHING — apply.sh
+        # will not run — but the NEXT gate reads it as a corrupt marker: kind
+        # `unusable`, a bail, and every application refused until a human deletes
+        # it. A scratch root full for one instant would wedge the gate for good,
+        # over a mutant that was never applied. The open above is O_EXCL, so this
+        # file is ours to remove and removing it takes no record with it.
+        try:
+            os.unlink(marker)
+        except OSError:
+            pass
+        return False, "cannot write the marker %s: %s" % (marker, e.strerror or e)
+    return True, ""
+
+
+def drop_applied_marker(ws, meta):
+    """Remove the marker — only when it records THIS mutant, and only after its
+    revert demonstrably succeeded. A revert of B must never erase the record of
+    A, whose revert failed: that record is the only trace of a tree that is not
+    HEAD. There is deliberately no "drop whatever is there" form — dropping a
+    record the harness did not just undo is how a leftover is lost for good."""
+    prior, why = read_applied_marker(ws)
+    if prior is None or why:
+        return
+    if prior.get("id") is not None and prior.get("id") != meta.get("id"):
+        return
+    try:
+        os.remove(applied_marker_for(ws))
+    except OSError:
+        pass
+
+
+def leftover_on_record(ws):
+    """True when a mutant is still recorded as applied — the tree is no longer
+    KNOWN to be at baseline.
+
+    The single signal, whatever armed it, and that is the point: `revert_clean`
+    only exists on a verdict that reached the full apply→capture→revert path.
+    Two other ways a revert fails to restore the baseline never set it — the
+    inert branch and the failed-apply branch each call revert_mutant and drop
+    its exit code on the floor. The record is what all three leave behind, so
+    the scoring reads the record and not one verdict's field.
+    """
+    meta, _why = read_applied_marker(ws)
+    return meta is not None
+
+
+def scoring_must_stop(verdict, ws):
+    """The scoring ends after this verdict: the tree is no longer known to be
+    at baseline, so every later measurement would describe a program nobody
+    wrote — and every later application is refused anyway while the record
+    stands. Named, rather than inline in each of the two scoring loops, so the
+    rule is one expression and the self-test can drive the decision itself."""
+    return (not verdict.get("revert_clean", True)) or leftover_on_record(ws)
+
+
+def overall_revert_clean(verdicts, stopped, ws):
+    """The report's `revert_clean`: did every mutant this gate applied get
+    undone, and did the tree come back?
+
+    Three branches never reach the revert path and so never write the field —
+    a refused apply, an inert mutant, an apply that failed — and reading their
+    SILENCE as True is what let a lot in which almost nothing was measured
+    report a clean revert. Combined with a scoring that stopped (so the later
+    mutants are absent, `blind_lanes` is empty and the held-out loop never ran,
+    leaving a vacuous 0 == 0), that produced a GREEN gate on a tree the harness
+    itself had left mutated with its marker armed. A stop, or a record still
+    standing, is the evidence the tree did not come back.
+    """
+    if stopped is not None or leftover_on_record(ws):
+        return False
+    return all(v.get("revert_clean", True) for v in verdicts)
+
+
+def measurement_hygiene(verdicts, held):
+    """`collateral`, `unstable_controls` and the line that NAMES them — over the
+    visible AND the held-out verdicts.
+
+    `score_pct` must stay visible-only: averaging a sealed set into the headline
+    is the resemblance this bot refuses. But these two are not a score, they are
+    HYGIENE OF MEASUREMENT — did a mutant move what it does not declare, does a
+    control reproduce itself — and `overall_revert_clean` already crosses both
+    sets for exactly that reason.
+
+    It became load-bearing the day a held verdict started DECIDING something:
+    `unproven_duplicate_groups` credits a separator's `collateral` as proof that
+    it moved a group member, and score_mutant PINS every group member into that
+    separator's control sample so the measurement exists. Read from `verdicts`
+    alone, the identical measurement was a hard red when the separator was
+    visible (`collateral == 0` is a gate term, in the graph AND in the standalone
+    runner) and a silent proof when it was held. A class cannot be discharged
+    through a channel the gate is forbidden to look at.
+
+    The detail ranges over the same set as the count — a headline that counts
+    what it does not list is the defect this file just removed from the
+    duplicate-group refusal — and each line says which set it came from, because
+    a held-out finding reads differently even though it is just as actionable.
+    """
+    held_ids = {v.get("id") for v in held}
+    both = list(verdicts) + list(held)
+    return {
+        "collateral": sum(len(v.get("collateral") or []) for v in both),
+        "unstable_controls": sorted({c for v in both
+                                     for c in (v.get("unstable_controls") or [])}),
+        "detail": "; ".join(
+            "%s moved %s%s" % (v.get("id"), v["collateral"],
+                               " (held-out)" if v.get("id") in held_ids else "")
+            for v in both if v.get("collateral")),
+    }
+
+
 def apply_mutant(meta, ws):
+    # The marker goes down BEFORE apply.sh runs: an interruption between the
+    # two leaves a tree that is mutated and a note that says by what. A marker
+    # that cannot go down keeps apply.sh from running at all.
+    ok, why = write_applied_marker(ws, meta)
+    if not ok:
+        return APPLY_REFUSED, "apply.sh NOT run: %s" % why
     return run_script(os.path.join(meta["dir"], "apply.sh"), ws)
 
 
 def revert_mutant(meta, ws):
-    return run_script(os.path.join(meta["dir"], "revert.sh"), ws)
+    code, out = run_script(os.path.join(meta["dir"], "revert.sh"), ws)
+    if code == 0:
+        drop_applied_marker(ws, meta)
+    return code, out
+
+
+def _under(path, root):
+    """True when path (realpath'd) sits under root (realpath'd)."""
+    if not root:
+        return False
+    p, r = os.path.realpath(path), os.path.realpath(root)
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
+def leftover_roots(ws, gm_dir=None):
+    """The only two places a mutant of this workspace's net can live: the
+    net's own directory (visible mutants, an unsealed held-out — the whole
+    tree when the caller has no net dir to name) and the sealed held-out
+    pile (sealed_dir_for — GM_SEALED_DIR honoured). Never the whole scratch
+    root: on a shared host that is all of /tmp, and a marker naming a
+    directory there would have the gate run whatever script it found."""
+    return [gm_dir or ws, sealed_dir_for(ws)]
+
+
+def revert_leftover_mutant(ws, gm_dir=None):
+    """Revert the mutant a previous, interrupted run left applied — if any.
+
+    A stream cut, a SIGTERM or a pod kill between apply.sh and revert.sh
+    leaves the mutant in the tree; the next gate, in the same tree, would
+    judge a mutated program and call it the lot's. Measured: a tool node
+    retried on the same tree after its exec stream broke — the build gate
+    went red on a file the mutant had edited, and the oracle reported that
+    file as "not committed". Run in record mode too: references recorded
+    over a leftover would seal a program nobody wrote, which is worse than
+    an edit lost on a file the mutant had already overwritten.
+
+    Returns None when there is nothing to revert. Otherwise a dict with the
+    mutant's id and dir, `code` (revert.sh's exit; None when the script is
+    gone), `marker`, and after a clean revert `dirty` — what `git status`
+    still shows, because the script's exit code is its word, not the tree's
+    — or `dirty_unknown`, the reason git could not be asked, which is not
+    the same fact as an empty `dirty`.
+    The marker is dropped only when the revert demonstrably succeeded — a
+    leftover the harness could not revert stays recorded, so the next gate
+    reports it again instead of forgetting it; an operator who reverts by
+    hand clears it by deleting the marker.
+
+    Refused, nothing executed AND nothing deleted — `refused` names which
+    half the harness would not touch: "dir", a marker whose directory is
+    neither this workspace nor its sealed held-out pile, and "slot", a
+    marker slot that is not the harness's own. Reading is not deciding: the
+    record goes down BEFORE apply.sh runs, so it stands whatever the
+    directory resolves to today, and dropping it would destroy the only
+    evidence that the tree is not HEAD. Every application is refused while
+    it is there, which is what makes the refusal stick.
+
+    ONE gate per tree is ASSUMED: the record carries no liveness, no pid and
+    no lock. A second gate starting while the first sits between its apply.sh
+    and its revert.sh reads that record as a leftover, reverts a LIVE mutant
+    and drops its owner's record; the first then captures against a reverted
+    tree and reports blind lanes it invented. write_applied_marker's refusal
+    ("another harness is gating this tree") does NOT cover this — the sweep
+    runs before any application, so it never reaches that refusal. Measured.
+    Two harnesses mutating one tree cannot measure anything either way, so
+    this is a limitation rather than a mode to support; the fix, if a real
+    case turns up, is an exclusive lock held for the gate's duration (an
+    flock dies with the process, unlike a recorded pid).
+    """
+    marker = applied_marker_for(ws)
+    meta, why = read_applied_marker(ws)
+    if meta is None:
+        return None
+    if why:
+        return {"id": None, "dir": "", "code": None, "out": why, "marker": marker,
+                "refused": "slot", "kept": True, "dirty": ""}
+    mdir = meta.get("dir") or ""
+    if not mdir or not any(_under(mdir, r) for r in leftover_roots(ws, gm_dir)):
+        return {"id": meta.get("id"), "dir": mdir, "code": None,
+                "out": " and ".join(leftover_roots(ws, gm_dir)),
+                "marker": marker, "refused": "dir", "kept": True, "dirty": ""}
+    script = os.path.join(mdir, "revert.sh")
+    if os.path.isfile(script):
+        code, out = run_script(script, ws)
+    else:
+        code, out = None, "the mutant's revert.sh is no longer there: %s" % script
+    dirty, unknown, residue, residue_undecided, vanished, undecided_cause = "", "", [], False, [], ""
+    if code == 0:
+        # Through run(), and on a short leash. This sweep runs in EVERY mode,
+        # record included, and the harness's contract is to answer with a
+        # verdict: a `git` that is absent must not replace the JSON report with
+        # a traceback the campaign reads as "the harness is broken", and a
+        # wedged one must not hang the gate the way the incident behind this
+        # whole guard hung it. Unanswered is reported as UNKNOWN, never as
+        # clean — an empty porcelain and an absent git are not the same fact.
+        st, st_out = status_porcelain_z(ws)
+        if st == 0:
+            after = porcelain_paths(st_out)
+            dirty = "\n".join(after)
+            before = meta.get("dirty_before")
+            if before is not None:
+                # What is still modified now and was NOT when the mutant went
+                # down is the mutant's residue — and so is a path that was
+                # already dirty but whose CONTENT moved since: revert.sh's
+                # exit 0 is the script's word, this is the tree's. An
+                # operator's own uncommitted work, untouched, is not residue
+                # — record mode is where the difference matters, since
+                # nothing else stops references from being sealed over a
+                # leftover. A path whose earlier content is unknown ("?")
+                # cannot be cleared: undecidable.
+                rec = split_dirty_record(before)
+                for q in after:
+                    if q not in rec:
+                        residue.append(q)
+                    elif rec[q] == "?" or fingerprint_like(ws, q, rec[q]) != rec[q]:
+                        residue.append(q)
+                        if rec[q] == "?":
+                            residue_undecided = True
+                            undecided_cause = "unknown_content"
+                # Work that was uncommitted before the mutant and is clean now
+                # was undone by the revert (a `git checkout -- .`): not the
+                # residue this sweep stops on, but said — the operator lost it.
+                vanished = sorted(q for q in rec if q not in after and rec[q] != "absent")
+            elif after:
+                # No record of what was dirty before the mutant went down
+                # (git did not answer then, or the marker predates the
+                # field): a tree that still shows changes is UNDECIDABLE,
+                # and undecidable is not clean — every change is treated as
+                # residue, the marker stays, an operator decides.
+                residue = after
+                residue_undecided = True
+                undecided_cause = "no_record"
+        else:
+            # A git that answered nothing is more undecidable still than one
+            # that answered with no record to compare against: the marker
+            # stays, the gate stops, an operator looks.
+            unknown = "`git status` did not answer (exit %s)" % st
+            residue_undecided = True
+        if not residue and not residue_undecided:
+            drop_applied_marker(ws, meta)
+    return {"id": meta.get("id"), "dir": mdir, "code": code, "out": (out or "")[-300:],
+            "marker": marker, "refused": False, "kept": code != 0 or bool(residue) or residue_undecided,
+            "dirty": dirty[:400], "dirty_unknown": unknown, "residue": residue[:50],
+            "residue_undecided": residue_undecided, "vanished": vanished[:50],
+            "undecided_cause": undecided_cause}
+
+
+# The dispositions on which the gate STOPS rather than judges. Only "reverted"
+# — the harness undid the leftover and saw the tree come back — lets it
+# through. The set lives here, beside the function that produces the kinds, so
+# the decision and its consumer cannot drift apart silently.
+LEFTOVER_BAIL_KINDS = ("still_mutated", "unusable", "refused")
+
+
+def leftover_disposition(left):
+    """The disposition text, with the operator's destroyed work named on EVERY
+    kind: a revert that erased uncommitted work and left residue stops the
+    gate, and the stop is where the operator is told what to do — a text
+    that says "keep yours" after the script already removed it is worse
+    than silence."""
+    kind, text = _leftover_disposition(left)
+    if left.get("vanished"):
+        text += (" Uncommitted work that was there before the mutant is clean now — undone by "
+                 "the revert, or by you since: %s." % ", ".join(left["vanished"][:20]))
+    return kind, text
+
+
+def _leftover_disposition(left):
+    """What the gate says about a leftover, and whether it may proceed.
+
+    Returns (kind, text): "reverted" — revert.sh exit 0, a note (with what
+    the tree still shows, if anything), the only kind that lets the gate
+    through; "refused" — a marker of ours naming a directory the harness
+    does not recognise, kept and not executed; "unusable" — the marker slot
+    is not the harness's own; "still_mutated" — the revert failed or its
+    script is gone. The last three are LEFTOVER_BAIL_KINDS: the tree is, or
+    may be, not HEAD, and the gate refuses rather than judge a program
+    nobody wrote.
+    """
+    if left.get("refused") == "slot":
+        return "unusable", (
+            "the application-marker slot %s is not the harness's own: %s. Nothing "
+            "executed, nothing deleted. Every mutant application is refused until "
+            "it is removed by hand or GM_SCRATCH points at a private root."
+            % (left.get("marker"), left.get("out")))
+    if left.get("refused"):
+        return "refused", (
+            "a mutant is recorded as APPLIED (%s) and the harness will NOT revert it: "
+            "its directory %s is none of the roots a leftover may live under (%s). "
+            "Nothing executed, nothing deleted. The record goes down BEFORE apply.sh "
+            "runs, so it stands whatever that directory resolves to today: the tree "
+            "is, or may be, mutated, and the gate will not judge it. The ordinary "
+            "cause is a GM_SEALED_DIR that moved between passes — re-run with the one "
+            "that pass used and the harness reverts the mutant itself. Otherwise "
+            "revert by hand (git checkout -- <the mutant's paths>), then delete the "
+            "marker %s."
+            % (left.get("id") or "?", left.get("dir") or "?", left.get("out") or "?",
+               left.get("marker")))
+    if left.get("code") == 0 and left.get("residue_undecided") and not left.get("residue"):
+        return "still_mutated", (
+            "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
+            "exit 0), but whether the tree came back could not be checked: %s. Unknown is not "
+            "clean — the tree will be neither judged nor recorded. Check it by hand (git status, "
+            "git diff), revert the mutant's paths if any remain, then delete the marker %s."
+            % (left.get("id"), left.get("dirty_unknown") or "no record", left.get("marker")))
+    if left.get("code") == 0 and left.get("residue"):
+        if left.get("residue_undecided"):
+            why = ("nothing recorded what was already uncommitted when the mutant went down"
+                   if left.get("undecided_cause") != "unknown_content" else
+                   "their content when the mutant went down could not be read or listed")
+            return "still_mutated", (
+                "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
+                "exit 0), but the tree still shows changes and %s, so their origin is UNDECIDABLE: "
+                "%s. Undecidable is not clean — the tree will be neither judged nor recorded. Check "
+                "those paths (git diff), revert the mutant's by hand, then delete the marker %s."
+                % (left.get("id"), why, ", ".join(left["residue"][:20]), left.get("marker")))
+        return "still_mutated", (
+            "a mutant left APPLIED by an interrupted gate was reverted at start (%s, revert.sh "
+            "exit 0), but these paths changed since the mutant went down and the harness cannot "
+            "attribute the change — the mutant's residue, or work done in between: %s. The tree "
+            "will be neither judged nor recorded. Inspect them (git diff), revert the mutant's by "
+            "hand, then delete the marker %s."
+            % (left.get("id"), ", ".join(left["residue"][:20]), left.get("marker")))
+    if left.get("code") == 0:
+        text = ("a mutant left APPLIED by an interrupted gate was reverted at start: %s "
+                "(revert.sh exit 0). The interrupted attempt's verdict, if any, judged a "
+                "mutated program." % left.get("id"))
+        if left.get("dirty"):
+            text += (" The tree still shows uncommitted changes after the revert — the "
+                     "script's exit is its word, not the tree's: %s"
+                     % " ".join(left["dirty"].split())[:300])
+        elif left.get("dirty_unknown"):
+            text += (" Whether the tree actually came back could not be checked: %s. "
+                     "Unknown, not clean." % left["dirty_unknown"])
+        return "reverted", text
+    how = "revert.sh is missing" if left.get("code") is None else "revert.sh exited %s" % left.get("code")
+    return "still_mutated", (
+        "a mutant left APPLIED by an interrupted gate could NOT be reverted at start: %s (%s). "
+        "The tree is still mutated and will not be judged. Revert by hand (git checkout -- "
+        "<the mutant's paths>), then delete the marker %s." % (left.get("id"), how, left.get("marker")))
 
 
 # ─── Comparison ─────────────────────────────────────────────────────────────
 
 def diverged(refs, captured, ids):
     return sorted(i for i in ids if refs.get(i) != captured.get(i))
+
+
+def duplicate_group_decls(corpus):
+    """The corpus's `duplicate_groups` declarations, normalised.
+
+    Two entries whose references are byte-identical are not automatically a
+    defect: on a refusal lane the second is a CONTROL proving a mutant moved
+    only the first. But a note saying so is prose, and the gate cannot read
+    prose — so the claim is declared as data and DISCHARGED by measurement:
+    each group names the mutant that separates it, and the gate checks that the
+    mutant really moves some members and leaves the others still.
+
+    That is the difference between a waiver and a proof obligation. A waiver is
+    believed; this is executed, and it goes red by itself the day its separator
+    dies — which is exactly what happened to two of these groups when a lot
+    re-anchored their mutant, silently, while the notes still claimed the pair
+    was controlled.
+    """
+    # A class declared TWICE is REFUSED, not resolved. `out[key] = ...` let the
+    # later declaration win an ordering nobody audits: ["a","b"] and ["b","a"]
+    # normalise to one key, and which adjudication decided the class was decided
+    # by position in a JSON list. The second-order harm is worse than the
+    # overwrite — separator_group_ids reads THIS map, so the discarded
+    # declaration's separator never gets its group pinned into a control sample
+    # and the measurement that would decide the class is not taken at all.
+    #
+    # Dropping the key is FAIL-CLOSED: the class then reads as declared by
+    # nobody and the gate refuses it, with unproven_duplicate_groups naming the
+    # collision rather than an absence. A class declared twice with the SAME
+    # separators is merely repetitious, not ambiguous — order there decides
+    # nothing, so it is kept.
+    return {k: v[0] for k, v in duplicate_group_index(corpus).items()
+            if len({frozenset(s) for s in v}) == 1}
+
+
+def duplicate_group_index(corpus):
+    """Every well-formed declaration, grouped by the class it keys.
+
+    `{class_key: [separator tuples, one per declaration that named it]}` — the
+    shape that makes a collision VISIBLE instead of resolving it silently.
+    """
+    seen = {}
+    for g in duplicate_group_raw(corpus):
+        norm = duplicate_group_decl(g)
+        if norm is None:
+            continue
+        seen.setdefault(norm[0], []).append(norm[1])
+    return seen
+
+
+def duplicate_group_conflicts(corpus):
+    """Classes with two declarations that do NOT say the same thing."""
+    return {k: [list(s) for s in v]
+            for k, v in duplicate_group_index(corpus).items()
+            if len({frozenset(s) for s in v}) > 1}
+
+
+def duplicate_group_raw(corpus):
+    """The declarations as written — the list, or [] when the key is absent or
+    is not a list at all.
+
+    Ne LEVE JAMAIS, et c'est la moitie porteuse. Ce lecteur est atteint depuis
+    score_mutant, donc APRES que le mutant est applique et AVANT le revert : une
+    exception y tue le harnais sans imprimer son rapport et laisse l'arbre MUTE.
+    La doctrine du fichier est explicite quelques vis plus haut — « refused, not
+    crashed ». Le refus, lui, est prononce ailleurs : par
+    duplicate_groups_shape_problems a la porte, par le juge d'extension sur le
+    canal. Un `for g in (corpus.get("duplicate_groups") or [])` ecrit a la main
+    leve un TypeError sur `5` ou `true` — il y en avait trois copies, il n'y en
+    a plus qu'une.
+    """
+    raw = corpus.get("duplicate_groups")
+    return raw if isinstance(raw, list) else []
+
+
+def duplicate_group_decl(g):
+    """ONE declaration, read once — the single shape predicate of this file.
+
+    Returns `(class_key, separators)` normalised, or None when the entry is
+    malformed. `class_key` is the sorted tuple of ids, which is what makes the
+    declaration keyed on the byte-identical CLASS rather than on an ordering the
+    lot chose; `separators` is deduplicated and order-preserving.
+
+    One separator or several: a class of two needs one mutant to split it, a
+    class of four needs enough of them to tell all four apart. Written as a bare
+    string for the common case, a list when resolution costs more than one.
+
+    It exists as one function because the predicate had been written three
+    times — the reader, the shape refusal, and the extension judge — and three
+    copies of a rule is three chances for a corpus to be well-formed for one
+    reader and malformed for another.
+    """
+    if not isinstance(g, dict):
+        return None
+    ids = g.get("ids")
+    sep = g.get("separated_by")
+    seps = [sep] if isinstance(sep, str) else sep
+    if not isinstance(ids, list) or len(ids) < 2 or not isinstance(seps, list) \
+            or not seps or not all(isinstance(m, str) and m for m in seps):
+        return None
+    return tuple(sorted(str(i) for i in ids)), tuple(dict.fromkeys(seps))
+
+
+def duplicate_groups_shape_problems(corpus):
+    """Ce que le LECTEUR laisse tomber en silence, dit a voix haute.
+
+    duplicate_group_decls ignore ce qu'il ne sait pas lire — il le doit, il
+    tourne avec un mutant applique. Mais une declaration ignoree se lit comme
+    « aucune declaration », donc comme un groupe non declare : le message
+    envoie corriger une absence alors que le defaut est une faute de frappe.
+    """
+    raw = corpus.get("duplicate_groups")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["`duplicate_groups` is %s, not a list — it is ignored whole, and "
+                "every declared group then reads as undeclared"
+                % type(raw).__name__]
+    out = []
+    bad = [repr(g)[:80] for g in raw if duplicate_group_decl(g) is None]
+    if bad:
+        out.append("%d `duplicate_groups` entr%s malformed and silently ignored — "
+                   "each needs at least two `ids` and a non-empty `separated_by` "
+                   "(a string, or a list of them): %s"
+                   % (len(bad), "y is" if len(bad) == 1 else "ies are", "; ".join(bad)))
+    for key, seps in sorted(duplicate_group_conflicts(corpus).items()):
+        out.append(
+            "class %s is declared TWICE with different separators (%s) — the ids "
+            "are normalised, so ['a','b'] and ['b','a'] are ONE class and nothing "
+            "here can say which adjudication is meant. Both are dropped, and the "
+            "class is refused until one declaration remains."
+            % (json.dumps(list(key)), " vs ".join(json.dumps(s) for s in seps)))
+    return out
+
+
+def separator_group_ids(corpus, mutant_id):
+    """Every id of every group this mutant is declared to separate."""
+    if not mutant_id:
+        return set()
+    ids = set()
+    for group, seps in duplicate_group_decls(corpus).items():
+        if mutant_id in seps:
+            ids.update(group)
+    return ids
+
+
+def unproven_duplicate_groups(duplicate_refs, corpus, verdicts, restricted=False,
+                              withheld=(), in_the_set=(), deferred=None):
+    """Which byte-identical classes are NOT discharged by measured separators.
+
+    `duplicate_refs` holds MAXIMAL equivalence classes — every id sharing one
+    sha256 — so a class of three or more cannot be declared as a set of pairs:
+    the declaration is keyed on the class itself. What several separators buy is
+    RESOLUTION. A class is discharged when the members are pairwise
+    distinguishable: for each one, the pattern of which declared separators move
+    it must be unique. One separator over a pair reduces to "moves one, not the
+    other"; four members need enough separators to tell all four apart, which is
+    exactly what the campaign's own notes describe when they name `sep-04` for
+    one member and `sep-05` for two others.
+
+    Returns one record per class that fails, with the reason IN the record — the
+    gate turns them into its refusal, and the selftest calls this same function,
+    so what is tested is what runs.
+
+    A class whose every missing separator is WITHHELD lands in the caller's
+    `deferred` sink, never in the return value.
+    """
+    # WITHHELD is neither ABSENT nor PROVED, and this used to discharge it.
+    # Skipping the class outright removed the false refusal at the cost of a
+    # false PROOF: with `seps = [held, visible]` where the visible one separates
+    # nothing, the class came back discharged without the scored separator ever
+    # being consulted. A term of convergence cannot be handed that.
+    #
+    # So it is DEFERRED — said out loud, in a sink the caller owns, never in the
+    # field the gate reads. A deferral is the absence of a verdict, not a
+    # verdict.
+    #
+    # No sink, no deferral — but the REASON must stay true. A withheld
+    # separator is IN the mutant set; folding it there makes the fallback say
+    # so, instead of shouting an absence that would send the campaign to fix a
+    # mutant that exists. Strictest AND honest: a caller that forgets the sink
+    # can only get a HARSHER verdict, never a softer one, and never a lying one.
+    if deferred is None:
+        in_the_set = list(in_the_set) + list(withheld)
+        withheld = set()
+    else:
+        withheld = set(withheld)
+    decls = duplicate_group_decls(corpus)
+    conflicts = duplicate_group_conflicts(corpus)
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    # VALID only. A failed or inert verdict carries `targets_declared` but
+    # never `undetected_targets` nor `collateral` — score_mutant returns before
+    # they are set — so crediting it would read "moved every declared target"
+    # from a measurement that never ran. And that is exactly how a separator
+    # dies when a lot re-anchors it: its apply.sh stops working. The class would
+    # have been reported PROVED by the failure it exists to catch.
+    scored = {v.get("id"): v for v in verdicts if v.get("id") and v.get("valid")}
+    seen_ids = {v.get("id") for v in verdicts if v.get("id")}
+    unproven = []
+    for g in sorted(observed):
+        seps = decls.get(g)
+        if not seps:
+            # Declared twice is not declared once, but it is not UNDECLARED
+            # either — and sending the campaign to write a declaration it has
+            # already written twice is the dead end this file keeps removing.
+            if g in conflicts:
+                unproven.append({"ids": list(g), "conflicting": conflicts[g], "why":
+                                 "this class is declared TWICE with different separators, and "
+                                 "the ids normalise to ONE key — nothing here can say which "
+                                 "adjudication is meant, so neither is used. Keep one."})
+                continue
+            unproven.append({"ids": list(g), "why":
+                             "no `duplicate_groups` entry declares this class. Either a "
+                             "member is redundant — drop it — or the identity is a control, "
+                             "and then it must name the mutant(s) that tell them apart."})
+            continue
+        missing = [m for m in seps if m not in scored]
+        # WITHHELD is not MISSING. In selfcheck the held-out set is deliberately
+        # not scored — `held` is empty by construction — so a separator drawn
+        # from it would be reported "absent from the mutant set", which is false
+        # and which the campaign cannot fix: the mutant IS in the set, its
+        # result is simply reserved for the final gate. Saying so is the whole
+        # difference between a work item and a dead end.
+        if missing and all(m in set(withheld) for m in missing):
+            deferred.append({"ids": list(g), "separated_by": list(seps),
+                             "withheld": sorted(missing), "why":
+                             "every unscored separator belongs to the held-out set, whose "
+                             "verdicts this pass reserves — not scored here, and not scorable "
+                             "here. Neither proved nor refuted until the final gate scores "
+                             "them."})
+            continue
+        if missing:
+            # THREE reasons, and they send the campaign to three different
+            # places. It RAN and came back invalid — the separator is broken,
+            # fix it. It is IN the mutant set but was not reached — scoring
+            # stopped before it, or GM_MUTANTS excluded it; nothing here is the
+            # campaign's to fix, the class is simply not proved yet. It is
+            # genuinely ABSENT — the declaration names a mutant that does not
+            # exist. Collapsing the middle one into "absent from the mutant set"
+            # is a refusal nothing the campaign does can lift, which is the same
+            # dead end WITHHELD-is-not-ABSENT removed one commit earlier.
+            if all(m in seen_ids for m in missing):
+                why = ("ran but came back INVALID — a separator that stops applying "
+                       "is exactly how this class loses its proof")
+            elif all(m in set(in_the_set) for m in missing):
+                why = ("are IN the mutant set but were not scored in this pass — "
+                       "scoring stopped before them%s. The class is not proved yet; "
+                       "nothing in the corpus is wrong" %
+                       (", or GM_MUTANTS excluded them" if restricted else ""))
+            else:
+                why = ("were not scored in this pass (absent from the mutant set%s)"
+                       % (", or excluded by GM_MUTANTS" if restricted else ""))
+            unproven.append({"ids": list(g), "separated_by": list(seps),
+                             "why": "declared separator(s) %s %s"
+                                    % (", ".join(sorted(missing)), why)})
+            continue
+        # One signature per member: which of the declared separators move it.
+        # Pairwise-distinct signatures IS "the references are distinguishable";
+        # anything less leaves two members that no declared mutant separates.
+        sig = {}
+        for m in g:
+            bits = []
+            for sep in seps:
+                v = scored[sep]
+                moved = ((set(v.get("targets_declared") or [])
+                          - set(v.get("undetected_targets") or []))
+                         | set(v.get("collateral") or []))
+                bits.append(m in moved)
+            sig.setdefault(tuple(bits), []).append(m)
+        collided = sorted(sorted(ms) for ms in sig.values() if len(ms) > 1)
+        if collided:
+            unproven.append({"ids": list(g), "separated_by": list(seps),
+                             "indistinguishable": collided, "why":
+                             "every declared separator treats these members identically, so "
+                             "none of them tells the references apart. Draw one that moves a "
+                             "strict subset, or accept that they are redundant."})
+    for g in sorted(set(decls) - observed):
+        unproven.append({"ids": list(g), "separated_by": list(decls[g]), "why":
+                         "declared, but these references are not a byte-identical class — the "
+                         "claim has nothing left to justify. Remove or re-key the declaration."})
+    return unproven
+
+
+def duplicate_groups_refusal(unproven, duplicate_refs, corpus_distinct, corpus_total):
+    """The gate's refusal, phrased over the TWO populations it actually has.
+
+    An OBSERVED byte-identical class that is not discharged is "N of M"; a STALE
+    declaration is unproved precisely BECAUSE its references are no longer
+    identical, so it is not one of the M and can never be. Counted into one
+    ratio the line read "4 reference group(s) are not proved (out of 1
+    byte-identical …)", which is arithmetic nobody can act on — on a gate whose
+    whole point is precise adjudication, a headline that cannot be read is
+    itself the defect.
+
+    Named rather than inline in main() so the self-test drives THIS text and not
+    a re-implementation of it.
+    """
+    observed = {tuple(sorted(g)) for g in duplicate_refs}
+    stale = [u for u in unproven if tuple(sorted(u["ids"])) not in observed]
+    head = []
+    if len(unproven) - len(stale):
+        head.append("%d of %d byte-identical reference group(s) across DIFFERENT entries "
+                    "are not proved (the corpus is %d observations wide, not %d)"
+                    % (len(unproven) - len(stale), len(duplicate_refs),
+                       corpus_distinct, corpus_total))
+    if stale:
+        head.append("%d `duplicate_groups` declaration(s) no longer describe a "
+                    "byte-identical class, so the claim has nothing left to justify"
+                    % len(stale))
+    return ("%s. A group may legitimately repeat — a refusal lane's second entry is a "
+            "control — but the claim is discharged by a mutant that moves part of the "
+            "group and leaves the rest still, declared in `duplicate_groups` and checked "
+            "here: %s" % ("; ".join(head), json.dumps(unproven, ensure_ascii=False)))
 
 
 def control_ids(corpus, targets, seed):
@@ -1674,7 +3723,17 @@ def probe_mutation(meta, ws):
     before_tree, before_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
 
     code, out = apply_mutant(meta, ws)
+    if code == APPLY_REFUSED:
+        # Nothing ran: no half-edit to undo, and the marker down there is
+        # another mutant's record of a tree that is not HEAD — this mutant's
+        # revert.sh over it would erase that record and half-restore the tree.
+        return dict(base, valid=False, detected=False, reason=out[-300:]), "failed"
     if code != 0:
+        # A failed apply may have half-edited the tree, and the marker is
+        # down: revert now, within this run, so neither outlives it — a
+        # marker left here would have the NEXT gate run this revert.sh over
+        # whatever the operator wrote since.
+        revert_mutant(meta, ws)
         return dict(base, valid=False, detected=False,
                     reason="apply.sh exited %s: %s" % (code, out[-300:])), "failed"
 
@@ -1705,7 +3764,26 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
     if meta.get("needs_restart", True):
         app_restart(config, ws)
 
+    # An entry named in a duplicate-group declaration is ALWAYS controlled when
+    # the mutant that claims to separate it runs. The sample is otherwise a
+    # deterministic slice of the corpus, and a member that fell outside it could
+    # move unseen — which is precisely the claim the declaration makes, so the
+    # one measurement that decides it must not be left to the sampling stride.
+    #
+    # Pinned against the CORPUS, and that intersection is load-bearing.
+    # `control_covered` is `len(sample)`, and the gate refuses a mutant whose
+    # coverage is 0 — "collateral: 0" with nothing to control against is vacuous
+    # rather than earned. An id that no entry declares is never captured and
+    # never compared (capture() iterates entries; diverged() reads None on both
+    # sides and calls it equal), so pinning one would have raised the coverage
+    # with a control that does not exist and silenced that refusal. A
+    # declaration naming an id the corpus does not have is refused where it
+    # belongs — as a class nothing observes — not by inflating a count here.
     sample = control_ids(corpus, set(targets), seed)
+    corpus_ids = {e["id"] for e in corpus["entries"]}
+    pinned = (separator_group_ids(corpus, meta.get("id")) & corpus_ids) - set(targets)
+    if pinned:
+        sample = sorted(set(sample) | pinned)
     captured = capture(config, corpus, canon, ids=set(targets) | set(sample))
     moved = diverged(refs, captured, targets)
     verdict["detected"] = bool(moved)
@@ -1858,6 +3936,67 @@ def stability(config, corpus, canon, ws):
 
 # ─── Self-test ──────────────────────────────────────────────────────────────
 
+# ─── Auto-maintenance audit (selftest) ──────────────────────────────────────
+
+_GIT_MAINTENANCE_OFF = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
+def _spawned_program(argv, shell):
+    """The program a Popen actually launches.
+
+    shell=True runs the string through /bin/sh, so the program is the shell —
+    not the first word of the string, which is what a reader assumes and what
+    an audit keyed on argv[0] would record.
+    """
+    if shell:
+        return "sh"
+    if isinstance(argv, (list, tuple)):
+        if not argv:
+            return ""
+        return os.path.basename(str(argv[0]))
+    return os.path.basename(str(argv).split()[0]) if str(argv).strip() else ""
+
+
+def _env_refuses_auto_maintenance(env):
+    """Whether an environment turns BOTH switches off through git's own
+    GIT_CONFIG_* form — the environment every descendant inherits, whatever
+    path it takes to reach git.
+
+    Both switches, not one: `maintenance.auto` is Git >= 2.48 and `gc.auto` is
+    the older one AND the fallback a recent Git consults when the first is
+    absent, so a single switch holds on one version and not the other.
+
+    env is None when the child inherits the parent's — that inherited
+    environment is the one git will actually read, so that is what gets read
+    here. Reading `env or {}` instead would call a correct inherited call
+    faulty.
+    """
+    environ = os.environ if env is None else env
+    try:
+        count = int(environ.get("GIT_CONFIG_COUNT", "0") or "0")
+    except (TypeError, ValueError):
+        count = 0
+    declared = {}
+    for i in range(count):
+        key = environ.get("GIT_CONFIG_KEY_%d" % i)
+        if key:
+            declared[key] = environ.get("GIT_CONFIG_VALUE_%d" % i)
+    return all(declared.get(key) == value for key, value in _GIT_MAINTENANCE_OFF)
+
+
+def _argv_refuses_auto_maintenance(argv):
+    """Whether a git argv turns both switches off with its own `-c` flags.
+
+    The other accepted idiom: the argv is what a call site writes, the
+    environment is what a chokepoint sets for every call site at once.
+    Accepting only the one in use here would refuse the other the day someone
+    moves the guard.
+    """
+    tokens = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+    flags = [tokens[i + 1] for i, a in enumerate(tokens[:-1]) if a == "-c"]
+    return all("%s=%s" % (key, value) in flags for key, value in _GIT_MAINTENANCE_OFF)
+
+
 def _selftest():
     """GM_MODE=selftest — teste la moitie qui DECIDE, pas celle qui compare.
 
@@ -1874,11 +4013,126 @@ def _selftest():
     qui tournent, jamais une reimplementation — qui finirait par diverger d'eux.
     """
     failures, checked = [], [0]
+    skipped_under_root = []
+
+    # A writing git command in a scratch repo detaches `git maintenance run
+    # --auto` (Git >= 2.48), which goes on writing under .git/objects after the
+    # command returned — while the fixture's temp dir is being removed.
+    #
+    # The switches are set HERE, once, in the environment every child git
+    # inherits, rather than at each call site: enumerating the call sites is
+    # what failed. Two sweeps read this file and both missed a helper defined
+    # four hundred lines below fixture_git, inside a block.
+    #
+    # And this does not read the source either — it WATCHES what the selftest
+    # spawns. Popen is the hook because run, call, check_call and check_output
+    # all reach the kernel through it; hooking run alone would leave four forms
+    # unseen. os.system reaches neither and is refused outright rather than
+    # watched, so the door nobody guards fails closed.
+    #
+    # What is judged is not "the git command lines we recognise" — recognising
+    # git by the program name is the same enumeration one level up, and it lets
+    # `env git`, `xargs git` or a git called through a shell variable walk past.
+    # Instead: a WHITELIST of what may be launched at all (git and the shell,
+    # the two the selftest uses — measured: 426 and 236), and the environment
+    # judged on EVERY launch, because that environment is what git reads
+    # whatever path reaches it. A future helper that spawns anything else is
+    # named, not missed.
+    #
+    # Deliberate hostility (`env -i`, unsetting GIT_CONFIG_COUNT inside a
+    # script) is out of scope and stated as such: the adversary here is an
+    # ordinary helper written without knowing the rule, not someone evading it.
+    _git_audit = {"git": 0, "sh": 0, "offenders": []}
+    _real_popen = subprocess.Popen
+    _real_system = os.system
+
+    class _AuditedPopen(_real_popen):
+        def __init__(self, args, *rest, **kw):
+            program = _spawned_program(args, kw.get("shell"))
+            env = kw.get("env")
+            if program not in _git_audit:
+                _git_audit["offenders"].append(
+                    "programme hors liste blanche : %s (%s)" % (program, str(args)[:80]))
+            else:
+                _git_audit[program] += 1
+                if not _env_refuses_auto_maintenance(env) and not (
+                        program == "git" and _argv_refuses_auto_maintenance(args)):
+                    _git_audit["offenders"].append(str(args)[:120])
+            super().__init__(args, *rest, **kw)
+
+    def _refuse_system(command):
+        raise AssertionError(
+            "selftest: os.system(%r) bypasses the git audit — use subprocess" % command)
+
+    # APPENDED after whatever is already declared, never written at index 0:
+    # the engine injects the workspace's safe.directory entry through this same
+    # environment (runtime/sandbox_mounts.go sets GIT_CONFIG_COUNT=1), so
+    # writing slot 0 destroys it and every git of the selftest then refuses the
+    # workspace for dubious ownership. Measured: safe.directory=/tmp/x became
+    # whatever the operator's global config said, or nothing.
+    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0") or "0"
+    try:
+        base_count = int(raw_count)
+    except ValueError:
+        raise SystemExit(
+            "selftest: GIT_CONFIG_COUNT=%r is not a count — refusing to guess "
+            "where to append the auto-maintenance switches" % raw_count)
+    if base_count < 0:
+        raise SystemExit("selftest: GIT_CONFIG_COUNT=%r is negative" % raw_count)
+    # A canary takes the slot a pre-existing declaration would occupy, because
+    # overwriting one is SILENT here: the selftest's own fixtures do not need
+    # safe.directory, so destroying the engine's entry changes nothing it
+    # measures — it only bites in the sandbox, where the workspace is owned by
+    # someone else. What is checked below is that git still resolves the canary
+    # once the switches are in place, which is the same question asked of a
+    # declaration that was there first.
+    canary_key = "iterion.selftestcanary"
+    canary_value = "alive-%d" % os.getpid()
+    saved_git_env = {"GIT_CONFIG_COUNT": os.environ.get("GIT_CONFIG_COUNT")}
+
+    def _declare(slot, key, value):
+        for name, declared in (("GIT_CONFIG_KEY_%d" % slot, key),
+                               ("GIT_CONFIG_VALUE_%d" % slot, value)):
+            saved_git_env.setdefault(name, os.environ.get(name))
+            os.environ[name] = declared
+
+    # The canary is declared FIRST and counted, so that what follows faces a
+    # declaration that was already there — which is the situation in a run,
+    # where the engine has declared the workspace's safe.directory. A canary
+    # placed beside the switches instead would survive its own displacement of
+    # the neighbour, and prove nothing: measured, that version stayed green
+    # under a faithful reproduction of the defect.
+    _declare(base_count, canary_key, canary_value)
+    os.environ["GIT_CONFIG_COUNT"] = str(base_count + 1)
+    declared_count = base_count + 1
+
+    for i, (key, value) in enumerate(_GIT_MAINTENANCE_OFF):
+        _declare(declared_count + i, key, value)
+    os.environ["GIT_CONFIG_COUNT"] = str(declared_count + len(_GIT_MAINTENANCE_OFF))
+    canary_seen = subprocess.run(
+        ["git", "config", "--get-all", canary_key],
+        capture_output=True, text=True).stdout.split()
+    subprocess.Popen = _AuditedPopen
+    os.system = _refuse_system
 
     def check(name, got, want):
         checked[0] += 1
         if got != want:
             failures.append("%s\n    attendu : %r\n    obtenu  : %r" % (name, want, got))
+
+    def fixture_git(repo, *args):
+        # A failed add/commit/reset used to be ignored: the verdict then read
+        # an old tree and acted[0] hid Git's diagnostic behind an IndexError
+        # (#876). Fixture setup must succeed before any rule can be judged.
+        # These disposable repos also must not spawn detached maintenance
+        # while the next scenario resets them (Git >= 2.48).
+        cmd = shlex.join(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                          "-c", "user.email=t@t", "-c", "user.name=t"] + list(args))
+        code, out = run(cmd, repo, timeout=60)
+        if code != 0:
+            raise SystemExit("selftest fixture git failed in %s: %s (exit %s)\n%s"
+                             % (repo, cmd, code, out))
+        return out.strip()
 
     g = globals()
     saved = {k: g[k] for k in ("apply_mutant", "revert_mutant", "tree_fingerprint",
@@ -1901,10 +4155,12 @@ def _selftest():
                 (i in self.moved) if self.applied else (i in self.unstable)) else "")
                 for i in ids}
 
-    def score(targets, sample, moved, unstable=(), revert_code=0):
+    def score(targets, sample, moved, unstable=(), revert_code=0, dup_groups=None):
         ids = ["%03d" % n for n in range(1, 13)]
         refs = {i: "ref-" + i for i in ids}
         corpus = {"entries": [{"id": i, "surface": "http"} for i in ids]}
+        if dup_groups:
+            corpus["duplicate_groups"] = dup_groups
         meta = {"id": "t", "dir": "/dev/null", "class": "code", "surface": "http",
                 "archetype": "value_change", "targets": list(targets), "needs_restart": False}
         w = World(refs, moved, unstable)
@@ -2016,6 +4272,199 @@ def _selftest():
               [x["probe"] for x in missing_corpus_probes(full, deg_cfg)],
               ["auth_case"])
 
+        # 7b. Televersements : un champ FICHIER s'encode en multipart, et la
+        #     frontiere est DERIVEE — deux rejeux de la meme requete rendent
+        #     les memes octets, donc rien de ce que l'application renvoie n'a
+        #     besoin d'etre efface par une regle de canonicalisation.
+        import email.parser
+
+        def parse_multipart(body, ctype):
+            raw = b"Content-Type: " + ctype.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+            msg = email.parser.BytesParser().parsebytes(raw)
+            out = {}
+            for part in msg.get_payload():
+                out[part.get_param("name", header="content-disposition")] = (
+                    part.get_param("filename", header="content-disposition"),
+                    part.get_content_type(),
+                    part.get_payload(decode=True))
+            return out
+
+        check("un champ ordinaire n'est pas un fichier ; un objet nomme l'est",
+              [is_file_part("x"), is_file_part({"a": 1}),
+               is_file_part({"filename": "a.pdf", "text": "x"})],
+              [False, False, True])
+        up = {"titre": "rapport", "doc": {"filename": "a.pdf",
+                                          "content_type": "application/pdf",
+                                          "text": "PDF-ish"}}
+        body, ctype = encode_multipart(up)
+        parsed = parse_multipart(body, ctype)
+        # Relu par un parseur STANDARD, pas par notre propre opinion des octets.
+        check("relu par un parseur standard : le champ, le fichier, son nom et son type",
+              [parsed["titre"][2], parsed["doc"][0], parsed["doc"][1], parsed["doc"][2]],
+              [b"rapport", "a.pdf", "application/pdf", b"PDF-ish"])
+        check("deux encodages de la meme requete rendent les MEMES octets",
+              encode_multipart(up), (body, ctype))
+        # Le piege de la frontiere : une charge utile qui la contient.
+        clash = {"doc": {"filename": "a.txt", "text": "avant\n--%s\napres"
+                         % FILE_PART_BOUNDARY}}
+        cbody, cctype = encode_multipart(clash)
+        check("charge utile contenant la frontiere -> une AUTRE frontiere, deterministe",
+              [FILE_PART_BOUNDARY + "-1" in cctype, encode_multipart(clash) == (cbody, cctype)],
+              [True, True])
+        check("et le corps reste relisible par un parseur standard",
+              parse_multipart(cbody, cctype)["doc"][2],
+              ("avant\n--%s\napres" % FILE_PART_BOUNDARY).encode())
+        check("payload base64 decode, ordre des champs = ordre declare",
+              [parse_multipart(*encode_multipart(
+                  {"doc": {"filename": "a.bin", "b64": "aGVsbG8="}}))["doc"][2],
+               [p.split(b'name="')[1].split(b'"')[0]
+                for p in body.split(b"--" + ctype.split("=")[1].encode())[1:-1]]],
+              [b"hello", [b"titre", b"doc"]])
+        # Le nom DECLARE est le nom qui arrive : un guillemet ne coupe pas le
+        # parametre, un CRLF n'ouvre ni une part ni un en-tete que le corpus
+        # n'a pas declares. Sinon l'application repond a une AUTRE requete que
+        # celle du corpus, et c'est cette reponse-la que la reference grave.
+        # Les trois interpolations, pas seulement celle du nom de fichier : le
+        # NOM DU CHAMP se coupe de la meme facon, et un mutant qui ne relache
+        # que celle-la doit mourir aussi.
+        hostile = {'champ";x="1': "v",
+                   "doc": {"filename": 'a";name="evil.pdf',
+                           "content_type": "text/plain\r\nX-Injecte: 1",
+                           "text": "X"}}
+        hbody, hctype = encode_multipart(hostile)
+        hparsed = parse_multipart(hbody, hctype)
+        check("guillemet dans le nom de champ ET de fichier : parametres entiers",
+              [list(hparsed), hparsed["doc"][0], hparsed["doc"][2]],
+              [['champ%22;x=%221', "doc"], 'a%22;name=%22evil.pdf', b"X"])
+        check("CRLF echappe : aucun en-tete que le corpus n'a pas declare",
+              [b"\r\nX-Injecte:" in hbody, b"%0D%0AX-Injecte:" in hbody],
+              [False, True])
+        # Un type de media n'est pas un parametre quoted-string : `"` y est
+        # une syntaxe legitime. L'echapper emettait un charset que personne
+        # n'avait declare, et la reference enregistrait la reponse de
+        # l'application a une requete que le corpus n'avait pas faite —
+        # en silence, la ou toute autre declaration malformee arrete le run
+        # en la nommant.
+        quoted = {"doc": {"filename": "a.csv", "text": "x",
+                          "content_type": 'text/csv; charset="utf-8"'}}
+        qbody, qctype = encode_multipart(quoted)
+        check("content_type : guillemets intacts, CRLF toujours echappe",
+              [b'Content-Type: text/csv; charset="utf-8"' in qbody,
+               b"%22utf-8%22" in qbody,
+               parse_multipart(qbody, qctype)["doc"][2]],
+              [True, False, b"x"])
+        # Une frontiere ecrite dans un NOM DE FICHIER — la ou un corpus
+        # l'ecrit a la main — entre dans la derivation comme une charge utile.
+        hidden = {"doc": {"filename": "%s.txt" % FILE_PART_BOUNDARY, "text": "X"}}
+        hibody, hictype = encode_multipart(hidden)
+        check("frontiere dans le nom de fichier -> frontiere deplacee, deterministe",
+              [FILE_PART_BOUNDARY + "-1" in hictype,
+               encode_multipart(hidden) == (hibody, hictype),
+               parse_multipart(hibody, hictype)["doc"][0]],
+              [True, True, "%s.txt" % FILE_PART_BOUNDARY])
+        # Et le CHOIX, pas seulement l'encodeur : une session qui parle a un
+        # vrai serveur, parce qu'un encodeur juste que `fetch` n'appelle pas
+        # laisse le defaut exactement ou il etait.
+        import http.server
+        import threading
+
+        received = {}
+
+        class _Echo(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 (stdlib naming)
+                n_ = int(self.headers.get("Content-Length") or 0)
+                received["ctype"] = self.headers.get("Content-Type") or ""
+                received["body"] = self.rfile.read(n_)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *_a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _Echo)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            sess = Session("http://127.0.0.1:%d" % srv.server_address[1])
+            sess.fetch("POST", "/upload", fields={"titre": "r", "doc": {
+                "filename": "a.pdf", "content_type": "application/pdf", "text": "P"}})
+            check("une requete portant un fichier part en multipart, frontiere annoncee",
+                  [received["ctype"].startswith("multipart/form-data; boundary="),
+                   FILE_PART_BOUNDARY in received["ctype"],
+                   b'filename="a.pdf"' in received["body"]],
+                  [True, True, True])
+            sess.fetch("POST", "/plain", fields={"titre": "r"})
+            check("une requete sans fichier reste urlencodee (aucun changement)",
+                  [received["ctype"], received["body"]],
+                  ["application/x-www-form-urlencoded", b"titre=r"])
+            # Le QUASI-MANQUE, et sur le chemin de la requete : un objet dont
+            # `filename` est mal orthographie n'est pas une part fichier et
+            # partait par son repr — le defaut meme que la declaration fichier
+            # existe pour clore, a une faute de frappe pres. Le serveur ne doit
+            # RIEN avoir recu : le refus precede l'envoi.
+            received.clear()
+            try:
+                sess.fetch("POST", "/presque", fields={
+                    "champ": {"file_name": "a.pdf", "text": "X"}})
+                near = "aucun-refus"
+            except SystemExit:
+                near = "SystemExit"
+            check("objet qui n'est pas une part fichier -> refus AVANT tout envoi",
+                  [near, received], ["SystemExit", {}])
+            # Et `null` : urlencode en fait le TEXTE "None", multipart n'en
+            # fait rien. La meme ligne de corpus partirait donc autrement selon
+            # qu'un champ VOISIN est un fichier. `""` dit la meme chose aux
+            # deux ; `null` est refuse plutot que devine.
+            received.clear()
+            try:
+                sess.fetch("POST", "/nul", fields={"note": None})
+                nul = "aucun-refus"
+            except SystemExit:
+                nul = "SystemExit"
+            check("champ null -> refus : les deux encodages ne s'accordent pas",
+                  [nul, received], ["SystemExit", {}])
+            # `""` en revanche est exact, et identique des deux cotes.
+            sess.fetch("POST", "/vide", fields={"note": ""})
+            vide_url = received["body"]
+            sess.fetch("POST", "/vide", fields={"note": "", "doc": {
+                "filename": "a.txt", "text": "P"}})
+            vide_multi = received["body"].split(b"\r\n\r\n")[1].split(b"\r\n--")[0]
+            check('"" dit la meme chose dans les deux encodages',
+                  [vide_url, vide_multi], [b"note=", b""])
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        def refuses(name, fn):
+            try:
+                fn()
+                check(name, "aucun-refus", "SystemExit")
+            except SystemExit:
+                check(name, "SystemExit", "SystemExit")
+        refuses("fichier sans charge utile -> refus nomme",
+                lambda: encode_multipart({"d": {"filename": "a.txt"}}))
+        refuses("base64 invalide -> refus nomme, jamais envoye tel quel",
+                lambda: encode_multipart({"d": {"filename": "a", "b64": "!!!"}}))
+        # Un `b64` non-chaine : `b64decode` repond par un TypeError, pas par
+        # un refus — un corpus mal tape doit lire la ligne a corriger.
+        refuses("b64 non-chaine -> refus nomme, pas une trace d'execution",
+                lambda: encode_multipart({"d": {"filename": "a", "b64": 5}}))
+        # Deux charges utiles declarees : l'une partait en silence, et la
+        # reference gravait la reponse a un fichier que personne n'a choisi.
+        refuses("`text` ET `b64` -> refus nomme, jamais un choix silencieux",
+                lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                "b64": "aGVsbG8="}}))
+        # La faute de frappe probable : l'en-tete HTTP s'ecrit avec un trait
+        # d'union. Declaree ainsi, la part partait en octet-stream et le
+        # corpus se lisait comme s'il avait demande text/csv.
+        refuses("cle inconnue dans une part fichier (`content-type`) -> refus",
+                lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                "content-type": "text/csv"}}))
+        refuses("content_type non-chaine -> refus, jamais un en-tete malforme",
+                lambda: encode_multipart({"d": {"filename": "a", "text": "x",
+                                                "content_type": 5}}))
+
         # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
         routes = [{"method": "GET", "pattern": "/list"},
                   {"method": None, "pattern": "/items/{id}"},
@@ -2110,6 +4559,58 @@ def _selftest():
                       lambda: validate_feature_coverage(
                           {"features": [{"feature": "a", "entries": ["1"]}],
                            "exclusions": [{"feature": "a", "reason": "x"}]}))
+        # 8e-bis. Le filet peut declarer un SECOND environnement pour le meme
+        #     corpus (second moteur, second runtime). GM_CONFIG nomme la
+        #     declaration a juger ; le verdict la porte ; une declaration
+        #     nommee et absente REFUSE, elle ne retombe jamais sur config.json
+        #     — c'est exactement le controle inerte qu'une campagne a mesure :
+        #     l'outcome lancait `GM_CONFIG=config-pg.json` contre un juge qui
+        #     lisait config.json.
+        cdir = tempfile.mkdtemp(prefix="gm-selftest-config-")
+        with open(os.path.join(cdir, "config.json"), "w", encoding="utf-8") as f:
+            f.write('{"seal_committed": true}')
+        with open(os.path.join(cdir, "config-pg.json"), "w", encoding="utf-8") as f:
+            f.write('{"up": "pg-up.sh"}')
+        prev_cfg = os.environ.pop("GM_CONFIG", None)
+        try:
+            check("sans GM_CONFIG : config.json",
+                  [config_name(), os.path.basename(config_path(cdir))],
+                  ["config.json", "config.json"])
+            check("l'opt-in scelle se lit dans la config JUGEE (config.json)",
+                  seal_committed_opted_in(cdir), True)
+            os.environ["GM_CONFIG"] = "config-pg.json"
+            check("GM_CONFIG nomme la declaration jugee",
+                  os.path.basename(config_path(cdir)), "config-pg.json")
+            # Le falsifieur qui compte : la porte du second environnement ne
+            # doit pas consommer le jeu scelle que la premiere s'est reserve.
+            check("l'opt-in du second environnement est le SIEN, pas celui de config.json",
+                  seal_committed_opted_in(cdir), False)
+            os.environ["GM_CONFIG"] = "config-absente.json"
+            named_refusal("config nommee absente -> refus nomme, jamais config.json",
+                          lambda: config_path(cdir))
+            # Le message compte autant que le refus : « chemin » et « absente »
+            # sont deux causes, et un controle qui ne distingue pas laisse
+            # passer la suppression de la garde de chemin (un chemin hors du
+            # filet tombe alors, par hasard, sur « fichier absent »).
+            def refusal_says(name, fn, needle):
+                try:
+                    fn()
+                    check(name, "aucun-refus", "refus contenant %r" % needle)
+                except SystemExit as e:
+                    check(name, needle in str(e), True)
+            for bad in ("../config.json", "a/b.json", ".."):
+                os.environ["GM_CONFIG"] = bad
+                refusal_says("GM_CONFIG=%r -> refuse COMME CHEMIN" % bad,
+                             lambda: config_path(cdir), "is a path")
+            os.environ["GM_CONFIG"] = ""
+            refusal_says("GM_CONFIG vide -> refuse comme vide, pas comme defaut",
+                         lambda: config_path(cdir), "set but empty")
+        finally:
+            if prev_cfg is None:
+                os.environ.pop("GM_CONFIG", None)
+            else:
+                os.environ["GM_CONFIG"] = prev_cfg
+
         prev_env = os.environ.pop("GM_SEAL_COMMITTED", None)
         os.environ["GM_SEAL_COMMITTED"] = "yes"
         try:
@@ -2163,15 +4664,31 @@ def _selftest():
               [True, False])
         repo2 = os.path.join(sroot, "committed")
         gmd2 = mk_holdout(repo2)
-        for cmd in ("git init -q", "git add -A",
-                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
-            run(cmd, repo2, timeout=60)
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(repo2, *args)
         sealed2 = os.path.join(sroot, "sealed2")
         check("jeu committe -> laisse en place, rien de scelle",
               [seal_holdout(gmd2, sealed2),
                os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01")),
                os.path.isdir(sealed2)],
               [False, True, False])
+        # Les deux dettes qu'une figure held-out 0/0 peut porter. Elles ne
+        # sont pas la meme, et aucune n'est un echec : ce sont des etats que
+        # le rapport doit rendre LISIBLES A UNE MACHINE — une chaine de notice
+        # est l'endroit ou les dettes se cachent.
+        check("jeu frais scelle hors de l'arbre -> ephemere ; jeu committe -> non",
+              [sealed_but_ephemeral(False, True), sealed_but_ephemeral(True, True),
+               sealed_but_ephemeral(False, False)],
+              [True, False, False])
+        adir = os.path.join(sroot, "audited", ".golden-master")
+        for cyc, name in (("01a0-un", "m1"), ("01a0-un", "m2"), ("01a0-deux", "m3")):
+            d = os.path.join(adir, "mutants", "audit", cyc, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+        check("cycles depenses comptes par CYCLE, pas par mutant",
+              [spent_cycles(adir), spent_cycles(gmd)], [2, 0])
+
         prev_seal = os.environ.get("GM_SEAL_COMMITTED")
         os.environ["GM_SEAL_COMMITTED"] = "1"
         try:
@@ -2188,9 +4705,8 @@ def _selftest():
         gmd3 = mk_holdout(repo3)
         with open(os.path.join(gmd3, "config.json"), "w", encoding="utf-8") as f:
             f.write('{"seal_committed": true}')
-        for cmd in ("git init -q", "git add -A",
-                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
-            run(cmd, repo3, timeout=60)
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(repo3, *args)
         check("opt-in par config.json -> le jeu committe se scelle",
               [seal_holdout(gmd3, os.path.join(sroot, "sealed3")),
                os.path.isdir(os.path.join(gmd3, "mutants", "holdout", "t01"))],
@@ -2233,33 +4749,1878 @@ def _selftest():
         check("bloc objet SANS id -> escalade nommee, pas un KeyError",
               pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
 
+        # 8e. Extensions : le verdict additions-only, falsifie dans les deux
+        #     sens — une extension legitime DOIT passer, et chaque deguisement
+        #     du vecteur de masquage (reecriture, suppression, retouche,
+        #     collision, entree passee en fraude, registre reecrit) DOIT
+        #     rougir. Un fixture git reel, parce que le verdict se lit en git.
+        xroot = tempfile.mkdtemp(prefix="gm-selftest-ext-")
+        xgm = os.path.join(xroot, ".golden-master")
+        os.makedirs(os.path.join(xgm, "refs"))
+        base_entry = {"id": "1", "method": "GET", "path": "/a", "persona": "p"}
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry]}, f)
+        with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-1\n")
+        for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "seed")):
+            fixture_git(xroot, *args)
+        xbase = fixture_git(xroot, "rev-parse", "HEAD")
+
+        def xledger(*blks):
+            with open(os.path.join(xgm, "EXTENSIONS.md"), "w", encoding="utf-8") as f:
+                f.write("\n".join("<!-- iterion:extension-%s\n%s\n-->" % b
+                                  for b in blks))
+
+        def xcommit(email="t@t"):
+            # fixture_git already sets a committer; a later -c wins, so the
+            # override rides it instead of bypassing the failure check.
+            fixture_git(xroot, "add", "-A")
+            fixture_git(xroot, "-c", "user.email=%s" % email, "commit", "-qm", "x")
+
+        def xrequest(req):
+            """The lot files its request and commits. A fixture that stages a
+            request and its act in ONE commit models a sequence production
+            cannot produce (the parent commits its lot before the subbot
+            starts) — and hides the provenance the verdict checks."""
+            xledger(("request", req))
+            xcommit()
+
+        def xreset():
+            fixture_git(xroot, "reset", "-q", "--hard", xbase)
+            fixture_git(xroot, "clean", "-qfd")
+
+        def xverdict(base):
+            verdict = extension_verdict(xroot, ".golden-master", base)
+            if len(verdict.get("acted", [])) != 1:
+                raise SystemExit("selftest extension fixture expected one acted entry "
+                                 "in %s at base %s; got %s"
+                                 % (xroot, base, json.dumps(verdict, sort_keys=True)))
+            return verdict
+
+        req2 = ('{"id": "E-1", "lot": "L", "type": "add-file",'
+                ' "paths": [".golden-master/refs/2.txt"]}')
+        act2 = ('{"id": "E-1", "lot": "L",'
+                ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+
+        check("pas de registre -> aucune extension pendante",
+              pending_extensions(xgm), [])
+        xledger(("request", req2))
+        check("demande sans acte -> pendante",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        xledger(("request", req2), ("act", act2))
+        check("demande actee -> rien", pending_extensions(xgm), [])
+        xledger(("request", 'pas du json'))
+        check("bloc extension illisible -> escalade nommee",
+              pending_extensions(xgm)[0]["id"], "UNPARSEABLE")
+
+        # Extension legitime : un fichier de ref NEUF, acte, registre commite.
+        xreset()
+        xrequest(req2)
+        xledger(("request", req2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        v = xverdict(xbase)
+        check("add-file legitime -> ok, chemin exempte",
+              [v["acted"][0]["ok"], v["ok_paths"]],
+              [True, [".golden-master/refs/2.txt"]])
+
+        # Un acte deja present A LA BASE n'est pas re-juge : ses ajouts sont
+        # les references de cette base, et les relire comme des reecritures
+        # refuserait tout lot parti d'une base qui contient un acte certifie.
+        xbase_acted = fixture_git(xroot, "rev-parse", "HEAD")
+        with open(os.path.join(xroot, "later.txt"), "w", encoding="utf-8") as f:
+            f.write("a lot landed after the act\n")
+        xcommit()
+        v_after = xverdict(xbase_acted)
+        check("acte present a la base -> ok, acted_at_base, aucun probleme",
+              [v_after["acted"][0]["ok"], v_after["acted"][0].get("acted_at_base"),
+               v_after["acted"][0]["problems"], v_after["problems"]],
+              [True, True, [], []])
+        # ... et la reecriture d'une de ses refs par le lot reste vue par le
+        # verdict d'immutabilite (git diff), pas par le certificat.
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2-reecrite-par-un-lot\n")
+        xcommit()
+        v_touch = xverdict(xbase_acted)
+        check("acte a la base + ref reecrite -> le certificat n'exempte rien",
+              [v_touch["acted"][0]["ok"], v_touch["ok_paths"]], [True, []])
+
+        # 8f. Provenance : un acte doit venir des commits du subbot du filet
+        #     (publies par le parent), ou porter EXACTEMENT le contenu certifie
+        #     (historique reecrit apres le subbot). L'auteur est de la prose.
+        xreset()
+        xrequest(req2)                                   # commit A, le lot
+        xledger(("request", req2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("forge par le lot\n")
+        xcommit(email="lot@run")                         # commit B, le lot acte
+        sha_b = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_b = run("git rev-parse HEAD:.golden-master/refs/2.txt", xroot, timeout=60)[1].strip()
+        v_old = extension_verdict(xroot, ".golden-master", xbase)
+        check("sans provenance (appelant d'avant) : l'auto-acte en deux commits passe encore",
+              v_old["acted"][0]["ok"], True)
+        v_strict = extension_verdict(xroot, ".golden-master", xbase, acted_commits=set())
+        check("provenance stricte, aucun commit du subbot : l'auto-acte est refuse, forge, auteur nomme",
+              [v_strict["acted"][0]["ok"], v_strict["acted"][0].get("forged"),
+               v_strict["acted"][0].get("author"), v_strict["ok_paths"]],
+              [False, True, "lot@run", []])
+        v_sub = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b})
+        check("l'acte introduit par un commit du subbot passe, chemin exempte",
+              [v_sub["acted"][0]["ok"], v_sub["ok_paths"]], [True, [".golden-master/refs/2.txt"]])
+        v_blob = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_b},
+                                   acted_ids={"E-1"})
+        check("sha inconnu mais contenu certifie identique (historique reecrit) : passe",
+              v_blob["acted"][0]["ok"], True)
+        # Le certificat couvre l'ACTE que le subbot a acte, pas n'importe quel
+        # acte nommant un chemin certifie : sans l'id, l'echappatoire par
+        # contenu s'ouvre pour un acte que le subbot n'a jamais rendu.
+        v_noid = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_b})
+        check("meme contenu, acte NON acte par le subbot : refuse",
+              [v_noid["acted"][0]["ok"], v_noid["acted"][0].get("forged")],
+              [False, True])
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("reecrit apres l'acte\n")
+        xcommit(email="lot@run")                         # commit C, le lot reecrit
+        v_rw = extension_verdict(xroot, ".golden-master", xbase, acted_commits={sha_b},
+                                 acted_blobs={".golden-master/refs/2.txt": blob_b})
+        # Refusee sans etre FORGEE : la reparation est un commit (restaurer le
+        # blob certifie), donc le lot doit repasser, pas mourir.
+        check("reference reecrite apres l'acte certifie : refusee, reparable, pas exemptee",
+              [v_rw["acted"][0]["ok"], v_rw["acted"][0].get("forged"), v_rw["ok_paths"]],
+              [False, None, []])
+        v_rw2 = extension_verdict(xroot, ".golden-master", xbase, acted_commits={"0" * 40},
+                                  acted_blobs={".golden-master/refs/2.txt": blob_b})
+        check("sha inconnu ET contenu different : refuse", v_rw2["acted"][0]["ok"], False)
+
+        # Le verdict ANNONCE la regle qu'il a appliquee : sans cet echo, un
+        # filet synchronise avant la provenance repond `extend-verify`, ignore
+        # les deux variables et rend l'ancienne regle — le trou que ce terme
+        # ferme, revenu en silence. L'appelant l'exige (main.bot).
+        check("le verdict annonce la regle appliquee",
+              [v_old.get("provenance"), v_strict.get("provenance"),
+               v_sub.get("provenance"), v_rw2.get("provenance")],
+              ["legacy", "strict", "strict", "strict"])
+
+        # L'AUTO-ACTE EN UN SEUL COMMIT, isole. Le scenario de contrebande
+        # ci-dessous depose la demande et l'acte dans DEUX commits, donc c'est
+        # la regle des commits du subbot qui le refuse — la regle du commit
+        # unique n'y est jamais seule a decider, et un mutant qui la supprime
+        # y survivait (mesure : M3 survivant). Ici le commit qui depose est le
+        # commit du subbot lui-meme, donc tous les autres controles passent :
+        # l'acte est dans acted_commits, l'id est acte, le blob correspond.
+        # Seule la separation des pouvoirs ferme la porte, et elle doit rester
+        # TERMINALE : aucune passe ne defait deux enregistrements deja dans
+        # l'historique.
+        xreset()
+        xledger(("request", req2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("le filet se demande et s'acte tout seul\n")
+        xcommit(email="extend@golden-master.iterion")     # UN commit : demande + acte
+        sha_self = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_self = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                        xroot, timeout=60)[1].strip()
+        v_self = extension_verdict(
+            xroot, ".golden-master", xbase, acted_commits={sha_self},
+            acted_blobs={".golden-master/refs/2.txt": blob_self}, acted_ids={"E-1"})
+        check("demande et acte dans le MEME commit : refuse, forge, rien d'exempte "
+              "(l'acte est pourtant dans les commits du subbot et son blob correspond)",
+              [v_self["acted"][0]["ok"], v_self["acted"][0].get("forged"),
+               v_self["ok_paths"]],
+              [False, True, []])
+
+        # LE SCENARIO DE CONTREBANDE, rejoue en entier : le lot depose DEUX
+        # demandes, le subbot en acte une et REFUSE l'autre, puis le lot
+        # s'acte la refusee en enregistrant le chemin que le subbot a
+        # certifie pour la premiere. Tous les controles de contenu passent —
+        # seul l'id ferme la porte.
+        req_e2 = ('{"id": "E-2", "lot": "L", "type": "add-file",'
+                  ' "paths": [".golden-master/refs/2.txt"]}')
+        act_e2 = ('{"id": "E-2", "lot": "L",'
+                  ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+        xreset()
+        # Les DEUX demandes sont deposees d'abord : l'acte de E-2 arrivera dans
+        # un commit ulterieur, donc la regle du commit unique ne le voit pas —
+        # c'est ce qui rend la contrebande possible.
+        xledger(("request", req2), ("request", req_e2))
+        xcommit()                                        # le lot depose E-1 et E-2
+        xledger(("request", req2), ("request", req_e2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2 certifiee par le subbot\n")
+        xcommit(email="extend@golden-master.iterion")     # le subbot acte E-1, REFUSE E-2
+        sha_sub = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_sub = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                       xroot, timeout=60)[1].strip()
+        xledger(("request", req2), ("request", req_e2),
+                ("act", act2), ("act", act_e2))
+        xcommit(email="lot@run")                          # le lot s'acte la refusee
+        v_smug = extension_verdict(xroot, ".golden-master", xbase,
+                                   acted_commits={sha_sub},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_sub},
+                                   acted_ids={"E-1"})
+        smug = [r for r in v_smug["acted"] if r["id"] == "E-2"][0]
+        check("acte auto-appose sur un chemin certifie pour UNE AUTRE demande : refuse",
+              [smug["ok"], smug.get("forged")], [False, True])
+        check("l'acte du subbot, lui, reste certifie",
+              [r["ok"] for r in v_smug["acted"] if r["id"] == "E-1"], [True])
+
+        # LE DOUBLON D'ACTE, rejoue en entier : la demande du lot declare DEUX
+        # chemins, le subbot en acte UN, puis le lot appose un SECOND bloc
+        # `act` portant le meme id pour le chemin restant. La provenance du
+        # doublon se resout sur le commit du subbot (premier gagnant), donc
+        # sans refus du doublon tout passe et le chemin du lot est exempte.
+        req_two = ('{"id": "E-1", "lot": "L", "type": "add-file",'
+                   ' "paths": [".golden-master/refs/2.txt",'
+                   ' ".golden-master/refs/9.txt"]}')
+        act_one = ('{"id": "E-1", "lot": "L",'
+                   ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+        act_dup = ('{"id": "E-1", "lot": "L",'
+                   ' "recorded_paths": [".golden-master/refs/9.txt"]}')
+        xreset()
+        xledger(("request", req_two))
+        xcommit()                                         # le lot depose
+        xledger(("request", req_two), ("act", act_one))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("acte par le subbot\n")
+        xcommit(email="extend@golden-master.iterion")      # le subbot acte
+        sha_one = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_one = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                       xroot, timeout=60)[1].strip()
+        xledger(("request", req_two), ("act", act_one), ("act", act_dup))
+        with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+            f.write("ecrit par le lot\n")
+        xcommit(email="lot@run")                           # le lot double l'acte
+        v_dup = extension_verdict(xroot, ".golden-master", xbase,
+                                  acted_commits={sha_one},
+                                  acted_blobs={".golden-master/refs/2.txt": blob_one},
+                                  acted_ids={"E-1"})
+        dup = v_dup["acted"][1]
+        check("second bloc `act` de meme id : refuse, reparable, et n'exempte rien",
+              [dup["ok"], dup.get("forged"),
+               ".golden-master/refs/9.txt" in v_dup["ok_paths"]],
+              [False, None, False])
+        check("l'acte du subbot reste certifie, lui",
+              [v_dup["acted"][0]["ok"], v_dup["ok_paths"]],
+              [True, [".golden-master/refs/2.txt"]])
+
+        # LE MEME TROU PAR L'AUTRE BATTANT : au lieu d'apposer un SECOND bloc,
+        # le lot ELARGIT celui du subbot. La provenance se resout premier-gagnant
+        # sur (kind, id), donc `act_sha` reste le commit du subbot quoi qu'il
+        # arrive au bloc ; l'append-only ne fige que le texte sous la base, et le
+        # bloc du subbot est au-dessus. Le chemin ajoute n'a aucun blob certifie
+        # — et une absence de certificat passait, la garde ne mordant que sur un
+        # certificat present.
+        act_widened = ('{"id": "E-1", "lot": "L",'
+                       ' "recorded_paths": [".golden-master/refs/2.txt",'
+                       ' ".golden-master/refs/9.txt"]}')
+        xreset()
+        xledger(("request", req_two))
+        xcommit()                                          # le lot depose
+        xledger(("request", req_two), ("act", act_one))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("acte par le subbot\n")
+        xcommit(email="extend@golden-master.iterion")      # le subbot acte
+        sha_w = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+        blob_w = run("git rev-parse HEAD:.golden-master/refs/2.txt",
+                     xroot, timeout=60)[1].strip()
+        xledger(("request", req_two), ("act", act_widened))
+        with open(os.path.join(xgm, "refs", "9.txt"), "w", encoding="utf-8") as f:
+            f.write("ecrit par le lot\n")
+        xcommit(email="lot@run")                           # le lot elargit l'acte
+        v_wide = extension_verdict(xroot, ".golden-master", xbase,
+                                   acted_commits={sha_w},
+                                   acted_blobs={".golden-master/refs/2.txt": blob_w},
+                                   acted_ids={"E-1"})
+        wide = v_wide["acted"][0]
+        check("bloc `act` du subbot elargi apres coup : refuse, reparable, "
+              "et le chemin ajoute n'est pas exempte",
+              [wide["ok"], wide.get("forged"),
+               ".golden-master/refs/9.txt" in v_wide["ok_paths"]],
+              [False, None, False])
+        check("et le chemin que le subbot a bien certifie n'exempte plus rien "
+              "non plus : c'est l'acte entier qui est refuse",
+              v_wide["ok_paths"], [])
+
+        # Un acte qui n'enregistre QUE le registre : aucun chemin de surface
+        # a certifier, donc aucune echappatoire par contenu.
+        xreset()
+        xrequest(req2)
+        xledger(("request", req2),
+                ("act", '{"id": "E-1", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/EXTENSIONS.md"]}'))
+        xcommit(email="lot@run")
+        v_led = extension_verdict(xroot, ".golden-master", xbase,
+                                  acted_commits=set(), acted_blobs={})
+        check("acte n'enregistrant que le registre, hors commits du subbot : forge",
+              [v_led["acted"][0]["ok"], v_led["acted"][0].get("forged")],
+              [False, True])
+
+        # Reecriture deguisee : la ref existait a la base.
+        xreset()
+        xledger(("request", '{"id": "E-1", "lot": "L", "paths": [".golden-master/refs/1.txt"]}'),
+                ("act", '{"id": "E-1", "lot": "L", "recorded_paths": [".golden-master/refs/1.txt"]}'))
+        with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-1-reecrite\n")
+        xcommit()
+        check("reecriture deguisee en ajout -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Suppression enregistree : le chemin manque a HEAD (le cote delete
+        # d'un renommage perd exactement ici).
+        xreset()
+        xledger(("request", req2), ("act", act2))
+        xcommit()
+        check("chemin enregistre absent a HEAD (delete/rename) -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Entree de corpus legitime, revendiquee par la demande.
+        xreset()
+        new_entry = {"id": "2", "method": "GET", "path": "/b", "persona": "p"}
+        xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                 ' "corpus_entries": [{"id": "2"}]}')
+        xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
+                            ' "corpus_entries": [{"id": "2"}]}'),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, new_entry]}, f)
+        xcommit()
+        check("add-entry legitime et revendiquee -> ok",
+              xverdict(xbase)["acted"][0]["ok"], True)
+
+        # La meme demande dans l'orthographe du registre de re-baseline
+        # (`expected_paths` + `entries` en identifiants) : lue au meme point,
+        # jugee pareil. Mesure : toute demande conforme a un en-tete de
+        # registre ecrit dans cet idiome etait jugee « smuggled ».
+        xreset()
+        req_taught = ('{"id": "E-2", "lot": "L", "entries": ["2"],'
+                      ' "expected_paths": [".golden-master/refs/2.txt"]}')
+        xrequest(req_taught)
+        xledger(("request", req_taught),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json",'
+                        ' ".golden-master/refs/2.txt"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, new_entry]}, f)
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        check("demande ecrite comme le registre de re-baseline l'enseigne -> ok",
+              xverdict(xbase)["acted"][0]["ok"], True)
+
+        # Retouche d'une entree existante sous couvert d'ajout.
+        xreset()
+        xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        touched = dict(base_entry, path="/a-bougee")
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [touched, new_entry]}, f)
+        xcommit()
+        check("entree existante retouchee -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Collision : la « nouvelle » entree observe le meme tuple qu'une
+        # existante — deux references pour une observation.
+        xreset()
+        collider = dict(base_entry, id="9")
+        xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                ("act", '{"id": "E-3", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, collider]}, f)
+        xcommit()
+        check("collision de tuple d'observation -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Entree passee en fraude : ajoutee au corpus, revendiquee par
+        # personne.
+        xreset()
+        smuggled = {"id": "8", "method": "GET", "path": "/c", "persona": "p"}
+        xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, new_entry, smuggled]}, f)
+        xcommit()
+        check("entree non revendiquee a cote d'une actee -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Chemin hors surface : le canon est le territoire du juge.
+        xreset()
+        xledger(("request", '{"id": "E-4", "lot": "L", "paths": [".golden-master/canon/x.py"]}'),
+                ("act", '{"id": "E-4", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/canon/x.py"]}'))
+        os.makedirs(os.path.join(xgm, "canon"), exist_ok=True)
+        with open(os.path.join(xgm, "canon", "x.py"), "w", encoding="utf-8") as f:
+            f.write("# neuf\n")
+        xcommit()
+        check("chemin hors refs/+corpus (canon) -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Registre reecrit : un registre COMMITTE a la base n'est plus un
+        # prefixe de HEAD. (Un registre ne EXISTANT PAS a la base rend ce
+        # check vacueux par construction — la, c'est « acte sans demande »
+        # qui tient la ligne, teste plus bas.)
+        xreset()
+        xledger(("request", req2))
+        xcommit()
+        xbase2 = fixture_git(xroot, "rev-parse", "HEAD")
+        xledger(("act", act2))  # la demande a disparu : trail edite
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        v = xverdict(xbase2)
+        check("registre committe puis reecrit -> append_only faux et acte refuse",
+              [v["ledger_append_only"], v["acted"][0]["ok"]],
+              [False, False])
+
+        # Acte sans demande : il n'acte rien.
+        xreset()
+        xledger(("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        # Un acte introduit par le commit qui depose sa propre demande : le
+        # lot a filed and answered, le subbot du filet n'a jamais juge.
+        xreset()
+        xledger(("request", req2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        v_self = xverdict(xbase)
+        check("demande et acte dans UN commit (le lot s'auto-sert) -> refuse",
+              [v_self["acted"][0]["ok"], v_self["ok_paths"]], [False, []])
+
+        # Un acte qui n'enregistre que le registre : il ne laisse pas la
+        # demande pendante, et il n'est pas certifie.
+        xreset()
+        ledger_only = ('{"id": "E-1", "lot": "L", "recorded_paths":'
+                       ' [".golden-master/EXTENSIONS.md"]}')
+        xrequest(req2)
+        xledger(("request", req2), ("act", ledger_only))
+        xcommit()
+        check("acte n'enregistrant QUE le registre -> la demande RESTE pendante",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        check("acte n'enregistrant QUE le registre -> refuse",
+              xverdict(xbase)["acted"][0]["ok"],
+              False)
+
+        # Un scalaire la ou le juge itere : le bloc devient refusable, il ne
+        # fait plus tomber le verdict (qui etait lu comme "rien a refuser").
+        xreset()
+        scalar_act = '{"id": "E-1", "lot": "L", "recorded_paths": 1}'
+        xrequest(req2)
+        xledger(("request", req2), ("act", scalar_act))
+        xcommit()
+        check("recorded_paths scalaire -> la demande RESTE pendante, pas de crash",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        v_scalar = xverdict(xbase)
+        check("recorded_paths scalaire -> verdict rendu et acte refuse",
+              ["error" not in v_scalar, v_scalar["acted"][0]["ok"]], [True, False])
+
+        # Deux entrees d'assets aux prefixes DISTINCTS observent deux choses
+        # differentes : refuser l'ajout serait un faux positif bloquant.
+        a1 = {"id": "a1", "surface": "asset", "persona": "p",
+              "static_prefix": "s/", "template_prefix": "t/"}
+        a2 = {"id": "a2", "surface": "asset", "persona": "p",
+              "static_prefix": "admin-s/", "template_prefix": "admin-t/"}
+        check("deux entrees asset a prefixes distincts -> pas de collision",
+              _entry_observation_key(a1) == _entry_observation_key(a2), False)
+
+        check("acte sans demande -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # 8f. Les refus arraches par la revue adversariale — chaque
+        #     deguisement executee contre le verdict doit rester rouge.
+
+        # Un acte VIDE ne ferme pas le terme de conjonction : quatre lignes
+        # de JSON suffiraient a la partie contrainte pour eteindre la porte.
+        xledger(("request", req2), ("act", '{"id": "E-1", "lot": "L"}'))
+        check("acte sans recorded_paths -> la demande RESTE pendante",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        xledger(("request", req2),
+                ("act", '{"id": "E-1", "lot": "L", "recorded_paths": []}'))
+        check("acte a recorded_paths vide -> la demande RESTE pendante",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+
+        # Un symlink sous refs/ : son contenu est sa cible, la prochaine
+        # passe record ecrit A TRAVERS lui sur une reference existante.
+        xreset()
+        xledger(("request", req2), ("act", act2))
+        os.symlink("1.txt", os.path.join(xgm, "refs", "2.txt"))
+        xcommit()
+        check("symlink sous refs/ -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Un chemin refs/ enregistre mais non declare par la demande.
+        xreset()
+        xledger(("request", req2),
+                ("act", '{"id": "E-1", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/refs/3.txt"]}'))
+        with open(os.path.join(xgm, "refs", "3.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-3\n")
+        xcommit()
+        check("ref ajoutee non declaree par la demande -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # LE CANAL DE DECLARATION : le lot qui AJOUTE une entree est celui qui
+        # peut creer une nouvelle paire byte-identique, donc celui a qui la
+        # porte demande de declarer son separateur. Si le juge d'extension gelait
+        # cette cle, la porte nommerait un remede qu'un autre juge refuse — le
+        # defaut que le canal existe pour supprimer, simplement deplace.
+        xreset()
+        dup_entry = dict(base_entry, id="7", path="/dup")
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1", "7"],
+                                             "separated_by": "sep-x"}]}, f)
+        xcommit()
+        _vd = xverdict(xbase)["acted"][0]
+        check("declarer un groupe de doublons n'est PAS un gel viole",
+              [pb for pb in _vd["problems"] if "keys outside" in pb], [])
+        # Et le gel tient pour tout le reste : une cle voisine refuse toujours.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry], "baseline": "reecrite"}, f)
+        xcommit()
+        check("mais toute AUTRE cle hors `entries` reste gelee",
+              any("keys outside" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Une declaration malformee est refusee ICI plutot que jetee en silence
+        # par le lecteur, ou elle se lirait comme « aucune declaration ».
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": [{"ids": ["1"], "separated_by": ""}]}, f)
+        xcommit()
+        check("une declaration malformee est refusee, pas ignoree",
+              any("malformed" in pb
+                  for pb in xverdict(xbase)["acted"][0]["problems"]), True)
+        # Et le CONTENEUR lui-meme : `duplicate_groups: 5` faisait lever un
+        # TypeError a la boucle ecrite a la main ici — ce juge tourne hors du
+        # try/finally de la porte, donc aucun mutant n'est abandonne, mais le
+        # mode imprimait une traceback la ou la campagne attend son verdict.
+        xreset()
+        xledger(("request", '{"id": "E-D", "lot": "L", "corpus_entries": [{"id": "7"}]}'),
+                ("act", '{"id": "E-D", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dup_entry],
+                       "duplicate_groups": 5}, f)
+        xcommit()
+        try:
+            _cv, _craised = xverdict(xbase)["acted"][0], ""
+        except Exception as e:                          # noqa: BLE001 - c'est le test
+            _cv, _craised = {}, "%s: %s" % (type(e).__name__, e)
+        check("un `duplicate_groups` non-liste refuse, il ne fait pas planter le juge",
+              [_craised, any("not a list" in pb for pb in _cv.get("problems") or [])],
+              ["", True])
+
+        # LE CANAL N'EST PAS UN DROIT DE REVISION. La cle est liberee du gel
+        # parce que le lot qui AJOUTE une entree est celui qui peut creer une
+        # nouvelle classe byte-identique. AJOUTER une declaration est verifie —
+        # un separateur bidon est refuse a la porte par la mesure. La REECRIRE
+        # ou la SUPPRIMER n'est verifie par rien : echanger un separateur
+        # valide contre un autre separateur valide rejuge en silence la classe
+        # d'un autre lot, et une suppression rouvre le refus « doublon non
+        # declare » pour le suivant.
+        xreset()
+        dg_a, dg_b = dict(base_entry, id="20"), dict(base_entry, id="21")
+        dg_c = dict(base_entry, id="22")
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, dg_a, dg_b],
+                       "duplicate_groups": [{"ids": ["20", "21"],
+                                             "separated_by": "sep-old"}]}, f)
+        xcommit()
+        xbase_dg = fixture_git(xroot, "rev-parse", "HEAD")
+
+        def xdg(groups):
+            """Un lot qui ajoute l'entree 22, sur une base qui PORTE deja une
+            declaration — et qui touche `duplicate_groups` comme indique."""
+            fixture_git(xroot, "reset", "-q", "--hard", xbase_dg)
+            fixture_git(xroot, "clean", "-qfd")
+            xledger(("request",
+                     '{"id": "E-G", "lot": "L", "corpus_entries": [{"id": "22"}]}'),
+                    ("act", '{"id": "E-G", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, dg_a, dg_b, dg_c],
+                           "duplicate_groups": groups}, f)
+            xcommit()
+            return xverdict(xbase_dg)["acted"][0]["problems"]
+
+        check("echanger un separateur valide contre un autre : REFUSE",
+              any("RE-ADJUDICATED" in pb
+                  for pb in xdg([{"ids": ["20", "21"],
+                                  "separated_by": "sep-new"}])), True)
+        check("supprimer la declaration d'un autre lot : REFUSE",
+              any("WITHDRAWN" in pb for pb in xdg([])), True)
+        # Le cas legitime que l'exemption existe pour servir : l'entree ajoutee
+        # REJOINT la classe, qui se recle en sur-ensemble et peut demander un
+        # separateur de plus pour garder les membres distinguables deux a deux.
+        check("une entree ajoutee qui rejoint la classe la recle sans refus",
+              [pb for pb in xdg([{"ids": ["20", "21", "22"],
+                                  "separated_by": ["sep-old", "sep-2"]}])
+               if "duplicate_groups" in pb], [])
+        # Et DECLARER reste libre : ajouter une classe neuve ne touche a
+        # l'adjudication de personne.
+        check("declarer une classe neuve reste libre",
+              [pb for pb in xdg([{"ids": ["20", "21"], "separated_by": "sep-old"},
+                                 {"ids": ["1", "22"], "separated_by": "sep-3"}])
+               if "duplicate_groups" in pb], [])
+
+        # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
+        xreset()
+        xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "1"}]}'),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        twin = dict(base_entry, path="/detournee")
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [twin, base_entry]}, f)
+        xcommit()
+        check("id duplique dans le corpus -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Une cle cosmetique ne neutralise pas la collision d'observation.
+        xreset()
+        cosmetic = dict(base_entry, id="9", note="differente en apparence")
+        xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                ("act", '{"id": "E-3", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, cosmetic]}, f)
+        xcommit()
+        check("collision masquee par une cle cosmetique -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Une base irresoluble ne tamponne rien : elle refuse.
+        check("GM_BASE irresoluble -> erreur, pas un laissez-passer",
+              "error" in extension_verdict(xroot, ".golden-master", "d" * 40), True)
+
+        # Un corpus malforme refuse, il ne crashe pas.
+        xreset()
+        xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                ("act", '{"id": "E-2", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            f.write('{"entries": {"E1": {}}}')
+        xcommit()
+        check("corpus malforme -> refuse, pas une traceback",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # 8g. Les refus du tour de CONSOLIDATION — la classe id-derive-un-
+        #     chemin et la cle sensible a la presence, plus le flux add-entry
+        #     legitime que le durcissement du tour 1 avait ferme.
+
+        # Un id ajoute portant un separateur derive refs/<id>.txt HORS de
+        # refs/ — le jumeau corpus du symlink.
+        xreset()
+        traversal = {"id": "../refs/1", "method": "GET", "path": "/t", "persona": "p"}
+        xledger(("request", '{"id": "E-5", "lot": "L", "corpus_entries": [{"id": "../refs/1"}]}'),
+                ("act", '{"id": "E-5", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, traversal]}, f)
+        xcommit()
+        check("id en traversee (../refs/1) -> refuse",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # La PRESENCE d'un champ allowliste vide ne scinde pas la cle.
+        xreset()
+        present_twin = dict(base_entry, id="9", query="")
+        xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                ("act", '{"id": "E-3", "lot": "L",'
+                        ' "recorded_paths": [".golden-master/corpus.json"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, present_twin]}, f)
+        xcommit()
+        check("collision masquee par un champ allowliste VIDE -> refusee",
+              xverdict(xbase)["acted"][0]["ok"], False)
+
+        # Le flux add-entry LEGITIME : l'entree revendiquee revendique sa
+        # reference derivee — corpus.json ET refs/2.txt exemptes, sans
+        # `paths` dans la demande (la forme que la doctrine prescrit).
+        xreset()
+        xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                 ' "corpus_entries": [{"id": "2"}]}')
+        xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
+                            ' "corpus_entries": [{"id": "2"}]}'),
+                ("act", '{"id": "E-2", "lot": "L", "recorded_paths":'
+                        ' [".golden-master/corpus.json", ".golden-master/refs/2.txt"]}'))
+        with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+            json.dump({"entries": [base_entry, new_entry]}, f)
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        v = xverdict(xbase)
+        check("add-entry avec sa ref derivee, sans `paths` -> ok, les deux exemptes",
+              [v["acted"][0]["ok"], v["ok_paths"]],
+              [True, [".golden-master/corpus.json", ".golden-master/refs/2.txt"]])
+
         # 9. Scellement : derivable partout, jamais dans le parent du worktree
         #    (lecture seule en sandbox), et sans collision entre worktrees
         #    freres qui partagent le meme basename.
         saved_env = {k: os.environ.get(k) for k in ("GM_SEALED_DIR", "GM_SCRATCH")}
         os.environ.pop("GM_SEALED_DIR", None)
         os.environ.pop("GM_SCRATCH", None)
-        a, b = sealed_dir_for("/w/replay/poss"), sealed_dir_for("/w/replay2/poss")
+        a, b = sealed_dir_for("/w/replay/app"), sealed_dir_for("/w/replay2/app")
         check("meme basename, deux worktrees -> deux piles", a != b, True)
         check("la pile ne vit pas dans le parent du worktree",
               a.startswith("/w/"), False)
         check("deux processus, meme workspace -> meme pile",
-              sealed_dir_for("/w/replay/poss") == a, True)
+              sealed_dir_for("/w/replay/app") == a, True)
         os.environ["GM_SEALED_DIR"] = "/elsewhere/pile"
         check("GM_SEALED_DIR impose sa pile", sealed_dir_for("/w/x"), "/elsewhere/pile")
         for k, v in saved_env.items():
             os.environ.pop(k, None)
             if v is not None:
                 os.environ[k] = v
+        # ── Un mutant laisse APPLIQUE par une porte interrompue est reverti au
+        # demarrage de la suivante. Les VRAIS apply/revert et empreintes, sur un
+        # vrai depot : c'est le marqueur et le nettoyage qui sont juges, pas leur
+        # doublure.
+        g.update(apply_mutant=saved["apply_mutant"], revert_mutant=saved["revert_mutant"],
+                 tree_fingerprint=saved["tree_fingerprint"], data_fingerprint=saved["data_fingerprint"])
+        tmp = tempfile.mkdtemp(prefix="gm-leftover-")
+        outside = tempfile.mkdtemp(prefix="gm-outside-")
+        saved_scratch = os.environ.get("GM_SCRATCH")
+        os.environ["GM_SCRATCH"] = tempfile.mkdtemp(prefix="gm-scratch-")
+        try:
+            def sub(*a):
+                # Same reason fixture_git carries them: this repo is a temp dir
+                # deleted on the way out, and a writing command (init, add,
+                # commit, checkout) detaches `git maintenance run --auto`, which
+                # goes on writing under .git/objects afterwards. Both buttons:
+                # maintenance.auto is Git >= 2.48, gc.auto is the older one AND
+                # what a recent Git falls back to when the first is absent — the
+                # local Git here is 2.43, so one button alone would hold on one
+                # version and not the other.
+                if a and a[0] == "git":
+                    a = ("git", "-c", "gc.auto=0", "-c", "maintenance.auto=false") + tuple(a[1:])
+                return subprocess.run(a, cwd=tmp, capture_output=True, text=True, check=True)
+            sub("git", "init", "-q")
+            sub("git", "config", "user.email", "t@t")
+            sub("git", "config", "user.name", "t")
+            with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as f:
+                f.write("original\n")
+            # Les repertoires de mutants de ce test vivent DANS l'arbre, non suivis :
+            # ignores des le depart, sinon leur listing (que le test reecrit) lit
+            # comme un chemin modifie.
+            with open(os.path.join(tmp, ".gitignore"), "w", encoding="utf-8") as f:
+                f.write("m1/\nm2/\n")
+            sub("git", "add", "f.txt", ".gitignore")
+            sub("git", "commit", "-qm", "seed")
+            mdir = os.path.join(tmp, "m1")
+            os.makedirs(mdir)
+
+            def scripts(apply_body, revert_body):
+                with open(os.path.join(mdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\n" + apply_body + "\n")
+                with open(os.path.join(mdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\n" + revert_body + "\n")
+
+            def tree():
+                with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as f:
+                    return f.read()
+
+            def clear_marker():
+                # Tolerant on purpose: a mutant on the drop rules must fail as
+                # CHECKS, not as an OSError that takes the whole self-test with it.
+                try:
+                    os.remove(applied_marker_for(tmp))
+                except OSError:
+                    pass
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            lmeta = {"id": "leftover-1", "dir": mdir}
+            code, _out = apply_mutant(lmeta, tmp)
+            check("apply.sh tourne", code, 0)
+            check("le marqueur d'application est pose", os.path.isfile(applied_marker_for(tmp)), True)
+            check("le marqueur vit dans le git-dir de l'arbre, hors de ce qui est juge",
+                  [applied_marker_for(tmp).startswith(os.path.realpath(os.path.join(tmp, ".git")) + os.sep),
+                   "gm-applied" in sub("git", "status", "--porcelain").stdout],
+                  [True, False])
+            nogit = tempfile.mkdtemp(prefix="gm-nogit-")
+            try:
+                check("sans depot git, le marqueur retombe sous GM_SCRATCH",
+                      applied_marker_for(nogit).startswith(os.environ["GM_SCRATCH"]), True)
+            finally:
+                shutil.rmtree(nogit, ignore_errors=True)
+            # Interruption ici : pas de revert. La porte suivante nettoie.
+            left = revert_leftover_mutant(tmp)
+            check("le mutant laisse applique est identifie", (left or {}).get("id"), "leftover-1")
+            check("l'arbre est revenu a HEAD", tree(), "original\n")
+            check("le marqueur est efface apres un revert propre", os.path.isfile(applied_marker_for(tmp)), False)
+            check("rien a revertir la seconde fois", revert_leftover_mutant(tmp), None)
+            check("disposition d'un revert propre", leftover_disposition(left or {})[0], "reverted")
+            # Le chemin nominal efface aussi le marqueur.
+            apply_mutant(lmeta, tmp)
+            revert_mutant(lmeta, tmp)
+            check("le revert nominal efface le marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+            # Un revert qui ECHOUE garde le marqueur : la porte suivante le redira.
+            scripts("printf 'mutant\\n' >> f.txt", "exit 3")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un revert en echec est signale avec son code", (left or {}).get("code"), 3)
+            check("le marqueur reste tant que rien n'est reverti", os.path.isfile(applied_marker_for(tmp)), True)
+            check("disposition d'un revert en echec : l'arbre est encore mute",
+                  leftover_disposition(left or {})[0], "still_mutated")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            left = revert_leftover_mutant(tmp)
+            check("le revert repare nettoie et efface", [tree(), os.path.isfile(applied_marker_for(tmp))],
+                  ["original\n", False])
+            # Un revert.sh disparu est signale, pas tu — et le marqueur reste.
+            apply_mutant(lmeta, tmp)
+            os.remove(os.path.join(mdir, "revert.sh"))
+            left = revert_leftover_mutant(tmp)
+            check("un mutant dont revert.sh a disparu est signale, pas tu",
+                  [(left or {}).get("id"), left is not None and left.get("code") is None,
+                   "revert.sh" in ((left or {}).get("out") or "")],
+                  ["leftover-1", True, True])
+            check("son marqueur reste", os.path.isfile(applied_marker_for(tmp)), True)
+            check("disposition d'un revert.sh disparu", leftover_disposition(left or {})[0], "still_mutated")
+            clear_marker()
+            sub("git", "checkout", "--", "f.txt")
+            # Une application qui ECHOUE nettoie l'arbre et le marqueur dans son propre run.
+            scripts("printf 'half\\n' >> f.txt; exit 1", "git checkout -- f.txt")
+            verdict, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+            check("une application en echec est un mutant 'failed'", state, "failed")
+            check("elle a reverti l'arbre", tree(), "original\n")
+            check("et efface son marqueur", os.path.isfile(applied_marker_for(tmp)), False)
+            # LE SIGNAL D'ARRET EST L'ENREGISTREMENT, PAS `revert_clean`. Un
+            # mutant INERTE — son point d'appui a disparu sous une modernisation
+            # legitime, apply.sh ne mute plus rien — dont le revert.sh echoue
+            # (`git checkout` d'un fichier que le lot a supprime) laisse un
+            # enregistrement arme, et sa branche ne pose JAMAIS `revert_clean` :
+            # la boucle continuait, chaque mutant suivant revenait INVALIDE en
+            # nommant le coupable, et les comptes decrivaient un lot que
+            # personne n'avait mesure.
+            scripts("exit 0", "exit 1")
+            v_inert, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+            check("un mutant qui ne mute rien est 'inert'", state, "inert")
+            revert_mutant(lmeta, tmp)   # ce que fait la branche inerte de score_mutant
+            check("son revert en echec laisse l'enregistrement arme",
+                  [("revert_clean" in v_inert), leftover_on_record(tmp)], [False, True])
+            check("et le classement S'ARRETE dessus, sans `revert_clean`",
+                  scoring_must_stop(v_inert, tmp), True)
+            check("l'application suivante est de toute facon refusee",
+                  apply_mutant(lmeta, tmp)[0], APPLY_REFUSED)
+            # LE SILENCE N'EST PAS UNE PREUVE DE PROPRETE. `revert_clean` n'est
+            # ecrit que par le chemin complet ; les trois branches qui n'y
+            # arrivent pas ne disent rien, et lire ce silence comme « propre »
+            # rendait VERTE une porte sur un arbre que le harnais venait de
+            # laisser mute, marqueur arme. Mesure : apply.sh mi-edite puis sort
+            # 7, revert.sh sort 1 -> score 100 %, revert_clean vrai, held-out
+            # 0/0, GREEN, `git status` = `M f.txt`.
+            check("un mutant enregistre interdit d'annoncer un revert propre",
+                  overall_revert_clean([{"revert_clean": True}], None, tmp), False)
+            check("un classement arrete aussi, quoi que disent les verdicts",
+                  overall_revert_clean([{"revert_clean": True}], {"id": "x"}, tmp), False)
+            clear_marker()
+            check("rien d'enregistre, un verdict propre : le classement continue",
+                  [leftover_on_record(tmp), scoring_must_stop({"revert_clean": True}, tmp)],
+                  [False, False])
+            check("un revert sale arrete le classement meme sans enregistrement",
+                  scoring_must_stop({"revert_clean": False}, tmp), True)
+            # Une ECRITURE qui echoue ne laisse pas de coquille. O_CREAT a
+            # reussi, l'ecriture non (racine scratch pleine) : le fichier vide
+            # reste, et la porte suivante le lit comme un marqueur corrompu —
+            # `unusable`, bail, toute application refusee — pour un mutant qui
+            # n'a JAMAIS ete applique. Une racine pleine un instant coincait la
+            # porte definitivement. RLIMIT_FSIZE=0 tient lieu d'ENOSPC.
+            # Import local : `resource` est POSIX-seulement et seul l'autotest
+            # s'en sert — en tete de fichier il ferait echouer l'IMPORT du
+            # harnais la ou il manque, au lieu d'un seul controle.
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            try:
+                resource.setrlimit(resource.RLIMIT_FSIZE, (0, hard))
+                ok_w, why_w = write_applied_marker(tmp, lmeta)
+            finally:
+                resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+            check("une ecriture de marqueur qui echoue refuse l'application",
+                  [ok_w, "cannot write" in why_w], [False, True])
+            check("et ne laisse aucune coquille derriere elle",
+                  [os.path.exists(applied_marker_for(tmp)), leftover_on_record(tmp)],
+                  [False, False])
+            # Un marqueur dont les CHAMPS ne sont pas des chaines : `dir` part
+            # directement dans realpath et os.path.join. Un nombre, une liste,
+            # une chaine avec un NUL -> exception hors de main(), et le harnais
+            # imprime une trace de pile la ou la campagne attend son unique
+            # verdict JSON. Refuse comme un marqueur illisible, pas subi.
+            os.makedirs(os.path.dirname(applied_marker_for(tmp)), mode=0o700, exist_ok=True)
+            for label, payload in (("un nombre", '{"id": "x", "dir": 5}'),
+                                   ("une liste", '{"id": "x", "dir": ["a"]}'),
+                                   ("un NUL", '{"id": "x", "dir": "/a\\u0000b"}'),
+                                   ("un id non-chaine", '{"id": 7, "dir": "%s"}' % mdir)):
+                with open(applied_marker_for(tmp), "w", encoding="utf-8") as f:
+                    f.write(payload)
+                try:
+                    got, raised = revert_leftover_mutant(tmp), ""
+                except Exception as e:                  # noqa: BLE001 - c'est le test
+                    got, raised = None, "%s: %s" % (type(e).__name__, e)
+                check("marqueur dont un champ est %s : refuse, pas subi" % label,
+                      [raised, (got or {}).get("refused"),
+                       leftover_disposition(got or {})[0]], ["", "slot", "unusable"])
+                clear_marker()
+            check("arbre sain, verdicts sains : le revert est annonce propre",
+                  overall_revert_clean([{"revert_clean": True}, {}], None, tmp), True)
+            check("un seul verdict sale suffit a le nier",
+                  overall_revert_clean([{"revert_clean": True}, {"revert_clean": False}],
+                                       None, tmp), False)
+            sub("git", "checkout", "--", "f.txt")
+            # Seule la disposition « reverti » laisse passer la porte. Le lien entre
+            # la decision et son consommateur est CETTE constante, pas trois lignes
+            # de main() que rien ne conduit.
+            check("seule une disposition 'reverted' laisse passer la porte",
+                  [k in LEFTOVER_BAIL_KINDS
+                   for k in ("still_mutated", "unusable", "refused", "reverted")],
+                  [True, True, True, False])
+            # Un marqueur qui nomme un repertoire que le harnais ne RECONNAIT pas :
+            # rien n'est execute, et rien n'est efface non plus. Lire n'est pas
+            # decider — le marqueur est pose AVANT apply.sh, donc son existence dit
+            # que l'arbre est (ou peut etre) mute, quoi que ce repertoire designe
+            # aujourd'hui. L'effacer detruisait la seule trace, et la porte
+            # continuait sur un arbre d'etat inconnu : #799 qui recommence, en
+            # silence.
+            canary = os.path.join(outside, "ran")
+            os.makedirs(os.path.join(outside, "evil"))
+            with open(os.path.join(outside, "evil", "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
+            write_applied_marker(tmp, {"id": "evil", "dir": os.path.join(outside, "evil")})
+            left = revert_leftover_mutant(tmp)
+            check("un marqueur etranger est refuse, rien n'est execute",
+                  [(left or {}).get("refused"), os.path.exists(canary)], ["dir", False])
+            check("le marqueur etranger est GARDE : c'est la seule trace de l'application",
+                  os.path.isfile(applied_marker_for(tmp)), True)
+            check("disposition d'un marqueur etranger", leftover_disposition(left or {})[0], "refused")
+            check("elle arrete la porte", leftover_disposition(left or {})[0] in LEFTOVER_BAIL_KINDS, True)
+            check("et son message nomme le marqueur a effacer a la main",
+                  applied_marker_for(tmp) in leftover_disposition(left or {})[1], True)
+            # Le refus COLLE : la porte suivante refuse a l'identique, et aucune
+            # application ne passe tant que le marqueur est la.
+            again = revert_leftover_mutant(tmp)
+            check("la porte suivante refuse a l'identique, canari toujours pas execute",
+                  [(again or {}).get("refused"), os.path.exists(canary),
+                   os.path.isfile(applied_marker_for(tmp))], ["dir", False, True])
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            code, _out = apply_mutant(lmeta, tmp)
+            check("aucune application ne passe tant qu'un refus est enregistre",
+                  [code, tree()], [APPLY_REFUSED, "original\n"])
+            clear_marker()
+            # Un marqueur sous la racine scratch mais HORS de la pile scellee est
+            # etranger aussi : la racine, c'est tout /tmp sur un hote partage.
+            evil2 = os.path.join(os.environ["GM_SCRATCH"], "evil2")
+            os.makedirs(evil2)
+            with open(os.path.join(evil2, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ntouch %s\n" % shlex.quote(canary))
+            write_applied_marker(tmp, {"id": "evil2", "dir": evil2})
+            left = revert_leftover_mutant(tmp)
+            check("un marqueur sous la racine scratch, hors pile scellee, est refuse et garde",
+                  [(left or {}).get("refused"), os.path.exists(canary),
+                   os.path.isfile(applied_marker_for(tmp))], ["dir", False, True])
+            clear_marker()
+            # Un marqueur sous la pile scellee (GM_SEALED_DIR, hors arbre et hors
+            # scratch) est le held-out : il est reverti, pas refuse.
+            sealed = tempfile.mkdtemp(prefix="gm-sealed-")
+            saved_sealed = os.environ.get("GM_SEALED_DIR")
+            os.environ["GM_SEALED_DIR"] = sealed
+            try:
+                hdir = os.path.join(sealed, "h1")
+                os.makedirs(hdir)
+                with open(os.path.join(hdir, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\nprintf 'held\\n' >> f.txt\n")
+                with open(os.path.join(hdir, "revert.sh"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+                code, _out = apply_mutant({"id": "h1", "dir": hdir}, tmp)
+                check("le held-out scelle s'applique", [code, tree()], [0, "original\nheld\n"])
+                left = revert_leftover_mutant(tmp)
+                check("un marqueur sous la pile scellee est reverti, pas refuse",
+                      [(left or {}).get("refused"), (left or {}).get("code"), tree()],
+                      [False, 0, "original\n"])
+                check("disposition du held-out reverti", leftover_disposition(left or {})[0], "reverted")
+                # LE CAS MESURE. La pile scellee a bouge entre deux passes —
+                # GM_SEALED_DIR pose a l'application, absent a la porte suivante :
+                # exactement la configuration que le harnais recommande quand la
+                # racine par defaut n'est pas stable. Le held-out laisse applique
+                # se lit alors comme etranger. Tant que ce refus jetait le
+                # marqueur, la porte notait et CONTINUAIT sur l'arbre mute, sans
+                # rien pour le dire a la suivante.
+                code, _out = apply_mutant({"id": "h1", "dir": hdir}, tmp)
+                check("le held-out est re-applique", [code, tree()], [0, "original\nheld\n"])
+                os.environ.pop("GM_SEALED_DIR", None)
+                moved = revert_leftover_mutant(tmp)
+                check("pile scellee deplacee : refus, marqueur garde, arbre encore mute",
+                      [(moved or {}).get("refused"), os.path.isfile(applied_marker_for(tmp)), tree()],
+                      ["dir", True, "original\nheld\n"])
+                check("et la porte s'arrete au lieu de juger cet arbre",
+                      leftover_disposition(moved or {})[0] in LEFTOVER_BAIL_KINDS, True)
+                os.environ["GM_SEALED_DIR"] = sealed
+                healed = revert_leftover_mutant(tmp)
+                check("la pile scellee retrouvee, le harnais revertit lui-meme",
+                      [(healed or {}).get("code"), tree(),
+                       os.path.isfile(applied_marker_for(tmp))], [0, "original\n", False])
+            finally:
+                os.environ.pop("GM_SEALED_DIR", None)
+                if saved_sealed is not None:
+                    os.environ["GM_SEALED_DIR"] = saved_sealed
+                shutil.rmtree(sealed, ignore_errors=True)
+            # Un `git` hors d'atteinte doit donner un VERDICT, pas une trace de
+            # pile : ce balayage tourne dans TOUS les modes, `record` compris, ou
+            # rien d'autre n'appelle git — et la campagne lit du JSON sur la
+            # sortie standard. PATH reduit a `sh` : git est absent, le script de
+            # revert (un `exit 0`, une primitive du shell) tourne encore.
+            scripts("exit 0", "exit 0")
+            apply_mutant(lmeta, tmp)
+            saved_path, shbin = os.environ.get("PATH", ""), shutil.which("sh")
+            check("`sh` est sur le PATH (tout le harnais passe par lui)", bool(shbin), True)
+            bindir = tempfile.mkdtemp(prefix="gm-bin-")
+            try:
+                os.symlink(shbin or "/bin/sh", os.path.join(bindir, "sh"))
+                os.environ["PATH"] = bindir
+                try:
+                    nogit = revert_leftover_mutant(tmp)
+                    raised = ""
+                except Exception as e:                      # noqa: BLE001 - c'est le test
+                    nogit, raised = None, "%s: %s" % (type(e).__name__, e)
+            finally:
+                os.environ["PATH"] = saved_path
+                shutil.rmtree(bindir, ignore_errors=True)
+            check("git absent : un verdict, pas une exception",
+                  [raised, (nogit or {}).get("code")], ["", 0])
+            check("l'etat de l'arbre est INCONNU, pas propre",
+                  [(nogit or {}).get("dirty"), bool((nogit or {}).get("dirty_unknown"))],
+                  ["", True])
+            check("et la porte s'arrete au lieu de laisser croire a un arbre propre",
+                  [leftover_disposition(nogit or {})[0], "Unknown is not clean" in leftover_disposition(nogit or {})[1],
+                   (nogit or {}).get("kept")],
+                  ["still_mutated", True, True])
+            clear_marker()
+            # Un revert en ECHEC garde son enregistrement face au mutant suivant :
+            # la seconde application est refusee, rien ne tourne, et le revert du
+            # second n'efface pas le marqueur du premier.
+            scripts("printf 'mutant\\n' >> f.txt", "exit 3")
+            code, _out = apply_mutant(lmeta, tmp)
+            check("A s'applique", code, 0)
+            code, out = revert_mutant(lmeta, tmp)
+            check("le revert de A echoue et A reste enregistre",
+                  [code, (read_applied_marker(tmp)[0] or {}).get("id")], [3, "leftover-1"])
+            bdir = os.path.join(tmp, "m2")
+            os.makedirs(bdir)
+            with open(os.path.join(bdir, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nprintf 'B\\n' >> f.txt\n")
+            with open(os.path.join(bdir, "revert.sh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\ngit checkout -- f.txt\n")
+            bmeta = {"id": "leftover-2", "dir": bdir}
+            code, out = apply_mutant(bmeta, tmp)
+            check("l'application de B est refusee tant que A est enregistre",
+                  [code, "leftover-1" in out, tree()], [APPLY_REFUSED, True, "original\nmutant\n"])
+            verdict, state = probe_mutation(dict(bmeta, targets=["001"]), tmp)
+            check("la sonde de B est 'failed' sans rien reverter ni toucher au marqueur",
+                  [state, tree(), (read_applied_marker(tmp)[0] or {}).get("id")],
+                  ["failed", "original\nmutant\n", "leftover-1"])
+            code, _out = revert_mutant(bmeta, tmp)
+            check("le revert de B (exit 0) n'efface pas l'enregistrement de A",
+                  [code, (read_applied_marker(tmp)[0] or {}).get("id")], [0, "leftover-1"])
+            clear_marker()
+            sub("git", "checkout", "--", "f.txt")
+            # Un repertoire de marqueur qui n'est pas prive n'est pas utilisable :
+            # l'application est refusee, la porte s'arrete (disposition 'unusable').
+            mdir_marker = os.path.dirname(applied_marker_for(tmp))
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            os.chmod(mdir_marker, 0o755)
+            try:
+                code, out = apply_mutant(lmeta, tmp)
+                check("un repertoire de marqueur non prive refuse l'application",
+                      [code, "not private" in out, tree()], [APPLY_REFUSED, True, "original\n"])
+                os.chmod(mdir_marker, 0o700)
+                apply_mutant(lmeta, tmp)
+                os.chmod(mdir_marker, 0o755)
+                left = revert_leftover_mutant(tmp)
+                check("un marqueur dans un repertoire non prive est refuse et garde, rien n'est execute",
+                      [(left or {}).get("refused"), (left or {}).get("kept"), tree(),
+                       os.path.isfile(applied_marker_for(tmp))],
+                      ["slot", True, "original\nmutant\n", True])
+                check("disposition d'un emplacement inutilisable", leftover_disposition(left or {})[0], "unusable")
+            finally:
+                os.chmod(mdir_marker, 0o700)
+            left = revert_leftover_mutant(tmp)
+            check("le meme marqueur, l'emplacement redevenu prive : reverti",
+                  [(left or {}).get("code"), tree()], [0, "original\n"])
+            # ── Ajouts : racines resserrees sur le repertoire du filet, sentinelle
+            # qui n'est pas un code de retour. Etat remis a plat d'abord.
+            try:
+                os.remove(applied_marker_for(tmp))
+            except OSError:
+                pass
+            sub("git", "checkout", "--", "f.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp, os.path.join(tmp, ".golden-master"))
+            check("hors du repertoire du filet nomme, le marqueur est refuse et garde",
+                  [(left or {}).get("refused"), tree(), os.path.isfile(applied_marker_for(tmp))],
+                  ["dir", "original\nmutant\n", True])
+            left = revert_leftover_mutant(tmp)
+            check("sans repertoire de filet nomme, l'arbre entier est reconnu : reverti",
+                  [(left or {}).get("code"), tree()], [0, "original\n"])
+            # Une application TUEE par un signal (returncode -1, ce que rapporte
+            # subprocess pour un shell mort sur SIGHUP) n'est pas une application
+            # refusee : elle a tourne, elle est revertie dans le run. Le -1 est
+            # injecte par une doublure de run_script (un signal reel depend du
+            # shell : exec ou non de la derniere commande).
+            scripts("printf 'half\\n' >> f.txt", "git checkout -- f.txt")
+            real_run_script = g["run_script"]
+
+            def killed_apply(path, ws, timeout=600):
+                if path.endswith("apply.sh"):
+                    real_run_script(path, ws, timeout)
+                    return -1, "killed by SIGHUP"
+                return real_run_script(path, ws, timeout)
+            g["run_script"] = killed_apply
+            try:
+                verdict, state = probe_mutation(dict(lmeta, targets=["001"]), tmp)
+            finally:
+                g["run_script"] = real_run_script
+            check("une application tuee par un signal est revertie, pas lue comme refusee",
+                  [state, tree(), os.path.isfile(applied_marker_for(tmp))],
+                  ["failed", "original\n", False])
+            # ── Le residu d'un revert qui dit « 0 » sans tout restaurer : ce qui
+            # est encore modifie ET etait propre quand le mutant est descendu.
+            try:
+                os.remove(applied_marker_for(tmp))
+            except OSError:
+                pass
+            sub("git", "checkout", "--", "f.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            db = (read_applied_marker(tmp)[0] or {}).get("dirty_before")
+            check("le marqueur enregistre ce qui etait deja modifie avant l'application (pas f.txt)",
+                  [isinstance(db, list), any(e.endswith(":f.txt") for e in (db or []))], [True, False])
+            left = revert_leftover_mutant(tmp)
+            check("un revert.sh a 0 qui ne restaure pas laisse un residu nomme, marqueur garde",
+                  [(left or {}).get("code"), (left or {}).get("residue"), (left or {}).get("kept"),
+                   os.path.isfile(applied_marker_for(tmp))],
+                  [0, ["f.txt"], True, True])
+            check("disposition d'un residu : la porte s'arrete",
+                  [leftover_disposition(left or {})[0], leftover_disposition(left or {})[0] in LEFTOVER_BAIL_KINDS],
+                  ["still_mutated", True])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "checkout", "--", "f.txt")
+            # Le travail non committe d'AVANT le mutant n'est pas un residu.
+            with open(os.path.join(tmp, "g.txt"), "w", encoding="utf-8") as f:
+                f.write("operator work\n")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            check("le travail deja non committe est enregistre comme tel, avec son empreinte",
+                  any(e.endswith(":g.txt") and len(e.split(":")[0]) == 40
+                      for e in ((read_applied_marker(tmp)[0] or {}).get("dirty_before") or [])), True)
+            left = revert_leftover_mutant(tmp)
+            check("un revert propre au milieu du travail de l'operateur : pas de residu, note, marqueur efface",
+                  [(left or {}).get("residue"), "g.txt" in ((left or {}).get("dirty") or ""),
+                   leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [[], True, "reverted", False])
+            os.remove(os.path.join(tmp, "g.txt"))
+            # Un marqueur SANS dirty_before (git muet a l'application, ou harnais
+            # d'avant) et un arbre encore modifie apres le revert : INDECIDABLE,
+            # donc pas propre — marqueur garde, porte arretee. Arbre propre : reverti.
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            mpath = applied_marker_for(tmp)
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "leftover-1", "dir": mdir}, f)
+            left = revert_leftover_mutant(tmp)
+            check("sans dirty_before, un arbre encore modifie est indecidable : still_mutated, marqueur garde",
+                  [(left or {}).get("residue_undecided"), (left or {}).get("residue"),
+                   leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [True, ["f.txt"], "still_mutated", True])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "checkout", "--", "f.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "leftover-1", "dir": mdir}, f)
+            left = revert_leftover_mutant(tmp)
+            check("sans dirty_before, un arbre propre apres le revert est reverti",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [[], "reverted", False])
+            # Un `git status` qui ne repond pas apres le revert : inconnu, pas propre —
+            # marqueur garde, porte arretee (doublure de run() sur cette commande seule).
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            real_status = g["status_porcelain_z"]
+            g["status_porcelain_z"] = lambda ws: (124, "timeout after 120s")
+            try:
+                left = revert_leftover_mutant(tmp)
+            finally:
+                g["status_porcelain_z"] = real_status
+            check("un git status muet apres le revert : inconnu, marqueur garde, porte arretee",
+                  [(left or {}).get("residue_undecided"), bool((left or {}).get("dirty_unknown")),
+                   (left or {}).get("kept"), os.path.isfile(applied_marker_for(tmp)),
+                   leftover_disposition(left or {})[0]],
+                  [True, True, True, True, "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            # Le CONTENU, pas le nom : un chemin deja modifie par l'operateur ET
+            # edite par le mutant est un residu si son contenu a bouge ; le meme
+            # chemin intact ne l'est pas ; un fichier cree par le mutant dans un
+            # repertoire deja non suivi bouge la liste du repertoire.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+            check("dirty_before porte une empreinte par chemin",
+                  all(":" in e and len(e.split(":")[0]) == 40 for e in db) and any(e.endswith(":f.txt") for e in db), True)
+            left = revert_leftover_mutant(tmp)
+            check("un mutant sur un chemin deja modifie laisse un residu par CONTENU : still_mutated, marqueur garde",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [["f.txt"], "still_mutated", True])
+            os.remove(applied_marker_for(tmp))
+            scripts("printf 'mutant\\n' >> g.txt", "rm -f g.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("le travail intact de l'operateur sur f.txt n'est pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0], os.path.isfile(applied_marker_for(tmp))],
+                  [[], "reverted", False])
+            sub("git", "checkout", "--", "f.txt")
+            os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
+            with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                f.write("artefact\n")
+            scripts("printf 'mutant\\n' > build/injected.txt", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un fichier cree par le mutant dans un repertoire deja non suivi est un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["build/"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "build", "injected.txt"))
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un repertoire non suivi intact n'est pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            shutil.rmtree(os.path.join(tmp, "build"), ignore_errors=True)
+            # Une entree sans empreinte (marqueur d'avant) sur un chemin encore modifie : indecidable.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            mpath = applied_marker_for(tmp)
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "leftover-1", "dir": mdir, "dirty_before": ["f.txt"]}, f)
+            left = revert_leftover_mutant(tmp)
+            check("une entree sans empreinte sur un chemin encore modifie est indecidable",
+                  [(left or {}).get("residue"), (left or {}).get("residue_undecided"), leftover_disposition(left or {})[0]],
+                  [["f.txt"], True, "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "checkout", "--", "f.txt")
+            # Une suppression non committee de l'operateur n'est pas un residu ; un
+            # renommage indexe non plus ; un chemin avec une espace edite par le
+            # mutant EST un residu (le porcelain -z ne le cite pas entre guillemets).
+            with open(os.path.join(tmp, "d.txt"), "w", encoding="utf-8") as f:
+                f.write("doomed\n")
+            with open(os.path.join(tmp, "a b.txt"), "w", encoding="utf-8") as f:
+                f.write("spaced\n")
+            sub("git", "add", "d.txt", "a b.txt")
+            sub("git", "commit", "-qm", "more files")
+            os.remove(os.path.join(tmp, "d.txt"))
+            sub("git", "mv", "a b.txt", "a c.txt")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+            check("une suppression est enregistree 'absent', un renommage par sa destination",
+                  ["absent:d.txt" in db, any(e.endswith(":a c.txt") for e in db), any(e.endswith(":a b.txt") for e in db)],
+                  [True, True, False])
+            left = revert_leftover_mutant(tmp)
+            check("suppression et renommage de l'operateur : pas un residu, reverti",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            scripts("printf 'mutant\\n' >> 'a c.txt'", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un chemin avec une espace edite par le mutant est un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["a c.txt"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            sub("git", "reset", "-q", "--hard", "HEAD")
+            # Une entree d'avant les empreintes dont le chemin contient ':' reste un chemin entier.
+            check("un chemin d'avant les empreintes avec ':' n'est pas coupe",
+                  split_dirty_record(["src/a:b.txt", "absent:d.txt"]), {"src/a:b.txt": "?", "d.txt": "absent"})
+            # Le porcelain -z lu avec stderr A PART : un avertissement de git dans le
+            # flux fondrait un vrai chemin dans une entree fantome. Le parseur jette
+            # ce qui n'a pas la forme `XY<espace>chemin`, et suit les renommages
+            # d'index comme d'arbre de travail.
+            check("un avertissement dans le flux ne fabrique ni ne masque un chemin",
+                  porcelain_paths("warning: could not open directory 'secret/': Permission denied\n M a.txt\0?? b.txt\0"),
+                  ["b.txt"])
+            # L'origine d'un renommage est sautee meme quand son nom a la forme
+            # d'une entree (deux lettres de statut et une espace).
+            check("un renommage d'arbre de travail est suivi par sa destination",
+                  porcelain_paths(" R new.txt\0MM old.txt\0R  new2.txt\0AD old2.txt\0"), ["new.txt", "new2.txt"])
+            # Un avertissement REEL de git (repertoire illisible) sur stderr ne
+            # touche pas le flux des chemins : le vrai chemin modifie est enregistre.
+            secret = os.path.join(tmp, "secret")
+            os.makedirs(secret, exist_ok=True)
+            with open(os.path.join(secret, "s.txt"), "w", encoding="utf-8") as f:
+                f.write("s\n")
+            with open(os.path.join(tmp, "other.txt"), "w", encoding="utf-8") as f:
+                f.write("o\n")
+            os.chmod(secret, 0)
+            try:
+                db = dirty_paths_before_apply(tmp) or []
+            finally:
+                os.chmod(secret, 0o755)
+                shutil.rmtree(secret, ignore_errors=True)
+            os.remove(os.path.join(tmp, "other.txt"))
+            if os.geteuid() == 0:
+                skipped_under_root.append("2 permission checks (chmod 0 denies nothing)")
+            if os.geteuid() != 0:
+                check("un repertoire illisible (avertissement git sur stderr) ne masque pas un vrai chemin",
+                      [any(e.endswith(":other.txt") for e in db), any("warning" in e for e in db)], [True, False])
+            # Un repertoire non suivi RECONSTRUIT entre deux runs (memes noms, autres
+            # contenus/mtimes) n'est pas un residu ; un fichier cree dedans l'est.
+            os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
+            with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                f.write("artefact v1\n")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            time.sleep(0.01)
+            with open(os.path.join(tmp, "build", "a.o"), "w", encoding="utf-8") as f:
+                f.write("artefact v2, rebuilt\n")
+            left = revert_leftover_mutant(tmp)
+            check("un repertoire non suivi reconstruit n'est pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            shutil.rmtree(os.path.join(tmp, "build"), ignore_errors=True)
+            # Un gros fichier modifie s'empreinte par (taille, mtime), sans le lire.
+            big = os.path.join(tmp, "big.bin")
+            with open(big, "wb") as f:
+                f.truncate(BIG_FILE_BYTES + 1)
+            check("un gros fichier s'empreinte par stat", dirty_fingerprint(tmp, "big.bin").startswith("st-"), True)
+            os.remove(big)
+            # Un changement de TYPE (fichier -> lien) est un chemin modifie : enregistre,
+            # et residu si le revert ne le restaure pas.
+            os.remove(os.path.join(tmp, "f.txt"))
+            os.symlink("d.txt", os.path.join(tmp, "f.txt"))
+            check("un changement de type est un chemin modifie",
+                  any(e.endswith(":f.txt") for e in (dirty_paths_before_apply(tmp) or [])), True)
+            os.remove(os.path.join(tmp, "f.txt"))
+            sub("git", "checkout", "--", "f.txt")
+            scripts("rm f.txt && ln -s d.txt f.txt", "true")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("un mutant qui remplace un fichier par un lien laisse un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [["f.txt"], "still_mutated"])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "f.txt"))
+            sub("git", "checkout", "--", "f.txt")
+            # Un gros fichier deja modifie fait l'aller-retour marqueur -> balayage sans residu.
+            saved_big = g["BIG_FILE_BYTES"]
+            g["BIG_FILE_BYTES"] = 16
+            try:
+                with open(os.path.join(tmp, "big.bin"), "wb") as f:
+                    f.write(b"x" * 64)
+                scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+                apply_mutant(lmeta, tmp)
+                db = (read_applied_marker(tmp)[0] or {}).get("dirty_before") or []
+                check("un gros fichier s'enregistre par stat, sans deux-points",
+                      [any(e.startswith("st-") and e.endswith(":big.bin") for e in db),
+                       "big.bin" in split_dirty_record(db)], [True, True])
+                left = revert_leftover_mutant(tmp)
+                check("un gros fichier intact de l'operateur n'est pas un residu",
+                      [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            finally:
+                g["BIG_FILE_BYTES"] = saved_big
+                os.remove(os.path.join(tmp, "big.bin"))
+            # Un revert qui EFFACE le travail de l'operateur (git checkout -- .) le dit.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- .")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            check("le travail de l'operateur efface par le revert est nomme",
+                  [(left or {}).get("vanished"), leftover_disposition(left or {})[0], "clean now" in leftover_disposition(left or {})[1]],
+                  [["f.txt"], "reverted", True])
+            # Un sous-repertoire illisible rend l'empreinte d'un repertoire indecidable.
+            os.makedirs(os.path.join(tmp, "u", "locked"), exist_ok=True)
+            with open(os.path.join(tmp, "u", "locked", "x"), "w", encoding="utf-8") as f:
+                f.write("x")
+            os.chmod(os.path.join(tmp, "u", "locked"), 0)
+            try:
+                if os.geteuid() != 0:
+                    check("un sous-repertoire illisible donne une empreinte partielle, stable",
+                          [dirty_fingerprint(tmp, "u/").startswith("u-"), dirty_fingerprint(tmp, "u/") == dirty_fingerprint(tmp, "u/")],
+                          [True, True])
+            finally:
+                os.chmod(os.path.join(tmp, "u", "locked"), 0o755)
+                shutil.rmtree(os.path.join(tmp, "u"), ignore_errors=True)
+            # Le travail efface est nomme AUSSI quand la porte s'arrete : un revert
+            # `git checkout -- .` efface l'edition de l'operateur ET laisse un fichier
+            # cree par le mutant.
+            with open(os.path.join(tmp, "f.txt"), "a", encoding="utf-8") as f:
+                f.write("operator edit\n")
+            scripts("printf 'mutant\\n' > created.txt", "git checkout -- .")
+            apply_mutant(lmeta, tmp)
+            left = revert_leftover_mutant(tmp)
+            kind, text = leftover_disposition(left or {})
+            check("residu ET travail efface : la porte s'arrete et nomme les deux",
+                  [kind, (left or {}).get("residue"), (left or {}).get("vanished"), "clean now" in text, "keep yours" in text],
+                  ["still_mutated", ["created.txt"], ["f.txt"], True, False])
+            os.remove(applied_marker_for(tmp))
+            os.remove(os.path.join(tmp, "created.txt"))
+            # L'ancienne forme « st:taille:mtime:chemin » d'un marqueur d'avant est lue.
+            check("l'ancienne empreinte st: d'un gros fichier est lue comme la nouvelle",
+                  split_dirty_record(["st:8388609:1234:big.bin"]), {"big.bin": "st-8388609-1234"})
+            # Un enregistrement par stat (ecrit sous un seuil plus bas) est compare par
+            # stat, meme si le fichier est aujourd'hui sous le seuil de hachage.
+            with open(os.path.join(tmp, "mid.bin"), "wb") as f:
+                f.write(b"m" * 64)
+            scripts("printf 'mutant\\n' >> f.txt", "git checkout -- f.txt")
+            apply_mutant(lmeta, tmp)
+            mpath = applied_marker_for(tmp)
+            mst = os.lstat(os.path.join(tmp, "mid.bin"))
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "leftover-1", "dir": mdir,
+                           "dirty_before": ["st:%d:%d:mid.bin" % (mst.st_size, mst.st_mtime_ns)]}, f)
+            left = revert_leftover_mutant(tmp)
+            check("un enregistrement stat d'avant, fichier sous le seuil actuel : compare par stat, pas un residu",
+                  [(left or {}).get("residue"), leftover_disposition(left or {})[0]], [[], "reverted"])
+            os.remove(os.path.join(tmp, "mid.bin"))
+            check("une entree st: sans chiffres n'est pas migree",
+                  split_dirty_record(["st:a:b:c.txt"]), {"st:a:b:c.txt": "?"})
+            # Les deux formes stat sont UNE fonction ; un enregistrement par hachage est
+            # repondu par un hachage meme au-dessus du seuil actuel (miroir du bug).
+            saved_big = g["BIG_FILE_BYTES"]
+            g["BIG_FILE_BYTES"] = 16
+            try:
+                with open(os.path.join(tmp, "big2.bin"), "wb") as f:
+                    f.write(b"y" * 64)
+                fp_stat = dirty_fingerprint(tmp, "big2.bin")
+                check("au-dessus du seuil, dirty_fingerprint et fingerprint_like(st-) donnent la meme forme stat",
+                      [fp_stat.startswith("st-"), fingerprint_like(tmp, "big2.bin", fp_stat) == fp_stat], [True, True])
+                h = hashlib.sha1(b"y" * 64).hexdigest()
+                check("un enregistrement par hachage est repondu par un hachage, seuil ou pas",
+                      fingerprint_like(tmp, "big2.bin", h) == h, True)
+            finally:
+                g["BIG_FILE_BYTES"] = saved_big
+                os.remove(os.path.join(tmp, "big2.bin"))
+            check("un enregistrement legacy avec mtime negatif migre",
+                  split_dirty_record(["st:10:-5:old.bin"]), {"old.bin": "st-10--5"})
+            # Un dirty_before qui n'est pas une liste de chemins est refuse a la lecture.
+            mpath = applied_marker_for(tmp)
+            os.makedirs(os.path.dirname(mpath), mode=0o700, exist_ok=True)
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"id": "x", "dir": mdir, "dirty_before": 5}, f)
+            os.chmod(mpath, 0o600)
+            check("un dirty_before qui n'est pas une liste est refuse",
+                  bool(read_applied_marker(tmp)[1]), True)
+            os.remove(mpath)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(outside, ignore_errors=True)
+            shutil.rmtree(os.environ["GM_SCRATCH"], ignore_errors=True)
+            if saved_scratch is None:
+                os.environ.pop("GM_SCRATCH", None)
+            else:
+                os.environ["GM_SCRATCH"] = saved_scratch
     finally:
         g.update(saved)
+        subprocess.Popen = _real_popen
+        os.system = _real_system
+        for key, value in saved_git_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    # Judged on what ran, not on what the source says. A future helper that
+    # spawns git its own way is caught by having RUN, which is the only thing
+    # that found the one this replaces.
+    check("aucun lancement du selftest ne laisse la maintenance automatique detachee"
+          " (%d git, %d sh)" % (_git_audit["git"], _git_audit["sh"]),
+          _git_audit["offenders"], [])
+    # Les DEUX compteurs, pas leur somme : le selftest lance les deux
+    # programmes, et un compteur mort laisse l'autre porter le total — un audit
+    # a moitie aveugle passerait pour un arbre propre.
+    # Ce que git RESOUT, pas ce que le dict dit avoir posé : une declaration
+    # anterieure survit a la pose des boutons.
+    check("une declaration git anterieure survit a la pose des boutons",
+          canary_value in canary_seen, True)
+    check("l'audit voit les lancements de git", _git_audit["git"] > 0, True)
+    check("l'audit voit les lancements du shell", _git_audit["sh"] > 0, True)
+
+    # ─── Groupes de references identiques : la preuve, pas la parole ──────────
+    #
+    # Deux entrees byte-identiques ne sont pas fautives en soi : sur une lane de
+    # refus, la seconde est un CONTROLE qui prouve qu'un mutant n'a deplace que
+    # la premiere. Ce que la porte ne pouvait pas faire, c'est distinguer ce cas
+    # d'un doublon — une note en prose ne se verifie pas. La declaration nomme
+    # le mutant separateur, et elle est ACQUITTEE par la mesure.
+    corpus_dg = {"entries": [{"id": "012"}, {"id": "013"}, {"id": "019"}],
+                 "duplicate_groups": [
+                     {"ids": ["013", "012"], "separated_by": "sep-01"},
+                     {"ids": ["019"], "separated_by": "trop-court"},
+                     {"ids": ["019", "012"], "separated_by": ""},
+                     "pas-un-dict"]}
+    check("une declaration se lit triee, et les malformees sont ignorees",
+          duplicate_group_decls(corpus_dg), {("012", "013"): ("sep-01",)})
+    # Un separateur ou plusieurs : une classe de quatre demande assez de mutants
+    # pour distinguer les quatre, pas un seul qui coupe quelque part.
+    check("plusieurs separateurs se lisent, dedupliques et ordonnes",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b", "c"], "separated_by": ["s2", "s1", "s2"]}]}),
+          {("a", "b", "c"): ("s2", "s1")})
+    check("une liste vide ou non-textuelle est ignoree",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b"], "separated_by": []},
+              {"ids": ["c", "d"], "separated_by": [1]}]}), {})
+    check("les ids d'un groupe sont epingles pour SON separateur",
+          separator_group_ids(corpus_dg, "sep-01"), {"012", "013"})
+    check("et pour aucun autre",
+          separator_group_ids(corpus_dg, "sep-02"), set())
+    check("un mutant sans id n'epingle rien",
+          separator_group_ids(corpus_dg, None), set())
+
+    # Le verdict lui-meme : ce que la porte conclut de ce qu'un separateur a
+    # REELLEMENT deplace. La forme qui compte est la derniere — un separateur
+    # qui deplace TOUT le groupe ne le separe plus, et c'est exactement ce qui
+    # est arrive a deux paires quand un lot a reancre leur mutant.
+    # Appelle la FONCTION QUE LA PORTE APPELLE — pas une reimplementation.
+    # Un banc qui rejoue la logique reste vert quand le produit derive ; celui-ci
+    # rougit avec lui.
+    def whys(group, decls, moved_by):
+        corpus_ = {"entries": [], "duplicate_groups": decls}
+        verdicts_ = [{"id": mid, "valid": True, "targets_declared": sorted(mv),
+                      "undetected_targets": [], "collateral": []}
+                     for mid, mv in moved_by.items()]
+        out = unproven_duplicate_groups([sorted(group)], corpus_, verdicts_)
+        return [x["ids"] for x in out]
+
+    # L'EPINGLAGE, et c'est la moitie porteuse : sans lui la mesure qui decide
+    # n'existe pas. Un membre du groupe hors de l'echantillon deterministe
+    # pourrait bouger sans etre vu, et la porte conclurait "sous-ensemble strict,
+    # groupe prouve" sur une separation qui n'a plus lieu.
+    v_pin = score(["001"], ["005"], ["001", "009"],
+                  dup_groups=[{"ids": ["001", "009"], "separated_by": "t"}])
+    check("un membre du groupe hors echantillon est quand meme controle",
+          v_pin["collateral"], ["009"])
+    # Et rien n'est epingle pour un mutant qui ne separe aucun groupe.
+    v_nopin = score(["001"], ["005"], ["001", "009"],
+                    dup_groups=[{"ids": ["001", "009"], "separated_by": "un-autre"}])
+    check("aucun epinglage pour un mutant qui ne separe rien",
+          v_nopin["collateral"], [])
+    # Et JAMAIS un id que le corpus n'a pas. `control_covered` est len(sample),
+    # et la porte refuse un mutant dont la couverture est nulle — « collateral
+    # 0 » sans rien a controler est vide, pas merite. Un id qu'aucune entree ne
+    # declare n'est jamais capture ni compare : l'epingler aurait leve la
+    # couverture avec un temoin qui n'existe pas, et eteint ce refus-la.
+    # Lu sans planter : si l'epinglage repassait large, la capture serait
+    # interrogee sur un id qu'elle n'a pas — et un banc qui plante dit qu'il
+    # s'est passe quelque chose sans dire quoi.
+    try:
+        _vg = score(["001"], [], ["001"],
+                    dup_groups=[{"ids": ["001", "fantome"], "separated_by": "t"}])
+        _ghost = [_vg["control_covered"], _vg["collateral"]]
+    except Exception as e:                              # noqa: BLE001 - c'est le test
+        _ghost = "%s: %s" % (type(e).__name__, e)
+    check("un id absent du corpus n'est pas epingle comme temoin", _ghost, [0, []])
+
+    # Un separateur INVALIDE ne prouve rien. Son verdict porte
+    # `targets_declared` mais jamais `undetected_targets` ni `collateral`, donc
+    # le crediter revient a lire « toutes les cibles ont bouge » d'une mesure
+    # qui n'a pas eu lieu — et c'est precisement ainsi qu'un separateur meurt.
+    check("un separateur INVALIDE ne prouve pas le groupe",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+              [{"id": "sep-01", "valid": False,
+                "targets_declared": ["013"], "reason": "apply.sh a echoue"}])],
+          [["012", "013"]])
+    # Le motif, lu sans indexer a l'aveugle : si le groupe repassait "prouve",
+    # un `[0]` planterait au lieu de RAPPORTER, et un banc qui plante dit qu'il
+    # s'est passe quelque chose sans dire quoi.
+    _inv = unproven_duplicate_groups(
+        [["012", "013"]],
+        {"entries": [], "duplicate_groups": [
+            {"ids": ["012", "013"], "separated_by": "sep-01"}]},
+        [{"id": "sep-01", "valid": False, "targets_declared": ["013"]}])
+    check("et le motif dit qu'il a tourne, pas qu'il est absent",
+          [("INVALID" in x["why"]) for x in _inv], [True])
+
+    # Une CLASSE de quatre, le cas reel du corpus : `sep-04` deplace un membre,
+    # `sep-05` en deplace deux — ensemble ils donnent quatre signatures
+    # distinctes, donc les quatre references sont distinguables.
+    C4 = [{"ids": ["074", "075", "076", "110"],
+           "separated_by": ["sep-04", "sep-05"]}]
+    def _v(mid, moved):
+        return {"id": mid, "valid": True, "targets_declared": sorted(moved),
+                "undetected_targets": [], "collateral": []}
+    # Et le resultat est celui du corpus REEL, pas celui qu'on esperait :
+    # `sep-04` isole 074, `sep-05` deplace 076 ET 110 ensemble — donc ces deux-la
+    # partagent leur signature et rien ne les separe. Deux separateurs ne
+    # suffisent pas a distinguer quatre references ; le banc l'a appris du
+    # produit apres avoir affirme le contraire.
+    check("deux separateurs ne distinguent pas quatre membres",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": C4},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"})])],
+          [[["076", "110"]]])
+    # Avec un troisieme qui ne bouge que 110, les quatre signatures deviennent
+    # distinctes et la classe est acquittee.
+    check("un separateur de plus les distingue toutes : acquittee",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"],
+                   "separated_by": ["sep-04", "sep-05", "sep-06"]}]},
+              [_v("sep-04", {"074"}), _v("sep-05", {"076", "110"}),
+               _v("sep-06", {"110"})])],
+          [])
+    # 076 et 110 partagent la meme signature : deux membres que rien ne separe.
+    check("deux membres de meme signature : la classe n'est PAS acquittee",
+          [x.get("indistinguishable") for x in unproven_duplicate_groups(
+              [["074", "075", "076", "110"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["074", "075", "076", "110"], "separated_by": ["sep-04"]}]},
+              [_v("sep-04", {"074"})])],
+          [[["075", "076", "110"]]])
+    # Et une declaration en PAIRES sur une classe de trois ne la couvre pas :
+    # la cle est la classe maximale, pas un decoupage choisi par le lot.
+    check("des paires ne declarent pas une classe de trois",
+          sorted(x["ids"] for x in unproven_duplicate_groups(
+              [["a", "b", "c"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["a", "b"], "separated_by": "s1"},
+                  {"ids": ["b", "c"], "separated_by": "s1"}]},
+              [_v("s1", {"a"})])),
+          [["a", "b"], ["a", "b", "c"], ["b", "c"]])
+
+    # Le CONTRAT que le site d'appel doit honorer : un separateur fourni parmi
+    # les verdicts du jeu tenu a l'ecart est reconnu comme les autres. La
+    # fonction est agnostique — c'est l'appelant qui doit composer les deux
+    # listes, et CE cablage-la n'est pas couvert par ce banc (le rejouer
+    # demanderait une porte complete). La limite est ecrite plutot que masquee.
+    check("un separateur venu du jeu tenu a l'ecart est reconnu",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": [
+                  {"ids": ["012", "013"], "separated_by": "held-sep"}]},
+              [{"id": "held-sep", "valid": True, "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": []}])],
+          [])
+    # ...et l'AUTRE moitie de ce contrat : ce que ce separateur tenu a l'ecart a
+    # deplace doit atteindre les memes termes de porte qu'un separateur visible.
+    # Le meme verdict etait un rouge dur quand il etait visible (`collateral == 0`
+    # est un terme de la porte) et une preuve silencieuse quand il etait retenu :
+    # une classe ne peut pas etre acquittee par un canal que la porte n'a pas le
+    # droit de regarder.
+    _hy = measurement_hygiene(
+        [{"id": "vis", "collateral": ["005"]}],
+        [{"id": "held-sep", "collateral": ["009"], "unstable_controls": ["012"]}])
+    check("le collateral du jeu tenu a l'ecart compte dans le total",
+          _hy["collateral"], 2)
+    check("et ses temoins instables aussi",
+          _hy["unstable_controls"], ["012"])
+    # La liste couvre le meme ensemble que le compte — un titre qui compte ce
+    # qu'il ne nomme pas est le defaut que ce fichier vient de retirer au refus
+    # des doublons — et chaque ligne dit d'ou elle vient.
+    check("et chaque ligne nomme sa provenance",
+          _hy["detail"], "vis moved ['005']; held-sep moved ['009'] (held-out)")
+    check("un jeu tenu a l'ecart propre ne change rien",
+          measurement_hygiene([{"id": "vis", "collateral": ["005"]}], []),
+          {"collateral": 1, "unstable_controls": [], "detail": "vis moved ['005']"})
+
+    # R797693 : le lecteur ne LEVE jamais (il tourne avec un mutant applique),
+    # et ce qu'il laisse tomber est dit a voix haute par le controle de forme —
+    # sinon une faute de frappe se lit comme « groupe non declare » et envoie
+    # corriger une absence.
+    check("un `duplicate_groups` non-liste ne fait pas planter le lecteur",
+          duplicate_group_decls({"duplicate_groups": 5}), {})
+    check("et il est REFUSE, pas ignore",
+          len(duplicate_groups_shape_problems({"duplicate_groups": 5})), 1)
+    check("une entree malformee est refusee nommement",
+          len(duplicate_groups_shape_problems({"duplicate_groups": [
+              {"ids": ["a"], "separated_by": "s"}]})), 1)
+    check("et un corpus sans declaration ne dit rien",
+          duplicate_groups_shape_problems({"entries": []}), [])
+    # UN SEUL predicat de forme. Il en existait trois copies — le lecteur, le
+    # refus de forme, le juge d'extension — et trois copies d'une regle sont
+    # trois occasions qu'un corpus soit bien forme pour l'un et malforme pour
+    # l'autre. Ce banc pince l'accord plutot que chaque copie : ce que le
+    # normaliseur refuse est exactement ce que le lecteur laisse tomber et
+    # exactement ce que le refus nomme.
+    _shapes = [{"ids": ["a", "b"], "separated_by": "s"},          # bien forme
+               {"ids": ["a", "b"], "separated_by": ["s", "s"]},   # bien forme
+               {"ids": ["a"], "separated_by": "s"},               # trop court
+               {"ids": ["a", "b"], "separated_by": []},           # sans separateur
+               {"ids": ["a", "b"], "separated_by": [1]},          # non textuel
+               {"ids": "ab", "separated_by": "s"},                # ids non-liste
+               "pas-un-dict"]
+    check("le normaliseur et le refus de forme s'accordent entree par entree",
+          [duplicate_group_decl(g) is None for g in _shapes],
+          [False, False, True, True, True, True, True])
+    check("et le lecteur ne garde que ce que le normaliseur accepte",
+          len(duplicate_group_decls({"duplicate_groups": _shapes})), 1)
+    check("le refus de forme nomme exactement les autres",
+          len(duplicate_groups_shape_problems({"duplicate_groups": _shapes})), 1)
+
+    # DEUX declarations pour UNE classe : refusees, pas departagees. Les ids sont
+    # normalises, donc ["a","b"] et ["b","a"] sont la MEME classe et c'est la
+    # POSITION dans la liste qui tranchait. Le mal du second ordre est pire que
+    # l'ecrasement : separator_group_ids lit cette meme carte, donc le separateur
+    # perdant n'epingle jamais son groupe dans son echantillon de temoins — la
+    # mesure qui deciderait la classe n'est pas prise du tout.
+    _clash = {"duplicate_groups": [{"ids": ["a", "b"], "separated_by": "first"},
+                                   {"ids": ["b", "a"], "separated_by": "second"}]}
+    check("une classe declaree deux fois n'est pas departagee par l'ordre",
+          duplicate_group_decls(_clash), {})
+    check("et le perdant n'epingle plus rien en silence",
+          [separator_group_ids(_clash, "first"), separator_group_ids(_clash, "second")],
+          [set(), set()])
+    check("la collision est REFUSEE nommement",
+          [("declared TWICE" in p) for p in duplicate_groups_shape_problems(_clash)],
+          [True])
+    # Et le refus dit la collision, pas une absence : envoyer ecrire une
+    # declaration deja ecrite deux fois est le cul-de-sac que ce fichier retire.
+    check("le motif nomme la collision, pas une declaration manquante",
+          [[("declared TWICE" in x["why"]), x.get("conflicting")]
+           for x in unproven_duplicate_groups([["a", "b"]], _clash, [])],
+          [[True, [["first"], ["second"]]]])
+    # Repeter la MEME adjudication n'est pas ambigu : l'ordre n'y decide rien.
+    check("la meme adjudication ecrite deux fois reste lisible",
+          duplicate_group_decls({"duplicate_groups": [
+              {"ids": ["a", "b"], "separated_by": ["s1", "s2"]},
+              {"ids": ["b", "a"], "separated_by": ["s2", "s1"]}]}),
+          {("a", "b"): ("s1", "s2")})
+
+    # R8bcd2c : RETENU n'est pas ABSENT. En selfcheck le jeu tenu a l'ecart
+    # n'est pas score, donc un separateur qui en vient est retenu, pas manquant
+    # — et le dire autrement produit un refus que la campagne ne peut pas lever.
+    _wd = {"entries": [], "duplicate_groups": [
+        {"ids": ["012", "013"], "separated_by": "held-sep"}]}
+    _sink = []
+    check("un separateur RETENU ne produit pas de refus",
+          unproven_duplicate_groups([["012", "013"]], _wd, [], False,
+                                    ["held-sep"], (), _sink), [])
+    # ...ET IL EST DIFFERE, PAS EFFACE. Sauter la classe retirait le faux refus
+    # au prix d'une fausse PREUVE : avec `seps = [retenu, visible]` ou le
+    # visible ne separe rien, la classe ressortait dechargee sans que le
+    # separateur score soit jamais consulte. Un terme de convergence ne peut pas
+    # recevoir ca.
+    check("... et la classe est DIFFEREE, pas effacee",
+          [(x["ids"], x["withheld"]) for x in _sink],
+          [(["012", "013"], ["held-sep"])])
+    # SANS PUITS, PAS DE REPORT — et le motif reste VRAI : un separateur retenu
+    # est dans le jeu, pas absent. Le defaut ne peut que RESSERRER, jamais
+    # mentir.
+    check("sans puits, RETENU redevient un refus, et un refus qui ne ment pas",
+          [x["why"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, ["held-sep"])],
+          ["declared separator(s) held-sep are IN the mutant set but were not "
+           "scored in this pass — scoring stopped before them. The class is not "
+           "proved yet; nothing in the corpus is wrong"])
+    # A LA PORTE FINALE RIEN N'EST RETENU : la voie du report y est
+    # inatteignable, donc elle ne peut pas adoucir le verdict qui decide.
+    _sink2 = []
+    check("porte finale : aucun report possible, le refus tient",
+          [[x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, (), (), _sink2)], _sink2],
+          [[["012", "013"]], []])
+    check("mais un separateur simplement ABSENT en produit un",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, [])], [["012", "013"]])
+    # Et le TROISIEME cas, celui qui restait confondu avec le second : un
+    # separateur que le scan n'a pas ATTEINT (arret apres un revert sale,
+    # GM_MUTANTS restreint) existe bel et bien. Le refus doit rester — rien n'est
+    # prouve — mais dire « absent du jeu de mutants » envoyait la campagne
+    # corriger une absence qui n'en est pas une, exactement le cul-de-sac que
+    # RETENU-n'est-pas-ABSENT venait de retirer.
+    check("un separateur NON ATTEINT refuse en le disant, pas en criant l'absence",
+          [x["why"] for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd, [], False, [], ["held-sep"])],
+          ["declared separator(s) held-sep are IN the mutant set but were not "
+           "scored in this pass — scoring stopped before them. The class is not "
+           "proved yet; nothing in the corpus is wrong"])
+    check("et un separateur vraiment absent garde son motif",
+          [("absent from the mutant set" in x["why"])
+           for x in unproven_duplicate_groups(
+               [["012", "013"]], _wd, [], False, [], ["un-autre"])], [True])
+    # Un separateur qui a TOURNE et qui est invalide garde le sien : le fait
+    # d'etre dans le jeu ne doit pas masquer qu'il a echoue.
+    check("un separateur INVALIDE reste un INVALIDE meme s'il est dans le jeu",
+          [("INVALID" in x["why"]) for x in unproven_duplicate_groups(
+              [["012", "013"]], _wd,
+              [{"id": "held-sep", "valid": False, "reason": "apply.sh a echoue"}],
+              False, [], ["held-sep"])], [True])
+
+    # LE TITRE, et il porte sur DEUX populations. Une classe OBSERVEE non
+    # acquittee se compte « N sur M » ; une declaration CADUQUE est non prouvee
+    # justement parce que ses references ne sont plus identiques, donc elle
+    # n'est pas l'un des M et ne peut pas l'etre. Comptees dans un seul rapport,
+    # la ligne annoncait « 4 reference group(s) are not proved (out of 1
+    # byte-identical …) » — une arithmetique sur laquelle personne n'agit.
+    _mixed = [{"ids": ["012", "013"], "why": "x"},
+              {"ids": ["019", "077"], "why": "caduque"},
+              {"ids": ["080", "081"], "why": "caduque aussi"}]
+    _head = duplicate_groups_refusal(_mixed, [["012", "013"]], 11, 14)
+    check("le titre separe les classes observees des declarations caduques",
+          [("1 of 1 byte-identical" in _head),
+           ("2 `duplicate_groups` declaration(s) no longer describe" in _head)],
+          [True, True])
+    check("et une seule population ne fait pas parler de l'autre",
+          [("no longer describe" in duplicate_groups_refusal(
+              [{"ids": ["012", "013"], "why": "x"}], [["012", "013"]], 11, 14)),
+           ("byte-identical reference group(s)" in duplicate_groups_refusal(
+               [{"ids": ["019", "077"], "why": "caduque"}], [], 14, 14))],
+          [False, False])
+
+    D = [{"ids": ["012", "013"], "separated_by": "sep-01"}]
+    check("separateur qui deplace UN membre : preuve acquittee",
+          whys(["012", "013"], D, {"sep-01": {"013"}}), [])
+    check("separateur qui deplace TOUT le groupe : refuse",
+          whys(["012", "013"], D, {"sep-01": {"012", "013"}}), [["012", "013"]])
+    check("separateur qui ne deplace AUCUN membre : refuse",
+          whys(["012", "013"], D, {"sep-01": {"099"}}), [["012", "013"]])
+    check("separateur absent du jeu score : refuse",
+          whys(["012", "013"], D, {"autre": {"013"}}), [["012", "013"]])
+    check("groupe observe mais non declare : refuse",
+          whys(["012", "013"], [], {}), [["012", "013"]])
+    check("declaration devenue caduque : refuse",
+          whys(["012", "013"], D + [{"ids": ["019", "077"], "separated_by": "sep-02"}],
+               {"sep-01": {"013"}}), [["019", "077"]])
+    # Le collateral compte comme un deplacement : un membre que le separateur ne
+    # DECLARE pas mais deplace quand meme casse la separation aussi surement.
+    check("un membre deplace en collateral casse la separation",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "valid": True, "targets_declared": ["013"],
+                "undetected_targets": [], "collateral": ["012"]}])],
+          [["012", "013"]])
+    # Et une cible DECLAREE qui n'a pas bouge ne compte pas comme deplacee.
+    check("une cible declaree mais immobile ne prouve rien",
+          [x["ids"] for x in unproven_duplicate_groups(
+              [["012", "013"]],
+              {"entries": [], "duplicate_groups": D},
+              [{"id": "sep-01", "valid": True, "targets_declared": ["012", "013"],
+                "undetected_targets": ["012", "013"], "collateral": []}])],
+          [["012", "013"]])
 
     if failures:
         log("harnais : %d test(s) ECHOUENT" % len(failures))
         for f in failures:
             log("  " + f)
         return 1
-    log("harnais : %d verifications passent" % checked[0])
+    log("harnais : %d verifications passent%s" % (
+        checked[0], (" (sautees sous root : %s)" % "; ".join(skipped_under_root)) if skipped_under_root else ""))
     return 0
 
 
@@ -2276,14 +6637,120 @@ def main():
     # set somewhere the gate will not look, and two runs cannot share a pile.
     sealed_dir = sealed_dir_for(ws)
     floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
-    mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate | selftest
+    mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate | selftest | extensions | extend-verify
 
     # Les tests du harnais d'abord, et hors de tout le reste : ils ne touchent
     # ni au depot, ni a l'application, ni a la configuration.
+    #
+    # Ils n'y touchaient pas ; ils en HERITAIENT. Le lanceur de porte execute
+    # cette etape en bloquant, environnement herite, donc une entree
+    # d'operateur destinee au FILET s'appliquait aux doubles : mesure,
+    # `GM_CONFIG` nommant un second environnement faisait refuser toutes les
+    # fixtures qui n'ecrivent que `config.json` (la porte mourait ROUGE avant
+    # de juger, en accusant les regles de decision), et `GM_SEAL_COMMITTED=1`
+    # faisait echouer les fixtures de scellement. Pire en silence : sous un
+    # ambiant, un refus type de fixture passe pour la MAUVAISE cause — « config
+    # absente » portant le nom du refus d'opt-in qu'il pretend epingler.
+    # Retirees ici, au point de dispatch : une variable absente ne peut
+    # qu'ETRE PLUS STRICTE sur des doubles, jamais adoucir un verdict.
     if mode == "selftest":
+        for _ambient in ("GM_CONFIG", "GM_SEAL_COMMITTED", "GM_SEALED_DIR",
+                         "GM_MUTATION_FLOOR", "GM_MUTANTS", "GM_RECORD_IDS",
+                         # Git's identity ENV outranks every config source,
+                         # `-c user.email` included, so a host that exports
+                         # it (devcontainer, CI image, agent sandbox) made
+                         # every fixture commit under the caller's name and
+                         # turned the author checks red — in a step the gate
+                         # wrapper runs BLOCKING, so a campaign's exit gate
+                         # failed for a reason unrelated to the code under
+                         # test (review finding, reproduced). Same class as
+                         # the GM_* above: the doubles are the selftest's,
+                         # and nothing about the caller may reach them.
+                         "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                         "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            os.environ.pop(_ambient, None)
         raise SystemExit(_selftest())
 
-    report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
+    # Ledger listings and the additions-only verdict are pure git/file reads:
+    # no boot, no capture, callable from a verifier that must not pay for
+    # either — and BY the party whose own work they judge, because the code
+    # deciding is this file's, not theirs.
+    if mode == "extensions":
+        print(json.dumps({"pending": pending_extensions(gm_dir)}))
+        raise SystemExit(0)
+    if mode == "extend-verify":
+        base = os.environ.get("GM_BASE", "")
+        if not base:
+            print(json.dumps({"error": "GM_BASE is required — judging "
+                              "additions against nothing would pass by "
+                              "construction"}))
+            raise SystemExit(1)
+        # Provenance from the PARENT: present (even empty) means strict —
+        # the parent bot always defines it, because the only pass that
+        # judges a self-act is the one where no subbot ran at all. Absent
+        # means a caller that predates provenance: today's rule only.
+        acted_commits = acted_blobs = None
+        if "GM_ACTED_COMMITS" in os.environ:
+            acted_commits = set()
+            for tok in os.environ.get("GM_ACTED_COMMITS", "").split():
+                full = run("git rev-parse --verify --quiet %s^{commit}" % shlex.quote(tok), ws, timeout=60)[1].strip()
+                acted_commits.add(full if len(full) == 40 else tok)
+        # ONE ENTRY PER LINE, for both certificates. Whitespace-delimited,
+        # a surface path containing a space split into two tokens: the left
+        # had no `=` and was DROPPED, the right registered a bogus key — so
+        # the real path had no certified blob, the post-act rewrite check
+        # skipped it, and the lot could rewrite that reference in a later
+        # commit and keep the exemption (review finding). The same defect sat
+        # on the ids, where a space in an id split it out of the set and the
+        # act silently lost its cover. Both ids and paths are lot-authored
+        # and a space passes their guards, so the encoding is what has to be
+        # unambiguous — and an entry that cannot be read is a REFUSAL, never
+        # a silent drop.
+        if "GM_ACTED_BLOBS" in os.environ:
+            acted_blobs = {}
+            for line in os.environ.get("GM_ACTED_BLOBS", "").splitlines():
+                if not line.strip():
+                    continue
+                path, sep, sha = line.rpartition("=")
+                if not (sep and path and sha):
+                    print(json.dumps({"error":
+                                      "GM_ACTED_BLOBS carries an entry that is "
+                                      "not `path=blob`: %r — a certificate the "
+                                      "judge cannot read is refused, not dropped"
+                                      % line}))
+                    raise SystemExit(1)
+                acted_blobs[path] = sha
+        # The ids the subbot reports having acted. Absent = no act is
+        # covered by the content rule, which is the safe direction: the
+        # rule only ever EXEMPTS.
+        acted_ids = None
+        if "GM_ACTED_IDS" in os.environ:
+            # The RAW line, exactly as the blob certificate above reads its
+            # own: `.strip()` is an emptiness test here, never a repair.
+            # Normalising the id while `extension_verdict` compares it
+            # verbatim made two ids differing only by surrounding whitespace
+            # collapse into one — the act the subbot REFUSED came back covered
+            # by the id it had acted, which is the smuggling of a refused
+            # extension, reopened by an encoding.
+            acted_ids = {l for l in
+                         os.environ.get("GM_ACTED_IDS", "").splitlines()
+                         if l.strip()}
+        print(json.dumps(extension_verdict(
+            ws, os.environ.get("GM_DIR", ".golden-master"), base,
+            acted_commits=acted_commits, acted_blobs=acted_blobs,
+            acted_ids=acted_ids)))
+        raise SystemExit(0)
+
+    # The verdict CARRIES the declaration it judged. Without it, a green from
+    # the second environment and a green from the first are the same line, and
+    # an operator reading the report cannot tell which app was booted.
+    try:
+        cfg_name = config_name()
+    except SystemExit as e:
+        print(json.dumps({"mode": mode, "log_tail": str(e)}))
+        raise SystemExit(1)
+    report = {"mode": mode, "config": cfg_name,
+              "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
               "noop_silent": False, "revert_clean": True, "collateral": 0,
               "unstable_controls": [],
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
@@ -2292,10 +6759,18 @@ def main():
               "standard": 2, "unmapped_features": [], "stale_features": [],
               "features_total": 0, "features_excluded": 0,
               "holdout_awaiting_gate": False,
+              "holdout_spent_unreplaced": False, "holdout_spent_cycles": 0,
+              "holdout_sealed_uncommitted": False,
               "pending_rebaselines": [],
+              "pending_extensions": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
+              "duplicate_groups_unproven": [],
+              # Rapporte, jamais gate : un report est l'absence d'un verdict,
+              # pas un verdict. Il existe pour qu'un selfcheck ne lise pas
+              # PROUVE ce qu'il n'a fait que ne pas pouvoir mesurer.
+              "duplicate_groups_deferred": [],
               "runner_replayable": False,
               "holdout_reused": [],
               "log_tail": ""}
@@ -2305,11 +6780,15 @@ def main():
         print(json.dumps(report))
         raise SystemExit(0)
 
-    for required in ("config.json", "corpus.json"):
+    try:
+        cfg_path = config_path(gm_dir)
+    except SystemExit as e:
+        bail(str(e))
+    for required in (cfg_name, "corpus.json"):
         if not os.path.isfile(os.path.join(gm_dir, required)):
             bail("%s is missing — the campaign has not produced an oracle yet" % required)
 
-    with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+    with open(cfg_path, encoding="utf-8") as f:
         config = json.load(f)
     with open(os.path.join(gm_dir, "corpus.json"), encoding="utf-8") as f:
         corpus = json.load(f)
@@ -2385,8 +6864,19 @@ def main():
     # est capturé ensuite décrit autre chose. Le travail non committé est
     # détruit au passage, en silence. Signalé plutôt que refusé : enregistrer et
     # itérer sur un arbre sale est légitime, GATER dessus ne l'est pas.
+    # A mutant left APPLIED by an interrupted gate is reverted BEFORE the tree
+    # is looked at, and said: otherwise the dirty check below names the
+    # mutant's file as the lot's uncommitted work, and the build gate judges a
+    # program nobody wrote.
+    left = revert_leftover_mutant(ws, gm_dir)
+    if left:
+        kind, text = leftover_disposition(left)
+        if kind in LEFTOVER_BAIL_KINDS:
+            bail(text)
+        note(report, text)
+
     if mode != "record":
-        dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+        dirty = subprocess.run(["git", "-C", ws, "--no-optional-locks", "status", "--porcelain"],
                                capture_output=True, text=True)
         if dirty.returncode == 0 and dirty.stdout.strip():
             # Decoupe AVANT tout strip global. `git status --porcelain` ecrit
@@ -2425,21 +6915,38 @@ def main():
         wanted = [i.strip() for i in os.environ.get("GM_MUTANTS", "").split(",") if i.strip()]
         chosen = [m for m in visible if not wanted or m["id"] in wanted]
         report["missing"] = sorted(set(wanted) - {m["id"] for m in chosen})
-        verdicts = []
+        verdicts, stopped_at = [], None
         for m in chosen:
             v, state = probe_mutation(m, ws)
             if state != "failed":
                 revert_mutant(m, ws)
             verdicts.append(v)
+            # The gate's rule, here too. One mutant whose revert failed leaves
+            # the record armed; without this, every LATER mutant came back
+            # invalid quoting that one, while the tail still announced them all
+            # "applied, fingerprinted and reverted" and the tree stayed mutated.
+            # This is the mode the campaign uses to accept a RE-ANCHORED mutant,
+            # so the cascade sent it to repair mutants that were fine.
+            if leftover_on_record(ws):
+                stopped_at = v
+                break
         report["total"] = len(verdicts)
         report["valid"] = len([v for v in verdicts if v.get("valid")])
         report["invalid"] = [{"id": v["id"], "reason": v.get("reason", "")}
                              for v in verdicts if not v.get("valid")]
+        done = len(verdicts) - (1 if stopped_at is not None else 0)
         report["log_tail"] = (
             "MODE=validate — %d mutant(s) applied, fingerprinted and reverted. This says "
             "each one CHANGES something; it says NOTHING about whether the net sees it. "
             "Only the gate captures and compares, and the zeroed fields above are defaults, "
-            "not a verdict." % len(verdicts))
+            "not a verdict." % done)
+        if stopped_at is not None:
+            report["log_tail"] += (
+                " STOPPED at mutant %s: it is still recorded as applied, so the tree is not "
+                "at baseline and the %d mutant(s) after it were NOT validated — every "
+                "application there would be refused, not measured. Revert by hand, delete "
+                "the marker %s, then re-run."
+                % (stopped_at.get("id"), len(chosen) - len(verdicts), applied_marker_for(ws)))
         if report["missing"]:
             report["log_tail"] += (" %d requested mutant(s) do not exist: %s."
                                    % (len(report["missing"]), ", ".join(report["missing"])))
@@ -2448,11 +6955,26 @@ def main():
 
     if mode != "record":
         try:
-            seal_holdout(gm_dir, sealed_dir)
+            committed_before = holdout_committed_in_tree(gm_dir)
+            sealed_now = seal_holdout(gm_dir, sealed_dir)
             awaiting = holdout_committed_in_tree(gm_dir) and \
                 not seal_committed_opted_in(gm_dir)
         except SystemExit as e:
             bail(str(e))
+        # A set sealed out of an UNCOMMITTED state lives only as long as the
+        # sealed pile does, and that pile is keyed on the workspace path under
+        # the scratch directory: a run whose workspace dies with it takes the
+        # set along, and the next gate reports 0/0 for a set that was drawn.
+        # Said here, once, at the moment the set leaves the tree — the only
+        # moment anyone can still commit it.
+        if sealed_but_ephemeral(committed_before, sealed_now):
+            report["holdout_sealed_uncommitted"] = True
+            note(report, "the held-out set was sealed OUT of the tree into %s and is "
+                         "NOT committed: it survives exactly as long as that directory "
+                         "does. A set a LATER run must score has one durable home — "
+                         "commit it under mutants/holdout/ and let the gate that owns "
+                         "it opt in (`\"seal_committed\": true`). Otherwise this run is "
+                         "the only one that will ever see it." % sealed_dir)
         if awaiting:
             # Machine-readable, not only prose: a set nobody ever consumes is
             # a debt of the NET's owner, and a supervising process needs a
@@ -2478,16 +7000,27 @@ def main():
         holdout_spent = bool(spent_fingerprints(gm_dir))
         if not held_meta and not os.path.isdir(os.path.join(gm_dir, "mutants", "holdout")):
             if holdout_spent:
-                # Legitimate: this cycle's set was scored once and published as
-                # evidence. The blindness proof was MADE and is replayable from
-                # mutants/audit/ — it is simply not being re-made here, and the
-                # report must say so rather than let 0 == 0 read as a pass.
+                # Legitimate for ONE replay: this cycle's set was scored once
+                # and published as evidence, and the blindness proof is
+                # replayable from mutants/audit/. It stops being legitimate
+                # when nobody draws the next one — and THAT is a debt, so it
+                # gets a field. A notice string is where debts go to hide: the
+                # sibling debt (a committed set nobody consumes) has carried
+                # `holdout_awaiting_gate` since it was measured, while this one
+                # was prose only. Measured on a live campaign: thirteen spent
+                # cycles, no set committed, every landing reporting 0/0 through
+                # a term the wrapper checks as `detected == total` — vacuously
+                # true, announced in a sentence nothing reads.
+                cycles = spent_cycles(gm_dir)
+                report["holdout_spent_unreplaced"] = True
+                report["holdout_spent_cycles"] = cycles
                 note(report, "the held-out set for this cycle is SPENT and published "
-                             "under mutants/audit/. This replay re-checks the visible "
+                             "under mutants/audit/ (%d cycle(s) there, none pending). "
+                             "This replay re-checks the visible "
                              "counter-test only; the held-out figure below is 0/0 and "
                              "proves nothing on its own. Draw a fresh set to harden "
                              "again — the gate refuses one that repeats a published "
-                             "fingerprint.")
+                             "fingerprint." % cycles)
             else:
                 bail("the sealed held-out set is missing from %s and no longer in the "
                      "workspace. It was relocated by an earlier gate and the sealed "
@@ -2543,6 +7076,17 @@ def main():
                  "a green counter-test), or refuse them in writing."
                  % (len(pending), json.dumps(pending, ensure_ascii=False)))
 
+        pending_ext = pending_extensions(gm_dir)
+        if pending_ext:
+            report["pending_extensions"] = pending_ext
+            bail("the ledger carries %d pending extension request(s): %s. Each one "
+                 "names an observation the net was asked to gain and does not "
+                 "have — a green built while they wait reports coverage the "
+                 "intent already knows is missing. The net's extension subbot "
+                 "acts them; what it cannot apply additively goes back to its "
+                 "requester in writing."
+                 % (len(pending_ext), json.dumps(pending_ext, ensure_ascii=False)))
+
     try:
         app_up(config, ws)
     except SystemExit as e:
@@ -2584,7 +7128,22 @@ def main():
 
     try:
         if mode == "record":
-            snap = capture(config, corpus, canon)
+            # GM_RECORD_IDS scopes the record to named entries — the extension
+            # subbot needs to capture EXACTLY the entries it added: a full
+            # re-record inside a lot where behaviour legitimately moved would
+            # rewrite every reference and be refused wholesale as smuggling.
+            only = [i for i in os.environ.get("GM_RECORD_IDS", "").split(",")
+                    if i.strip()]
+            if only:
+                known = {e["id"] for e in corpus["entries"]}
+                missing = [i for i in only if i not in known]
+                if missing:
+                    bail("GM_RECORD_IDS names %d entr%s absent from the "
+                         "corpus: %s — recording an unknown id writes a "
+                         "reference nothing will ever compare"
+                         % (len(missing), "y" if len(missing) == 1 else "ies",
+                            ", ".join(missing)))
+            snap = capture(config, corpus, canon, ids=only or None)
             for k, v in snap.items():
                 with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8", newline="") as f:
                     f.write(v)
@@ -2663,30 +7222,62 @@ def main():
                          % ", ".join(sorted(only)))
 
         verdicts, blind = [], []
+        # A revert that did not restore the baseline ends the scoring: every
+        # later measurement would describe a program nobody wrote, and every
+        # later apply is refused anyway while the leftover is on record.
+        #
+        # TWO signals, because one does not cover the rule. `revert_clean` is
+        # written only on the full apply→capture→revert path — revert.sh
+        # exited non-zero, or the captures still differ with the mutant gone.
+        # The inert branch and the failed-apply branch also run a revert and
+        # also ignore its exit code, and a leftover armed there used to let the
+        # loop run on: every remaining mutant came back INVALID naming the
+        # culprit, the counts described a lot nobody measured, and the operator
+        # was told to revert a tree by hand. `leftover_on_record` is what all
+        # three leave behind. The gate is red either way; stopping keeps it
+        # legible.
+        stopped = None
         for seed, meta in enumerate(visible):
             if only and meta["id"] not in only:
                 continue
             v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
             verdicts.append(v)
-            if not v.get("valid"):
-                continue
-            if not v.get("detected"):
-                blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
-                              "mutant_id": v["id"], "entries": v.get("targets_declared", []),
-                              "why": "no declared target moved"})
-            elif v.get("undetected_targets"):
-                blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
-                              "mutant_id": v["id"], "entries": v["undetected_targets"],
-                              "why": "these references did not move for a change they cover"})
+            if v.get("valid"):
+                if not v.get("detected"):
+                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                  "mutant_id": v["id"], "entries": v.get("targets_declared", []),
+                                  "why": "no declared target moved"})
+                elif v.get("undetected_targets"):
+                    blind.append({"surface": v.get("surface"), "archetype": v.get("archetype"),
+                                  "mutant_id": v["id"], "entries": v["undetected_targets"],
+                                  "why": "these references did not move for a change they cover"})
+            # Classified FIRST, then the stop. A verdict whose revert failed
+            # still reached capture and comparison, so what it says about the
+            # net is evidence; breaking before this line dropped a real blind
+            # lane on the way out.
+            if scoring_must_stop(v, ws):
+                stopped = v
+                break
 
         # The seal relocates the held-out set in BOTH modes — the campaign must
         # lose file access early — but selfcheck neither scores it nor reports
         # it. Revealing `holdout_detected` to whoever runs the check is enough to
         # steer hardening: seeing 3/5 says "keep tuning" even with the files out
         # of reach. The held-out result belongs to the final gate alone.
-        held = [] if mode == "selfcheck" else [
-            score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
-            for i, m in enumerate(held_meta)]
+        held = []
+        if mode != "selfcheck" and stopped is None:
+            for i, m in enumerate(held_meta):
+                v = score_mutant(m, config, corpus, canon, refs, ws, 1000 + i)
+                held.append(v)
+                if scoring_must_stop(v, ws):
+                    stopped = v
+                    break
+        hygiene = measurement_hygiene(verdicts, held)
+        if stopped is not None:
+            note(report, "scoring stopped after mutant %s: %s. The tree or the app is no longer "
+                 "KNOWN to be at baseline, so the mutants after it were not scored and are absent "
+                 "from the counts; a leftover, if any, is on record for the next gate."
+                 % (stopped.get("id"), stopped.get("reason") or "its revert did not restore the baseline"))
 
         valid = [v for v in verdicts if v.get("valid")]
         detected = [v for v in valid if v.get("detected")]
@@ -2704,10 +7295,9 @@ def main():
             valid=len(valid),
             detected=len(detected),
             score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
-            revert_clean=all(v.get("revert_clean", True) for v in verdicts + held),
-            collateral=sum(len(v.get("collateral") or []) for v in verdicts),
-        unstable_controls=sorted({c for v in verdicts
-                                  for c in (v.get("unstable_controls") or [])}),
+            revert_clean=overall_revert_clean(verdicts + held, stopped, ws),
+            collateral=hygiene["collateral"],
+            unstable_controls=hygiene["unstable_controls"],
             uncontrolled=[v["id"] for v in valid if not v.get("control_covered")],
             blind_lanes=blind,
             holdout_total=len([v for v in held if v.get("valid")]),
@@ -2729,6 +7319,22 @@ def main():
                 "probe: %s. The net saw the change; the lane they were drawn against did "
                 "not. Citing the aggregate alone would report the resemblance."
                 % (len(off), ", ".join(off))))
+        # A lot whose baseline was lost reports a WITHHELD held-out figure, not
+        # a measured one: the held-out loop did not run (or stopped part-way),
+        # so its 0 == 0 is the vacuous equality this file guards against
+        # everywhere else — and it sat right beside a `revert_clean` that read
+        # silence as clean. Measured, end to end: apply.sh half-edits and exits
+        # 7, revert.sh exits 1 — score_pct 100, revert_clean true, blind_lanes
+        # empty, holdout 0/0, GATE GREEN, `git status` showing `M f.txt` and the
+        # marker still armed. The gate approved the exact tree this guard exists
+        # to refuse. `overall_revert_clean` is now the one that says otherwise.
+        baseline_lost = not report["revert_clean"]
+        if baseline_lost and len(held) < len(held_meta):
+            # Withheld, not zero-because-failed — the idiom selfcheck uses just
+            # below, deliberately unequal so an unscored held-out set can never
+            # be taken for a passed one.
+            report["holdout_total"] = len(held_meta)
+            report["holdout_detected"] = -1
         if mode == "selfcheck":
             # Withheld, not zero-because-failed. The two numbers are made
             # DELIBERATELY UNEQUAL: the gate converges on
@@ -2739,6 +7345,14 @@ def main():
             report["holdout_detected"] = -1
 
         problems = []
+        if baseline_lost:
+            problems.append(
+                "THE TREE IS NOT KNOWN TO BE BACK AT BASELINE: %s. The figures above "
+                "describe what was measured BEFORE that point, not the lot — the mutants "
+                "after it were never applied, so an empty blind-lane list and a 0/0 "
+                "held-out figure mean 'not measured', never 'clean'."
+                % (("scoring stopped after mutant %s" % stopped.get("id")) if stopped
+                   else "a mutant is still recorded as applied"))
         if not report["noop_silent"]:
             detail = noop.get("noisy_detail") or {}
             problems.append(
@@ -2760,10 +7374,7 @@ def main():
                             "cover. Not averaged away, not weighted: this list must be "
                             "empty. %s" % json.dumps(blind, ensure_ascii=False))
         if report["collateral"]:
-            detail = "; ".join(
-                "%s moved %s" % (v["id"], v["collateral"])
-                for v in verdicts if v.get("collateral")
-            )
+            detail = hygiene["detail"]
             problems.append("collateral drift on %d control entries — a mutant moves "
                             "responses it does not declare as targets. Either its "
                             "`targets` under-state its blast radius, or the capture is "
@@ -2788,24 +7399,66 @@ def main():
         if report["score_pct"] < floor:
             problems.append("mutation score %d%% is under the %d%% floor"
                             % (report["score_pct"], floor))
-        if report["duplicate_refs"]:
-            problems.append("%d reference group(s) are byte-identical across DIFFERENT entries, "
-                            "so the corpus is %d observations wide, not %d. This is NOT always a "
-                            "defect: on a refusal lane two entries legitimately capture the same "
-                            "302, and the second is a control proving a mutant moved only the "
-                            "first. It IS a defect when the endpoints were meant to differ — then "
-                            "either one is redundant, or they differ on a path this fixture does "
-                            "not exercise and the difference is captured NOWHERE. Decide which, "
-                            "per group: %s"
-                            % (len(report["duplicate_refs"]), report["corpus_distinct"],
-                               report["corpus_total"],
-                               json.dumps(report["duplicate_refs"], ensure_ascii=False)))
+        # Byte-identical references are not automatically a defect — on a
+        # refusal lane the second entry is a CONTROL proving a mutant moved only
+        # the first. What was missing is the difference between that and a
+        # redundant pair, and it cannot be settled by a note: the gate reads
+        # data, not prose. So the corpus DECLARES the separating mutant per
+        # group, and the declaration is discharged by MEASUREMENT — the mutant
+        # must move some members and leave the others still, with every member
+        # pinned into its control sample so the answer exists.
+        #
+        # A proof obligation, not a waiver. It goes red by itself the day the
+        # separator dies, which is what a waiver could never do: measured 08/09,
+        # two groups whose notes still read "TRANCHÉ, ET PROUVÉ" had lost their
+        # separator to a lot's re-anchoring — the mutant now moves both members,
+        # and the pair proves nothing at all.
+        #
+        # verdicts + held. A declared separator may live in the held-out set —
+        # score_mutant pins its group into the control sample there too, so the
+        # deciding measurement really IS taken — but it lands in `held`, not
+        # `verdicts`. Passing only the latter made the gate report a separator it
+        # had just scored as never scored, and refuse the group on its own blind
+        # spot. What that held measurement finds reaches the gate's own hygiene
+        # terms through `measurement_hygiene`, so a class cannot be discharged
+        # through a channel the gate is forbidden to look at.
+        #
+        # Les ids TENUS A L'ECART quand leur resultat est reserve : en selfcheck
+        # `held` est vide par construction, et un separateur qui en vient n'est
+        # pas absent, il est retenu.
+        withheld_ids = ([m.get("id") for m in held_meta]
+                        if (mode == "selfcheck" and not held) else [])
+        # Ce que le JEU DE MUTANTS contient, score ou non. Un separateur que le
+        # scan n'a pas atteint — l'arret apres un revert sale, un GM_MUTANTS
+        # restreint — n'est pas absent : il existe, il n'a pas tourne. Le dire
+        # « absent du jeu » envoyait corriger une absence qui n'en est pas une.
+        in_the_set = [m.get("id") for m in visible + held_meta]
+        # Le puits des classes DIFFEREES. Il est fourni, donc `withheld` est
+        # honore ; sans lui la fonction retombe sur le refus le plus severe.
+        # Rien n'est retenu a la porte finale (`withheld_ids` y est vide), donc
+        # cette voie ne peut pas adoucir le verdict qui decide.
+        deferred = []
+        unproven = unproven_duplicate_groups(
+            report["duplicate_refs"], corpus, list(verdicts) + list(held),
+            bool(only), withheld_ids, in_the_set, deferred)
+        problems.extend(duplicate_groups_shape_problems(corpus))
+        report["duplicate_groups_unproven"] = unproven
+        report["duplicate_groups_deferred"] = deferred
+        if unproven:
+            problems.append(duplicate_groups_refusal(
+                unproven, report["duplicate_refs"],
+                report["corpus_distinct"], report["corpus_total"]))
         if mode == "selfcheck":
             note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
                          "its result is withheld on purpose. Only the final gate scores "
                          "it. An empty log_tail here means the VISIBLE set is clean, "
                          "which is not the same as a green gate.")
-        elif report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
+        elif (not baseline_lost and report["holdout_total"]
+                and report["holdout_detected"] < report["holdout_total"]):
+            # `not baseline_lost`: after a stop the figure is WITHHELD (-1), not
+            # measured, and rendering it would read "HELD-OUT set: -1/2 detected"
+            # — a count where there was no measurement. The red is already said,
+            # once, above.
             problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
                             "the mutants it could see, not against divergence in general."
                             % (report["holdout_detected"], report["holdout_total"]))

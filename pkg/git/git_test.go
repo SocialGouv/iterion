@@ -79,7 +79,8 @@ func gitTestEnv() []string {
 
 func mustRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	// NoAutoMaintenance, not internal/gittest: that package imports this one.
+	cmd := exec.Command("git", NoAutoMaintenance(args...)...)
 	cmd.Dir = dir
 	cmd.Env = gitTestEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {

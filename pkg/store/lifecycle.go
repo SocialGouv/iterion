@@ -1,0 +1,362 @@
+package store
+
+// This file is the canonical terminal-state contract for runs (ADR-095).
+//
+// Two things live here and nowhere else:
+//
+//  1. The policy predicates on RunStatus. Each one answers ONE named
+//     question; callers pick the predicate whose question they are
+//     actually asking instead of re-deriving a status set. Predicates
+//     that other layers deliberately diverge from (supervise's
+//     event-level terminal set, runview's ExecStatus monotonicity set,
+//     the board/pipeline sets) document the divergence at their own
+//     declaration and are pinned by the cross-layer agreement tests.
+//
+//  2. FailureCode — the persisted, machine-readable classification of
+//     why a run is in a failure status. It is the same vocabulary the
+//     engine uses in-process (runtime.ErrorCode is a type alias of it),
+//     persisted on Run.FailureCode instead of dying at the store
+//     boundary as free text.
+
+// FailureCode classifies a run failure. The empty value means UNKNOWN
+// (legacy rows, writers not yet classified) — never "no failure": the
+// presence of a failure is Run.Status's job.
+//
+// The registry below is OPEN-WORLD: it documents the codes iterion
+// itself emits, but readers MUST NOT validate against it — a newer
+// binary (or an external writer) may persist a code this binary does
+// not know, and it must round-trip unharmed. Zero-means-unknown is the
+// only universal rule.
+type FailureCode string
+
+const (
+	FailureNodeNotFound   FailureCode = "NODE_NOT_FOUND"
+	FailureNoOutgoingEdge FailureCode = "NO_OUTGOING_EDGE"
+	// FailureLoopExhausted, FailureJoinFailed and FailureResumeInvalid
+	// are RESERVED: declared for the event vocabulary but with no
+	// persisting writer today — a run record never carries them until
+	// their sites are classified. Kept so the wire vocabulary and the
+	// runtime aliases stay stable.
+	FailureLoopExhausted    FailureCode = "LOOP_EXHAUSTED"
+	FailureBudgetExceeded   FailureCode = "BUDGET_EXCEEDED"
+	FailureExecutionFailed  FailureCode = "EXECUTION_FAILED"
+	FailureWorkspaceSafety  FailureCode = "WORKSPACE_SAFETY"
+	FailureTimeout          FailureCode = "TIMEOUT"
+	FailureCancelled        FailureCode = "CANCELLED"
+	FailureJoinFailed       FailureCode = "JOIN_FAILED"
+	FailureResumeInvalid    FailureCode = "RESUME_INVALID"
+	FailureSchemaValidation FailureCode = "SCHEMA_VALIDATION"
+	// FailureExpressionFailed: a `compute` node's expression could not be
+	// evaluated (an unknown reference, a type the operator cannot
+	// multiply, an overflow). Distinct from FailureExecutionFailed, which
+	// covers a BACKEND fault an automatic resume can genuinely outlast: a
+	// compute node runs no LLM and no shell, so re-executing it against
+	// the same checkpoint produces the same error, forever. That is what
+	// the automatic-resume classification reads it by.
+	FailureExpressionFailed FailureCode = "EXPRESSION_FAILED"
+	FailureRateLimited      FailureCode = "RATE_LIMITED"
+	// FailureUsageLimitBlocked: the provider's subscription/quota WINDOW
+	// is exhausted (Anthropic forfait 5h / session / weekly cap) —
+	// distinct from FailureRateLimited because retrying inside the
+	// window can never succeed: the only cure is waiting for the reset.
+	// In-node recovery fails terminal immediately; the run lands
+	// failed_resumable and the run-level auto-resume loop waits with a
+	// reset-aware delay (see pkg/cli/auto_resume.go).
+	FailureUsageLimitBlocked     FailureCode = "USAGE_LIMIT_BLOCKED"
+	FailureContextLengthExceeded FailureCode = "CONTEXT_LENGTH_EXCEEDED"
+	FailureToolFailedTransient   FailureCode = "TOOL_FAILED_TRANSIENT"
+	FailureToolFailedPermanent   FailureCode = "TOOL_FAILED_PERMANENT"
+	// FailureNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
+	// reaching the upstream model API. Distinct from
+	// FailureExecutionFailed so the recovery dispatcher can apply a
+	// longer exponential-backoff budget — a 2-second single retry is
+	// plenty for "stale token" or "race on the tool subprocess", but
+	// useless against a 30-second captive-portal handoff or a
+	// multi-minute datacenter routing blip.
+	FailureNetworkTransient FailureCode = "NETWORK_TRANSIENT"
+	// FailureAuthFailed: the upstream model provider rejected the
+	// request for credential reasons (HTTP 401/403, expired token,
+	// invalid api key). NOT transient — retrying the same call can
+	// never succeed until a human re-authenticates. The recovery
+	// dispatcher pauses for human instead of burning the retry budget;
+	// the run is resumable once the credential is refreshed.
+	FailureAuthFailed FailureCode = "AUTH_FAILED"
+
+	// FailureModelUnavailable: the provider refused the request because
+	// the MODEL it names is not served to this caller — an id the
+	// backend does not know, a model the account may not use, a model
+	// whose minimum client release this image is behind ("requires a
+	// newer version of Codex"). Distinct from FailureAuthFailed, where
+	// the credential is what was rejected, and from
+	// FailureExecutionFailed, whose automatic resume claims that a later
+	// attempt can outlast the fault: this verdict is a property of the
+	// model and the caller, not of the request's content, so every
+	// attempt from the same image is told the same thing. The cure is an
+	// operator changing the model or the image, then resuming.
+	FailureModelUnavailable FailureCode = "MODEL_UNAVAILABLE"
+
+	// FailureSchemaUnusable: the node's DECLARED output schema could not
+	// be read by the backend serving it, so no request was ever built.
+	// Distinct from FailureSchemaValidation, where a request WAS served
+	// and the model's output missed the schema — that one is decided by
+	// a sample and the next may conform. This one rides the IR: the same
+	// declaration reaches the same parser on every attempt. The cure is
+	// fixing the schema (or the backend that cannot read it), then
+	// resuming.
+	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
+
+	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
+	// stall reap, server shutdown) parked the run failed_resumable.
+	// Previously only visible as the run_failed event's
+	// `interrupted:true` flag.
+	FailureInterrupted FailureCode = "INTERRUPTED"
+	// FailureFailNode: the workflow's own `fail` node ended the run —
+	// a deliberate graph termination, not a crash (ADR-015). It is the
+	// UNTYPED outcome: a `fail <name>:` declaration supplies its own
+	// UPPER_SNAKE code instead, so this constant means "the bot refused
+	// and did not say why", which is exactly what it should read as.
+	FailureFailNode FailureCode = "FAIL_NODE"
+	// FailureProcessOrphaned: a liveness probe (flock, lease, pid)
+	// found the run's owner dead and flipped it failed_resumable.
+	// Declared here for the orphan sweep/reconcile writers; wiring
+	// them is follow-up work to the ADR-095 slice.
+	FailureProcessOrphaned FailureCode = "PROCESS_ORPHANED"
+	// FailureQueueSchemaMismatch: a cloud queue delivery was parked
+	// because its message schema version is outside the runner's
+	// accepted range. Declared for the schema-park writer (follow-up).
+	FailureQueueSchemaMismatch FailureCode = "QUEUE_SCHEMA_MISMATCH"
+	// FailureDLQParked: the queue exhausted its deliveries for this run
+	// and parked it on the DLQ — replay via /api/admin/dlq.
+	FailureDLQParked FailureCode = "DLQ_PARKED"
+	// FailureIRUnloadable: the runner could not decode or compile the IR a
+	// server ahead of it produced. Written by the runner before it acks the
+	// delivery (a redelivery would reach the same image and the same
+	// verdict); resumable, because a resume after the fleet is aligned
+	// re-compiles the source on the server. Reserved so no bot can mint it
+	// and no reader takes it for a bot's own refusal.
+	FailureIRUnloadable FailureCode = "IR_UNLOADABLE"
+	// FailureLaunchFailed: the run never left the launch path. Its row was
+	// persisted but no queue message was ever published for it (the
+	// publish, the IR encoding or the contribution payload failed), so no
+	// runner will ever claim it; the error names the step. Terminal — the
+	// launch is re-done by its caller (a forge redelivery, a new click),
+	// never by resuming this row.
+	FailureLaunchFailed FailureCode = "LAUNCH_FAILED"
+	// FailureSandboxSetupTimeout: a sandbox driver's bounded SETUP
+	// phase (workspace copy, git fixup, …) exceeded its per-phase
+	// budget. Distinct from FailureTimeout (a node's deadline — raising
+	// max_duration is not the cure here) and from FailureInterrupted
+	// (runner drain / lost heartbeat): the phase ran on a
+	// driver-internal child ctx with a driver-internal bound while the
+	// run ctx stayed live. Persisted on RunStatusFailedResumable so the
+	// redelivery lands on a healthy pod, where a stuck kubectl-exec pipe
+	// routinely clears.
+	FailureSandboxSetupTimeout FailureCode = "SANDBOX_SETUP_TIMEOUT"
+	// FailureBotRequiresNewerEngine: the bundle's manifest declares an
+	// engine floor (`requires.iterion`) this build is below. TERMINAL, not
+	// resumable: the bundle and the image are what disagree, and neither
+	// changes by re-running the same pod — a resume re-queues onto the same
+	// fleet and re-reads the same manifest. What clears it is a deploy or a
+	// bot edit, and after either the caller RE-LAUNCHES (the fixed bot's IR
+	// is not the one this run checkpointed). Written before any node
+	// executes, so there is nothing half-done to preserve.
+	FailureBotRequiresNewerEngine FailureCode = "BOT_REQUIRES_NEWER_ENGINE"
+	// FailureSandboxCapacity: the sandbox never STARTED because the
+	// cluster had no room for its pod (unschedulable past the start
+	// deadline, or still being brought up on the node it landed on).
+	// Distinct from FailureSandboxSetupTimeout, which is a phase that RAN
+	// and stalled: here nothing of the run executed at all, so the retry
+	// is a fresh placement rather than a resume of half-done work — and
+	// distinct from a terminal sandbox failure (a bad image reference, an
+	// invalid spec), which re-fails identically on every pod. Persisted on
+	// RunStatusFailedResumable so an hourly sentinel does not silently
+	// lose its tick when the fleet sits at its request ceiling.
+	FailureSandboxCapacity FailureCode = "SANDBOX_CAPACITY"
+)
+
+// ReservedFailureCodes is the exhaustive set of codes the ENGINE itself
+// emits — the const block above, enumerated. It exists because the
+// vocabulary is open-world for READERS but not for WRITERS: a workflow's
+// own `fail <name>:` may mint any code it likes EXCEPT one of these,
+// since every one of them is control flow somewhere. `BUDGET_EXCEEDED`,
+// `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`, `NETWORK_TRANSIENT`,
+// `EXECUTION_FAILED` and `TOOL_FAILED_TRANSIENT` are the auto-resume
+// allow-list; the cloud runner's usage-window retry keys on the same
+// values. A deliberate refusal wearing one of those names would be
+// auto-retried as a transient provider fault, and — because a resumable
+// fail re-executes the same guard, which refuses identically — every
+// attempt would burn for nothing.
+//
+// The compiler reads THIS list (C248); the drift guard in
+// lifecycle_reserved_test.go parses the const block and fails when a new
+// constant is not listed here, so the two cannot separate.
+var ReservedFailureCodes = []FailureCode{
+	FailureNodeNotFound,
+	FailureNoOutgoingEdge,
+	FailureLoopExhausted,
+	FailureBudgetExceeded,
+	FailureExecutionFailed,
+	FailureWorkspaceSafety,
+	FailureTimeout,
+	FailureCancelled,
+	FailureJoinFailed,
+	FailureResumeInvalid,
+	FailureSchemaValidation,
+	FailureExpressionFailed,
+	FailureRateLimited,
+	FailureUsageLimitBlocked,
+	FailureContextLengthExceeded,
+	FailureToolFailedTransient,
+	FailureToolFailedPermanent,
+	FailureNetworkTransient,
+	FailureAuthFailed,
+	FailureModelUnavailable,
+	FailureSchemaUnusable,
+	FailureInterrupted,
+	FailureFailNode,
+	FailureProcessOrphaned,
+	FailureQueueSchemaMismatch,
+	FailureDLQParked,
+	FailureIRUnloadable,
+	FailureLaunchFailed,
+	FailureSandboxSetupTimeout,
+	FailureSandboxCapacity,
+	FailureBotRequiresNewerEngine,
+}
+
+// reservedFailureCodes indexes ReservedFailureCodes for lookup. Built
+// once at init from the slice, so the slice stays the single declaration.
+var reservedFailureCodes = func() map[FailureCode]bool {
+	m := make(map[FailureCode]bool, len(ReservedFailureCodes))
+	for _, c := range ReservedFailureCodes {
+		m[c] = true
+	}
+	return m
+}()
+
+// Reserved reports whether c is one of the engine's own codes — i.e. a
+// value a workflow must not mint for itself, because the engine reads it
+// as control flow. The empty code is not reserved: it means UNKNOWN.
+func (c FailureCode) Reserved() bool { return reservedFailureCodes[c] }
+
+// AllRunStatuses is the exhaustive status vocabulary, for callers that
+// derive a policy set from a predicate (and for the truth-table tests).
+// Order matches the declaration block above.
+var AllRunStatuses = []RunStatus{
+	RunStatusRunning, RunStatusPausedWaitingHuman, RunStatusPausedOperator,
+	RunStatusFinished, RunStatusFailed, RunStatusFailedResumable,
+	RunStatusCancelled, RunStatusQueued,
+}
+
+// CarriesFailureCode names the only statuses on which a non-empty
+// FailureCode may persist. Every status transition through the store
+// choke points clears the field when the target is outside this set,
+// which is what makes a stale code impossible after a resume.
+func (s RunStatus) CarriesFailureCode() bool {
+	return s == RunStatusFailed || s == RunStatusFailedResumable || s == RunStatusCancelled
+}
+
+// HoldsCredentialSlot names the statuses that count toward a
+// credential's concurrency ceiling (secrets.ApiKey.MaxConcurrentRuns):
+// running is spending, and queued is about to — admitting a burst of
+// queued runs against a full key is exactly the thundering herd the
+// ceiling exists to stop. Parked (failed_resumable) and paused runs
+// hold NO slot: they spend nothing while they wait, and their resume
+// re-resolves credentials against the ceiling like any claim.
+func (s RunStatus) HoldsCredentialSlot() bool {
+	return s == RunStatusRunning || s == RunStatusQueued
+}
+
+// CarriesPausePointer reports whether a run in this status may
+// truthfully carry a pending-interaction pointer on its checkpoint
+// (Checkpoint.InteractionID / InteractionQuestions). True for the
+// paused statuses (the pointer IS the pause) and for queued — the
+// in-flight cloud resume hop: SubmitResume flips paused → queued
+// before a runner claims the message, and the runner's queued router
+// reads the pointer to route a human-answers resume. Every other
+// transition consumes it: the checkpoint itself survives (ADR-095 §5),
+// but a pointer on a cancelled/terminal/running run is a replayable
+// lie — a later resume would route back into the pause path and cross
+// the human gate with empty answers.
+func (s RunStatus) CarriesPausePointer() bool {
+	return s.IsPaused() || s == RunStatusQueued
+}
+
+// ---------------------------------------------------------------------------
+// Policy predicates — one named question each
+// ---------------------------------------------------------------------------
+
+// IsFinalSuccess: the run completed its workflow (reached a done node).
+func (s RunStatus) IsFinalSuccess() bool { return s == RunStatusFinished }
+
+// IsFinalFailure: the run failed with no automatic path forward — only
+// an explicit operator action (rewind, fresh launch) touches it again.
+func (s RunStatus) IsFinalFailure() bool { return s == RunStatusFailed }
+
+// IsTerminalResumable: terminal for polling purposes (IsTerminal is
+// true) yet holding a checkpoint an operator may resume from. The
+// deliberate ambiguity of failed_resumable/cancelled being "terminal",
+// made explicit.
+func (s RunStatus) IsTerminalResumable() bool {
+	return s == RunStatusFailedResumable || s == RunStatusCancelled
+}
+
+// IsQueued: submitted to the cloud queue, not yet claimed by a runner.
+func (s RunStatus) IsQueued() bool { return s == RunStatusQueued }
+
+// CanOperatorResume answers the EXTERNAL eligibility question: may an
+// operator ask this run to continue (studio Resume, `iterion resume`,
+// SubmitResume, MCP local_resume)? It deliberately says nothing about
+// HOW the resume proceeds — paused_waiting_human routes through the
+// answers path (see RequiresResumeAnswers) while the other three
+// restart from the failure checkpoint — and internal claim CAS sets
+// keep their own, narrower or wider, sets (e.g. the failure-resume
+// claim also accepts `queued` for the cloud pre-flip, and the pause
+// claim accepts only paused_waiting_human).
+func (s RunStatus) CanOperatorResume() bool {
+	return s == RunStatusFailedResumable || s == RunStatusCancelled ||
+		s == RunStatusPausedOperator || s == RunStatusPausedWaitingHuman
+}
+
+// RequiresResumeAnswers: resuming this status needs the pending human
+// interaction answered first (`--answers-file`, the studio form).
+func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
+
+// RunnerVerdictFromStatuses is the CAS set of the runner's own writes on a
+// run it claimed — the DLQ park and the unloadable-IR verdict: a claimed
+// or queued attempt, and the engine's own failed_resumable write, which on
+// the nominal path lands before the runner's (a CAS from running/queued
+// alone could never land). A run cancelled meanwhile is not flipped back.
+func RunnerVerdictFromStatuses() []RunStatus {
+	return []RunStatus{RunStatusRunning, RunStatusQueued, RunStatusFailedResumable}
+}
+
+// CanAutoResume answers the AUTOMATIC eligibility question: may
+// machinery (--auto-resume, usage-window retries) resume this run with
+// no human in the loop? Deliberately excludes cancelled — an operator's
+// cancel is a decision automation must never override — and the paused
+// statuses, which wait on a human by definition. One documented
+// divergence: the dispatcher's resumableRunID additionally re-dispatches
+// its OWN paused_operator tickets (pkg/dispatcher/retry.go) — a
+// dispatcher-owned pause is machinery state there, not an operator's;
+// do not "align" it onto this predicate.
+func (s RunStatus) CanAutoResume() bool { return s == RunStatusFailedResumable }
+
+// CountsAgainstLaunchLimit: the run occupies launch-admission capacity
+// (tenant concurrency caps, overlap policies). Named after the policy,
+// not "active": a paused run is alive too, it just doesn't hold a
+// launch slot.
+func (s RunStatus) CountsAgainstLaunchLimit() bool {
+	return s == RunStatusQueued || s == RunStatusRunning
+}
+
+// CanBeCancelled is the MAXIMAL set a cancel write may stomp: anything
+// not already finally settled (finished, failed, cancelled). Surfaces
+// with a narrower reach keep their own subset and say why — the
+// engine's ctx-cancel CAS excludes queued because a queued doc is a
+// NEWER attempt that engine does not own (pkg/runtime/run_failure.go),
+// and runview's CancelInactive excludes running (a live run is
+// cancelled through its process, not a store write).
+func (s RunStatus) CanBeCancelled() bool {
+	return !s.IsFinalSuccess() && !s.IsFinalFailure() && s != RunStatusCancelled
+}

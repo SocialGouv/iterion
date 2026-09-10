@@ -113,11 +113,10 @@ func TestParsePullRequest_Forgejo(t *testing.T) {
 	}
 }
 
-// TestIsCrossRepo guards the fork-guard signal: a PR whose head branch lives
-// in a different repo than its base is a fork (untrusted), and a payload with
-// no head.repo defaults to same-repo so a trusted internal PR is never falsely
-// gated off the auto-launch path.
-func TestIsCrossRepo(t *testing.T) {
+// TestSameRepoAsBase guards the fork guard, which is fail-CLOSED: a lane
+// launching on `<base>.CloneURL + head branch` may only proceed when the
+// head is PROVEN to live in the base repo.
+func TestSameRepoAsBase(t *testing.T) {
 	same, err := ParsePullRequest([]byte(sameRepoPR))
 	if err != nil {
 		t.Fatal(err)
@@ -125,8 +124,8 @@ func TestIsCrossRepo(t *testing.T) {
 	if same.HeadRepoFullName != "acme/widgets" {
 		t.Fatalf("same-repo head: %q", same.HeadRepoFullName)
 	}
-	if same.IsCrossRepo() {
-		t.Error("same-repo PR must NOT be cross-repo")
+	if !same.SameRepoAsBase() {
+		t.Error("a same-repo PR must be proven same-repo")
 	}
 
 	fork, err := ParsePullRequest([]byte(forkPR))
@@ -136,17 +135,67 @@ func TestIsCrossRepo(t *testing.T) {
 	if fork.HeadRepoFullName != "mallory/widgets" {
 		t.Fatalf("fork head: %q", fork.HeadRepoFullName)
 	}
-	if !fork.IsCrossRepo() {
-		t.Error("fork PR MUST be cross-repo (fork-guard signal)")
+	if fork.SameRepoAsBase() {
+		t.Error("a fork PR must NOT be proven same-repo")
 	}
 
-	// Legacy/minimal payload with no head.repo → same-repo (not a fork).
-	min, err := ParsePullRequest([]byte(githubOpenPR))
+	// The hole this predicate closes: `head.repo: null` is what a fork
+	// looks like once it is DELETED, and it is indistinguishable from a
+	// payload that never carried the field. Reading either as same-repo
+	// aims the bot at the base repo with a head branch name the fork
+	// author chose — a fixer would push LLM commits onto the base repo's
+	// branch of that name.
+	unnamed, err := ParsePullRequest([]byte(githubOpenPR))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if min.IsCrossRepo() {
-		t.Error("PR with no head.repo must default to same-repo")
+	if unnamed.HeadRepoFullName != "" {
+		t.Fatalf("this fixture must carry no head repo, got %q", unnamed.HeadRepoFullName)
+	}
+	if unnamed.SameRepoAsBase() {
+		t.Error("an unnamed head repo must never be proven same-repo — a deleted fork has exactly this shape")
+	}
+}
+
+// The GitHub/Forgejo "Request review" / "Re-request review" gesture arrives
+// as a `review_requested` action carrying the targeted user. It is a manual
+// gesture, so unlike the auto-review actions a draft does not suppress it.
+func TestParsePullRequest_ReviewRequested(t *testing.T) {
+	payload := `{
+	  "action": "review_requested",
+	  "sender": {"login": "alice"},
+	  "requested_reviewer": {"login": "iterion-bot"},
+	  "repository": {"id": 1, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 5, "title": "t", "html_url": "https://github.com/acme/widgets/pull/5",
+	    "state": "open", "draft": true, "updated_at": "2026-09-01T10:00:00Z",
+	    "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}
+	}`
+	p, err := ParsePullRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.RequestedReviewerLogin != "iterion-bot" || p.UpdatedAt != "2026-09-01T10:00:00Z" {
+		t.Fatalf("parsed: %+v", p)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") || !p.ReviewRequestedFrom("ITERION-BOT") {
+		t.Fatal("ReviewRequestedFrom must match the targeted reviewer (case-insensitively), draft included")
+	}
+	if p.ReviewRequestedFrom("alice") || p.ReviewRequestedFrom("") {
+		t.Fatal("only the targeted reviewer matches")
+	}
+	if p.IsReviewable() {
+		t.Fatal("review_requested is not an auto-review action")
+	}
+
+	// A team review request carries no requested_reviewer — never matches.
+	team := `{"action": "review_requested", "repository": {"full_name": "acme/widgets"},
+	  "pull_request": {"number": 5, "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}}`
+	p2, err := ParsePullRequest([]byte(team))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("team review request must not match a user login")
 	}
 }
 

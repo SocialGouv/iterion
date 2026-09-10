@@ -26,11 +26,11 @@ on:
         type: string
 
 concurrency:
-  # Serialise tap updates: this workflow does `git push origin main` and
-  # the two release pipelines (release.yml + desktop-release.yml) each
-  # trigger a separate run for the same tag, so concurrent runs would
-  # race on the push. Never cancel — every run carries artefacts that
-  # need to land in the tap.
+  # Serialise tap updates: the two release pipelines (release.yml +
+  # desktop-release.yml) each trigger a separate run for the same tag, and
+  # both write the same branch and PR, so concurrent runs would race on the
+  # push. Never cancel — every run carries artefacts that need to land in
+  # the tap.
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
@@ -86,6 +86,18 @@ jobs:
           echo "resolved tag=$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare the tap branch
+        # The tap change lands as its OWN queued PR, not as a push to main:
+        # a direct push invalidates the merge group at the head of the queue
+        # and makes every PR behind it rebuild (~20-25 min, measured on
+        # #766). Switching branches BEFORE the rewrite is what lets the
+        # second pipeline's pass add the desktop cask to the first pass's
+        # branch instead of starting from main and dropping its formula.
+        if: steps.tag.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/brew-tap-pr.sh branch "$TAG"
+
       - name: Download release assets
         if: steps.tag.outputs.skip != '1'
         env:
@@ -119,17 +131,19 @@ jobs:
           VERSION="${TAG#v}"
           bash scripts/update-brew-tap.sh "$VERSION" artifacts
 
-      - name: Commit & push
+      - name: Open (or update) the tap PR
+        # GH_TOKEN is the token-bureau App installation token, not
+        # GITHUB_TOKEN: a PR opened by GITHUB_TOKEN gets no workflow runs, so
+        # its required checks would never report and auto-merge would wait
+        # forever. The App token needs `pull_requests: write` on top of the
+        # `contents: write` the push already uses — if the bureau's grant is
+        # narrower, `gh pr create` fails here rather than silently leaving
+        # the tap behind.
         if: steps.tag.outputs.skip != '1'
         env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/iterion.rb Cask/iterion-desktop.rb
-          if git diff --staged --quiet; then
-            echo "tap already up to date for ${TAG}, nothing to commit"
-            exit 0
-          fi
-          git commit -m "chore(brew): update tap to ${TAG} [skip ci]"
-          git push origin main
+          bash scripts/brew-tap-pr.sh publish "$TAG"

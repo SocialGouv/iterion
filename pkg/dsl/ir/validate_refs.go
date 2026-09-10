@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
@@ -22,11 +23,30 @@ type refContext struct {
 	Location    string // e.g. "prompt 'sys' (node 'a')"
 	IncludeSelf bool   // true for edge with-mappings: the source node itself is available
 	EdgeTo      string // destination of an edge with-mapping; empty otherwise
+	// EdgeID and Span locate the TEXT that holds the reference — the edge
+	// line for a with-mapping, the prompt declaration for a prompt body —
+	// so a diagnostic lands where the author has to edit, not on the
+	// consuming node's header. Zero when the reference lives in the node
+	// itself (a command, a script, an expression), where the node's own
+	// declaration is the right place.
+	EdgeID string
+	Span   ast.Span
+}
+
+// refErrorf / refWarnf emit a template-reference diagnostic with the
+// context's full attribution: node, edge and the span of the text that
+// carries the reference.
+func (c *compiler) refErrorf(rc refContext, code DiagCode, format string, args ...any) {
+	c.emit(SeverityError, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
+}
+
+func (c *compiler) refWarnf(rc refContext, code DiagCode, format string, args ...any) {
+	c.emit(SeverityWarning, code, rc.NodeID, rc.EdgeID, rc.Span, "", format, args...)
 }
 
 // collectAllRefs gathers every template reference in the workflow together
 // with the node that consumes it.
-func collectAllRefs(w *Workflow) []refContext {
+func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[*Edge]ast.Span) []refContext {
 	// Build reverse map: prompt name → list of consuming node IDs.
 	promptUsers := make(map[string][]string)
 	for _, n := range w.Nodes {
@@ -37,7 +57,9 @@ func collectAllRefs(w *Workflow) []refContext {
 
 	var out []refContext
 
-	// Prompt template refs.
+	// Prompt template refs. The reference sits in the prompt's text, so the
+	// prompt declaration is where the diagnostic points; the consuming node
+	// stays the attribution (what the reference resolves against).
 	for _, p := range w.Prompts {
 		consumers := promptUsers[p.Name]
 		for _, ref := range p.TemplateRefs {
@@ -46,6 +68,7 @@ func collectAllRefs(w *Workflow) []refContext {
 					Ref:      ref,
 					NodeID:   nodeID,
 					Location: fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
+					Span:     promptSpans[p.Name],
 				})
 			}
 		}
@@ -70,6 +93,8 @@ func collectAllRefs(w *Workflow) []refContext {
 					Location:    fmt.Sprintf("edge %s -> %s, with %q", e.From, e.To, dm.Key),
 					IncludeSelf: true,
 					EdgeTo:      e.To,
+					EdgeID:      edgeID(e.From, e.To),
+					Span:        edgeSpans[e],
 				})
 			}
 		}
@@ -95,6 +120,27 @@ func collectAllRefs(w *Workflow) []refContext {
 					Location: fmt.Sprintf("tool node %q script", t.ID),
 				})
 			}
+		}
+	}
+
+	// Fail node `message:` refs. Same argument the ScriptRefs comment
+	// above makes: the message is what the operator reads INSTEAD of the
+	// generic "workflow reached fail node", so a typo'd
+	// `{{outputs.gat.pct}}` resolves to nil at fail time, renders empty,
+	// and the outcome silently falls back to exactly the wording a typed
+	// fail exists to remove — the one moment nobody is watching a
+	// compiler.
+	for _, n := range w.Nodes {
+		fn, ok := n.(*FailNode)
+		if !ok || fn.Message == nil {
+			continue
+		}
+		for _, ref := range fn.Message.Refs {
+			out = append(out, refContext{
+				Ref:      ref,
+				NodeID:   fn.ID,
+				Location: fmt.Sprintf("fail node %q message", fn.ID),
+			})
 		}
 	}
 
@@ -317,7 +363,15 @@ func validEnvName(s string) bool {
 }
 
 func (c *compiler) validateTemplateRefs(w *Workflow) {
-	refs := collectAllRefs(w)
+	promptSpans := map[string]ast.Span{}
+	if c.file != nil {
+		for _, p := range c.file.Prompts {
+			if _, seen := promptSpans[p.Name]; !seen {
+				promptSpans[p.Name] = p.Span
+			}
+		}
+	}
+	refs := collectAllRefs(w, promptSpans, c.edgeSpans)
 	if len(refs) == 0 {
 		return
 	}
@@ -352,7 +406,7 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	name := rc.Ref.Path[0]
 	secret, ok := w.Secrets[name]
 	if !ok {
-		c.errorf(DiagUnknownSecret,
+		c.refErrorf(rc, DiagUnknownSecret,
 			"%s: reference %s targets undeclared secret %q",
 			rc.Location, rc.Ref.Raw, name)
 		return
@@ -362,13 +416,13 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	}
 	sub := rc.Ref.Path[1]
 	if sub != "path" {
-		c.errorf(DiagSecretSubfield,
+		c.refErrorf(rc, DiagSecretSubfield,
 			"%s: reference %s uses unknown secret sub-field %q (expected: path)",
 			rc.Location, rc.Ref.Raw, sub)
 		return
 	}
 	if !secret.IsFile() {
-		c.errorf(DiagSecretSubfield,
+		c.refErrorf(rc, DiagSecretSubfield,
 			"%s: reference %s uses .path on non-file secret %q",
 			rc.Location, rc.Ref.Raw, name)
 	}
@@ -380,7 +434,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	}
 	name := rc.Ref.Path[0]
 	if _, ok := w.Attachments[name]; !ok {
-		c.errorf(DiagUnknownAttachment,
+		c.refErrorf(rc, DiagUnknownAttachment,
 			"%s: reference %s targets undeclared attachment %q",
 			rc.Location, rc.Ref.Raw, name)
 		return
@@ -388,7 +442,7 @@ func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) >= 2 {
 		sub := rc.Ref.Path[1]
 		if _, ok := AttachmentSubFields[sub]; !ok {
-			c.errorf(DiagAttachmentSubfieldUnknown,
+			c.refErrorf(rc, DiagAttachmentSubfieldUnknown,
 				"%s: reference %s uses unknown sub-field %q (expected one of: path, url, mime, size, sha256)",
 				rc.Location, rc.Ref.Raw, sub)
 		}
@@ -404,7 +458,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C029: referenced node must exist.
 	targetNode, ok := w.Nodes[targetNodeID]
 	if !ok {
-		c.errorf(DiagUnknownRefNode,
+		c.refErrorf(rc, DiagUnknownRefNode,
 			"%s: reference %s targets unknown node %q",
 			rc.Location, rc.Ref.Raw, targetNodeID)
 		return
@@ -412,7 +466,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 
 	// C036: referenced node must be reachable before consumer.
 	if !checkReachable(rc, predecessors, targetNodeID) {
-		c.errorf(DiagRefNodeNotReachable,
+		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets node %q which is not reachable before %q",
 			rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
 		return
@@ -438,7 +492,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// exactly those fields are valid, anything else is a hard error.
 	if implicit := NodeImplicitOutputFields(targetNode); implicit != nil {
 		if !slices.Contains(implicit, fieldName) {
-			c.errorf(DiagRefFieldNotInSchema,
+			c.refErrorf(rc, DiagRefFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s",
 				rc.Location, rc.Ref.Raw, fieldName, targetNode.NodeKind(), targetNodeID, strings.Join(implicit, ", "))
 		}
@@ -448,7 +502,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	// C032: node has no output schema — warn that field access can't be verified.
 	outSchema := NodeOutputSchema(targetNode)
 	if outSchema == "" {
-		c.warnf(DiagRefNodeNoSchema,
+		c.refWarnf(rc, DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
 			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
 		return
@@ -460,7 +514,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 		return // already reported by C002
 	}
 	if findField(schema, fieldName) == nil {
-		c.errorf(DiagRefFieldNotInSchema,
+		c.refErrorf(rc, DiagRefFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in output schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, outSchema, targetNodeID)
 	}
@@ -472,7 +526,7 @@ func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
 	}
 	varName := rc.Ref.Path[0]
 	if _, ok := w.Vars[varName]; !ok {
-		c.errorf(DiagUndeclaredVar,
+		c.refErrorf(rc, DiagUndeclaredVar,
 			"%s: reference %s targets undeclared variable %q",
 			rc.Location, rc.Ref.Raw, varName)
 	}
@@ -510,7 +564,7 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 
 	if findField(schema, fieldName) == nil {
-		c.errorf(DiagInputFieldNotInSchema,
+		c.refErrorf(rc, DiagInputFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
 	}
@@ -532,7 +586,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 	}
 	if implicit := NodeImplicitOutputFields(node); implicit != nil {
 		if !slices.Contains(implicit, fieldName) {
-			c.errorf(DiagInputFieldNotInSchema,
+			c.refErrorf(rc, DiagInputFieldNotInSchema,
 				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
 				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
 		}
@@ -550,7 +604,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 		if _, isVar := w.Vars[fieldName]; isVar {
 			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
 		}
-		c.warnf(DiagRefNodeNoSchema, "%s", msg)
+		c.refWarnf(rc, DiagRefNodeNoSchema, "%s", msg)
 		return
 	}
 	schema, ok := w.Schemas[outSchema]
@@ -571,7 +625,7 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
 		}
 	}
-	c.errorf(DiagInputFieldNotInSchema, "%s", msg)
+	c.refErrorf(rc, DiagInputFieldNotInSchema, "%s", msg)
 }
 
 // validateRouterEdgeInput is C032 for a mid-graph router whose outgoing
@@ -591,7 +645,12 @@ func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *Router
 	if _, isVar := w.Vars[fieldName]; isVar {
 		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
 	}
-	c.warnf(DiagRefNodeNoSchema, "%s", msg)
+	// The catalogue fix for C032 ("add an output: schema") cannot be
+	// followed on a router, which has no output of its own: the remedy
+	// here is to map the field onto the router or read a var.
+	c.emit(SeverityWarning, DiagRefNodeNoSchema, rc.NodeID, rc.EdgeID, rc.Span,
+		fmt.Sprintf("A router has no `output:` of its own — map the field onto it through an incoming edge (`… -> %s with { %s: \"…\" }`), or read `{{vars.%s}}` for a launch-time value.", rc.NodeID, fieldName, fieldName),
+		"%s", msg)
 }
 
 // routerPassThroughKeys is the set of keys a mid-graph router will have
@@ -641,7 +700,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	// C035: artifact must be published by some node.
 	producerID, ok := producers[artifactName]
 	if !ok {
-		c.errorf(DiagUnknownArtifact,
+		c.refErrorf(rc, DiagUnknownArtifact,
 			"%s: reference %s targets artifact %q which is not published by any node",
 			rc.Location, rc.Ref.Raw, artifactName)
 		return
@@ -649,7 +708,7 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 
 	// C036: producer must be reachable before consumer.
 	if !checkReachable(rc, predecessors, producerID) {
-		c.errorf(DiagRefNodeNotReachable,
+		c.refErrorf(rc, DiagRefNodeNotReachable,
 			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
 			rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
 	}

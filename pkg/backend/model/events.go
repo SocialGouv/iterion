@@ -89,6 +89,30 @@ type UsageCapInfo struct {
 	ResetsAt time.Time
 }
 
+// UsageProgressInfo is a node's cumulative mid-call token usage by
+// billing class, passed to the OnUsageProgress hook. Model is the
+// effective model serving the call (prices the estimate; may be empty
+// early in a stream). Counts are CUMULATIVE for the in-flight call,
+// never deltas.
+type UsageProgressInfo struct {
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+}
+
+// OrchestrationStallInfo is one classified orchestration deadlock — a
+// delegate session blocked on TaskOutput / Monitor with no background work
+// to wait on — and its outcome, passed to the OnOrchestrationStall hook.
+type OrchestrationStallInfo struct {
+	Backend   string
+	Tool      string
+	Model     string
+	IdleFor   time.Duration
+	Recovered bool
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string
@@ -160,12 +184,15 @@ type LLMCompactInfo struct {
 // natural end-of-iteration boundary — the very state the next LLM
 // call would observe if the loop continued. Treat as immutable.
 type LLMTurnCaptureInfo struct {
-	Step             int
-	Text             string
-	ToolCalls        []ToolCallEntry
-	FinishReason     string
-	InputTokens      int
-	OutputTokens     int
+	Step         int
+	Text         string
+	ToolCalls    []ToolCallEntry
+	FinishReason string
+	InputTokens  int
+	OutputTokens int
+	// AggregateTokens is a turn total the backend could not split. Filled
+	// instead of InputTokens/OutputTokens, never alongside them.
+	AggregateTokens  int
 	CacheReadTokens  int
 	CacheWriteTokens int
 	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).
@@ -183,6 +210,13 @@ type LLMTurnCaptureInfo struct {
 	// passes it to `claude --resume <id> --fork-session` for the
 	// claude_code rehydration path.
 	SessionID string
+	// ConversationOmittedBytes is non-zero when the turn crossed the
+	// sandbox IPC without its snapshot, the snapshot being larger than
+	// one relayed line may carry (relayConversationBudget): the turn is
+	// still an anchor for the timeline, but a fork from it replays
+	// nothing, and this names how much stayed inside the container.
+	// Always zero on the in-process path.
+	ConversationOmittedBytes int
 	// conversation holds the unmarshalled message slice the runtime
 	// captures for the fork rehydration path. Kept unexported so
 	// observers must call MarshalConversation to materialise the JSON

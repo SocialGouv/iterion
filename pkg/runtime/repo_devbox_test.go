@@ -171,8 +171,8 @@ func TestResolveDevboxProjects_CLIOverrideBeatsTheWorkflow(t *testing.T) {
 	if len(got) != 1 || got[0].label != "repo" {
 		t.Fatalf("--repo-devbox on must re-enable the repo source, got %+v", got)
 	}
-	if skipped != "" {
-		t.Errorf("nothing was declined, got skipped=%q", skipped)
+	if len(skipped) != 0 {
+		t.Errorf("nothing was declined, got skipped=%+v", skipped)
 	}
 }
 

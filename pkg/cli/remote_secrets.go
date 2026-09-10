@@ -31,14 +31,18 @@ func ReadSecretValue(fromEnv, fromFile string, stdinOK bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		v = strings.TrimRight(string(b), "\n")
+		// CRLF too: a file written on Windows leaves a trailing \r, which
+		// the server's shape gate refuses as a control character with a
+		// message about a terminal transcript — right refusal, misleading
+		// cause, for a file that is perfectly fine.
+		v = strings.TrimRight(string(b), "\r\n")
 	case stdinOK:
 		r := bufio.NewReader(os.Stdin)
 		line, err := r.ReadString('\n')
 		if err != nil && line == "" {
 			return "", fmt.Errorf("read secret from stdin: %w", err)
 		}
-		v = strings.TrimRight(line, "\n")
+		v = strings.TrimRight(line, "\r\n")
 	default:
 		return "", fmt.Errorf("provide the value via --from-env <VAR>, --from-file <path>, or pipe it on stdin")
 	}
@@ -48,29 +52,53 @@ func ReadSecretValue(fromEnv, fromFile string, stdinOK bool) (string, error) {
 	return v, nil
 }
 
-// remoteSecretsBase returns the REST prefix for a scope: the active
-// team's store, the personal (/api/me) store, or the super-admin
-// platform store (/api/admin/llm — api-keys only; the deployment's own
-// fallback credentials).
-func remoteSecretsBase(ctx context.Context, c *RemoteClient, scope, teamFlag, resource string) (string, error) {
+// RemoteSecretsBase returns the REST prefix for a scope: the active team's
+// store, the personal (/api/me) store, the ORG's shared store
+// (/api/orgs/{id} — api-keys only, lent to the teams the org's credential
+// audience names), or the super-admin platform store (/api/admin/llm —
+// api-keys only; the deployment's own fallback credentials).
+//
+// Exported so the cobra layer resolves --scope through this ONE authority
+// instead of keeping a second copy of the switch: they drifted once, and a
+// scope added to one worked on `create` while `list` composed a path no
+// route serves.
+//
+// scopeFlag is the tenant the caller pinned: --team for team scope, --org
+// for org scope. The two credential-only scopes refuse `secrets`
+// explicitly rather than building a URL no route serves — a 404 from a path
+// the CLI composed itself reads as "the instance is broken", not "that
+// scope has no such store".
+func RemoteSecretsBase(ctx context.Context, c *RemoteClient, scope, scopeFlag, resource string) (string, error) {
 	switch scope {
 	case "", "team":
-		team, err := c.ResolveTeam(ctx, teamFlag)
+		team, err := c.ResolveTeam(ctx, scopeFlag)
 		if err != nil {
 			return "", err
 		}
 		return "/api/teams/" + team + "/" + resource, nil
 	case "me":
 		return "/api/me/" + resource, nil
+	case "org":
+		if resource != "api-keys" {
+			return "", fmt.Errorf("--scope org covers LLM api-keys only; %s stays team- or user-scoped", resource)
+		}
+		org, err := c.ResolveOrg(ctx, scopeFlag)
+		if err != nil {
+			return "", err
+		}
+		return "/api/orgs/" + org + "/" + resource, nil
 	case "platform":
+		if resource != "api-keys" {
+			return "", fmt.Errorf("--scope platform covers LLM api-keys only; %s stays team- or user-scoped", resource)
+		}
 		return "/api/admin/llm/" + resource, nil
 	default:
-		return "", fmt.Errorf("invalid --scope %q (want team|me|platform)", scope)
+		return "", fmt.Errorf("invalid --scope %q (want team|me|org|platform)", scope)
 	}
 }
 
 func RemoteSecretsSet(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, name, value string) error {
-	base, err := remoteSecretsBase(ctx, c, scope, teamFlag, "secrets")
+	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "secrets")
 	if err != nil {
 		return err
 	}
@@ -83,7 +111,7 @@ func RemoteSecretsSet(ctx context.Context, c *RemoteClient, p *Printer, scope, t
 }
 
 func RemoteSecretsRotate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, secretID, value string) error {
-	base, err := remoteSecretsBase(ctx, c, scope, teamFlag, "secrets")
+	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "secrets")
 	if err != nil {
 		return err
 	}
@@ -96,7 +124,7 @@ func RemoteSecretsRotate(ctx context.Context, c *RemoteClient, p *Printer, scope
 }
 
 func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, provider, name, value string, isDefault bool) error {
-	base, err := remoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
+	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
 	if err != nil {
 		return err
 	}
@@ -118,7 +146,7 @@ func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope
 // immediately; in-flight runs keep their sealed snapshot until they
 // finish or fail-resume.
 func RemoteAPIKeysRotate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, keyID, value string) error {
-	base, err := remoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
+	base, err := RemoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
 	if err != nil {
 		return err
 	}

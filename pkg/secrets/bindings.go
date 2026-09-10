@@ -287,37 +287,44 @@ func NewMemoryBotSecretBindingStore() *MemoryBotSecretBindingStore {
 	return &MemoryBotSecretBindingStore{bindings: make(map[string]BotSecretBinding)}
 }
 
-func (m *MemoryBotSecretBindingStore) Create(_ context.Context, b BotSecretBinding) error {
+// The memory store mirrors the Mongo one's tenant semantics (stamp on
+// write, filter on read) — see stampTenant / visibleToTenant in generic.go
+// for why a permissive double hides a whole class of bugs (#997).
+func (m *MemoryBotSecretBindingStore) Create(ctx context.Context, b BotSecretBinding) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	b.TenantID = stampTenant(ctx, b.TenantID)
 	m.bindings[b.ID] = b
 	return nil
 }
 
-func (m *MemoryBotSecretBindingStore) Get(_ context.Context, id string) (BotSecretBinding, error) {
+func (m *MemoryBotSecretBindingStore) Get(ctx context.Context, id string) (BotSecretBinding, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	b, ok := m.bindings[id]
-	if !ok {
+	if !ok || !visibleToTenant(ctx, b.TenantID) {
 		return BotSecretBinding{}, ErrBindingNotFound
 	}
 	return b, nil
 }
 
-func (m *MemoryBotSecretBindingStore) Update(_ context.Context, b BotSecretBinding) error {
+func (m *MemoryBotSecretBindingStore) Update(ctx context.Context, b BotSecretBinding) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.bindings[b.ID]; !ok {
+	cur, ok := m.bindings[b.ID]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrBindingNotFound
 	}
+	b.TenantID = stampTenant(ctx, cur.TenantID)
 	m.bindings[b.ID] = b
 	return nil
 }
 
-func (m *MemoryBotSecretBindingStore) Delete(_ context.Context, id string) error {
+func (m *MemoryBotSecretBindingStore) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.bindings[id]; !ok {
+	b, ok := m.bindings[id]
+	if !ok || !visibleToTenant(ctx, b.TenantID) {
 		return ErrBindingNotFound
 	}
 	delete(m.bindings, id)

@@ -97,3 +97,30 @@ workflow main:
 		t.Fatal("workflow must still compile despite the warning")
 	}
 }
+
+// A supervisor watching a JUDGE node is legitimate (a reviewer is a
+// judge; both kinds execute through the same model executor and drain
+// steering identically) — no C190.
+func TestSupervisorWatchingJudgeNodeDoesNotWarn(t *testing.T) {
+	src := `
+supervisor pacer:
+  watches: [review]
+
+judge review:
+  model: "anthropic/claude-opus-4-8"
+
+workflow main:
+  entry: review
+  review -> done
+`
+	pr := parser.Parse("t.bot", src)
+	res := Compile(pr.File)
+	for _, d := range res.Diagnostics {
+		if d.Code == DiagUnknownWatchedNode {
+			t.Fatalf("C190 fired for a judge watch: %s", d.Message)
+		}
+	}
+	if res.Workflow == nil {
+		t.Fatal("workflow must compile")
+	}
+}

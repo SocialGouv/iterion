@@ -1,10 +1,17 @@
 package store
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -19,6 +26,10 @@ import (
 // wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
 var ErrRunNotFound = errors.New("store: run not found")
 
+// ErrRunConflict means the loaded version changed before a full-document save.
+// Reload and reapply the intended edit; never retry the stale document.
+var ErrRunConflict = errors.New("store: run changed since it was loaded")
+
 // ErrRunDeleted marks a run that was DELIBERATELY deleted (DeleteRun
 // left a durable tombstone). Distinct from ErrRunNotFound so late
 // writers — a detached engine goroutine, a stale runner, a replayed
@@ -26,6 +37,45 @@ var ErrRunNotFound = errors.New("store: run not found")
 // the run by re-creating its directory / upserting its document. The
 // HTTP layer maps it to 410 Gone.
 var ErrRunDeleted = errors.New("store: run was deleted")
+
+// RunAbsent reports whether a LoadRun error PROVES the run is gone —
+// never came to exist (ErrRunNotFound), or was deliberately deleted and
+// left a tombstone (ErrRunDeleted). Both mean "nothing is alive behind
+// this id"; a bare error means the store is momentarily unreadable and
+// must NOT be read as absence.
+//
+// It exists because the two sentinels are easy to half-handle: a caller
+// that tests only ErrRunNotFound treats a deleted run as a transient
+// read failure and conserves forever — which for the claim watchdog is a
+// card stuck under a dead owner's claim with no exit. Every authority
+// that resolves a card's recorded run answers this question the same
+// way, or one bricks the card the other would free.
+func RunAbsent(err error) bool {
+	return errors.Is(err, ErrRunNotFound) || errors.Is(err, ErrRunDeleted)
+}
+
+// ErrRunNotDeletable marks a delete refused on lifecycle grounds — the
+// run exists and is ALIVE. Typed so the HTTP layer can answer 409
+// instead of 404: a refusal made in the name of "the tombstone is proof
+// of absence" must not itself answer with the HTTP proof of absence.
+var ErrRunNotDeletable = errors.New("run is not deletable")
+
+// RunDeletable is the ONE lifecycle guard on deleting a run, crossed by
+// every delete authority (runview.DeleteRunCtx behind the HTTP handler
+// and the MCP tool, `iterion runs prune`). A run that is not TERMINAL is
+// refused: the delete tombstone is read everywhere as PROOF the run is
+// gone (the board launch authorities admit a fresh run on it), so
+// deleting a running/queued/paused run would mint a live sibling while
+// the engine goroutine keeps burning.
+func RunDeletable(r *Run) error {
+	if r == nil {
+		return fmt.Errorf("%w: no run record", ErrRunNotDeletable)
+	}
+	if !r.Status.IsTerminal() {
+		return fmt.Errorf("%w: run %s is %s — cancel it first: a delete tombstone reads as proof of absence and would let a second run launch on the same work", ErrRunNotDeletable, r.ID, r.Status)
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
@@ -75,6 +125,76 @@ func (s RunStatus) IsPaused() bool {
 	return s == RunStatusPausedWaitingHuman || s == RunStatusPausedOperator
 }
 
+// RunEndReason is the typed WHY a run ENDED, persisted on the run doc beside
+// FailureCode. It is the protocol between the surface that ends a run and the
+// surfaces that must recognise the ending — above all the runner admission,
+// which drops a redelivery for a run whose pull request is gone.
+//
+// It exists because run.Error cannot be that protocol: it is a human message,
+// wrapped by the cancel path as "<message> (was <status>: <prior>)", quoted on
+// the run list, on board cards and inside the merge-gate synthetic status. Any
+// rewording, translation or truncation of a message read by a strings.Contains
+// would silently disarm the check that reads it.
+//
+// The message is DERIVED from the reason (Message below), so a writer states
+// the reason alone and the two can never disagree.
+type RunEndReason string
+
+const (
+	// RunEndReasonOperator: a human asked for the run to stop.
+	RunEndReasonOperator RunEndReason = "operator"
+	// RunEndReasonPRClosed: the stop-on-close webhook lane ended the run
+	// because its pull request was closed or merged. The runner admission
+	// drops every redelivery for such a run — including one carrying an
+	// explicit resume: nothing the review would say can matter now, and
+	// continuing burns provider quota on a diff no one will merge.
+	RunEndReasonPRClosed RunEndReason = "pr_closed"
+	// RunEndReasonPRRequeued: the merge queue took the pull request back,
+	// so the auto-heal run has nothing left to carry.
+	RunEndReasonPRRequeued RunEndReason = "pr_requeued"
+	// RunEndReasonSuperseded: a newer delivery for the same subject
+	// replaced this run.
+	RunEndReasonSuperseded RunEndReason = "superseded"
+)
+
+// Message is the human sentence a reason writes into run.Error — what the run
+// list, the board cards and the merge-gate synthetic status quote. An unknown
+// or empty reason reads as a bare "cancelled": an automated stop that cannot
+// name itself must not sign an operator's name to its own decision.
+func (r RunEndReason) Message() string {
+	switch r {
+	case RunEndReasonOperator:
+		return "cancelled by user"
+	case RunEndReasonPRClosed:
+		return "pull request closed or merged — nothing left to review"
+	case RunEndReasonPRRequeued:
+		return "pull request re-entered the merge queue — the heal has nothing left to carry"
+	case RunEndReasonSuperseded:
+		return "superseded by a newer delivery for the same subject"
+	default:
+		return "cancelled"
+	}
+}
+
+// IsPRClosedCancel reports whether run.Error carries the PR-closed message.
+// It is the MIGRATION reader, for run documents written before EndReason
+// existed and which therefore say why in prose alone; a run carrying the typed
+// reason is recognised by that field. Empty string → false.
+func IsPRClosedCancel(runError string) bool {
+	return runError != "" && strings.Contains(runError, RunEndReasonPRClosed.Message())
+}
+
+// EndedBecausePRClosed answers the admission's question over BOTH carriers:
+// the typed reason on the doc, and — for a document written before the field
+// existed — the message it wrapped. One predicate, so a caller cannot honour
+// half the answer.
+func EndedBecausePRClosed(r *Run) bool {
+	if r == nil {
+		return false
+	}
+	return r.EndReason == RunEndReasonPRClosed || IsPRClosedCancel(r.Error)
+}
+
 // ---------------------------------------------------------------------------
 // Run — top-level run metadata persisted in run.json
 // ---------------------------------------------------------------------------
@@ -82,6 +202,20 @@ func (s RunStatus) IsPaused() bool {
 // RunFormatVersion is the current version of the persisted run.json format.
 // Bump this when making breaking changes to the Run struct.
 const RunFormatVersion = 1
+
+// The bot-resolution tiers a launch can be served by, persisted on
+// Run.BotSourceTier. The vocabulary lives here, next to the field, so the
+// resolver that produces it and the publisher that stores it cannot drift.
+const (
+	// BotSourceTierTeam — the launching team's own botsource row (a fork
+	// authored in the studio editor, or a bot only that team has).
+	BotSourceTierTeam = "team"
+	// BotSourceTierPlatform — a deployment-wide override under the
+	// reserved platform sentinel tenant.
+	BotSourceTierPlatform = "platform"
+	// BotSourceTierBaked — the catalog baked into the image.
+	BotSourceTierBaked = "baked"
+)
 
 // Run is the top-level metadata for a single workflow invocation.
 //
@@ -106,6 +240,76 @@ type RunModelOverride struct {
 	Effort   string `json:"effort,omitempty" bson:"effort,omitempty"`
 }
 
+// RunFallbackEntry is one persisted stage of the launch's run-level
+// fallback chain — the doc twin of queue.RunFallbackEntry.
+type RunFallbackEntry struct {
+	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
+	Model    string `json:"model,omitempty" bson:"model,omitempty"`
+	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
+// RunFallback is the ordered persisted chain. New JSON and BSON documents
+// encode it as an array; both decoders also promote the legacy single-object
+// representation to a one-stage chain.
+type RunFallback []RunFallbackEntry
+
+func (f *RunFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("store: empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("store: invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []RunFallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("store: decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry RunFallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: fallback must be an object or array")
+	}
+}
+
+// UnmarshalBSONValue keeps legacy single-route run documents readable while
+// the canonical representation is an array.
+func (f *RunFallback) UnmarshalBSONValue(typ byte, data []byte) error {
+	switch bson.Type(typ) {
+	case bson.TypeNull:
+		*f = nil
+		return nil
+	case bson.TypeArray:
+		var entries []RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entries); err != nil {
+			return fmt.Errorf("store: decode BSON fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case bson.TypeEmbeddedDocument:
+		var entry RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy BSON fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: BSON fallback must be an object or array, got %s", bson.Type(typ))
+	}
+}
+
 // NodeServed is the (backend, model) that actually served one LLM node.
 // Last write wins per node_id — a loop's last pass is what a finished
 // run.json reports; the event stream is the full history.
@@ -122,6 +326,16 @@ type NodeServed struct {
 	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
 	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
+	// Fingerprint is the provider fingerprint the backend reported for the
+	// session behind this record ("anthropic-oauth", "facade:<base url>",
+	// …). A model id alone cannot tell that an Anthropic-shaped facade
+	// answered a claude id with whatever it aliases it to; the fingerprint
+	// can. It names the route that SERVED on a success and the one that
+	// was ATTEMPTED on a failure that still reported a model — the same
+	// reading as Model beside it, and last-write-wins with it. Empty when
+	// the backend reports none (claw and the CLI-agent backends report no
+	// fingerprint), so empty is "route unknown", never "not a facade".
+	Fingerprint string `json:"fingerprint,omitempty" bson:"fingerprint,omitempty"`
 }
 
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the
@@ -207,6 +421,10 @@ type RunRetryState struct {
 	// resume. Nil = nothing armed (never armed, already claimed, or
 	// deliberately abandoned).
 	RetryAfter *time.Time `json:"retry_after,omitempty" bson:"retry_after,omitempty"`
+	// ScheduledAt anchors max_wait across circuit deferrals. ScheduleRunRetry
+	// resets it for each paid attempt; DelayRunRetry deliberately preserves it
+	// so a repeatedly extended shared circuit cannot postpone one run forever.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty" bson:"scheduled_at,omitempty"`
 	// Reason names the failure class that armed this retry
 	// ("usage_window").
 	Reason string `json:"reason,omitempty" bson:"reason,omitempty"`
@@ -223,9 +441,88 @@ type RunRetryState struct {
 	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
 }
 
+// OutputCorrectionEpisode is the durable ledger for bounded schema-output
+// correction.  An episode belongs to one node execution and survives a
+// process restart/resume, so a watcher cannot accidentally turn an invalid
+// output into an unbounded model-correction loop.
+//
+// Attempts is the number of correction calls already made.  The fingerprints
+// make the no-progress guard explicit: if the same invalid payload produces
+// the same violation twice, the runtime stops immediately even when budget
+// remains. Status is one of active, succeeded, exhausted, unchanged or
+// spend_blocked. A spend-blocked episode is reconsidered after an operator
+// raises the run budget; it does not consume another correction attempt by
+// itself.
+type OutputCorrectionEpisode struct {
+	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
+}
+
+// WatcherCursor is the durable anti-loop cursor for a supervisor/watch
+// instance. It records the last progress sample and evaluation/action window
+// so a watcher restart cannot immediately re-evaluate the same unchanged
+// evidence and enqueue the same correction again.
+type WatcherCursor struct {
+	WatcherID               string     `json:"watcher_id,omitempty" bson:"watcher_id,omitempty"`
+	LastProgressFingerprint string     `json:"last_progress_fingerprint,omitempty" bson:"last_progress_fingerprint,omitempty"`
+	LastProgressAt          time.Time  `json:"last_progress_at,omitempty" bson:"last_progress_at,omitempty"`
+	LastEvaluationAt        *time.Time `json:"last_evaluation_at,omitempty" bson:"last_evaluation_at,omitempty"`
+	LastAction              string     `json:"last_action,omitempty" bson:"last_action,omitempty"`
+	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
+	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`
+	ConsecutiveNoProgress   int        `json:"consecutive_no_progress,omitempty" bson:"consecutive_no_progress,omitempty"`
+	// ProgressSequence advances on each semantic transition in the observed
+	// event stream. Replayed copies of one event retain the sequence, while an
+	// A-B-A recurrence gets a fresh trigger identity even though A's payload is
+	// byte-for-byte identical.
+	ProgressSequence int `json:"progress_sequence,omitempty" bson:"progress_sequence,omitempty"`
+	// InterventionSequence advances only after a steering message is accepted.
+	InterventionSequence int `json:"intervention_sequence,omitempty" bson:"intervention_sequence,omitempty"`
+	// PendingIntervention* reserves the exact delivery identity before the
+	// message is inserted. If the process dies after insertion but before the
+	// cursor is finalized, the next coordinator reuses the same ID and the
+	// inbox's insert-once contract turns the replay into a no-op.
+	PendingInterventionID       string    `json:"pending_intervention_id,omitempty" bson:"pending_intervention_id,omitempty"`
+	PendingInterventionTrigger  string    `json:"pending_intervention_trigger,omitempty" bson:"pending_intervention_trigger,omitempty"`
+	PendingInterventionSequence int       `json:"pending_intervention_sequence,omitempty" bson:"pending_intervention_sequence,omitempty"`
+	UpdatedAt                   time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+}
+
+// RunCredStamp is what one credential resolution leaves on the run
+// document: the audit identities of the credentials it sealed, and when the
+// earliest credential it passed over reopens. Written as a unit — at launch
+// on the in-memory document, at resume through RunStore.SetRunCredStamp —
+// so the two facts always describe the same resolution.
+type RunCredStamp struct {
+	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
+	// clears it (a re-resolution that sealed nothing holds no slot).
+	Fingerprints []string
+	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
+	SkippedReopensAt *time.Time
+}
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
+	// ExecutionContext is the versioned launch contract. It is optional so
+	// runs written before the reliability contract remain readable and keep
+	// their legacy behaviour on resume.
+	ExecutionContext *ExecutionContext `json:"execution_context,omitempty" bson:"execution_context,omitempty"`
+	// Admission records the last pre-execution decision. It is written before
+	// attachment promotion, workspace setup or any model call.
+	Admission *AdmissionDecision `json:"admission,omitempty" bson:"admission,omitempty"`
 	// Name is a deterministic, human-friendly label derived from
 	// (file_path + run_id) at run creation. Display-only — the
 	// canonical identifier remains ID. Empty for runs persisted
@@ -238,6 +535,32 @@ type Run struct {
 	// runs. The studio surfaces parent/child relationships via these
 	// fields; aggregation is by polling children's terminal status.
 	ParentRunID string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
+
+	// CredFingerprints are the stable audit identities of the credentials
+	// the publisher sealed for this run (API-key and OAuth fingerprints —
+	// never secrets). Stamped at launch and RE-stamped at every resume,
+	// because re-resolution may pick different credentials. The per-key
+	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
+	// runs through this field.
+	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// SkippedCredReopensAt is the earliest instant a credential the
+	// resolution PASSED OVER reopens — a refused window's reset, a reached
+	// cap's reset — or nil when nothing usable was skipped. Stamped with
+	// CredFingerprints at launch and re-stamped at every resume. The
+	// usage-window retry arms on the earlier of the failed credential's
+	// reset and this: a run that parked on the platform forfait's Monday
+	// reset comes back the same afternoon, when the team key it was
+	// refused only on the five-hour window reopens.
+	SkippedCredReopensAt *time.Time `json:"skipped_cred_reopens_at,omitempty" bson:"skipped_cred_reopens_at,omitempty"`
+	// LLMIdleSince is set while the run executes NO model-calling node —
+	// the last one finished at this instant and none has started since —
+	// and nil while one is running, while the run is queued, or before its
+	// first model call (a run about to spend counts). The per-key
+	// concurrency ceiling counts alive runs whose marker is nil: a run in a
+	// sixty-minute tool-only verify gate holds its key's slot for nobody.
+	// Cleared by every credential re-stamp (a resumed attempt starts over)
+	// and toggled by the runner at each model node's start and finish.
+	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.
@@ -254,9 +577,20 @@ type Run struct {
 	// losing the answered child's work. Empty for parents with no subbot
 	// nodes and for runs that predate this field. Set only on the parent.
 	SubbotChildren map[string]string `json:"subbot_children,omitempty" bson:"subbot_children,omitempty"`
-	WorkflowName   string            `json:"workflow_name" bson:"workflow_name"`
-	WorkflowHash   string            `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath       string            `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+
+	// AwaitAnswersWaits contains only nodes currently parked at await_answers.
+	// Expiry bounds stale markers; a state transition ends their execution.
+	AwaitAnswersWaits map[string]AwaitAnswersWait `json:"await_answers_waits,omitempty" bson:"await_answers_waits,omitempty"`
+
+	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
+	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
+	// ArtifactCompatibilityRevision records the workflow revision for which an
+	// operator explicitly accepted the source-derived portions of every
+	// retained artifact contract with --force. Artifact bodies remain immutable;
+	// this run-level acknowledgement keeps a later ordinary/automatic resume
+	// from demanding the same force flag again after WorkflowHash is restamped.
+	ArtifactCompatibilityRevision string `json:"artifact_compatibility_revision,omitempty" bson:"artifact_compatibility_revision,omitempty"`
+	FilePath                      string `json:"file_path,omitempty" bson:"file_path,omitempty"` // absolute .bot source path captured at launch (resume without re-supplying file)
 	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
 	// answers "did the source change since?"; this answers "which node
 	// changed", which is what `iterion rewind --auto` needs to target the
@@ -297,6 +631,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// Fallback captures the launch-time run-level fallback chain (CLI
+	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
+	// same doctrine as the budget ask: cloud resumes are often unattended
+	// auto-retries, so nothing else can re-state the route, and a dropped
+	// route silently strands the run on exactly the provider wall it was
+	// meant to escape.
+	Fallback RunFallback `json:"fallback,omitempty" bson:"fallback,omitempty"`
 	// NodesServed maps IR node id → last (backend, model) that served
 	// it. Display-only / post-hoc: makes a finished run self-describing
 	// without replaying events.jsonl. Empty for legacy runs and for
@@ -353,6 +694,20 @@ type Run struct {
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
+	// OutputCorrections is the durable, per-node ledger for bounded invalid
+	// output correction. Nil/empty means no correction was attempted. Legacy
+	// runs keep their existing fail-fast behaviour unless their executor opts
+	// into correction through the runtime option.
+	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`
+	// OutputCorrectionHistory retains terminal and in-flight correction
+	// ledgers invalidated by an explicit rewind. The live map can then start a
+	// fresh bounded episode without erasing the audit record of paid calls.
+	OutputCorrectionHistory []OutputCorrectionEpisode `json:"output_correction_history,omitempty" bson:"output_correction_history,omitempty"`
+	// WatcherCursors is keyed by supervisor/watch identity. It is deliberately
+	// separate from run events: a watcher may restart without replaying the
+	// entire event stream, while its cooldown and last-action proof remain
+	// durable.
+	WatcherCursors map[string]WatcherCursor `json:"watcher_cursors,omitempty" bson:"watcher_cursors,omitempty"`
 	// DeletedAt is the Mongo-side durable tombstone (the filesystem
 	// twin is the .deleted marker file): DeleteRun strips the run's
 	// data and leaves a skeleton doc carrying this stamp, so a late
@@ -396,8 +751,27 @@ type Run struct {
 	UpdatedAt         time.Time      `json:"updated_at" bson:"updated_at"`
 	FinishedAt        *time.Time     `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
 	Error             string         `json:"error,omitempty" bson:"error,omitempty"`
-	Checkpoint        *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
-	ArtifactIndex     map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
+	// FailureCode is the machine-readable classification of Error —
+	// the cause of the CURRENT failure status (failed /
+	// failed_resumable / cancelled), cleared by every transition to a
+	// non-failure status. Empty for legacy runs and for writers not
+	// yet classified: empty means UNKNOWN, never "no failure". One
+	// documented exception to "follows Error exactly": the cloud
+	// resume-publish rollback restores the PRIOR code under its own
+	// rollback text — the code classifies the restored state, not the
+	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
+	// and the open-world contract.
+	FailureCode FailureCode `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+	// EndReason is the typed WHY the run ended — the protocol half of
+	// Error, whose prose it derives (RunEndReason.Message). It carries on
+	// the same statuses as FailureCode and is cleared by the same
+	// transitions, so a resumed run never keeps claiming why it once
+	// ended. Empty means UNKNOWN, and for a run cancelled before this
+	// field existed the message is the only carrier there is — read the
+	// pair through EndedBecausePRClosed rather than either half alone.
+	EndReason     RunEndReason   `json:"end_reason,omitempty" bson:"end_reason,omitempty"`
+	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
+	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
 	// WorkDir is the absolute filesystem path the run executes in
 	// (the per-run git worktree when Worktree is true, otherwise the
 	// engine's resolved cwd at start). Persisted so studio surfaces
@@ -434,6 +808,32 @@ type Run struct {
 	// missing. The studio surfaces this so the operator can run
 	// `git branch <name> <FinalCommit>` before the reflog expires.
 	FinalBranchError string `json:"final_branch_error,omitempty" bson:"final_branch_error,omitempty"`
+	// RoutingPolicy is the launch-frozen outcome contract (nil = none):
+	// what "success" and "blocked" mean for THIS run, where a success
+	// lands, and which actions a consumer may take automatically. It is
+	// resolved, validated and hashed at launch and never re-read from a
+	// mutable source afterwards — re-reading a team/repo setting at the
+	// terminal would let the contract of already-produced work change
+	// retroactively. Replayed from the run doc on resume, like
+	// ModelOverrides.
+	RoutingPolicy *RoutingPolicy `json:"routing_policy,omitempty" bson:"routing_policy,omitempty"`
+	// OutcomeSeq counts this run's terminal arrivals: every transition
+	// INTO finished / failed / failed_resumable / cancelled increments
+	// it (a redelivered run that dies again is a NEW episode). It is
+	// the stable per-episode key an outcome consumer needs — the
+	// event-derived RunOutcomeEventID cannot serve: it truncates
+	// UpdatedAt to the second (two episodes in one second collide) and
+	// every SaveRun refreshes UpdatedAt (the same episode re-read
+	// yields a new key).
+	OutcomeSeq int64 `json:"outcome_seq,omitempty" bson:"outcome_seq,omitempty"`
+	// The typed cause of the last terminal transition lives in
+	// FailureCode (ADR-095) — one taxonomy, not two.
+	// ContinuationState says who still owns this run's future after a
+	// terminal transition: a platform continuation (queue redelivery in
+	// flight, quota retry armed) or nobody (final). An outcome consumer
+	// must not act — resume, relaunch, route — while a continuation is
+	// pending; until now it had to GUESS from the error prose.
+	ContinuationState ContinuationState `json:"continuation_state,omitempty" bson:"continuation_state,omitempty"`
 	// MergedInto is the branch the engine fast-forwarded to FinalCommit
 	// after the run, or empty when the FF was skipped (dirty main,
 	// non-FF, branch divergence, opt-out, or detached HEAD at start).
@@ -449,10 +849,16 @@ type Run struct {
 	AutoMerge bool `json:"auto_merge,omitempty" bson:"auto_merge,omitempty"`
 	// MergeStatus tracks whether the merge has happened yet:
 	//   "pending"  — storage branch created, merge awaiting user action
+	//   "merging"  — a merge claim is held (one worker is performing it)
 	//   "merged"   — merge succeeded; MergedInto + MergedCommit are set
 	//   "skipped"  — explicit opt-out (merge_into="none") or no commits
 	//   "failed"   — auto-merge attempted but failed; user can retry
 	MergeStatus MergeStatus `json:"merge_status,omitempty" bson:"merge_status,omitempty"`
+	// MergeClaimedAt is stamped when a worker claims the merge
+	// (MergeStatus="merging"). A claim older than the staleness bound a
+	// caller passes to ClaimMerge is up for grabs again — the previous
+	// claimant crashed mid-merge and must not wedge the run forever.
+	MergeClaimedAt time.Time `json:"merge_claimed_at,omitempty" bson:"merge_claimed_at,omitempty"`
 	// MergedCommit is the SHA on the target branch after the merge.
 	// Equal to FinalCommit for "merge" (FF) strategy; a fresh squash
 	// commit SHA for "squash". Empty when not yet merged.
@@ -517,6 +923,13 @@ type Run struct {
 	// (or the baked bundle), and a unique-slug team bot could not resume
 	// at all.
 	BotSourceTenant string `json:"bot_source_tenant,omitempty" bson:"bot_source_tenant,omitempty"`
+	// BotSourceTier names the tier that SERVED this launch — BotSourceTierTeam,
+	// BotSourceTierPlatform or BotSourceTierBaked. BotSourceTenant already
+	// identifies a stored ROW, but its empty value conflates "baked catalog"
+	// with "nothing recorded", so it cannot answer which tier a launch
+	// resolved through. Empty here means the launch predates the stamp or
+	// resolved no bot at all (a loose .bot).
+	BotSourceTier string `json:"bot_source_tier,omitempty" bson:"bot_source_tier,omitempty"`
 	// KeyOverrides pins a BYOK key per LLM provider (provider → api_key id)
 	// for this run, persisted so cloud resume re-resolves with the same
 	// keys. Set by webhook launches carrying per-webhook key bindings;
@@ -530,12 +943,10 @@ type Run struct {
 	// cancel can target the queued message before pickup. Empty after
 	// pickup or when not in cloud mode.
 	QueueMsgID string `json:"queue_msg_id,omitempty" bson:"queue_msg_id,omitempty"`
-	// CASVersion is the optimistic-lock counter incremented on every
-	// SaveCheckpoint / UpdateRunStatus in cloud mode. The runner's
-	// checkpoint write conditions on the previous value; a mismatch
-	// signals two runners raced and one must back off. Zero in local
-	// mode (filesystem flock guards single-writer semantics).
-	CASVersion int64 `json:"-" bson:"version,omitempty"`
+	// CASVersion advances on every run-document write. SaveRun only accepts
+	// the version returned by the last load or successful save. Missing on a
+	// legacy document is version zero; its first writer upgrades it atomically.
+	CASVersion int64 `json:"cas_version,omitempty" bson:"version,omitempty"`
 
 	// TenantID is the team_id the run belongs to. Set on every cloud
 	// run at Launch from the JWT's active team. Local-mode runs leave
@@ -572,6 +983,20 @@ type Run struct {
 	// 2026-05-10 run finish but the 2026-05-15 run fail" answerable
 	// without git-bisecting blindly. Empty for legacy runs.
 	IterionVersion string `json:"iterion_version,omitempty" bson:"iterion_version,omitempty"`
+
+	// RunnerVersion is the iterion build that EXECUTED the run, stamped by
+	// the runner when it claims the delivery. On a laptop it always equals
+	// IterionVersion; in cloud they are two deployments that move
+	// independently, and the pair is the only place the run itself records
+	// which two builds it was made of.
+	//
+	// It exists because that skew is not hypothetical: a server following
+	// `:edge` moved five releases ahead of a digest-pinned runner fleet
+	// between two pod recreations, and the IR one compiled would not load
+	// on the other. The runs said nothing — the operator had to compare the
+	// healthz of two deployments to find out. Empty for a run no runner has
+	// claimed, and for legacy rows.
+	RunnerVersion string `json:"runner_version,omitempty" bson:"runner_version,omitempty"`
 
 	// ForkedFrom, when non-empty, identifies the parent run this run
 	// was forked from via POST /api/runs/{id}/fork. ForkAnchor records
@@ -740,6 +1165,108 @@ const (
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
 
+// RoutingPolicy is a run's launch-frozen outcome contract. The
+// expressions speak the SAME language as the bot DSL's edge conditions
+// (pkg/dsl/expr), resolved against the terminal checkpoint's outputs —
+// the contract quotes the gates the bot already publishes instead of
+// inventing a parallel vocabulary.
+//
+// The consumer-side rule is strict: an expression whose path is absent
+// or whose value is not a bool NEVER yields an automatic action — it
+// escalates. "converged + nothing blocking" has no generic
+// representation across bots; only the contract knows the fields, so a
+// missing field is a contract violation, not a false.
+type RoutingPolicy struct {
+	// Version of the policy SCHEMA (this struct), for consumers that
+	// must refuse contracts newer than they understand.
+	Version int `json:"version" bson:"version"`
+	// SuccessWhen must evaluate to boolean true on the terminal
+	// checkpoint for the run to be an auto-merge candidate.
+	SuccessWhen string `json:"success_when" bson:"success_when"`
+	// BlockWhen: if ANY evaluates to boolean true — or fails to
+	// evaluate — the run never auto-merges, whatever SuccessWhen says.
+	// This is where a bot's explicit blockers (a pending re-baseline
+	// request, a re-anchor demand) are quoted.
+	BlockWhen []string `json:"block_when,omitempty" bson:"block_when,omitempty"`
+	// MergeInto is the branch a success lands on ("" = the run's
+	// RepoRef default).
+	MergeInto string `json:"merge_into,omitempty" bson:"merge_into,omitempty"`
+	// MergeStrategy for the landing ("" = squash default).
+	MergeStrategy MergeStrategy `json:"merge_strategy,omitempty" bson:"merge_strategy,omitempty"`
+	// AllowedActions bounds what a consumer may do automatically:
+	// "merge", "relaunch", "resume". Anything not listed escalates.
+	AllowedActions []string `json:"allowed_actions,omitempty" bson:"allowed_actions,omitempty"`
+	// MaxRelaunches caps automatic fresh relaunches across the run's
+	// lineage (0 = never relaunch automatically). Mirrors the explicit
+	// cap the forge-gate autofix reactor carries.
+	MaxRelaunches int `json:"max_relaunches,omitempty" bson:"max_relaunches,omitempty"`
+	// Hash pins the resolved contract: sha256 over the canonical JSON
+	// of every field above, computed at launch. A consumer records it
+	// with each decision so an audit can prove WHICH contract decided.
+	Hash string `json:"hash,omitempty" bson:"hash,omitempty"`
+}
+
+// ComputeHash returns the canonical content hash of the policy (all
+// fields except Hash itself, JSON-marshalled — struct field order is
+// fixed, so the encoding is canonical).
+func (p *RoutingPolicy) ComputeHash() string {
+	if p == nil {
+		return ""
+	}
+	c := *p
+	c.Hash = ""
+	// Canonical: the action SET is order-insensitive — sort a copy so
+	// [merge relaunch] and [relaunch merge] are the same contract.
+	c.AllowedActions = append([]string(nil), p.AllowedActions...)
+	slices.Sort(c.AllowedActions)
+	b, err := json.Marshal(&c)
+	if err != nil {
+		// Marshalling a plain struct of strings/ints cannot fail;
+		// guard anyway rather than hash garbage.
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// ContinuationState enumerates who owns a run's future after a
+// terminal transition. Empty means the transition predates the typed
+// bookkeeping (or the writer did not know) — consumers must treat it
+// as unknown, never as final.
+type ContinuationState string
+
+const (
+	// ContinuationRedeliveryPending: the queue still holds the message
+	// (NAK'd); a runner will pick the run back up without anyone asking.
+	ContinuationRedeliveryPending ContinuationState = "redelivery_pending"
+	// ContinuationRetryArmed: a scheduled retry (quota window parking)
+	// will resume the run at RetryState.RetryAfter.
+	ContinuationRetryArmed ContinuationState = "retry_armed"
+	// ContinuationFinal: no platform continuation exists — acting on
+	// this run is now the consumer's decision.
+	ContinuationFinal ContinuationState = "final"
+)
+
+// RunOutcomeMeta is the typed WHY of a status transition, persisted
+// with it: the failure classification (ADR-095's Run.FailureCode — one
+// taxonomy, not a parallel terminal_code) and the continuation
+// ownership. Writers that know pass it; the store clears both fields
+// on transitions that cannot carry them, so stale metadata can never
+// describe a newer outcome. Continuation is a RUNNER-side statement —
+// the engine does not know the queue topology, so engine failure paths
+// persist code only (continuation stays unknown until the runner
+// promotes it at the actual NAK / retry-arm / park).
+type RunOutcomeMeta struct {
+	Code         FailureCode
+	Continuation ContinuationState
+	// EndReason is the typed WHY the run ended. It follows the FailureCode
+	// discipline exactly — persisted only on the statuses that carry an
+	// outcome (RunStatus.CarriesFailureCode), cleared by every transition
+	// out of them, preserved across a same-status rewrite that states none
+	// — so a resumed run cannot keep claiming why it once ended.
+	EndReason RunEndReason
+}
+
 // MergeStatus enumerates the lifecycle of the merge step independently
 // from the overall RunStatus — a finished run may still have a pending
 // merge if AutoMerge was off.
@@ -750,6 +1277,13 @@ const (
 	MergeStatusMerged  MergeStatus = "merged"
 	MergeStatusSkipped MergeStatus = "skipped"
 	MergeStatusFailed  MergeStatus = "failed"
+	// MergeStatusMerging is the claim state: exactly one worker holds
+	// the right to perform the merge (ClaimMerge is a compare-and-set,
+	// so two server replicas cannot both build a squash for the same
+	// run). Every persisted exit from this state goes through
+	// UpdateRunMergeIf, so a claimant that lost its claim (staleness
+	// steal) cannot overwrite the outcome of the worker that took over.
+	MergeStatusMerging MergeStatus = "merging"
 	// MergeStatusConflicted means `git merge --squash` produced
 	// content conflicts and the worktree is currently in the
 	// conflicted state (UU paths, markers on disk). The operator
@@ -758,6 +1292,31 @@ const (
 	// status flips to "merged".
 	MergeStatusConflicted MergeStatus = "conflicted"
 )
+
+// RunMergeUpdate is the full merge bookkeeping written by one merge
+// transition. UpdateRunMergeIf persists it atomically, conditioned on
+// the current MergeStatus — the single choke point every merge-side
+// writer goes through, so a racing writer cannot clobber a state
+// another worker already landed (in particular: nobody can overwrite
+// "merged"). Empty string fields are cleared on the run, mirroring the
+// omitempty semantics a full SaveRun would have.
+type RunMergeUpdate struct {
+	Status              MergeStatus
+	MergedCommit        string
+	MergedInto          string
+	MergeStrategy       MergeStrategy
+	PendingMergeMessage string
+	PendingMergeInto    string
+	// ExpectClaimedAt scopes an exit from "merging" to ONE claim: when
+	// non-zero, the CAS additionally requires the persisted
+	// MergeClaimedAt to equal it (the token ClaimMerge returned). A
+	// claimant whose claim was stolen for staleness then matches
+	// nothing — it cannot consume the live claimant's claim, so a late
+	// failure write can never overwrite the state of the worker that
+	// took over. Zero skips the check (exits from non-merging states,
+	// which carry no claim).
+	ExpectClaimedAt time.Time
+}
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
 // StateRef names a blob in BackendSessionStore. Empty StateRef means the
@@ -798,8 +1357,40 @@ type Checkpoint struct {
 	// loop's decision node would cross with no measurement and launch a
 	// pass the budget cannot fund, which is exactly the stranding the
 	// affordability guard exists to prevent.
-	LoopBudgetMarks  map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
-	ArtifactVersions map[string]int                `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	LoopBudgetMarks map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	// LoopBudgetMarksV is the format version of LoopBudgetMarks. Version 2
+	// marks are measured at a loop's entry or back-edge; earlier engines also
+	// wrote the run-start baseline for loops never entered at their head, a
+	// zero the resume must not read as a price.
+	LoopBudgetMarksV int            `json:"loop_budget_marks_v,omitempty" bson:"loop_budget_marks_v,omitempty"`
+	ArtifactVersions map[string]int `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	// Artifacts stores the non-reconstructible values in the exact logical
+	// publish-name snapshot. ArtifactOwners carries the complete logical catalog;
+	// when a value equals its owner's Output it is omitted here to avoid embedding
+	// large bodies twice in Mongo's run document. A verified historical alias can
+	// also be omitted when its revision sets ValueFromRevision; unverified and
+	// ownerless values remain explicit here.
+	Artifacts map[string]map[string]any `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	// ArtifactOwners is the complete logical snapshot catalog and keeps the
+	// producing node even when the value is compacted out of Artifacts or no
+	// verified physical revision can be claimed. Rewind and fork use it to prune
+	// fallback values without turning ownership into provenance.
+	ArtifactOwners map[string]string `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"`
+	// ArtifactsKnown distinguishes an intentionally empty current logical catalog
+	// from a checkpoint written before Artifacts/ArtifactOwners were persisted.
+	// Older checkpoints continue to rebuild best-effort values from Outputs.
+	ArtifactsKnown bool `json:"artifacts_known,omitempty" bson:"artifacts_known,omitempty"`
+	// ArtifactRevisions binds each logical publish name to its selected physical
+	// artifact identity. Unless Unverified is set, that is the exact body exposed
+	// through {{artifacts.<name>}}. Version counters alone cannot recover this
+	// when several nodes share a publish name or parallel branches allocate
+	// different versions.
+	ArtifactRevisions map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	// ArtifactRevisionsKnown distinguishes a current checkpoint whose exposed
+	// artifact set is intentionally empty (for example after rewind) from a
+	// legacy checkpoint that predates ArtifactRevisions and may use the run's
+	// ArtifactIndex as a compatibility fallback.
+	ArtifactRevisionsKnown bool `json:"artifact_revisions_known,omitempty" bson:"artifact_revisions_known,omitempty"`
 	// SelectedIncoming records, per destination node, the incoming edges
 	// that routing actually selected for the current visit of that node.
 	// buildNodeInputRS applies with-mappings only from those edges so an
@@ -815,6 +1406,13 @@ type Checkpoint struct {
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty" bson:"backend_session_id,omitempty"`
+	// BackendSessionFingerprint is the provider fingerprint that produced
+	// BackendSessionID. Checkpointed beside the id because the id alone
+	// is not usable on a `session: fork` resume: the backend drops a fork
+	// whose parent provider it cannot identify, to avoid cross-provider
+	// thinking-block 400s. Empty on checkpoints written before this field
+	// existed — absent stays "unknown", the conservative reading.
+	BackendSessionFingerprint string `json:"backend_session_fingerprint,omitempty" bson:"backend_session_fingerprint,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty" bson:"backend_name,omitempty"`
 	// BackendConversation is the opaque, backend-specific persisted
@@ -836,6 +1434,16 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+	// RecoveryPause marks a pause written by the recovery dispatcher
+	// (RecoveryPauseForHuman) for a node whose execution FAILED. The node
+	// still owes its work: the answer that resumes the run is the
+	// operator's acknowledgement that the cause is addressed, never the
+	// node's output, and resume re-executes the node. RecoveryCode is the
+	// classified failure the pause was written for (AUTH_FAILED,
+	// BUDGET_EXCEEDED, …). Both are cleared with the pause pointer once a
+	// resume claims the run.
+	RecoveryPause bool   `json:"recovery_pause,omitempty" bson:"recovery_pause,omitempty"`
+	RecoveryCode  string `json:"recovery_code,omitempty" bson:"recovery_code,omitempty"`
 
 	// BudgetTokensUsed / BudgetCostUSD / BudgetIterationsUsed / BudgetElapsedNS
 	// persist the run-scoped SharedBudget consumption so a resume continues
@@ -860,6 +1468,82 @@ type Checkpoint struct {
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
 	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
+	// prevents a resumed branch from waiting forever on an event emitted by a
+	// sibling whose durable cursor is already Completed and will not replay.
+	FiredEvents map[string]map[string]any `json:"fired_events,omitempty" bson:"fired_events,omitempty"`
+
+	// Parallel captures an in-flight fan-out invocation. The router remains
+	// the trunk checkpoint NodeID; each branch carries its own cursor and loop
+	// state so restart/resume can continue incomplete branches without
+	// replaying completed nodes or sharing iteration counters with siblings.
+	Parallel *ParallelCheckpoint `json:"parallel,omitempty" bson:"parallel,omitempty"`
+}
+
+// PausedNodeID returns the operator-facing node that owns the pending
+// interaction. Parallel checkpoints stay anchored on their router for exact
+// runtime resume, while the actual human gate is stored in PendingNodeID.
+func (c *Checkpoint) PausedNodeID() string {
+	if c == nil {
+		return ""
+	}
+	if c.Parallel != nil && c.Parallel.PendingNodeID != "" {
+		return c.Parallel.PendingNodeID
+	}
+	return c.NodeID
+}
+
+// ParallelCheckpoint is the durable state of one fan_out_all, fan_out_each,
+// or llm-multi invocation. InvocationKey includes the router's enclosing loop
+// path, distinguishing repeated visits to the same router deterministically.
+type ParallelCheckpoint struct {
+	RouterNodeID  string                       `json:"router_node_id" bson:"router_node_id"`
+	InvocationKey string                       `json:"invocation_key" bson:"invocation_key"`
+	Branches      map[string]*BranchCheckpoint `json:"branches" bson:"branches"`
+	// PendingBranchID/PendingNodeID identify the single interaction that
+	// paused the parent run. Empty during ordinary crash-recovery checkpoints.
+	PendingBranchID             string         `json:"pending_branch_id,omitempty" bson:"pending_branch_id,omitempty"`
+	PendingNodeID               string         `json:"pending_node_id,omitempty" bson:"pending_node_id,omitempty"`
+	PendingInteractionID        string         `json:"pending_interaction_id,omitempty" bson:"pending_interaction_id,omitempty"`
+	PendingInteractionQuestions map[string]any `json:"pending_interaction_questions,omitempty" bson:"pending_interaction_questions,omitempty"`
+	// Artifact allocations make a branch execution key idempotent across a
+	// restart. NextArtifactVersion is the allocator cursor per publishing node.
+	ArtifactAllocations map[string]int `json:"artifact_allocations,omitempty" bson:"artifact_allocations,omitempty"`
+	NextArtifactVersion map[string]int `json:"next_artifact_version,omitempty" bson:"next_artifact_version,omitempty"`
+}
+
+// BranchCheckpoint is a branch-private execution scope. Outputs contains only
+// values produced inside the branch; the immutable parent snapshot is rebuilt
+// by the router when the invocation resumes.
+type BranchCheckpoint struct {
+	BranchID           string                         `json:"branch_id" bson:"branch_id"`
+	StartNodeID        string                         `json:"start_node_id" bson:"start_node_id"`
+	CurrentNodeID      string                         `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
+	Outputs            map[string]map[string]any      `json:"outputs,omitempty" bson:"outputs,omitempty"`
+	Artifacts          map[string]map[string]any      `json:"artifacts,omitempty" bson:"artifacts,omitempty"`             // expanded for V1 mixed-version readers
+	ArtifactOwners     map[string]string              `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"` // complete logical catalog
+	ArtifactVersions   map[string]int                 `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
+	ArtifactRevisions  map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	LoopCounters       map[string]int                 `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
+	LoopPreviousOutput map[string]map[string]any      `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
+	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	JoinNodeID         string                         `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID     string                         `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed          bool                           `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone   bool                           `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	// CostUSD is this branch's cumulative LLM spend for the current
+	// invocation. The daily spend cap records per-branch spend under a
+	// monotonic-max ledger key, so a resumed branch must restart its
+	// accumulator from the persisted total rather than from zero —
+	// otherwise the post-resume nodes' spend is max()'d away.
+	CostUSD float64 `json:"cost_usd,omitempty" bson:"cost_usd,omitempty"`
+	// ResumeAnswers is populated transiently from the answered interaction.
+	// It is persisted before the resumed runner is claimed, so another crash
+	// in that window still has the answer needed to finish the human node.
+	ResumeAnswers  map[string]any `json:"resume_answers,omitempty" bson:"resume_answers,omitempty"`
+	ResumeAnswered bool           `json:"resume_answered,omitempty" bson:"resume_answered,omitempty"`
 }
 
 // IncomingEdge identifies a workflow edge that actually fired into a node
@@ -891,8 +1575,78 @@ type Artifact struct {
 	// can group artifacts by label. Sourced from the node's DSL
 	// `artifact_labels:` plus a shape heuristic (pkg/artifactlabels). Empty
 	// on legacy artifacts written before this field existed.
-	Labels    []string  `json:"labels,omitempty" bson:"labels,omitempty"`
-	WrittenAt time.Time `json:"written_at" bson:"written_at"`
+	Labels []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	// Contract binds this output to its logical reference, producer revision,
+	// schema and dependencies. Nil is the legacy artifact shape and remains
+	// readable during the rollout.
+	Contract  *ArtifactContract `json:"contract,omitempty" bson:"contract,omitempty"`
+	WrittenAt time.Time         `json:"written_at" bson:"written_at"`
+}
+
+// ArtifactDependency records the artifact revision consumed while producing
+// an output. A resume must not silently feed an incompatible or missing
+// revision to a downstream node.
+type ArtifactDependency struct {
+	LogicalRef string `json:"logical_ref" bson:"logical_ref"`
+	NodeID     string `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Version    int    `json:"version" bson:"version"`
+	Required   bool   `json:"required,omitempty" bson:"required,omitempty"`
+}
+
+// ArtifactRevisionRef identifies one persisted artifact revision. Checkpoints
+// store it by the alias visible to the workflow. ContractLogicalRef preserves
+// the immutable name in the artifact body when a forced source migration
+// exposes that same physical revision through a renamed alias.
+type ArtifactRevisionRef struct {
+	NodeID             string `json:"node_id" bson:"node_id"`
+	Version            int    `json:"version" bson:"version"`
+	ContractLogicalRef string `json:"contract_logical_ref,omitempty" bson:"contract_logical_ref,omitempty"`
+	// ValueFromRevision means the logical value body is intentionally omitted
+	// from Checkpoint.Artifacts and must be restored from this immutable
+	// revision. It is used for historical aliases whose value differs from the
+	// producer's latest checkpoint output, avoiding a second large body in the
+	// Mongo run document.
+	ValueFromRevision bool `json:"value_from_revision,omitempty" bson:"value_from_revision,omitempty"`
+	// Unverified keeps the producer binding needed to preserve and invalidate
+	// the logical checkpoint value after report mode could not read the
+	// physical body. It must not be emitted as a verified dependency; a later
+	// successful load clears the marker.
+	Unverified bool `json:"unverified,omitempty" bson:"unverified,omitempty"`
+}
+
+// ArtifactContract is the durable restart contract for one logical output.
+// runtime.ValidateArtifactContracts is what reads it, before a resume or a
+// rewind may mutate the run.
+type ArtifactContract struct {
+	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int    `json:"version" bson:"version"`
+	Schema           string `json:"schema,omitempty" bson:"schema,omitempty"`
+	// SchemaHash fingerprints the resolved schema DEFINITION. Schema alone is
+	// a label: editing a schema's fields — the change that actually
+	// invalidates a persisted artifact, because a downstream node reads
+	// `outputs.x.field` — keeps the name, while renaming an unchanged schema
+	// changes no shape at all. Empty on artifacts written before this field
+	// existed and on nodes with no declared output schema; the name
+	// comparison stays the fallback for both.
+	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
+	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+
+	// Mutable and Effects are RESERVED: they are persisted and exposed, and
+	// nothing writes Mutable or reads either one today. Said plainly so the
+	// next reader does not take a value here for a decision the engine makes
+	// — an earlier comment claimed Effects' vocabulary was "understood",
+	// which would have made a stale `["persist"]` look load-bearing.
+	//
+	// Mutable is intended to mark an output a re-execution may legitimately
+	// replace; Effects to describe the publishing policy ("persist" for a
+	// store write, "external" for an output whose production also touched
+	// something outside the run). Effects is metadata for admission, never a
+	// request to replay an external side effect. Give either one a reader
+	// before giving it a meaning.
+	Mutable bool     `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects []string `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +1706,11 @@ const (
 	// an agent calls the await_answers tool while async questions are
 	// still pending. Its Questions carry the pending async interaction IDs.
 	InteractionKindAwait = "await"
+	// InteractionKindRecovery is the synthetic pause interaction the
+	// recovery dispatcher writes for a FAILED node (Checkpoint.RecoveryPause).
+	// Its answer acknowledges that the cause is addressed; it is never the
+	// node's output — the node re-executes on resume.
+	InteractionKindRecovery = "recovery"
 )
 
 // Interaction records a human pause/resume exchange.
@@ -959,7 +1718,7 @@ type Interaction struct {
 	ID          string         `json:"id" bson:"interaction_id"`
 	RunID       string         `json:"run_id" bson:"run_id"`
 	NodeID      string         `json:"node_id" bson:"node_id"`
-	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait
+	Kind        string         `json:"kind,omitempty" bson:"kind,omitempty"` // "" (blocking pause) | InteractionKindAsync | InteractionKindAwait | InteractionKindRecovery
 	RequestedAt time.Time      `json:"requested_at" bson:"requested_at"`
 	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`

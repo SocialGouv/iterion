@@ -28,7 +28,10 @@ triggers: [revi-converse, ask, converse]
 # Forge-access requirements for the studio Integrations auto-provisioner
 # (advisory + discovery-time — the runtime does not read this).
 forge:
-  events: [pull_request_comment]  # conversational sibling only; no PR-open auto-trigger
+  # pull_request_comment feeds /revi <question>; pull_request_review_comment
+  # feeds reply-to-a-suggestion (the GitHub review-thread firehose — only
+  # this bot's presence makes a repo subscribe it). No PR-open auto-trigger.
+  events: [pull_request_comment, pull_request_review_comment]
   token_scopes:
     pull_requests: write     # reply in-thread via the forge_token
     repository: read

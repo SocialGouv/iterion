@@ -146,6 +146,47 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, map[string]any{"events": events})
 }
 
+// handleGetRunDiagnostic serves the common, versioned operator projection.
+// It is read-only and additive to the existing snapshot/events endpoints so
+// older clients keep their current behaviour.
+func (s *Server) handleGetRunDiagnostic(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if xs, _, err := s.resolveCrossStore(r); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	} else if xs != nil {
+		diagnostic, err := runview.BuildDiagnostic(r.Context(), xs, id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, store.ErrRunDeleted) {
+				status = http.StatusGone
+			} else if errors.Is(err, store.ErrRunNotFound) {
+				status = http.StatusNotFound
+			}
+			s.httpErrorFor(w, r, status, "load diagnostic from cross-store: %v", err)
+			return
+		}
+		s.writeJSONFor(w, r, diagnostic)
+		return
+	}
+	diagnostic, err := runview.BuildDiagnostic(r.Context(), s.runs.RunStore(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrRunDeleted) {
+			status = http.StatusGone
+		} else if errors.Is(err, store.ErrRunNotFound) {
+			status = http.StatusNotFound
+		}
+		s.httpErrorFor(w, r, status, "load diagnostic: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, diagnostic)
+}
+
 func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {

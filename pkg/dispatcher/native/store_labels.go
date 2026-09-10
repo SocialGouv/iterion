@@ -19,7 +19,11 @@ type LabelUsage struct {
 // count, max(updated_at)). Sorted by count desc, label asc for
 // deterministic output. Used by the REST /labels endpoint, the
 // boardops list_labels MCP tool, and the studio's label-picker.
-func (s *Store) AggregateLabels() []LabelUsage {
+//
+// The filesystem store serves the index it loaded at open, so this read
+// has no failure mode of its own; the error is the contract's (see
+// BoardStore.AggregateLabels) and is always nil here.
+func (s *Store) AggregateLabels() ([]LabelUsage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	type acc struct {
@@ -54,7 +58,7 @@ func (s *Store) AggregateLabels() []LabelUsage {
 		}
 		return out[i].Label < out[j].Label
 	})
-	return out
+	return out, nil
 }
 
 // RenameLabel rewrites every occurrence of `from` to `to` across all

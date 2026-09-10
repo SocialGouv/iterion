@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -458,5 +459,113 @@ func TestParseAttachFlags(t *testing.T) {
 	}
 	if _, err := cli.ParseAttachFlags([]string{"noequals"}); err == nil {
 		t.Error("want error on malformed pair")
+	}
+}
+
+// --- pool policy (operator) ---
+
+// The operator half of the pool had no command: standing one up meant a
+// raw `remote api PUT` with a hand-written audience. RemotePoolPolicy
+// sends ONLY what the caller set — a partial update must not restate (or
+// silently drop) the rest of the policy.
+func TestRemotePoolPolicy_SendsOnlyWhatWasSet(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"org1","name":"devthejo","enabled":true}`))
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+
+	enabled := false
+	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", cli.PoolPolicy{Enabled: &enabled}); err != nil {
+		t.Fatalf("RemotePoolPolicy: %v", err)
+	}
+	if gotMethod != "PUT" || gotPath != "/api/teams/team-1/pool" {
+		t.Fatalf("request = %s %s, want PUT /api/teams/team-1/pool", gotMethod, gotPath)
+	}
+	if len(gotBody) != 1 {
+		t.Fatalf("body = %v, want only the enabled field", gotBody)
+	}
+	if gotBody["enabled"] != false {
+		t.Fatalf("enabled = %v, want false", gotBody["enabled"])
+	}
+	if _, ok := gotBody["audience"]; ok {
+		t.Fatal("a pause must not restate the audience — that is how a forgotten --all-teams survives")
+	}
+}
+
+// An audience travels WHOLE: it is a set, so every dial the caller chose
+// is present (and the ones they did not are absent, not carried over).
+func TestRemotePoolPolicy_AudienceTravelsWhole(t *testing.T) {
+	var gotBody map[string]any
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"org1"}`))
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+
+	name := "devthejo"
+	pol := cli.PoolPolicy{Name: &name}
+	pol.Audience = &credpool.Audience{AllTeams: true}
+	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
+		t.Fatalf("RemotePoolPolicy: %v", err)
+	}
+	aud, ok := gotBody["audience"].(map[string]any)
+	if !ok {
+		t.Fatalf("audience missing from %v", gotBody)
+	}
+	if aud["all_teams"] != true {
+		t.Fatalf("all_teams = %v, want true", aud["all_teams"])
+	}
+	if gotBody["name"] != "devthejo" {
+		t.Fatalf("name = %v, want devthejo", gotBody["name"])
+	}
+	if _, ok := gotBody["enabled"]; ok {
+		t.Fatal("enabled was not set by the caller and must not be sent")
+	}
+}
+
+// Standing a NEW pool up without stating the master switch would create
+// it Enabled:false — invisible to the broker's ListEnabled, every pledge
+// under it dead, and nothing says why. The CLI probes first and refuses.
+func TestRemotePoolPolicy_RefusesSilentDisabledCreate(t *testing.T) {
+	var puts int
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			// The server describes "the pool that WOULD be created":
+			// empty id = no pool exists yet.
+			_, _ = w.Write([]byte(`{"id":"","org_id":"org1","donors":[]}`))
+			return
+		}
+		puts++
+		_, _ = w.Write([]byte(`{"id":"org1"}`))
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+
+	pol := cli.PoolPolicy{Audience: &credpool.Audience{AllTeams: true}}
+	err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol)
+	if err == nil {
+		t.Fatal("want a refusal: creating a pool without --enabled stands it up disabled and dead")
+	}
+	if !strings.Contains(err.Error(), "--enabled") {
+		t.Fatalf("the refusal must name the missing flag, got: %v", err)
+	}
+	if puts != 0 {
+		t.Fatalf("the PUT must not be sent on refusal (got %d)", puts)
+	}
+
+	// Stating the switch skips the probe entirely and goes through.
+	enabled := true
+	pol.Enabled = &enabled
+	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
+		t.Fatalf("explicit --enabled must pass: %v", err)
+	}
+	if puts != 1 {
+		t.Fatalf("PUT count = %d, want 1", puts)
 	}
 }

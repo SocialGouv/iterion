@@ -31,7 +31,7 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		Summary string         `json:"summary"`
 		Gate    map[string]any `json:"gate"`
 	}
-	runWith := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped string) (published, bool) {
+	runBanked := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped, banked, take string) (published, bool) {
 		t.Helper()
 		var got published
 		var posted bool
@@ -55,6 +55,9 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 			"{{input.branch_clean}}":       clean,
 			"{{input.commits_pushed}}":     pushed,
 			"{{input.push_reason}}":        "pushed 2 commits",
+			"{{input.banked_branch}}":      banked,
+			"{{input.how_to_take}}":        take,
+			"{{input.superseded}}":         "false",
 			"{{input.verify_ok}}":          verifyOK,
 			"{{input.verify_skipped}}":     verifySkipped,
 			"{{vars.gate_enabled}}":        "true",
@@ -76,6 +79,10 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		return got, posted
 	}
 
+	runWith := func(t *testing.T, ledger, clean, pushed, verifyOK, verifySkipped string) (published, bool) {
+		t.Helper()
+		return runBanked(t, ledger, clean, pushed, verifyOK, verifySkipped, "", "")
+	}
 	run := func(t *testing.T, ledger, clean, pushed, verifyOK string) (published, bool) {
 		return runWith(t, ledger, clean, pushed, verifyOK, "false")
 	}
@@ -187,6 +194,26 @@ func TestBranchImproveGateNeverGreenOnAnUnresolvedFinding(t *testing.T) {
 		_, posted := run(t, `[]`, "true", "false", "true")
 		if posted {
 			t.Error("posted a verdict for a head this run neither changed nor reviewed")
+		}
+	})
+
+	// The one exception, and the reason it is one: a BANKED branch is not a
+	// verdict about the head, it is a fact about work that exists. Silence
+	// there strands it — iterion#773 measured two runs, $16.81 and $23.70 of
+	// reviewed, test-backed commits, whose verdicts named no branch and whose
+	// readers had no way to reach them.
+	t.Run("a banked branch is always named, even with nothing pushed", func(t *testing.T) {
+		const branch = "iterion/banked/feature-x-1234567890ab"
+		got, posted := runBanked(t, `[]`, "true", "false", "true", "false",
+			branch, "git fetch origin "+branch+" && git cherry-pick abcdef123456..FETCH_HEAD")
+		if !posted {
+			t.Fatal("work banked on a branch nobody is told about is work nobody has")
+		}
+		if !strings.Contains(got.Summary, branch) {
+			t.Errorf("the comment must name the branch:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "cherry-pick") {
+			t.Errorf("the comment must carry the command that takes the work:\n%s", got.Summary)
 		}
 	})
 }

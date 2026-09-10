@@ -264,7 +264,7 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // disagreeing with the same bundle opened in directory form.
 func BundleNameForPath(filePath string) string {
 	b := ResolveBundleFromFilePath(filePath)
-	if b == nil {
+	if b == nil || b.Manifest == nil {
 		return ""
 	}
 	return b.Manifest.Name

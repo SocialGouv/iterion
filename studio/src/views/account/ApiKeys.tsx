@@ -258,6 +258,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
             <Th>Default</Th>
             <Th>Created</Th>
             <Th>Last used</Th>
+            <Th>In use</Th>
             <Th align="right" srLabel="Actions" />
           </THead>
           <TBody>
@@ -278,6 +279,16 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
                 <Td className="text-fg-muted">{formatDateTime(k.created_at)}</Td>
                 <Td className="text-fg-muted">
                   {formatDateTime(k.last_used_at)}
+                </Td>
+                <Td
+                  className="text-fg-muted font-mono"
+                  title="Runs holding this key's concurrency slot right now (alive, executing a model node) vs the key's ceiling"
+                >
+                  {k.alive_runs === undefined
+                    ? "—"
+                    : k.max_concurrent_runs
+                      ? `${k.alive_runs} / ${k.max_concurrent_runs}`
+                      : `${k.alive_runs}`}
                 </Td>
                 <Td align="right">
                   {canManage && (

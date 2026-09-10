@@ -63,6 +63,41 @@ const (
 	// subscription quota, and the budget flags (--max-cost-usd) are what
 	// bound money.
 	WindowOverage Window = "overage"
+	// WindowFrequency is not a provider window at all: it is an
+	// account-level refusal of the REQUEST RATE (a fair-usage policy, a
+	// frequency restriction) relayed as an error rather than as window
+	// telemetry, so it never carries a reset instant. It exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip needs a fresh StatusRejected reading to route
+	// around a credential the provider will not serve, and freshness for
+	// a reading with no reset instant is already bounded by ObservedAt.
+	WindowFrequency Window = "frequency"
+	// WindowSpend is not a provider window either: it is the ACCOUNT's
+	// money ceiling, set by its own admin ("You've hit your org's monthly
+	// spend limit · ask your admin to raise it"), relayed as text rather
+	// than as window telemetry. Distinct from WindowOverage — that is a
+	// channel the plan may spill INTO, this is the wall it stops at — and
+	// from WindowFrequency, which refuses the request RATE while the
+	// budget is intact. It carries no reset instant (a human raises the
+	// ceiling, or the calendar month rolls), so freshness is bounded by
+	// ObservedAt like the other two refusals, and the credential-tier
+	// skip is the consumer: a credential whose org budget is spent serves
+	// NOTHING, so the resolver must route around it instead of feeding
+	// every node of every run into the same wall.
+	WindowSpend Window = "spend"
+	// WindowAuth is not a provider window either: it is the provider
+	// REJECTING THE CREDENTIAL ITSELF — a dead token, an expired OAuth
+	// record, a malformed secret. Like WindowFrequency it exists as a
+	// window name so the refusal can be recorded as meter evidence: the
+	// credential-tier skip is the only consumer, and without this
+	// evidence a structurally-broken credential keeps filling its slot
+	// on every re-resolution, gating the pool and platform tiers off
+	// behind a credential that can never serve (five consecutive
+	// dead-on-arrival fleets were the lived cost). No reset instant —
+	// a dead credential does not heal on a schedule — so freshness is
+	// bounded by ObservedAt, giving a cheap periodic re-probe in case
+	// an operator rotated the secret in place.
+	WindowAuth Window = "auth"
 )
 
 // Family groups the windows that share one operator-facing cap. An
@@ -72,6 +107,17 @@ type Family string
 const (
 	FamilyFiveHour Family = "5h"
 	FamilyWeek     Family = "week"
+	// FamilyAccount governs no operator cap today (Policy.For of an
+	// unconfigured family is inert), but it is NOT FamilyNone: a
+	// frequency refusal is real provider evidence, and the consumers
+	// that filter evidence on "does a cap family govern this window"
+	// must see it.
+	FamilyAccount Family = "account"
+	// FamilyCredential mirrors FamilyAccount for WindowAuth: no
+	// operator cap governs it (an unconfigured family is inert in the
+	// guard), but it is real provider evidence the credential-tier
+	// skip must see — FamilyNone would filter it out at the consumer.
+	FamilyCredential Family = "credential"
 	// FamilyNone marks a window no cap applies to.
 	FamilyNone Family = ""
 )
@@ -83,6 +129,10 @@ func FamilyOf(w Window) Family {
 		return FamilyFiveHour
 	case WindowSevenDay, WindowSevenDayOpus, WindowSevenDaySonnet, WindowSevenDayOverageIncluded:
 		return FamilyWeek
+	case WindowFrequency, WindowSpend:
+		return FamilyAccount
+	case WindowAuth:
+		return FamilyCredential
 	default:
 		// Includes WindowOverage and any window a future CLI adds: an
 		// unknown window is not silently folded into a cap that was never
@@ -186,6 +236,24 @@ type Reading struct {
 	ResetsAt time.Time
 	// ObservedAt is when iterion saw the reading.
 	ObservedAt time.Time
+	// Source is the delegate's provider-routing label for the session
+	// that produced this reading (providerFingerprint: "facade:<url>",
+	// "anthropic-direct", "anthropic-oauth", "anthropic-env"). It lets
+	// the publisher key the reading under the credential the node
+	// ACTUALLY spent — a node pinned `provider: anthropic` must not
+	// charge its refusal to the z.ai key sharing the bundle. Empty on
+	// readings from older binaries; consumers fall back to the bundle's
+	// default precedence then. Never carries a secret.
+	Source string
+	// Refusals is how many times IN A ROW this credential was refused on
+	// this window, counted by the STORE — a caller is one pod that saw one
+	// refusal; only the ledger can tell a blip from an account frozen for
+	// days. Counted only for a refusal with NO reset instant (the
+	// account-level ones: auth, frequency, spend), because those are the
+	// readings nothing but the staleness bound ever expires. A served call
+	// resets it to zero, which is what keeps the escalating rest
+	// self-healing rather than a one-way lock. Zero on legacy readings.
+	Refusals int
 }
 
 // Provider status values.
@@ -198,29 +266,209 @@ const (
 // Percent is the utilization on the 0–100 scale operators configure in.
 func (r Reading) Percent() float64 { return r.Utilization * 100 }
 
-// Fresh reports whether a reading still describes the current window.
+// Trust bounds how long a reading is BELIEVED, on two axes.
 //
-// A reading dies at its own reset instant: past it the window has rolled
-// over and the old number describes a window that no longer exists. That is
-// what keeps a stale reading from blocking a deployment forever — the guard
-// forgets by itself, with no sweeper and no TTL to tune.
-//
-// A reading with no reset instant cannot expire that way, so it falls back
-// to maxAge. Without that fallback an undated reading would be immortal.
-func (r Reading) Fresh(now time.Time, maxAge time.Duration) bool {
-	if r.ObservedAt.IsZero() {
-		return false
-	}
-	if !r.ResetsAt.IsZero() {
-		return now.Before(r.ResetsAt)
-	}
-	return now.Sub(r.ObservedAt) < maxAge
+// A reading is a measurement of a window at one instant, and the premise
+// "a window's utilization cannot drop before its reset" is FALSE for the
+// provider: it has reset every window early, out of cycle. A reading
+// trusted for its whole window then locks the credential out until a
+// reset that already happened — and nothing can correct it, because the
+// only writer of a fresh reading is a live session, which the lock itself
+// prevents (measured: two forfaits at 0% skipped for four days, the merge
+// gate blocked behind them). So a reading is authoritative only for a
+// bounded time after it was observed; past that it is suggestive, the
+// gate lets the credential through, and the next session's own
+// rate_limit_event re-establishes the truth within one call.
+type Trust struct {
+	// MaxAge bounds a reading that carries no reset instant (a refusal
+	// relayed as text, a dead credential): with no window end to expire
+	// at, this is the only thing that stops it from being immortal.
+	MaxAge time.Duration
+	// Window bounds a DATED reading — the trust window. Past it the number
+	// is a memory of the window, not a measurement of it. It does not
+	// apply to a reading with no reset instant: the window exists because
+	// a dated window can roll over early, which an account-level refusal
+	// cannot do.
+	Window time.Duration
+	// MaxRefusalRest bounds how far MaxAge may be stretched for a
+	// credential refused several times in a row (see Reading.RestBound).
+	// Zero means DefaultMaxRefusalRest; NEGATIVE turns the escalation off
+	// (ITERION_USAGE_CAP_REFUSAL_REST_MAX=off), which is why Normalized
+	// only fills the zero value.
+	MaxRefusalRest time.Duration
 }
 
 // DefaultMaxAge bounds how long a reading with no reset instant is trusted.
 // Short enough that a wrong block heals within one five-hour window, long
 // enough to cover the gap between two runs on a quiet deployment.
 const DefaultMaxAge = time.Hour
+
+// DefaultTrustWindow bounds how long any reading is trusted after it was
+// observed (ITERION_USAGE_CAP_TRUST_WINDOW overrides it). Long enough that
+// a deployment running a session every few hours never re-probes a window
+// it just measured; short enough that an early provider reset costs hours
+// of idle subscription, not days.
+const DefaultTrustWindow = 3 * time.Hour
+
+// DefaultMaxRefusalRest bounds the escalating rest a repeatedly-refused
+// credential earns. Chosen so an account frozen for days is probed four
+// times a day instead of twenty-four, while an operator who rotates a dead
+// token IN PLACE (same fingerprint, so the meter does not reset) still sees
+// it picked up within a working part of a day. `iterion remote admin
+// usage-readings clear <fingerprint>` cuts the wait short on demand.
+const DefaultMaxRefusalRest = 6 * time.Hour
+
+// DefaultTrust is the bound every enforcement point applies when the
+// operator set nothing.
+func DefaultTrust() Trust {
+	return Trust{MaxAge: DefaultMaxAge, Window: DefaultTrustWindow, MaxRefusalRest: DefaultMaxRefusalRest}
+}
+
+// Normalized fills the zero value with the defaults, so a caller holding
+// no operator value (a test, an unset config) still applies a bound. A
+// NEGATIVE MaxRefusalRest is preserved: it is how "escalation off" travels.
+func (t Trust) Normalized() Trust {
+	if t.MaxAge <= 0 {
+		t.MaxAge = DefaultMaxAge
+	}
+	if t.Window <= 0 {
+		t.Window = DefaultTrustWindow
+	}
+	if t.MaxRefusalRest == 0 {
+		t.MaxRefusalRest = DefaultMaxRefusalRest
+	}
+	return t
+}
+
+// RestBound is how long THIS reading is believed when it carries no reset
+// instant: the staleness bound, doubled once per consecutive refusal and
+// capped at Trust.MaxRefusalRest.
+//
+// Without it a credential the provider has frozen — a dead token, an
+// account whose fair-usage limiter is shut, an org past its spend ceiling —
+// is re-probed every MaxAge forever: one wasted pod and one parked run per
+// hour, for days, on a condition only a human can end. Escalating trades
+// that for a slower re-probe, and the ceiling is what keeps it a REST and
+// not a lock: the streak ends the moment the credential serves a call.
+func (r Reading) RestBound(t Trust) time.Duration {
+	t = t.Normalized()
+	base := t.MaxAge
+	if r.Status != StatusRejected || r.Refusals <= 1 || t.MaxRefusalRest <= base {
+		return base
+	}
+	rest := base
+	for i := 1; i < r.Refusals && rest < t.MaxRefusalRest; i++ {
+		rest *= 2
+	}
+	if rest > t.MaxRefusalRest {
+		rest = t.MaxRefusalRest
+	}
+	return rest
+}
+
+// Fresh reports whether a reading still describes the current window AND
+// is recent enough to be believed (see Trust).
+//
+// A reading dies at its own reset instant: past it the window has rolled
+// over and the old number describes a window that no longer exists. It
+// also dies at the end of the trust window, however far its reset is:
+// that is what keeps a pre-reset reading from locking a credential out
+// through a reset the provider made early.
+//
+// A reading with no reset instant cannot expire at a rollover, so it falls
+// back to RestBound (MaxAge, stretched by the refusal streak). Without that
+// fallback an undated reading would be immortal — and the trust window does
+// NOT bound it, because that window exists for readings whose provider
+// window can reset early, which an account-level refusal cannot do; capping
+// the rest at the trust window would make the escalation inert.
+func (r Reading) Fresh(now time.Time, t Trust) bool {
+	if r.ObservedAt.IsZero() {
+		return false
+	}
+	t = t.Normalized()
+	age := now.Sub(r.ObservedAt)
+	if r.ResetsAt.IsZero() {
+		return age < r.RestBound(t)
+	}
+	if age >= t.Window {
+		return false
+	}
+	return now.Before(r.ResetsAt)
+}
+
+// Refusal is a credential the provider is currently turning away, folded
+// out of everything the ledger holds about it.
+type Refusal struct {
+	// Until is when the LAST-lapsing refusal stops being believed — the
+	// credential is unusable up to it. Zero means "nothing is refusing it".
+	Until time.Time
+	// Window names the refusal that lasts longest.
+	Window Window
+	// Reason is a one-line human explanation, safe for a log line and an
+	// API field.
+	Reason string
+}
+
+// Refused reports whether anything is refusing the credential.
+func (r Refusal) Refused() bool { return !r.Until.IsZero() }
+
+// RefusedUntil folds a credential's readings into the refusal that keeps it
+// unusable longest, or the zero value when none does.
+//
+// It is the ONE reading of "the provider is turning this credential away",
+// shared by every consumer — the launch walk's credential-tier skips, the
+// pinned-key warning, and the operator's key view — because a view that
+// computed it differently from the gate would report a state the gate does
+// not act on.
+//
+// Everything uncertain means "not refused": a stale reading (Fresh already
+// encodes both the reset instant and the escalating rest), an allowed or
+// warning status at any utilization, and a window no cap family governs —
+// a rejected OVERAGE reading is about the pay-as-you-go money channel, and
+// an unknown window must not be folded into a rule never meant to govern
+// it (FamilyOf's own contract). The store is populated unfiltered, so the
+// filter has to live here.
+func RefusedUntil(readings []Reading, now time.Time, trust Trust) Refusal {
+	trust = trust.Normalized()
+	var out Refusal
+	for _, r := range readings {
+		if r.Status != StatusRejected || !r.Fresh(now, trust) {
+			continue
+		}
+		if FamilyOf(r.Window) == FamilyNone {
+			continue
+		}
+		reopen := r.ResetsAt
+		if reopen.IsZero() {
+			// A refusal with no reset instant is trusted only for the
+			// reading's own staleness bound, stretched by its streak.
+			reopen = r.ObservedAt.Add(r.RestBound(trust))
+		}
+		if !reopen.After(out.Until) {
+			continue
+		}
+		out.Until = reopen
+		out.Window = r.Window
+		out.Reason = refusalReason(r)
+	}
+	return out
+}
+
+// refusalReason words one refusal for a human.
+func refusalReason(r Reading) string {
+	// Frequency, spend and auth are refusals, not windows with a fill
+	// level — "(0% used)" on them would read as a contradiction.
+	switch r.Window {
+	case WindowAuth:
+		return "provider rejected the credential itself (auth failure)"
+	case WindowFrequency:
+		return "provider refused the account's request rate (fair-usage)"
+	case WindowSpend:
+		return "the account's spend ceiling is reached — an admin must raise it (claude.ai/settings/usage)"
+	default:
+		return fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
+	}
+}
 
 // Decision is what a policy says about a reading (or a set of them).
 type Decision struct {
@@ -380,21 +628,19 @@ func (g *Guard) Latest() []Reading {
 
 // Preflight answers "may new work start against this credential" from
 // previously stored readings. It is the cheap gate: no pod, no clone, no
-// call. Stale readings are ignored (see Reading.Fresh), so a deployment
-// that has not run in days is never blocked by what it learned then.
+// call. Stale readings are ignored (see Reading.Fresh and Trust), so a
+// deployment that has not run in hours is never blocked by what it learned
+// then — the next session re-measures.
 //
 // When several windows block, the one that reopens LAST wins: coming back
 // before every blocking window has reopened would just park the run again.
-func Preflight(readings []Reading, pol Policy, now time.Time, maxAge time.Duration) Decision {
+func Preflight(readings []Reading, pol Policy, now time.Time, trust Trust) Decision {
 	if !pol.Enabled() {
 		return Decision{}
 	}
-	if maxAge <= 0 {
-		maxAge = DefaultMaxAge
-	}
 	var worst Decision
 	for _, r := range readings {
-		if !r.Fresh(now, maxAge) {
+		if !r.Fresh(now, trust) {
 			continue
 		}
 		d := evaluate(r, pol)

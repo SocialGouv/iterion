@@ -335,11 +335,9 @@ func FinalizeConflictMerge(repoRoot, message string) (string, error) {
 	if remaining, err := unmergedPaths(repoRoot); err == nil && len(remaining) > 0 {
 		return "", fmt.Errorf("still unmerged: %s", strings.Join(remaining, ", "))
 	}
-	cmCmd, cmCancel := gitCmd("-C", repoRoot, "commit", "-m", message)
-	out, err := cmCmd.CombinedOutput()
-	cmCancel()
+	out, err := gitCommitMessage(repoRoot, message)
 	if err != nil {
-		return "", fmt.Errorf("git commit: %v\noutput: %s", err, string(out))
+		return "", fmt.Errorf("git commit: %v\noutput: %s", err, out)
 	}
 	newHead := readHEAD(repoRoot)
 	if newHead == "" {

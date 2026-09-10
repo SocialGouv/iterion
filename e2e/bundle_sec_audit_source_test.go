@@ -54,6 +54,7 @@ var expectedSecAuditSourceNodes = []string{
 // TestBundle_SecAuditSource_PackOpenCompile exercises the full bundle
 // pipeline: PackDir → Detect → Open → CompileBundleWorkflow.
 func TestBundle_SecAuditSource_PackOpenCompile(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/sec-audit-source")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)
@@ -111,6 +112,7 @@ func TestBundle_SecAuditSource_PackOpenCompile(t *testing.T) {
 // (OpenDir on the source directory) yields a structurally identical
 // workflow to the packed archive.
 func TestBundle_SecAuditSource_OpenDirMatchesPack(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/sec-audit-source")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)

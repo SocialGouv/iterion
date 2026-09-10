@@ -33,6 +33,15 @@ func weeklyWindowErr(resetAt time.Time) error {
 	}
 }
 
+// blindUsageWindowErr is a real usage window whose end nothing parses — the
+// case where there is no authoritative instant at all.
+func blindUsageWindowErr() error {
+	return &runtime.RuntimeError{
+		Code:    runtime.ErrCodeUsageLimitBlocked,
+		Message: "quota exhausted, no further detail",
+	}
+}
+
 func TestUsageWindowRetryAt(t *testing.T) {
 	reset := time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC)
 
@@ -147,7 +156,7 @@ func TestUsageWindowRetryAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow)
+			at, source, ok := usageWindowRetryAt(tt.err, tt.pol, retryNow, time.Time{}, 0)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -174,7 +183,7 @@ func TestUsageWindowRetryAt_JitterStaysInBand(t *testing.T) {
 
 	seen := map[time.Time]bool{}
 	for i := 0; i < 200; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow)
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(reset), pol, retryNow, time.Time{}, 0)
 		if !ok {
 			t.Fatal("ok = false")
 		}
@@ -195,7 +204,7 @@ func TestUsageWindowRetryAt_JitterNeverPushesPastMaxWait(t *testing.T) {
 	pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "2h", Jitter: "30m"})
 	ceiling := retryNow.Add(2 * time.Hour)
 	for i := 0; i < 100; i++ {
-		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow)
+		at, _, ok := usageWindowRetryAt(weeklyWindowErr(retryNow.Add(90*time.Minute)), pol, retryNow, time.Time{}, 0)
 		if !ok {
 			t.Fatal("ok = false")
 		}
@@ -203,6 +212,48 @@ func TestUsageWindowRetryAt_JitterNeverPushesPastMaxWait(t *testing.T) {
 			t.Fatalf("at = %v exceeds max_wait ceiling %v", at, ceiling)
 		}
 	}
+}
+
+func TestUsageWindowCircuitAt_PreservesJitterAndMaxWait(t *testing.T) {
+	openUntil := retryNow.Add(90 * time.Minute)
+	state := &store.RetryCircuitState{OpenUntil: &openUntil}
+
+	t.Run("an open circuit is jittered", func(t *testing.T) {
+		pol := retrypolicy.Normalize(retrypolicy.Policy{MaxWait: "3h", Jitter: "10m"})
+		seen := map[time.Time]bool{}
+		for i := 0; i < 200; i++ {
+			at, delayed := usageWindowCircuitAt(retryNow.Add(time.Hour), state, pol, retryNow)
+			if !delayed {
+				t.Fatal("delayed = false, want an open circuit to delay the retry")
+			}
+			if at.Before(openUntil) || !at.Before(openUntil.Add(10*time.Minute)) {
+				t.Fatalf("at = %v, want within [%v, %v)", at, openUntil, openUntil.Add(10*time.Minute))
+			}
+			seen[at] = true
+		}
+		if len(seen) < 2 {
+			t.Error("circuit jitter produced one instant — the shared circuit would release a synchronized wave")
+		}
+	})
+
+	t.Run("the resolved max wait remains the ceiling", func(t *testing.T) {
+		pol := noJitter(retrypolicy.Policy{MaxWait: "30m"})
+		at, delayed := usageWindowCircuitAt(retryNow.Add(10*time.Minute), state, pol, retryNow)
+		if !delayed {
+			t.Fatal("delayed = false, want the circuit to participate even when its cooldown is clamped")
+		}
+		if want := retryNow.Add(30 * time.Minute); !at.Equal(want) {
+			t.Fatalf("at = %v, want max_wait ceiling %v", at, want)
+		}
+	})
+
+	t.Run("a circuit that does not extend the retry is ignored", func(t *testing.T) {
+		at := retryNow.Add(2 * time.Hour)
+		got, delayed := usageWindowCircuitAt(at, state, noJitter(retrypolicy.Policy{}), retryNow)
+		if delayed || !got.Equal(at) {
+			t.Fatalf("got (%v, %v), want unchanged retry %v", got, delayed, at)
+		}
+	})
 }
 
 // TestRunRetryPolicy_ReadsTheLaunchSnapshot pins that the runner takes the
@@ -264,10 +315,12 @@ func TestRunRetryPolicy_PlatformCeilingLowers(t *testing.T) {
 // a real Mongo client does.
 type cancelAwareStore struct {
 	store.RunStore
-	run     *store.Run
-	armed   bool
-	armedAt time.Time
-	calls   int
+	run          *store.Run
+	armed        bool
+	armedAt      time.Time
+	calls        int
+	blockCircuit bool
+	successes    int
 }
 
 func (c *cancelAwareStore) LoadRun(ctx context.Context, _ string) (*store.Run, error) {
@@ -286,6 +339,10 @@ func (c *cancelAwareStore) ScheduleRunRetry(ctx context.Context, _ string, at ti
 	return true, 1, nil
 }
 
+func (c *cancelAwareStore) DelayRunRetry(ctx context.Context, _ string, _, _ time.Time) (bool, error) {
+	return false, ctx.Err()
+}
+
 func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.Time) (bool, error) {
 	return false, ctx.Err()
 }
@@ -293,6 +350,40 @@ func (c *cancelAwareStore) ClaimRunRetry(ctx context.Context, _ string, _ time.T
 func (c *cancelAwareStore) ClearRunRetry(ctx context.Context, _ string) error { return ctx.Err() }
 
 func (c *cancelAwareStore) AbandonRunRetry(ctx context.Context, _, _ string) error { return ctx.Err() }
+
+func (c *cancelAwareStore) RecordRetryFailure(ctx context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+	if c.blockCircuit {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return nil, nil
+}
+
+func (c *cancelAwareStore) RetryCircuitOpen(context.Context, string, time.Time) (*store.RetryCircuitState, error) {
+	return nil, nil
+}
+
+func (c *cancelAwareStore) RecordRetrySuccess(context.Context, string, time.Time) error {
+	c.successes++
+	return nil
+}
+
+func TestRetryCircuitResetRequiresDurableFinishedStatus(t *testing.T) {
+	st := &cancelAwareStore{run: &store.Run{
+		ID: "run-review-reply", WorkflowHash: "rev-1", Status: store.RunStatusPausedWaitingHuman,
+	}}
+	r := &Runner{cfg: Config{Store: st}}
+	r.resetRetryCircuitAfterSuccessfulExecution(context.Background(), st.run.ID)
+	if st.successes != 0 {
+		t.Fatalf("paused review reply reset retry circuit %d times, want 0", st.successes)
+	}
+
+	st.run.Status = store.RunStatusFinished
+	r.resetRetryCircuitAfterSuccessfulExecution(context.Background(), st.run.ID)
+	if st.successes != 1 {
+		t.Fatalf("finished run reset retry circuit %d times, want 1", st.successes)
+	}
+}
 
 func (c *cancelAwareStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {
 	if err := ctx.Err(); err != nil {
@@ -318,6 +409,23 @@ func TestArmUsageWindowRetry_SurvivesACancelledContext(t *testing.T) {
 	}
 	if st.armedAt.IsZero() {
 		t.Error("retry armed with a zero instant")
+	}
+}
+
+func TestArmUsageWindowRetry_SlowCircuitLeavesTimeForMandatoryArm(t *testing.T) {
+	st := &cancelAwareStore{
+		run:          &store.Run{ID: "run-slow-circuit", Status: store.RunStatusFailedResumable, WorkflowHash: "rev-1"},
+		blockCircuit: true,
+	}
+	r := &Runner{cfg: Config{Store: st}}
+
+	started := time.Now()
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-slow-circuit", iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryArmed || !st.armed {
+		t.Fatalf("outcome = %v armed=%v, want mandatory per-run retry after circuit timeout", got, st.armed)
+	}
+	if elapsed := time.Since(started); elapsed >= usageRetryStoreTimeout {
+		t.Fatalf("circuit consumed the full %v store budget (elapsed %v)", usageRetryStoreTimeout, elapsed)
 	}
 }
 

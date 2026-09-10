@@ -101,19 +101,14 @@ func envAutoResume() int {
 	return n
 }
 
-// autoResumeRetryableCodes is the allow-list of RuntimeError codes for which a
-// run-level auto-resume is meaningful. Everything NOT here (SCHEMA_VALIDATION,
-// AUTH_FAILED, WORKSPACE_SAFETY, LOOP_EXHAUSTED, NODE_NOT_FOUND, …) fails loud:
-// resuming would just re-hit the same deterministic wall.
-var autoResumeRetryableCodes = map[runtime.ErrorCode]bool{
-	runtime.ErrCodeExecutionFailed:     true, // transient backend error surfaced after in-executor retries
-	runtime.ErrCodeBudgetExceeded:      true, // special-cased: needs a raised cap
-	runtime.ErrCodeTimeout:             true, // context deadline (max_duration / --timeout)
-	runtime.ErrCodeRateLimited:         true, // provider throttle (short backoff)
-	runtime.ErrCodeUsageLimitBlocked:   true, // forfait window exhausted — special-cased: reset-aware delay
-	runtime.ErrCodeNetworkTransient:    true, // connectivity blip beyond the LAYER-1 budget
-	runtime.ErrCodeToolFailedTransient: true, // transient tool failure
-}
+// Which codes a run-level auto-resume is meaningful for is decided by the
+// SHARED classification (retrypolicy.AutoResumable) — the same table the
+// cloud runner reads to know whether a redelivery could change anything.
+// Everything outside it (SCHEMA_VALIDATION, EXPRESSION_FAILED, AUTH_FAILED,
+// WORKSPACE_SAFETY, LOOP_EXHAUSTED, NODE_NOT_FOUND, …) fails loud: resuming
+// would just re-hit the same deterministic wall. Two copies of that judgment
+// is exactly what let the cloud path auto-resume, seven times over, a
+// compute-expression failure this loop had always refused.
 
 // autoResumeGate is the pure per-attempt decision (status/forfait I/O stays in
 // the loop): given the failure code + config + whether budget was already
@@ -129,7 +124,7 @@ type autoResumeGate struct {
 // BUDGET_EXCEEDED special-case (needs a raised cap; only one budget retry so
 // the same cap can't loop).
 func gateAutoResume(code runtime.ErrorCode, cfg autoResumeConfig, budgetResumed bool) autoResumeGate {
-	if !autoResumeRetryableCodes[code] {
+	if !retrypolicy.AutoResumable(code) {
 		return autoResumeGate{reason: "not auto-recoverable (code " + nonEmptyCode(code) + ") — leaving run failed_resumable for manual review"}
 	}
 	if code == runtime.ErrCodeUsageLimitBlocked && !cfg.Retry.Enabled() {
@@ -229,7 +224,7 @@ func autoResumeLoop(
 			logger.Warn("auto-resume: load run %s: %v — stopping", runID, loadErr)
 			return err
 		}
-		if r.Status != store.RunStatusFailedResumable {
+		if !r.Status.CanAutoResume() {
 			return err
 		}
 

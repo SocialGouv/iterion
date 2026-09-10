@@ -99,7 +99,7 @@ the staging step alone and prints the upload id.
 | `bots` | `list · get · put · overlay · install · upload` |
 | `marketplace` | `list · get · download · submit · install · uninstall · moderation` |
 | `issues` | `list · get · create · update · delete · transition · comment · push · pulls` |
-| `labels` / `board` | `list · rename · merge · delete` / `get · set` |
+| `labels` / `board` | `list · rename · merge · delete` / `get · set · bind · show · unbind` |
 | `dispatcher` | `status · state · start · stop · pause · resume · refresh · reload · config · issue · cancel` |
 | `triggers` | `list · get · create · update · delete · emit` |
 | `schedules` | `list · create · delete` (team-scoped, cloud recurring bots) |
@@ -116,12 +116,48 @@ the staging step alone and prints the upload id.
 | `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |
-| `pool` | `status · history · share · pause · resume · withdraw · donors` — lend your own LLM subscription or personal metered key to the shared [credential pool](credential-pool.md), bounded by ceilings you set on `share` (`--max-usd-day/-week`, `--max-runs-day`, `--max-concurrent`, `--from-hour/--to-hour`, `--bots`). `donors` is the operator view of the pool's policy and its lenders. |
+| `pool` | `status · history · share · pause · resume · withdraw · donors · policy` — lend your own LLM subscription or personal metered key to the shared [credential pool](credential-pool.md), bounded by ceilings you set on `share` (`--max-usd-day/-week`, `--max-runs-day`, `--max-concurrent`, `--from-hour/--to-hour`, `--bots`). `donors` is the operator view of the pool's policy and its lenders; `policy` is the operator write side (`--enabled`, `--name`, audience flags — the audience is replaced whole). |
 | `server` | `info · health` |
 
 Structured mutation payloads follow the `--data '<json>'` /
 `--data @file.json` / `--data @-` (stdin) convention shared with
 `remote api`.
+
+### Bind the team to a GitHub project board
+
+Makes a Projects v2 board and the native board the same tickets: the board's
+`Status` column becomes two-way with the native columns, and its
+`Area`/`Mode`/`Priority` land as `area:`/`mode:`/`prio:` card labels.
+
+```sh
+iterion remote forge connections                 # find the connection id
+iterion remote board bind --project SocialGouv/203 --connection conn_123
+iterion remote board show                        # the EFFECTIVE map + coverage
+```
+
+Field and option ids are discovered by name at bind time, never hardcoded. A
+board with different columns binds with `--status-map
+"Todo=ready,Doing=in_progress,Shipped=done"`; the map must be injective (two
+columns on one state is refused, naming the collision). `--sync-every 2m`
+(default; `0`/`off` disables, floor 1m) sets the reconciliation interval, which
+the server runs elected per tenant. Full runbook, incl. the permissions the
+credential needs and what the sync deliberately refuses to do:
+[github-board-sync.md](github-board-sync.md).
+
+### Give a bot account the iterion-bot avatar
+
+A GitLab group/project access token's bot user gets the mascot avatar at
+connect time. For a connection created before that, or a dedicated account the
+forge does not flag as a bot (Forgejo, a hand-made GitLab user), apply it once:
+
+```sh
+iterion remote forge connections avatar <connection-id>            # a flagged bot account
+iterion remote forge connections avatar <connection-id> --force    # a dedicated, unflagged account
+```
+
+Refused on an OAuth connection (a person's account) and on GitHub, which has no
+avatar or App-logo API — the error names where to upload it by hand. Full
+policy + the manual GitHub App upload: [brand.md](brand.md).
 
 ### Refresh GitHub App grants
 

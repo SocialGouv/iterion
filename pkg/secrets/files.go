@@ -40,6 +40,14 @@ const (
 	// rewrites through the sandbox exec seam).
 	ClaudeCodeSandboxCredentialsPath = ClaudeCodeSandboxConfigDir + "/.credentials.json"
 
+	// ClaudeCodeCredentialsFileName is the file the Claude Code forfait
+	// blob is materialised as inside a CLAUDE_CONFIG_DIR-shaped directory —
+	// including the per-run one the runner builds
+	// (Credentials.OAuthDir("claude_code")). Named because several readers
+	// now open it: the CLI env builder, the in-process claw factory, and
+	// the runner's refresh worker.
+	ClaudeCodeCredentialsFileName = ".credentials.json"
+
 	// The same three for the ChatGPT (Codex) forfait. Without them a
 	// sandboxed node has no way to see a resolved subscription — the host
 	// temp dir does not exist in the container — and silently falls back to

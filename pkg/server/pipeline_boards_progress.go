@@ -329,11 +329,19 @@ func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates ma
 // own — a newer run or any move of the ticket makes it stale (native.GiveUp.
 // Current) — so no writer has to remember to clear it, and a stale stamp can
 // never pin a card to the lane.
+//
+// root is nil for a ticket that never ran. Only a LAUNCH give-up (the launch
+// attempt cap, native.GiveUp.Launch) can be current there — it names no run;
+// a run give-up needs the run it was written on.
 func pipelineTicketGaveUp(issue *native.Issue, root *store.Run) bool {
-	if issue == nil || root == nil {
+	if issue == nil {
 		return false
 	}
-	return issue.GaveUp.Current(issue.State, root.ID)
+	rootID := ""
+	if root != nil {
+		rootID = root.ID
+	}
+	return issue.GaveUp.Current(issue.State, rootID)
 }
 
 // pipelineTicketHoldsSlot is the ONE definition of "this ticket is holding a

@@ -75,6 +75,21 @@ A pledge only ever answers a request for its OWN source and ref: a
 subscription never stands in for a metered key, because they are billed to
 different places.
 
+**What the run is asked for** (`wantsFor`, over
+[`model.EffectiveProviders`](../pkg/backend/model/override_fold.go)) is
+narrowed to the providers the run's routes actually pin — the DSL under the
+launch's model overrides, node `fallbacks:` routes and the run-level
+`--fallback` chain, read the way the executor reads them (`${VAR}` expanded,
+chains split, `provider:model` steps). The narrowing is exact per provider
+because the delegates are: a `zai` hint spends a z.ai key and nothing else,
+`anthropic` the Anthropic key or the claude_code forfait. And it **fails
+open**: one route the walk cannot name — a node with no pin, an explicit
+`auto`, a `${VAR}` empty on the server, a hint nobody knows, a model-answering
+node with no `LLMFields` — widens the request back to the full order, because
+that route takes whatever the process holds. A pin that matches no known
+provider is named in a `Warn` (`asked for the FULL order … provider hint(s)
+match no known provider`) rather than skipping the tier.
+
 ## Enforcement: the run's own budget is the ceiling
 
 A grant carries the donor's **remaining allowance**, and the launch clamps
@@ -104,6 +119,29 @@ its sharing window, or when the requested bot is not in its allow-list.
 Among the rest, selection ranks by the **fraction of what each donor
 offered** that has been consumed today — so a modest pledge is not drained
 before a generous one — with least-recently-served as the tie-break.
+
+**When nobody serves, the server log says why** — once, at the moment the
+abstention is final, at `Warn` (the level that survives
+`ITERION_LOG_LEVEL=info`). The broker returns a typed
+`credpool.NoDonorError` (unwrapping to `ErrNoDonor`) and the publisher
+renders it:
+
+```
+credential pool declined run <id> — reason=no_eligible_pledge pools_enabled=2 pools_admitted=1 pledges_considered=1 skips=<pledge-id>:paused wants=oauth:claude_code,…
+```
+
+`pools_enabled` is every enabled pool, `pools_admitted` those whose audience
+opened to the request, `pledges_considered` only the pledges of a kind the
+run asked for, and `skips` names each considered pledge with the state that
+held it out: `paused`, `unhealthy`, `out_of_hours`, `bot_filtered`,
+`cooling`, `exhausted` (a ceiling really spent), `serving` (every slot busy,
+or a ceiling met while the donor has runs in flight). `audience_rejected`
+gets the same treatment. Two reasons are static configuration and log at
+`Debug` instead — `pool_disabled` (no broker wired) and `no_enabled_pool` —
+so a platform-funded deployment without a pool does not page the error
+tracker on every launch. The definitive signal for a run that resolved
+**no credential at all** (every tier abstained, on a workflow that can call
+a model) is one `Warn` at the end of resolution naming the tiers consulted.
 
 Two states are set from a run's outcome:
 
@@ -239,13 +277,16 @@ iterion remote api-keys create --provider anthropic --name mine --from-file ~/ke
 iterion remote pool share --source api_key --ref anthropic   --key-id <id from `iterion remote api-keys list`> --max-usd-day 3
 
 # 1. Operator: create/enable the pool for the org (default audience:
-#    the org's own teams only).
-iterion remote api PUT /api/teams/<team-id>/pool --data '{"enabled":true}'
+#    the org's own teams only). Creating one REQUIRES --enabled stated
+#    explicitly — a pool stood up disabled is invisible to the broker
+#    and every pledge under it is dead, so the CLI refuses the silent
+#    shape.
+iterion remote pool policy --enabled
 
 # Widen it only if you mean to — this lets more runs spend contributors'
-# personal subscriptions:
-iterion remote api PUT /api/teams/<team-id>/pool \
-  --data '{"enabled":true,"audience":{"contributors":true}}'
+# personal subscriptions. The audience is a SET, replaced whole: restate
+# every dial you mean to keep on each call.
+iterion remote pool policy --contributors
 
 # 2. Contributor: connect the subscription (once), then pledge it.
 iterion remote api POST /api/me/oauth/claude_code/authorize/start
@@ -291,6 +332,15 @@ A donor's credential is never returned by any of these — it stays sealed in
   a key can be re-scoped afterwards.
 - **A metered pledge must carry a spend ceiling.** Refused otherwise: it
   would be an open invoice on the lender's own account.
+- **A lent credential is metered under the SHARED scope, not the
+  borrower's.** The grant carries the donor's fingerprint (a subscription's
+  connect-time stamp, a key's own hash), and the run marks the slot
+  `pool_sourced`, so the usage ledger keys the readings on the donor's
+  credential in the cross-tenant scope — the same treatment as a
+  platform-tier one, and for the same reason: it is one account serving
+  several tenants. Metering it per borrower would open one ledger per
+  borrower of the same subscription, and a window at 95% measured by the
+  first would reach none of the others.
 - **`ITERION_FORBID_SUBSCRIPTION_OAUTH=1` does not disable the pool.** That
   guard only covers `claw`/`pi` (`secrets.GuardSubscriptionOAuth`); a lent
   Claude forfait still works on `claude_code`, which is its native path.

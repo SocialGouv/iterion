@@ -484,3 +484,63 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 		t.Fatal("expected error for plain text fallback")
 	}
 }
+
+// TestLLMRouterKeepsSpendOnPostGenerationFailure: the two exits an LLM
+// router takes AFTER the generation was paid for — unparseable text, and
+// output the router schema refuses. The dispatch-failure exit above already
+// hands the metered result up; these two returned a bare nil, so the engine
+// (the only caller that books) saw nothing and a whole routing call fell out
+// of max_cost_usd and the daily-cap ledger. Unlike a dispatch failure, here
+// the model DID answer — the bill is certain.
+func TestLLMRouterKeepsSpendOnPostGenerationFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		result delegate.Result
+	}{
+		{
+			// Parse fallback whose text is not JSON: the local `output` is
+			// still the delegate's map here, but the sibling branch replaces
+			// it with a fresh `parsed` one — which is why the metering must
+			// read out.Result, not the local variable.
+			name: "unparseable parse-fallback text",
+			result: delegate.Result{
+				Output:        map[string]any{"text": "I think agent_a is best", "_cost_usd": 0.75},
+				ParseFallback: true,
+				Tokens:        3_000,
+			},
+		},
+		{
+			// Well-formed JSON naming no route: schema validation refuses it.
+			name: "output the router schema refuses",
+			result: delegate.Result{
+				Output: map[string]any{"reasoning": "undecided", "_cost_usd": 0.75},
+				Tokens: 3_000,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := newDelegateTestExecutor(&stubBackend{results: []delegate.Result{tc.result}}, EventHooks{})
+			node := &ir.RouterNode{
+				BaseNode:   ir.BaseNode{ID: "router"},
+				LLMFields:  ir.LLMFields{Backend: "test_backend"},
+				RouterMode: ir.RouterLLM,
+			}
+			output, err := exec.executeLLMRouterUnified(context.Background(),
+				node, map[string]any{"_route_candidates": []string{"agent_a", "agent_b"}})
+			if err == nil {
+				t.Fatal("precondition: this router output must fail")
+			}
+			if output == nil {
+				t.Fatal("the failed router's spend never left the executor: nil output")
+			}
+			if got := output["_tokens"]; got != 3_000 {
+				t.Errorf("_tokens = %v, want 3000 (what the generation burned)", got)
+			}
+			if got := output["_cost_usd"]; got != 0.75 {
+				t.Errorf("_cost_usd = %v, want 0.75", got)
+			}
+		})
+	}
+}

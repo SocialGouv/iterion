@@ -68,11 +68,26 @@ func TestForgeOAuthApp_CRUD(t *testing.T) {
 		t.Fatalf("bad provider: code=%d", w.Code)
 	}
 
-	// auto mode is not available yet in this phase → 400
-	w = httptest.NewRecorder()
-	s.handleRegisterForgeOAuthApp(w, oauthAppReq(ctx, "POST", base, `{"provider":"gitlab","mode":"auto","admin_token":"t"}`, "t1", ""))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("auto mode (phase 1): code=%d", w.Code)
+	// auto mode: the refusals that are ITERION's, asserted without leaving
+	// this process.
+	//
+	// This row used to send mode=auto WITH a bogus admin_token, which walks
+	// past every local check into a live POST to gitlab.com and then asserts
+	// on GITLAB's answer. That is not a property of iterion: it made every CI
+	// run send a credential-shaped request to a third party, and it turned
+	// their rate limiter into a red build — measured 34 failures in 60 runs
+	// once gitlab.com started answering `HTTP 429`, which the handler maps to
+	// 500 ("auto mode (phase 1): code=500"), fast and load-independent.
+	for _, tc := range []struct{ name, body string }{
+		{"auto without a token", `{"provider":"gitlab","mode":"auto"}`},
+		{"auto_from_connection without a connection", `{"provider":"gitlab","mode":"auto_from_connection","admin_token":"t"}`},
+		{"auto on a provider with no create-app API", `{"provider":"github","mode":"auto","admin_token":"t"}`},
+	} {
+		w = httptest.NewRecorder()
+		s.handleRegisterForgeOAuthApp(w, oauthAppReq(ctx, "POST", base, tc.body, "t1", ""))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: code=%d body=%s, want 400", tc.name, w.Code, w.Body.String())
+		}
 	}
 
 	// valid manual create → 200, secret not serialised
@@ -197,5 +212,43 @@ func TestForgeGitHubManifest_Start(t *testing.T) {
 	}
 	if resp.Manifest["redirect_url"] != "https://iterion.test/api/forge/github/app-manifest/callback" {
 		t.Fatalf("manifest redirect_url = %v", resp.Manifest["redirect_url"])
+	}
+}
+
+// TestForgeGitHubManifest_ProjectBoardGrant pins that the opt-in project-board
+// grant reaches the manifest GitHub is asked to create the App from.
+//
+// Without it the whole App credential path of the board sync is unusable: the
+// per-call mint asks for organization_projects, GitHub refuses a token for a
+// permission the App does not hold, and the failure surfaces at the first
+// board write — with no surface anywhere that could have requested the grant.
+func TestForgeGitHubManifest_ProjectBoardGrant(t *testing.T) {
+	perms := func(t *testing.T, body string) map[string]any {
+		t.Helper()
+		s := newForgeOAuthAppTestServer(t)
+		w := httptest.NewRecorder()
+		s.handleStartGitHubManifest(w, oauthAppReq(superAdminCtx(), "POST",
+			"/api/teams/t1/forge/oauth-apps/github-manifest", body, "t1", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("start: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Manifest struct {
+				DefaultPermissions map[string]any `json:"default_permissions"`
+			} `json:"manifest"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Manifest.DefaultPermissions
+	}
+
+	if got := perms(t, `{"allow_project_board":true}`)["organization_projects"]; got != "write" {
+		t.Errorf("organization_projects = %v, want \"write\" — the request asked for the board grant", got)
+	}
+	// And it stays OPT-IN: an org-wide roadmap grant is not something a plain
+	// connect quietly acquires.
+	if got, ok := perms(t, `{}`)["organization_projects"]; ok {
+		t.Errorf("organization_projects = %v on a default App, want absent", got)
 	}
 }

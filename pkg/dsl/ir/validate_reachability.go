@@ -77,7 +77,7 @@ func (c *compiler) validateHistoryRefs(w *Workflow) {
 				return // unknown node already reported by other checks
 			}
 			if !loopNodes[nodeID] {
-				c.errorf(DiagHistoryRefNotInLoop,
+				c.errorfAt(DiagHistoryRefNotInLoop, nodeID, "",
 					"%s: reference %s uses .history but node %q is not in any loop",
 					ctx, ref.Raw, nodeID)
 			}
@@ -145,7 +145,7 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 				// Back-edge found — cycle. Only report if neither endpoint
 				// participates in a declared loop (which bounds the cycle).
 				if !loopNodes[node] && !loopNodes[to] {
-					c.errorf(DiagUndeclaredCycle,
+					c.errorfAt(DiagUndeclaredCycle, "", edgeID(node, to),
 						"cycle detected: edge %s -> %s forms a cycle without a declared loop; add a loop with max_iterations to bound it",
 						node, to)
 				}

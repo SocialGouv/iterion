@@ -11,6 +11,20 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+// meteredHumanFailure renders what a FAILED human-node generation burned, in
+// the shape the engine books from. Nil when nothing was served: an output map
+// carrying only meta keys would read as an answer on a path whose caller
+// degrades to a human pause, and the engine's own guard already skips a
+// spendless failure.
+func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
+	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0) {
+		return nil
+	}
+	output := map[string]any{}
+	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	return output
+}
+
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It calls GenerateObjectDirect against api.APIClient with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
@@ -105,7 +119,12 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 
 	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
-		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		// The llm half of a human node is a real LLM call, and the engine
+		// books what it burned from the map returned beside the error (it
+		// then degrades to the human pause). A bare nil made that booking
+		// inert: the attempt is over — the human answers next, and a human
+		// reports no tokens — so this figure is final or lost.
+		return meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
@@ -129,7 +148,12 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 // question keys.
 //
 // Returns:
-//   - answers: LLM-generated answers for each question
+//   - answers: LLM-generated answers for each question — and, when err is
+//     non-nil, the failed generation's SPEND instead (a `_tokens`/`_cost_usd`
+//     map, nil when nothing was observed). The interaction LLM is a real,
+//     billed model call, and this is the last frame that still holds the
+//     figure; the callers read `answers` as answers only on success, and book
+//     it on failure.
 //   - needsHuman: true if the LLM decided to escalate (llm_or_human mode only)
 //   - err: any error from model execution
 func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
@@ -182,7 +206,11 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 
 	output, err := e.executeHumanLLM(ctx, node, input, syntheticSchema)
 	if err != nil {
-		return nil, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
+		// output is the spend map on this path, not answers — see the doc
+		// comment. Passing it up is what lets the engine book a failed
+		// auto-answer; dropping it here would waste the capture one frame
+		// short, which is the whole defect this seam exists to close.
+		return output, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
 	}
 
 	// Check if the LLM decided to escalate (llm_or_human mode).

@@ -39,20 +39,24 @@ func (s *Server) registerWebhookRoutes() {
 }
 
 type webhookConfigReq struct {
-	Name                *string           `json:"name,omitempty"`
-	Provider            *string           `json:"provider,omitempty"`
-	SignMode            *string           `json:"sign_mode,omitempty"`
-	Enabled             *bool             `json:"enabled,omitempty"`
-	BotIDs              []string          `json:"bot_ids,omitempty"`
-	WildcardBots        *bool             `json:"wildcard_bots,omitempty"`
-	DefaultBotID        *string           `json:"default_bot_id,omitempty"`
-	ProjectAllowlist    []string          `json:"project_allowlist,omitempty"`
-	EventAllowlist      []string          `json:"event_allowlist,omitempty"`
-	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
-	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
-	HoldLabels          []string          `json:"hold_labels,omitempty"`
-	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
-	ReviewOnSync        *bool             `json:"review_on_sync,omitempty"`
+	Name                *string  `json:"name,omitempty"`
+	Provider            *string  `json:"provider,omitempty"`
+	SignMode            *string  `json:"sign_mode,omitempty"`
+	Enabled             *bool    `json:"enabled,omitempty"`
+	BotIDs              []string `json:"bot_ids,omitempty"`
+	WildcardBots        *bool    `json:"wildcard_bots,omitempty"`
+	DefaultBotID        *string  `json:"default_bot_id,omitempty"`
+	ProjectAllowlist    []string `json:"project_allowlist,omitempty"`
+	EventAllowlist      []string `json:"event_allowlist,omitempty"`
+	AuthorAllowlist     []string `json:"author_allowlist,omitempty"`
+	LabelAllowlist      []string `json:"label_allowlist,omitempty"`
+	HoldLabels          []string `json:"hold_labels,omitempty"`
+	ReviewOnSync        *bool    `json:"review_on_sync,omitempty"`
+	ReviewRequestLogins []string `json:"review_request_logins,omitempty"`
+	// ReviewOnSyncPinned clears (false) or restates (true) the provenance
+	// pin an explicit review_on_sync set leaves behind; absent = derived
+	// from whether review_on_sync itself is being set.
+	ReviewOnSyncPinned  *bool             `json:"review_on_sync_pinned,omitempty"`
 	Overlap             *string           `json:"overlap,omitempty"`
 	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
 	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
@@ -261,11 +265,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		AuthorAllowlist:     req.AuthorAllowlist,
 		LabelAllowlist:      req.LabelAllowlist,
 		HoldLabels:          req.HoldLabels,
-		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
 		ReviewOnSync:        req.ReviewOnSync != nil && *req.ReviewOnSync,
+		ReviewRequestLogins: req.ReviewRequestLogins,
+		ReviewOnSyncPinned:  req.ReviewOnSync != nil, // an explicit set at create is a decision too
 		Overlap:             overlapOrEmpty(req.Overlap),
 		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
 		RateLimit:           rate,
+		RateLimitPinned:     req.RateLimit != nil, // same rule as ReviewOnSyncPinned
 		LaunchVars:          req.LaunchVars,
 		KeyOverrides:        req.KeyOverrides,
 		SecretOverrides:     req.SecretOverrides,
@@ -302,11 +308,11 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.HMACSecretSealed = sealed
 	}
-	if err := s.validateKeyOverrides(r.Context(), teamID, cfg.KeyOverrides); err != nil {
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.KeyOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	if err := s.validateSecretOverrides(r.Context(), teamID, cfg.SecretOverrides); err != nil {
+	if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), teamID), teamID, cfg.SecretOverrides); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -407,6 +413,26 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// Org approval-gate parity: a MANAGED (forge-provisioned) config is the
+	// runtime face of a repo integration, and it carries the same automation
+	// switches the provisioning gate parks (bots, hold labels, allowlist,
+	// zero-touch lanes, overlap). Letting a team admin PATCH those here
+	// would bypass Org.RequireProvisionApproval entirely — so an EXPANDING
+	// patch on a managed config is refused toward the integrations API,
+	// whose approval flow is the governed path. Tightenings and neutral
+	// fields (launch vars, rate limits, names) stay direct.
+	if strings.HasPrefix(cfg.ProvisionedBy, "forge:") {
+		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		if gerr != nil {
+			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
+			return
+		}
+		if gateOrg != "" && webhookPatchExpandsSurface(cfg, req) {
+			httpError(w, http.StatusConflict,
+				"this org requires approval for expanding a managed integration's automation — request the change through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin")
+			return
+		}
+	}
 	if req.Name != nil {
 		cfg.Name = *req.Name
 	}
@@ -435,6 +461,13 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ReviewOnSync != nil {
 		cfg.ReviewOnSync = *req.ReviewOnSync
+		// An explicit set is an operator decision: pin it so the gating
+		// derivation stops rewriting the field at the next provision (in
+		// either direction — see webhooks.Config.ReviewOnSyncPinned).
+		cfg.ReviewOnSyncPinned = true
+	}
+	if req.ReviewOnSyncPinned != nil {
+		cfg.ReviewOnSyncPinned = *req.ReviewOnSyncPinned
 	}
 	if req.Overlap != nil {
 		cfg.Overlap = strings.TrimSpace(*req.Overlap)
@@ -442,9 +475,6 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "%v", err)
 			return
 		}
-	}
-	if req.BlockForkPRs != nil {
-		cfg.BlockForkPRs = *req.BlockForkPRs
 	}
 	if req.AutoImplementOnOpen != nil {
 		cfg.AutoImplementOnOpen = *req.AutoImplementOnOpen
@@ -454,6 +484,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit
+		cfg.RateLimitPinned = true
 	}
 	if req.MonthlyCallLimit != nil {
 		cfg.MonthlyCallLimit = *req.MonthlyCallLimit
@@ -462,14 +493,14 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		cfg.LaunchVars = req.LaunchVars
 	}
 	if req.KeyOverrides != nil {
-		if err := s.validateKeyOverrides(r.Context(), teamID, req.KeyOverrides); err != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.KeyOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
 		cfg.KeyOverrides = req.KeyOverrides
 	}
 	if req.SecretOverrides != nil {
-		if err := s.validateSecretOverrides(r.Context(), teamID, req.SecretOverrides); err != nil {
+		if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), teamID), teamID, req.SecretOverrides); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
@@ -477,6 +508,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AuthorizedRepliers != nil {
 		cfg.AuthorizedRepliers = req.AuthorizedRepliers
+	}
+	if req.ReviewRequestLogins != nil {
+		cfg.ReviewRequestLogins = req.ReviewRequestLogins
 	}
 	if req.MinReplierRole != nil {
 		cfg.MinReplierRole = *req.MinReplierRole

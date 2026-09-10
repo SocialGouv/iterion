@@ -21,7 +21,7 @@ const (
 	defaultBaseURL         = "https://api.openai.com"
 	chatgptCodexBaseURL    = "https://chatgpt.com/backend-api/codex"
 	chatgptOriginator      = "codex_cli_rs"
-	chatgptFallbackVersion = "0.130.0"
+	chatgptFallbackVersion = api.ChatGPTClientVersion
 	DefaultOpenAIModel     = "gpt-5.5"
 )
 

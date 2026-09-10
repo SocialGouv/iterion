@@ -31,6 +31,7 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -166,6 +167,18 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 // installation-token connect mode. The PEM private key is loaded from a file
 // (the canonical k8s-secret mount), falling back to an inline env value.
 // Empty AppID → the App mode is unavailable (OAuth/PAT still work).
+// forgeBrandAvatarDisabled reads ITERION_FORGE_BRAND_AVATAR: "off", "0",
+// "false" or "no" (the values every other falsy switch in the repo takes)
+// keeps iterion from uploading the iterion-bot avatar onto a bot identity at
+// connect time (docs/brand.md). Anything else — including unset — leaves it on.
+func forgeBrandAvatarDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_FORGE_BRAND_AVATAR"))) {
+	case "off", "0", "false", "no":
+		return true
+	}
+	return false
+}
+
 func forgeGitHubAppFromEnv() server.ForgeGitHubAppConfig {
 	appID, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_ID")), 10, 64)
 	key := strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_PRIVATE_KEY"))
@@ -193,6 +206,19 @@ func randomBootstrapPassword() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// cloudBoardFor builds the per-tenant board factory. The pipeline launch
+// guard measures claim leases against the board's ServerNow; the inner
+// pin below holds the method on the bare factory ONLY — a wrapper around
+// the returned closure would still compile, and is caught at runtime by
+// boardNow's warn (any non-FS board without a server clock is loud).
+func cloudBoardFor(st *mongostore.Store) func(string) native.BoardStore {
+	factory := func(tenantID string) *boardmongo.Store { return boardmongo.New(st.DB(), tenantID) }
+	var _ interface {
+		ServerNow(context.Context) (time.Time, error)
+	} = factory("")
+	return func(tenantID string) native.BoardStore { return factory(tenantID) }
 }
 
 func runServer(cmd *cobra.Command, _ []string) error {
@@ -242,18 +268,25 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = traceShutdown(shutCtx)
 	}()
 
+	// Keep in sync with the natsq.Connect literal in runner.go: a field only
+	// one side passes is silently defaulted for the other, and the two then
+	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,
+		StreamReplicas:      cfg.NATS.StreamReplicas,
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
+		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
 		MaxDeliver:          cfg.NATS.MaxDeliver,
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
 		MaxPayload:          cfg.NATS.MaxPayload,
+		LockTTL:             cfg.Runner.LockTTL,
 		Logger:              logger,
 	})
 	if err != nil {
@@ -279,6 +312,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.
 	mreg := metrics.New()
+	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live in diagnostic-only mode; background workers and run publication are fenced")
+	}
 
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
@@ -290,19 +328,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	stores, err := buildCloudStores(rootCtx, st, logger)
 	if err != nil {
 		return err
-	}
-
-	// Seed the hosted marketplace from the image's bot catalog (bots/, or
-	// ITERION_MARKETPLACE_SEED_PATHS) so the public Marketplace view lists
-	// iterion's first-class bots out of the box. Best-effort + idempotent;
-	// user-submitted (git/upload) entries are never clobbered. No-op when
-	// the registry is disabled or the catalog isn't shipped in the image.
-	if stores.marketplace != nil {
-		if n, sErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); sErr != nil {
-			logger.Warn("cloud: marketplace seed failed: %v", sErr)
-		} else if n > 0 {
-			logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
-		}
 	}
 
 	// The auth stack is built before the publisher so the publisher can
@@ -333,6 +358,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Invalidate so this replica's own compile-time previews see a
 	// mutation immediately. Precedence: setting > pod env > .bot default.
 	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](stores.botVars, logger.Warn)
+	// Who may draw on the deployment's own credentials. Own resolver
+	// instance, like CapPolicy: the admin write invalidates the server's,
+	// this one converges within the resolver's TTL bound.
+	platformCredAudience := platformcfg.NewResolver[platformcfg.PlatformCredentials](stores.platformCreds, logger.Warn)
 	ir.SetEnvOverlay(func(name string) (string, bool) {
 		rec := botVarsResolver.Get(context.Background())
 		if rec == nil {
@@ -341,22 +370,68 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		v, ok := rec.Vars[name]
 		return v, ok
 	})
+	// One fetcher for both halves of the plugin-source contract: the
+	// publisher materialises a team's sources at launch, the server verifies
+	// a source the same way at registration.
+	pluginFetcher := newPluginSourceFetcher(stores, sealer)
+	// One readings ledger shared by the publisher's credential walk and the
+	// admin route that clears a credential's readings, and one trust bound
+	// for the walk — resolved once, so a malformed value refuses the boot
+	// here rather than degrading silently at the first launch.
+	usageCapStore := usagecap.NewMongoStore(st.DB())
+	usageCapTrust, err := usagecap.TrustFromEnv()
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	// Refuse at publish a run no credential tier can fund, instead of
+	// queueing one that fails at its first LLM call. Off by default: the
+	// runner may still fund a run from its pod's ambient env.
+	requireLLMCredential, err := envBoolStrict("ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL")
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:             natsConn,
-		Store:            st,
-		MongoColl:        st.RunsCollection(),
-		Logger:           logger,
-		Metrics:          mreg,
-		ApiKeys:          stores.apiKeys,
-		GenericSecrets:   stores.genericSecrets,
-		BotBindings:      stores.botBindings,
-		RunSecrets:       stores.runSecrets,
-		Sealer:           sealer,
-		OAuthForfait:     stores.oauth,
-		ForgeConnections: stores.forgeConn,
-		Identity:         authStack.identityStore,
-		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
-		CredPool:         credBroker,
+		RequireLLMCredential:       requireLLMCredential,
+		NATS:                       natsConn,
+		Store:                      st,
+		MongoColl:                  st.RunsCollection(),
+		Logger:                     logger,
+		Metrics:                    mreg,
+		ApiKeys:                    stores.apiKeys,
+		GenericSecrets:             stores.genericSecrets,
+		BotBindings:                stores.botBindings,
+		RunSecrets:                 stores.runSecrets,
+		Sealer:                     sealer,
+		OAuthForfait:               stores.oauth,
+		ForgeConnections:           stores.forgeConn,
+		Identity:                   authStack.identityStore,
+		PlatformCredentialAudience: platformCredAudience,
+		PluginSources:              newPluginSourceResolver(stores, pluginFetcher, logger),
+		CredPool:                   credBroker,
+		// The fleet's shared meter: a forfait the provider has refused is
+		// skipped at launch so the run falls through to the next
+		// credential tier instead of parking for a reset it could have
+		// avoided.
+		UsageCaps:     usageCapStore,
+		UsageCapTrust: usageCapTrust,
+		// A forfait whose stored readings are stale but say "closed" is
+		// re-measured at the provider before the walk decides on it.
+		UsageProbe: cloudpublisher.AnthropicForfaitProbe(8 * time.Second),
+		// The operator's cap posture, consulted by the walk over the same
+		// readings: the runner's pre-flight parks on a hard cap before any
+		// node runs, so a capped credential must be passed over like a
+		// refused one or the tiers stop being a fallback chain. Own
+		// resolver instance — the admin PUT invalidates the server's, this
+		// one converges within the resolver's TTL bound.
+		CapPolicy: func() usagecap.PolicySource {
+			envPol, envErr := usagecap.FromEnv()
+			if envErr != nil {
+				logger.Warn("server: publisher cap policy disabled — env policy invalid: %v", envErr)
+				return nil
+			}
+			return usagecap.NewResolver(stores.usageCapSettings, envPol,
+				usagecap.WithWarnLogger(logger.Warn))
+		}(),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
 		SandboxImage: func(ctx context.Context) string {
@@ -419,33 +494,39 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
-	var notifSent usernotify.SentStore
-	var notifiableRuns usernotify.ListNotifiableRuns
+	// The episode-claim store + terminal-run window scan serve BOTH
+	// notification families — user web push (gated on VAPID keys below)
+	// and the operator-alert dispatcher (gated on the alerts webhook URL)
+	// — so they are built whenever the Mongo store is, not only when web
+	// push is on.
+	sentStore := usernotify.NewMongoSentStore(st.DB())
+	if sErr := sentStore.EnsureSchema(rootCtx); sErr != nil {
+		return fmt.Errorf("server: ensure sent notifications schema: %w", sErr)
+	}
+	notifSent := sentStore
+	notifiableRuns := func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+		refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
+		if lErr != nil {
+			return nil, lErr
+		}
+		out := make([]usernotify.RunRef, 0, len(refs))
+		for _, ref := range refs {
+			out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
+		}
+		return out, nil
+	}
 	if cfg.WebPush.Enabled() {
 		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
 		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
-		sentStore := usernotify.NewMongoSentStore(st.DB())
 		for name, ensure := range map[string]func(context.Context) error{
 			"push subscriptions": subsStore.EnsureSchema,
 			"notification prefs": prefsStore.EnsureSchema,
-			"sent notifications": sentStore.EnsureSchema,
 		} {
 			if sErr := ensure(rootCtx); sErr != nil {
 				return fmt.Errorf("server: ensure %s schema: %w", name, sErr)
 			}
 		}
-		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
-		notifiableRuns = func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
-			refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
-			if lErr != nil {
-				return nil, lErr
-			}
-			out := make([]usernotify.RunRef, 0, len(refs))
-			for _, ref := range refs {
-				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
-			}
-			return out, nil
-		}
+		pushSubs, notifPrefs = subsStore, prefsStore
 	}
 
 	// The studio Home "Bots" panel lists first-class bots via /api/examples
@@ -502,86 +583,138 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The un-leased claim horizon is a startup dial: read it before the
+	// coordinator's sweeps run, refuse a bad value rather than start a
+	// watchdog measuring against a horizon nobody intended.
+	if horizon, err := boardmongo.ConfigureUnleasedClaimHorizonFromEnv(); err != nil {
+		return err
+	} else if horizon != boardmongo.DefaultUnleasedClaimHorizon {
+		logger.Info("board watchdog: un-leased claim horizon set to %s (%s)", horizon, boardmongo.UnleasedClaimHorizonEnv)
+	}
+
 	srv := server.New(server.Config{
-		Port:                   serverOpts.port,
-		Bind:                   serverOpts.bind,
-		Bots:                   server.BotsConfig{Paths: botsPaths},
-		ExamplesDir:            examplesDir,
-		WorkDir:                serverOpts.dir,
-		Store:                  st,
-		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
-		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
-		TriggerStore:           trigger.NewMongoSubscriptionStore(st.DB()),
-		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
-		OrgPurgeSweeper:        orgPurgeSweeper,
-		Alerts:                 alertSettings,
-		LaunchPublisher:        pub,
-		StreamSource:           streamSrc,
-		Mode:                   string(iterconfig.ModeCloud),
-		AuthService:            authStack.authSvc,
-		AuthSigner:             authStack.signer,
-		OIDCRegistry:           registry,
-		OIDCStates:             stores.oidcState,
-		DesktopTickets:         stores.desktopTickets,
-		WSTickets:              stores.wsTickets,
-		OrgSSO:                 stores.orgSSO,
-		OrgDomains:             stores.orgDomain,
-		ApiKeys:                stores.apiKeys,
-		GenericSecrets:         stores.genericSecrets,
-		BotBindings:            stores.botBindings,
-		ForgeConnections:       stores.forgeConn,
-		ForgeIntegrations:      stores.forgeIntegration,
-		ForgeOAuthApps:         stores.forgeOAuthApp,
-		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
-		PluginSources:          stores.pluginSources,
-		BotSources:             stores.botSources,
-		BotRolesSettings:       stores.botRoles,
-		BotVarsSettings:        stores.botVars,
-		BotVarsResolver:        botVarsResolver,
-		SandboxSettings:        stores.sandboxCfg,
-		SandboxResolver:        sandboxResolver,
-		WebhookConfigs:         stores.webhooks.Configs,
-		WebhookDeliveries:      stores.webhooks.Deliveries,
-		WebhookCounter:         stores.webhooks.Counter,
-		ConfigShares:           stores.configShares,
-		OrgUsage:               stores.orgUsage,
-		OrgDefaults:            orgLimitDefaultsFromEnv(),
-		CredPoolBroker:         credBroker,
-		CredPoolPools:          stores.credPools,
-		CredPoolPledges:        stores.credPledges,
-		CredPoolLeases:         stores.credLeases,
-		CredPoolLedger:         stores.credLedger,
-		Audit:                  stores.audit,
-		UsageCapSettings:       stores.usageCapSettings,
-		Marketplace:            stores.marketplace,
-		Redis:                  redisClient,
-		PATs:                   stores.pat,
-		PATMaxTTL:              patMaxTTLFromEnv(logger),
-		Queue:                  natsConn,
-		EventsBus:              eventsBus,
-		PushSubscriptions:      pushSubs,
-		NotificationPrefs:      notifPrefs,
-		ModelPrefs:             modelPrefStore,
-		NotificationSent:       notifSent,
-		NotifiableRuns:         notifiableRuns,
-		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,
-		WebPushVAPIDPrivateKey: cfg.WebPush.VAPIDPrivateKey,
-		WebPushSubscriber:      cfg.WebPush.Subscriber,
-		MemoryStore:            stores.memory,
-		RunSecrets:             stores.runSecrets,
-		Sealer:                 sealer,
-		OAuthForfait:           stores.oauth,
-		OAuthPending:           stores.oauthPending,
-		AnthropicOAuthClientID: cfg.Auth.OAuthForfait.AnthropicClientID,
-		CodexOAuthClientID:     cfg.Auth.OAuthForfait.CodexClientID,
-		AccessTTL:              cfg.Auth.AccessTTL,
-		RefreshTTL:             cfg.Auth.RefreshTTL,
-		PublicURL:              cfg.Auth.PublicURL,
-		SignupMode:             cfg.Auth.SignupMode,
-		CookieDomain:           cfg.Auth.CookieDomain,
-		CookieSecure:           cfg.Auth.CookieSecure,
-		DisableAuth:            disableAuth,
-		Metrics:                mreg,
+		Port:        serverOpts.port,
+		Bind:        serverOpts.bind,
+		Bots:        server.BotsConfig{Paths: botsPaths},
+		ExamplesDir: examplesDir,
+		WorkDir:     serverOpts.dir,
+		Store:       st,
+		// The launch guard's cross-clock comparison type-asserts ServerNow
+		// on what THIS factory returns. No compile pin covers this seam —
+		// a decorator wrapped around the returned closure compiles fine
+		// (cloudBoardFor's inner pin only checks the bare factory). The
+		// real net is runtime: boardNow warns on any non-FS board without
+		// a server clock, so a wrapper degrades LOUDLY, never silently.
+		CloudBoardFor:         cloudBoardFor(st),
+		CloudBoardCoordinator: boardmongo.NewCoordinator(st.DB()),
+		TriggerStore:          trigger.NewMongoSubscriptionStore(st.DB()),
+		ScheduledBots:         cloudsched.NewMongoStore(st.DB()),
+		OrgPurgeSweeper:       orgPurgeSweeper,
+		Alerts:                alertSettings,
+		LaunchPublisher:       pub,
+		StreamSource:          streamSrc,
+		Mode:                  string(iterconfig.ModeCloud),
+		RunnerEpoch:           selfEpoch,
+		HighWaterEpoch:        highWaterEpoch,
+		Superseded:            natsConn.Superseded(),
+		ClaimRunnerEpoch: func() (uint64, bool, error) {
+			wasSuperseded := natsConn.Superseded()
+			if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
+				return 0, false, err
+			}
+			self, highWater := natsConn.RunnerEpoch()
+			superseded := natsConn.Superseded()
+			if superseded && !wasSuperseded {
+				mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
+				logger.WithFields(map[string]any{"self_epoch": self, "high_water_epoch": highWater}).Error("server: epoch superseded while bootstrapping — entering diagnostic-only mode")
+			}
+			// Seed only after the final claim. An older process may have looked
+			// current at Connect and become superseded while wiring; letting it
+			// seed earlier could downgrade the hosted catalog after the new image
+			// had already populated it.
+			if !superseded && stores.marketplace != nil {
+				if n, seedErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); seedErr != nil {
+					logger.Warn("cloud: marketplace seed failed: %v", seedErr)
+				} else if n > 0 {
+					logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
+				}
+			}
+			return highWater, superseded, nil
+		},
+		AuthService:                 authStack.authSvc,
+		AuthSigner:                  authStack.signer,
+		OIDCRegistry:                registry,
+		OIDCStates:                  stores.oidcState,
+		DesktopTickets:              stores.desktopTickets,
+		WSTickets:                   stores.wsTickets,
+		OrgSSO:                      stores.orgSSO,
+		OrgDomains:                  stores.orgDomain,
+		ApiKeys:                     stores.apiKeys,
+		GenericSecrets:              stores.genericSecrets,
+		BotBindings:                 stores.botBindings,
+		ForgeConnections:            stores.forgeConn,
+		ForgeIntegrations:           stores.forgeIntegration,
+		BoardBindings:               stores.boardBinding,
+		ProvisionApprovals:          stores.forgeApprovals,
+		ForgeOAuthApps:              stores.forgeOAuthApp,
+		ForgeGitHubApp:              forgeGitHubAppFromEnv(),
+		DisableForgeBrandAvatar:     forgeBrandAvatarDisabled(),
+		PluginSources:               stores.pluginSources,
+		PluginSourceFetcher:         pluginFetcher,
+		BotSources:                  stores.botSources,
+		BotRolesSettings:            stores.botRoles,
+		BotVarsSettings:             stores.botVars,
+		BotVarsResolver:             botVarsResolver,
+		SandboxSettings:             stores.sandboxCfg,
+		SandboxResolver:             sandboxResolver,
+		PlatformCredentialsSettings: stores.platformCreds,
+		PlatformCredentialsResolver: platformCredAudience,
+		WebhookConfigs:              stores.webhooks.Configs,
+		WebhookDeliveries:           stores.webhooks.Deliveries,
+		WebhookCounter:              stores.webhooks.Counter,
+		WebhookDeferred:             stores.webhooks.Deferred,
+		ConfigShares:                stores.configShares,
+		OrgUsage:                    stores.orgUsage,
+		CredUsage:                   stores.credUsage,
+		OrgDefaults:                 orgLimitDefaultsFromEnv(),
+		CredPoolBroker:              credBroker,
+		CredPoolPools:               stores.credPools,
+		CredPoolPledges:             stores.credPledges,
+		CredPoolLeases:              stores.credLeases,
+		CredPoolLedger:              stores.credLedger,
+		Audit:                       stores.audit,
+		UsageCapSettings:            stores.usageCapSettings,
+		UsageCaps:                   usageCapStore,
+		Marketplace:                 stores.marketplace,
+		Redis:                       redisClient,
+		PATs:                        stores.pat,
+		PATMaxTTL:                   patMaxTTLFromEnv(logger),
+		Queue:                       natsConn,
+		EventsBus:                   eventsBus,
+		PushSubscriptions:           pushSubs,
+		NotificationPrefs:           notifPrefs,
+		NotificationSent:            notifSent,
+		NotifiableRuns:              notifiableRuns,
+		AlertsWebhookURL:            cfg.Alerts.Webhook.URL,
+		WebPushVAPIDPublicKey:       cfg.WebPush.VAPIDPublicKey,
+		WebPushVAPIDPrivateKey:      cfg.WebPush.VAPIDPrivateKey,
+		WebPushSubscriber:           cfg.WebPush.Subscriber,
+		MemoryStore:                 stores.memory,
+		RunSecrets:                  stores.runSecrets,
+		Sealer:                      sealer,
+		OAuthForfait:                stores.oauth,
+		OAuthPending:                stores.oauthPending,
+		AnthropicOAuthClientID:      cfg.Auth.OAuthForfait.AnthropicClientID,
+		CodexOAuthClientID:          cfg.Auth.OAuthForfait.CodexClientID,
+		AccessTTL:                   cfg.Auth.AccessTTL,
+		RefreshTTL:                  cfg.Auth.RefreshTTL,
+		PublicURL:                   cfg.Auth.PublicURL,
+		SignupMode:                  cfg.Auth.SignupMode,
+		CookieDomain:                cfg.Auth.CookieDomain,
+		CookieSecure:                cfg.Auth.CookieSecure,
+		DisableAuth:                 disableAuth,
+		Metrics:                     mreg,
+		ModelPrefs:                  modelPrefStore,
 		// /readyz pings each dependency under a 1s deadline. Only Mongo is
 		// CRITICAL (it is the store — without it the pod serves nothing
 		// real): the others are reported as "degraded" in the probe body
@@ -626,6 +759,8 @@ type cloudStores struct {
 	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
+	boardBinding     *forge.MongoBoardBindingStore
+	forgeApprovals   *forge.MongoProvisionApprovalStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
 	pluginSources    *pluginsource.MongoStore
 	botSources       *botsource.MongoStore
@@ -635,6 +770,7 @@ type cloudStores struct {
 	desktopTickets   *desktopsso.MongoStore
 	wsTickets        *wsticket.MongoStore
 	orgUsage         *orgusage.MongoCounter
+	credUsage        *credusage.MongoCounter
 	credPools        *credpool.MongoPoolStore
 	credPledges      *credpool.MongoPledgeStore
 	credLeases       *credpool.MongoLeaseStore
@@ -644,6 +780,7 @@ type cloudStores struct {
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
+	platformCreds    *platformcfg.MongoStore[platformcfg.PlatformCredentials]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -668,12 +805,15 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
+		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
+		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),
+		platformCreds:    platformcfg.NewMongoPlatformCredentials(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
@@ -683,6 +823,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		desktopTickets:   desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
 		wsTickets:        wsticket.NewMongoStore(st.DB(), time.Minute),
 		orgUsage:         orgusage.NewMongoCounter(st.DB()),
+		credUsage:        credusage.NewMongoCounter(st.DB()),
 		credPools:        credpool.NewMongoPoolStore(st.DB()),
 		credPledges:      credpool.NewMongoPledgeStore(st.DB()),
 		credLeases:       credpool.NewMongoLeaseStore(st.DB()),
@@ -711,6 +852,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
+		{"forge_board_bindings", s.boardBinding.EnsureSchema},
+		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
 		{"plugin_sources", s.pluginSources.EnsureSchema},
 		{"bot_sources", s.botSources.EnsureSchema},
@@ -720,6 +863,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"desktop_sso_tickets", s.desktopTickets.EnsureSchema},
 		{"ws_tickets", s.wsTickets.EnsureSchema},
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
+		{"credential_usage", func(c context.Context) error { return credusage.EnsureSchema(c, st.DB()) }},
 		{"cred_pool", func(c context.Context) error { return credpool.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
@@ -744,38 +888,50 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 	return s, nil
 }
 
-// newPluginSourceResolver builds the launch-time resolver for team-scoped,
-// git-hosted plugins (ADR-080). The cache dir is deliberately ephemeral: the
-// durable authority is the Mongo record, so a cold pod re-derives its checkouts
-// instead of depending on pod-local state that a restart would silently lose.
+// newPluginSourceFetcher builds the fetcher for team-scoped, git-hosted
+// plugins (ADR-080), shared by the launch-time resolver and the registration
+// endpoint's verification so both materialise a source the same way. The
+// cache dir is deliberately ephemeral: the durable authority is the Mongo
+// record, so a cold pod re-derives its checkouts instead of depending on
+// pod-local state that a restart would silently lose.
 //
 // The read credential is used strictly BY REFERENCE — the secret id travels on
 // the source record, the value is unsealed here and handed to the fetcher,
 // which passes it to git via an askpass helper (never argv, never a log line).
-func newPluginSourceResolver(stores *cloudStores, sealer secrets.Sealer, logger *iterlog.Logger) *pluginsource.Resolver {
+func newPluginSourceFetcher(stores *cloudStores, sealer secrets.Sealer) *pluginsource.Fetcher {
 	if stores == nil || stores.pluginSources == nil || sealer == nil {
 		return nil
 	}
-	return &pluginsource.Resolver{
-		Store: stores.pluginSources,
-		Fetcher: &pluginsource.Fetcher{
-			CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
-			CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
-				if s.SecretID == "" {
-					return "", nil // public repository
-				}
-				gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
-				if err != nil {
-					return "", err
-				}
-				plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
-				if err != nil {
-					return "", err
-				}
-				return string(plain), nil
-			},
+	return &pluginsource.Fetcher{
+		CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
+		CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
+			if s.SecretID == "" {
+				return "", nil // public repository
+			}
+			gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
+			if err != nil {
+				return "", err
+			}
+			plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
+			if err != nil {
+				return "", err
+			}
+			return string(plain), nil
 		},
-		Warnf: logger.Warn,
+	}
+}
+
+// newPluginSourceResolver is the launch-time half: the store plus the shared
+// fetcher. Nil when plugin sources are not wired, which keeps the publisher on
+// its local-only behaviour.
+func newPluginSourceResolver(stores *cloudStores, fetcher *pluginsource.Fetcher, logger *iterlog.Logger) *pluginsource.Resolver {
+	if stores == nil || stores.pluginSources == nil || fetcher == nil {
+		return nil
+	}
+	return &pluginsource.Resolver{
+		Store:   stores.pluginSources,
+		Fetcher: fetcher,
+		Warnf:   logger.Warn,
 	}
 }
 
@@ -1075,4 +1231,18 @@ func buildOIDCRegistry(cfg iterconfig.Config) *oidc.Registry {
 		registry.Register(oidc.NewGenericConnector(cfg.Auth.OIDC.Generic.IssuerURL, cfg.Auth.OIDC.Generic.ClientID, cfg.Auth.OIDC.Generic.ClientSecret, cfg.Auth.OIDC.Generic.DisplayName, cfg.Auth.OIDC.Generic.Scopes))
 	}
 	return registry
+}
+
+// envBoolStrict reads a boolean env knob: unset or empty is false, and a
+// value strconv cannot parse refuses the boot rather than reading as off.
+func envBoolStrict(name string) (bool, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: want a boolean (1/0, true/false)", name, v)
+	}
+	return b, nil
 }

@@ -19,9 +19,30 @@ import (
 // (ListCIHistory) — which is portable across Gitea and every Forgejo version.
 var _ forge.PullClient = (*AdminClient)(nil)
 
+// forgejoBranchInfo is one side of a pull request. RepoDeclared reports
+// whether the answer carried the `repo` key at all: Forgejo/Gitea sends it as
+// null once a fork is DELETED or blocked, which is not the same fact as an
+// answer that never named a repository — and neither is the base repo.
 type forgejoBranchInfo struct {
-	Ref string `json:"ref"`
-	Sha string `json:"sha"`
+	Ref  string `json:"ref"`
+	Sha  string `json:"sha"`
+	Repo *struct {
+		FullName string `json:"full_name"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repo,omitempty"`
+	RepoDeclared bool `json:"-"`
+}
+
+func (b *forgejoBranchInfo) UnmarshalJSON(raw []byte) error {
+	type plain forgejoBranchInfo // no method set ⇒ no recursion
+	var v plain
+	declared, err := forge.UnmarshalDeclaring(raw, &v, "repo")
+	if err != nil {
+		return err
+	}
+	*b = forgejoBranchInfo(v)
+	b.RepoDeclared = declared
+	return nil
 }
 
 // forgejoPull mirrors the Gitea API PullRequest shape (subset we normalize).
@@ -58,6 +79,11 @@ func (p forgejoPull) toRef() forge.PullRef {
 	if p.Head != nil {
 		ref.SourceBranch = p.Head.Ref
 		ref.HeadSHA = p.Head.Sha
+		ref.HeadRepoDeclared = p.Head.RepoDeclared
+		if p.Head.Repo != nil {
+			ref.HeadRepoFullName = p.Head.Repo.FullName
+			ref.HeadCloneURL = p.Head.Repo.CloneURL
+		}
 	}
 	if p.Base != nil {
 		ref.TargetBranch = p.Base.Ref

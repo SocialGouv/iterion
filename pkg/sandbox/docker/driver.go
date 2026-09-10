@@ -593,45 +593,6 @@ func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) er
 	return nil
 }
 
-// maxInlineArgBytes caps the size of a single argv element passed to
-// `docker exec`. Linux's ARG_MAX is typically 128 KiB–2 MiB for the
-// total argv+env block; a single element well below that bound is
-// always safe, while a multi-hundred-KB shell script interpolated into
-// `docker exec … sh -c <script>` (e.g. Seki's majority_verdict tool
-// node concatenating three large voter verdicts) overflows the kernel's
-// E2BIG check and the docker fork fails with
-// "fork/exec /usr/bin/docker: argument list too long". 100 KB leaves
-// headroom for the rest of the argv (flags, env, container id) on the
-// smallest realistic ARG_MAX and is far above any normal tool snippet.
-const maxInlineArgBytes = 100_000
-
-// shouldStreamScriptViaStdin reports whether the given cmd is the
-// `sh -c <script>` shape and should be routed through stdin instead of
-// argv to avoid ARG_MAX (E2BIG) overflow. Returns the script when so;
-// the empty string otherwise.
-//
-// Conditions: cmd is exactly `["sh","-c", script]` or `["bash","-c",
-// script]`, no stdin is already attached (so we don't clobber a
-// caller-provided reader), and the script exceeds [maxInlineArgBytes].
-// Both shells are matched because internal callers emit both: the
-// tool-node executor runs recipes via `bash -c`, while RunPostCreate
-// and the claw bash builtin use `sh -c`. Any other shell or argv shape
-// falls through to the standard argv path so behavior is byte-for-byte
-// unchanged. The reroute (see Command) re-uses cmd[0] for the `-s`
-// invocation, so bash recipes keep bash semantics.
-func shouldStreamScriptViaStdin(cmd []string, opts sandbox.ExecOpts) string {
-	if len(cmd) != 3 || (cmd[0] != "sh" && cmd[0] != "bash") || cmd[1] != "-c" {
-		return ""
-	}
-	if opts.Stdin != nil {
-		return ""
-	}
-	if len(cmd[2]) <= maxInlineArgBytes {
-		return ""
-	}
-	return cmd[2]
-}
-
 // Command returns an *exec.Cmd that, when started, runs cmd inside the
 // container via `docker exec`. Stdin/Stdout/Stderr on the returned cmd
 // are forwarded transparently to the in-container process by docker
@@ -647,10 +608,11 @@ func shouldStreamScriptViaStdin(cmd []string, opts sandbox.ExecOpts) string {
 // the inner program.
 //
 // When cmd is `["sh","-c", script]` and the script is larger than
-// [maxInlineArgBytes], the script is streamed through stdin via
+// [sandbox.MaxInlineArgBytes], the script is streamed through stdin via
 // `sh -s` instead of being passed as a single argv element. This
 // avoids the kernel's ARG_MAX (E2BIG) limit on the host `docker exec`
-// fork — see [shouldStreamScriptViaStdin] for the trigger predicate.
+// fork — see [sandbox.ShouldStreamScriptViaStdin] for the trigger
+// predicate, now shared with the kubernetes driver.
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		// Mirror noop's degenerate case: return a cmd that errors on
@@ -658,7 +620,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		return exec.CommandContext(ctx, "")
 	}
 
-	stdinScript := shouldStreamScriptViaStdin(cmd, opts)
+	stdinScript := sandbox.ShouldStreamScriptViaStdin(cmd, opts)
 
 	args := []string{"exec"}
 	if opts.Stdin != nil || opts.KeepStdinOpen || stdinScript != "" {
@@ -690,7 +652,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 		// `<shell> -s` reads the script from stdin instead of taking it
 		// as an argv element. Works identically on dash, bash, busybox
 		// sh. cmd[0] is "sh" or "bash" (guaranteed by
-		// shouldStreamScriptViaStdin), so bash recipes keep bash. The
+		// sandbox.ShouldStreamScriptViaStdin), so bash recipes keep bash. The
 		// script never enters the docker argv, sidestepping E2BIG.
 		args = append(args, cmd[0], "-s")
 	} else {
@@ -919,9 +881,21 @@ func cleanupTempDirs(dirs []string) {
 // runPostCreate runs the spec's post-create command inside the
 // freshly started container. Stdout/stderr are streamed to the
 // driver's logger so users see install progress.
+//
+// BOUNDED like every other setup phase: a snippet that never returns (a
+// package install waiting on a dead mirror, a command reading stdin)
+// would otherwise hold the run in setup until the outer max_duration
+// fires — no `sandbox_started`, no typed failure. Budget:
+// sandbox.ResolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT),
+// the same knob the kubernetes driver reads — the phase owns the budget,
+// not the driver. The expiry carries sandbox.ErrPhaseTimeout, so the
+// engine parks the run failed_resumable with SANDBOX_SETUP_TIMEOUT.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand")
-	return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+	return sandbox.RunWithPhaseTimeout(ctx, r.driver.logger, "post_create", sandbox.PostCreateTimeoutEnv, sandbox.ResolvePostCreateTimeout(),
+		func(ctx context.Context) error {
+			return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+		})
 }
 
 // containerNameFor maps a run ID to a deterministic container name.

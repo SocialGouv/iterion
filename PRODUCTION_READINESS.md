@@ -119,6 +119,10 @@ hardening commits on this branch:
 - [ ] `task test:live:review` (the cheapest live target) clean on
       whatever provider you can prove credentials for.
 - [ ] Chart version drift gate green (`task chart:check-version`).
+- [ ] `CHANGELOG.md` is written by the release commit itself — nothing
+      to do by hand. Re-split it with `task changelog:gen` after a major
+      bump, or when the script warns the file is nearing GitHub's
+      512 KB render ceiling.
 - [ ] Skim `govulncheck` SARIF for new advisories; acknowledge or
       patch before tagging.
 - [ ] If you bumped vendor: confirm no `replace` directives remain
@@ -132,10 +136,6 @@ hardening commits on this branch:
   ($99/yr) + Windows EV cert ($300+/yr) + macOS CI runner. Manual
   signing acceptable until adoption justifies the cost. The release
   checklist is in [docs/desktop-release-checklist.md](docs/desktop-release-checklist.md).
-- **CHANGELOG.md committed in-repo** — release-it + the
-  conventional-changelog plug-in already publish GitHub release
-  notes; a committed CHANGELOG.md would drift. The GitHub releases
-  page is the single source.
 - **Renovate** — Dependabot is sufficient for the five ecosystems
   iterion currently ships; switch cost is low if needed later.
 - **Codecov threshold enforcement** — coverage signal is informative

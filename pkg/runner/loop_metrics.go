@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -26,26 +27,53 @@ type metricsEmitter struct {
 	inner model.EventEmitter
 	reg   *metrics.Registry
 
-	// modelByNode caches the last model name reported by an
-	// llm_request event for a given node, so the subsequent
-	// llm_step_finished events can be labelled even though the step
-	// payload itself doesn't repeat the model field.
+	// modelByNode names the model each node's route is keyed on. Seeded by
+	// delegate_started (the node's declared spec, provider included),
+	// refined by llm_request (the id the call actually went to) and by
+	// delegate_finished's effective_model — each re-qualified with the
+	// declared provider when a backend reports the same model bare, see
+	// routeModel. The step events carry no model of their own; this is
+	// where they read it.
+	//
+	// declaredByNode keeps the declared spec beside it, because a bare
+	// reported id needs the provider the declaration carried.
+	//
+	// stepsSeen marks a node whose CURRENT attempt produced
+	// llm_step_finished events (each delegate_started opens a new attempt).
+	// It decides whether a claw delegation total is a summary of steps
+	// already counted or the only observation there is.
 	//
 	// priceByModel caches the resolved per-token rates so the
 	// cost.EstimateUSD path (which hits claw's live registry — a disk
 	// read + JSON parse each call) doesn't fire on every step event.
 	// A workflow with 50 steps × 10 parallel branches would otherwise
 	// serialise 500 disk hits through the metrics emitter mutex.
-	mu           sync.Mutex
-	modelByNode  map[string]string
-	priceByModel map[string]modelRate
+	mu             sync.Mutex
+	modelByNode    map[string]string
+	declaredByNode map[string]string
+	stepsSeen      map[string]bool
+	priceByModel   map[string]modelRate
+
+	// declinedRoutes remembers the routes recordCredentialSpend could name
+	// no credential for, so that decline is warned once per route.
+	declinedRoutes map[routeKey]bool
 
 	// Per-run accumulation for org metering. Covers both claw steps and
 	// delegate calls; a node whose model the price table cannot price
 	// contributes nothing, so this is a floor, not an exact invoice.
-	runCostUSD      float64
-	runInputTokens  int64
-	runOutputTokens int64
+	runCostUSD         float64
+	runInputTokens     int64
+	runOutputTokens    int64
+	runAggregateTokens int64
+
+	// byRoute splits the same accumulation per (backend, model) — the unit
+	// per-CREDENTIAL metering needs. One run can spend two credentials (a
+	// claude_code forfait for the implementer, a platform codex key for the
+	// plan review), and the run total cannot be attributed to either: it
+	// would charge one for the other's calls. Keyed by the pair because the
+	// model is what names the provider, and the backend alone does not (a
+	// claw node can be pointed at any provider the registry knows).
+	byRoute map[routeKey]routeTotals
 
 	// sawAuthFailure records that the provider rejected this run's
 	// credential at some point, even if the attempt did not END on that
@@ -68,13 +96,97 @@ type modelRate struct {
 	known             bool
 }
 
+// routeKey names one (backend, model) pair a run spent on.
+type routeKey struct{ backend, model string }
+
+// routeTotals is one route's slice of the run's consumption.
+type routeTotals struct {
+	costUSD float64
+	// inputTokens / outputTokens hold an OBSERVED split; aggregateTokens
+	// holds a total the delegate could not split. A route fills one or the
+	// other — see credusage.MonthlyUsage for why the distinction is public.
+	inputTokens     int64
+	outputTokens    int64
+	aggregateTokens int64
+}
+
 func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
 	return &metricsEmitter{
-		inner:        inner,
-		reg:          reg,
-		modelByNode:  make(map[string]string),
-		priceByModel: make(map[string]modelRate),
+		inner:          inner,
+		reg:            reg,
+		modelByNode:    make(map[string]string),
+		declaredByNode: make(map[string]string),
+		stepsSeen:      make(map[string]bool),
+		priceByModel:   make(map[string]modelRate),
+		byRoute:        make(map[routeKey]routeTotals),
+		declinedRoutes: make(map[routeKey]bool),
 	}
+}
+
+// routeModel names the model a node's route is keyed on, from the spec the
+// node declared and the id a backend reported. Backends report the id they
+// CALLED — claw strips the provider prefix before the request, so its
+// llm_request carries a bare id — and a bare id names no provider: keyed on
+// it, the route falls to the backend's default wire and an OpenAI model's
+// tokens are charged to the Anthropic credential. When the report is the
+// declared model without its prefix, the declared spec names the route; a
+// different id (a fallback element) is kept as reported.
+func routeModel(declared, reported string) string {
+	switch {
+	case reported == "":
+		return declared
+	case declared == "" || strings.Contains(reported, "/"):
+		return reported
+	case delegate.SameModelID(declared, reported):
+		return declared
+	}
+	return reported
+}
+
+// noteDeclinedRoute records that no credential could be named for a route
+// and reports whether this is the first time — the warning it gates is
+// written once per route per attempt.
+func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.declinedRoutes[k] {
+		return false
+	}
+	if m.declinedRoutes == nil {
+		m.declinedRoutes = make(map[routeKey]bool)
+	}
+	m.declinedRoutes[k] = true
+	return true
+}
+
+// addRouteLocked folds one observation into its (backend, model) bucket.
+// Called with m.mu held, alongside the run-total accumulation it mirrors —
+// the two must never diverge, so they are updated in the same critical
+// section.
+func (m *metricsEmitter) addRouteLocked(backend, modelName string, cost float64, in, out, aggregate int64) {
+	if m.byRoute == nil {
+		m.byRoute = make(map[routeKey]routeTotals)
+	}
+	k := routeKey{backend: backend, model: modelName}
+	t := m.byRoute[k]
+	t.costUSD += cost
+	t.inputTokens += in
+	t.outputTokens += out
+	t.aggregateTokens += aggregate
+	m.byRoute[k] = t
+}
+
+// RouteTotals snapshots what the run spent per (backend, model). The unit
+// per-credential metering charges, because one run can draw on two
+// credentials and the run total belongs to neither.
+func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[routeKey]routeTotals, len(m.byRoute))
+	for k, v := range m.byRoute {
+		out[k] = v
+	}
+	return out
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -170,10 +282,24 @@ func (m *metricsEmitter) RecordNodeServed(ctx context.Context, runID, nodeID str
 
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
+	case store.EventDelegateStarted:
+		if evt.NodeID == "" {
+			return
+		}
+		declared, _ := evt.Data["declared_model"].(string)
+		m.mu.Lock()
+		// A new attempt of the node: whether its steps are observed is
+		// decided afresh.
+		delete(m.stepsSeen, evt.NodeID)
+		if declared != "" {
+			m.declaredByNode[evt.NodeID] = declared
+			m.modelByNode[evt.NodeID] = declared
+		}
+		m.mu.Unlock()
 	case store.EventLLMRequest:
 		if model, _ := evt.Data["model"].(string); model != "" && evt.NodeID != "" {
 			m.mu.Lock()
-			m.modelByNode[evt.NodeID] = model
+			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], model)
 			m.mu.Unlock()
 		}
 	case store.EventLLMStepFinished:
@@ -188,6 +314,9 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// the addTokens helper run AFTER the unlock — counter Add is
 		// atomic on the vec, addTokens reads only its locals.
 		m.mu.Lock()
+		if evt.NodeID != "" {
+			m.stepsSeen[evt.NodeID] = true
+		}
 		modelName := m.modelByNode[evt.NodeID]
 		if modelName == "" {
 			modelName = "unknown"
@@ -204,6 +333,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
+		m.addRouteLocked(backend, modelName, costDelta, int64(inputT), int64(outputT), 0)
 		m.mu.Unlock()
 
 		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
@@ -225,43 +355,92 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			m.sawAuthFailure = true
 			m.mu.Unlock()
 		}
+	case store.EventDelegateStall:
+		// The F8.1 class: a served model blocking on an orchestration wait
+		// it never armed. Counted per outcome so "recovered in place" and
+		// "aborted, node restarted" stay distinguishable.
+		if m.reg == nil {
+			return
+		}
+		backend, _ := evt.Data["backend"].(string)
+		if backend == "" {
+			backend = "delegate"
+		}
+		modelName, _ := evt.Data["model"].(string)
+		if modelName == "" {
+			modelName = m.lookupModel(evt.NodeID)
+		}
+		outcome, _ := evt.Data["outcome"].(string)
+		if outcome == "" {
+			outcome = "aborted"
+		}
+		m.reg.DelegateIdleDeadlockTotal.WithLabelValues(backend, normalizeModelLabel(modelName), outcome).Inc()
 	case store.EventDelegateFinished:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
 			backend = "delegate"
 		}
 		tokensF := toFloat(evt.Data["tokens"])
-		// The delegate already priced this call (its own CLI figure, or the
-		// token estimate a subscription session falls back to) and carries
-		// the result on the event. Accumulating it here is what keeps a
-		// claude_code run from reporting $0 spend for the whole attempt —
-		// which is what every downstream consumer of RunTotals (org monthly
-		// cost cap, credential-pool quota) is metering on. Absent key = the
-		// price table didn't know the model, so nothing is recorded.
-		//
-		// claw is excluded. It is an in-process backend but still dispatches
-		// through the same observability hook, so it emits BOTH a
-		// llm_step_finished per step (priced above, off the same table) and
-		// this delegation total — counting both would charge every claw run
-		// twice, tripping an org's monthly cap at half its budget and
-		// draining a lending donor at twice the rate they agreed to.
-		var costDelta float64
-		if backend != "claw" {
-			costDelta = toFloat(evt.Data["cost_usd"])
-		}
+		effective, _ := evt.Data["effective_model"].(string)
 
 		// Single critical section: resolve the per-node model name and
 		// accumulate the aggregated token count. Prometheus write
 		// happens after the unlock via addTokens (counter Add is atomic).
 		m.mu.Lock()
+		if effective != "" && evt.NodeID != "" {
+			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
+		}
 		modelName := m.modelByNode[evt.NodeID]
-		m.runInputTokens += int64(tokensF)
-		m.runCostUSD += costDelta
+		// claw dispatches through the same observability hook as the CLI
+		// delegates, so when its LLM loop has been observed step by step
+		// (llm_step_finished, counted and priced above) this delegation
+		// total is the SUM of those steps: counting it again would charge
+		// every claw run twice — an org's monthly cap tripping at half its
+		// budget, a lending donor drained at twice the rate they agreed to.
+		// The steps are the evidence, not the backend name: a claw loop in a
+		// sandbox container relays them across the IPC, and an in-container
+		// runner too old to relay them leaves this total as the only
+		// observation there is — which is then booked like any delegate's.
+		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
+		var costDelta float64
+		if !summarised {
+			// The delegate already priced this call (its own CLI figure, the
+			// token estimate a subscription session falls back to, or claw's
+			// in-container annotation) and carries the result on the event;
+			// accumulating it is what keeps a claude_code run from reporting
+			// $0 for the whole attempt — the number every consumer of
+			// RunTotals (org monthly cost cap, credential-pool quota) meters
+			// on. An absent key means the delegate's price sources did not
+			// know the model. claw's sources were consulted in the container,
+			// where no cache may exist yet, so the host prices the aggregate
+			// off its own — at the INPUT rate, a floor: one aggregate count
+			// cannot be split into input and output, and output is dearer. A
+			// model no source prices stays at zero: unknown, never free.
+			costDelta = toFloat(evt.Data["cost_usd"])
+			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
+				if rate := m.rateForLocked(modelName); rate.known {
+					costDelta = tokensF * rate.inputUSDPerToken
+				}
+			}
+			m.runAggregateTokens += int64(tokensF)
+			m.runCostUSD += costDelta
+			// The delegate reports ONE token count and no split. It goes to
+			// the aggregate counter rather than to input: a sum stays exact
+			// either way, and only this way does a reader of the public
+			// per-credential endpoint see "not split" instead of a
+			// confident, wrong input figure (#992).
+			m.addRouteLocked(backend, modelName, costDelta, 0, 0, int64(tokensF))
+		}
 		m.mu.Unlock()
+		if summarised {
+			return
+		}
 
-		// Delegate events report a single aggregated token count;
-		// label as input so a sum across directions stays meaningful.
-		m.addTokens(backend, modelName, "input", evt.Data["tokens"])
+		// Delegate events report a single aggregated token count. It gets
+		// its own direction label: summing every direction stays exact,
+		// and a dashboard reading `direction="input"` is no longer served
+		// output tokens under that name.
+		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
 		if costDelta > 0 && m.reg != nil {
 			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
 		}
@@ -270,10 +449,14 @@ func (m *metricsEmitter) observe(evt store.Event) {
 
 // RunTotals snapshots the run's accumulated LLM consumption — what
 // the runner charges to the org's monthly usage bucket.
-func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens int64) {
+//
+// The three token counts are disjoint: a run mixing an in-process claw loop
+// with a CLI delegate fills the directional pair AND the aggregate, and its
+// true total is the sum of all three.
+func (m *metricsEmitter) RunTotals() (costUSD float64, inputTokens, outputTokens, aggregateTokens int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.runCostUSD, m.runInputTokens, m.runOutputTokens
+	return m.runCostUSD, m.runInputTokens, m.runOutputTokens, m.runAggregateTokens
 }
 
 // SawAuthFailure reports whether the provider rejected this run's

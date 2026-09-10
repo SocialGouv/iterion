@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/google/uuid"
 )
 
 // awaitAnswersPollInterval is the store re-check cadence while an
@@ -39,7 +40,26 @@ func SetAwaitAnswersPollInterval(d time.Duration) time.Duration {
 // for the From node (or the whole run), bounded by the mandatory
 // timeout. On success it returns {answers: [...]} with every answered
 // async question in scope.
-func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID string, an *ir.AwaitAnswersNode) (map[string]any, error) {
+func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID string, an *ir.AwaitAnswersNode) (out map[string]any, resultErr error) {
+	until := time.Now().Add(an.Timeout)
+	token := ""
+	defer func() {
+		if token == "" {
+			return
+		}
+		// Cancellation must still remove this invocation's proof, preserving
+		// tenant identity while bounding the cleanup independently of the wait.
+		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := e.store.SetAwaitAnswersWait(clearCtx, rs.runID, token, nil); err != nil {
+			// Fail closed even after collecting answers: carrying this proof
+			// into the next node could hide a real stall until the sync timeout
+			// (possibly hours). Answers remain in the interaction store and
+			// can be collected again on retry without asking the human twice.
+			resultErr = errors.Join(resultErr, &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: nodeID, Message: "clear await_answers wait", Cause: err})
+		}
+	}()
+
 	deadline := time.NewTimer(an.Timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(awaitAnswersPollInterval)
@@ -70,6 +90,14 @@ func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID str
 		}
 		if len(pending) == 0 {
 			return e.awaitAnswersOutput(ctx, rs.runID, nodeID, an.From)
+		}
+
+		if token == "" {
+			candidate := uuid.NewString()
+			if err := e.store.SetAwaitAnswersWait(ctx, rs.runID, candidate, &store.AwaitAnswersWait{NodeID: nodeID, Until: until}); err != nil {
+				return nil, &RuntimeError{Code: ErrCodeExecutionFailed, NodeID: nodeID, Message: "persist await_answers wait", Cause: err}
+			}
+			token = candidate
 		}
 
 		select {

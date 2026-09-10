@@ -9,7 +9,23 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+type recordingSchemaManager struct {
+	streams []jetstream.StreamConfig
+	kvs     []jetstream.KeyValueConfig
+}
+
+func (r *recordingSchemaManager) CreateOrUpdateStream(_ context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+	r.streams = append(r.streams, cfg)
+	return nil, nil
+}
+
+func (r *recordingSchemaManager) CreateOrUpdateKeyValue(_ context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	r.kvs = append(r.kvs, cfg)
+	return nil, nil
+}
 
 // NOTE on coverage scope. The bulk of pkg/queue/nats wraps the NATS
 // client + JetStream + KV; meaningful coverage of Connect, EnsureSchema,
@@ -34,6 +50,12 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.KVBucket != KVRunLocks {
 		t.Errorf("KVBucket: got %q want %q", got.KVBucket, KVRunLocks)
 	}
+	if got.RolloutKVBucket != KVRolloutEpochs {
+		t.Errorf("RolloutKVBucket: got %q want %q", got.RolloutKVBucket, KVRolloutEpochs)
+	}
+	if got.StreamReplicas != DefaultStreamReplicas {
+		t.Errorf("StreamReplicas: got %d want %d", got.StreamReplicas, DefaultStreamReplicas)
+	}
 	if got.ConsumerName != ConsumerRunners {
 		t.Errorf("ConsumerName: got %q want %q", got.ConsumerName, ConsumerRunners)
 	}
@@ -51,6 +73,9 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	}
 	if got.SchemaMismatchDelay != SchemaMismatchNakDelay {
 		t.Errorf("SchemaMismatchDelay: got %v want %v", got.SchemaMismatchDelay, SchemaMismatchNakDelay)
+	}
+	if got.EpochMismatchDelay != EpochMismatchNakDelay {
+		t.Errorf("EpochMismatchDelay: got %v want %v", got.EpochMismatchDelay, EpochMismatchNakDelay)
 	}
 	if got.MaxAckPending != DefaultMaxAckPending {
 		t.Errorf("MaxAckPending: got %d want %d", got.MaxAckPending, DefaultMaxAckPending)
@@ -72,12 +97,16 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		StreamName:          "X",
 		DLQStream:           "Y",
 		KVBucket:            "Z",
+		RolloutKVBucket:     "R",
+		StreamReplicas:      3,
 		ConsumerName:        "C",
 		MaxAge:              1 * time.Hour,
 		DLQMaxAge:           2 * time.Hour,
 		MaxDeliver:          42,
 		AckWait:             30 * time.Second,
 		SchemaMismatchDelay: 45 * time.Second,
+		EpochMismatchDelay:  3 * time.Minute,
+		RunnerEpoch:         9,
 		MaxAckPending:       12,
 		LockTTL:             15 * time.Second,
 		Logger:              logger,
@@ -88,19 +117,73 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	}
 }
 
-func TestRedeliveryWindowAccountsForSchemaMismatchDelay(t *testing.T) {
+func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
+	recorder := &recordingSchemaManager{}
+	cfg := applyDefaults(Config{StreamReplicas: 3})
+	if _, err := ensureSchema(context.Background(), recorder, cfg); err != nil {
+		t.Fatalf("ensureSchema: %v", err)
+	}
+	if len(recorder.streams) != 2 {
+		t.Fatalf("stream configs: got %d want 2", len(recorder.streams))
+	}
+	wantStreams := map[string]bool{StreamRuns: true, StreamRunsDLQ: true}
+	for _, stream := range recorder.streams {
+		if !wantStreams[stream.Name] {
+			t.Errorf("unexpected stream config %q", stream.Name)
+		}
+		delete(wantStreams, stream.Name)
+		if stream.Replicas != 3 {
+			t.Errorf("stream %s replicas: got %d want 3", stream.Name, stream.Replicas)
+		}
+	}
+	if len(wantStreams) != 0 {
+		t.Errorf("missing stream configs: %v", wantStreams)
+	}
+	if len(recorder.kvs) != 2 {
+		t.Fatalf("KV configs: got %d want 2", len(recorder.kvs))
+	}
+	for _, kv := range recorder.kvs {
+		if got := kv.Replicas; got != 3 {
+			t.Errorf("KV %s replicas: got %d want 3", kv.Bucket, got)
+		}
+	}
+	if recorder.kvs[0].TTL == 0 {
+		t.Errorf("run-lock KV must retain its lease TTL")
+	}
+	if recorder.kvs[1].TTL != 0 {
+		t.Errorf("rollout KV TTL = %s, want no TTL", recorder.kvs[1].TTL)
+	}
+}
+
+func TestConnect_RejectsInvalidStreamReplicas(t *testing.T) {
+	_, err := Connect(context.Background(), Config{URL: "nats://127.0.0.1:4222", StreamReplicas: -1})
+	if err == nil || !strings.Contains(err.Error(), "stream replicas -1 invalid") {
+		t.Fatalf("Connect error = %v, want invalid stream replicas", err)
+	}
+}
+
+func TestRedeliveryWindowAccountsForAdmissionDelays(t *testing.T) {
 	cases := []struct {
-		name  string
-		ack   time.Duration
-		delay time.Duration
-		want  time.Duration
+		name   string
+		ack    time.Duration
+		schema time.Duration
+		epoch  time.Duration
+		lock   time.Duration
+		want   time.Duration
 	}{
-		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 80 * time.Minute},
-		{"schema delay is larger", time.Minute, 2 * time.Minute, 16 * time.Minute},
+		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 0, 80 * time.Minute},
+		{"schema delay is larger", time.Minute, 3 * time.Minute, 2 * time.Minute, 0, 24 * time.Minute},
+		{"epoch delay is larger", time.Minute, 30 * time.Second, 4 * time.Minute, 0, 32 * time.Minute},
+		// A lock-blocked delivery Naks with a LockTTL delay, so an operator
+		// who raises ITERION_LOCK_TTL above AckWait stretches the worst case
+		// the same way the schema/epoch delays do. Left unregistered, the
+		// sweeper's cutoff (window + 10m) would sit 30 minutes BELOW the true
+		// 120m and could flip a queued run that still has retries scheduled.
+		{"lock ttl is larger", 10 * time.Minute, 30 * time.Second, 2 * time.Minute, 15 * time.Minute, 120 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.delay}}
+			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.schema, EpochMismatchDelay: tc.epoch, LockTTL: tc.lock}}
 			if got := c.RedeliveryWindow(); got != tc.want {
 				t.Errorf("RedeliveryWindow() = %v, want %v", got, tc.want)
 			}

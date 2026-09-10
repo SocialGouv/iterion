@@ -162,6 +162,26 @@ type Config struct {
 	// triage+ rights on the forge, which IS the approval gesture.
 	MinAuthorRole string `bson:"min_author_role,omitempty" json:"min_author_role,omitempty"`
 
+	// ReviewRequestLogins names the review identities whose (re-)request the
+	// on-demand re-review lane answers, IN ADDITION to the one derived from the
+	// webhook's forge connection. It is what makes that lane reachable on
+	// GitHub at all: a GitHub App cannot be a requested reviewer, so the button
+	// only exists for a User account — and the review must be POSTED by that
+	// same account for the forge to clear the pending request and re-arm it,
+	// which is what a `pat` connection to a dedicated bot user gives.
+	//
+	// EXPLICIT ONLY, never derived from the connection's account: the PAT
+	// connect path stamps whatever token was pasted, typically a maintainer's
+	// own, and deriving would turn every ordinary reviewer ping addressed to
+	// that human into a bot run — the reasoning isIterionForgeBotAuthor already
+	// applies when it refuses to trust AccountLogin on GitHub.
+	//
+	// The logins join iterionBotLogins, so BOTH halves of the identity read the
+	// same set: the lane answers their request, and the actor guard recognises
+	// their own PRs and their own reviewer-writes. An identity only one half
+	// knew would launch on the bot's own echo.
+	ReviewRequestLogins []string `bson:"review_request_logins,omitempty" json:"review_request_logins,omitempty"`
+
 	// ReviewOnSync, when true, re-runs the review bot on a PR "synchronize"
 	// (a push to the PR head), not only on opened/reopened. OFF by default
 	// (a push is normally on-demand re-review — see prforge.IsReviewable, kept
@@ -172,15 +192,28 @@ type Config struct {
 	// gate_enabled var + a required-check ruleset listing revi/review.
 	ReviewOnSync bool `bson:"review_on_sync,omitempty" json:"review_on_sync,omitempty"`
 
-	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
-	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
-	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
-	// can open many to trigger costly bot runs), so an operator must validate it
-	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
-	// the mutating branch-improve bot never runs on a PR-open regardless — the
-	// PR-open lane is review-only, see handlePRForgeReview). Recommended ON for
-	// a public repo.
-	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
+	// ReviewOnSyncPinned records that an operator set ReviewOnSync
+	// EXPLICITLY through the webhook API (either value). Provisioning's
+	// gating derivation then leaves ReviewOnSync alone in BOTH directions —
+	// it neither forces it on for a statuses-scope bot nor releases it on a
+	// gate_enabled=false pin. An explicit operator choice is never silently
+	// replaced (CLAUDE.md principle 1); without the pin, ReviewOnSync is
+	// presumed derivation-owned. Clearable via the same PATCH
+	// (review_on_sync_pinned: false) to hand the field back.
+	ReviewOnSyncPinned bool `bson:"review_on_sync_pinned,omitempty" json:"review_on_sync_pinned,omitempty"`
+
+	// There is no fork switch here on purpose. A pull request whose head lives
+	// in another repository is refused on EVERY lane, unconditionally: the
+	// auto-review lane, the /command lanes, the reply-in-thread lane, the
+	// gate relaunch and the auto-fix lane all require a PROVEN same-repo head
+	// before anything launches. The launch pair a fork produces (the base
+	// repo's clone URL + a head branch that lives elsewhere) does not name one
+	// repository, so the checkout misses or — worse — hits a same-named branch
+	// on the base and the bot answers, comments and pushes grounded in the
+	// wrong code under iterion's own identity.
+	//
+	// Serving forks needs a lane of its own (read-only, no publish grant, no
+	// fixer, no repo secrets), not a boolean: see docs/webhooks.md.
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
@@ -192,7 +225,15 @@ type Config struct {
 	ForgeBaseURL string `bson:"forge_base_url,omitempty" json:"forge_base_url,omitempty"`
 
 	// Limits.
-	RateLimit        Rate `bson:"rate_limit" json:"rate_limit"`
+	RateLimit Rate `bson:"rate_limit" json:"rate_limit"`
+	// RateLimitPinned records that an operator set RateLimit EXPLICITLY
+	// through the webhook API (create or PATCH). The re-provision carry
+	// preserves a pinned value — losing an operator's raise means
+	// deliveries silently 429. An UNPINNED value is presumed
+	// provisioner-owned: a re-provision moves it to the current
+	// provisioning default, so a default bump actually reaches existing
+	// webhooks instead of freezing each on the burst it was born with.
+	RateLimitPinned  bool `bson:"rate_limit_pinned,omitempty" json:"rate_limit_pinned,omitempty"`
 	MonthlyCallLimit int  `bson:"monthly_call_limit,omitempty" json:"monthly_call_limit,omitempty"` // 0 = inherit org
 
 	// OperatorLaunchVars are the per-repo overrides an operator pinned on the
@@ -471,8 +512,16 @@ type Delivery struct {
 	EventAction string `bson:"event_action,omitempty" json:"event_action,omitempty"`
 	ProjectPath string `bson:"project_path,omitempty" json:"project_path,omitempty"`
 	SubjectID   string `bson:"subject_id,omitempty" json:"subject_id,omitempty"`
-	SubjectSHA  string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
-	PayloadHash string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	// ParentSubjectID names the subject this delivery's own subject hangs
+	// off — a comment's pull request ("pr:7") beside its own "comment:99".
+	// Without it a consumer asking "what did this pull request launch"
+	// finds only the PR-event lane: a `/billy` fixer and a review-thread
+	// reply record comment ids, so the closed-PR stop could not reach the
+	// very runs it exists to end. Empty when the subject has no parent
+	// (the PR/MR event itself, an issue comment).
+	ParentSubjectID string `bson:"parent_subject_id,omitempty" json:"parent_subject_id,omitempty"`
+	SubjectSHA      string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	PayloadHash     string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
 
 	Status     string     `bson:"status" json:"status"`
 	BotID      string     `bson:"bot_id,omitempty" json:"bot_id,omitempty"`
@@ -481,6 +530,14 @@ type Delivery struct {
 	SourceIP   string     `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
 	ReceivedAt time.Time  `bson:"received_at" json:"received_at"`
 	LaunchedAt *time.Time `bson:"launched_at,omitempty" json:"launched_at,omitempty"`
+	// Attempts counts the launches tried under this idempotency key: 1 on
+	// the first, one more each time a launch_error row is retried. The
+	// unattended gate lanes read it as their failure budget — it lives on
+	// the row the claim key already names, so every replica reads the same
+	// count. FailedAt is when the latest attempt failed (launch_error rows
+	// only); the same lanes measure their backoff from it.
+	Attempts int        `bson:"attempts,omitempty" json:"attempts,omitempty"`
+	FailedAt *time.Time `bson:"failed_at,omitempty" json:"failed_at,omitempty"`
 }
 
 // Delivery status values.
@@ -493,7 +550,79 @@ const (
 	StatusFiltered      = "filtered"
 	StatusLaunched      = "launched"
 	StatusLaunchError   = "launch_error"
+	// StatusDeferred is an HTTP-response-only status (never a stored
+	// Delivery row): the delivery is parked for a quiet window and will
+	// launch — as its own delivery, under its own idempotency key — when
+	// the window elapses with no newer push on the same subject.
+	StatusDeferred = "deferred"
 )
+
+// DeferredTarget is one resolved (bot, idempotency key, vars) launch of
+// a parked delivery — the serialized twin of the server's in-memory
+// launch target, so the sweep can replay the launch exactly as the
+// handler would have performed it.
+type DeferredTarget struct {
+	BotID   string            `bson:"bot_id" json:"bot_id"`
+	IdemKey string            `bson:"idem_key" json:"idem_key"`
+	Vars    map[string]string `bson:"vars" json:"vars"`
+	RepoURL string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
+	RepoRef string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
+}
+
+// DeferredLaunch parks one webhook delivery's resolved launch for a
+// quiet window — the push debounce. Keyed by SubjectKey (tenant |
+// webhook | subject): a newer push on the same subject REPLACES the
+// payload and pushes FireAt back, so a volley of pushes costs one
+// review of the final head instead of N-1 superseded partial runs.
+// The sweep claims due rows atomically (first replica wins) and runs
+// the ordinary launch tail on the stored targets.
+type DeferredLaunch struct {
+	// SubjectKey is the row's identity (tenant | webhook | subject).
+	// Generation increments on every upsert: a Delete names the
+	// generation it launched, so acknowledging an old payload can never
+	// drop a subject that re-armed mid-claim.
+	SubjectKey string    `bson:"_id" json:"subject_key"`
+	Generation int64     `bson:"generation" json:"generation"`
+	TenantID   string    `bson:"tenant_id" json:"tenant_id"`
+	WebhookID  string    `bson:"webhook_id" json:"webhook_id"`
+	FireAt     time.Time `bson:"fire_at" json:"fire_at"`
+	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
+	// ClaimedUntil is the sweep lease (zero = unclaimed). See
+	// DeferredLaunchStore.ClaimDue for the at-least-once contract.
+	ClaimedUntil time.Time `bson:"claimed_until,omitempty" json:"claimed_until,omitempty"`
+	// Attempts counts the fires that did NOT launch (a transient
+	// admission denial, a launch failure) and were re-armed, bounding the
+	// retry chain. PAYLOAD-scoped, not subject-scoped: a fresh push
+	// writes a new payload with Attempts zero, so a developer pushing
+	// over a struggling row hands it a full budget again.
+	Attempts int `bson:"attempts,omitempty" json:"attempts,omitempty"`
+	// OrderKey orders two payloads for the same subject: the FORGE's own
+	// timestamp for the event, verbatim. Upsert refuses to replace a
+	// strictly newer parked payload with an older one — see
+	// DeferredPayloadIsStale for why arrival order cannot serve.
+	OrderKey string `bson:"order_key,omitempty" json:"order_key,omitempty"`
+
+	// Event metadata, mirrored from the handler's parse so the sweep can
+	// rebuild delivery rows + supersede scoping without the raw payload.
+	EventKind    string `bson:"event_kind,omitempty" json:"event_kind,omitempty"`
+	EventAction  string `bson:"event_action,omitempty" json:"event_action,omitempty"`
+	ProjectPath  string `bson:"project_path,omitempty" json:"project_path,omitempty"`
+	SubjectID    string `bson:"subject_id,omitempty" json:"subject_id,omitempty"`
+	SubjectURL   string `bson:"subject_url,omitempty" json:"subject_url,omitempty"`
+	SubjectSHA   string `bson:"subject_sha,omitempty" json:"subject_sha,omitempty"`
+	SenderHandle string `bson:"sender_handle,omitempty" json:"sender_handle,omitempty"`
+	PayloadHash  string `bson:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	SourceIP     string `bson:"source_ip,omitempty" json:"source_ip,omitempty"`
+	// PublicBase is the server base URL ("https://host") resolved from
+	// the ORIGINAL inbound request. The launch tail derives the forge
+	// publish grant's endpoint from the request when the deployment has
+	// no PublicURL configured — and the sweep has no request, so without
+	// this mirror a deferred review would silently lose its publish
+	// grant (no PR comments, no commit status) on such a deployment.
+	PublicBase string `bson:"public_base,omitempty" json:"public_base,omitempty"`
+
+	Targets []DeferredTarget `bson:"targets" json:"targets"`
+}
 
 // OverlapPolicy projects the webhook's overlap field onto the shared
 // launch-surface policy. Not normalized: schedgate's zero value means "skip"

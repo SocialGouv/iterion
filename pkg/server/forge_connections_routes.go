@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -155,6 +157,12 @@ type forgeConnectionHealth struct {
 	// hasn't approved it — the fix is the ManageInstallURL page.
 	SecurityReadEnabled        bool     `json:"security_read_enabled"`
 	MissingSecurityPermissions []string `json:"missing_security_permissions,omitempty"`
+	// MissingCIPermissions names the grants the board card's CI panel reads
+	// through this connection (checks, statuses) that the installation has
+	// not approved. An installation approved before `checks: read` was
+	// requested shows exactly that here — and the panel answers 422 naming
+	// it — until an owner approves the pending request on ManageInstallURL.
+	MissingCIPermissions []string `json:"missing_ci_permissions,omitempty"`
 }
 
 // syncGrantedPermissions persists the installation's live grant onto the
@@ -193,6 +201,16 @@ func missingDeliveryFor(conn forge.Connection, granted map[string]string) []stri
 		return nil
 	}
 	return forgegithub.MissingDeliveryPermissions(granted)
+}
+
+// missingCIFor is missingDeliveryFor's twin for the card CI panel's grants: a
+// watch-only connection never serves a card, so its absent checks/statuses
+// are not a defect either.
+func missingCIFor(conn forge.Connection, granted map[string]string) []string {
+	if conn.IsSecurityReadOnly() {
+		return nil
+	}
+	return forgegithub.MissingCIPermissions(granted)
 }
 
 func samePermissions(a, b map[string]string) bool {
@@ -247,6 +265,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				h.GrantedPermissions = inst.Permissions
 				h.MissingPermissions = missingDeliveryFor(conn, inst.Permissions)
 				h.MissingSecurityPermissions = forgegithub.MissingSecurityPermissions(inst.Permissions)
+				h.MissingCIPermissions = missingCIFor(conn, inst.Permissions)
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
 				// long after the install.
@@ -350,6 +369,7 @@ func (s *Server) handleCreateForgeRepo(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusConflict, "%v", err)
 		case errors.Is(err, forge.ErrPermissionsNotGranted):
 			httpError(w, http.StatusUnprocessableEntity, "the GitHub App installation lacks the Administration permission — approve the App's pending permission update on GitHub, then retry: %v", err)
+		case writeForgeUpstreamError(w, err, "create repository: %v", err):
 		default:
 			httpError(w, http.StatusBadGateway, "create repository: %v", err)
 		}
@@ -381,6 +401,7 @@ func (s *Server) handleDeleteForgeConnection(w http.ResponseWriter, r *http.Requ
 		httpError(w, http.StatusInternalServerError, "disconnect failed: %v", err)
 		return
 	}
+	s.forgetForgeAppClient(connID)
 	s.auditTenant(r, teamID, "forge.connection.deleted", "forge_connection", connID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -389,6 +410,12 @@ type forgeConnectionPatchReq struct {
 	// SecurityReadEnabled toggles the org-wide Dependabot-alerts token flow
 	// for this github_app connection (see forge.SecurityReadSecretName).
 	SecurityReadEnabled *bool `json:"security_read_enabled,omitempty"`
+	// WebhookBaseURL pins the base this connection's inbound hook URLs are
+	// built from, for a forge that cannot reach the deployment's public URL
+	// (see forge.Connection.WebhookBaseURL). An explicit "" clears it and
+	// hands the connection back to the public URL — which is why it is a
+	// pointer: absent and "cleared" are different intents.
+	WebhookBaseURL *string `json:"webhook_base_url,omitempty"`
 }
 
 // handlePatchForgeConnection updates a connection's operator-tunable flags.
@@ -416,12 +443,51 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.SecurityReadEnabled == nil {
-		httpError(w, http.StatusBadRequest, "nothing to update: security_read_enabled is the only patchable field")
+	if req.SecurityReadEnabled == nil && req.WebhookBaseURL == nil {
+		httpError(w, http.StatusBadRequest, "nothing to update: patchable fields are security_read_enabled and webhook_base_url")
+		return
+	}
+	// Refused rather than half-applied. The two fields are unrelated
+	// operations against different systems — one pins a URL, the other mints
+	// or withdraws a live org token on GitHub — and there is no transaction
+	// spanning them. Accepting both would mean that when the security-read
+	// half fails (wrong kind, an org clash, a mint that 502s), the URL change
+	// is dropped while the error names only security-read: the caller reads a
+	// single failure and cannot tell that half its intent was discarded.
+	if req.SecurityReadEnabled != nil && req.WebhookBaseURL != nil {
+		httpError(w, http.StatusBadRequest, "send security_read_enabled and webhook_base_url in separate requests: they are independent operations and nothing makes them atomic, so a failure of one would silently drop the other")
+		return
+	}
+	ctx := store.WithTenant(r.Context(), teamID)
+	// Its own path, reached only when the request carries this field alone:
+	// pinning a hook base mints and withdraws nothing, and must not walk a
+	// token path at all.
+	if req.WebhookBaseURL != nil {
+		base, err := canonicalWebhookBaseURL(*req.WebhookBaseURL)
+		if err != nil {
+			httpError(w, http.StatusUnprocessableEntity, "%v", err)
+			return
+		}
+		// A non-loopback http base means the forge delivers the payload AND
+		// the signature header in the clear. Warned rather than refused: an
+		// internal-network endpoint is a legitimate thing to pin, and the
+		// operator is the one who knows the network.
+		if u, perr := url.Parse(base); perr == nil && u.Scheme == "http" && !httpdial.IsLoopbackBind(u.Hostname()) && s.logger != nil {
+			s.logger.Warn("forge: connection %s pins a plaintext webhook base (%s) — the forge will deliver payloads and the signature header unencrypted", conn.ID, base)
+		}
+		conn.WebhookBaseURL = base
+		conn.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(ctx, conn); err != nil {
+			httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+			return
+		}
+		s.auditTenant(r, teamID, "forge.connection.webhook_base_url", "forge_connection", conn.ID, map[string]any{
+			"webhook_base_url": conn.WebhookBaseURL,
+		})
+		writeJSON(w, conn)
 		return
 	}
 	enable := *req.SecurityReadEnabled
-	ctx := store.WithTenant(r.Context(), teamID)
 	if enable {
 		if conn.Kind != forge.KindGitHubApp {
 			httpError(w, http.StatusUnprocessableEntity, "security-read requires a github_app connection (this one is %s); a non-App deployment can set the %q team secret by hand instead", conn.Kind, forge.SecurityReadSecretName)
@@ -459,7 +525,23 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 				httpError(w, http.StatusUnprocessableEntity, "%v", err)
 				return
 			}
-			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
+			if !writeForgeUpstreamError(w, err, "security-read token mint: %v", err) {
+				// Default: the App token mint failing against the forge,
+				// where 502 is the true code. The mint's PRE-FLIGHT no
+				// longer lands here — MintInstallationToken signs the App
+				// JWT from a stored key before it opens a socket, and
+				// marks that half forge.ErrLocalPreflight, which
+				// writeForgeUpstreamError answers 500.
+				//
+				// One pre-flight source still arrives unmarked, because it
+				// cannot be marked without a signature change:
+				// githubAppConfigForConnection reports (cfg, shared, ok)
+				// and so answers "no github app available" for a store
+				// read that FAILED exactly as for an App genuinely absent.
+				// Its 12 call sites are a change of their own; #969 names
+				// it.
+				httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
+			}
 			return
 		}
 		// Date the connection from the token we just minted — but ONLY on a
@@ -542,7 +624,17 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "connection credential rejected — reconnect")
 			return
 		}
-		httpError(w, http.StatusBadGateway, "list repos: %v", err)
+		if !writeForgeUpstreamError(w, err, "list repos: %v", err) {
+			// Default, and a clean one now. A PAT connection's ListRepos
+			// is a pure round trip, so 502 is the true code there; an
+			// App's goes through AppClient.rest, which mints an
+			// installation token and signs the App JWT before any socket
+			// — and that half now carries forge.ErrLocalPreflight, which
+			// writeForgeUpstreamError answers 500. The route's other
+			// pre-forge half was already right: forgeAdminFor above
+			// answers 500 on its own.
+			httpError(w, http.StatusBadGateway, "list repos: %v", err)
+		}
 		return
 	}
 	if repos == nil {

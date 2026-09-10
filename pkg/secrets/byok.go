@@ -44,10 +44,57 @@ var ErrApiKeyTenantMissing = errors.New("secrets: ApiKey store called without te
 // platformScope is the single reserved literal both platform scopes derive
 // from: one concept — "the deployment itself" — indexed in two namespaces
 // (api-key tenant ids and OAuth owner keys). The prefix-with-colon shape
-// cannot collide with a real tenant/user id (UUIDs, emails) nor with an
-// OrgOwnerKey (always "org:<team-uuid>"). Renames migrate BOTH exported
-// names at once by construction.
+// cannot collide with a real tenant/user id (UUIDs, emails), with an
+// OrgOwnerKey (always "org:<team-uuid>"), nor with an org-tier scope
+// (always "orgtier:<org-uuid>"). Renames migrate BOTH exported names at
+// once by construction.
 const platformScope = "platform:"
+
+// orgTierScope is the reserved prefix for a credential owned by an
+// identity.Org — the billing/governance tenant that groups teams — and
+// lent to the teams its CredentialAudience names. Same trick as
+// platformScope: an org key is an ordinary ApiKey row and an org forfait
+// an ordinary OAuthRecord, under a reserved scope, so the whole store
+// (tenant filter, defaults, rotation, MarkUsed, the refresh worker) is
+// reused with zero schema change.
+//
+// It deliberately is NOT "org:". That prefix is already taken by
+// OrgOwnerPrefix, which despite its name keys a TEAM-scoped forfait
+// (OrgOwnerKey's argument is a tenant/team id). Reusing it would make an
+// org credential and a team credential collide in one owner namespace,
+// and the collision would be silent — the publisher would serve whichever
+// row the store returned first.
+const orgTierScope = "orgtier:"
+
+// OrgTierTenantID is the sentinel tenant under which an ORG's own shared
+// provider API keys are stored: ordinary ApiKey rows with
+// TenantID = ScopeTeamID = OrgTierTenantID(orgID), written and read under
+// store.WithTenant. The cloud publisher consults them after the team's own
+// BYOK and forfaits and before the mutualised pool, for the teams the org's
+// CredentialAudience admits. The ApiKeyStore counterpart of
+// OrgTierOwnerKey.
+func OrgTierTenantID(orgID string) string { return orgTierScope + orgID }
+
+// OrgTierOwnerKey is the synthetic OAuth owner key under which an ORG's own
+// shared forfait blobs are stored. Shares its literal with
+// OrgTierTenantID (see orgTierScope) — one concept, two index namespaces,
+// exactly as PlatformOwnerKey shares platformScope with PlatformTenantID.
+func OrgTierOwnerKey(orgID string) string { return orgTierScope + orgID }
+
+// IsOrgTierScope reports whether a tenant id or owner key addresses the
+// org tier. Callers that must never treat a reserved scope as a real
+// tenant (roster reads, quota metering, the studio's team pickers) use it
+// rather than re-deriving the prefix.
+func IsOrgTierScope(s string) bool { return strings.HasPrefix(s, orgTierScope) }
+
+// OrgIDFromTierScope returns the org id an org-tier scope addresses, and
+// false when s is not one.
+func OrgIDFromTierScope(s string) (string, bool) {
+	if !IsOrgTierScope(s) {
+		return "", false
+	}
+	return strings.TrimPrefix(s, orgTierScope), true
+}
 
 // PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
 // provider API keys are stored — the DB-backed form of the platform env
@@ -106,6 +153,19 @@ func (p Provider) Valid() bool {
 	return false
 }
 
+// CredentialIsJSON reports whether this provider's BYOK value is a JSON
+// credential document rather than a bearer token: Bedrock takes an
+// AWS-style credential object, Vertex a service-account file. The shape
+// gate at ingestion reads this so the two are not refused as "a terminal
+// transcript" for containing newlines and spaces.
+func (p Provider) CredentialIsJSON() bool {
+	switch p {
+	case ProviderBedrock, ProviderVertex:
+		return true
+	}
+	return false
+}
+
 // ApiKey is a BYOK record: a single API key (or AWS-style credential
 // blob, JSON-encoded inside SealedSecret) attached to a team and
 // optionally scoped to a single user. The plaintext secret is never
@@ -134,6 +194,16 @@ type ApiKey struct {
 	LastUsedAt   *time.Time `bson:"last_used_at,omitempty" json:"last_used_at,omitempty"`
 	ExpiresAt    *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 	Fingerprint  string     `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// MaxConcurrentRuns caps how many ALIVE runs (queued or running) may
+	// hold this key at once; 0 means uncapped. Providers that enforce
+	// fair-usage frequency limits publish NO numeric bound to adapt to —
+	// the operator sets one here, and the resolver's usable-predicate
+	// walks past a key at its ceiling exactly like a refused one, so the
+	// next key or tier serves instead of tripping the provider. A SOFT
+	// cap by design: the refused-key restore still hands the key out when
+	// no other tier could serve its wire — progress beats the ceiling
+	// when the alternative is a run with no credential at all.
+	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
 }
 
 // ApiKeyStore is the persistence interface for BYOK records.
@@ -162,6 +232,20 @@ type ApiKeyStore interface {
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
 	// MarkUsed updates last_used_at without altering anything else.
 	MarkUsed(ctx context.Context, id string, at time.Time) error
+	// MarkFingerprintUsed bumps last_used_at on every key whose stable
+	// audit identity matches the given fingerprint. Called by the runner
+	// at the start and end of every attempt so an operator can tell an
+	// idle key from one that is actively serving. Match by fingerprint on
+	// purpose: the runner knows what the bundle sealed, not the row ids
+	// under it. The tenant scope comes from the CONTEXT: with a tenant on
+	// it, only that tenant's rows move (a tenant's own key — another
+	// tenant holding the byte-identical secret must not read as "in
+	// use"); without one, every row carrying the fingerprint moves (a
+	// pool-lent or platform-tier key, whose row lives in another tenant
+	// and serves every tenant). The runner picks per slot from the
+	// bundle's tier markers. A missing fingerprint is a no-op, not an
+	// error.
+	MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error
 	// ClearDefault removes the is_default flag from any other key in
 	// the same (team, user, provider) tuple. Used when a new key is
 	// created with is_default=true or an existing one is promoted.
@@ -184,6 +268,10 @@ type Resolution struct {
 	Plaintext   []byte
 	SealedBlob  []byte
 	SourceScope string // "user" or "team" — for audit logging
+	// Fingerprint is the chosen key's stable audit identity, carried so
+	// the publisher can stamp the run document with the credentials it
+	// actually sealed (the concurrency meter counts alive runs by it).
+	Fingerprint string
 }
 
 // Resolve returns at most one ApiKey for each requested provider,
@@ -202,6 +290,13 @@ type Resolution struct {
 // When sealer is non-nil, every Resolution.Plaintext is decrypted; on
 // decrypt failure the resolution is skipped and an error is logged
 // to logErr. Pass nil sealer to get sealed blobs only.
+// A nil usable predicate accepts every key. A non-nil one is consulted in
+// the priority walk (pass 2) ONLY: a key it refuses is skipped and the walk
+// takes the NEXT visible key of that provider, which is what turns several
+// keys of one provider into an ordered fallback chain. An explicit
+// keyOverrides pin is deliberately NOT filtered — the operator named that
+// key, and honouring the pin over the optimisation is what keeps the
+// predicate an optimisation.
 func Resolve(
 	ctx context.Context,
 	store ApiKeyStore,
@@ -209,6 +304,7 @@ func Resolve(
 	providers []Provider,
 	keyOverrides map[Provider]string,
 	sealer Sealer,
+	usable func(ApiKey) bool,
 ) (map[Provider]Resolution, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("secrets: team id required for resolve")
@@ -260,6 +356,9 @@ func Resolve(
 		if _, already := out[k.Provider]; already {
 			continue
 		}
+		if usable != nil && !usable(k) {
+			continue
+		}
 		if r, ok := buildResolution(k, sealer, userID); ok {
 			out[k.Provider] = r
 		}
@@ -297,6 +396,7 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 		KeyID:       k.ID,
 		SealedBlob:  k.SealedSecret,
 		SourceScope: scope,
+		Fingerprint: k.Fingerprint,
 	}
 	if sealer == nil {
 		return r, true
@@ -347,18 +447,29 @@ func NewMemoryApiKeyStore() *MemoryApiKeyStore {
 	return &MemoryApiKeyStore{keys: make(map[string]ApiKey)}
 }
 
-func (m *MemoryApiKeyStore) Create(_ context.Context, k ApiKey) error {
+// Create stores the row. Like the Mongo twin it stamps TenantID from the
+// context when one is present (the Mongo twin REQUIRES one; the memory
+// twin stays usable from bare-context tests), so the tenant-scoped
+// MarkFingerprintUsed reads the same field on both.
+func (m *MemoryApiKeyStore) Create(ctx context.Context, k ApiKey) error {
+	if tenantID, ok := store.TenantFromContext(ctx); ok && tenantID != "" {
+		k.TenantID = tenantID
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.keys[k.ID] = k
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Get(_ context.Context, id string) (ApiKey, error) {
+// Create already stamps the ctx tenant; the reads MUST filter on it too,
+// or the double cannot express the failure the Mongo store produces (a row
+// written under one tenant, invisible under another) and a tenant-scoping
+// regression passes its tests. See stampTenant / visibleToTenant (#997).
+func (m *MemoryApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
-	if !ok {
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ApiKey{}, ErrApiKeyNotFound
 	}
 	return k, nil
@@ -378,20 +489,23 @@ func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) 
 	return k, nil
 }
 
-func (m *MemoryApiKeyStore) Update(_ context.Context, k ApiKey) error {
+func (m *MemoryApiKeyStore) Update(ctx context.Context, k ApiKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[k.ID]; !ok {
+	cur, ok := m.keys[k.ID]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrApiKeyNotFound
 	}
+	k.TenantID = stampTenant(ctx, cur.TenantID)
 	m.keys[k.ID] = k
 	return nil
 }
 
-func (m *MemoryApiKeyStore) Delete(_ context.Context, id string) error {
+func (m *MemoryApiKeyStore) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.keys[id]; !ok {
+	k, ok := m.keys[id]
+	if !ok || !visibleToTenant(ctx, k.TenantID) {
 		return ErrApiKeyNotFound
 	}
 	delete(m.keys, id)
@@ -439,6 +553,35 @@ func (m *MemoryApiKeyStore) MarkUsed(_ context.Context, id string, at time.Time)
 	return nil
 }
 
+// MarkFingerprintUsed bumps last_used_at on every key that carries this
+// fingerprint — within the context's tenant when it carries one (matched
+// on the row's TenantID, the field the Mongo twin filters on), across
+// tenants otherwise. Empty fingerprint is a no-op (nothing to look up),
+// never an error — a runner metering a key that predates fingerprint
+// stamping just leaves the observation on the floor rather than failing
+// the report.
+func (m *MemoryApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	tenantID, scoped := store.TenantFromContext(ctx)
+	scoped = scoped && tenantID != ""
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := at
+	for id, k := range m.keys {
+		if k.Fingerprint != fingerprint {
+			continue
+		}
+		if scoped && k.TenantID != tenantID {
+			continue
+		}
+		k.LastUsedAt = &t
+		m.keys[id] = k
+	}
+	return nil
+}
+
 func (m *MemoryApiKeyStore) ClearDefault(_ context.Context, teamID, userID string, provider Provider, exceptID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -479,6 +622,11 @@ func (s *MongoApiKeyStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "scope_user", Value: 1}, {Key: "provider", Value: 1}}, Options: options.Index().SetName("team_user_provider")},
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "provider", Value: 1}, {Key: "is_default", Value: 1}}, Options: options.Index().SetName("team_provider_default")},
+		// MarkFingerprintUsed's predicate: every attempt start and end
+		// bumps by fingerprint, with no tenant filter (a lent or platform
+		// key moves on its own row). Unindexed it was a collection scan
+		// per attempt. Sparse: rows that predate stamping carry none.
+		{Keys: bson.D{{Key: "fingerprint", Value: 1}}, Options: options.Index().SetName("fingerprint").SetSparse(true)},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure api_keys indexes: %w", err)
@@ -587,6 +735,28 @@ func (s *MongoApiKeyStore) MarkUsed(ctx context.Context, id string, at time.Time
 	}
 	if _, err := s.coll.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
 		return fmt.Errorf("secrets: mark used: %w", err)
+	}
+	return nil
+}
+
+// MarkFingerprintUsed updates last_used_at on every row matching the
+// fingerprint — within the context's tenant when it carries one, across
+// tenants otherwise (see ApiKeyStore). A missing fingerprint (empty
+// string) is a no-op — the metering path calls this per stamped fp on the
+// run doc, and a run predating fingerprint stamping simply carries none.
+// UpdateMany matches every matching row in scope: two rows sharing a
+// fingerprint inside one tenant (an operator saved the same secret twice)
+// still get both bumped.
+func (s *MongoApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint string, at time.Time) error {
+	if fingerprint == "" {
+		return nil
+	}
+	filter := bson.M{"fingerprint": fingerprint}
+	if tenantID, ok := store.TenantFromContext(ctx); ok && tenantID != "" {
+		filter["tenant_id"] = tenantID
+	}
+	if _, err := s.coll.UpdateMany(ctx, filter, bson.M{"$set": bson.M{"last_used_at": at}}); err != nil {
+		return fmt.Errorf("secrets: mark fingerprint used: %w", err)
 	}
 	return nil
 }

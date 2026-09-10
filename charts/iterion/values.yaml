@@ -5,6 +5,18 @@
 image:
   repository: ghcr.io/socialgouv/iterion
   tag: ""              # defaults to .Chart.AppVersion when empty
+  # Wins over `tag` when set (`sha256:…`). Prefer it whenever `tag` is a
+  # MOVING tag (edge/main/latest): a tag is resolved per pod at that pod's own
+  # start time, so a publish landing mid-rollout splits one ReplicaSet across
+  # two builds, and a later HPA/KEDA scale-up from an existing ReplicaSet pulls
+  # whatever the tag means then — no rollout entry, no signal. A digest is what
+  # makes "one ReplicaSet = one build" true, which the rollout epoch assumes.
+  # Cost: each deploy becomes an explicit digest bump instead of a rollout
+  # restart. Note this pins the SHARED image only: `runner.image` below is
+  # empty by default and falls back to this same reference, so a runner pool
+  # given its own image must be pinned there too.
+  # See docs/cloud-deployment.md#pinning-the-image.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -14,6 +26,14 @@ fullnameOverride: ""
 # --- Server (HTTP API + studio) ---------------------------------
 server:
   replicas: 1
+  # Full surge keeps the current serving capacity while the new ReplicaSet
+  # becomes ready. It is a capacity/SLO aid; the runner epoch is the safety
+  # invariant under HPA/KEDA proportional scaling.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
   # Cloud-mode HTTP entry point — `iterion server` (T-30). Reads
   # ITERION_MODE + ITERION_MONGO_URI / ITERION_NATS_URL / ITERION_S3_*
   # from envFrom so no extra args are needed for the cloud wiring.
@@ -48,6 +68,10 @@ server:
       cpu: 1000m
       memory: 1Gi
   podAnnotations: {}
+  # PriorityClass of the server pods (empty = the cluster default). Give the
+  # platform pods a class ABOVE the run pods: a sandboxed run that bursts is
+  # then preempted before the server or a runner is.
+  priorityClassName: ""
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -58,13 +82,17 @@ server:
     targetCPUUtilizationPercentage: 70
 
 # --- Runner (workflow execution pool) -------------------------------
-# The runner subcommand and NATS consumer are not yet implemented
-# (T-25, T-27, T-29). When they land, set runner.enabled=true and
-# the chart will deploy the pool with a KEDA ScaledObject keyed on
-# JetStream lag.
+# The runner pool consumes the shared JetStream durable. KEDA may scale old
+# and new ReplicaSets proportionally during a rollout, so rollout correctness
+# comes from config.rollout.runnerEpoch rather than replica ordering.
 runner:
   enabled: true
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
   # Same rationale as server.command above: keep command empty so the
   # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
   command: []
@@ -81,6 +109,10 @@ runner:
   # only. The devbox runner image runs as uid 1000 (Nix store owned by `devbox`),
   # so set runAsUser/runAsGroup/fsGroup: 1000 when using it. Empty = inherit the
   # shared context.
+  # PriorityClass of the runner pods (empty = the cluster default). Same
+  # rule as server.priorityClassName: the runner outranks the run pods it
+  # starts, so a bursting sandbox never evicts the process that owns its run.
+  priorityClassName: ""
   podSecurityContext: {}
   containerSecurityContext: {}
   # Prometheus metrics port for the runner. Defaults to the same
@@ -125,6 +157,34 @@ runner:
   # sandbox feature; turn on per-environment via values-prod.yaml.
   sandbox:
     enabled: false
+    # Scheduling policy the kubernetes sandbox driver stamps on every
+    # per-run sandbox pod, rendered as LITERAL env on the runner PodTemplate
+    # (a pod from an old ReplicaSet keeps the policy it was rolled out
+    # with). Empty = not rendered: the pods request nothing and, on a
+    # multi-node cluster, pile onto the node that already holds the image
+    # (measured: 5 of 6 runs on one 8-core worker at 89 % CPU). Set at
+    # least the requests on any multi-node cluster — e.g. requests cpu "2",
+    # memory "4Gi", spread "hostname" — and bump config.rollout.runnerEpoch
+    # with the rollout like any runner change. Requests and limits are
+    # Kubernetes quantities, podReadyTimeout a Go duration; the runner
+    # refuses to start on a malformed one. See docs/sandbox.md
+    # § "Scheduling: requests and node spread".
+    scheduling:
+      requests:
+        cpu: ""
+        memory: ""
+      limits:
+        cpu: ""
+        memory: ""
+      # "" or "none" = no spread constraint; "hostname" = soft spread across
+      # nodes; or a prefixed label key every node carries.
+      spread: ""
+      # How long a run waits for its pod to be Ready, a Go duration ("" =
+      # the driver's default, 10m). The wait absorbs scheduling — a cluster
+      # autoscaler adding a node takes minutes — a fresh node's CNI setup
+      # and the image pull; a cap shorter than their sum kills runs whose
+      # container was about to start.
+      podReadyTimeout: ""
   # --- Persistent build cache (warm runner pods) --------------------
   # A bot's verify gate re-clones the target repo per run into an
   # ephemeral workdir, so a fresh/scaled-up runner pod otherwise
@@ -182,10 +242,22 @@ config:
   # ConfigMap (both the server and runner deployments envFrom it).
   # e.g. TZ: Europe/Paris — the binary embeds the IANA tz database
   # (time/tzdata), so TZ works even in tzdata-less images.
+  # NOT the place for generation-sensitive runner settings (the epoch, the
+  # sandbox pod scheduling policy): those are literal PodTemplate values —
+  # see runner.sandbox.scheduling.
   extraEnv: {}
   log:
     format: json
     level: info
+  rollout:
+    # Immutable per-ReplicaSet generation fence. Release A ships wire v12 at
+    # epoch 0; Release B raises this to 1. Thereafter increment it for every
+    # runner-code rollout. Never roll back to a lower value: restore an older
+    # image as a new Helm release with a higher epoch.
+    runnerEpoch: 0
+    # Delayed-Nak interval for a future-epoch message. Keep
+    # delay × (MaxDeliver-1) above the cold readiness time of the new fleet.
+    epochMismatchDelay: 2m
   mongo:
     uri: ""           # required when mode=cloud and mongodb.enabled=false
     database: iterion
@@ -201,6 +273,8 @@ config:
     stream: ITERION_RUNS
     kvBucket: iterion-run-locks
     dlqStream: ITERION_RUNS_DLQ
+    # Clustered NATS needs this >1 for data-HA; CreateOrUpdateStream migrates existing streams in place at the next server boot.
+    streamReplicas: 1
   s3:
     endpoint: ""      # required when mode=cloud and minio.enabled=false
     region: us-east-1

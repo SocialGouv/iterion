@@ -52,7 +52,7 @@ import (
 // observability — operators concerned with hard budget tracking should
 // pull the authoritative rates from their provider invoices.
 //
-// Last reviewed: 2026-07-28, against models.dev via `iterion models pricing`.
+// Last reviewed: 2026-09-06, against models.dev via `iterion models pricing`.
 // Run that command to see where this table and the published rates diverge;
 // it reports and never rewrites, because a price is a budget decision.
 //
@@ -82,6 +82,12 @@ var (
 	sonnetRate     = modelPricing{3.00, 15.00}
 	sonnet5Rate    = modelPricing{2.00, 10.00}
 	haikuRate      = modelPricing{1.00, 5.00}
+	// OpenAI's gpt-5.6 line ships three sizes at three rates (standard tier,
+	// developers.openai.com/api/docs/pricing); the bare `gpt-5.6` alias routes
+	// to sol, so it carries sol's rate.
+	gpt56SolRate   = modelPricing{4.00, 20.00}
+	gpt56TerraRate = modelPricing{2.00, 12.00}
+	gpt56LunaRate  = modelPricing{0.20, 1.20}
 )
 
 var modelPriceTable = map[string]modelPricing{
@@ -101,21 +107,25 @@ var modelPriceTable = map[string]modelPricing{
 	"claude-sonnet-4":           sonnetRate,
 	"claude-haiku-4-5":          haikuRate,
 	"claude-haiku-4-5-20251001": haikuRate,
-	// OpenAI — gpt-5.5+ are priced higher than gpt-5; mini/nano variants
-	// are roughly an order of magnitude cheaper. Numbers below are best
-	// effort against the known list; refresh against the OpenAI pricing
+	// OpenAI — each gpt-5.x generation carries its own rate; mini/nano
+	// variants are roughly an order of magnitude cheaper. Numbers below are
+	// best effort against the known list; refresh against the OpenAI pricing
 	// page when a new tier ships.
-	"gpt-5":        {1.25, 10.00},
-	"gpt-5-mini":   {0.25, 2.00},
-	"gpt-5.4":      {2.50, 15.00},
-	"gpt-5.4-pro":  {30.00, 180.00},
-	"gpt-5.4-mini": {0.75, 4.50},
-	"gpt-5.4-nano": {0.20, 1.25},
-	"gpt-5.5":      {5.00, 30.00},
-	"gpt-5.5-pro":  {30.00, 180.00},
-	"o3":           {2.00, 8.00},
-	"gpt-4o":       {2.50, 10.00},
-	"gpt-4o-mini":  {0.15, 0.60},
+	"gpt-5":         {1.25, 10.00},
+	"gpt-5-mini":    {0.25, 2.00},
+	"gpt-5.4":       {2.50, 15.00},
+	"gpt-5.4-pro":   {30.00, 180.00},
+	"gpt-5.4-mini":  {0.75, 4.50},
+	"gpt-5.4-nano":  {0.20, 1.25},
+	"gpt-5.5":       {5.00, 30.00},
+	"gpt-5.5-pro":   {30.00, 180.00},
+	"gpt-5.6":       gpt56SolRate,
+	"gpt-5.6-sol":   gpt56SolRate,
+	"gpt-5.6-terra": gpt56TerraRate,
+	"gpt-5.6-luna":  gpt56LunaRate,
+	"o3":            {2.00, 8.00},
+	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
 }
 
 // EstimateUSD returns a rough cost estimate for the given token usage on

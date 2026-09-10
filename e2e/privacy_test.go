@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -28,6 +27,7 @@ import (
 // privacy tools are pure Go and require neither API keys nor
 // external processes.
 func TestE2E_PrivacyPipeline(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "privacy_pipeline.bot")
 
 	storeDir := t.TempDir()
@@ -55,7 +55,7 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 	const rawToken = "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
 	rawText := "Contact " + rawEmail + " or use token " + rawToken
 
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, map[string]any{
 		"text": rawText,
 	}); err != nil {

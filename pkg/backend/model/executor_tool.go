@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
@@ -333,11 +334,11 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// shell-level variables (positional args, exit-status, captured
 			// stdout) survive into the resolved command for sh -c to interpret.
 			expandedCommand := expandBracedEnv(node.Command)
-			// Resolve {{run.id}} first — resolveCommandTemplate only knows the
-			// input/vars/secrets namespaces, so a direct run ref would survive
-			// into the command verbatim.
-			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), node.CommandRefs, shellEscapeValue)
-			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, e.secretGuard)
+			// One snapshot, one pass — the same snapshot the prompts render
+			// from. {{run.*}} and {{outputs.*}} resolve beside {{input.*}},
+			// under the same shell escaping and the same missing-value rule.
+			td := TemplateDataFromContext(ctx)
+			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, e.jsonFieldsAsText(node, input), e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 			// Compression (tool nodes): node-level opt-in ONLY — compresses
 			// command output only when the node's own `compress:` is on/ultra (a
 			// run override can force-off as a kill switch, never force-on), so a
@@ -472,25 +473,40 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// script-language string parsers when the value contains embedded
 			// apostrophes. No compression: a script body is not a shell command line.
 			expanded := expandBracedEnv(node.Script)
-			// {{run.id}} first — resolveScriptTemplate only knows input/vars/secrets.
-			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), node.ScriptRefs, jsonLiteralValue)
-			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, e.secretGuard)
+			// Same single pass over one snapshot as the shell recipe:
+			// {{run.*}} and {{outputs.*}} beside {{input.*}}, here as JSON
+			// literals.
+			td := TemplateDataFromContext(ctx)
+			return resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars, td, RunIDFromContext(ctx), e.secretGuard)
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
 			interp, ext := scriptInterpreter(node.Language)
 			if interp == "" {
 				return nil, nil, fmt.Errorf("model: tool node %q: unsupported language %q", node.ID, node.Language)
 			}
-			// Temp file lives in the workspace so it is visible from inside the
-			// sandbox bind-mount (e.workDir is the host-side bind source the
-			// container also sees); a basename written there is reachable from
-			// both sides via the same relative path. Removed on success or
-			// failure via the returned cleanup.
+			// The script file must be reachable from where the interpreter
+			// runs. Out of the judged tree whenever a place exists that both
+			// sides see at the same path: the host's temp dir for an
+			// unsandboxed run, the shared state dir for a bind-mount sandbox
+			// that has one. Only a copy-based sandbox, or a bind-mount without
+			// a shared dir, still gets the file in the workspace (basename,
+			// same relative path on both sides, pushed through the write-
+			// through seam below where the driver copies) — a dotfile a gate
+			// that judges the tree's cleanliness would otherwise read as
+			// uncommitted work of the run. Removed on success or failure via
+			// the returned cleanup.
 			wd := e.workDir
 			if wd == "" {
 				wd = "."
 			}
-			tmpFile, err := os.CreateTemp(wd, ".iterion-script-*"+ext)
+			_, copyBased := e.sandbox.(sandbox.WorkspaceFileRefresher)
+			scriptDir, inWorkspace := scriptScratchDir(wd, e.sharedStateDir, e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut), copyBased)
+			if !inWorkspace {
+				if merr := os.MkdirAll(scriptDir, 0o755); merr != nil {
+					return nil, nil, fmt.Errorf("model: tool node %q: create script scratch dir: %w", node.ID, merr)
+				}
+			}
+			tmpFile, err := os.CreateTemp(scriptDir, ".iterion-script-*"+ext)
 			if err != nil {
 				return nil, nil, fmt.Errorf("model: tool node %q: create temp script: %w", node.ID, err)
 			}
@@ -510,12 +526,18 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 				return nil, nil, fmt.Errorf("model: tool node %q: close temp script: %w", node.ID, cerr)
 			}
 			base := filepath.Base(tmpPath)
+			// Out of the workspace, the interpreter is handed the absolute
+			// path — the same on both sides by construction of the scratch.
+			scriptArg := base
+			if !inWorkspace {
+				scriptArg = tmpPath
+			}
 			// Copy-based sandboxes (kubernetes: workspace tar-copied at
 			// Prepare time) never see a host-side file created mid-run, so
 			// the script must ALSO be pushed through the write-through seam.
 			// The in-pod copy is removed on cleanup — a stray workspace
 			// dotfile would otherwise be swept up by a later `git add -A`.
-			if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+			if inWorkspace && e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
 				if refresher, ok := e.sandbox.(sandbox.WorkspaceFileRefresher); ok {
 					if rerr := refresher.RefreshWorkspaceFile(ctx, base, []byte(body)); rerr != nil {
 						cleanup()
@@ -531,9 +553,9 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 					}
 				}
 			}
-			// Pass just the basename for the in-sandbox view (the bind mount
-			// uses the same path; portable whether we run via sandbox or host).
-			return e.toolNodeScriptCommand(ctx, interp, base), cleanup, nil
+			// In the workspace, just the basename (the bind mount uses the same
+			// relative path); out of it, the absolute scratch path.
+			return e.toolNodeScriptCommand(ctx, interp, scriptArg), cleanup, nil
 		}
 }
 
@@ -564,6 +586,10 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	// A script body backgrounds jobs as freely as a shell recipe does, so
+	// its lifetime ends with the node's context the same way — see
+	// toolNodeCommand.
+	proc.TerminateGroupOnCancel(cmd)
 	// Host path only: sandboxed commands already see the variable from the
 	// container env (the same dir is bind-mounted there). runExtraEnv
 	// carries run-level provisioning (devbox profile PATH), appended
@@ -614,6 +640,12 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	// A tool node's lifetime is the node's. `bash -c` routinely backgrounds
+	// jobs (`&`, a daemon a build script starts), and those grandchildren
+	// inherit our stdout/stderr pipes: killing only the shell leaves the
+	// read blocked, so cancelling the run would stop the wait and not the
+	// work. Signal the whole group instead.
+	proc.TerminateGroupOnCancel(cmd)
 	if len(env) > 0 || e.artifactFilesDir != "" || len(e.runExtraEnv) > 0 {
 		cmd.Env = os.Environ()
 		// Run-level provisioning (devbox profile PATH) — appended after
@@ -665,10 +697,14 @@ func looksLikeShellCommand(cmd string) bool {
 	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
 }
 
-// resolveCommandTemplate substitutes {{input.X}} and {{vars.X}} references in
-// a command string with values from the input map and workflow variables.
-// Values are shell-escaped to prevent command injection when the resolved
-// string is passed to sh -c.
+// resolveCommandTemplate substitutes {{input.X}}, {{vars.X}}, {{secrets.X}},
+// {{outputs.<node>.<field>}} and {{run.X}} references in a command string —
+// the input map, the workflow variables, the secret guard's placeholders,
+// and the template snapshot td (the same one the prompts render from;
+// nil-tolerant). ctxRunID is the run identity for hosts that wire only
+// WithRunID and no snapshot; it answers for `{{run.id}}` alone. Values are
+// shell-escaped to prevent command injection when the resolved string is
+// passed to sh -c.
 //
 // Refs flagged as `Raw` (authored as `{{!input.X}}` / `{{!vars.X}}`) bypass
 // shellEscape and are inserted verbatim. Use only for trusted values that
@@ -676,7 +712,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -684,11 +720,13 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// Shell commands preserve `{{input.X}}` literal text for missing
 	// values — sh -c sees the placeholder and either fails informatively
 	// or the operator notices. Substituting silently would lose that
-	// signal and could mask wiring bugs.
+	// signal and could mask wiring bugs. An `{{outputs.*}}` ref whose node
+	// has not produced, and a `{{run.*}}` member the namespace does not
+	// carry, take the same rule.
 	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
 	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
 	// mistake that has already been made confidently.
-	return resolveTemplateWith(command, refs, input, vars, guard, shellEscapeValue, false)
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shellEscapeValue, false)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -704,7 +742,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
-func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
+func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -714,39 +752,7 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 	// parse time before any user logic can react. Substitute with the
 	// language's null literal (rendered as JSON null = "null") so the
 	// script can still run and handle the missing input itself.
-	return resolveTemplateWith(script, refs, input, vars, guard, jsonLiteralValue, true)
-}
-
-// resolveRunRefs substitutes run-namespace refs ({{run.id}}) into a tool
-// command / script template. The shared resolveTemplateWith handles only
-// the input / vars / secrets namespaces — the ones tool nodes normally
-// reach via edge `with`-mappings — so a *direct* {{run.id}} (there is no
-// node output to map it from) would otherwise survive verbatim and run as
-// the literal text "{{run.id}}". That bit sec-audit-source's
-// apply-mode prepare_branch, which named its temp branch
-// `iterion/sec-fix/{{run.id}}` and ended up on `iterion/sec-fix/run.id`
-// after its sanitiser stripped the braces. `render` formats the value for
-// the target context (shellEscapeValue for command bodies, jsonLiteralValue
-// for script bodies), matching the main resolver; the bang form keeps the
-// raw passthrough. Only run.id is defined today. A run id is a stable
-// UUID-shaped token (no `{{` of its own), so the literal ReplaceAll
-// cannot re-trigger on a substituted value.
-func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(any) string) string {
-	for _, r := range refs {
-		if r == nil || r.Kind != ir.RefRun {
-			continue
-		}
-		var val any
-		if len(r.Path) > 0 && r.Path[0] == "id" {
-			val = runID
-		}
-		rendered := render(val)
-		if r.Unquoted {
-			rendered = rawTemplateValue(val)
-		}
-		template = strings.ReplaceAll(template, r.Raw, rendered)
-	}
-	return template
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, jsonLiteralValue, true)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -756,13 +762,15 @@ func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(any) str
 //
 // Substitution is single-pass over the original template: we build a
 // map[ref.Raw]rendered and then scan the template once, replacing
-// each {{...}} occurrence by its rendered value. The previous
-// strings.ReplaceAll loop fed each substitution's output back into
-// subsequent passes, so an input value that happened to contain a
-// {{...}} literal matching a later ref would be silently rewritten
-// (the "cascade" bug). The single-pass walk only touches positions
-// that were in the source template.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
+// each {{...}} occurrence by its rendered value. A strings.ReplaceAll
+// loop would feed each substitution's output back into subsequent
+// passes, so a value that happened to contain a {{...}} literal
+// matching a later ref would be silently rewritten (the "cascade"
+// bug). The single-pass walk only touches positions that were in the
+// source template — which is why EVERY namespace a tool body can
+// reference resolves here, in this one walk, rather than in a pre-pass
+// of its own.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -776,6 +784,28 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
 			val = vars[ref.Path[0]]
+			handled = true
+		case ref.Kind == ir.RefOutputs && len(ref.Path) > 0:
+			// The snapshot the prompts render from. An output not yet
+			// produced (or no snapshot at all) is nil here and takes the
+			// same missing-value rule as an absent input below — the
+			// placeholder in a shell body, `null` in a script body — so
+			// the two namespaces cannot disagree about a hole.
+			val, _ = outputsTemplateValue(td, ref.Path)
+			handled = true
+		case ref.Kind == ir.RefRun && len(ref.Path) > 0:
+			// The engine's `run.*` namespace — identity plus the run's
+			// consumption and effective budget caps — read through the
+			// same runNamespaceValue the prompt path uses, so a member
+			// cannot resolve in a prompt and stay literal in a command.
+			// The snapshot answers for every member, `id` included, which
+			// is what makes a command inside a fan-out branch render like
+			// the same command on the trunk; ctxRunID is the fallback for
+			// hosts that wire only WithRunID. A member the namespace does
+			// not carry is nil here and takes the shared missing-value
+			// rule below — the placeholder in a shell body, `null` in a
+			// script body — instead of vanishing from the command line.
+			val, _ = runNamespaceValue(ctxRunID, td, ref.Path[0])
 			handled = true
 		case ref.Kind == ir.RefSecrets && len(ref.Path) > 0:
 			// Render the opaque placeholder into the command; the real
@@ -1182,4 +1212,20 @@ func sliceHasComplexElement(s []any) bool {
 func shellEscape(s string) string {
 	// Replace each ' with '\'': end current quote, insert escaped quote, reopen quote.
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// scriptScratchDir decides where a tool node's script file is written, and
+// whether that is inside the judged workspace. The host's temp dir serves an
+// unsandboxed run; a bind-mount sandbox with a shared state dir gets a
+// `scripts` scratch under it, reachable at the same absolute path on both
+// sides; a copy-based sandbox, or a bind-mount without a shared dir, keeps
+// the file in the workspace — the only place both sides then agree on.
+func scriptScratchDir(workDir, sharedStateDir string, sandboxed, copyBased bool) (dir string, inWorkspace bool) {
+	switch {
+	case !sandboxed:
+		return os.TempDir(), false
+	case !copyBased && sharedStateDir != "":
+		return filepath.Join(sharedStateDir, "scripts"), false
+	}
+	return workDir, true
 }

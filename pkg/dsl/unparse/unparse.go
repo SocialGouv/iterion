@@ -36,6 +36,7 @@ func Unparse(f *ast.File) string {
 	w.writeEmits(f.Emits)
 	w.writeWaits(f.Waits)
 	w.writeAwaitAnswers(f.AwaitAnswers)
+	w.writeFails(f.Fails)
 	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
@@ -567,6 +568,25 @@ func (w *fileWriter) writeAwaitAnswers(decls []*ast.AwaitAnswersDecl) {
 	}
 }
 
+func (w *fileWriter) writeFails(decls []*ast.FailDecl) {
+	for _, fd := range decls {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "fail %s:\n", fd.Name)
+		if fd.Description != "" {
+			writeQuotedProp(&w.b, "description", fd.Description)
+		}
+		if fd.Code != "" {
+			writeProp(&w.b, "code", fd.Code)
+		}
+		if fd.Message != "" {
+			writeQuotedProp(&w.b, "message", fd.Message)
+		}
+		if fd.Resumable {
+			writeProp(&w.b, "resumable", "true")
+		}
+	}
+}
+
 func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 	for _, wf := range workflows {
 		w.blankLine()
@@ -619,6 +639,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.RepoDevbox != "" {
 			writeProp(&w.b, "repo_devbox", wf.RepoDevbox)
+		}
+
+		if wf.WorkspaceCheckpoint != "" {
+			writeProp(&w.b, "workspace_checkpoint", wf.WorkspaceCheckpoint)
 		}
 
 		if wf.Permission != "" {

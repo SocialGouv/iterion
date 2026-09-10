@@ -46,6 +46,74 @@ Rotate or revoke at any time: `POST /api/teams/{id}/webhooks/{webhook_id}/rotate
 returns a fresh plaintext (also shown once) and updates the forge's
 "secret" field is then a manual step.
 
+## When a forge cannot reach the deployment's public URL
+
+Provisioned hook URLs are built from the deployment's public URL
+(`auth.publicUrl` → `forge.Orchestrator.PublicURL`), which is what every
+connection wants: move the deployment and the next provision moves its
+hooks with it.
+
+A forge may refuse that host outright. **GitLab** rejects any webhook URL
+outside its instance-wide outbound allowlist with `Invalid url given`
+(HTTP 422, surfaced as `create hook: HTTP 422`), and getting a host listed
+is an administrative act on the forge's side — Admin area → Settings →
+Network → Outbound requests. A deployment that serves two names, or that is
+migrating between them, then has one connection that cannot follow.
+
+`Connection.WebhookBaseURL` pins the base for **that connection only**:
+
+```sh
+iterion remote forge connections webhook-base <conn-id> \
+  --url https://iterion.old-and-allowlisted.example
+iterion remote forge connections webhook-base <conn-id> --url ""   # clear
+```
+
+It takes effect at the next provision of each repo on that connection, and
+the value must be scheme+host (the `/api/webhooks/<provider>/<id>` route is
+appended to it). An unparseable or path-carrying value is refused with 422 at
+the PATCH, on purpose: a wrong base does not fail when it is set — it fails
+as hooks that register successfully and never arrive.
+
+Re-provisioning a repo is the gesture that applies it, and it is a
+**reconcile**: `POST /api/teams/{id}/forge/repo-bots` with the repo's current
+`bot_ids` and nothing else (`launch_vars`, `overlap`,
+`auto_fix_on_gate_failure` and `hold_labels` all mean "leave the stored one
+alone" when omitted, so re-sending them is a chance to mistype
+`gate_context`, not a safety). It compares the address the forge *should* be
+calling against the one it is, and rewrites the hook in place when they
+differ — same hook id, same webhook id, and the fresh `iwh_` reaches both
+ends together. Where nothing has moved it touches the forge not at all, so
+it is safe to re-run across a whole fleet.
+
+That comparison is what makes a public-URL change reachable at all: the
+idempotence test used to look at bots and events only, so an instance that
+moved could never repair its own hooks — provisioning answered 200, changed
+nothing, and the deliveries kept going to an address it no longer served.
+
+Two more properties of that endpoint worth knowing:
+
+- **It refuses a body carrying `webhook_base_url` *and*
+  `security_read_enabled` together (400).** They act on different systems —
+  one pins a URL, the other mints or withdraws a live org token on GitHub —
+  and nothing makes them atomic. Sent together, a failure of the
+  security-read half would drop the URL change while the error named only
+  security-read. Send them as separate requests.
+- **An `http://` base on a non-loopback host is accepted but warned**: the
+  forge then delivers the payload *and* the signature header in the clear.
+  An internal-network endpoint is a legitimate thing to pin, so this is a
+  log line, not a refusal.
+
+**Declaring the pin is what makes the exception durable.** A hook URL that
+merely predates a public-URL change is one re-provision away from being
+silently rewritten to an address the forge is not allowed to call — and
+enabling one more bot, or moving the repo to another team, is a
+re-provision. The write succeeds; only the deliveries stop.
+
+Prefer getting the canonical host allowlisted and clearing the pin. It is
+an escape hatch for the interval where that is out of your hands, not a
+target state — the pinned host has to keep resolving and serving for as
+long as the pin is there.
+
 ## Auth modes — token vs HMAC
 
 Iterion's middleware has two authentication modes, picked per provider
@@ -92,23 +160,52 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   flag) deliberately do **not** re-trigger — auto-review on every push was
   found too noisy; cf.
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
+  An `update` whose `changes.reviewers` **(re-)requests a review from
+  iterion's own bot account** is the exception — the re-request-review
+  button; see <a href="#re-request-review">below</a>. A **fork MR never
+  auto-launches**, on any action: the payload names both projects
+  (`source_project_id`/`target_project_id` and the source project's own
+  path under `object_attributes.source`), so a proven fork is filtered
+  with a reason naming the fork (`gitlab.Parsed.IsFork`) — the same
+  posture as the GitHub/Forgejo lanes; a payload naming neither project
+  stays on its way, and the API-side lanes fail closed on it.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
-  /revi" mid-text never triggers (anti-oscillation guard;
-  [pkg/webhooks/gitlab/note.go:IsReviewCommand](../pkg/webhooks/gitlab/note.go)).
+  /revi" mid-text never triggers (anti-oscillation guard —
+  `ParseSlashCommand` requires the first non-blank, non-quote line to
+  *start with* `/`; [pkg/webhooks/gitlab/note.go](../pkg/webhooks/gitlab/note.go)).
   Four routes, in the order the handler tries them
-  ([pkg/server/webhooks_gitlab.go:259-345](../pkg/server/webhooks_gitlab.go)):
+  ([pkg/server/webhooks_gitlab.go](../pkg/server/webhooks_gitlab.go)):
   1. a `/command` on an **open issue** → the generic command handler
      with `surface="issue"`, so the bot opens an MR back-linking the
      issue. A non-command issue note is filtered.
-  2. any command **other than** `/revi` on an open MR → resolved through
-     the command registry to a bot + execution mode; an unknown command
-     is filtered.
-  3. `/revi` on an open MR → on-demand re-review. `/revi <question>`
-     routes to the conversation bot instead.
-  4. a plain reply **in a thread Revi is part of**, with no command at
+  2. **every** command on an open MR — `/revi` included, no bot-specific
+     branch — resolved through the SAME generic command registry as the
+     GitHub/Forgejo `issue_comment` lane: `review-pr`'s
+     `when_args_empty` route claims a bare `/revi` (on-demand
+     re-review), `revi-converse`'s `when_args_present` route claims
+     `/revi <question>`; an unknown command is filtered. This surface
+     also resolves the MR via the forge API to prove the fork guard
+     (`forge.PullRef.SameRepoAs` — the note payload carries neither
+     `source_project_id` nor `target_project_id`, so same-project can
+     only be proven, never assumed from the payload; the adapter resolves
+     a fork's source project by id — `GET /projects/:id`, cached per
+     instance for an hour — so the refusal names the fork's own path, and
+     a source project the token cannot see stays unproven) and carries the
+     note's own conversational plumbing (`discussion_id`,
+     `trigger_note`/`trigger_command`/`trigger_args`, `replier`) plus a
+     best-effort `thread_context` for any command that carries args. A
+     dedicated `/revi approve [reason]` override is intercepted before
+     this routing — see [merge-gate.md](merge-gate.md).
+  3. a plain reply **in a thread Revi is part of**, with no command at
      all, when `revi-converse` is enabled — so "just replying" to Revi
-     works.
+     works. This is the ONLY bespoke lane left: a reply carries no
+     command for the registry to resolve, so classifying "is this a
+     Revi thread" stays a dedicated gate
+     (`realWebhookNoteGate`/`gitlabNoteGateWithAPI`). It proves the head
+     project through the same resolver the command lane uses and launches
+     on `forge.PullRef.HeadCloneURL`/`SourceBranch`, so the pair it hands
+     the runner names ONE repository.
 - **`Issue Hook`** — adding a trigger label (e.g. `implement`) launches the
   webhook's bot, same as GitHub `issues` (below). GitLab has no `labeled`
   action, so the parser diffs `changes.labels` (previous→current) and fires
@@ -122,8 +219,11 @@ Operators who want only the auto-review path list `["merge_request"]`
 explicitly; that disables `/revi` while keeping open/reopen.
 
 Vars stamped on the run: `pr_url`, `base_ref`, `scope_notes`,
-`post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true`
-for the note path. The webhook's `LaunchVars` override these.
+`post_to_board=false`, `pr_review_mode=inline`, plus `re_review=true` for a
+`when_args_empty`-routed command (bare `/revi`; a `when_args_present`
+sibling sharing the same command, e.g. `/revi <question>`, does not get it —
+answering a question is not a re-review). The webhook's `LaunchVars`
+override these.
 
 ### GitHub (`POST /api/webhooks/github/{id}`)
 
@@ -132,24 +232,97 @@ event paths trigger; ping / push / everything else is silently filtered
 (returns 200 — a 4xx makes GitHub disable the webhook after repeated
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
+- **`pull_request`** with action **`closed`** (merged or not) → every run
+  still bound to that PR is **stopped**, and any armed usage-window retry is
+  **disarmed**. That includes the runs a **comment** launched (`/billy`, a
+  review-thread reply): those record the comment's own id as their subject,
+  so the delivery carries a `parent_subject_id` pointing at the pull
+  request, and the stop matches on either. Scoped to the PR across every
+  bot, unlike
+  `overlap: supersede` which replaces one bot's work with newer work of the
+  same bot. Without it a review in flight keeps spending provider quota on a
+  diff nobody will merge, and a review PARKED on a quota window wakes hours
+  later to comment on a dead pull request. Nothing is ever launched on this
+  action.
 - **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
   — **plus `synchronize` when the webhook sets `review_on_sync`**, so a push
   to the head re-reviews and the `revi/review` status re-evaluates on the new
   head SHA (this is what makes a required check track the fixed revision; see
-  [merge-gate.md](merge-gate.md))
+  [merge-gate.md](merge-gate.md)). The synchronize lane is **debounced**: the
+  launch waits out a quiet window (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default
+  `3m`, `0` disables) and a newer push on the same PR replaces the parked
+  launch and re-arms the window, so a volley of pushes costs ONE review of
+  the final head instead of N−1 runs cancelled mid-flight
+  ([pkg/server/webhooks_debounce.go](../pkg/server/webhooks_debounce.go); the
+  delivery answers `202 {"status":"deferred"}`, a 20s sweep launches due
+  entries, multi-replica-safe via a store lease, and the launch tail's
+  idempotency key keeps a lease replay from double-launching). PR open,
+  `/revi` and a re-request click stay immediate — a human is waiting on
+  those. During the window the required check is simply absent, the same
+  honest "nothing is reviewing this yet" as the seconds between push and
+  launch; the in-flight claim still lands at the real launch. What gets
+  parked is the **newest** head, not the last-arrived one: forges do not
+  guarantee delivery order, so the payloads are ordered by the forge's
+  own event timestamp and a delivery that lost the race answers
+  `200 {"status":"filtered"}` rather than overwriting a newer parked
+  push. Two further properties are worth knowing when a parked review
+  does not appear: the **config at fire time governs** — disabling the
+  webhook, clearing `review_on_sync`, or removing the bot from
+  `bot_ids` during the window drops the parked launch (with a
+  `filtered` delivery naming why), because the sweep re-enters none of
+  the admission the inbound request passed; and a parked launch the
+  admission gate refuses (org concurrency, launch rate) or that fails
+  outright is **re-armed with backoff**, not dropped — the forge was
+  answered `202 deferred` and will never redeliver, so the retry has to
+  live here. That chain is bounded (8 attempts, ~45 min); past it, or
+  on a monthly quota/cost denial that resets weeks away, the review is
+  abandoned with a `launch_error` delivery naming the loss rather than
+  disappearing.
   → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
   PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
   (the `draft` flag is honoured on every action — the trigger is
   `ready_for_review`, which clears it). A **fork PR** (head branch in a
-  different repo) is likewise never auto-launched: it is untrusted, so a repo
-  collaborator must trigger a bot manually via the `/command` path — the anti
-  budget-exhaustion boundary
+  different repo, or one the payload does not name) is likewise never
+  auto-launched, and the `/command` lanes refuse it too — same-repo only,
+  silently: the fork's work needs a branch in the base repo before any bot
+  runs on it — the anti budget-exhaustion boundary
   ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
-  `IsCrossRepo`). A PR opened by iterion's **own forge bot** (another iterion
+  `SameRepoAsBase` behind `forkGuardRefusal`). A PR opened by iterion's **own forge bot** (another iterion
   bot's PR — see below) is also skipped.
+
+  **Fork pull requests are refused on every lane, and no configuration lifts
+  it.** The auto-review lane, the `/command` lanes, the reply-in-thread lane,
+  the gate relaunch and the gate auto-fix lane each require a head repository
+  PROVEN equal to the base before anything launches; a head the payload does
+  not name counts as unproven, which is the shape a deleted or blocked fork
+  takes. The reason is not only trust: the launch pair a fork produces — the
+  base repo's clone URL plus a head branch that lives elsewhere — does not
+  name one repository, so the checkout misses or hits a same-named branch on
+  the base and the bot reviews, comments and pushes against the wrong code
+  under iterion's own identity. Serving forks needs a lane of its own
+  (read-only, no publish grant, no fixer launch, no repo secrets, project
+  settings not honoured), not a switch on the existing ones.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
-  `/featurly <prompt>`, `/billy`), routed through the command registry.
+  `/featurly <prompt>`, `/billy`), routed through the command registry —
+  including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
+  manifests' complementary `when_args_empty`/`when_args_present`
+  disambiguators (question → the converse bot, bare → re-review).
+- **`pull_request_review_comment`** with action `created` → the
+  conversational reply lane: replying inside one of the bot's review
+  threads launches the converse bot, which answers **in the same
+  thread**. Loop-guarded (the bot's own answer echoes back as this
+  event), thread-classified (a human↔human thread never triggers), and
+  replier-gated like every comment lane — through the same client
+  resolution as the other lanes: the team connection covering the PR
+  first, the webhook's `forge_token` binding as the fallback. Requires the converse bot in
+  `bot_ids` and the event in `event_allowlist` (a re-provision
+  regenerates both from the converse bot's own manifest event
+  `pull_request_review_comment` — deliberately separate from
+  `pull_request_comment`, so repos without the conversational bot
+  never subscribe the per-inline-comment delivery firehose). GitHub
+  only for now. See
+  [forge-conversations.md](forge-conversations.md).
 - **`issues`** with action `labeled` → launches the webhook's bot with
   the labeled issue turned into a feature task. The handler derives
   `feature_prompt` (issue title + body), `open_mr=true`, and
@@ -163,7 +336,9 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `author_association` ∈ OWNER/MEMBER/COLLABORATOR (decoded from the
   payload, no API call), OR live `CollaboratorPermission` ≥
   **`min_author_role`** (gitlab vocabulary, `""` → developer ≡ write;
-  needs a `forge_token` binding). Unknown = untrusted (**fail-closed** —
+  read through the team connection covering the repo when its client
+  can serve, else the webhook's `forge_token` binding — the same client
+  the command gate resolves). Unknown = untrusted (**fail-closed** —
   this is the budget boundary against drive-by issues, unlike the
   fail-open org quotas). An untrusted author's delivery filters (200,
   visible reason) and the issue's board card parks with
@@ -236,6 +411,153 @@ recent findings under the **`prior_review`** var — so Billy starts from
 that review instead of re-deriving it (best-effort: with no prior review,
 Billy reviews the diff from scratch;
 [pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
+
+### <a name="re-request-review"></a>On-demand re-review: the "Re-request review" button
+
+Alongside `/revi`, the forge-native **"Re-request review" button** is a
+second on-demand re-review gesture — the one non-comment surface a product
+developer already knows. Clicking it on iterion's bot reviewer (or adding
+the bot to the reviewer set in the first place) relaunches the review bot on
+the MR/PR's current head:
+
+- **GitLab** — a `merge_request` `update` whose `changes.reviewers` carries
+  `re_requested: true` on the bot's account (GitLab ≥ 18.5,
+  [gitlab-org/gitlab!205274](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/205274)),
+  or simply shows the bot newly added (the only expressible form on older
+  GitLab). To make the button exist, the server's publish step
+  **self-assigns the bot as an MR reviewer** after each posted review
+  ([forge.ReviewerAssigner](../pkg/forge/reviews.go) — read-modify-write,
+  never dropping human reviewers; best-effort, a miss only costs the
+  button). The assigner resolves **who it is at call time**, through a live
+  `WhoAmI` on the connection's own token, and refuses to write when that
+  answer is not a usable numeric user id — GitLab reads a `0` in
+  `reviewer_ids` as "add nobody", which would report success while adding
+  no one. On "no button on this repo", the server has already said why: the
+  failure logs at **Warn** naming provider, repo, MR number and the
+  underlying error (`resolve own account: …` or `own account id %q is not a
+  usable GitLab user id`), while the review itself completes untouched.
+- **GitHub / Forgejo** — a `pull_request` event with action
+  `review_requested` whose `requested_reviewer` is iterion's identity.
+  That identity is the **App bot login only** (`<app_slug>[bot]`): a
+  PAT/OAuth connection's account may be a HUMAN's, and treating it as the
+  bot would turn an ordinary human-to-human review request into an LLM
+  launch (and disarm the anti-loop actor guard). A GitHub App cannot be a
+  PR reviewer at all (forge restriction) and a Forgejo connection carries
+  no App slug (there is no Forgejo App kind), so the derived identity
+  leaves the lane inert on both.
+
+  **`review_request_logins` is what lights it up.** The operator names the
+  review identity explicitly on the webhook, and those logins join the same
+  set both halves of the guard read — so the lane answers their request AND
+  the actor guard recognises their own writes. On GitHub that identity has
+  to be a **User account reached through a `pat` connection**: only a user
+  can be a requested reviewer, and the review must be POSTED by that same
+  account for the forge to clear the pending request and re-arm the button.
+  Nothing is derived from the connection for this — see the config table.
+
+Semantics, shared with `/revi` (deliberate manual gesture):
+
+- **NOT exempt from the hold-label pause** — unlike `/revi`. The forge
+  emits the same event for a CODEOWNERS auto-request, which needs no
+  permission from the requester and carries no field distinguishing it
+  from a click ([about-code-owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)),
+  so the lane cannot claim a command's deliberateness — and the label's
+  promise is that it freezes *every* automation on one PR;
+- **repeatable once the head's review has FINISHED** — such a click is its
+  own delivery (the idempotency key is then salted with the MR/PR
+  `updated_at`), so re-requesting twice on the same head reviews twice. On
+  GitHub a click landing while EVERY fanned-out bot's review of that head is
+  still in flight collapses onto them instead (the CODEOWNERS auto-request
+  dedupe) — unless the webhook's `overlap` is `supersede`, which takes
+  precedence: the click salts, the stale run is cancelled and the fresh one
+  replaces it ("newest request wins" is the operator's explicit choice). A
+  click on a head no review has claimed yet takes the ordinary per-head
+  key. GitLab keeps the unconditional salt (its lane only arms on an
+  `update` action, so the open itself never double-fires; an auto-assign
+  arriving as a follow-up update salts per click, bounded by the overlap
+  policy); forge redeliveries of the same click stay deduped;
+- **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
+  ones and never burn a run;
+- **replier-gated like `/revi`** — the click is authorized through the
+  same `authorized_repliers` allowlist / `min_replier_role` project-role
+  gate (default developer) as every other manual trigger, on every
+  provider. "The forge gates reviewer edits" is not enough: GitLab lets
+  an MR AUTHOR edit their own MR's reviewers without holding a project
+  role, and GitHub grants "request review" at the **Triage** role —
+  below the write floor the command gate enforces — either of which
+  would hand an under-privileged account a repeatable trigger. An
+  unauthorized click is demoted — the delivery rides whatever automatic
+  lane still admits it (with the hold label honoured) or is filtered;
+- **never self-triggering** — a reviewers change whose *actor* is the bot
+  itself (the self-assign echoing back) is filtered
+  ([pkg/server/webhooks_common.go:isIterionBotReviewRequest](../pkg/server/webhooks_common.go)).
+
+Pairs with the per-repo gate opt-out (`gate_enabled: "false"` pinned on the
+integration's launch vars): first review automatic on open, every re-review
+a button click or a `/revi` — see
+[merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
+
+### <a name="two-identities"></a>Two identities: the App connection reads, a PAT binding writes
+
+An operator who wires BOTH a team **forge App connection** covering the
+repo AND a webhook **`forge_token` PAT binding** on the same webhook gets
+a bot that reads and writes under **two different logins**, and neither
+guard connects them by itself:
+
+- **the server-side read side** — the command gate, the author-trust
+  probe, the reply-thread gate, the PR fetch behind `/revi` — resolves
+  its client through `prforgeReplierAPIFor`
+  ([pkg/server/webhooks_prforge.go](../pkg/server/webhooks_prforge.go)):
+  the covering App connection FIRST (mints an installation token,
+  identity `<app_slug>[bot]`), the webhook's `forge_token` binding only
+  as fallback when the connection cannot serve. The merge-gate commit
+  status is App-only — it rides the connection the publish grant names,
+  with no binding fallback at all;
+- **the bot's runtime write side** — the review comments, the verdict,
+  a `/billy` push, the reply the bot posts inside its own review thread
+  — posts through the `forge_token` PAT the run resolves from its bot
+  binding, identity = whichever user owns that PAT.
+
+`iterionBotLogins` — the shared identity set the bot-author actor guard
+(`isIterionForgeBotAuthor`), the review-request predicate
+(`isIterionBotReviewRequest`) and the per-login classifier
+(`iterionBotAuthorPredicate`) all read
+([pkg/server/webhooks_common.go](../pkg/server/webhooks_common.go)) — is
+built from the connection alone: operator-configured
+`review_request_logins` first, then `<app_slug>[bot]` on GitHub/Forgejo
+Apps, then `AccountLogin` on GitLab only. **The PAT's login is NOT in
+that set unless you list it.** Symptom: on a delivery whose actor is the
+PAT — the bot's own review comment echoing back on the `note` /
+`issue_comment` lane, or a `review_requested` naming the PAT user — the
+actor guard reads the write as a human's and either loops (re-reacts to
+its own comment) or never fires (the reviewer-request button routes
+nowhere).
+
+**What to list.** Add the PAT's login to
+[`review_request_logins`](#other-config-keys-settable-through-the-crud-api)
+on the webhook (with or without the leading `@`). It joins the shared
+identity set both halves read: the actor guard skips the PAT's writes,
+and the "Re-request review" button relaunches when that user is added
+as reviewer.
+
+**How to check the identities.** For the App side,
+`iterion remote forge refresh <conn-id>` re-probes the installation and
+prints the account it acts as (`installation`; `installation_account`
+under `--json`); `iterion remote forge connections` lists every
+connection's `account_login`. For a `forge_token` PAT there is no
+built-in whoami: you named the account when you set the token, or you
+ask the forge directly with the token in hand (`GET /user` on
+GitHub / Forgejo, `GET /api/v4/user` on GitLab).
+
+The reply-thread gate compensates in one place: `reviewReplyGateWithAPI`
+issues a live `WhoAmI` on whatever client it resolved and unions the
+answer into its own bot-identity check, so an in-thread self-reply is
+caught even when the identity is not in `iterionBotLogins`. That union
+is scoped to that one gate; the actor guard on the delivery envelope and
+the reviewer-request predicate stay driven by `iterionBotLogins`, so
+`review_request_logins` remains the knob for those two — and, on a
+setup where the connection SERVES the read side, the WhoAmI returns the
+App login rather than the PAT's, so listing the PAT stays required.
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 
@@ -452,12 +774,17 @@ statuses ([pkg/webhooks/types.go status constants](../pkg/webhooks/types.go)):
 | `invalid` | Bad payload, missing token, bot not permitted by scope |
 | `rate_limited` | Per-webhook bucket empty |
 | `quota_exceeded` | Per-org or per-webhook monthly call quota exhausted |
-| `launch_error` | The launch-admission gate refused (cost cap / run quota / concurrency / org suspended) OR the runner publisher failed |
+| `launch_error` | The launch-admission gate refused (cost cap / run quota / concurrency / org suspended) OR the launch failed after admission (bot resolution, contribution payload, queue publish). A run row the failed launch had already persisted is flipped to `failed` with `failure_code: LAUNCH_FAILED` by the publisher itself — never left `queued` with no queue message behind it |
 
 Delivery rows never carry the raw payload — only a SHA-256 hash, the
 selected fields (`event_kind`, `event_action`, `project_path`,
 `subject_id`, `subject_sha`), the source IP, and (for launched rows)
-the resulting `run_id`. Read them at
+the resulting `run_id`. A row under a real idempotency key also counts
+its launch `attempts` (1 on the first, +1 each time a `launch_error` row
+is retried under the same key) and stamps `failed_at` on a failed one —
+the unattended gate lanes read those two as their failure budget (see
+[merge-gate.md](merge-gate.md#autofix)); a forge redelivery is never
+refused on their account. Read them at
 `GET /api/teams/{id}/webhooks/{webhook_id}/deliveries` (last 100 by
 default).
 
@@ -520,13 +847,13 @@ are accepted by `POST` / `PATCH`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
+| `review_request_logins` | *(empty)* | Logins whose `review_requested` / reviewer-add delivery relaunches the reviewer, IN ADDITION to the identity derived from the connection. **This is what makes the lane work on GitHub**, where only a User account can be a requested reviewer: name a bot user reached through a `pat` connection, so the review is posted by that same account and the forge re-arms the button. Explicit only — never derived from a connection's account, which on the PAT path is typically a maintainer's own, and deriving would turn every reviewer ping addressed to that human into a bot run. The logins join the shared identity set, so the anti-loop actor guard recognises them too. Also the knob for the [mixed-identity setup](#two-identities) where a webhook rides an App connection for reads and a `forge_token` PAT for writes — list the PAT's login here so both guards recognise the bot's own posts. |
+| `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). The lane is debounced (`ITERION_WEBHOOK_SYNC_DEBOUNCE`, default `3m`): a push volley costs one review of the final head — see the GitHub section above. |
 | `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
 | `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
 | `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
 | `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
 | `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
-| `block_fork_prs` | `false` | Persisted but **never read** by any launch path — see [merge-gate.md](merge-gate.md) for what actually guards fork PRs, which differs by provider. |
 
 `authorized_repliers` / `min_replier_role` gate who may talk back to a
 bot in a note thread — see
@@ -562,3 +889,12 @@ The starter PrometheusRule pack ships an alert on
 noisy forge integration or an abusive caller. See
 [charts/iterion/README.md](../charts/iterion/README.md) for the full
 alert pack.
+
+### Authorization service failures
+
+If the forge fails while checking a command, thread reply, review request or
+approval, the webhook acknowledges the delivery with HTTP 200 and records
+`launch_error` with its cause. It neither launches work nor replies to an
+unverified actor. Check the delivery audit and restore the forge connection
+before triggering the action again. An independent automatic review on the
+same event may still proceed under its own admission rules.

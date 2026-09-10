@@ -19,11 +19,30 @@ import (
 // wildcard webhook with no provisioned CommandMap (a hand-created webhook);
 // orchestrator-provisioned webhooks carry an authoritative CommandMap and
 // never reach this.
-type commandDiscovery struct{ s *Server }
+//
+// teamID is the tenant the resolved command will LAUNCH for, so the scan
+// reads the same three tiers the launch will: a fork that renames its
+// command, or moves its args var, routes and stamps as itself, and a bot the
+// team authored is reachable at all. Empty only where a surface genuinely has
+// no tenant (the native board, one local store).
+//
+// The ctx is carried on the struct because webhooks.CommandDiscovery takes
+// none: the adapter is built per delivery and used within it, so the request's
+// cancellation still reaches the store read.
+type commandDiscovery struct {
+	s      *Server
+	ctx    context.Context
+	teamID string
+}
 
 func (d commandDiscovery) LookupCommand(cmd string) (webhooks.CommandRoute, bool) {
-	entries, err := d.s.effectiveEntries()
+	ctx := d.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entries, err := d.s.effectiveEntriesFor(ctx, d.teamID)
 	if err != nil {
+		d.s.logWarn("command discovery: cannot read the bot catalog, /%s will not resolve: %v", cmd, err)
 		return webhooks.CommandRoute{}, false
 	}
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
@@ -61,9 +80,12 @@ func commandRouteFromInvocation(botID string, inv bundle.Invocation) webhooks.Co
 	}
 }
 
-// cmdDiscovery returns the live command-discovery fallback bound to this
-// server (nil-safe — commandDiscovery handles registry errors internally).
-func (s *Server) cmdDiscovery() webhooks.CommandDiscovery { return commandDiscovery{s: s} }
+// cmdDiscoveryFor returns the live command-discovery fallback bound to this
+// server and to the tenant the resolved command will launch for (nil-safe —
+// commandDiscovery handles registry errors internally).
+func (s *Server) cmdDiscoveryFor(ctx context.Context, teamID string) webhooks.CommandDiscovery {
+	return commandDiscovery{s: s, ctx: ctx, teamID: teamID}
+}
 
 // boardRouteForLabel builds a synthetic board-mode CommandRoute for a
 // label-triggered launch (an issue gains a trigger label → run the bot).
@@ -73,15 +95,20 @@ func (s *Server) cmdDiscovery() webhooks.CommandDiscovery { return commandDiscov
 // (so a labeled issue dispatches the bot exactly like its `/command` would),
 // defaulting to the implementer contract (feature_prompt + opens an MR) — the
 // shape every label-triggered bot (featurly et al.) follows.
-func (s *Server) boardRouteForLabel(botID string) webhooks.CommandRoute {
+//
+// teamID is the tenant the card will launch for: the invocation is read from
+// the tier that will serve it, so a fork's own args var is what the issue text
+// lands in.
+func (s *Server) boardRouteForLabel(ctx context.Context, teamID, botID string) webhooks.CommandRoute {
 	route := webhooks.CommandRoute{
 		BotID:   botID,
 		Mode:    string(bundle.ExecutionBoard),
 		ArgsVar: "feature_prompt",
 		OpensMR: true,
 	}
-	entries, err := s.effectiveEntries()
+	entries, err := s.effectiveEntriesFor(ctx, teamID)
 	if err != nil {
+		s.logWarn("board route: cannot read the bot catalog, %s falls back to the default label contract: %v", botID, err)
 		return route
 	}
 	for _, e := range entries {
@@ -139,25 +166,30 @@ func (s *Server) dispatchInvocation(
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
-			// Dispatcher active: gate (per-org quota), create the card in the
-			// eligible state, and let the dispatcher own execution + state
+			// Dispatcher active: pre-check the org gate, create the card in
+			// the eligible state, and let the dispatcher own execution + state
 			// transitions — no direct launch (else the card would run twice).
 			//
-			// Idempotency BEFORE metering: gateLaunch performs the per-org
+			// Idempotency BEFORE the gate: gateLaunch performs the per-org
 			// quota CAS increment, and ensureBoardCard is idempotent on the
-			// per-comment label only AFTER that. So a webhook redelivery would
-			// re-charge the quota while creating no new card. Short-circuit to
-			// a "carded" replay when the card already exists, before gating.
+			// per-comment label only AFTER that. Short-circuit to a "carded"
+			// replay when the card already exists, before gating.
 			if s.boardCardExists(cfg, meta) {
 				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
 				writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID})
 				return
 			}
-			if _, d := s.gateLaunch(ctx); d != nil {
+			adm, d := s.gateLaunch(ctx)
+			if d != nil {
 				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 				s.writeLaunchDenial(w, r, d)
 				return
 			}
+			// A pre-check, not the metering: a card is not a run. The
+			// dispatcher passes the same gate — and meters — when it claims
+			// the card (processBoardCard), so the slot taken here is handed
+			// back at once; keeping it would charge one command two runs.
+			adm.rollback(s.logger)
 			seed()
 			s.ensureBoardCard(ctx, cfg, route, vars, meta, native.StateReady, repoURL, repoRef)
 			s.markWebhookOutcome(cfg.Provider, webhooks.StatusAccepted)
@@ -227,7 +259,7 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	// same PR. Derived rather than listed: a fixed list would mean a bot that
 	// declares a new hand-off gets it on the direct lane and silently loses it
 	// on the board lane — the failure this whole carry-list exists to prevent.
-	for _, c := range s.handoffConsumersFor(route.BotID) {
+	for _, c := range s.handoffConsumersFor(ctx, cfg.TenantID, route.BotID) {
 		carry = append(carry, c.Var)
 	}
 	for _, k := range carry {

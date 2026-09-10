@@ -1,6 +1,7 @@
 package expr
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -146,12 +147,82 @@ func TestExpr_Helpers(t *testing.T) {
 		{"sum(input.floats)", 4.0},
 		{"min(input.nums)", int64(1)},
 		{"max(input.nums)", int64(3)},
+		// Variadic form. A budget guard clamping one figure between two
+		// others — `min(max(floor, cap * ratio), cap * 0.5)` — is the
+		// shape every author writes first, and the array-only form made it
+		// unwritable: the alternative is the same two subexpressions
+		// spelled out four times inside nested `if`s, which is how a
+		// deterministic guard becomes unreadable and then wrong.
+		{"min(3, 1, 2)", int64(1)},
+		{"max(3, 1, 2)", int64(3)},
+		{"min(1.5, 2)", 1.5},
+		{"max(input.nums, 7)", int64(7)},
 	}
 	for _, c := range cases {
 		got := evalOK(t, c.src, ctx)
 		if !reflect.DeepEqual(got, c.expect) {
 			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", c.src, got, got, c.expect, c.expect)
 		}
+	}
+}
+
+// floor / round are the explicit form a division takes under an `int` field
+// (#792): both return an int64, so the compute output's declared type and
+// its value agree without the engine guessing which rounding was meant.
+func TestExpr_FloorRound(t *testing.T) {
+	ctx := makeCtx(nil, map[string]any{
+		"f":    10.58,
+		"neg":  -2.5,
+		"half": 2.5,
+		"i":    int64(7),
+		"s":    "x",
+		"inf":  math.Inf(1),
+	}, nil, nil)
+	cases := []struct {
+		src    string
+		expect any
+	}{
+		{"floor(input.f)", int64(10)},
+		{"round(input.f)", int64(11)},
+		{"floor(input.neg)", int64(-3)},
+		{"round(input.neg)", int64(-3)}, // half away from zero
+		{"round(input.half)", int64(3)},
+		{"floor(input.i)", int64(7)},
+		{"round(input.i)", int64(7)},
+		{"floor(1058 / 100.0)", int64(10)},
+		{"floor(7 * 100 / 30)", int64(23)},
+	}
+	for _, c := range cases {
+		got := evalOK(t, c.src, ctx)
+		if !reflect.DeepEqual(got, c.expect) {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", c.src, got, got, c.expect, c.expect)
+		}
+	}
+
+	errCases := []struct {
+		src      string
+		contains string
+	}{
+		{"floor(input.s)", "expects a number"},
+		{"round(input.s)", "expects a number"},
+		{"floor(input.inf)", "not a finite"},
+	}
+	for _, c := range errCases {
+		ast, err := Parse(c.src)
+		if err != nil {
+			t.Errorf("Parse(%q) error: %v", c.src, err)
+			continue
+		}
+		_, err = ast.Eval(ctx)
+		if err == nil || !strings.Contains(err.Error(), c.contains) {
+			t.Errorf("Eval(%q) error = %v, want substring %q", c.src, err, c.contains)
+		}
+	}
+
+	// A wrong argument count is refused at PARSE — it needs no values, so it
+	// must never survive to a run.
+	if _, err := Parse("floor(input.f, 2)"); err == nil || !strings.Contains(err.Error(), "takes 1 argument") {
+		t.Errorf(`Parse("floor(input.f, 2)") error = %v, want an arity refusal`, err)
 	}
 }
 

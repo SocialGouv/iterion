@@ -11,19 +11,31 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // SchemaVersion is incremented at every breaking change to the wire
-// payload. Producers always set RunMessage.V = SchemaVersion;
-// consumers reject any V they don't recognise so that a
-// rolling-upgrade always upgrades the server first (which then never
-// emits an unsupported version).
+// payload. Producers always set RunMessage.V = SchemaVersion; consumers
+// reject any V outside [MinSchemaVersion, SchemaVersion] in both directions,
+// so a rolling upgrade has to choose which side rolls first — see the
+// ordering bullet below.
 //
 // Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
-//   - Deploy the server (producer) first, then the runners. A mismatch in
+//   - Deploy the server (producer) first by default. Both orders can park a
+//     message; only one park is replayable. Old runners rejecting the new
+//     version park messages a DLQ replay fixes once the fleet is upgraded;
+//     new runners rejecting a version below their MinSchemaVersion park
+//     messages a replay can never fix (it re-publishes the same bytes). Roll
+//     the runners first only when nothing below MinSchemaVersion(new) can
+//     still be queued — automatic when the bump leaves MinSchemaVersion
+//     alone, otherwise a check against the queue, never against the old
+//     server's SchemaVersion. A mismatch in
 //     either direction is TRANSIENT, never terminal: the consumer holds the
 //     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
 //     on the DLQ with the run document flipped to an actionable status —
@@ -70,29 +82,48 @@ import (
 // silently serves STALE code/skills for an overridden bot — the exact façade
 // the platform-override feature exists to prevent. Consumers accept BOTH v8
 // and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
-// consumes old queued v8 messages. (The reverse still holds the standard
-// policy: a pre-bump runner rejects v9, so the server-first ordering — or a
-// same-release roll of both — remains required; dual-accept removes only
-// the stranded-v8-message half of the window.)
+// consumes old queued v8 messages. (The reverse does not hold — a pre-bump
+// runner rejects v9 — so the server-first ordering, or a same-release roll of
+// both, remains the default; dual-accept removes only the stranded-v8-message
+// half of the window. Rolling the runners first removes the other half, but
+// only when nothing below the new Min can still be queued: a runner-first roll
+// parks such a message UNREPLAYABLY, while a server-first one parks the new
+// version replayably. See the runbook's Deploy ordering section.)
+//
+// v=10 (2026-08-29): added Fallback so the operator's single run-level
+// fallback route (`--fallback` / launch `fallback`) reaches the runner.
+// Same failure direction as v=7: the server accepted the field and the
+// local executor honoured it, but the cloud path dropped it at publish —
+// so the one route meant to rescue a run from a provider's exhausted
+// usage window never fired precisely where runs park unattended.
+// v=11 (2026-08-30): Fallback became an ordered chain. New consumers accept
+// both the v10 object and the v11 array, while producers always emit the
+// array. A v10 runner must reject the new payload rather than run with a
+// partially decoded rescue policy.
+// v=12 (2026-09-02): added RunnerEpoch, the generation fence that prevents a
+// stale runner from admitting work published after a rollout cutover. New
+// consumers continue to accept v10/v11 messages as epoch 0; older consumers
+// must reject v12 because ignoring the field would fail the fence open.
 //
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-// v=10 (2026-08-27): ModelOverride.Effort. Dropping it makes a stale runner
-// accept the message as v9 and run each node at its DSL reasoning_effort —
-// an operator who pinned ultracode gets the bot's declared effort with no
-// signal. MinSchemaVersion stays 8: a new runner still consumes queued v8/v9.
-// v=11 (2026-08-28): added Permission so the operator's run-level tool gate
-// override reaches the cloud runner. Dropping `deny` is a silent security
-// downgrade; dropping `off` makes the documented escape hatch inert.
-const SchemaVersion = 11
+// v=13: BotBundle snapshots include sibling workflows and resources. An old
+// runner must reject them instead of silently attaching its own catalog.
+// v=14: ExecutionContext carries the resolved run/workspace/workflow/lineage
+// contract to the claiming runner. Dropping it would make cloud admission
+// disagree with local admission, so the wire version is bumped.
+// v=15: ModelOverride.Effort and the run-level Permission override from the
+// assistant branch. Stale v14 runners must reject explicit choices they
+// cannot enforce. The branch-local v10/v11 additions are renumbered here.
+const SchemaVersion = 15
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
-// bundle, env-default image"), so a v8 payload decodes into exactly the
-// pre-v9 behaviour.
-const MinSchemaVersion = 8
+// v10 → v12 is additive from the new consumer's perspective: its custom
+// decoder promotes the v10 fallback object to a one-stage chain and a missing
+// runner_epoch decodes to the bootstrap epoch 0.
+const MinSchemaVersion = 10
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -101,14 +132,19 @@ const MinSchemaVersion = 8
 //
 // Field order is stable to keep readable JSON diffs in tests.
 type RunMessage struct {
-	V            int             `json:"v"`
-	RunID        string          `json:"run_id"`
-	WorkflowName string          `json:"workflow_name"`
-	WorkflowHash string          `json:"workflow_hash"`
-	IRCompiled   json.RawMessage `json:"ir_compiled,omitempty"`
-	IRRef        *IRRef          `json:"ir_ref,omitempty"`
-	RepoURL      string          `json:"repo_url,omitempty"`
-	RepoSHA      string          `json:"repo_sha,omitempty"`
+	V            int    `json:"v"`
+	RunnerEpoch  uint64 `json:"runner_epoch,omitempty"`
+	RunID        string `json:"run_id"`
+	WorkflowName string `json:"workflow_name"`
+	WorkflowHash string `json:"workflow_hash"`
+	// ExecutionContext is the launcher's resolved, versioned context
+	// contract. The queued run document also carries it; the wire copy lets a
+	// runner fail closed even when it has not yet loaded the document.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	IRCompiled       json.RawMessage         `json:"ir_compiled,omitempty"`
+	IRRef            *IRRef                  `json:"ir_ref,omitempty"`
+	RepoURL          string                  `json:"repo_url,omitempty"`
+	RepoSHA          string                  `json:"repo_sha,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
@@ -136,6 +172,15 @@ type RunMessage struct {
 	// display-only: the studio showed an override the delegates never
 	// honoured.
 	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
+	// Fallback carries the operator's ordered run-level fallback chain so
+	// the claiming runner APPLIES it to its executor (ir.ApplyRunFallback,
+	// same screen as a local launch) — the wire mirror of
+	// store.RunFallback, same doctrine as ModelOverrides above. Without
+	// this field the cloud path accepted the launch's `fallback` and
+	// dropped it at publish: the one route meant to rescue a run from an
+	// exhausted usage window never fired on the path where runs park
+	// unattended.
+	Fallback RunFallback `json:"fallback,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
@@ -153,12 +198,9 @@ type RunMessage struct {
 	// It must remain distinct from the workflow permission because it sits
 	// ABOVE node declarations in the precedence chain.
 	Permission string `json:"permission,omitempty"`
-	// BotBundle, when set, points at the STORED bot bundle (a team-authored
-	// bot or a platform override — a pkg/botsource row) this run was
-	// resolved from. The runner fetches the row, verifies Version still
-	// matches (a racing push fails the run loudly rather than pairing this
-	// message's IR with newer resources), and materializes it as the run's
-	// bundle INSTEAD of the baked BotsPaths one. Nil = baked/loose bot.
+	// BotBundle carries the server-resolved immutable collection in v13.
+	// Legacy refs without a snapshot still resolve a stored row with a version
+	// check. Nil retains the legacy baked/loose-bot resource lookup.
 	BotBundle *BotBundleRef `json:"bot_bundle,omitempty"`
 	// SandboxImage is the effective `sandbox: auto` fallback image resolved
 	// by the PUBLISHER (platform runtime setting over the env default) and
@@ -212,11 +254,14 @@ type RunMessage struct {
 
 // BotBundleRef is the wire mirror of runview.BotBundleRef (kept local so
 // this schema package stays dependency-free — the BudgetOverrides pattern):
-// the (tenant scope, slug, version) of a stored bot-bundle row.
+// origin tuple plus an immutable collection inline or through a blob reference.
 type BotBundleRef struct {
-	TenantID string `json:"tenant_id"`
-	Slug     string `json:"slug"`
-	Version  int    `json:"version"`
+	TenantID       string          `json:"tenant_id"`
+	Slug           string          `json:"slug"`
+	Version        int             `json:"version"`
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	SnapshotDigest string          `json:"snapshot_digest,omitempty"`
+	SnapshotRef    *IRRef          `json:"snapshot_ref,omitempty"`
 }
 
 // Contributions is the wire mirror of runtime.Contributions: the plugin
@@ -274,6 +319,50 @@ type ModelOverride struct {
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Effort   string `json:"effort,omitempty"`
+}
+
+// RunFallbackEntry is one stage of the operator's run-level fallback
+// chain on the wire — the queue twin of runview.FallbackEntry.
+type RunFallbackEntry struct {
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// RunFallback is the ordered wire chain. Producers marshal it as an array;
+// UnmarshalJSON also accepts the v10 single-object form and promotes it to a
+// one-stage chain. Eligibility is decided by ir.ApplyRunFallback after decode.
+type RunFallback []RunFallbackEntry
+
+func (f *RunFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("queue: empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("queue: invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []RunFallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("queue: decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry RunFallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("queue: decode legacy fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("queue: fallback must be an object or array")
+	}
 }
 
 // IRBackend is the storage backend an IRRef points at.
@@ -375,6 +464,22 @@ func (m *RunMessage) Validate() error {
 			return fmt.Errorf("queue: IRRef.Backend %q invalid (want s3|mongo)", m.IRRef.Backend)
 		}
 	}
+	if b := m.BotBundle; b != nil && (b.SnapshotDigest != "" || len(b.Snapshot) > 0 || b.SnapshotRef != nil) {
+		if m.V < 13 {
+			return fmt.Errorf("%w: bundle snapshots require v13", ErrSchemaVersion)
+		}
+		if len(b.SnapshotDigest) != 64 || strings.Trim(b.SnapshotDigest, "0123456789abcdef") != "" {
+			return fmt.Errorf("queue: bundle snapshot digest must be lowercase SHA-256")
+		}
+		if (len(b.Snapshot) > 0) == (b.SnapshotRef != nil) {
+			return fmt.Errorf("queue: exactly one bundle snapshot payload/ref is required")
+		}
+		if b.SnapshotRef != nil {
+			if b.SnapshotRef.StorageKey == "" || (b.SnapshotRef.Backend != IRBackendS3 && b.SnapshotRef.Backend != IRBackendMongo) {
+				return fmt.Errorf("queue: invalid bundle snapshot reference")
+			}
+		}
+	}
 	return nil
 }
 
@@ -387,6 +492,7 @@ func (m *RunMessage) Validate() error {
 // status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
 	V              int    `json:"v"`
+	RunnerEpoch    uint64 `json:"runner_epoch,omitempty"`
 	RunID          string `json:"run_id"`
 	TenantID       string `json:"tenant_id"`
 	OwnerID        string `json:"owner_id,omitempty"`

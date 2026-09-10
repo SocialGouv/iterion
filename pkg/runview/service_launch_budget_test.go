@@ -6,7 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -29,6 +30,14 @@ human gate:
   interaction: human
 
 workflow budget_demo:
+  ## This test runs from inside iterion, so the run's workspace root is the
+  ## repo itself and both defaults bite: worktree defaults to auto (a full
+  ## git checkout of iterion per run) and repo_devbox to on (realising
+  ## iterion's own devbox.json, which a cold Nix cache turns into minutes).
+  ## The test only reads the persisted budget snapshot, so it wants neither
+  ## — together they made its wait for the human pause a coin flip.
+  worktree: none
+  repo_devbox: off
   budget:
     max_cost_usd: 60
     max_tokens: 5000
@@ -68,7 +77,7 @@ func TestLaunch_AppliesBudgetOverrides(t *testing.T) {
 	}
 	select {
 	case <-res.Done:
-	case <-time.After(30 * time.Second):
+	case <-runWaitContext(t).Done():
 		t.Fatal("run goroutine did not exit (expected immediate human pause)")
 	}
 
@@ -126,7 +135,7 @@ func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec Lau
 	return 1, nil
 }
 func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
-func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, string) error {
+func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
 	return nil
 }
 func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {

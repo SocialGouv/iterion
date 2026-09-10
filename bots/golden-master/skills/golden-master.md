@@ -97,7 +97,9 @@ notice that the bytes reaching the browser changed, and a scan of source files c
 6. **Stop.** The runner and the report are emitted by the workflow, not by you. Writing a
    `REPORT.md` of your own is welcome when you have something the template cannot say — your
    documented blind spots, the causes behind your canonicalisation rules — and it will not be
-   overwritten. Do not write `verify-oracle.sh`.
+   overwritten. Do not write `verify-oracle.sh`. This freedom is the RITE's: inside the extension
+   subbot the only writable paths are the extension surface, and a refusal is reported in the
+   node's `summary`, never in a file (see «Extensions: who may act, and how the gate knows»).
 
 ## Putting the runner in CI, and the three ways that job goes green without judging
 
@@ -143,6 +145,127 @@ build files, the declared toolchain lock, the wrapper. Content, never clocks: re
 mtime lie as soon as files arrive through git, which restores COMMIT timestamps, so a freshly
 imported producer can look older than the artifact it must rebuild. Anything else is app-down and
 a fresh boot from the tree. A residual state is recovered from; it is never reported as a success.
+
+## A second environment for the same corpus
+
+A migration whose point IS the environment — a second database engine, a second runtime — is
+judged by booting the app the other way and replaying **the same references**. That is one
+declaration, not a second net: `GM_CONFIG=<name>.json` names a config file beside `config.json`,
+under the net's own directory, and the harness reads it in place of `config.json`.
+
+What differs between the two files is the ENVIRONMENT: `up`, `down`, `restore`, and where the URL
+is published (`base_url_file`). What must NOT differ is the contract — the personas, the standard,
+the probes, the test command — because the whole claim is that the same corpus renders the same
+verdict on both. A config that drops `standard` reads as a standard-2 net and the ratchet refuses
+it; one that drops the probes has no inventory to check at standard 3; one that drops `test_cmd`
+scores no mutation. Copy the file and change the environment lines, nothing else.
+
+Two mechanics worth knowing before the first run:
+
+- **The verdict carries the config it judged** (`config` in the report). A green from the second
+  environment and a green from the first are otherwise the same line, and a gate command that
+  passes a variable no one reads reports the first environment's health under the second one's
+  name — measured on a campaign whose `engine-target` check ran `GM_CONFIG=config-pg.json` for
+  three lots against a judge that read `config.json`.
+- **A named config that is absent REFUSES.** It never falls back, and neither does an empty
+  `GM_CONFIG` (a variable that did not expand is not an unset variable).
+- **The held-out opt-in is read from the config being judged**, so a second environment that does
+  not declare `seal_committed` leaves the committed held-out set to the gate that does. Give the
+  second environment its own fresh set if you want it scored there too — a set is spent once.
+
+## The held-out set has to survive the run that drew it
+
+Sealing the set out of the tree is what makes the seal mechanical — the hardening loop cannot
+learn from mutants it cannot read. It is also what makes a fresh set **ephemeral**: the sealed
+pile lives under the scratch directory, keyed on the workspace path, so a workspace that dies
+with its run takes the set with it. On a pod, that is every run.
+
+A set a LATER gate must score therefore has one durable home, the tree: commit it under
+`mutants/holdout/`, and let the gate that owns it opt in (`"seal_committed": true`, or
+`GM_SEAL_COMMITTED=1` for a hand-run gate). A committed set is left in place by the seal
+precisely so it can wait for that gate.
+
+Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
+a supervising process needs to see them:
+
+- `holdout_awaiting_gate` — a set is committed and no gate has claimed it. It narrows the
+  counter-test while reading as prepared.
+- `holdout_spent_unreplaced` with `holdout_spent_cycles` — the last set was scored and published
+  under `mutants/audit/`, and no fresh one has been drawn. One cycle is a set that did its work;
+  a long run of them is a campaign whose strongest term has been vacuously true for a while.
+  Measured on a live campaign: thirteen published cycles, nothing committed, every landing
+  reporting `0/0` through a gate line that checks `detected == total`.
+- `holdout_sealed_uncommitted` — a fresh set just left the tree without a committed copy. Said at
+  the one moment anyone can still commit it.
+
+None of the three is a refusal: the judge publishes the state and the count, and the process that
+owns the campaign's cadence decides what a debt costs.
+
+## Two entries with the SAME reference — declare the mutant that tells them apart
+
+Two entries whose canonical references are byte-identical are one observation,
+not two. The corpus is then narrower than it claims, and the gate says so
+(`corpus_distinct` versus `corpus_total`).
+
+That is **not automatically a defect**. On a refusal lane the second entry is
+often a *control*: it exists to prove a mutant moved only the first. But a note
+in `REPORT.md` saying so is prose, and the gate reads data — so the claim is
+declared in `corpus.json` and **discharged by measurement**:
+
+```json
+{
+  "entries": [ ... ],
+  "duplicate_groups": [
+    {"ids": ["012", "013"], "separated_by": "sep-01"},
+    {"ids": ["074", "075", "076", "110"],
+     "separated_by": ["sep-04", "sep-05", "sep-06"]}
+  ]
+}
+```
+
+The rules, all of them enforced at the gate — `duplicate_groups_unproven` must
+be empty or the run does not converge, in the graph gate AND in
+`verify-oracle.sh`:
+
+- **The key is the CLASS, not a pairing you choose.** `duplicate_refs` reports
+  maximal equivalence classes — every id sharing one sha256 — so a class of
+  three cannot be declared as three pairs. `["a","b"]` and `["b","a"]` are the
+  same class; declaring one class **twice with different separators** is
+  refused, not resolved, because nothing can say which adjudication is meant.
+- **The separator must move a STRICT SUBSET.** A mutant that moves every member
+  no longer separates anything, and one that moves none never did. This is
+  measured: every member of a declared group is pinned into that mutant's
+  control sample, so the deciding observation always exists.
+- **Move the members you separate as DECLARED `targets`.** A member that moves
+  without being declared surfaces as `collateral`, which is its own hard gate
+  red — including for a separator drawn from the held-out set.
+- **A class of N needs enough separators for pairwise-distinct signatures.**
+  Two mutants do not tell four references apart: if `sep-05` moves 076 and 110
+  together, nothing separates those two and the class stays unproved. Add a
+  separator that moves a different subset.
+- **It is a proof obligation, not a waiver.** It goes red by itself the day a
+  lot re-anchors the separating mutant — which is exactly how two groups whose
+  notes read "settled, and proved" turned out to prove nothing at all.
+- **A declaration whose references are no longer identical is stale** and is
+  refused too: remove it or re-key it.
+
+A malformed declaration (fewer than two `ids`, an empty `separated_by`, a
+non-list container) is **named**, never dropped in silence — a dropped
+declaration would read as "this class is undeclared" and send you to write one
+you had already written.
+
+**Proving a group does not buy back width, and that is deliberate.** The floor
+is applied to `corpus_distinct`, which counts distinct baseline observations. A
+separator proves the two references are *distinguishable under mutation*; it
+does not make them two observations of the application's behaviour at rest, and
+crediting them back would let a corpus reach its floor by padding with
+controls. So the two refusals are independent: discharge the class *and* widen
+the corpus. If the gate still says the corpus is too narrow after every group
+is proved, the answer is a new entry, never a new declaration.
+
+The extension channel may write this key: the lot that ADDS an entry is the one
+that can create a new byte-identical class, so it is also the one that must
+declare its separator. Every other key outside `entries` stays frozen.
 
 ## Re-baselining, and why it kills nets
 
@@ -211,6 +334,56 @@ under pressure learns a file's convention from the file, and a ledger whose visi
 all prose teaches prose — measured: a model announcement, complete in every way except the block,
 that nothing could act on until an operator transcribed it by hand.
 
+### The extension ledger — additions, the one change a bot may grant
+
+`EXTENSIONS.md`, beside `REBASELINE.md`, carries the ADDITIVE counterpart with the opposite
+authority. A re-baseline MOVES a reference, so only a human act closes it. An extension ADDS an
+observation point — a new route, a state only modernised code reaches — and the net's own subbot
+(`extend.bot`) may act it, because an addition is checkable: it cannot mask an existing
+divergence, it can only add a constraint. Same block idiom:
+
+```
+<!-- iterion:extension-request
+{"id": "E-<lot>-<n>", "lot": "<lot-id>", "type": "add-file|add-entry",
+ "paths": ["new reference paths under refs/, if add-file"],
+ "corpus_entries": [{"id": "<new-entry-id>", "...": "the full entry, tuple included"}],
+ "justification": "one line: the observation the intent requires and the net lacks"}
+-->
+
+The certifier also reads the re-baseline ledger's spelling of the same request —
+`expected_paths` for `paths`, `entries` (a list of new entry ids) for
+`corpus_entries` — at its single parse point, so a ledger whose header taught
+that idiom keeps its requests judgeable. Write the block above; do not mix the
+two spellings in one request.
+<!-- iterion:extension-act
+{"id": "E-<lot>-<n>", "lot": "<lot-id>", "recorded_paths": ["…"], "ts": "…"}
+-->
+```
+
+An `add-entry` implies its reference: the gate demands `refs/<id>.txt` for
+every corpus entry, so the acting bot captures it (`GM_MODE=record` scoped
+with `GM_RECORD_IDS=<id,…>` — never a full re-record) and records it in the
+act; a claimed entry claims its derived reference, no `paths` line needed.
+Entry ids are file-name-safe by construction — an id carrying a path
+separator would derive a reference OUTSIDE refs/ and is refused.
+
+**A pending extension request is a conjunction term too** (`pending_extensions` in the verdict),
+for the mirrored reason: it names coverage the intent already knows is missing, and a green built
+while it waits reports that coverage anyway. No `replaces` chain here — a request that no longer
+applies is acted or withdrawn by its requester, never superseded.
+
+What the acting side is held to, mechanically (`GM_MODE=extend-verify`, judged in git against the
+run's base): every recorded path is a PURE addition — a refs/ file absent at base, or corpus
+entries where every base entry survives equal. A rewrite, a delete, or a rename (its delete side
+loses) is the masking vector wearing an addition's name → refused, re-baseline ledger, human. An
+added entry no acted request claims is smuggling → refused. An added entry whose observation
+tuple equals an existing one is a COLLISION — the tuple is the `OBSERVATION_FIELDS` allowlist
+(`method`, `path`, `persona`, `surface`, `fields`, `steps`, `params`, `query`, `body`,
+`readback`, `no_redirect`, `csrf_field`), NOT "the entry minus its id": a distinguishing field
+outside the allowlist does not disambiguate, and absent and empty compare equal. Two references
+for one observation resolve later by a cleanup that picks the masking direction → refused. The
+ledger is append-only: an edited trail audits nothing.
+
 ## The `write` surface — the only one a read-only capture cannot reach
 
 Every other surface watches a response **served**. A corruption that happens
@@ -255,8 +428,96 @@ Three rules, and each of them was learned by paying for it:
    upgrade is known to lose: semantic tags that render like presentational ones,
    attributes a renderer ignores, ordering. Those are what come back deformed.
 
+### A field that is a FILE — uploads
+
+An upload is a lane a form-encoded field cannot express at all, so it has its
+own declaration. A field whose value is an **object whose `filename` is a
+string** is a file part, and one such field makes the whole form
+`multipart/form-data`:
+
+```json
+"fields": {
+  "titre": "rapport trimestriel",
+  "document": { "filename": "rapport.csv",
+                "content_type": "text/csv",
+                "text": "annee;montant\n2024;12\n" }
+}
+```
+
+- **`text` or `b64`, exactly one** — declaring both is refused, because the
+  loser would be dropped in silence. `text` is sent as UTF-8 and keeps the
+  corpus readable and replayable by hand — prefer it. `b64` carries what text
+  cannot (a real PNG header, a byte sequence an importer chokes on). Keep the
+  payload SMALL: it is committed, and every capture replays it.
+- **`content_type` is optional** and defaults to `application/octet-stream`.
+  Declare it when the application branches on it — a rejected type is a
+  behaviour worth a reference of its own. Spell it with an **underscore**: the
+  HTTP header is `Content-Type`, and `content-type` in a corpus is refused
+  rather than ignored, because a key the harness does not read is a
+  declaration you believe you made. Those four keys — `filename`, `text`,
+  `b64`, `content_type` — are the whole vocabulary; any other is refused.
+  A media type reaches the application **as you spell it**, quotes included
+  (`text/csv; charset="utf-8"`): a `"` is legitimate syntax in a header
+  value, and only `name`/`filename` are quoted-string parameters where a
+  bare `"` would end the parameter early. CR and LF are escaped in both,
+  since either opens a header the corpus never declared.
+- **A form with no file field is urlencoded exactly as before.** Nothing
+  changes for the entries you already have.
+- **The boundary is derived, never random**, so two replays of one request are
+  byte-identical. That is what lets you leave the upload response ALONE in
+  `canon/rules.py`: a random boundary would force a canonicalisation rule
+  erasing it from every capture, and such a rule blinds the net to the region
+  of the response where the application quotes back the part it received —
+  a stored name, a validation message. Do not write that rule.
+- **A payload the harness cannot build is a named refusal, not a request.** No
+  `text` and no `b64`, both at once, an invalid base64, a non-string `text` or
+  `b64` — each stops the run with the field named. That is deliberate: a broken payload
+  sent as its own error text would record the application refusing *the
+  harness*, and a reference of that refusal can never fail again.
+- **Write `""` for an empty field, never `null`.** The two encodings disagree
+  on null — urlencoded sends the text `None`, multipart sends nothing — so the
+  same corpus line would leave differently depending on whether a *sibling*
+  field is a file. It is refused rather than guessed; `""` is exact and
+  identical in both.
+- **A near miss is refused too, and that is the one to expect.** An object or
+  a list that is NOT a file part — `file_name`, `fileName`, a `filename` that
+  is a number — has no form encoding, so both encodings would fall back to the
+  *repr* of a Python object and the reference would record the application
+  refusing that text. Get `filename` right, or you get a named refusal; you
+  never get a silently mangled request.
+- **What you declare is what is sent**, with one visible transformation: a `"`
+  or a CRLF inside a name, a filename or a content type is %-escaped
+  (`%22`, `%0D%0A`) exactly as a browser escapes it (RFC 7578 §5.1). So a
+  filename declared with a quote is *observed* in its escaped form — which is
+  the real browser behaviour, and the alternative was a truncated parameter or
+  a second part the corpus never declared.
+
 ## Honesty clause
 
 If the net cannot be made to see something, **write that down** rather than narrowing the corpus
 until it goes green. A documented blind spot is a usable engineering artefact. A green run
 obtained by removing what failed is a lie with a timestamp on it.
+
+## Extensions: who may act, and how the gate knows
+
+A lot may **ask** for a new observation point (a request block in the ledger); only
+the net's own subbot (`extend`) may **act** it. The gate does not take anyone's word
+for who acted: the subbot reports the commits it made (`acted_commits`), the request
+ids it acted and the blob it certified per surface path (`acted_blobs`); the parent
+hands them to the harness on every pass, and an act introduced by any other commit —
+or a certified path whose blob moved since — is a typed refusal (`EXTENSION_FORGED`),
+never a repair pass and never certified later by a resume from the banked branch.
+
+Practical consequences for the constrained party (the lot):
+
+- File the request, commit, and stop. Do not write refs, corpus entries or an act
+  block yourself — the gate refuses them whatever author your commits carry.
+- Do not leave anything uncommitted under the net's directory: the subbot refuses
+  to start on a dirty net, since it could not tell its own additions from yours.
+- Do not merge or rebase the base into your branch while a lot runs: the acts the
+  subbot certified are known by commit and by content; a history rewritten after
+  the subbot ran keeps its certified content and loses its shas.
+
+The git identity of the subbot's commits is set by the engine for its run and restored
+after (`golden-master extend <extend@golden-master.iterion>` by default): it is
+attribution the gate reports, not the lock — the lock is the list of commits.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -190,17 +191,7 @@ func setupConflictingRepo(t *testing.T) string {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
-			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"LC_ALL=C",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\noutput: %s", args, err, string(out))
-		}
+		gittest.Run(t, dir, args...)
 	}
 	write := func(name, content string) {
 		t.Helper()
@@ -245,16 +236,8 @@ func seedConflictRun(t *testing.T, srv *Server, repoDir, runID string) {
 	r.Status = store.RunStatusFinished
 	r.FinalBranch = "iterion/run/test"
 	// FinalCommit is the storage branch tip; resolve via git.
-	out, err := exec.Command("git", "-C", repoDir, "rev-parse", "iterion/run/test").Output()
-	if err != nil {
-		t.Fatalf("rev-parse storage: %v", err)
-	}
-	r.FinalCommit = strings.TrimSpace(string(out))
-	baseOut, err := exec.Command("git", "-C", repoDir, "merge-base", "main", "iterion/run/test").Output()
-	if err != nil {
-		t.Fatalf("merge-base: %v", err)
-	}
-	r.BaseCommit = strings.TrimSpace(string(baseOut))
+	r.FinalCommit = gittest.Run(t, repoDir, "rev-parse", "iterion/run/test")
+	r.BaseCommit = gittest.Run(t, repoDir, "merge-base", "main", "iterion/run/test")
 	if err := st.SaveRun(context.Background(), r); err != nil {
 		t.Fatalf("SaveRun seed: %v", err)
 	}

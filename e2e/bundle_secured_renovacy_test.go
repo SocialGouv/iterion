@@ -51,6 +51,7 @@ var expectedSecuredRenovacyNodes = []string{
 // that a freshly-packed bundle round-trips through the runtime loader
 // and yields a compilable workflow with the expected node structure.
 func TestBundle_SecuredRenovacy_PackOpenCompile(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/secured-renovacy")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)
@@ -110,6 +111,7 @@ func TestBundle_SecuredRenovacy_PackOpenCompile(t *testing.T) {
 // archive path. The hashes differ on purpose (OpenDir leaves Hash empty)
 // but the runtime contract is that either path yields the same graph.
 func TestBundle_SecuredRenovacy_OpenDirMatchesPack(t *testing.T) {
+	t.Parallel()
 	srcDir, err := filepath.Abs("../bots/secured-renovacy")
 	if err != nil {
 		t.Fatalf("resolve src: %v", err)
@@ -164,6 +166,7 @@ func TestBundle_SecuredRenovacy_OpenDirMatchesPack(t *testing.T) {
 // (see pkg/bundle/writer_test.go::TestPackDir_Deterministic), so hash
 // equality is the right invariant.
 func TestBundle_SecuredRenovacy_RepackMatchesShippedBotz(t *testing.T) {
+	t.Parallel()
 	shippedPath, err := filepath.Abs("../bots/secured-renovacy.botz")
 	if err != nil {
 		t.Fatalf("resolve shipped path: %v", err)

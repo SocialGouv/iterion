@@ -30,8 +30,13 @@ import (
 // a File with no error diagnostics, and ir.Compile must produce a Workflow with
 // no error diagnostics. Warnings are out of scope (the typing/consistency tests
 // own those).
+// teamBotFiles lists every workflow of the catalog, not only each bot's
+// main.bot: a sibling workflow (extend.bot, reanchor.bot, sync-harness.bot)
+// launches by the same path and must pass the same gates.
+func teamBotFiles() ([]string, error) { return filepath.Glob("*/*.bot") }
+
 func TestCatalogBotsParseAndCompileClean(t *testing.T) {
-	teamBots, _ := filepath.Glob("*/main.bot")
+	teamBots, _ := teamBotFiles()
 	demoMain, _ := filepath.Glob("../examples/*/main.bot")
 	demoLoose, _ := filepath.Glob("../examples/*.bot")
 	targets := append(append(teamBots, demoMain...), demoLoose...)

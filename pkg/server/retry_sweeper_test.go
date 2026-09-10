@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -50,6 +51,7 @@ type fakeRetryStore struct {
 	rearmed   map[string]time.Time
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
 	armOK     bool
+	circuit   *store.RetryCircuitState
 }
 
 func newFakeRetryStore() *fakeRetryStore {
@@ -90,6 +92,13 @@ func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at ti
 	return true, 2, nil
 }
 
+func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rearmed[runID] = delayedUntil
+	return true, nil
+}
+
 func (f *fakeRetryStore) ClearRunRetry(_ context.Context, runID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -104,13 +113,29 @@ func (f *fakeRetryStore) AbandonRunRetry(_ context.Context, runID, reason string
 	return nil
 }
 
+func (f *fakeRetryStore) RecordRetryFailure(_ context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+	return f.circuit, nil
+}
+
+func (f *fakeRetryStore) RetryCircuitOpen(_ context.Context, _ string, _ time.Time) (*store.RetryCircuitState, error) {
+	return f.circuit, nil
+}
+
+func (f *fakeRetryStore) RecordRetrySuccess(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 func (f *fakeRetryStore) LoadRun(_ context.Context, id string) (*store.Run, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r, ok := f.loadRun[id]; ok {
 		return r, nil
 	}
-	return &store.Run{ID: id}, nil
+	// Default to the shape a run under retry is EXPECTED to have —
+	// failed_resumable, which is what CanAutoResume() accepts. A test that
+	// wants a different status (e.g. cancelled — #663's regression)
+	// stamps loadRun[id] explicitly.
+	return &store.Run{ID: id, Status: store.RunStatusFailedResumable}, nil
 }
 
 // fakeResumer captures what the sweeper asked runview to resume.
@@ -176,6 +201,56 @@ func TestSweepDueRetries_ResumesAClaimedRun(t *testing.T) {
 	}
 }
 
+func TestSweepDueRetries_OpenCircuitDelaysWithoutSpendingAttempt(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-circuit"] = true
+	now := time.Now().UTC()
+	openUntil := now.Add(20 * time.Minute)
+	st.circuit = &store.RetryCircuitState{Key: "workflow:rev-1", OpenUntil: &openUntil}
+	st.loadRun["run-circuit"] = &store.Run{
+		ID:           "run-circuit",
+		Status:       store.RunStatusFailedResumable,
+		WorkflowHash: "rev-1",
+		RetryPolicy:  &store.RunRetryPolicy{MaxWait: "1h", Jitter: "0s"},
+	}
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-circuit", at)}}, resumer, time.Now().UTC())
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times while circuit is open", len(resumer.calls))
+	}
+	if got := st.rearmed["run-circuit"]; !got.Equal(openUntil) {
+		t.Fatalf("delayed retry = %v, want circuit open_until %v", got, openUntil)
+	}
+	if _, charged := st.armBudget["run-circuit"]; charged {
+		t.Fatal("circuit delay called ScheduleRunRetry and consumed another attempt")
+	}
+}
+
+func TestCircuitRetryDelaySpreadsRunsAndHonorsOriginalHorizon(t *testing.T) {
+	now := time.Now().UTC()
+	scheduledAt := now.Add(-10 * time.Minute)
+	dueAt := now.Add(-time.Minute)
+	openUntil := now.Add(20 * time.Minute)
+	ref := dueRef("spread", dueAt)
+	ref.RetryState.ScheduledAt = &scheduledAt
+	run := &store.Run{RetryPolicy: &store.RunRetryPolicy{MaxWait: "1h", Jitter: "5m"}}
+	delayed, ok := circuitRetryDelayAt(ref, run, &store.RetryCircuitState{OpenUntil: &openUntil}, now)
+	if !ok || delayed.Before(openUntil) || delayed.After(openUntil.Add(5*time.Minute)) {
+		t.Fatalf("jittered delay = %v, ok=%t; want [%v,%v]", delayed, ok, openUntil, openUntil.Add(5*time.Minute))
+	}
+
+	expiredAnchor := now.Add(-2 * time.Hour)
+	ref.RetryState.ScheduledAt = &expiredAnchor
+	run.RetryPolicy.Jitter = "0s"
+	if delayed, ok := circuitRetryDelayAt(ref, run, &store.RetryCircuitState{OpenUntil: &openUntil}, now); ok || !delayed.IsZero() {
+		t.Fatalf("expired max_wait horizon delayed retry to %v", delayed)
+	}
+}
+
 // TestSweepDueRetries_TransientDenialReArms pins the denial classification: a
 // monthly quota refills on the 1st and a concurrency cap clears in minutes,
 // so those must defer the retry rather than throw the run away.
@@ -191,6 +266,50 @@ func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
 		}
 	}
 }
+
+// TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead pins #663:
+// stop-on-close can land between ClaimRunRetry winning and the SubmitResume
+// CAS. Without the pre-Resume Auto check, the sweeper republishes a queue
+// message whose priorStatus is `cancelled` and (in production) both store
+// twins clear run.Error on the `cancelled → queued` transition, so the
+// delivery lands without the PR-closed marker on the doc — structurally
+// unreachable from the runner admission guard. The pre-Resume check MUST
+// abandon the retry with a reason naming the current status.
+func TestSweepDueRetries_ResumeRefusedIfRunCancelledBeforeRead(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-cancelled"] = true
+	// stop-on-close raced past ClaimRunRetry: the run doc reads cancelled
+	// with the PR-closed reason on run.Error.
+	st.loadRun["run-cancelled"] = &store.Run{
+		ID:     "run-cancelled",
+		Status: store.RunStatusCancelled,
+		Error:  store.RunEndReasonPRClosed.Message() + " (was failed_resumable: node \"campaign\": rate_limited)",
+	}
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-cancelled", at)}}, resumer, time.Now().UTC())
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times on a cancelled run — the sweeper would have re-run a review on a merged PR (#663)", len(resumer.calls))
+	}
+	got, ok := st.abandoned["run-cancelled"]
+	if !ok {
+		t.Fatalf("abandonRetry was not called on the cancelled run — the retry stays claimable and the next sweep tick will hit the same race")
+	}
+	// The abandon reason MUST name the status so an operator debugging a
+	// stopped retry gets a clear signal ("run is cancelled …") rather than
+	// a mystery drop.
+	if !strings.Contains(got, "cancelled") {
+		t.Fatalf("abandon reason must name the status, got %q", got)
+	}
+}
+
+// The two resume boundaries refuse the same automatic resume of a cancelled
+// run: runview (TestValidateResumable_AutomaticRefusesCancelled) and the
+// publisher, doc and queue untouched (cloudpublisher's
+// TestSubmitResume_AutomaticRefusesCancelled).
 
 func TestSweepDueRetries_LostClaimDoesNotResume(t *testing.T) {
 	st := newFakeRetryStore() // claimWins empty → every claim loses
@@ -208,7 +327,12 @@ func TestSweepDueRetries_LostClaimDoesNotResume(t *testing.T) {
 func TestSweepDueRetries_FailedResumeReArmsWithinBudget(t *testing.T) {
 	st := newFakeRetryStore()
 	st.claimWins["run-a"] = true
-	st.loadRun["run-a"] = &store.Run{ID: "run-a", RetryPolicy: &store.RunRetryPolicy{MaxAttempts: 4}}
+	// A run under retry MUST be failed_resumable (CanAutoResume=true) for
+	// the pre-Resume Auto check to admit it into the resumer.
+	st.loadRun["run-a"] = &store.Run{
+		ID: "run-a", Status: store.RunStatusFailedResumable,
+		RetryPolicy: &store.RunRetryPolicy{MaxAttempts: 4},
+	}
 	resumer := &fakeResumer{failing: errors.New("publish blip")}
 	s := newRetrySweeperServer(t, st, resumer)
 
@@ -311,6 +435,58 @@ func TestSweepDueRetries_AbandonRepublishesTheRunOutcome(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no run outcome republished on abandon — the reconciler never learns the run is permanently dead")
+	}
+}
+
+// A run parked on the DLQ (final for automation — the gate reconciler has
+// already posted the synthetic failure and relaunched once per head) that
+// still carries an armed retry_after must be DISARMED, not resumed: a
+// resume here runs the bot a second time on the same PR head, sharing one
+// gate context. And the disarm must not replay the run's outcome event —
+// the DLQ notice keys on that event firing once per park.
+func TestSweepDueRetries_DLQParkedRunIsDisarmedNotResumed(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-dlq"] = true
+	st.loadRun["run-dlq"] = &store.Run{
+		ID: "run-dlq", TenantID: "team-1",
+		Status:            store.RunStatusFailedResumable,
+		FailureCode:       store.FailureDLQParked,
+		ContinuationState: store.ContinuationFinal,
+	}
+	resumer := &fakeResumer{}
+	// Local mode on purpose: the fixture bot resolves, so the only thing
+	// between the claim and a Resume call is the DLQ guard.
+	s := newRetrySweeperServer(t, st, resumer)
+
+	bus := eventbus.NewInProcBus(nil)
+	s.cfg.EventsBus = bus
+	replayed := make(chan trigger.Event, 1)
+	if _, err := bus.Subscribe("probe", trigger.Matcher{
+		Sources: []trigger.Source{trigger.SourceRun},
+		Kinds:   []string{trigger.KindRunFailed},
+	}, func(_ context.Context, ev trigger.Event) error {
+		replayed <- ev
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-dlq", time.Now().UTC().Add(-time.Minute))}}, resumer, time.Now().UTC())
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times for a DLQ-parked run, want 0 — two runs of the bot on one PR head sharing one gate context", len(resumer.calls))
+	}
+	reason, ok := st.abandoned["run-dlq"]
+	if !ok {
+		t.Fatal("the stale retry was not disarmed — the next sweep tick claims it again")
+	}
+	if !strings.Contains(reason, "DLQ") {
+		t.Fatalf("abandon reason = %q, want it to name the DLQ park", reason)
+	}
+	select {
+	case ev := <-replayed:
+		t.Fatalf("the park's outcome was replayed (%s) — the DLQ notice has no dedup of its own and would post on the PR a second time", ev.Kind)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

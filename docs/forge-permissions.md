@@ -84,12 +84,59 @@ Prefer narrowing the *connection*, not the user:
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
   permissions in its manifest (`contents:write`, `pull_requests:write`,
   `issues:write` for posting the PR/MR back-link on the source issue,
-  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook),
-  scoped to the repos the App is installed on. It deliberately does **not**
+  `metadata:read`, `repository_hooks:write` for the per-repo inbound webhook,
+  `statuses:write` for the merge-gate verdict, `checks:read` for the board
+  card's CI panel — it lists a ref's check-runs), scoped to the repos the App
+  is installed on. It deliberately does **not**
   request `administration` (repo deletion/settings/teams/branch-protection) —
   that is over-privileged, and per GitHub docs webhooks require
   `repository_hooks`, not `administration`. The right answer for production: bots get only
   what they need, and PRs are authored by a clearly-non-human bot identity.
+  Tokens are minted **per call family**, each narrowed to the grants its
+  endpoint is gated on ([`pkg/forge/github/app_client.go`](../pkg/forge/github/app_client.go),
+  the `*InstallationPermissions` profiles): the token a bot pushes with never
+  carries `checks`, and the token the CI panel reads with never carries a
+  write.
+
+  **Existing installations must re-approve a permission added after they
+  were installed.** GitHub never widens an installation silently: when the
+  App's requested set grows (`statuses:write` for the merge gate,
+  `checks:read` for the CI panel), every installation shows a *pending
+  permission request* that an org owner approves — org **Settings → GitHub
+  Apps → Configure** on the App, the page the connection health view returns
+  as `manage_install_url` — and an App created before the permission existed
+  must first add it under **Permissions & events** in its own settings. Until
+  then the surface that needs it says so instead of failing silently: the
+  card's CI panel answers `422` naming `checks:read` and the page to approve
+  it on, the health view lists it under `missing_ci_permissions`
+  (`iterion remote forge connections refresh <id>` prints the same line), and
+  nothing else on the connection is affected — the runtime token is never
+  minted with it.
+
+  **One client per connection.** The server keeps a single App client per
+  connection per replica ([`githubAppClientFor`](../pkg/server/forge_clients.go)),
+  so the management token and each scoped profile are minted once per token
+  lifetime (~1h) and reused by every lane and delivery — not minted again by
+  each call. The entry is valid only while the connection state it was built
+  from is unchanged (installation, App id + key, status, granted permissions,
+  slug): a re-provisioned App, a synced grant, a revocation or a key rotation
+  builds a fresh client; deleting the connection or hitting its `refresh`
+  route evicts it. The App's identity — the `<slug>[bot]` login the loop
+  guards compare a commenter against — is the configured slug, else the one
+  `GET /app` answers, resolved once and recorded on the connection (the
+  refresh worker records it too), never a placeholder. The management token
+  that client mints — the one the server's own calls ride: hooks, the merge
+  gate's commit status, the PR review, the commenter's role — is narrowed to
+  the baseline grants the installation **recorded as approved**
+  (`ManagementPermissionsFor`, the health probe keeps the record in step),
+  plus `statuses:write` when the grant carries it; an installation approved
+  with less than the baseline still mints the intersection, and what it
+  withholds is known before any write (`PreflightFor`) rather than
+  discovered as a 403. A 403 the forge does answer on a commit-status call —
+  a grant revoked after the mint — is recorded on that token too, so the next
+  preflight reports `statuses` withheld and the lane takes its fallback
+  (the webhook's `forge_token` binding) instead of failing the same write
+  for the rest of the token's life.
   **Self-service** (no platform App, no manual registration): Integrations →
   "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds
   the scoped App via manifest and captures its private key), then the **"Install"**
@@ -116,6 +163,19 @@ first-class **GitHub App** on GitHub, whereas on GitLab/Forgejo you approximate
 least-privilege with a **scoped service-account / project token** connected as a
 `pat`. Clients: [pkg/forge/gitlab/client.go](../pkg/forge/gitlab/client.go),
 [pkg/forge/forgejo/client.go](../pkg/forge/forgejo/client.go).
+
+## The face on the connection — the iterion-bot avatar
+
+Whatever the kind, the operator sees the connection's account on every comment
+it posts. iterion gives that account the mascot of the official `iterion-bot`
+GitHub account wherever the forge lets it: **automatically** for a GitLab
+account the forge flags as a bot (a group/project access token's bot user, a
+service account — `PUT /user/avatar`, GitLab ≥ 17.0), **on request** for a
+dedicated account it cannot flag (Forgejo; a hand-made `iterion-bot` user),
+**never** for an OAuth connection (it authenticates as the person who
+authorized it), and **by hand** for a GitHub App (no logo API — the studio
+hands over the file and the settings page). Runbook, endpoint and escape
+hatch: [brand.md](brand.md).
 
 ## Audit — correlating a forge action back to a person
 

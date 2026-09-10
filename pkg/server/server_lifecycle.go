@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -15,6 +18,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
+)
+
+// Forge refresh cadence. The invariant is Lead > tick period: a GitHub App
+// installation token lives 1h and RunOnce only refreshes what expires within
+// Lead, so with Lead below the tick period a token can go from "not yet due"
+// to "expired" between two ticks. The refresh then lands AT expiry — and
+// because the next mint inherits that phase (mint at T ⇒ expiry T+1h ⇒ next
+// mint at the first tick ≥ T+1h−Lead), the connection locks onto an
+// always-refreshed-at-death cycle: any run whose launch minute sits just
+// before the lock point is sealed a token with seconds of life, its clones
+// and pushes failing "Invalid username or token" / "could not read Username"
+// (Senti's hourly `17 * * * *` vs a :17:24 lock, 2026-09-03). With
+// Lead > tick, every token is re-minted 5–15 minutes BEFORE expiry, so a
+// sealed token always carries at least Lead − tick of remaining life.
+const (
+	forgeRefreshLead = 15 * time.Minute
+	forgeRefreshTick = 10 * time.Minute
 )
 
 // Addr returns the actual bound address (host:port) once ListenAndServe has
@@ -43,7 +63,43 @@ func (s *Server) ListenAndServe() error {
 	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
 		s.cfg.Port = tcpAddr.Port
 	}
+	// The listener bind is the last fallible boot step. Only now may a new
+	// generation advance the durable high-water mark: a bad dependency,
+	// configuration, metrics bind, or HTTP bind must leave the previous
+	// generation restartable. No request or background worker can race this
+	// callback because Serve has not started yet.
+	if s.cfg.ClaimRunnerEpoch != nil {
+		highWater, superseded, claimErr := s.cfg.ClaimRunnerEpoch()
+		if claimErr != nil {
+			_ = ln.Close()
+			close(s.addrReady)
+			return fmt.Errorf("server: claim rollout epoch: %w", claimErr)
+		}
+		s.cfg.HighWaterEpoch = highWater
+		s.cfg.Superseded = superseded
+	}
 	close(s.addrReady)
+	// A process that started below the durable rollout high-water mark is
+	// deliberately kept alive so /healthz and /readyz explain why the pod is
+	// parked. It must not, however, start any of the background coordinators
+	// below: several of them win one-shot CAS claims before launching a run,
+	// and the queue fence would then reject that launch after the claim was
+	// irreversibly consumed. Serve diagnostics only; readiness keeps this pod
+	// out of the Service and the queue layer remains the publication backstop.
+	if s.cfg.Superseded {
+		s.logger.Error("server: superseded epoch — background workers disabled; serving diagnostics only")
+		s.server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/healthz":
+				s.handleHealthz(w, r)
+			case "/readyz":
+				s.handleReadyz(w, r)
+			default:
+				http.Error(w, "server generation superseded", http.StatusServiceUnavailable)
+			}
+		})
+		return s.server.Serve(ln)
+	}
 	// Sweep abandoned upload staging dirs in the background. Without
 	// this, attachments uploaded for runs that never launched (operator
 	// closed the modal, browser crashed mid-upload, etc.) accumulate
@@ -81,7 +137,7 @@ func (s *Server) ListenAndServe() error {
 		}
 		var launcher trigger.Launcher
 		if s.runs != nil {
-			launcher = newServiceLauncher(s.runs, s.logger, s.resolveRunRetryPolicy, s.resolveBotSource)
+			launcher = s.triggerLauncher()
 		}
 		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.cfg.EventsBus, s.logger)
 	}
@@ -93,8 +149,8 @@ func (s *Server) ListenAndServe() error {
 	if s.cfg.NativeTrackerStore == nil && s.cfg.CloudBoardCoordinator != nil && s.cfg.TriggerStore != nil && s.runs != nil {
 		s.cloudTriggerCoord = StartCloudTriggerCoordinator(
 			s.cfg.CloudBoardCoordinator, s.cfg.TriggerStore,
-			newServiceLauncher(s.runs, s.logger, s.resolveRunRetryPolicy, s.resolveBotSource),
-			s.cfg.EventsBus, s.logger)
+			s.triggerLauncher(),
+			s.boardProjection(), s.cfg.EventsBus, s.logger)
 	}
 	// Wire the run-completion source onto the process's single event spine
 	// (the injected EventsBus, which the trigger coordinator also rides
@@ -108,8 +164,12 @@ func (s *Server) ListenAndServe() error {
 		}
 	}
 	s.startUserNotify()
+	s.startOperatorAlerts()
 	s.startGateReconciler()
+	s.startForgePublishGrantExpiry()
+	s.startBoardSync()
 	s.startGateAutofix()
+	s.startOutcomeRouter()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the
@@ -137,7 +197,7 @@ func (s *Server) ListenAndServe() error {
 			Sealer:         s.sealer,
 			RefresherFor:   s.forgeRefresherFor,
 			SecurityMinter: s.forgeSecurityTokenMinter,
-			Lead:           5 * time.Minute,
+			Lead:           forgeRefreshLead,
 		}
 		go func() {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -146,7 +206,14 @@ func (s *Server) ListenAndServe() error {
 				<-s.shutdown
 				cancel()
 			}()
-			t := time.NewTicker(10 * time.Minute)
+			// Boot sweep: a rolling deploy re-phases the ticker below onto the
+			// new pod's start time, so a token that was about to be refreshed by
+			// the old replica's next tick could otherwise sit dying until this
+			// replica's first tick, up to a full period away.
+			if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("forge token refresh: %v", err)
+			}
+			t := time.NewTicker(forgeRefreshTick)
 			defer t.Stop()
 			for {
 				select {
@@ -160,43 +227,7 @@ func (s *Server) ListenAndServe() error {
 			}
 		}()
 	}
-	// OAuth-forfait token refresh: proactively rotate Claude Code (and
-	// Codex) subscription access tokens before they expire so neither an
-	// interactive run nor an automated (webhook/dispatcher/cron) run ever
-	// reads a stale credential. Covers personal AND org-scoped records.
-	// No-op without a store/sealer or any configured client id.
-	if s.oauthStore != nil && s.sealer != nil && (s.cfg.AnthropicOAuthClientID != "" || s.cfg.CodexOAuthClientID != "") {
-		worker := &secrets.OAuthRefreshWorker{
-			Store:             s.oauthStore,
-			Sealer:            s.sealer,
-			HTTP:              s.httpClient,
-			AnthropicClientID: s.cfg.AnthropicOAuthClientID,
-			CodexClientID:     s.cfg.CodexOAuthClientID,
-			Lead:              30 * time.Minute,
-		}
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-s.shutdown
-				cancel()
-			}()
-			t := time.NewTicker(10 * time.Minute)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
-						s.logger.Warn("oauth-forfait refresh: %v", err)
-					} else if n > 0 && s.logger != nil {
-						s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
-					}
-				}
-			}
-		}()
-	}
+	s.startOAuthForfaitRefresh()
 	// Forge → board issue sync (cloud only): periodically mirror every
 	// sync-enabled repo's forge issues onto its team board. Off unless a
 	// cloud board + the integration store are wired. See board_forge.go.
@@ -283,6 +314,20 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("merge-gate sweeper NOT started: the store does not implement ListNotifiableRuns — " +
 			"a review whose outcome event is dropped will leave its required check absent forever")
 	}
+	// Webhook push-debounce sweeper: launches synchronize reviews parked for
+	// their quiet window (webhooks_debounce.go). Multi-replica-safe via the
+	// store lease. Absent when no deferred store is wired or the window is 0.
+	if s.webhookDeferred != nil && s.syncDebounce > 0 {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runWebhookDeferSweeper(ctx)
+		}()
+	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
 	if s.cfg.ScheduledBots != nil {
@@ -320,7 +365,19 @@ func (s *Server) ListenAndServe() error {
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).
 	if s.cfg.CloudBoardCoordinator != nil {
 		marker := "board-dispatcher:" + uuid.NewString()
+		// Shutdown WAITS on this (bounded): the drain's final writes —
+		// release the claim, leave the card in place — run on a detached
+		// 10s context, and a process that exits without waiting kills
+		// them anyway, which is exactly the stranded-claim state the
+		// drain arm exists to prevent. Written under stateMu: the bare
+		// field write raced Shutdown's read (-race), and a SIGTERM during
+		// boot skipped the wait entirely.
+		done := make(chan struct{})
+		s.stateMu.Lock()
+		s.boardDispDone = done
+		s.stateMu.Unlock()
 		go func() {
+			defer close(done)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
@@ -328,6 +385,9 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			d := newBoardDispatcher(s.cfg.CloudBoardCoordinator, s.processBoardCard, marker, 4, s.logger)
+			// Pre-claim admission: a card that cannot be launched is skipped
+			// in its column, never claimed and parked.
+			d.admit = s.admitBoardCard
 			// Parked-card sweep wiring: read a run's status tenant-scoped,
 			// and clear the denormalized ⏸ badge when the sweep moves a card.
 			d.statusFor = s.boardRunStatus
@@ -351,6 +411,116 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.logger.Info("Editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 	return s.server.Serve(ln)
+}
+
+// oauthRefreshWorker builds the forfait refresh sweep, or nil when this
+// deployment has nothing to sweep with (no store, no sealer, no client id
+// for either kind). One builder for both callers — the periodic loop and
+// the out-of-band kick a connect fires — so neither can drift into
+// sweeping with a different lead or a different logger.
+func (s *Server) oauthRefreshWorker() *secrets.OAuthRefreshWorker {
+	if s.oauthStore == nil || s.sealer == nil || (s.cfg.AnthropicOAuthClientID == "" && s.cfg.CodexOAuthClientID == "") {
+		return nil
+	}
+	return &secrets.OAuthRefreshWorker{
+		Store:             s.oauthStore,
+		Sealer:            s.sealer,
+		HTTP:              s.httpClient,
+		AnthropicClientID: s.cfg.AnthropicOAuthClientID,
+		CodexClientID:     s.cfg.CodexOAuthClientID,
+		Lead:              30 * time.Minute,
+		Logger:            s.logger,
+	}
+}
+
+// kickOAuthRefresh runs ONE sweep out of band, off the request that
+// triggered it. It exists for the connect path: a credential uploaded
+// already expired is accepted on the promise that the worker renews it,
+// and without this that promise is up to a ticker period away — minutes in
+// which every run drawing the credential is handed a token the server
+// knows is dead.
+//
+// Detached from the request context (which dies with the response) and
+// bounded on its own, best-effort throughout: the upload has already
+// succeeded, and a provider that is down must not turn into a failed
+// connect. The claim makes it safe to overlap with the periodic sweep —
+// whichever gets there first does the exchange.
+func (s *Server) kickOAuthRefresh(ownerKey string, kind secrets.OAuthKind) {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
+		return
+	}
+	errtrack.Go("server.oauthRefreshOnConnect", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), oauthConnectRefreshTimeout)
+		defer cancel()
+		// The count is the SWEEP's, not this owner's: RunOnce is a full pass
+		// over every due record, and reading "owner=X … rotated 3" as three
+		// rotations of X's credential would be wrong on any deployment with
+		// more than one. The owner/kind name what TRIGGERED the pass.
+		if n, err := worker.RunOnce(ctx); err != nil {
+			s.logger.Warn("oauth-forfait refresh, swept on connect of owner=%s kind=%s: %v", ownerKey, kind, err)
+		} else if n > 0 {
+			s.logger.Info("oauth-forfait refresh, swept on connect of owner=%s kind=%s: rotated %d token(s) across all due records", ownerKey, kind, n)
+		}
+	})
+}
+
+// oauthConnectRefreshTimeout bounds that kick. Generous enough for the
+// exchange's three attempts at the 15s client timeout, short enough that a
+// hanging provider cannot keep a goroutine (and a refresh claim) alive
+// across the next periodic sweep.
+const oauthConnectRefreshTimeout = time.Minute
+
+// startOAuthForfaitRefresh runs the OAuth-forfait refresh sweep: proactively
+// rotate Claude Code (and Codex) subscription access tokens before they
+// expire so neither an interactive run nor an automated
+// (webhook/dispatcher/cron) run ever reads a stale credential. Covers
+// personal AND org-scoped records. No-op without a store/sealer or any
+// configured client id.
+//
+// Its own method so the boot sweep below is reachable from a test — the
+// hazard it closes is invisible in a unit test of RunOnce, which is exactly
+// how it went missing.
+func (s *Server) startOAuthForfaitRefresh() {
+	worker := s.oauthRefreshWorker()
+	if worker == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-s.shutdown
+			cancel()
+		}()
+		sweep := func() {
+			if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+				s.logger.Warn("oauth-forfait refresh: %v", err)
+			} else if n > 0 && s.logger != nil {
+				s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
+			}
+		}
+		// Boot sweep, for the same reason as the forge worker above: a
+		// restart re-phases the ticker onto this pod's start time, so a
+		// token the old replica was about to rotate would otherwise sit
+		// expired until this replica's first tick — ten minutes in which the
+		// publisher hands out a credential it knows is dead (it seals what
+		// the store holds; no tier checks the expiry). It also covers a
+		// connect: an expired-but-refreshable record is accepted on the
+		// promise that "the refresh worker renews it on its next pass", and
+		// after a restart that pass is a full period away.
+		sweep()
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
 }
 
 // startUserNotify builds the usernotify dispatcher (web-push sink), attaches
@@ -396,6 +566,66 @@ func (s *Server) startUserNotify() {
 		go sweeper.Start(sweepCtx)
 	}
 	s.logger.Info("server: user notifications enabled (web push)")
+}
+
+// startOperatorAlerts builds the operator-alert dispatcher — the cloud twin
+// of the in-process alert Manager, which is fed by file tails and in-process
+// engine observers only and therefore never sees a runner pod's failures
+// (the 2026-08-31 five silent parked digests). Bus-fed with a sweep net,
+// episodes deduped through the shared sent-notifications claim store.
+func (s *Server) startOperatorAlerts() {
+	if s.cfg.AlertsWebhookURL == "" || s.runs == nil {
+		return
+	}
+	if s.cfg.NotificationSent == nil {
+		// Without the claim store every replica AND the sweep would re-send
+		// each episode. Loud refusal beats a spamming alert channel.
+		s.logger.Warn("server: operator alerts configured but no episode-claim store wired — disabled (wire NotificationSent)")
+		return
+	}
+	rs := s.runs.RunStore()
+	if rs == nil {
+		return
+	}
+	var sinks []alert.Sink
+	if wh := alert.NewWebhookSink(s.cfg.AlertsWebhookURL, s.logger); wh != nil {
+		sinks = append(sinks, wh)
+	}
+	if tk := alert.NewTrackerSink(); tk != nil {
+		sinks = append(sinks, tk)
+	}
+	d := &alert.OpsDispatcher{
+		Runs:    rs,
+		Claims:  s.cfg.NotificationSent,
+		Sinks:   sinks,
+		BaseURL: s.cfg.PublicURL,
+		Logger:  s.logger,
+	}
+	s.opsAlerts = d
+	bus := s.cfg.EventsBus
+	if bus == nil && s.triggerCoord != nil {
+		bus = s.triggerCoord.Bus()
+	}
+	if bus != nil {
+		cancel, err := bus.Subscribe(alert.OpsSubscriberName, trigger.Matcher{
+			Sources: []trigger.Source{trigger.SourceRun},
+			Kinds:   []string{trigger.KindRunFailed},
+		}, d.Handle)
+		if err != nil {
+			s.logger.Warn("server: operator-alert bus subscribe failed (sweep-only delivery): %v", err)
+		} else {
+			s.opsAlertsCancel = cancel
+		}
+	}
+	if s.cfg.NotifiableRuns != nil {
+		sweepCtx, cancelSweep := context.WithCancel(context.Background())
+		go func() {
+			<-s.shutdown
+			cancelSweep()
+		}()
+		go d.RunOpsSweep(sweepCtx, s.cfg.NotifiableRuns)
+	}
+	s.logger.Info("server: operator alerts enabled (parked/failed runs → webhook)")
 }
 
 // drainBudgetShare is the fraction of the caller's shutdown deadline the
@@ -494,6 +724,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.triggerCoord != nil {
 		s.triggerCoord.Close()
 	}
+	if s.opsAlertsCancel != nil {
+		s.opsAlertsCancel()
+	}
 	if s.userNotifyCancel != nil {
 		s.userNotifyCancel()
 	}
@@ -501,8 +734,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.gateAutofixCancel()
 		s.gateAutofixCancel = nil
 	}
+	if s.outcomeRouterCancel != nil {
+		s.outcomeRouterCancel()
+		s.outcomeRouterCancel = nil
+	}
+	if s.boardSyncCancel != nil {
+		s.boardSyncCancel()
+	}
 	if s.gateReconcileCancel != nil {
 		s.gateReconcileCancel()
+	}
+	if s.forgePublishExpiryCancel != nil {
+		s.forgePublishExpiryCancel()
+		s.forgePublishExpiryCancel = nil
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()
@@ -517,5 +761,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	default:
 		close(s.shutdown)
 	}
-	return s.server.Shutdown(ctx)
+	// The board dispatcher's drain (in-flight cards left in place, claims
+	// released on a detached 10s context) runs concurrently with the HTTP
+	// shutdown below — waiting for it BEFORE server.Shutdown carved a
+	// third serial segment out of the grace period and starved the HTTP
+	// drain the budget arithmetic was sized for. Wait AFTER instead: the
+	// only requirement is that the PROCESS not exit mid-release, and the
+	// dispatcher drains while HTTP connections wind down.
+	err := s.server.Shutdown(ctx)
+	s.stateMu.RLock()
+	boardDone := s.boardDispDone
+	s.stateMu.RUnlock()
+	if boardDone != nil { // nil when the cloud board dispatcher never started
+		// Bounded by ctx only: a caller shutting down with no deadline
+		// waits for the drain however long it takes (the drain's own claim
+		// releases run on a detached 10s context, so in practice this is
+		// bounded by that — but the bound is the drain's, not ours).
+		select {
+		case <-boardDone:
+		case <-ctx.Done():
+			s.logger.Warn("shutdown: board dispatcher drain still running at the deadline — in-flight claim releases may be cut")
+		}
+	}
+	return err
 }

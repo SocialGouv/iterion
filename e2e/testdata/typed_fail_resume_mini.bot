@@ -1,0 +1,45 @@
+## typed_fail_resume_mini.bot — fixture for the RESUME half of a
+## `resumable: true` fail node.
+##
+## The guard reads the run's effective cost cap and refuses while it is
+## under $1. That makes the refusal a pure function of the budget, so
+## `iterion resume --max-cost-usd 10` is the operator action the promise
+## names — and re-running the GUARD is the only way it can be seen.
+##
+## The readout is which nodes execute on the resume: the guard again (now
+## taking its `else` edge) and `implement`, never `plan_exhausted`.
+
+schema gauge:
+  cap: float
+  exhausted: bool
+
+schema note:
+  value: string
+
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    cap: "run.max_cost_usd"
+    exhausted: "run.max_cost_usd < 1"
+
+compute implement:
+  output: note
+  expr:
+    value: "'implemented'"
+
+fail plan_exhausted:
+  code: PLAN_BUDGET_EXHAUSTED
+  message: "the plan phase has only {{outputs.plan_budget_gate.cap}} USD to work with — raise --max-cost-usd and resume"
+  resumable: true
+
+workflow typed_fail_resume_mini:
+  worktree: none
+  sandbox: none
+  entry: plan_budget_gate
+
+  budget:
+    max_cost_usd: 0.5
+
+  plan_budget_gate -> plan_exhausted when exhausted
+  plan_budget_gate -> implement else
+  implement -> done

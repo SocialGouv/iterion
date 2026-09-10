@@ -20,6 +20,11 @@ const (
 	// state change on a ticket that no human asked for, so it gets its own
 	// audit record rather than an anonymous issue_updated.
 	EvtIssueGaveUp EventType = "issue_gave_up"
+	// EvtIssueLaunchRefused is emitted when the dispatcher's launch-refusal
+	// ledger is written or cleared on an issue (see Issue.LaunchRefusal).
+	// Payload: {refused: bool, attempts, not_before, reason}. An audit
+	// record, not a card event: the trigger spine does not consume it.
+	EvtIssueLaunchRefused EventType = "issue_launch_refused"
 	// EvtIssueBlockersUpdated is emitted when an issue's blockers list changes
 	// (create-with-blockers, Update patch). Payload: {blockers: []string}.
 	EvtIssueBlockersUpdated EventType = "issue_blockers_updated"

@@ -26,6 +26,7 @@ type File struct {
 	Emits        []*EmitDecl         // emit node declarations (publish a run-scoped event)
 	Waits        []*WaitDecl         // wait node declarations (block until a run-scoped event)
 	AwaitAnswers []*AwaitAnswersDecl // await_answers node declarations (block until async questions are answered)
+	Fails        []*FailDecl         // named terminal failure nodes carrying a typed code / message
 	Groups       []*GroupDecl        // reusable node-cluster declarations (compile-time macros)
 	Uses         []*UseDecl          // group instantiations (`use <group> as <prefix>`)
 	Subbots      []*SubbotDecl       // sub-bot node declarations (run another .bot as a nested run)
@@ -742,9 +743,35 @@ type ComputeExpr struct {
 // Terminal nodes — done / fail
 // ---------------------------------------------------------------------------
 
-// done and fail are reserved identifiers, not declared in the DSL.
-// They appear only as edge targets inside workflow declarations.
-// The parser recognizes them by name; no AST declaration is needed.
+// `done` and the bare `fail` are reserved identifiers, not declared in the
+// DSL: they appear only as edge targets inside workflow declarations, and
+// the parser recognizes them by name.
+//
+// A workflow that fails for a REASON declares a named fail node instead.
+
+// FailDecl is a `fail <name>:` declaration — a terminal failure node
+// carrying the run's own diagnosis. Reaching it stamps the run's
+// `failure_code` and `error`, so `iterion runs list`, the studio, the
+// merge-gate notice and the alert sinks can act on WHY the bot refused
+// instead of reading "workflow reached fail node" on every deliberate
+// termination.
+//
+//	fail plan_exhausted:
+//	  code: PLAN_BUDGET_EXHAUSTED           ## optional, UPPER_SNAKE
+//	  message: "planning used {{outputs.gate.pct}}% of the budget"
+//	  resumable: true                       ## optional, default false
+//
+// The bare `-> fail` target keeps its untyped behaviour; a named node is
+// how a bot opts into a typed refusal, and several may coexist in one
+// workflow (one per reason).
+type FailDecl struct {
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	Code        string // optional UPPER_SNAKE failure code (C247 when malformed)
+	Message     string // optional operator-facing reason, templated with the usual {{...}} refs
+	Resumable   bool   // park the run failed_resumable (checkpoint kept) instead of terminal failed
+	Span        Span
+}
 
 // ---------------------------------------------------------------------------
 // Workflow
@@ -775,13 +802,18 @@ type WorkflowDecl struct {
 	// on|off ("" = unset → ITERION_REPO_DEVBOX → on). The BOT's own
 	// devbox.json is never affected — a bot's declared tools are its own.
 	RepoDevbox string
-	Permission string        // permission gate mode: off|ask|deny ("" = unset → off)
-	Allow      []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
-	Ask        []string      // permission ask rules
-	Deny       []string      // permission deny rules
-	Sandbox    *SandboxBlock // sandbox: short or block form (nil = inherit global default)
-	Edges      []*Edge       // directed edges between nodes
-	Span       Span
+	// WorkspaceCheckpoint switches the mid-run preservation of a copy-based
+	// sandbox's workspace: on|off ("" = unset → ITERION_WORKSPACE_CHECKPOINT
+	// → on). Off for a run that does not commit to the repo it is pointed
+	// at — the net has nothing to hold there, and it pushes a branch.
+	WorkspaceCheckpoint string
+	Permission          string        // permission gate mode: off|ask|deny ("" = unset → off)
+	Allow               []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
+	Ask                 []string      // permission ask rules
+	Deny                []string      // permission deny rules
+	Sandbox             *SandboxBlock // sandbox: short or block form (nil = inherit global default)
+	Edges               []*Edge       // directed edges between nodes
+	Span                Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

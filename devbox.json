@@ -12,6 +12,8 @@
     "xorg.xorgserver@latest",
     "xdotool@latest",
     "imagemagick@latest",
+    "oxipng@latest",
+    "pngquant@latest",
     "pkg-config@latest",
     "gtk3@latest",
     "webkitgtk_4_1@latest",

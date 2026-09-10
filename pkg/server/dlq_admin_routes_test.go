@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The DLQ admin surface (`iterion remote admin dlq show|replay|delete`
@@ -145,12 +148,52 @@ func (q *fakeDLQQueue) snapshot() ([]string, []uint64, int) {
 	return append([]string(nil), q.republished...), append([]uint64(nil), q.discarded...), len(q.parked)
 }
 
-// newDLQAdminServer boots a cloud-shaped server (auth stack + audit
-// store + queue) through the real New()/routes() path, so the DLQ
-// endpoints are registered and reached through the production auth
-// middleware. Returns the live HTTP server plus a super-admin and a
+// dlqWorld is the cloud-shaped test server the DLQ admin tests drive: the
+// queue double, the platform audit store, the run store a replay reads the
+// run's status from, the live HTTP server, and a super-admin plus a
 // plain-member bearer.
-func newDLQAdminServer(t *testing.T) (*fakeDLQQueue, audit.Store, *httptest.Server, string, string) {
+type dlqWorld struct {
+	q     *fakeDLQQueue
+	audit audit.Store
+	runs  store.RunStore
+	hs    *httptest.Server
+	admin string
+	user  string
+}
+
+// seedRun writes the run doc a parked message points at, in the status
+// the replay handler reads. A DLQ message always names a run that was
+// created before it was published; the fixtures model that.
+func (w *dlqWorld) seedRun(t *testing.T, id string, status store.RunStatus) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := w.runs.CreateRun(ctx, id, "wf", nil); err != nil {
+		t.Fatalf("seed run %s: %v", id, err)
+	}
+	if err := w.runs.UpdateRunStatus(ctx, id, status, ""); err != nil {
+		t.Fatalf("seed run %s status: %v", id, err)
+	}
+}
+
+// park parks a message for a run AND seeds its doc as queued — the
+// ordinary shape of a poisoned launch.
+func (w *dlqWorld) park(t *testing.T, seq uint64, runID, reason string) {
+	t.Helper()
+	w.seedRun(t, runID, store.RunStatusQueued)
+	w.q.park(seq, runID, reason)
+}
+
+// newDLQAdminServer boots a cloud-shaped server (auth stack + audit
+// store + run store + queue) through the real New()/routes() path, so the
+// DLQ endpoints are registered and reached through the production auth
+// middleware.
+func newDLQAdminServer(t *testing.T) *dlqWorld {
+	return newDLQAdminServerWith(t, nil)
+}
+
+// newDLQAdminServerWith lets a test wrap the run store (an unreadable one,
+// for the fail-closed probe). wrap == nil keeps the filesystem store.
+func newDLQAdminServerWith(t *testing.T, wrap func(store.RunStore) store.RunStore) *dlqWorld {
 	t.Helper()
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -170,6 +213,14 @@ func newDLQAdminServer(t *testing.T) (*fakeDLQQueue, audit.Store, *httptest.Serv
 	if err != nil {
 		t.Fatalf("auth service: %v", err)
 	}
+	fs, err := store.New(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatalf("run store: %v", err)
+	}
+	var runs store.RunStore = fs
+	if wrap != nil {
+		runs = wrap(fs)
+	}
 	q := newFakeDLQQueue()
 	auditStore := audit.NewMemoryStore()
 	s := New(Config{
@@ -178,6 +229,7 @@ func newDLQAdminServer(t *testing.T) (*fakeDLQQueue, audit.Store, *httptest.Serv
 		AuthService:             svc,
 		AuthSigner:              signer,
 		Audit:                   auditStore,
+		Store:                   runs,
 		Queue:                   q,
 	}, iterlog.New(iterlog.LevelError, nil))
 
@@ -191,7 +243,7 @@ func newDLQAdminServer(t *testing.T) (*fakeDLQQueue, audit.Store, *httptest.Serv
 	}
 	hs := httptest.NewServer(s.handler)
 	t.Cleanup(hs.Close)
-	return q, auditStore, hs, adminTok, userTok
+	return &dlqWorld{q: q, audit: auditStore, runs: fs, hs: hs, admin: adminTok, user: userTok}
 }
 
 func dlqDo(t *testing.T, hs *httptest.Server, method, path, token string) (int, []byte) {
@@ -246,9 +298,10 @@ func waitForAudit(t *testing.T, st audit.Store, action string) audit.Event {
 // onto the live queue and then gone from the DLQ — the operator's whole
 // recovery loop, plus the audit row that records who did it.
 func TestDLQAdmin_ListPeekReplayLeavesAuditTrail(t *testing.T) {
-	q, auditStore, hs, adminTok, _ := newDLQAdminServer(t)
-	q.park(11, "run-poison", "schema version 99 from a newer server")
-	q.park(12, "run-other", "max deliver exhausted")
+	w := newDLQAdminServer(t)
+	q, auditStore, hs, adminTok := w.q, w.audit, w.hs, w.admin
+	w.park(t, 11, "run-poison", "schema version 99 from a newer server")
+	w.park(t, 12, "run-other", "max deliver exhausted")
 
 	code, body := dlqDo(t, hs, "GET", "/api/admin/dlq", adminTok)
 	if code != http.StatusOK {
@@ -341,8 +394,9 @@ func TestDLQAdmin_ListPeekReplayLeavesAuditTrail(t *testing.T) {
 
 // Discarding drops the message for good (204) and is recorded.
 func TestDLQAdmin_DiscardRemovesAndAudits(t *testing.T) {
-	q, auditStore, hs, adminTok, _ := newDLQAdminServer(t)
-	q.park(7, "run-dead", "unrecoverable")
+	w := newDLQAdminServer(t)
+	q, auditStore, hs, adminTok := w.q, w.audit, w.hs, w.admin
+	w.park(t, 7, "run-dead", "unrecoverable")
 
 	code, body := dlqDo(t, hs, "DELETE", "/api/admin/dlq/7", adminTok)
 	if code != http.StatusNoContent {
@@ -372,8 +426,9 @@ func TestDLQAdmin_DiscardRemovesAndAudits(t *testing.T) {
 // refused, and — the part that matters — the queue is never touched.
 // An anonymous caller doesn't even reach the gate.
 func TestDLQAdmin_NonSuperAdminCannotReplayOrDiscard(t *testing.T) {
-	q, _, hs, _, userTok := newDLQAdminServer(t)
-	q.park(3, "run-poison", "max deliver exhausted")
+	w := newDLQAdminServer(t)
+	q, hs, userTok := w.q, w.hs, w.user
+	w.park(t, 3, "run-poison", "max deliver exhausted")
 
 	cases := []struct {
 		method, path string
@@ -403,8 +458,9 @@ func TestDLQAdmin_NonSuperAdminCannotReplayOrDiscard(t *testing.T) {
 // and a replay the queue itself refuses surfaces as 502 (the message
 // stays parked) rather than a false "replayed".
 func TestDLQAdmin_BadSequenceAndBackendFailure(t *testing.T) {
-	q, _, hs, adminTok, _ := newDLQAdminServer(t)
-	q.park(5, "run-x", "boom")
+	w := newDLQAdminServer(t)
+	q, hs, adminTok := w.q, w.hs, w.admin
+	w.park(t, 5, "run-x", "boom")
 
 	for _, path := range []string{"/api/admin/dlq/abc/replay", "/api/admin/dlq/0/replay"} {
 		if code, body := dlqDo(t, hs, "POST", path, adminTok); code != http.StatusBadRequest {
@@ -425,5 +481,97 @@ func TestDLQAdmin_BadSequenceAndBackendFailure(t *testing.T) {
 	}
 	if republished, _, remaining := q.snapshot(); len(republished) != 0 || remaining != 1 {
 		t.Fatalf("a failed replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// A replay puts the parked bytes back on the live subject without reading
+// the run doc, and the runner drops a delivery for a cancelled run on its
+// admission read (an operator's cancel wins over the message). So the
+// operator was answered "replayed" and then nothing happened. The replay
+// must be refused at the moment the operator acts, naming the status.
+func TestDLQAdmin_ReplayOfACancelledRunIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.seedRun(t, "run-cancelled", store.RunStatusCancelled)
+	w.q.park(21, "run-cancelled", "max deliver exhausted")
+
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/21/replay", w.admin)
+	if code != http.StatusConflict {
+		t.Fatalf("replay of a cancelled run: status=%d want 409 body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "cancelled") || !strings.Contains(string(body), "run-cancelled") {
+		t.Fatalf("the refusal must name the run and its status, got %s", body)
+	}
+	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
+		t.Fatalf("a refused replay must leave the message parked and republish nothing: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// A message whose run doc is gone (pruned, deleted) cannot be replayed
+// into anything the runner could execute: refused, with the discard named
+// as the way out.
+func TestDLQAdmin_ReplayOfAMissingRunIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.q.park(22, "run-gone", "max deliver exhausted") // no doc seeded
+
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/22/replay", w.admin)
+	if code != http.StatusConflict {
+		t.Fatalf("replay of a run with no doc: status=%d want 409 body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "run-gone") || !strings.Contains(string(body), "discard") {
+		t.Fatalf("the refusal must name the run and point at the discard, got %s", body)
+	}
+	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
+		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// A DELETED run leaves a tombstone, and LoadRun answers ErrRunDeleted
+// rather than ErrRunNotFound: nothing is alive behind the id either way,
+// so the replay must be refused the same way (409, discard) — not as a
+// transient read failure the operator is told to retry.
+func TestDLQAdmin_ReplayOfADeletedRunIsRefused(t *testing.T) {
+	w := newDLQAdminServer(t)
+	w.seedRun(t, "run-del", store.RunStatusFinished)
+	if err := w.runs.DeleteRun(context.Background(), "run-del"); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+	w.q.park(24, "run-del", "max deliver exhausted")
+
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/24/replay", w.admin)
+	if code != http.StatusConflict {
+		t.Fatalf("replay of a deleted run: status=%d want 409 body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "run-del") || !strings.Contains(string(body), "discard") {
+		t.Fatalf("the refusal must name the run and point at the discard, got %s", body)
+	}
+	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
+		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
+	}
+}
+
+// unreadableRunStore fails every run read — the store being down.
+type unreadableRunStore struct{ store.RunStore }
+
+func (unreadableRunStore) LoadRun(context.Context, string) (*store.Run, error) {
+	return nil, fmt.Errorf("mongo: connection reset")
+}
+
+// When the status cannot be read the replay fails CLOSED: a side-effectful
+// act is not performed on an unverifiable premise, and the operator gets a
+// 502 to retry once the store answers — never a "replayed" that may be a
+// silent drop.
+func TestDLQAdmin_ReplayWithAnUnreadableStoreFailsClosed(t *testing.T) {
+	w := newDLQAdminServerWith(t, func(inner store.RunStore) store.RunStore { return unreadableRunStore{inner} })
+	w.q.park(23, "run-y", "max deliver exhausted")
+
+	code, body := dlqDo(t, w.hs, "POST", "/api/admin/dlq/23/replay", w.admin)
+	if code != http.StatusBadGateway {
+		t.Fatalf("replay with an unreadable store: status=%d want 502 body=%s", code, body)
+	}
+	if !strings.Contains(string(body), "connection reset") {
+		t.Fatalf("the refusal must carry the store's reason, got %s", body)
+	}
+	if republished, _, remaining := w.q.snapshot(); len(republished) != 0 || remaining != 1 {
+		t.Fatalf("a refused replay must leave the message parked: republished=%v remaining=%d", republished, remaining)
 	}
 }

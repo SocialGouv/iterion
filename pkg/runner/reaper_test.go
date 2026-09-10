@@ -87,6 +87,17 @@ func TestSandboxResourceReapable(t *testing.T) {
 			want:   true,
 		},
 		{
+			// A deleted run leaves a tombstone and LoadRun answers
+			// ErrRunDeleted, not ErrRunNotFound: it is provably gone all the
+			// same, and reading it as a transient error keeps its sandbox
+			// and credential Secret forever.
+			name:   "no lease + deleted (tombstoned) → provably gone → reap",
+			runID:  rid,
+			leases: fakeLeaseChecker{},
+			loader: fakeRunLoader{loadErr: fmt.Errorf("store: load run %s: %w", rid, store.ErrRunDeleted)},
+			want:   true,
+		},
+		{
 			name:   "no lease + transient store error → fail safe → keep",
 			runID:  rid,
 			leases: fakeLeaseChecker{},

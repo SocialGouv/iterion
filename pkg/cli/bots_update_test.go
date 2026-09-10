@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
@@ -133,7 +133,7 @@ func writeUpdateLock(t *testing.T, workdir, source, ref, hash string) {
 
 func runUpdateGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := gittest.Cmd(dir, args...)
 	body, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, body)

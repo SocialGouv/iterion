@@ -64,12 +64,30 @@ func (s *Service) RenameRunCtx(ctx context.Context, runID, name string) (*store.
 	return r, nil
 }
 
+// ErrRunNotDeletable is store.ErrRunNotDeletable, re-exported for the HTTP
+// layer's 409 mapping — the guard itself lives in the store package so
+// every delete authority (this service, `iterion runs prune`) crosses the
+// same one.
+var ErrRunNotDeletable = store.ErrRunNotDeletable
+
 // DeleteRunCtx permanently removes a run and all of its data. It LoadRuns
 // first so a run outside the caller's tenant scope surfaces as not-found
 // (a tenant can only delete its own runs); the actual delete is then
 // tenant-scoped by the store as well. Idempotent at the store layer.
+//
+// A run that is not TERMINAL is refused (store.RunDeletable): the delete
+// tombstone is read everywhere as PROOF the run is gone (the board launch
+// authorities admit a fresh run on it), so deleting a running/queued/
+// paused run would mint a live sibling while the engine goroutine keeps
+// burning. The studio already disables delete on those; this is the
+// choke the HTTP handler and the MCP escape hatch cross, and prune
+// crosses the same guard at its own delete.
 func (s *Service) DeleteRunCtx(ctx context.Context, runID string) error {
-	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if err := store.RunDeletable(r); err != nil {
 		return err
 	}
 	return s.store.DeleteRun(ctx, runID)
@@ -150,7 +168,9 @@ func (s *Service) logSkippedRun(id string, err error) {
 	if s.logger == nil {
 		return
 	}
-	if errors.Is(err, store.ErrRunNotFound) {
+	if store.RunAbsent(err) {
+		// Never existed, or deleted and tombstoned between the list and
+		// the load: gone either way, never an unreadable document.
 		if _, dup := s.skipRunLogged.LoadOrStore("gone:"+id, struct{}{}); !dup {
 			s.logger.Debug("runview: skip run %s (stale index entry, logged once): %v", id, err)
 		}
@@ -244,6 +264,8 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
+		FailureCode:       r.FailureCode,
+		EndReason:         r.EndReason,
 		Active:            active,
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
@@ -381,7 +403,10 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 	// is a deliberate branch-only outcome, and failed/conflicted have their
 	// own UX.
 	if r, err := s.store.LoadRun(ctx, runID); err == nil && r.MergeStatus == store.MergeStatusPending {
-		_, _ = s.reconcileOutOfBandMerge(ctx, r, mergeRepoRoot(r), "")
+		// The guard above admits only merge_status=pending, so that is
+		// the only state this CAS can exit from.
+		_, _ = s.reconcileOutOfBandMerge(ctx, r, mergeRepoRoot(r), "",
+			[]store.MergeStatus{store.MergeStatusPending})
 	}
 	return BuildSnapshot(ctx, s.store, runID)
 }

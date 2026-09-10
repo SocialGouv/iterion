@@ -13,10 +13,15 @@ import (
 )
 
 // fakeTeamResolver maps team → org and counts lookups (cache assertions).
+// orgDocs, when populated, backs GetOrg for the org credential tier; its
+// zero value (no doc) resolves as "org not found", which the tier reads as
+// "no audience" — the fail-closed default.
 type fakeTeamResolver struct {
-	orgs  map[string]string
-	err   error
-	calls int
+	orgs    map[string]string
+	orgDocs map[string]identity.Org
+	err     error
+	orgErr  error
+	calls   int
 }
 
 func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team, error) {
@@ -29,6 +34,17 @@ func (f *fakeTeamResolver) GetTeam(_ context.Context, id string) (identity.Team,
 		return identity.Team{}, identity.ErrNotFound
 	}
 	return identity.Team{ID: id, OrgID: orgID}, nil
+}
+
+func (f *fakeTeamResolver) GetOrg(_ context.Context, id string) (identity.Org, error) {
+	if f.orgErr != nil {
+		return identity.Org{}, f.orgErr
+	}
+	o, ok := f.orgDocs[id]
+	if !ok {
+		return identity.Org{}, identity.ErrNotFound
+	}
+	return o, nil
 }
 
 // TestSubmitLaunchStampsOrgID is the regression test for the multi-team

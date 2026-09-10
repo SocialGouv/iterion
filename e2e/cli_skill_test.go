@@ -87,6 +87,7 @@ func listedSkills(t *testing.T, projectDir string) map[string]skilllib.LibrarySk
 	return byName
 }
 
+// Serial: its fixture calls t.Setenv (a temp ITERION_HOME), which Go refuses in a parallel test.
 func TestSkillLibraryAddListShowExportRemove(t *testing.T) {
 	projectDir := isolateSkillLibrary(t)
 
@@ -180,6 +181,7 @@ func TestSkillLibraryAddListShowExportRemove(t *testing.T) {
 // which is the whole point of the per-project override. A run in this
 // project must see the project body, and removing the project layer must
 // uncover the global one rather than leaving a hole.
+// Serial: its fixture calls t.Setenv (a temp ITERION_HOME), which Go refuses in a parallel test.
 func TestSkillLibraryProjectScopeShadowsGlobal(t *testing.T) {
 	projectDir := isolateSkillLibrary(t)
 

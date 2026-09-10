@@ -274,6 +274,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return UserInputError(err)
 	}
 	applyBudgetOverrides(wf, opts.Budget)
+	// The raw ask is persisted on the run doc (Run.BudgetOverrides) as the
+	// resume path's replay source — an ask-less `iterion resume` keeps the
+	// cap this launch asked for instead of the .bot's own. The detached
+	// studio launch reaches this same line through its `iterion run`
+	// subprocess, so one option covers both.
+	engineOpts = append(engineOpts, runtime.WithBudgetAsk(&opts.Budget))
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
@@ -339,6 +345,19 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	} else {
 		ctx = stamped
 	}
+	// The CLI is another launch authority, so it stamps the same context
+	// contract as the service/cloud paths before the engine can execute a
+	// node. The policy is opt-in through ITERION_RELIABILITY_MODE, with
+	// ITERION_EXECUTION_CONTEXT_POLICY kept as the compatibility alias read
+	// only when that is unset (pkg/reliability.ModeFromEnv). Naming just the
+	// alias is what made the documented rollback look inert.
+	cliContext := runview.ResolveExecutionContext(ctx, s, runID, runview.LaunchSpec{
+		FilePath: iterFile,
+		Source:   "",
+		WorkDir:  "",
+	}, wf, wfHash, runview.ExecutionContextPolicyFromEnv(), "")
+	cliContext.LaunchSurface = "cli"
+	engineOpts = append(engineOpts, runtime.WithExecutionContext(cliContext))
 	if c, ok := executor.(io.Closer); ok {
 		defer func() {
 			if cerr := c.Close(); cerr != nil {
@@ -537,7 +556,12 @@ func buildRunExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
-		RunFallback:     runFallback,
+		// The same tiers the engine resolves the sandbox from (see
+		// ExecutorSpec) — without them the codex screen is inert on the
+		// primary local surface while the run sandboxes two calls later.
+		SandboxOverride: opts.Sandbox,
+		SandboxDefault:  runtime.ResolveGlobalSandboxDefault(),
+		RunFallback:     []ir.Fallback{runFallback},
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.
@@ -624,13 +648,34 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			lastMu sync.Mutex
 			last   map[string]any
 		)
-		childEng := runtime.New(childWf, s, childExec,
+		var childContextSeed *store.ExecutionContext
+		if parent, loadErr := s.LoadRun(ctx, req.ParentRunID); loadErr == nil && parent != nil {
+			childContextSeed = parent.ExecutionContext.Clone()
+			if childContextSeed != nil {
+				childContextSeed.Workflow = store.WorkflowContext{}
+				childContextSeed.Lineage = store.LineageContext{}
+			}
+		}
+		childContext := runview.ResolveExecutionContext(ctx, s, childRunID, runview.LaunchSpec{
+			FilePath:         childPath,
+			WorkDir:          req.WorkDir,
+			ParentRunID:      req.ParentRunID,
+			ParentNodeID:     req.NodeID,
+			ExecutionContext: childContextSeed,
+		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
+		childContext.LaunchSurface = "cli-subbot"
+		childOpts := []runtime.EngineOption{
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
+			runtime.WithExecutionContext(childContext),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
 			runtime.WithBundle(childBundle),
+			// The child executes in the parent's sandbox when the parent has
+			// one — the same tree, on every driver, on this host as on the
+			// runner and the studio.
+			runtime.WithSharedSandbox(req.ParentSandbox),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested
@@ -644,7 +689,14 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 					lastMu.Unlock()
 				}
 			}),
-		)
+		}
+		// The child works in the parent's EFFECTIVE workdir (its worktree when
+		// it swapped to one), not the process cwd: that is the tree the
+		// parent's sandbox mounts and the parent's gate judges.
+		if req.WorkDir != "" {
+			childOpts = append(childOpts, runtime.WithWorkDir(req.WorkDir))
+		}
+		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
 		// registers the child with the run Manager for per-child studio
 		// Cancel/Pause), the CLI has no per-run control plane — no HTTP API and
@@ -869,7 +921,7 @@ func enrichPausedResult(s store.RunStore, runID string, result map[string]any) {
 		return
 	}
 	result["interaction_id"] = r.Checkpoint.InteractionID
-	result["node_id"] = r.Checkpoint.NodeID
+	result["node_id"] = r.Checkpoint.PausedNodeID()
 	if interaction, err := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID); err == nil {
 		result["questions"] = interaction.Questions
 	}

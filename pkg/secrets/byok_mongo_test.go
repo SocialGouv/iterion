@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -27,7 +28,7 @@ func mongoKeyStore(t *testing.T) (*MongoApiKeyStore, context.Context) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo api-key suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	t.Cleanup(cancel)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -37,7 +38,7 @@ func mongoKeyStore(t *testing.T) (*MongoApiKeyStore, context.Context) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_byok_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dropCancel := mongotest.TeardownCtx()
 		defer dropCancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -161,5 +162,90 @@ func TestMongoApiKey_ScopeWithoutMatchingTenantIsUnreachable(t *testing.T) {
 	}
 	if len(other) != 1 || other[0].ID != "mis-stamped" {
 		t.Fatalf("the mis-stamped row is the one that answers here, got %+v", other)
+	}
+}
+
+// The Mongo twin of TestMemoryApiKey_MarkFingerprintUsed: the metering
+// bump must land in prod on the real store, not only in unit-test
+// memory. Skipped without ITERION_TEST_MONGO_URI (mongo-conformance CI
+// job gates it, like the other Mongo suites in this file).
+func TestMongoApiKey_MarkFingerprintUsed(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// The bump runs at every attempt start and end with no tenant filter;
+	// its predicate must be indexed or it is a collection scan per
+	// attempt (#659). The schema is the contract, so it is asserted here.
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	cur, err := s.coll.Indexes().List(ctx)
+	if err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	var indexes []struct {
+		Name string `bson:"name"`
+	}
+	if err := cur.All(ctx, &indexes); err != nil {
+		t.Fatalf("decode indexes: %v", err)
+	}
+	hasFP := false
+	for _, ix := range indexes {
+		if ix.Name == "fingerprint" {
+			hasFP = true
+		}
+	}
+	if !hasFP {
+		t.Fatalf("no index on fingerprint after EnsureSchema; got %+v", indexes)
+	}
+
+	// Two rows sharing a fingerprint (an operator saved the same secret
+	// twice on different tenants) — the update must land on BOTH, so a
+	// run spending either row moves the meter on both.
+	if err := s.Create(store.WithTenant(ctx, "team-a"), ApiKey{
+		ID: "k1", TenantID: "team-a", ScopeTeamID: "team-a",
+		ScopeUserID: "u1", Provider: ProviderAnthropic, Name: "k1", Fingerprint: "fp-shared",
+	}); err != nil {
+		t.Fatalf("create k1: %v", err)
+	}
+	if err := s.Create(store.WithTenant(ctx, "team-b"), ApiKey{
+		ID: "k2", TenantID: "team-b", ScopeTeamID: "team-b",
+		ScopeUserID: "u2", Provider: ProviderAnthropic, Name: "k2", Fingerprint: "fp-shared",
+	}); err != nil {
+		t.Fatalf("create k2: %v", err)
+	}
+	if err := s.Create(store.WithTenant(ctx, "team-c"), ApiKey{
+		ID: "k3", TenantID: "team-c", ScopeTeamID: "team-c",
+		ScopeUserID: "u3", Provider: ProviderAnthropic, Name: "k3", Fingerprint: "fp-untouched",
+	}); err != nil {
+		t.Fatalf("create k3: %v", err)
+	}
+
+	if err := s.MarkFingerprintUsed(ctx, "", now); err != nil {
+		t.Errorf("empty fp errored: %v", err)
+	}
+	if err := s.MarkFingerprintUsed(ctx, "fp-shared", now); err != nil {
+		t.Fatalf("MarkFingerprintUsed: %v", err)
+	}
+	k1, err := s.Get(store.WithTenant(ctx, "team-a"), "k1")
+	if err != nil {
+		t.Fatalf("read k1: %v", err)
+	}
+	if k1.LastUsedAt == nil || !k1.LastUsedAt.Equal(now) {
+		t.Errorf("k1.last_used_at = %v, want %v", k1.LastUsedAt, now)
+	}
+	k2, err := s.Get(store.WithTenant(ctx, "team-b"), "k2")
+	if err != nil {
+		t.Fatalf("read k2: %v", err)
+	}
+	if k2.LastUsedAt == nil || !k2.LastUsedAt.Equal(now) {
+		t.Errorf("k2.last_used_at = %v, want %v (a shared fingerprint must land on every matching row)", k2.LastUsedAt, now)
+	}
+	k3, err := s.Get(store.WithTenant(ctx, "team-c"), "k3")
+	if err != nil {
+		t.Fatalf("read k3: %v", err)
+	}
+	if k3.LastUsedAt != nil {
+		t.Errorf("k3.last_used_at = %v, want nil (its fingerprint was untouched)", k3.LastUsedAt)
 	}
 }

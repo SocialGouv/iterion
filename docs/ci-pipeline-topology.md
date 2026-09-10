@@ -70,3 +70,30 @@ release-images.yml   runner + sandbox @ :vX.Y.Z   push tags v*  (await image.yml
   sandbox `:edge`; tags go through `release-images.yml`, PRs publish nothing.
 - No cycles: nothing re-triggers `image.yml`, so the `image.yml → {runner,
   sandbox}` fan-out terminates.
+
+### The docs site can freeze silently — check for a stuck `pages` run
+
+`docs.yml` serialises on `concurrency: group: pages` with
+`cancel-in-progress: false`, so one run that never starts blocks the group
+forever: every later run waits behind it as `pending`, and each new push
+collapses the previous pending one to `cancelled`. The run list then shows an
+unbroken column of `cancelled` and **no failure anywhere** — nothing is red,
+the site simply stops updating.
+
+Measured 2026-08-30: a `docs` run queued since 2026-08-12 held the group for
+18 days. Every docs change in between — including a dead link that fails the
+build — never reached the site. Cancelling the zombie freed the queue
+immediately and the next run deployed.
+
+The list view hides it, because a run queued weeks ago is far down the page.
+Ask the API for what is actually stuck, not what ran recently:
+
+```sh
+gh api "repos/SocialGouv/iterion/actions/runs?status=queued&per_page=20" \
+  --jq '.workflow_runs[] | "\(.id) \(.name) \(.created_at)"'
+gh run cancel <id>   # its Pages deploy already happened; the leftover job is a zombie
+```
+
+A quicker tell, when you only want to know whether the site is current:
+`gh api repos/SocialGouv/iterion/deployments --jq '[.[]|select(.environment=="github-pages")][0].created_at'`
+— if that date is not recent, the group is stuck.

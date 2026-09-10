@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -50,6 +51,12 @@ var (
 		// projectDir from the run's own workspace/bundle resolution, not
 		// from request input.
 		cmd := exec.CommandContext(ctx, devboxBin, "install", "-c", projectDir)
+		// `devbox install` drives nix, which forks builders and substituters
+		// of its own. Cancelling the run — or hitting the 15-minute ceiling —
+		// has to stop them: they hold CombinedOutput's pipes, and a nix build
+		// left running writes the store long after the run that asked for it
+		// is gone.
+		proc.TerminateGroupOnCancel(cmd)
 		// devbox prompts before writing a lockfile on some paths; a
 		// run-start hook has nobody to answer.
 		cmd.Env = append(os.Environ(), "DEVBOX_NO_PROMPT=1")

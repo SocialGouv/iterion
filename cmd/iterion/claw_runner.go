@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/spf13/cobra"
 )
 
@@ -68,6 +69,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	var (
 		ioTask          delegate.IOTask
 		replaySnapshots [][]byte
+		policyCfg       *permission.PolicyConfig
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -87,6 +89,17 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
+		if env.Type == delegate.EnvelopePermissionPolicy {
+			// The node's permission gate, in serialisable form. A
+			// malformed payload is fatal BEFORE any model call: a gate
+			// the author declared must never silently not exist.
+			var cfg permission.PolicyConfig
+			if uerr := json.Unmarshal(env.Data, &cfg); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode permission_policy envelope: %w", uerr))
+			}
+			policyCfg = &cfg
+			continue
+		}
 		return emitFatal(dispatcher, stderr, fmt.Errorf("unexpected envelope %q before task", env.Type))
 	}
 
@@ -99,6 +112,18 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	task := delegate.FromIOTask(ioTask)
 	// Sandbox is intentionally nil — we ARE the sandbox now.
 	task.Sandbox = nil
+	// Rebuild the permission gate the launcher shipped pre-task, through
+	// the same parser it was authored against. From here the ordinary
+	// unsandboxed Execute path applies it (opts.Permission), so builtins
+	// running locally in this container and proxied tools alike hit the
+	// same gate as an unsandboxed run.
+	if policyCfg != nil {
+		pol, perr := permission.NewPolicyFromConfig(*policyCfg)
+		if perr != nil {
+			return emitFatal(dispatcher, stderr, fmt.Errorf("rebuild permission policy: %w", perr))
+		}
+		task.Permission = pol
+	}
 	// V2-2 (refined): builtins (bash, read_file, glob, grep, file_edit,
 	// web_fetch, write_file) execute LOCALLY inside the runner so their
 	// filesystem effects land on the sandbox bind-mount, not on the
@@ -135,9 +160,12 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// Build a minimal ClawBackend. The registry resolves the API
 	// client from the standard ITERION_*_KEY env vars, which the
 	// sandbox driver inherits from the host (subject to the env
-	// scrubbing the engine applies before container start).
+	// scrubbing the engine applies before container start). Its event
+	// hooks relay what this loop observes to the launcher, which re-fires
+	// them through its own hooks — what makes a sandboxed claw node
+	// metered, auditable and forkable like an in-process one.
 	registry := model.NewRegistry()
-	backend := model.NewClawBackend(registry, model.EventHooks{}, model.RetryPolicy{})
+	backend := model.NewClawBackend(registry, relayEventHooks(dispatcher, stderr), model.RetryPolicy{})
 
 	start := time.Now()
 	result, err := backend.Execute(ctx, task)
@@ -164,6 +192,19 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		return err
 	}
 	return nil
+}
+
+// relayEventHooks builds the event hooks the runner installs on its claw
+// backend: every observation of the in-container loop — its LLM steps,
+// the tools it executes here, its retries and compactions, its per-turn
+// fork anchors — crosses the IPC as an `event` envelope on the
+// dispatcher's writer (see [model.SandboxRelayHooks]). A failed write is
+// reported on stderr, which the launcher captures into the node's error
+// when the channel is dead.
+func relayEventHooks(d *proxyDispatcher, stderr io.Writer) model.EventHooks {
+	return model.SandboxRelayHooks(d.write, func(err error) {
+		fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
+	})
 }
 
 // unmarshalTaskEnvelope decodes a [delegate.EnvelopeTask] envelope

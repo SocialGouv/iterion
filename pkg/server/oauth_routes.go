@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -28,13 +29,25 @@ func (s *Server) registerOAuthForfaitRoutes() {
 	// Raw blob paste — kept as a fallback (power users / Codex).
 	s.mux.Handle("POST /api/me/oauth/{kind}/credentials", s.requireAuth(http.HandlerFunc(s.handleUploadOAuthCredentials)))
 	s.mux.Handle("POST /api/me/oauth/{kind}/refresh", s.requireAuth(http.HandlerFunc(s.handleRefreshOAuth)))
+	s.mux.Handle("PATCH /api/me/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleRenameOAuth)))
 	s.mux.Handle("DELETE /api/me/oauth/{kind}", s.requireAuth(http.HandlerFunc(s.handleDeleteOAuth)))
 }
 
 // oauthConnectionView is the safe-to-display projection of an
 // OAuthRecord. Plaintext / sealed payload never leave the server.
 type oauthConnectionView struct {
-	Kind                 string   `json:"kind"`
+	Kind string `json:"kind"`
+	// AccountLabel is the operator's name for the account behind this
+	// credential ("jothedev"). Empty on records connected before labels
+	// existed — rename them with PATCH.
+	AccountLabel string `json:"account_label,omitempty"`
+	// Fingerprint is the credential's stable id, and the SAME value the
+	// runtime prints when it picks a credential
+	// ("oauth-forfait(org) used … fp=700acc7b…"). Exposing it is what
+	// lets an operator answer "whose subscription served that run?"
+	// from the API instead of grepping server logs. Non-secret by
+	// construction: a hash, never the token.
+	Fingerprint          string   `json:"fingerprint,omitempty"`
 	Scopes               []string `json:"scopes,omitempty"`
 	AccessTokenExpiresAt *string  `json:"access_token_expires_at,omitempty"`
 	LastRefreshedAt      *string  `json:"last_refreshed_at,omitempty"`
@@ -48,6 +61,8 @@ type oauthConnectionView struct {
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
 	return oauthConnectionView{
 		Kind:                 string(r.Kind),
+		AccountLabel:         r.AccountLabel,
+		Fingerprint:          r.Fingerprint,
 		Scopes:               r.Scopes,
 		CreatedAt:            r.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            r.UpdatedAt.Format(time.RFC3339),
@@ -84,6 +99,12 @@ func (s *Server) handleRefreshOAuth(w http.ResponseWriter, r *http.Request) {
 	s.refreshOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
 }
 
+// handleRenameOAuth names the account behind the caller's own forfait.
+func (s *Server) handleRenameOAuth(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	s.renameOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
+}
+
 func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	s.deleteOAuthForOwner(w, r, id.UserID, secrets.OAuthKind(r.PathValue("kind")))
@@ -102,15 +123,40 @@ func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 // to check on admins must not lie). Placed inside the shared helpers,
 // after the write, so team AND platform surfaces audit identically:
 // keeping the audit at each caller meant it fired even on a 400/404/500
-// return from the helper. A personal (/me) owner key is not audited —
-// unchanged from the per-user endpoints, which never did. verb is
-// "connected" or "deleted".
+// return from the helper. verb is "connected", "deleted" or "refused".
+//
+// A personal (/me) owner key is audited for a REFUSAL only, on the
+// caller's active team — pkg/audit has no user scope, and the sibling
+// personal credential door already writes there (/api/me/api-keys
+// refuses through refuseApiKey -> auditApiKey(r, id.TeamID, "refused")).
+// A refusal is an operational signal an org admin needs: a personal
+// forfait can be pledged to the org's credential pool, and a refused
+// rotation of it stops funding runs the org depends on. The row names
+// the field and the reason class, never the material — and a successful
+// personal connect stays the user's own business, unaudited. With no
+// active team there is no tenant to key the row on (a tenant-less row is
+// readable by nobody), so the Warn at the refusal site is the trace.
 func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind secrets.OAuthKind, meta map[string]any) {
 	switch {
 	case ownerKey == secrets.PlatformOwnerKey:
 		s.auditPlatform(r, "", "platform.llm_oauth."+verb, "platform_llm_oauth", string(kind), meta)
+	case secrets.IsOrgTierScope(ownerKey):
+		// The ORG's own shared forfait. Without this case it matched none of
+		// the branches: a successful mutation produced NO event at all, and a
+		// refusal fell through to the personal one and was keyed on the
+		// actor's active team — an org credential filed as somebody's own.
+		// (No collision with OrgOwnerPrefix below: that is "org:", this is
+		// "orgtier:".) The api-key twin routes the same way in auditApiKey.
+		orgID, _ := secrets.OrgIDFromTierScope(ownerKey)
+		s.auditOrg(r, orgID, "org.llm_oauth."+verb, "org_llm_oauth", string(kind), meta)
 	case strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix):
 		s.auditTenant(r, strings.TrimPrefix(ownerKey, secrets.OrgOwnerPrefix), "oauth.org."+verb, "oauth_forfait", string(kind), meta)
+	case verb == "refused":
+		id, _ := auth.FromContext(r.Context())
+		if id.TeamID == "" {
+			return
+		}
+		s.auditTenant(r, id.TeamID, "oauth.personal.refused", "oauth_forfait", string(kind), meta)
 	}
 }
 
@@ -221,6 +267,13 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 	if pasteState == "" {
 		pasteState = frag
 	}
+	// Validate the name BEFORE consuming the pending authorization: a
+	// refused label must not cost the operator a restarted connect.
+	accountLabel, err := normalizeOAuthAccountLabel(r.URL.Query().Get("account_label"))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	pending, err := s.oauthPending.Take(r.Context(), ownerKey, kind)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "no pending authorization (expired? restart the connect)")
@@ -248,13 +301,16 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		httpError(w, http.StatusInternalServerError, "build credentials: %v", err)
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob)
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, blob, accountLabel, credentialServerBuilt)
 	if err != nil {
+		if s.refuseOAuthCredential(w, r, ownerKey, kind, "browser", err) {
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser"})
+	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -274,20 +330,94 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusBadRequest, "empty body — paste the credentials.json / auth.json content")
 		return
 	}
-	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body)
+	accountLabel, err := normalizeOAuthAccountLabel(r.URL.Query().Get("account_label"))
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste"})
+	rec, err := s.sealOAuthRecord(r.Context(), ownerKey, kind, body, accountLabel, credentialPasted)
+	if err != nil {
+		if s.refuseOAuthCredential(w, r, ownerKey, kind, "paste", err) {
+			return
+		}
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
+}
+
+// maxOAuthAccountLabel bounds the account name. It is a display string —
+// a handle a human recalls ("jothedev", "SocialGouv Revi") — and the
+// connect paths take it as a query parameter, where nothing but the
+// server's header limit would otherwise bound it.
+const maxOAuthAccountLabel = 120
+
+// normalizeOAuthAccountLabel is the one place a label is accepted from a
+// caller (both connect paths and the rename), so the bound holds everywhere.
+func normalizeOAuthAccountLabel(raw string) (string, error) {
+	label := strings.TrimSpace(raw)
+	if n := utf8.RuneCountInString(label); n > maxOAuthAccountLabel {
+		return "", fmt.Errorf("account_label is %d characters, max %d", n, maxOAuthAccountLabel)
+	}
+	return label, nil
+}
+
+// credentialOrigin says who built the blob sealOAuthRecord is gating: a
+// human paste, or the server itself out of a token exchange. The
+// presence rules differ — a pasted claude_code record must carry what
+// the CLI needs to consider itself logged in (expiresAt, scopes), while
+// the exchange legitimately omits an expiry or a scope (the refresh
+// tests model scope-less responses) and the server-built blob only gets
+// the token-shape check.
+type credentialOrigin int
+
+const (
+	credentialPasted credentialOrigin = iota
+	credentialServerBuilt
+)
+
+// pastedBlobParseError gives a blob that is not even JSON the same typed
+// refusal a bad FIELD gets, so the paste path's Warn + audit cover the
+// shape #627 was filed on: a terminal transcript pasted whole, which
+// ParseAnthropicView/ParseCodexView reject as a plain parse error and the
+// refusal branch therefore let through with no trace at all. A
+// server-built blob keeps the raw error — nobody pasted it, and the token
+// exchange's own failure is the interesting one.
+func pastedBlobParseError(file string, origin credentialOrigin, err error) error {
+	var se *secrets.ShapeError
+	if origin != credentialPasted || errors.As(err, &se) {
+		return err
+	}
+	return &secrets.ShapeError{
+		Field:  file,
+		Reason: fmt.Sprintf("is not a JSON object (%v) — paste the file itself, not a terminal transcript or a fragment of it", err),
+	}
+}
+
+// refuseOAuthCredential is the refusal branch both connect paths share:
+// a typed shape refusal answers 400 with the reason, and leaves a trace —
+// a Warn and an audit event naming the field and the reason, never the
+// value — so a paste that would have burned a fleet of runs on 401s is
+// findable after the fact. Reports whether it handled the error.
+func (s *Server) refuseOAuthCredential(w http.ResponseWriter, r *http.Request, ownerKey string, kind secrets.OAuthKind, flow string, err error) bool {
+	var se *secrets.ShapeError
+	if !errors.As(err, &se) {
+		return false
+	}
+	s.logger.Warn("oauth: owner=%s kind=%s credential REFUSED at ingestion (flow=%s field=%s): %s", ownerKey, kind, flow, se.Field, se.Reason)
+	s.auditOAuthByOwner(r, ownerKey, "refused", kind, map[string]any{"flow": flow, "field": se.Field, "reason": se.Reason})
+	httpError(w, http.StatusBadRequest, "%s", err.Error())
+	return true
 }
 
 // sealOAuthRecord validates a credentials blob, extracts expiry/scope
 // metadata, seals it bound to (ownerKey, kind), and upserts the record.
-// Shared by the browser flow and the paste path.
-func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte) (secrets.OAuthRecord, error) {
+// Shared by the browser flow and the paste path; accountLabel arrives
+// already normalized by the handler. Every refusal of the blob's SHAPE is
+// a *secrets.ShapeError; anything else is a parse, seal or store failure.
+func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secrets.OAuthKind, blob []byte, accountLabel string, origin credentialOrigin) (secrets.OAuthRecord, error) {
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
 		// ID is derived in the OAuth store's Upsert (memory + Mongo
@@ -297,34 +427,131 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// What the fingerprint is taken over. Only the claude_code branch moves
+	// it off the blob, and only when it wraps a bare setup token.
+	identity := blob
 	switch kind {
 	case secrets.OAuthKindClaudeCode:
-		v, err := secrets.ParseAnthropicView(blob)
+		nb, err := secrets.NormalizeAnthropicBlob(blob, now)
 		if err != nil {
 			return secrets.OAuthRecord{}, err
 		}
-		if v.ClaudeAIOauth.AccessToken == "" {
-			return secrets.OAuthRecord{}, errors.New("credentials.json missing claudeAiOauth.accessToken")
+		if nb.Wrapped {
+			// Said out loud, because the expiry below is iterion's
+			// assumption and not something the provider stated.
+			s.logger.Info("oauth: owner=%s kind=%s ingested a bare setup token — wrapped as credentials.json, scope %q, assumed validity %s (the token carries no expiry of its own)",
+				ownerKey, kind, "user:inference", secrets.SetupTokenAssumedLifetime)
 		}
-		if v.ClaudeAIOauth.ExpiresAt > 0 {
-			t := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
-			rec.AccessTokenExpiresAt = &t
+		blob, identity = nb.Payload, nb.Identity
+		v, err := secrets.ParseAnthropicView(blob)
+		if err != nil {
+			return secrets.OAuthRecord{}, pastedBlobParseError("credentials.json", origin, err)
+		}
+		if v.ClaudeAIOauth.AccessToken == "" {
+			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.accessToken", Reason: "is missing from credentials.json"}
+		}
+		// Ingestion gate — the runtime backstop is #624's evidence-based skip,
+		// this end catches the garbage before it ever reaches a run: an
+		// accessToken with a newline/tab/ANSI escape is a transcript, not a
+		// bearer token, and every downstream call would die with a legible
+		// "Header has invalid value" for hours before the cause was found.
+		if err := secrets.ValidateTokenShape("claudeAiOauth.accessToken", v.ClaudeAIOauth.AccessToken); err != nil {
+			return secrets.OAuthRecord{}, err
 		}
 		rec.NotRefreshable = v.ClaudeAIOauth.RefreshToken == ""
 		rec.Scopes = v.ClaudeAIOauth.Scopes
+		if v.ClaudeAIOauth.ExpiresAt > 0 {
+			exp := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
+			rec.AccessTokenExpiresAt = &exp
+		}
+		if origin == credentialPasted {
+			// A pasted claude_code record without an expiresAt or scopes is
+			// what the CLI reads as "Not logged in" — the credential exists
+			// server-side and can never serve a run. Refuse it at paste
+			// time, not on a paid fleet of dead-on-arrival runs.
+			if rec.AccessTokenExpiresAt == nil {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.expiresAt", Reason: "is missing from credentials.json — a claude_code record without it is read by the CLI as 'Not logged in'; paste the current credentials.json of a logged-in Claude Code (run any `claude` command first so it is fresh)"}
+			}
+			if len(rec.Scopes) == 0 {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.scopes", Reason: "is missing from credentials.json — a claude_code record without any scope is read by the CLI as 'Not logged in'; paste the current credentials.json of a logged-in Claude Code"}
+			}
+		}
+		// An EXPIRED access token is only dead when nothing can renew it.
+		// With a refreshToken the record is exactly what the refresh worker
+		// exists for (ExpiringBefore lists expired records too, and RunOnce
+		// refreshes every refreshable one), so a stale export from a
+		// logged-in machine connects and heals on the worker's next pass.
+		// Without one, only a fresh paste can help — and `claude login` is
+		// the wrong advice for a machine that IS logged in and merely
+		// exported a stale file.
+		if rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(now) {
+			if rec.NotRefreshable {
+				return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "claudeAiOauth.accessToken", Reason: fmt.Sprintf("already expired at %s and the record carries no refreshToken, so nothing can renew it — paste the current credentials.json of a logged-in Claude Code (it carries a refreshToken), or connect through the browser flow", rec.AccessTokenExpiresAt.Format(time.RFC3339))}
+			}
+			s.logger.Info("oauth: owner=%s kind=%s accessToken expired at %s but refreshable — accepted; the refresh worker renews it on its next pass", ownerKey, kind, rec.AccessTokenExpiresAt.Format(time.RFC3339))
+		}
 	case secrets.OAuthKindCodex:
 		v, err := secrets.ParseCodexView(blob)
 		if err != nil {
-			return secrets.OAuthRecord{}, err
+			return secrets.OAuthRecord{}, pastedBlobParseError("auth.json", origin, err)
 		}
 		if v.Tokens.AccessToken == "" {
-			return secrets.OAuthRecord{}, errors.New("auth.json missing tokens.access_token")
+			return secrets.OAuthRecord{}, &secrets.ShapeError{Field: "tokens.access_token", Reason: "is missing from auth.json"}
 		}
-		if v.Tokens.ExpiresIn > 0 {
+		// Same shape gate as claude_code — a whitespace/control char in a
+		// bearer token is a paste accident, not a legal credential.
+		if err := secrets.ValidateTokenShape("tokens.access_token", v.Tokens.AccessToken); err != nil {
+			return secrets.OAuthRecord{}, err
+		}
+		// Stamp the access token's own `exp` claim in preference to
+		// expires_in. Both the record's usefulness and the whole codex
+		// refresh path hang off this one field: the refresh worker sweeps
+		// ExpiringBefore, whose query requires access_token_expires_at to
+		// EXIST, so a codex record connected without it is invisible to
+		// the worker forever and can only ever be renewed by hand.
+		//
+		// expires_in alone left exactly that hole: real ~/.codex/auth.json
+		// blobs carry access_token/refresh_token/account_id/id_token and
+		// last_refresh, and nothing writes expires_in (see
+		// delegate.piCodexExpiry), so the branch was never taken in
+		// practice. Where it IS present it is also the weaker answer —
+		// relative to an exchange that may be days old, which stamps an
+		// optimistic future expiry over an already-dead token. The claim
+		// is absolute and describes this very token.
+		//
+		// Measured cost of the hole: a platform forfait sat unrefreshed
+		// for ten days, surfacing only as a run failing its first LLM call
+		// with "authentication token is expired".
+		if t := v.AccessTokenExpiry(); !t.IsZero() {
+			rec.AccessTokenExpiresAt = &t
+		} else if v.Tokens.ExpiresIn > 0 {
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
+		// An unstampable record is accepted — it serves runs perfectly well
+		// until its token dies — but it will never be swept, so say that
+		// once, here, where the cause is still visible. Learning it later
+		// means reading it off a run's first LLM call failing on an expired
+		// token, which names neither the credential nor the reason.
+		if rec.AccessTokenExpiresAt == nil {
+			s.logger.Warn("oauth: owner=%s kind=%s stored WITHOUT an access-token expiry — the token states none "+
+				"(no readable `exp` claim, no expires_in), so the refresh worker cannot select this record and the "+
+				"forfait will need a manual re-connect when it expires", ownerKey, kind)
+		}
 		rec.NotRefreshable = v.Tokens.RefreshToken == ""
+		// Now that the deadline is readable, the dead-on-arrival case can be
+		// named at last: an expired token with nothing to renew it serves no
+		// run, and every one that draws this credential dies on its first
+		// LLM call. Said, not refused — the operator keeps the choice
+		// (uploading first and logging in after is a legitimate order), and
+		// the claude_code path already refuses the same shape only because
+		// its own "Not logged in" symptom is unreadable.
+		if rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(now) {
+			s.logger.Warn("oauth: owner=%s kind=%s stored with an access token that expired at %s and NO refresh "+
+				"token — nothing can renew it, so every run drawing this credential fails its first LLM call; "+
+				"re-run `codex login` and upload the fresh ~/.codex/auth.json",
+				ownerKey, kind, rec.AccessTokenExpiresAt.Format(time.RFC3339))
+		}
 	}
 	sealed, err := secrets.SealOAuthPayload(s.sealer, ownerKey, kind, blob)
 	if err != nil {
@@ -336,9 +563,31 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// worker rewrites tokens for the SAME subscription and preserves it.
 	// Derived from the account the payload names where it names one, so
 	// connecting ONE subscription twice does not open two meters.
-	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, blob)
+	rec.Fingerprint = secrets.SubscriptionFingerprint(kind, identity)
+	// The name follows the fingerprint. A re-connect that names no account
+	// keeps the previous label ONLY when it provably re-connects the same
+	// subscription (codex: same account id; claude_code: the same setup
+	// token, or the same credentials.json byte for byte).
+	// Any other re-connect may be an account SWAP — the same owner key
+	// re-pointed at somebody else's forfait — and inheriting the old name
+	// there would answer "whose subscription paid?" with the wrong person.
+	// Absent beats wrong: the operator names it (`account_label`) or the
+	// listing shows no name.
+	rec.AccountLabel = accountLabel
+	if rec.AccountLabel == "" {
+		if prev, err := s.oauthStore.Get(ctx, ownerKey, kind); err == nil && prev.Fingerprint == rec.Fingerprint {
+			rec.AccountLabel = prev.AccountLabel
+		}
+	}
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
+	}
+	// An expired credential that CAN be renewed is accepted on the promise
+	// that the refresh worker renews it — so make that promise immediate
+	// rather than up to a ticker period away. Off the request, bounded,
+	// best-effort: the upload has already succeeded either way.
+	if !rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !rec.AccessTokenExpiresAt.After(time.Now()) {
+		s.kickOAuthRefresh(ownerKey, kind)
 	}
 	return rec, nil
 }
@@ -357,15 +606,41 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Take the record's refresh claim before touching the provider, exactly
+	// as the background sweep does. A refresh is not atomic — read, provider
+	// round trip, persist — and the provider RETIRES the refresh token it is
+	// handed, so a manual refresh racing the sweep (or another operator's
+	// click) leaves one of the two holding a credential the provider has
+	// already invalidated. Whoever loses the claim does not exchange.
+	owner, err := secrets.NewRefreshClaimOwner()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	claimed, err := s.oauthStore.ClaimRefresh(r.Context(), ownerKey, kind, owner, now, now.Add(secrets.RefreshClaimTTL))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if !claimed {
+		httpError(w, http.StatusConflict, "%s", s.refreshClaimRefusal(r.Context(), ownerKey, kind))
+		return
+	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
+		// Give the claim back so the sweep is not held off by a failed
+		// attempt; a claim already superseded has nothing to release.
+		if rerr := s.oauthStore.ReleaseRefreshClaim(r.Context(), ownerKey, kind, owner, nil); rerr != nil && !errors.Is(rerr, secrets.ErrRefreshClaimLost) {
+			s.logger.Warn("oauth: release refresh claim %s/%s: %v", ownerKey, kind, rerr)
+		}
 		if errors.Is(err, secrets.ErrNotRefreshable) {
 			// Self-heal the record so the background worker stops
 			// attempting it; surface an actionable message instead of
 			// the raw exchange error.
 			if !rec.NotRefreshable {
-				rec.NotRefreshable = true
-				rec.UpdatedAt = time.Now().UTC()
-				if uerr := s.oauthStore.Upsert(r.Context(), rec); uerr != nil {
+				// Partial write: the flag is all this path learned, and a
+				// rename may have landed since the Get above.
+				if uerr := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
 					s.logger.Warn("oauth: mark not-refreshable %s/%s: %v", ownerKey, kind, uerr)
 				}
 			}
@@ -375,10 +650,105 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		httpError(w, http.StatusBadGateway, "refresh: %v", err)
 		return
 	}
-	if err := s.oauthStore.Upsert(r.Context(), rec); err != nil {
+	// Only the refresh-owned keys: the record read above is a round trip
+	// old, so writing it whole would revert a rename committed since. Fenced
+	// by the claim, so a re-connect that landed during the exchange (which
+	// clears the claim) keeps the credential the operator just uploaded
+	// instead of being overwritten by a refresh of the session it replaced.
+	if err := s.oauthStore.UpdateTokens(r.Context(), ownerKey, kind, secrets.OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+		if errors.Is(err, secrets.ErrRefreshClaimLost) {
+			httpError(w, http.StatusConflict, "this connection was replaced while the refresh was in flight — the refreshed tokens were discarded")
+			return
+		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Re-read rather than render the in-hand copy, for the same reason:
+	// the stored record is the truth about the fields this write did not
+	// touch.
+	fresh, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	writeJSON(w, toOAuthView(fresh))
+}
+
+// refreshClaimRefusal explains a refused claim to the operator who clicked
+// Refresh. Two states refuse it and they are NOT the same news:
+//
+//   - another refresh holds the lease — seconds away, "retry in a moment"
+//     is exactly right;
+//   - a cool-down left by a refresh that succeeded without a readable
+//     deadline — up to an hour, during which "retry in a moment" sends the
+//     operator back to a button that answers 409 every time.
+//
+// The two share one field on the record (the cool-down IS the lease
+// instant, with no owner), so only the stored record can tell them apart.
+// Best-effort: a read that fails falls back to the generic answer rather
+// than turning a 409 into a 500.
+func (s *Server) refreshClaimRefusal(ctx context.Context, ownerKey string, kind secrets.OAuthKind) string {
+	const inFlight = "a refresh of this connection is already in flight — retry in a moment"
+	cur, err := s.oauthStore.Get(ctx, ownerKey, kind)
+	if err != nil || cur.RefreshClaimOwner != "" || cur.RefreshNotBefore == nil {
+		return inFlight
+	}
+	if !cur.RefreshNotBefore.After(time.Now()) {
+		// The cool-down lapsed between the CAS and this read: whatever holds
+		// the record now took it in that gap.
+		return inFlight
+	}
+	return fmt.Sprintf("this connection is in a refresh cool-down until %s — its last refresh succeeded but the "+
+		"token it returned states no readable deadline, so the sweep backs off instead of re-running the exchange "+
+		"every tick; re-connect the credential to refresh it now",
+		cur.RefreshNotBefore.UTC().Format(time.RFC3339))
+}
+
+// renameOAuthForOwner sets (or clears) the account label on an existing
+// connection. It exists because the label is the only thing that maps a
+// credential back to a human account, and every record connected before
+// labels existed carries none — so the feature would be inert on exactly
+// the credentials an operator most needs to identify today. Renaming
+// touches metadata only: the sealed payload, fingerprint and expiry are
+// untouched, so a rename can never rotate or invalidate a live key.
+func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, ownerKey string, kind secrets.OAuthKind) {
+	if !kind.Valid() {
+		httpError(w, http.StatusBadRequest, "unknown oauth kind")
+		return
+	}
+	var req struct {
+		AccountLabel *string `json:"account_label"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "decode body: %v", err)
+		return
+	}
+	if req.AccountLabel == nil {
+		httpError(w, http.StatusBadRequest, "account_label required (send \"\" to clear it)")
+		return
+	}
+	label, err := normalizeOAuthAccountLabel(*req.AccountLabel)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	// Store-level metadata write, not Get → Upsert: the latter would carry
+	// the sealed payload this handler read back over whatever a concurrent
+	// refresh committed in between.
+	if err := s.oauthStore.SetAccountLabel(r.Context(), ownerKey, kind, label); err != nil {
+		if errors.Is(err, secrets.ErrOAuthNotFound) {
+			httpError(w, http.StatusNotFound, "no %s connection", kind)
+			return
+		}
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	rec, err := s.oauthStore.Get(r.Context(), ownerKey, kind)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"account_label": label, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 

@@ -23,6 +23,7 @@ package forge
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -59,6 +60,19 @@ const (
 	// KindPAT is an operator-pasted personal access token (the fallback for
 	// self-hosted instances with no registrable OAuth app). Never refreshed.
 	KindPAT Kind = "pat"
+)
+
+// AccountKind values — what the account behind a credential IS on the forge.
+// Identity.Kind carries one at connect time and Connection.AccountKind keeps it.
+const (
+	// AccountKindUser is a person's account: an OAuth authorization or a PAT.
+	AccountKindUser = "user"
+	// AccountKindBot is a machine account the forge itself flags as one —
+	// GitLab's group/project-access-token bot user or service account. The
+	// only kind iterion rebrands with the iterion-bot avatar unasked.
+	AccountKindBot = "bot"
+	// AccountKindInstallation is a GitHub App acting through an installation.
+	AccountKindInstallation = "installation"
 )
 
 // ConnectionStatus is the health of a connection's admin credential.
@@ -114,6 +128,26 @@ type Connection struct {
 	// the auto-created webhooks.Config.ForgeBaseURL so the existing inbound
 	// SSRF host-pin keeps applying.
 	ForgeBaseURL string `bson:"forge_base_url,omitempty" json:"forge_base_url,omitempty"`
+
+	// WebhookBaseURL overrides, for this connection only, the base the
+	// INBOUND hook URL is built from — the reverse direction of
+	// ForgeBaseURL, which names the host we call OUT to. Empty = the
+	// deployment's public URL, which is what every connection wants until
+	// one of them cannot reach it.
+	//
+	// It exists because a forge may refuse the deployment's canonical host
+	// outright: GitLab's outbound allowlist rejects any unlisted webhook
+	// URL with "Invalid url given" (HTTP 422), and getting a host listed is
+	// an administrative act on the forge's side, not ours. Without a
+	// per-connection escape hatch, one such forge pins the whole
+	// deployment's public URL — a re-provision would rewrite its hook to an
+	// address it is not allowed to call, and the failure would only surface
+	// as a provisioning error much later.
+	//
+	// Declaring it is what makes the exception survive: a hook URL that
+	// merely predates a public-URL change is one re-provision away from
+	// being silently replaced.
+	WebhookBaseURL string `bson:"webhook_base_url,omitempty" json:"webhook_base_url,omitempty"`
 
 	// Connected identity / namespace, populated from WhoAmI at connect time.
 	AccountLogin string `bson:"account_login,omitempty" json:"account_login,omitempty"`
@@ -193,6 +227,21 @@ type Connection struct {
 	// that an org admin must re-approve or remove the connection). Surfaced
 	// to the operator so the fix is actionable; cleared on reconnect.
 	StatusReason string `bson:"status_reason,omitempty" json:"status_reason,omitempty"`
+
+	// AccountKind is what the connected account IS on the forge (the
+	// AccountKind* constants), copied from WhoAmI at connect time. It gates
+	// the iterion-bot avatar upload: only AccountKindBot is rebranded without
+	// the operator asking. Empty on connections older than the field, which
+	// reads as a user — nothing is ever rebranded on a mere absence.
+	AccountKind string `bson:"account_kind,omitempty" json:"account_kind,omitempty"`
+	// AvatarAppliedAt is when iterion last uploaded the iterion-bot avatar
+	// onto this connection's account (at connect time for a bot identity, or
+	// through the explicit apply action). Nil = never.
+	AvatarAppliedAt *time.Time `bson:"avatar_applied_at,omitempty" json:"avatar_applied_at,omitempty"`
+	// AvatarError keeps the forge's refusal of the last avatar upload, so the
+	// studio can name it and offer a retry instead of showing a default
+	// avatar with no explanation. Cleared by the next successful upload.
+	AvatarError string `bson:"avatar_error,omitempty" json:"avatar_error,omitempty"`
 
 	// SealedPayload holds the token blob (access/refresh/PAT + expiry),
 	// sealed via secrets.Sealer with AAD "forge_conn:<ID>". Never serialised.
@@ -285,20 +334,45 @@ func hostOf(base string) string {
 }
 
 // Sentinel errors. Callers compare with errors.Is.
+//
+// Two families live here and the difference is invisible in the text: a
+// sentinel is IN the ErrNotFound class iff it wraps ErrNotFound. Membership
+// is what pkg/server's forgeUpstreamStatus reads, so wrapping one of the
+// store misses below into the class would turn every "could not be recorded"
+// %w-wrap in the forge layer into a 404 — the messages unchanged, only what
+// errors.Is answers. Each sentinel states its family; the table and the guard
+// that pins it live next to forgeUpstreamStatus.
 var (
+	// ErrConnectionNotFound, ErrIntegrationNotFound and ErrOAuthAppNotFound
+	// report an iterion STORE miss, and are deliberately OUTSIDE the
+	// ErrNotFound class: they are iterion's own state, never an answer the
+	// forge gave, and every handler that %w-wraps a store failure relies on
+	// them not classifying as a forge 404.
 	ErrConnectionNotFound  = errors.New("forge: connection not found")
 	ErrIntegrationNotFound = errors.New("forge: repo integration not found")
 	ErrOAuthAppNotFound    = errors.New("forge: oauth app not found")
 	ErrOAuthAppExists      = errors.New("forge: oauth app already exists")
-	ErrHookNotFound        = errors.New("forge: hook not found")
+	// ErrNotFound is the class every 404 belongs to. A caller that only needs
+	// "the forge has no such thing" matches on it; one that acts on a
+	// specific absence matches the resource sentinel (ErrHookNotFound) or
+	// reads the *NotFoundError the operation carries.
+	//
+	// Membership is by wrapping, and it is the whole meaning: forgeUpstreamStatus
+	// answers a member 404. Only what the forge itself answered belongs.
+	ErrNotFound = errors.New("forge: not found")
+	// ErrHookNotFound is IN the ErrNotFound class — a forge-answered 404 the
+	// orchestrator additionally reads as "the hook is already gone", so
+	// deprovision treats it as done.
+	ErrHookNotFound = fmt.Errorf("%w: hook", ErrNotFound)
 	// ErrForbidden is returned by an admin client when the credential lacks
 	// the scope to perform an operation (e.g. create a webhook). The
 	// orchestrator surfaces it as a structured "insufficient_scope" error so
 	// the studio can prompt for re-auth with broader scope or a PAT.
 	ErrForbidden = errors.New("forge: insufficient scope")
 	// ErrUnauthorized is returned when the credential is rejected outright
-	// (revoked / expired). The refresh worker flips the connection to
-	// StatusRevoked on this.
+	// (revoked / expired). The refresh worker marks a refreshable connection
+	// StatusNeedsReauth on it; an avatar apply meeting it on a PAT — which
+	// nothing else probes — marks the connection StatusRevoked.
 	ErrUnauthorized = errors.New("forge: credential rejected")
 	// ErrPermissionsNotGranted is returned when minting a GitHub-App
 	// installation token fails with a PERMANENT permission mismatch — the
@@ -309,4 +383,20 @@ var (
 	// (an org admin must re-approve the install with the updated permissions,
 	// or the connection should be removed) instead of re-minting each tick.
 	ErrPermissionsNotGranted = errors.New("forge: installation permissions not granted")
+	// ErrAvatarUnsupported is returned by an AvatarSetter when the forge
+	// instance has no avatar endpoint at all (GitLab before 17.0, Gitea before
+	// 1.20): the operator's only path is the forge's own profile page.
+	ErrAvatarUnsupported = errors.New("forge: this instance has no avatar API")
+	// ErrLocalPreflight marks a failure that happened while PREPARING a forge
+	// call, before any byte reached the network: a stored App key that is not
+	// parseable PEM, a payload that will not marshal, a base URL that will not
+	// parse. The forge never saw the request and cannot be blamed for it.
+	//
+	// It exists because a client method is not the same thing as a round
+	// trip. AppClient.rest and every security-read mint sign an App JWT from
+	// a stored key first, so a key iterion cannot read fails inside what
+	// reads like a pure remote call — and the handlers that default to 502
+	// then report a third party as broken. Callers in pkg/server ask
+	// isIterionFault, which reads this sentinel and answers 500.
+	ErrLocalPreflight = errors.New("forge: the request never left iterion")
 )

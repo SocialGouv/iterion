@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -103,9 +104,82 @@ type PullRef struct {
 	Draft        bool      `json:"draft,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
+	// differs from the base repo (the endpoint's own path parameter) for a
+	// fork PR; empty when the provider omits it. Read by SameRepoAs for the
+	// fork guard on lanes that resolve a PR via the forge API and therefore
+	// cannot rely on the webhook payload's own head.repo field.
+	HeadRepoFullName string `json:"head_repo_full_name,omitempty"`
+	// HeadCloneURL is the head repo's own clone URL when the provider reports
+	// it — a fork's, on a fork PR; empty when unknown. It is what a lane that
+	// chooses to work on a fork's code would clone; no launch lane does today.
+	HeadCloneURL string `json:"head_clone_url,omitempty"`
+	// HeadRepoDeclared reports whether the provider's answer NAMES a head
+	// repository for this pull request at all — the API-side twin of
+	// prforge.Parsed.HeadRepoDeclared, so the payload side and this side
+	// speak one vocabulary. Declared with an EMPTY HeadRepoFullName is a head
+	// repository the forge HAS and iterion could not name (a deleted or
+	// blocked fork; a GitLab source project this credential may not read);
+	// undeclared is a provider that reports none. Neither is the base repo,
+	// which is the assumption a bare empty field invites.
+	HeadRepoDeclared bool `json:"head_repo_declared,omitempty"`
+	// HeadRepoErr is the forge's own refusal of a head-repository read that
+	// took its own call — GitLab's merge request names its source project by
+	// id, so naming it is a second request that can be answered 403 (a
+	// permission) or 404 (an absence). Kept TYPED, so a lane classifies the
+	// refusal (errors.Is(err, ErrForbidden)) instead of guessing from an
+	// empty name; nil when no separate read was needed or it succeeded.
+	// Never serialised: it is the refusing lane's diagnosis, not a field of
+	// the pull request.
+	HeadRepoErr error `json:"-"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`
+}
+
+// SameRepoAs reports whether the PR's head branch lives in the SAME repo as
+// baseRepo — the fork guard of the API-side lanes. Every launch pair
+// combining `<base repo>.CloneURL + pr.SourceBranch` MUST clear this before
+// dispatching: an empty head repo means the provider omitted the field OR
+// the head repo was deleted/blocked, and launching on it aims the bot at
+// repoURL=<base> repoRef=<head branch> — a fixer would push LLM commits to
+// the BASE repo's branch of that name.
+//
+// Empty head repo → false (never proven safe). Empty base → false. Both set
+// and case-insensitively equal → true. The command lane, the autofix lane
+// and the gate-relaunch lane all consult this before launching.
+func (p PullRef) SameRepoAs(baseRepo string) bool {
+	return SameRepo(p.HeadRepoFullName, baseRepo)
+}
+
+// HeadRepoWithheld reports a head repository the forge HAS and iterion could
+// not name: declared, with no name. Mirrors prforge.Parsed.HeadRepoWithheld
+// on the payload side, where the same fact arrives as `head.repo: null`.
+//
+// Both refuse — SameRepoAs is false on an empty head either way — so this is
+// not a second decision but the WORDING and the diagnosis: "the credential
+// could not read the fork" is an operator action, "the provider reports no
+// head repository" is a legacy or minimal answer, and collapsing them leaves
+// a refusal nobody can act on.
+func (p PullRef) HeadRepoWithheld() bool {
+	return p.HeadRepoDeclared && p.HeadRepoFullName == ""
+}
+
+// SameRepo reports whether two "owner/repo" identifiers name the same
+// repository, case-insensitively (owner/repo names are uniquely
+// case-insensitive on every supported forge). Empty on either side → false:
+// "unknown" is never proven equal, so a caller that fails-closed inherits
+// the safe answer for free.
+//
+// The one vocabulary behind every cross-repo predicate — PullRef.SameRepoAs
+// here, prforge.Parsed / prforge.ParsedReviewComment SameRepoAsBase in
+// pkg/webhooks/prforge — so "Owner/Repo" and "owner/repo" never disagree
+// between the payload side and the API side.
+func SameRepo(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(a, b)
 }
 
 // PullListOptions filters ListPullRequests.
@@ -228,3 +302,16 @@ const (
 	CISkipped   = "skipped"
 	CIUnknown   = "unknown"
 )
+
+// PRReviewComment is one comment in a PR's review threads (an inline diff
+// comment or a reply inside one). InReplyTo == 0 marks a thread root; every
+// reply carries the root's id. Consumed by the inbound-webhook
+// reply-in-thread conversational gate.
+type PRReviewComment struct {
+	ID        int64
+	InReplyTo int64
+	Body      string
+	Path      string
+	CreatedAt string
+	Author    string
+}

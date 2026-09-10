@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // Parsed is the normalized PR view the inbound handler consumes. It
@@ -35,8 +37,13 @@ type Parsed struct {
 	AuthorLogin string
 	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
 	// differs from ProjectPath (the base repo) for a fork PR; empty when the
-	// payload omits head.repo. Read by IsCrossRepo for the fork guard.
+	// payload omits head.repo OR the head repo was deleted/blocked. Read by
+	// SameRepoAsBase, which treats empty as NOT proven same-repo.
 	HeadRepoFullName string
+	// HeadRepoDeclared reports whether the payload carried a head `repo`
+	// key at all — see Ref.RepoDeclared. Empty+declared is a DELETED or
+	// blocked fork; empty+undeclared is a legacy sender.
+	HeadRepoDeclared bool
 	// DequeueReason is the merge-queue eject reason on a `dequeued`
 	// action (e.g. "MERGE_CONFLICT", "CI_FAILURE"). Empty otherwise.
 	DequeueReason string
@@ -47,6 +54,13 @@ type Parsed struct {
 	// Labels is the PR's current label set (names). Empty when the payload
 	// omits it (GitLab, minimal payloads) — the hold-label gate fail-opens.
 	Labels []string
+	// RequestedReviewerLogin is who a `review_requested` action asks a
+	// review from (the "Request review" / "Re-request review" gesture).
+	// Empty on other actions and on team review requests.
+	RequestedReviewerLogin string
+	// UpdatedAt distinguishes successive events on one head (idempotency
+	// salt for deliberate, repeatable gestures like a review re-request).
+	UpdatedAt string
 }
 
 // healableDequeueReasons are the merge-queue eject reasons that a
@@ -68,6 +82,13 @@ var healableDequeueReasons = map[string]bool{
 func (p Parsed) NeedsAutoHeal() bool {
 	return p.Action == "dequeued" && healableDequeueReasons[p.DequeueReason]
 }
+
+// IsRequeued reports whether the pull request just (re-)entered the merge
+// queue. It is the closing half of NeedsAutoHeal: a heal exists only to
+// carry an ejected PR back into the queue, so a PR that is back in it has
+// nothing left to heal — and a heal still running would force-push over
+// the head the queue is building.
+func (p Parsed) IsRequeued() bool { return p.Action == "enqueued" }
 
 // ParsePullRequest decodes a pull_request webhook body from GitHub or
 // Forgejo/Gitea (one shared wire shape). We reject empty bodies / wrong
@@ -99,10 +120,23 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		SenderLogin:      e.Sender.Login,
 		AuthorLogin:      pr.User.Login,
 		HeadRepoFullName: pr.Head.Repo.FullName,
+		HeadRepoDeclared: pr.Head.RepoDeclared,
 		DequeueReason:    e.Reason,
 		Draft:            pr.Draft,
 		Labels:           labelNames(pr.Labels),
+
+		RequestedReviewerLogin: e.RequestedReviewer.Login,
+		UpdatedAt:              pr.UpdatedAt,
 	}, nil
+}
+
+// ReviewRequestedFrom reports whether THIS event asks `login` for a review —
+// the forge-native "Request review" / "Re-request review" gesture. A draft is
+// deliberately NOT excluded: unlike the auto-review actions this is a manual
+// gesture, same posture as a `/revi` comment.
+func (p Parsed) ReviewRequestedFrom(login string) bool {
+	return p.Action == "review_requested" && login != "" &&
+		strings.EqualFold(p.RequestedReviewerLogin, login)
 }
 
 // Author returns the login author-based routing must use: the PR's own
@@ -129,15 +163,29 @@ func labelNames(labels []Label) []string {
 	return out
 }
 
-// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
-// than its base — i.e. the PR comes from a fork. This is the fork-guard
-// signal: a fork PR is untrusted, so the inbound handler must not auto-launch a
-// MUTATING bot (which would run costly LLM work + push commits) on it without
-// operator validation — the anti budget-exhaustion boundary. An empty head
-// repo (minimal/legacy payloads) is treated as same-repo to avoid falsely
-// gating a trusted internal PR.
-func (p Parsed) IsCrossRepo() bool {
-	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
+// SameRepoAsBase reports whether the PR's head branch is PROVEN to live in
+// the base repo — the fork guard for the payload-side types, mirroring
+// forge.PullRef.SameRepoAs.
+//
+// Every unattended lane that launches with the pair `<base>.CloneURL +
+// p.SourceBranch` clears THIS, through forkGuardRefusal (which only adds the
+// wording). The predicate is deliberately fail-CLOSED, and there is no
+// fail-open twin to reach for by mistake: an
+// empty head repo means the payload omitted the field OR the head repo was
+// deleted/blocked, and `head.repo: null` is exactly the shape a fork takes
+// once deleted. A "not a proven fork" test answers "same repo" for the one
+// case that most needs gating, aiming the bot at repoURL=<base>
+// repoRef=<fork-controlled branch name>.
+func (p Parsed) SameRepoAsBase() bool {
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
+}
+
+// HeadRepoWithheld reports the payload shape a fork takes once its head
+// repo is DELETED or blocked: the forge declared the key and gave it no
+// value. Distinct from a legacy sender that never carried the key —
+// see Ref.RepoDeclared for why the two must not be collapsed.
+func (p Parsed) HeadRepoWithheld() bool {
+	return p.HeadRepoDeclared && p.HeadRepoFullName == ""
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a
@@ -171,7 +219,26 @@ func (p Parsed) IsSynchronize() bool {
 	return !p.Draft && (p.Action == "synchronize" || p.Action == "synchronized")
 }
 
+// StateOpenOrUnknown reports whether the PR can still receive review work:
+// open, or a payload that omits `state`. Same contract as the GitLab
+// counterpart: fail-open for the merge-gate resync lane (a required check
+// must keep following the head), while deliberate manual gestures use a
+// strict open check (their failure mode is wasted spend, not a stuck check).
+func (p Parsed) StateOpenOrUnknown() bool {
+	return p.State == "" || strings.EqualFold(p.State, "open")
+}
+
 // SubjectID is the stable per-PR identifier used in delivery records.
 func (p Parsed) SubjectID() string {
 	return "pr:" + strconv.FormatInt(p.PRNumber, 10)
+}
+
+// IsClosed reports whether this delivery says the pull request is over —
+// merged or closed unmerged, which for a review are the same fact: there
+// is nothing left to judge. Anchored on the ACTION rather than the state
+// alone, because a `synchronize` on a PR whose payload happens to carry
+// state=closed is a race, not a close event; the state check keeps a
+// stale/reopened payload from ending a live review.
+func (p Parsed) IsClosed() bool {
+	return p.Action == "closed" && strings.EqualFold(p.State, "closed")
 }

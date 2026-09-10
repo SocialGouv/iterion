@@ -158,6 +158,39 @@ func SanitizeEnv(env []string) []string {
 	return out
 }
 
+// autoMaintenanceOff is the config that keeps a git command from spawning
+// automatic maintenance.
+//
+// Since git 2.48 a command that WRITES to a repository — fetch, commit, merge,
+// rebase, am — ends by running `git maintenance run --auto --detach`, and that
+// process DAEMONIZES: it forks, the parent exits, the child calls setsid() and
+// closes stdin/stdout/stderr (git's setup.c daemonize()). The parent's exit and
+// the closed pipes are exactly what os/exec waits for, so CombinedOutput
+// returns while the maintenance child is still alive, still holding
+// `<repo>/.git/objects/maintenance.lock` and still writing under
+// `.git/objects`. The caller has no handle on it: it cannot be waited for, and
+// removing the checkout races it.
+//
+// `maintenance.auto=false` refuses the spawn outright (git ≥ 2.48).
+// `gc.auto=0` is the knob older git reads — there the detaching process is
+// `git gc --auto` — and is also the fallback git ≥ 2.48 consults when
+// maintenance.auto is unset.
+var autoMaintenanceOff = []string{"-c", "maintenance.auto=false", "-c", "gc.auto=0"}
+
+// NoAutoMaintenance returns args prefixed with the config above, for a git
+// command run against a directory iterion owns and disposes of: a cache
+// checkout, a disposable server-side clone, a scratch repository a test
+// builds under t.TempDir(). Such a directory has nothing to maintain, and a
+// maintenance process outliving the command that started it is a process
+// nothing can wait for.
+//
+// Exported for the same reason SanitizeEnv is: this package is not the only
+// place that shells out to git, and a caller assembling its own argv cannot
+// get it from run() below.
+func NoAutoMaintenance(args ...string) []string {
+	return append(slices.Clone(autoMaintenanceOff), args...)
+}
+
 func gitEnv() []string {
 	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 }

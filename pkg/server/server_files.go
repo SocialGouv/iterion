@@ -49,6 +49,14 @@ func readJSON(r *http.Request, v any) error {
 	return httpx.DecodeJSON(r, v)
 }
 
+// readJSONStrict refuses a field the destination does not declare, and names
+// the ones it does. For requests whose parameters are consumed long after the
+// 200 — a launch above all — where a dropped field is read back as the
+// workflow's own default and the payload gives no sign.
+func readJSONStrict(r *http.Request, v any) error {
+	return httpx.DecodeJSONStrict(r, v)
+}
+
 // decodeJSON reads+unmarshals the request body into *dst, writing a 400
 // "invalid request: %v" on failure. Returns true on success, false if it
 // already wrote an error response. Intended for the dominant handler-boilerplate
@@ -157,6 +165,11 @@ func (s *Server) allowedOrigins() []string {
 // is in the allowlist. Callers should always set Vary: Origin so caches don't
 // poison the response across origins.
 func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
+	// nil request = a server-internal replay (the webhook defer sweep);
+	// there is no Origin to reflect.
+	if r == nil {
+		return
+	}
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.isAllowedOriginReq(r) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)

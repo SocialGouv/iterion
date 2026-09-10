@@ -1,6 +1,10 @@
 package api
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 // CacheControlMarker is the Anthropic prompt caching marker.
 // Set Type to "ephemeral" to enable caching up to this content block.
@@ -187,12 +191,83 @@ type InputSchema struct {
 // under any of the given schemas`. Anthropic's validator accepted the
 // malformed shape, which is why this only surfaced on OpenAI calls.
 type Property struct {
-	Type        string              `json:"type,omitempty"`
+	Type string `json:"type,omitempty"`
+	// Types keeps a JSON Schema `type` given as an array of alternatives
+	// (`["array","null"]`, or the six-kind union a schema generator emits for
+	// an untyped field). Type then holds the first non-null alternative so
+	// single-type consumers keep working, and the array round-trips on
+	// marshal. Empty for the common single-type property.
+	Types       []string            `json:"-"`
 	Description string              `json:"description,omitempty"`
 	Items       *Property           `json:"items,omitempty"`
 	Enum        []any               `json:"enum,omitempty"`
 	Properties  map[string]Property `json:"properties,omitempty"`
 	Required    []string            `json:"required,omitempty"`
+}
+
+// UnmarshalJSON accepts `type` as a string or as an array of strings. Both
+// are valid JSON Schema; a generator that spells "any value" as the union of
+// every kind must not be refused with an unmarshal error at request time.
+func (p *Property) UnmarshalJSON(data []byte) error {
+	type plain Property
+	var aux struct {
+		plain
+		Type json.RawMessage `json:"type,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	typ, types, err := parseSchemaType(aux.Type)
+	if err != nil {
+		return err
+	}
+	*p = Property(aux.plain)
+	p.Type, p.Types = typ, types
+	return nil
+}
+
+// MarshalJSON writes the array form back when the property carried one.
+func (p Property) MarshalJSON() ([]byte, error) {
+	type plain Property
+	if len(p.Types) == 0 {
+		return json.Marshal(plain(p))
+	}
+	return json.Marshal(struct {
+		plain
+		Type []string `json:"type"`
+	}{plain(p), p.Types})
+}
+
+// parseSchemaType reads a JSON Schema `type` value: absent/null → empty; a
+// string → itself; an array of strings → the first non-null kind as the
+// scalar view plus the full list. Anything else is a schema error.
+func parseSchemaType(raw json.RawMessage) (string, []string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", nil, nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return "", nil, err
+		}
+		return s, nil, nil
+	case '[':
+		var list []string
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return "", nil, fmt.Errorf("json schema: type array must hold strings: %w", err)
+		}
+		first := ""
+		for _, t := range list {
+			if t != "null" {
+				first = t
+				break
+			}
+		}
+		return first, list, nil
+	}
+	return "", nil, fmt.Errorf("json schema: type must be a string or an array of strings, got %s", trimmed)
 }
 
 // ToolChoice controls which tool the model must use.
@@ -294,6 +369,14 @@ type MessageDelta struct {
 // UsageDelta contains token usage info.
 type UsageDelta struct {
 	OutputTokens int `json:"output_tokens"`
+	// InputTokens is the prompt count for providers that only learn it
+	// once the turn is over. Anthropic and Bedrock report theirs on
+	// message_start (StreamEvent.InputTokens) and leave this at 0; the
+	// OpenAI endpoints have no equivalent frame, since both put the
+	// prompt count in the terminal usage payload. A consumer therefore
+	// takes whichever of the two is non-zero — never the later one
+	// unconditionally, which would zero the Anthropic count.
+	InputTokens int `json:"input_tokens"`
 	// OutputTokensDetails carries Anthropic's exact billed breakdown.
 	// ThinkingTokens counts the raw internal reasoning (always the full
 	// amount regardless of thinking.display); 0 when the API omits it.

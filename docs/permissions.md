@@ -121,7 +121,18 @@ and evaluated by each gated backend before every tool runs:
 - **claw** — `executeToolsDirect` (pkg/backend/model/generation.go)
   evaluates the policy before `gt.Execute`. Allow → execute; Deny → a
   synthetic `isError` tool_result the model adapts to; Ask → the loop
-  aborts with `delegate.ErrAskUser` so the run pauses.
+  aborts with `delegate.ErrAskUser` so the run pauses. **Sandboxed claw
+  enforces the same gate**: the policy crosses the IPC as a pre-task
+  `permission_policy` envelope (`permission.PolicyConfig` — raw rule
+  strings re-parsed in-container by the same parser), and the
+  `__claw-runner`'s own tool loop applies it to local builtins and
+  proxied tools alike. The pre-task position makes a mixed-version
+  fleet fail CLOSED: an older runner fatals on the unknown envelope
+  instead of running the node ungated. What cannot cross is an **Ask
+  decision** — nothing inside the container can pause the parent run —
+  so a policy that can produce one (mode `ask`, or any explicit `ask:`
+  rule, which outranks mode `deny`) is refused loudly at dispatch, and
+  C136 warns about the coupling at compile time.
 - **claude_code** — a broad PreToolUse hook (`wirePermissionHook` in
   claude_code.go) evaluates the policy. Under the always-on
   `bypassPermissions`, PreToolUse hooks still run and a `deny` decision

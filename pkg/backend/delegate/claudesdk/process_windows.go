@@ -14,6 +14,12 @@ import (
 // CREATE_NEW_PROCESS_GROUP and route TerminateJobObject through a Job Object.
 func setProcessGroup(_ *exec.Cmd) {}
 
+// terminateGroupOnCancel is a no-op on Windows: os/exec's default Cancel
+// already terminates the leader, and there is no process-group signal to
+// widen it to the subtree. See setProcessGroup for the Job Object path
+// forward.
+func terminateGroupOnCancel(_ *exec.Cmd) {}
+
 // killProcessGroup falls back to terminating the leader on Windows.
 // Descendants are left to the caller; see setProcessGroup for the path
 // forward.

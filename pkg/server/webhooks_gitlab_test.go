@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,8 +19,21 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 )
 
+// glConfig is a minimal provisioned GitLab webhook: review-pr only, with the
+// CommandMap entry a REAL orchestrator provisioning review-pr alone would
+// carry (bots/review-pr/manifest.yaml's own `command: {name: revi, scope:
+// pr, disambiguator: when_args_empty}` invocation) — `/revi` now resolves
+// through the SAME generic registry as any other command, so a config that
+// never provisioned a route for it would find none, exactly as it
+// wouldn't for `/billy`. Tests that also enable revi-converse extend
+// CommandMap with its when_args_present sibling explicitly.
 func glConfig() webhooks.Config {
-	return webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true, BotIDs: []string{"review-pr"}}
+	return webhooks.Config{
+		ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitLab, Enabled: true, BotIDs: []string{"review-pr"},
+		CommandMap: map[string][]webhooks.CommandRoute{
+			"revi": {{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"}},
+		},
+	}
 }
 
 // gitlabCtx simulates what webhookAuth stamps before the handler runs.
@@ -187,6 +201,292 @@ func TestGitLabWebhook_Idempotent(t *testing.T) {
 	}
 }
 
+// glReRequestMR builds the "Re-request review" delivery: an `update` whose
+// changes.reviewers stamps re_requested on one reviewer. updatedAt salts the
+// idempotency key (one delivery per click); state exercises the open-MR gate.
+func glReRequestMRState(actor, reviewer, updatedAt, state string, reRequested bool) string {
+	return `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "` + actor + `"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "` + state + `", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "` + updatedAt + `", "last_commit": {"id": "sha1"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "` + reviewer + `", "re_requested": ` + map[bool]string{true: "true", false: "false"}[reRequested] + `}]}}
+	}`
+}
+
+func glReRequestMR(actor, reviewer, updatedAt string, reRequested bool) string {
+	return glReRequestMRState(actor, reviewer, updatedAt, "opened", reRequested)
+}
+
+// The forge-native re-review button: a reviewers change that (re-)requests a
+// review from iterion's own bot account launches the review bot — even on a
+// head the MR-open lane already claimed — and each click launches again.
+func TestGitLabWebhook_ReRequestReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotVars = vars
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
+	cfg := glConfig()
+
+	// The open already claimed this head under the "mr|" key space…
+	w0 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w0, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w0.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("open: code=%d calls=%d", w0.Code, calls)
+	}
+
+	// …and the re-request still relaunches on that same head.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("re-request: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+	if gotVars["re_review"] != "true" || gotVars["head_sha"] != "sha1" {
+		t.Fatalf("re-request vars: %v", gotVars)
+	}
+
+	// The forge redelivering the SAME click (same updated_at) is a replay…
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if calls != 2 {
+		t.Fatalf("redelivery must not double-launch: calls=%d", calls)
+	}
+	// …but a SECOND click (new updated_at) on the same head reviews again.
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 11:22:33 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusAccepted || calls != 3 {
+		t.Fatalf("second click: code=%d calls=%d", w3.Code, calls)
+	}
+}
+
+// The publish tail self-assigns the bot as reviewer after each review, and
+// GitLab echoes that PUT back as a reviewers change. The actor of that echo
+// is the bot itself — it must never trigger a review (the self-launch loop
+// this guard exists for). A change naming some OTHER reviewer is ordinary
+// MR housekeeping and stays filtered too.
+func TestGitLabWebhook_ReviewerChangeNotForBotFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+		return login == "iterion-bot"
+	}
+	cfg := glConfig()
+
+	// Self-assign echo: the bot added ITSELF (actor = bot) → filtered.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("iterion-bot", "iterion-bot", "2026-09-01 10:00:00 UTC", false), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("self-assign echo: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+
+	// A human requesting a review from ANOTHER human → filtered.
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "bob", "2026-09-01 10:05:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("other reviewer: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+}
+
+// Reviewer edits arrive freely on closed and merged MRs — a re-request there
+// must never burn a review run (mirror of the Note lane's closed-MR filter).
+func TestGitLabWebhook_ReRequestOnClosedMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+	for _, state := range []string{"closed", "merged"} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glReRequestMRState("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", state, true), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+}
+
+// One GitLab `update` can be BOTH a push (oldrev) and a reviewers change.
+// With ReviewOnSync on, that event must ride the per-head resync key — else
+// the following pure resync on the same head reviews it a second time.
+func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+
+	pushWithReviewers := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:00:00 UTC", "last_commit": {"id": "sha1"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
+	}`
+	pureResync := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:00:05 UTC", "last_commit": {"id": "sha1"}}
+	}`
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), pushWithReviewers, gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("push+reviewers: code=%d calls=%d", w1.Code, calls)
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), pureResync, gitlab.EventHeaderMergeRequest))
+	if calls != 1 {
+		t.Fatalf("pure resync on the same head must dedupe against the first launch: calls=%d", calls)
+	}
+}
+
+// R7e050f: the button is a MANUAL trigger like /revi, and must ride the same
+// replier controls (AuthorizedRepliers / MinReplierRole). An unauthorized
+// click never launches — and never earns the hold-label exemption: with no
+// stub the production gate fail-closes on the missing forge token, which is
+// exactly the state this harness runs in.
+func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+
+	// Production gate, no stub: no forge token resolvable → refused, filtered.
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("unauthorized re-request must filter: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// An explicit refusal from the gate seam behaves identically.
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "re-request review by unauthorized replier: mallory", nil
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:01:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("refused re-request must filter: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+
+	// An authz error is acknowledged and audited, as on the note gate.
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return false, "", context.DeadlineExceeded
+	}
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:02:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("authz error must acknowledge without launching: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
+	}
+
+	// R34eb8c: when an automatic lane co-rides the event (push + reviewers
+	// diff, ReviewOnSync on), the same authz error must NOT strand it — the
+	// gesture is demoted and the resync launches.
+	cfg2 := glConfig()
+	cfg2.ReviewOnSync = true
+	coRiding := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "mallory"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:03:00 UTC", "last_commit": {"id": "sha-co"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
+	}`
+	w4 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w4, glReq(gitlabCtx(cfg2), coRiding, gitlab.EventHeaderMergeRequest))
+	if w4.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("authz error must not strand the co-riding resync: code=%d calls=%d body=%s", w4.Code, calls, w4.Body.String())
+	}
+}
+
+// The merge-gate resync lane shares the closed-MR rule with the re-request
+// lane (the round-1 guard's SIBLING term): a push to a closed/merged MR's
+// source branch still delivers the update hook and must not burn a review.
+// A payload WITHOUT a state stays fail-open — filtering it would strand the
+// required check on the new head.
+func TestGitLabWebhook_ResyncOnDeadMRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	cfg := glConfig()
+	cfg.ReviewOnSync = true
+
+	resync := func(state, sha string) string {
+		st := ""
+		if state != "" {
+			st = `"state": "` + state + `", `
+		}
+		return `{
+		  "object_kind": "merge_request",
+		  "user": {"username": "alice"},
+		  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+		  "object_attributes": {"iid": 7, "action": "update", ` + st + `"oldrev": "prev", "source_branch": "feature/x", "target_branch": "main",
+		    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+		    "last_commit": {"id": "` + sha + `"}}
+		}`
+	}
+	for _, state := range []string{"closed", "merged", "locked"} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, "sha-"+state), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusOK || calls != 0 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+	// Open and state-less payloads keep the gate following the head.
+	for i, state := range []string{"opened", ""} {
+		w := httptest.NewRecorder()
+		s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), resync(state, fmt.Sprintf("sha-live-%d", i)), gitlab.EventHeaderMergeRequest))
+		if w.Code != http.StatusAccepted || calls != i+1 {
+			t.Fatalf("state=%q: code=%d calls=%d body=%s", state, w.Code, calls, w.Body.String())
+		}
+	}
+}
+
 // glNoteReq builds a request carrying the Note Hook event header.
 func glNoteReq(ctx context.Context, body string) *http.Request {
 	return glReq(ctx, body, gitlab.EventHeaderNote)
@@ -275,12 +575,15 @@ func botsDirAbs(t *testing.T) string {
 	return abs
 }
 
-// TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot pins the A5
-// conversational route: when an authorized user asks `/revi <question>`
-// AND the webhook scope includes revi-converse AND the bot is
-// resolvable on disk, the handler launches revi-converse (NOT
-// review-pr) with the question threaded as `converse_question`. The
-// re_review flag is dropped (it's a question, not a re-review).
+// TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot pins the
+// conversational route through the GENERIC command registry — the
+// manifests' complementary disambiguators (review-pr when_args_empty /
+// revi-converse when_args_present), no bot-specific branch in the handler:
+// when an authorized user asks `/revi <question>` on a webhook whose
+// CommandMap was provisioned with both bots, the handler launches
+// revi-converse (NOT review-pr) with the question threaded as
+// `converse_question`. The re_review flag is never set on this route (only
+// the when_args_empty sibling gets it).
 func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
@@ -294,6 +597,12 @@ func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	}
 	cfg := glConfig()
 	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"revi": {
+			{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"},
+			{BotID: "revi-converse", Scope: "pr", Disambiguator: "when_args_present", ArgsVar: "converse_question"},
+		},
+	}
 	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
@@ -320,17 +629,18 @@ func TestGitLabNoteHook_ConverseRoutesQuestionToConverseBot(t *testing.T) {
 	}
 }
 
-// TestGitLabNoteHook_ConverseFallsBackWhenBotMissing pins that even
-// when the webhook scope ALLOWS revi-converse, if the bot bundle is
-// NOT resolvable on disk (older deploy without the bundle) the handler
-// gracefully falls back to the review-pr re-review path with the args
-// ignored — same outcome as a webhook that doesn't scope the converse
-// bot. The fallback keeps a /revi <question> note useful instead of
-// erroring out the inbound webhook.
-func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
+// TestGitLabNoteHook_ConverseNotProvisionedFallsBackToReview pins the
+// generic disambiguation fallback (Config.ResolveCommand: "all routes
+// disambiguated but none matched the args state — fall back to the first"):
+// a webhook whose CommandMap was never provisioned with revi-converse's
+// when_args_present route — because the operator's config predates the
+// bot, or never enabled it — still handles `/revi <question>` by falling
+// back to review-pr's when_args_empty route, question ignored. Same
+// mechanism as TestGitLabNoteHook_FocusArgTolerated; pinned separately
+// because it is the shape a production PIC-style webhook takes today (one
+// bot enabled, revi-converse not yet provisioned).
+func TestGitLabNoteHook_ConverseNotProvisionedFallsBackToReview(t *testing.T) {
 	s := newWebhookTestServer(t)
-	// Point at an empty bot dir so revi-converse does not resolve.
-	s.cfg.Bots.Paths = []string{t.TempDir()}
 	var calls int
 	var gotBot string
 	var gotVars map[string]string
@@ -339,8 +649,7 @@ func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
 		gotBot, gotVars = botID, vars
 		return "run-fallback-1", nil
 	}
-	cfg := glConfig()
-	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg := glConfig() // CommandMap carries ONLY review-pr's when_args_empty route
 	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
 	w := httptest.NewRecorder()
 	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
@@ -355,6 +664,48 @@ func TestGitLabNoteHook_ConverseFallsBackWhenBotMissing(t *testing.T) {
 	}
 	if _, present := gotVars["converse_question"]; present {
 		t.Fatalf("converse_question must NOT be set on the fallback path: %v", gotVars)
+	}
+}
+
+// TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly pins
+// the doctrine change from the old bespoke routing: generic command
+// resolution trusts a PROVISIONED CommandMap entry — it does not re-probe
+// bot existence on disk the way the old reply-in-thread-style fallback did.
+// So when a webhook's CommandMap DOES declare revi-converse's
+// when_args_present route (a real provisioning drift: the row outlived the
+// bundle) the launch is now attempted and fails EXPLICITLY (a visible
+// launch_error) instead of silently dropping the question and re-reviewing
+// instead — erreurs-explicites, never a masked fallback.
+func TestGitLabNoteHook_ConverseRouteWithUnresolvableBotFailsExplicitly(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		if botID == "revi-converse" {
+			return "", fmt.Errorf("resolve bot source: bundle not found")
+		}
+		return "run-x", nil
+	}
+	cfg := glConfig()
+	cfg.BotIDs = []string{"review-pr", "revi-converse"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"revi": {
+			{BotID: "review-pr", Scope: "pr", Disambiguator: "when_args_empty"},
+			{BotID: "revi-converse", Scope: "pr", Disambiguator: "when_args_present", ArgsVar: "converse_question"},
+		},
+	}
+	body := strings.Replace(glNoteRevi, `"note": "/revi"`, `"note": "/revi why is the SSRF critical?"`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glNoteReq(gitlabCtx(cfg), body))
+	if w.Code != http.StatusBadGateway || calls != 1 {
+		t.Fatalf("an unresolvable routed bot must fail explicitly, never silently: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp["error"], "bundle not found") {
+		t.Fatalf("expected the launch failure surfaced explicitly, got %v", resp)
 	}
 }
 
@@ -400,6 +751,165 @@ func TestGitLabNoteHook_ReplyInThreadRoutesToConverse(t *testing.T) {
 	if _, present := gotVars["re_review"]; present {
 		t.Fatalf("re_review must be dropped on the converse path: %v", gotVars)
 	}
+}
+
+// fakeGitlabNoteAPI drives gitlabNoteGateWithAPI / gitlabCommandGateWithAPI
+// without a live GitLab — the token-free split the GitHub twin
+// (reviewReplyGateWithAPI) already had. realWebhookNoteGate had NO test that
+// executed it before this: every handler test stubbed the s.webhookNoteGate
+// seam directly, so the gate's own loop-guard / classification / authz
+// ordering was never exercised.
+type fakeGitlabNoteAPI struct {
+	who       gitlab.User
+	whoErr    error
+	notes     []gitlab.DiscussionNote
+	discErr   error
+	discCalls int
+	level     int
+	member    bool
+	permErr   error
+	permCalls int
+}
+
+func (f *fakeGitlabNoteAPI) CurrentUser(context.Context) (gitlab.User, error) { return f.who, f.whoErr }
+func (f *fakeGitlabNoteAPI) Discussion(context.Context, int64, int64, string) ([]gitlab.DiscussionNote, error) {
+	f.discCalls++
+	return f.notes, f.discErr
+}
+func (f *fakeGitlabNoteAPI) MemberAccessLevel(context.Context, int64, int64) (int, bool, error) {
+	f.permCalls++
+	return f.level, f.member, f.permErr
+}
+
+// TestGitlabNoteGateWithAPI is the REAL gate core (not the handler stub):
+// self-note loop-guard, bot-in-thread classification, allowlist vs role
+// authorization, and error propagation, on a fake GitLab API.
+func TestGitlabNoteGateWithAPI(t *testing.T) {
+	s := &Server{}
+	p := gitlab.ParsedNote{ProjectID: 42, MRIID: 7, DiscussionID: "d-1", AuthorID: 2, AuthorUsername: "alice", NoteBody: "why?"}
+	botThread := []gitlab.DiscussionNote{
+		{AuthorID: 1, AuthorUsername: "revi-bot", Body: "the SSRF is reachable"},
+		{AuthorID: 2, AuthorUsername: "alice", Body: "why?"},
+	}
+	bot := gitlab.User{ID: 1, Username: "revi-bot"}
+
+	t.Run("allowlist authorizes without a role probe", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: botThread}
+		authorized, replyInThread, transcript, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || !authorized || !replyInThread || reason != "allowlist" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("allowlist path must not probe the role: %d calls", api.permCalls)
+		}
+		if !strings.Contains(transcript, "@revi-bot (you, the bot)") || !strings.Contains(transcript, "the SSRF is reachable") {
+			t.Fatalf("transcript must label the bot's anchor: %q", transcript)
+		}
+	})
+
+	t.Run("role gate", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessDeveloper, member: true}
+		authorized, _, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api)
+		if err != nil || !authorized || reason != "role" {
+			t.Fatalf("developer>=developer must pass: authorized=%v reason=%q err=%v", authorized, reason, err)
+		}
+		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, level: gitlab.AccessGuest, member: true}
+		authorized, _, _, reason, err = s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{MinReplierRole: "developer"}, p, api2)
+		if err != nil || authorized || !strings.HasPrefix(reason, "replier not authorized") {
+			t.Fatalf("guest<developer must refuse: authorized=%v reason=%q err=%v", authorized, reason, err)
+		}
+	})
+
+	t.Run("human-only thread never triggers", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, notes: []gitlab.DiscussionNote{
+			{AuthorID: 3, AuthorUsername: "bob", Body: "top-level human note"},
+			{AuthorID: 2, AuthorUsername: "alice", Body: "why?"},
+		}}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, api)
+		if err != nil || authorized || replyInThread || !strings.Contains(reason, "not a /revi command or a reply in a Revi thread") {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("thread gate must refuse before any authz probe: %d calls", api.permCalls)
+		}
+	})
+
+	t.Run("self note loop-guard refuses before any thread fetch", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: gitlab.User{ID: 2, Username: "alice"}, notes: botThread}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		if err != nil || authorized || replyInThread || reason != "self note (loop-guard)" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.discCalls != 0 {
+			t.Fatalf("a self note must be refused before the discussion fetch: %d calls", api.discCalls)
+		}
+	})
+
+	t.Run("bot identity unresolved fails closed before any thread fetch", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{whoErr: fmt.Errorf("401 unauthorized"), notes: botThread}
+		authorized, replyInThread, _, reason, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api)
+		if err != nil || authorized || replyInThread || reason != "bot identity unresolved; cannot classify reply" {
+			t.Fatalf("authorized=%v replyInThread=%v reason=%q err=%v", authorized, replyInThread, reason, err)
+		}
+		if api.discCalls != 0 {
+			t.Fatalf("an unclassifiable delivery must not pay the discussion fetch: %d calls", api.discCalls)
+		}
+	})
+
+	t.Run("infra errors propagate", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: bot, discErr: fmt.Errorf("boom")}
+		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api); err == nil {
+			t.Fatal("discussion fetch error must propagate, not filter")
+		}
+		api2 := &fakeGitlabNoteAPI{who: bot, notes: botThread, permErr: fmt.Errorf("boom")}
+		if _, _, _, _, err := s.gitlabNoteGateWithAPI(context.Background(), webhooks.Config{}, p, api2); err == nil {
+			t.Fatal("member-access-level error must propagate, not filter")
+		}
+	})
+}
+
+// TestGitlabCommandGateWithAPI is the REAL core of the generic command gate
+// (self-note loop-guard + allowlist/role authz), on a fake GitLab API —
+// same split, same reason the note gate needed one.
+func TestGitlabCommandGateWithAPI(t *testing.T) {
+	s := &Server{}
+	p := gitlab.ParsedNote{ProjectID: 42, AuthorID: 2, AuthorUsername: "alice"}
+	route := webhooks.CommandRoute{BotID: "feature-dev"}
+
+	t.Run("self note refuses before any authz probe", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{who: gitlab.User{ID: 2, Username: "alice"}}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, route, api)
+		if err != nil || outcome != gateRefused || reason != "self note (loop-guard)" {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+		if api.permCalls != 0 {
+			t.Fatalf("self note must refuse before the role probe: %d calls", api.permCalls)
+		}
+	})
+
+	t.Run("allowlist authorizes", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{AuthorizedRepliers: []string{"alice"}}, p, route, api)
+		if err != nil || outcome != gateAuthorized || reason != "allowlist" {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+	})
+
+	t.Run("role below the route's MinReplierRole refuses", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{level: gitlab.AccessGuest, member: true}
+		outcome, reason, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, webhooks.CommandRoute{BotID: "feature-dev", MinReplierRole: "developer"}, api)
+		if err != nil || outcome != gateRefused || !strings.HasPrefix(reason, "replier not authorized") {
+			t.Fatalf("outcome=%v reason=%q err=%v", outcome, reason, err)
+		}
+	})
+
+	t.Run("authz infra error is gateUnevaluable", func(t *testing.T) {
+		api := &fakeGitlabNoteAPI{permErr: fmt.Errorf("boom")}
+		outcome, _, err := s.gitlabCommandGateWithAPI(context.Background(), webhooks.Config{}, p, route, api)
+		if err == nil || outcome != gateUnevaluable {
+			t.Fatalf("outcome=%v err=%v — an infra failure must be gateUnevaluable + a propagated error", outcome, err)
+		}
+	})
 }
 
 // TestGitLabNoteHook_PlainCommentWithoutConverseBotFiltered pins that a
@@ -644,5 +1154,42 @@ func TestGitLabWebhook_ConcurrentDuplicateReleasesQuota(t *testing.T) {
 	}
 	if u.Runs != 1 {
 		t.Fatalf("org monthly runs = %d, want 1 (loser must release its quota unit)", u.Runs)
+	}
+}
+
+// The hold label freezes EVERY automation on an MR, the re-request included —
+// same promise as the GitHub lane (the forge emits the same event for an
+// auto-request, so the click's deliberateness is not a property this handler
+// can rely on). The click here is AUTHORIZED: the veto must hold anyway.
+func TestGitLabWebhook_ReRequestRespectsHoldLabel(t *testing.T) {
+	s := newWebhookTestServer(t)
+	calls := 0
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
+		return true, "allowlist", nil
+	}
+	cfg := glConfig()
+	cfg.HoldLabels = []string{"iterion:hold"}
+
+	body := strings.Replace(
+		glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true),
+		`"project": {`, `"labels": [{"title": "iterion:hold"}], "project": {`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), body, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("held MR: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+	rows, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 5)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("no delivery row recorded (%v)", err)
+	}
+	if !strings.Contains(rows[0].Error, "hold label") {
+		t.Fatalf("audit reason = %q, want the hold-label explanation", rows[0].Error)
 	}
 }

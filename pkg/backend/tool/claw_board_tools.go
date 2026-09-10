@@ -22,8 +22,9 @@ type BoardConfig struct {
 	SourceIssueID string
 }
 
-// RegisterClawBoardTools registers the seven board operations as
-// in-process claw tools, filtered by the granted capabilities. The
+// RegisterClawBoardTools registers the board operations (boardops'
+// registry, whatever it lists) as in-process claw tools, filtered by the
+// granted capabilities. The
 // `mcp__iterion_board__` FQN prefix mirrors the claude_code MCP path so a
 // workflow swapping backends doesn't need to rename tool references in
 // prompts.

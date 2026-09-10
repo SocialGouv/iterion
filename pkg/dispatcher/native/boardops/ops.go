@@ -87,6 +87,21 @@ type Tool struct {
 // perform.
 var allTools = []Tool{
 	{
+		Name:       "add_labels",
+		Capability: CapBoardLabel,
+		Description: "Add labels to an issue, leaving every label already on it in place (idempotent: a label already present is left as is). " +
+			"PREFER this over set_labels for any incremental change — set_labels REPLACES the whole list, so a list composed from an " +
+			"earlier read re-arms one-shot trigger labels (e.g. triage:auto) that were consumed in between.",
+		InputSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{
+            "id":{"type":"string","description":"Issue ID or unambiguous prefix."},
+            "labels":{"type":"array","items":{"type":"string"},"description":"Labels to add. At least one."}
+          },
+          "required":["id","labels"]
+        }`),
+	},
+	{
 		Name:        "assign_issue",
 		Capability:  CapBoardAssign,
 		Description: "Set the human/ownership assignee on an issue. To choose which BOT processes an issue, use set_bot instead — the dispatcher routes by bot first, and an assignee is only used as a bot selector when no bot is set (the path external trackers like GitHub/Forgejo rely on).",
@@ -192,6 +207,20 @@ var allTools = []Tool{
         }`),
 	},
 	{
+		Name:       "remove_labels",
+		Capability: CapBoardLabel,
+		Description: "Remove the given labels from an issue, leaving every other label in place (a label not present is ignored). " +
+			"Prefer it over set_labels for incremental changes — see add_labels.",
+		InputSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{
+            "id":{"type":"string","description":"Issue ID or unambiguous prefix."},
+            "labels":{"type":"array","items":{"type":"string"},"description":"Labels to remove. At least one."}
+          },
+          "required":["id","labels"]
+        }`),
+	},
+	{
 		Name:        "set_bot",
 		Capability:  CapBoardAssign,
 		Description: "Set the explicit bot (dispatcher workflow) for an issue. This is the CANONICAL way to choose which bot runs an issue — prefer it over assign_issue, which sets the human/ownership assignee. The dispatcher routes by bot first, else assignee. Empty string clears it (falls back to assignee-based routing).",
@@ -205,9 +234,11 @@ var allTools = []Tool{
         }`),
 	},
 	{
-		Name:        "set_labels",
-		Capability:  CapBoardLabel,
-		Description: "Replace the label list on an issue.",
+		Name:       "set_labels",
+		Capability: CapBoardLabel,
+		Description: "Replace the label list on an issue (ABSOLUTE). Only for a full rewrite from a fresh read; to add or remove a few " +
+			"labels use add_labels / remove_labels — a replacement built from an earlier read re-arms one-shot trigger labels " +
+			"(e.g. triage:auto) consumed in between.",
 		InputSchema: json.RawMessage(`{
           "type":"object",
           "properties":{
@@ -250,6 +281,8 @@ var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.R
 	"assign_issue":     doAssign,
 	"set_bot":          doSetBot,
 	"set_labels":       doSetLabels,
+	"add_labels":       doAddLabels,
+	"remove_labels":    doRemoveLabels,
 	"close_issue":      doClose,
 	"list_issues":      doList,
 	"list_labels":      doListLabels,
@@ -489,6 +522,49 @@ func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage,
 	return json.Marshal(iss)
 }
 
+// doAddLabels / doRemoveLabels are the RELATIVE label writes: the delta
+// goes to the store's atomic AdjustLabels and is applied to the card as
+// it is — never composed from a read the agent took earlier, which is how
+// set_labels re-armed a consumed one-shot (issue #666).
+func doAddLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+	return adjustLabels(store, raw, true)
+}
+
+func doRemoveLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+	return adjustLabels(store, raw, false)
+}
+
+func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.RawMessage, error) {
+	var args struct {
+		ID     string   `json:"id"`
+		Labels []string `json:"labels"`
+	}
+	if err := unmarshalArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	if args.ID == "" {
+		return nil, errors.New("id is required")
+	}
+	labels := native.CleanLabels(args.Labels)
+	if len(labels) == 0 {
+		return nil, errors.New("labels is required: at least one non-empty label")
+	}
+	resolved, err := store.Resolve(args.ID)
+	if err != nil {
+		return nil, err
+	}
+	var iss *native.Issue
+	if add {
+		iss, _, err = store.AdjustLabels(resolved, labels, nil)
+	} else {
+		iss, _, err = store.AdjustLabels(resolved, nil, labels)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(iss)
+}
+
 func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
@@ -504,10 +580,35 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if err != nil {
 		return nil, err
 	}
+	// One read for the whole target resolution: a failure to read the board
+	// is an error, never a board with no terminal state (which the branches
+	// below would report as "declare one" — a lie the operator would act on),
+	// and on a cloud board it is one round-trip instead of three.
+	board, err := store.Board()
+	if err != nil {
+		return nil, err
+	}
 	target := args.To
 	if target == "" {
+		// A card ALREADY in a terminal state stays where it is: closing a
+		// closed ticket is not a request to re-file it into a different
+		// sink (the terminal→terminal carve-out is an operator refiling;
+		// this is a bot surface, and re-filing here also erased the
+		// dispatcher's give-up stamp on a card the bot never asked to
+		// move). No-op, current issue returned.
+		if cur, err := store.Get(resolved); err == nil {
+			if st := board.StateByName(cur.State); st != nil && st.Terminal {
+				// Still an acknowledgment: the give-up stamp goes (same
+				// best-effort contract as below — nothing moved).
+				_ = store.SetGaveUp(resolved, nil)
+				if refreshed, gerr := store.Get(resolved); gerr == nil {
+					cur = refreshed
+				}
+				return json.Marshal(cur)
+			}
+		}
 		// Find the first terminal state on the board.
-		for _, st := range store.Board().States {
+		for _, st := range board.States {
 			if st.Terminal {
 				target = st.Name
 				break
@@ -517,7 +618,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			return nil, errors.New("board has no terminal state; specify 'to' explicitly")
 		}
 	} else {
-		st := store.Board().StateByName(target)
+		st := board.StateByName(target)
 		if st == nil {
 			return nil, fmt.Errorf("unknown state %q", target)
 		}
@@ -576,7 +677,11 @@ func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, erro
 }
 
 func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, error) {
-	return json.Marshal(store.AggregateLabels())
+	labels, err := store.AggregateLabels()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(labels)
 }
 
 func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {

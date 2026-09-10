@@ -41,6 +41,7 @@ func (r *recordingLauncher) snapshot() []trigger.LaunchPlan {
 }
 
 func TestIssueTriageTrigger_E2E_ConsumeAndLaunch(t *testing.T) {
+	t.Parallel()
 	// The REAL manifest is the contract under test: kind=board mode=direct
 	// on inbox + triage:auto with consume_labels.
 	manifest, err := bundle.LoadManifest(filepath.Join("..", "bots", "issue-triage", "manifest.yaml"))

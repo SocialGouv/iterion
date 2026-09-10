@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -23,9 +24,15 @@ func (f *fakeStaleLister) ListStaleActiveRuns(_ context.Context, statuses []stor
 	return out, nil
 }
 
-type fakeLeases struct{ locked map[string]bool }
+type fakeLeases struct {
+	locked map[string]bool
+	err    error // returned for every probe when set
+}
 
 func (f *fakeLeases) IsRunLocked(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
 	return f.locked[runID], nil
 }
 
@@ -42,6 +49,10 @@ type fakeSweepStore struct {
 	store.RunStore
 	mu      sync.Mutex
 	flipped map[string]store.RunStatus
+}
+
+func (f *fakeSweepStore) UpdateRunOutcome(ctx context.Context, id string, status store.RunStatus, runErr string, _ store.RunOutcomeMeta, expectedFrom []store.RunStatus) (bool, error) {
+	return f.UpdateRunStatusIf(ctx, id, status, runErr, expectedFrom)
 }
 
 func (f *fakeSweepStore) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, _ string, _ []store.RunStatus) (bool, error) {
@@ -84,6 +95,79 @@ func TestSweepOrphanRuns(t *testing.T) {
 	}
 }
 
+// TestSweepOrphanRuns_LeaseFaultIsVisible pins the degradation contract: a
+// broken lease probe must (a) fail safe (flip nothing), (b) count on the
+// stage metric, and (c) bracket the episode edge-triggered — one Warn on
+// entry, none while it persists, recovery flips the flag back.
+func TestSweepOrphanRuns_LeaseFaultIsVisible(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	broken := &fakeLeases{err: context.DeadlineExceeded}
+
+	before := counterValue(t, s.cfg.Metrics.OrphanSweepErrors.WithLabelValues("lease"))
+	s.sweepOrphanRuns(context.Background(), lister, broken, time.Now().UTC())
+
+	fs.mu.Lock()
+	if len(fs.flipped) != 0 {
+		fs.mu.Unlock()
+		t.Fatalf("lease-unknown candidates were flipped: %+v", fs.flipped)
+	}
+	fs.mu.Unlock()
+	if got := counterValue(t, s.cfg.Metrics.OrphanSweepErrors.WithLabelValues("lease")); got != before+1 {
+		t.Fatalf("lease error counter = %v, want %v — a disarmed sweeper must be measurable", got, before+1)
+	}
+	if !s.sweepDegraded {
+		t.Fatal("sweepDegraded not set — the episode Warn would re-fire every tick or never")
+	}
+
+	// An EMPTY pass proves nothing: no candidate was probed, so the episode
+	// must stay open instead of flapping "back to healthy" while NATS-KV is
+	// still down (most minutes have no stale run at all).
+	s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("an empty pass closed the degradation episode — false 'back to healthy'")
+	}
+
+	// A pass that actually probed a candidate cleanly closes it.
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("sweepDegraded still set after a clean probing pass")
+	}
+}
+
+// TestSweepOrphanRuns_DeadScanOpensTheEpisode: a failing scan is orphan
+// recovery 100% disabled — it must open the degraded episode, not just tick
+// a per-minute Warn.
+func TestSweepOrphanRuns_DeadScanOpensTheEpisode(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	s.sweepOrphanRuns(context.Background(), failingLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("a dead scan did not open the degradation episode")
+	}
+
+	// A SCAN episode closes on any pass whose scans return — an empty
+	// healthy minute IS positive evidence for the scan stage. Without this
+	// the flag latches forever (probed stays 0 on a healthy deployment)
+	// and the edge-triggered Warn goes mute for every LATER outage.
+	s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("a recovered scan + empty healthy pass did not close the episode — the next outage would be silent")
+	}
+}
+
+type failingLister struct{}
+
+func (failingLister) ListStaleActiveRuns(context.Context, []store.RunStatus, time.Time, int) ([]mongostore.StaleRunRef, error) {
+	return nil, context.DeadlineExceeded
+}
+
 func TestQueuedSweepCutoff(t *testing.T) {
 	// Lease checker exposing the queue's redelivery window → window + margin.
 	windowed := &fakeWindowedLeases{window: 80 * time.Minute}
@@ -105,5 +189,157 @@ func TestQueuedSweepCutoff(t *testing.T) {
 	envelope := time.Duration(natsq.DefaultStreamMaxRetry) * natsq.DefaultAckWait
 	if sweepQueuedFallback <= envelope {
 		t.Fatalf("fallback %v does not exceed the default MaxDeliver × AckWait envelope (%v)", sweepQueuedFallback, envelope)
+	}
+}
+
+// TestSweepOrphanRuns_LeaseEpisodeClosesOnBoundedCleanPasses pins the other
+// half of the latch class: a lease-opened episode whose candidate was flipped
+// by a peer replica during the blindness may NEVER see another probe — after
+// a bounded run of clean passes it must close (a latched flag silences every
+// later outage's edge Warn), and the very next failure must re-warn.
+func TestSweepOrphanRuns_LeaseEpisodeClosesOnBoundedCleanPasses(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("setup: lease episode did not open")
+	}
+	// Healthy empty passes (the peer flipped the candidate): bounded close.
+	for i := 0; i < sweepProbeCloseAfter+1; i++ {
+		s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	}
+	if s.sweepDegraded {
+		t.Fatalf("lease episode still open after %d clean passes — latched, every later outage is silent", sweepProbeCloseAfter+1)
+	}
+	// The next outage re-opens (the edge Warn can fire again).
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("a later outage did not re-open the episode")
+	}
+}
+
+// TestSweepOrphanRuns_MixedCauseNeedsBothRecoveries: an episode that saw BOTH
+// a scan failure and a lease failure closes only when each stage has its own
+// evidence (or the probe bound passes) — a clean scan alone must not close a
+// still-broken lease.
+func TestSweepOrphanRuns_MixedCauseNeedsBothRecoveries(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	// Open by lease…
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	// …then the scan dies too.
+	s.sweepOrphanRuns(context.Background(), failingLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegradedByScan || !s.sweepDegradedByProbe {
+		t.Fatalf("mixed episode flags: scan=%v probe=%v, want both", s.sweepDegradedByScan, s.sweepDegradedByProbe)
+	}
+	// Scan recovers, lease still broken WITH a candidate probing red:
+	// the episode must stay open (probe evidence is negative).
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if s.sweepDegraded != true {
+		t.Fatal("episode closed while the lease stage still fails")
+	}
+	// Both recover with a probed candidate: closes.
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("episode still open after both stages recovered with evidence")
+	}
+}
+
+// fakeBacklogLeases reports a queue backlog, like the real natsq.Conn.
+type fakeBacklogLeases struct {
+	fakeLeases
+	backlog uint64
+	err     error
+}
+
+func (f *fakeBacklogLeases) QueueBacklog(context.Context) (uint64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.backlog, nil
+}
+
+// A queued run with no lease is NOT an orphan while the queue still
+// holds unfetched work: it is waiting for a free runner. One run per
+// pod plus a frozen pool means a long campaign fills the fleet, and
+// flipping the short runs queued behind it killed the instance's own PR
+// reviews (measured 2026-09-01). The running pass, whose lease check is
+// a real signal, must keep working.
+func TestSweepOrphanRuns_queuedWaitingForCapacityIsNotOrphaned(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"queued":  {{ID: "r-waiting", TenantID: "t1", Status: "queued"}},
+		"running": {{ID: "r-crashed", TenantID: "t2", Status: "running"}},
+	}}
+	leases := &fakeBacklogLeases{backlog: 3}
+
+	s.sweepOrphanRuns(context.Background(), lister, leases, time.Now().UTC())
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if _, flipped := fs.flipped["r-waiting"]; flipped {
+		t.Fatal("a queued run waiting for a free runner must not be flipped — the queue still holds its message")
+	}
+	if fs.flipped["r-crashed"] != store.RunStatusFailedResumable {
+		t.Fatalf("the running pass must still recover crashed runs: %+v", fs.flipped)
+	}
+}
+
+// An empty queue means the message is GONE: the queued row is a real
+// orphan and must be recovered, exactly as before.
+func TestSweepOrphanRuns_queuedWithEmptyQueueIsStillOrphaned(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"queued": {{ID: "r-gone", TenantID: "t1", Status: "queued"}},
+	}}
+
+	s.sweepOrphanRuns(context.Background(), lister, &fakeBacklogLeases{backlog: 0}, time.Now().UTC())
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.flipped["r-gone"] != store.RunStatusFailedResumable {
+		t.Fatalf("a queued row whose message is gone is a real orphan: %+v", fs.flipped)
+	}
+}
+
+// The backlog is an optional capability and an optional answer: a queue
+// that cannot report one leaves the sweeper exactly as it was, rather
+// than assuming either direction.
+func TestSweepOrphanRuns_backlogUnknownKeepsPreviousBehaviour(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		leases runLeaseChecker
+	}{
+		{"capability absent", &fakeLeases{}},
+		{"backlog read fails", &fakeBacklogLeases{err: context.DeadlineExceeded}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newOrgTestServer(t)
+			fs := &fakeSweepStore{}
+			s.cfg.Store = fs
+			lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+				"queued": {{ID: "r-unknown", TenantID: "t1", Status: "queued"}},
+			}}
+
+			s.sweepOrphanRuns(context.Background(), lister, c.leases, time.Now().UTC())
+
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			if fs.flipped["r-unknown"] != store.RunStatusFailedResumable {
+				t.Fatalf("without a backlog answer the sweeper must behave as before: %+v", fs.flipped)
+			}
+		})
 	}
 }

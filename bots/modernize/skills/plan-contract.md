@@ -21,10 +21,12 @@ oracle:
   refs_dir: .golden-master/refs  # references — off-limits to this bot
   verify: .golden-master/verify-oracle.sh
 
+gate_timeout_s: 3600             # wall per gate command (optional; a lot may carry its own)
+
 lots:
   - id: L1
     title: "one line, in the imperative"
-    status: todo                 # todo | blocked | done
+    status: todo                 # todo | blocked (worker) | done (the gate only)
     rebaseline_allowed: false
     crosses_major: false         # true -> the upgrade-archetypes sweep is due
     depends_on: []
@@ -61,6 +63,22 @@ This is not distrust of any particular agent. It is that a self-reported status
 and a verified one are different kinds of claim, and a programme that conflates
 them will, sooner or later, report a milestone that never happened. The field
 is a bookmark, not evidence.
+
+And the two words it can carry are not the worker's to write alike. `blocked`
+is yours: it had to be committed to be said, and a claim of failure cannot
+cheat its way to green. `done` is the gate's: the `mark_done` node writes it
+after the verdict went green, one line, in a commit of its own — so a landing
+has exactly one commit to check for "what did the programme accept", and a
+bank taken before the verdict can never carry a completion nobody proved. A
+`done` you wrote is refused by the verifier before it runs a single gate
+command; revert the line and let the gate decide.
+
+An explicit launch (`only_lot`) on a lot that cannot be carried out — already
+`done` or `blocked`, undeclared, waiting on a dependency, or declaring no
+`exit_gate` — is a typed verdict the graph reads (`lot_not_actionable`,
+`lot_status`: done / blocked / absent / waiting / no_gate) and the run fails on
+it, never a green no-op: a `finished` run that crossed no gate reads as
+convergence to whoever relaunched it.
 
 ## `exit_gate`
 
@@ -151,6 +169,42 @@ judges what it says, and the behavioural net remains the only party that can
 prove the sweep missed nothing it watches. A sweep record that says "class not
 instantiated in this stack, because X" is a legitimate record; an absent one is
 a lot that skipped a due diligence its own contract named.
+
+## The shape of a lot block is part of the contract
+
+A lot is a list item whose FIRST line is `- id: <id>` and whose `status:` key
+sits at the item's key column (the column right after `- `). The gate edits
+exactly one line when a lot converges — the status — by anchoring on that
+shape; a lot written as a flow mapping (`- {id: L1, …}`), or with `id:` below
+another key, cannot be edited by it. `plan_read` refuses such a lot as
+`LOT_UNEDITABLE` before any token is spent, never after the gate.
+
+## `gate_timeout_s`
+
+The wall each gate command gets — every `exit_gate` entry and the oracle
+replay, one command at a time. Read from the contract **at the run's base**
+(a lot cannot move its own wall): on the lot first, else at the top level,
+else 3600 s. An integer number of seconds between 1 and 86400; anything else
+is a `CONTRACT_UNREADABLE` refusal before any command runs. It is normative
+wherever it sits — on a lot or at the top level, like `oracle`: a worker who
+adds or changes it has rewritten the contract (the next run reads its wall from
+its base, which is this tree once landed).
+
+An expiry is a **verdict**, not a tool error: the report carries
+`gate_timed_out: true` and a `block_reason` beginning `GATE_TIMEOUT:` naming
+the command, the wall and the time spent, and the run ends at `fail` on the
+first occurrence, its work banked — no repair pass replays an hour against the
+same wall, and no `finished` invites a relaunch into it. A wall the next pass
+would hit again is a finding about the wall: raise it here when the gate
+legitimately needs the time (a full oracle replay over ~150 mutants can take an
+hour), or shorten the gate, then relaunch.
+
+```yaml
+gate_timeout_s: 7200        # top level: every lot of the programme
+lots:
+  - id: L21
+    gate_timeout_s: 10800   # this lot's own wall
+```
 
 ## Re-anchoring a mutant is the NET's act, and this bot delegates it
 

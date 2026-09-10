@@ -65,7 +65,7 @@ func TestSanitizeEnvIsWhatMakesDirAuthoritative(t *testing.T) {
 	}
 
 	run := func(env []string) string {
-		cmd := exec.Command("git", "status", "--porcelain")
+		cmd := exec.Command("git", NoAutoMaintenance("status", "--porcelain")...)
 		cmd.Dir = target
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()

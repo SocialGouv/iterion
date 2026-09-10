@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -103,6 +106,24 @@ func loadRunIndex(ctx context.Context, runs *runview.Service) (map[string]*store
 	return index, nil
 }
 
+// firstLiveTreeRun returns the first run in a ticket's tree that has not
+// reached a terminal status, or nil once the whole tree has settled. It is
+// the single "is anything still going under this card?" answer shared by
+// Delete (which refuses to detach a live pipeline from its ticket) and
+// Reset's `fresh` option (which refuses to drop the pointer that holds one).
+// One helper rather than a repeated loop: the two guards must agree on what
+// "still going" means, and `failed_resumable` — terminal, and precisely the
+// status a fresh restart exists to abandon — is where a divergence would
+// hurt.
+func firstLiveTreeRun(issue *native.Issue, runs map[string]*store.Run) *store.Run {
+	for _, run := range issueTreeRuns(issue, runs) {
+		if !run.Status.IsTerminal() {
+			return run
+		}
+	}
+	return nil
+}
+
 // handlePipelineBoardTaskDelete removes a ticket the operator no longer
 // wants — the backend of the Backlog card's Delete button. It only deletes
 // the native ISSUE, never a run: past attempts stay in the run store (they
@@ -141,12 +162,10 @@ func (s *Server) handlePipelineBoardTaskDelete(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board delete: list runs: %v", err)
 		return
 	}
-	for _, run := range issueTreeRuns(issue, runIndex) {
-		if !run.Status.IsTerminal() {
-			s.httpErrorFor(w, r, http.StatusConflict,
-				"pipeline board delete: run %s is still %s — cancel or reset the ticket first", run.ID, run.Status)
-			return
-		}
+	if live := firstLiveTreeRun(issue, runIndex); live != nil {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"pipeline board delete: run %s is still %s — cancel or reset the ticket first", live.ID, live.Status)
+		return
 	}
 	if err := boardStore.Delete(id); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board delete: %v", err)
@@ -154,6 +173,35 @@ func (s *Server) handlePipelineBoardTaskDelete(w http.ResponseWriter, r *http.Re
 	}
 	s.reflectAllowedOrigin(w, r)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// pipelineBoardResetRequest is the reset action's OPTIONAL body.
+type pipelineBoardResetRequest struct {
+	// Fresh additionally drops the ticket's last-run pointer, so the next
+	// launch cannot resume the run this reset discards. Without it the
+	// pointer survives and "what happens next" depends on who picks the
+	// ticket up — the studio admission loop mints a fresh run,
+	// `iterion dispatch` resolves the pointer and resumes from its
+	// checkpoint (resolveRunID → LastRunForIssue → resumableRunID).
+	Fresh bool `json:"fresh"`
+}
+
+// readPipelineResetRequest decodes the reset body, which is OPTIONAL: this
+// endpoint shipped without one and clients still POST it empty. An absent or
+// blank body is the historical (pointer-keeping) reset; a body that is
+// present but malformed is an ERROR, never silently read as `fresh: false` —
+// the flag decides whether a run pointer is discarded, so a typo'd request
+// must not be answered with the safe-looking default.
+func readPipelineResetRequest(r *http.Request) (pipelineBoardResetRequest, error) {
+	var req pipelineBoardResetRequest
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return req, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return req, nil
+	}
+	return req, json.Unmarshal(raw, &req)
 }
 
 // handlePipelineBoardTaskReset restarts an in-progress ticket from zero —
@@ -165,6 +213,13 @@ func (s *Server) handlePipelineBoardTaskDelete(w http.ResponseWriter, r *http.Re
 // (pipelineTicketLaunchable holds the launch until the old run is
 // terminal). If any run cannot be cancelled from this process the reset is
 // refused with 409 and the ticket is left untouched.
+//
+// `fresh: true` additionally clears the last-run pointer, which is what
+// makes the restart deterministic: with the pointer gone both launch
+// authorities mint a new run, instead of the studio minting one and a live
+// dispatcher resuming the dead one. It is REFUSED while anything in the
+// ticket's tree is still non-terminal, and refused BEFORE the cancel sweep
+// so nothing is touched — see the guard below.
 func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
@@ -183,6 +238,11 @@ func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board reset: missing task id")
 		return
 	}
+	req, err := readPipelineResetRequest(r)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board reset: invalid request: %v", err)
+		return
+	}
 	issue, err := boardStore.Get(id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board reset: %v", err)
@@ -199,6 +259,38 @@ func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board reset: list runs: %v", err)
 		return
+	}
+	// THE PIN'S WINDOW. The sweep below only SIGNALS a cancel, so a run can
+	// still be unwinding when it returns — which is why reset pins that run
+	// as the ticket's current attempt (see below) instead of letting the
+	// relaunch start beside it. `fresh` deletes exactly that pointer, so
+	// running it in that window would reopen the hole the pin closes.
+	//
+	// The guard therefore refuses rather than waits, and refuses HERE,
+	// before the sweep: waiting would hold an HTTP request for however long
+	// an agent takes to reach its next safe boundary and still have to
+	// refuse on timeout, while refusing first leaves the ticket, the runs
+	// and the pointer exactly as they were — a 409 the operator can act on
+	// (stop or plain-reset it, then start over) rather than a half-done
+	// reset. The consequence is that `fresh` only ever runs on a settled
+	// tree, where the sweep and the pin are both no-ops.
+	//
+	// Same predicate as Delete's guard (firstLiveTreeRun) and the same
+	// dead-vs-live discrimination as `iterion issue update
+	// --clear-last-run` (refuseClearWhileRunAlive): `failed_resumable` and
+	// `cancelled` are dead and clearable — they are the whole point —
+	// while running/queued/paused hold the pointer. A server with no run
+	// service reads an empty index and so admits the clear: it launches
+	// nothing itself (the launch endpoint refuses outright), and both
+	// siblings resolve that same unknowable the same way rather than
+	// bricking the escape hatch.
+	if req.Fresh {
+		if live := firstLiveTreeRun(issue, runIndex); live != nil {
+			s.httpErrorFor(w, r, http.StatusConflict,
+				"pipeline board reset: ticket %s cannot start fresh while run %s is still %s — discarding its last-run pointer now would let a second run start beside it; stop or reset it first, then start over once it is terminal",
+				id, live.ID, live.Status)
+			return
+		}
 	}
 	// Roots before descendants (tree walk order): cancelling the root first
 	// lets the engine's own context propagation stop in-process children,
@@ -238,7 +330,28 @@ func (s *Server) handlePipelineBoardTaskReset(w http.ResponseWriter, r *http.Req
 			break
 		}
 	}
-	updated, err := boardStore.SetState(id, native.StateReady)
+	// Drop the pointer BEFORE the restage, never after: restaging is what
+	// makes the ticket eligible again, so a window where it is Ready and
+	// still names a resumable run is a window in which a dispatcher resumes
+	// the very run this call was told to discard.
+	//
+	// Its failure is RAISED, not logged: the operator asked for a fresh
+	// start, and restaging with the pointer intact would hand them the
+	// race they clicked to avoid. Nothing has been restaged yet, so the
+	// 409 leaves a coherent card (its runs cancelled, its state unchanged).
+	if req.Fresh {
+		if err := boardStore.SetLastRun(id, "", ""); err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError,
+				"pipeline board reset: ticket %s: clear the last-run pointer: %v — the ticket was NOT restaged, so nothing can resume the discarded run", id, err)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Info("pipeline board: reset ticket %s dropped its last-run pointer (was %s) — the next launch starts fresh", id, issue.LastRunID)
+		}
+	}
+	// Reset is an OPERATOR gesture: a terminal ticket restaged is a
+	// sanctioned reopen, not a machine resurrection.
+	updated, err := native.SetStateOrReopen(boardStore, id, native.StateReady)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board reset: restage: %v", err)
 		return
@@ -331,7 +444,12 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board close: %v", err)
 		return
 	}
-	target, ok := pipelineCloseTargetState(boardStore.Board())
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board close: read board: %v", err)
+		return
+	}
+	target, ok := pipelineCloseTargetState(board)
 	if !ok {
 		s.httpErrorFor(w, r, http.StatusConflict,
 			"pipeline board close: board has no terminal state — declare one or move the ticket by hand")
@@ -569,7 +687,11 @@ func (s *Server) handlePipelineBoardTaskLaunch(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	runID, err := s.launchTicketNow(runs, boardStore, issue)
+	// The bot resolves for the team the board itself was selected from
+	// (cloudBoardResolve), so a team's fork — or a bot only it authored —
+	// serves its own cards.
+	caller, _ := auth.FromContext(r.Context())
+	runID, err := s.launchTicketNow(r.Context(), caller.TeamID, runs, boardStore, issue)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board launch: %v", err)
 		return

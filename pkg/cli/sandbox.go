@@ -73,9 +73,18 @@ func runSandboxDoctorBasic(p *Printer) error {
 	driver, driverErr := factory.Driver()
 	caps := sandbox.Capabilities{}
 	driverName := "<none>"
+	schedulingPolicy := ""
+	var schedulingErr error
 	if driver != nil {
 		driverName = driver.Name()
 		caps = driver.Capabilities()
+		if r, ok := driver.(sandbox.SchedulingPolicyReporter); ok {
+			schedulingPolicy, schedulingErr = r.SchedulingPolicy()
+			if schedulingErr != nil {
+				// The same error every run would hit at sandbox start.
+				schedulingPolicy = "INVALID: " + schedulingErr.Error()
+			}
+		}
 	}
 
 	containerRuntime := sandbox.HostHasDocker()
@@ -103,6 +112,7 @@ func runSandboxDoctorBasic(p *Printer) error {
 		"sandbox_default":     defaultMode,
 		"selected_driver":     driverName,
 		"available_drivers":   factory.Available(),
+		"scheduling_policy":   schedulingPolicy,
 		"iterion_binary":      binPath,
 		"iterion_binary_link": binLink.String(),
 		"capabilities": map[string]bool{

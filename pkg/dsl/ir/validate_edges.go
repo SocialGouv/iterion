@@ -1,5 +1,10 @@
 package ir
 
+import (
+	"fmt"
+	"strings"
+)
+
 // ---------------------------------------------------------------------------
 // C009 — session: inherit/fork forbidden on convergence points
 // ---------------------------------------------------------------------------
@@ -26,7 +31,7 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 			continue
 		}
 		if session == SessionInherit || session == SessionInheritIfAvailable || session == SessionFork {
-			c.errorf(DiagSessionAfterConvergence,
+			c.errorfAt(DiagSessionAfterConvergence, nodeID, "",
 				"node %q has session: %s but has await: %s (convergence point); only fresh, artifacts_only, or persist are allowed",
 				nodeID, session, awaitMode)
 		}
@@ -43,9 +48,29 @@ func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
 		if !ok || llm.GetSession() != SessionPersist || !body[id] {
 			continue
 		}
-		c.errorf(DiagPersistInFanOut,
+		c.errorfAt(DiagPersistInFanOut, id, "",
 			"node %q has session: persist but sits in a fan_out_all/fan_out_each/llm-multi body; persist is trunk-only in v1 (C243)",
 			id)
+	}
+}
+
+// validateHumanModesInExecBranch rejects orchestration modes whose runtime
+// helpers are trunk-only. Plain human gates have a durable branch pause path;
+// review and llm_or_human require companion/auto-answer dispatch that cannot
+// be reproduced by treating them as unconditional branch pauses.
+func (c *compiler) validateHumanModesInExecBranch(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	for id, node := range w.Nodes {
+		human, ok := node.(*HumanNode)
+		if !ok || !body[id] {
+			continue
+		}
+		if human.Interaction != InteractionReview && human.Interaction != InteractionLLMOrHuman {
+			continue
+		}
+		c.errorfAt(DiagHumanModeInExecBranch, id, "",
+			"human %q uses interaction: %s inside a fan_out_all/fan_out_each/llm-multi body; this orchestration mode is trunk-only (C245)",
+			id, human.Interaction)
 	}
 }
 
@@ -147,7 +172,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			for i, e := range g.unconditional {
 				targets[i] = e.To
 			}
-			c.errorf(DiagMultipleDefaultEdges,
+			c.errorfAt(DiagMultipleDefaultEdges, nodeID, "",
 				"node %q has %d unconditional edges (targets: %v); only one default edge is allowed",
 				nodeID, len(g.unconditional), targets)
 		}
@@ -159,14 +184,14 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			for i, e := range g.elseEdges {
 				targets[i] = e.To
 			}
-			c.errorf(DiagMultipleElseEdges,
+			c.errorfAt(DiagMultipleElseEdges, nodeID, "",
 				"node %q has %d `else` edges (targets: %v); only one else fallback is allowed",
 				nodeID, len(g.elseEdges), targets)
 		}
 		// C040: `else` REPLACES the bare unconditional fallback — having
 		// both is two competing defaults, pick one form.
 		if len(g.elseEdges) > 0 && len(g.unconditional) > 0 {
-			c.errorf(DiagElseWithUnconditional,
+			c.errorfAt(DiagElseWithUnconditional, nodeID, "",
 				"node %q has both an `else` edge (-> %s) and an unconditional edge (-> %s); `else` IS the fallback — remove one",
 				nodeID, g.elseEdges[0].To, g.unconditional[0].To)
 		}
@@ -174,7 +199,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		// mean anything — it would just be an unconditional edge wearing
 		// a misleading keyword.
 		if len(g.elseEdges) > 0 && len(g.conditional) == 0 {
-			c.errorf(DiagElseWithoutConditional,
+			c.errorfAt(DiagElseWithoutConditional, nodeID, "",
 				"node %q has an `else` edge (-> %s) but no conditional (`when`) sibling; use a plain edge",
 				nodeID, g.elseEdges[0].To)
 		}
@@ -189,7 +214,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		// edge (it is the explicit fallback form).
 		if len(g.unconditional) == 0 && len(g.loopBearing) == 0 && len(g.elseEdges) == 0 {
 			if !isExhaustive(g.conditional) {
-				c.errorf(DiagMissingFallback,
+				c.errorfAt(DiagMissingFallback, nodeID, "",
 					"node %q has conditional edges but no default (unconditional) fallback edge",
 					nodeID)
 			}
@@ -217,7 +242,7 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 			}
 		}
 		if count < 2 {
-			c.errorf(DiagRoundRobinTooFewEdges,
+			c.errorfAt(DiagRoundRobinTooFewEdges, r.ID, "",
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
 				r.ID, count)
 		}
@@ -239,14 +264,14 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorf(DiagLLMRouterConditionEdge,
+					c.errorfAtEdge(DiagLLMRouterConditionEdge, e,
 						"llm router %q edge to %q has a 'when' condition; LLM routers select targets directly",
 						r.ID, e.To)
 				}
 			}
 		}
 		if count < 2 {
-			c.errorf(DiagLLMRouterTooFewEdges,
+			c.errorfAt(DiagLLMRouterTooFewEdges, r.ID, "",
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				r.ID, count)
 		}
@@ -273,40 +298,108 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 			if e.From == r.ID {
 				count++
 				if e.IsConditional() {
-					c.errorf(DiagFanOutEachEdges,
+					c.errorfAtEdge(DiagFanOutEachEdges, e,
 						"fan_out_each router %q edge to %q has a 'when' condition; the single template edge must be unconditional",
 						r.ID, e.To)
 				}
 			}
 		}
 		if count != 1 {
-			c.errorf(DiagFanOutEachEdges,
+			c.errorfAt(DiagFanOutEachEdges, r.ID, "",
 				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
 				r.ID, count)
 		}
 	}
 }
 
-// validateBoundedIterationInExecBranch refuses loop/foreach edges whose
-// source sits in a subgraph executed by execBranch (C244). Those branches
-// share no local loop counters; the branch edge selector skips
-// IsBoundedIteration() edges, so a declared loop would compile and then
-// silently not run (and a foreach would be taken as an unguarded
-// unconditional back-edge). A loop whose source is the fan-out / llm-multi
-// router itself is the same class: launchBranches never applies loop
-// bookkeeping to those outgoing edges. A back-edge from the join into a
-// body node is also C244 (it elects the branch head as the join). A loop
-// that wraps the router from the join is on the trunk and is allowed.
+// ---------------------------------------------------------------------------
+// C249 — a branch-spawning router names the same target more than once
+// ---------------------------------------------------------------------------
+//
+// fan_out_all and llm-multi spawn one goroutine per outgoing edge, and both
+// derive the branch identity from the TARGET
+// (runtime: "branch_<router>_<target>"). Two edges to the same node therefore
+// produce two executions wearing one branch id: they collapse onto one output
+// slot at convergence, and onto one durable BranchCheckpoint whose cursor each
+// goroutine overwrites — so a resume can restart one execution at the other's
+// position.
+//
+// The shape has always compiled and an operator may have leaned on it, so this
+// warns rather than refuses. fan_out_each is the shape that actually delivers
+// N executions of one node: its branch ids are item-indexed
+// ("branch_<router>_<i>"), which is why it is the remedy named below. It is
+// excluded here on its own account too — C115 already requires exactly one
+// outgoing template edge, so a second complaint would be noise.
+//
+// Every outgoing edge counts, conditional or not: fan_out_all takes them all
+// without evaluating any condition, and C022 already refuses a conditional
+// edge on an llm router.
+func (c *compiler) validateDuplicateFanOutTargets(w *Workflow) {
+	for _, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(r) || r.RouterMode == RouterFanOutEach {
+			continue
+		}
+		counts := make(map[string]int)
+		second := make(map[string]*Edge) // the first REPEAT of a target: the edge to remove
+		var order []string
+		for _, e := range w.Edges {
+			if e.From != r.ID {
+				continue
+			}
+			if counts[e.To] == 0 {
+				order = append(order, e.To)
+			} else if second[e.To] == nil {
+				second[e.To] = e
+			}
+			counts[e.To]++
+		}
+		for _, target := range order {
+			if counts[target] < 2 {
+				continue
+			}
+			c.warnfAtEdge(DiagDuplicateFanOutTarget, second[target],
+				"%s declares %d edges to %q; every branch is identified by branch_<router>_<target>, so those executions share one branch id, one output slot and one durable checkpoint — a resume can restart one at the other's position (C249). %s",
+				describeBranchRouter(r), counts[target], target, duplicateFanOutRemedy(r))
+		}
+	}
+}
+
+// describeBranchRouter names a branch-spawning router the way its declaration
+// reads, so the diagnostic points at something greppable in the .bot.
+func describeBranchRouter(r *RouterNode) string {
+	if r.RouterMode == RouterLLM {
+		return fmt.Sprintf("llm router %q (multi: true)", r.ID)
+	}
+	return fmt.Sprintf("fan_out_all router %q", r.ID)
+}
+
+// duplicateFanOutRemedy differs by mode. An llm router selects each target by
+// NAME, so a second edge to one can never mean "run it twice" — there is
+// nothing to convert it to. fan_out_all's duplicate, on the other hand, is
+// usually an attempt at N executions of one node, which fan_out_each delivers.
+func duplicateFanOutRemedy(r *RouterNode) string {
+	if r.RouterMode == RouterLLM {
+		return "Remove the duplicate edge: the model names each target once, so the extra edge only doubles the goroutine"
+	}
+	return "Remove the duplicate edge, or use a fan_out_each router (branch ids are item-indexed) when the intent is N executions of the same node"
+}
+
+// validateBoundedIterationInExecBranch accepts a bounded cycle only when both
+// endpoints are owned by exactly one parallel branch. C244 remains the guard
+// for router edges, collector re-entry, sibling crossings, and any ambiguous
+// shared node: those shapes have no single durable branch scope to own them.
 func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	body := execBranchBodyNodes(w)
+	owners := execBranchNodeOwners(w)
 	for _, e := range w.Edges {
 		if !e.IsBoundedIteration() {
 			continue
 		}
-		// Source in the body (or the fan-out router) — skipped at run time.
-		// Target in the body — join -> branch-head as more elects the head
-		// as the join and the sibling swallows wait_all (Ra060bd).
-		if !body[e.From] && !body[e.To] && !edgeFromExecBranchRouter(w, e) {
+		if !body[e.From] && !body[e.To] && len(owners[e.From]) == 0 && len(owners[e.To]) == 0 && !edgeFromExecBranchRouter(w, e) {
+			continue
+		}
+		if !edgeFromExecBranchRouter(w, e) && hasSingleCommonBranchOwner(owners[e.From], owners[e.To]) {
 			continue
 		}
 		kind, name := "loop", e.LoopName
@@ -314,9 +407,236 @@ func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 			kind, name = "foreach", e.ForeachName
 		}
 		c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
-			"edge %s -> %s is a %s edge (%s) inside a fan_out_all/fan_out_each/llm-multi body; branches have no local loop counters (C244)",
+			"edge %s -> %s is a %s edge (%s) that crosses or ambiguously re-enters a fan_out_all/fan_out_each/llm-multi boundary; bounded iteration must be wholly owned by one branch (C244)",
 			e.From, e.To, kind, name)
 	}
+	c.validateBoundedIterationScopeIsUnique(w, body, owners)
+}
+
+// validateBoundedIterationScopeIsUnique rejects a loop/foreach NAME whose
+// back-edges live in two different execution scopes — a trunk edge and a
+// branch-local edge, or edges owned by two sibling branches. Every edge may
+// pass the per-edge ownership test above, yet the compiler folds edges sharing
+// a name into ONE Loop, and at run time a branch composes its enclosing trunk
+// counters with its own: a branch-local counter of the same name would shadow
+// the trunk's, collapsing distinct trunk iterations in `iteration_path`, in the
+// human-interaction id of a branch gate, and in the artifact execution key.
+// The runtime has no way to tell the two apart, so the name must be unique to
+// one scope (C244).
+func (c *compiler) validateBoundedIterationScopeIsUnique(w *Workflow, body map[string]bool, owners map[string]map[string]bool) {
+	scopes := map[string]string{} // loop/foreach name → "trunk" or owning branch root
+	for _, e := range w.Edges {
+		if !e.IsBoundedIteration() {
+			continue
+		}
+		name := e.LoopName
+		if e.ForeachName != "" {
+			name = "foreach:" + e.ForeachName
+		}
+		scope, ok := boundedIterationScope(w, e, body, owners)
+		if !ok {
+			continue // already reported by the per-edge check
+		}
+		if prev, seen := scopes[name]; !seen {
+			scopes[name] = scope
+		} else if prev != scope {
+			kind := "loop"
+			if e.ForeachName != "" {
+				kind = "foreach"
+			}
+			c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
+				"edge %s -> %s reuses %s name %q across execution scopes (%s and %s); a branch-local counter would shadow the enclosing one, so a bounded iteration name must belong to a single scope (C244)",
+				e.From, e.To, kind, strings.TrimPrefix(name, "foreach:"), describeIterationScope(prev), describeIterationScope(scope))
+		}
+	}
+}
+
+// boundedIterationScope names the execution scope that owns a bounded edge:
+// "trunk" when neither endpoint sits in a parallel body, else the branch root
+// both endpoints share. ok is false for the shapes C244 rejects per edge.
+func boundedIterationScope(w *Workflow, e *Edge, body map[string]bool, owners map[string]map[string]bool) (string, bool) {
+	if edgeFromExecBranchRouter(w, e) {
+		return "", false
+	}
+	if !body[e.From] && !body[e.To] && len(owners[e.From]) == 0 && len(owners[e.To]) == 0 {
+		return "trunk", true
+	}
+	if !hasSingleCommonBranchOwner(owners[e.From], owners[e.To]) {
+		return "", false
+	}
+	for owner := range owners[e.From] {
+		return owner, true
+	}
+	return "", false
+}
+
+func describeIterationScope(scope string) string {
+	if scope == "trunk" {
+		return "the trunk"
+	}
+	return "the branch rooted at " + scope
+}
+
+// validateImplicitCollectorMigration warns about the one execution-shape
+// change that could affect a workflow which compiled before branch-local
+// bounded iteration: a downstream loop head on a single-target fan used to be
+// elected as an implicit collector because its bounded predecessor counted as
+// a second source. Canonical multi-target retries and template-head loops were
+// C244 errors before this feature, so they are not migrations and must not get
+// this warning.
+func (c *compiler) validateImplicitCollectorMigration(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	allIn := make(map[string]map[string]bool)
+	nonIterIn := make(map[string]map[string]bool)
+	boundedIn := make(map[string]bool)
+	for _, edge := range w.Edges {
+		if allIn[edge.To] == nil {
+			allIn[edge.To] = make(map[string]bool)
+		}
+		allIn[edge.To][edge.From] = true
+		if edge.IsBoundedIteration() {
+			boundedIn[edge.To] = true
+			continue
+		}
+		if nonIterIn[edge.To] == nil {
+			nonIterIn[edge.To] = make(map[string]bool)
+		}
+		nonIterIn[edge.To][edge.From] = true
+	}
+	legacyCollectors := legacySingleFanImplicitCollectors(w, allIn, nonIterIn)
+	for id, node := range w.Nodes {
+		if !body[id] || !legacyCollectors[id] || !boundedIn[id] || NodeAwaitMode(node) != AwaitNone || len(allIn[id]) <= 1 || len(nonIterIn[id]) > 1 {
+			continue
+		}
+		c.warnfAt(DiagImplicitCollectorMove, id, "",
+			"node %q was previously elected as an implicit fan-out collector because a bounded back-edge counted as a second predecessor; it now executes once per branch (C246). Add await: wait_all/best_effort to the intended collector, or keep the bounded loop branch-local intentionally",
+			id)
+	}
+}
+
+// legacySingleFanImplicitCollectors reconstructs the narrow pre-branch-loop
+// election rule that C246 is meant to warn about. The old walk stopped on an
+// extra predecessor only for a router with one target, and never at that fan
+// target itself. Canonical multi-edge retries and fan_out_each template-head
+// loops were compile errors before this feature, so warning about a migration
+// there would be both false and actively misleading.
+func legacySingleFanImplicitCollectors(w *Workflow, allIn, nonIterIn map[string]map[string]bool) map[string]bool {
+	out := make(map[string][]string)
+	for _, edge := range w.Edges {
+		out[edge.From] = append(out[edge.From], edge.To)
+	}
+	collectors := make(map[string]bool)
+	for _, node := range w.Nodes {
+		router, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(router) {
+			continue
+		}
+		var fan []*Edge
+		for _, edge := range w.Edges {
+			if edge.From == router.ID {
+				fan = append(fan, edge)
+			}
+		}
+		if len(fan) != 1 {
+			continue
+		}
+		target := fan[0].To
+		seen := make(map[string]bool)
+		var walk func(string)
+		walk = func(id string) {
+			if id == "" || seen[id] || w.Nodes[id] == nil {
+				return
+			}
+			seen[id] = true
+			if NodeAwaitMode(w.Nodes[id]) != AwaitNone || len(nonIterIn[id]) > 1 {
+				return
+			}
+			if id != target && len(allIn[id]) > 1 {
+				collectors[id] = true
+				return
+			}
+			for _, next := range out[id] {
+				walk(next)
+			}
+		}
+		walk(target)
+	}
+	return collectors
+}
+
+func hasSingleCommonBranchOwner(left, right map[string]bool) bool {
+	if len(left) != 1 || len(right) != 1 {
+		return false
+	}
+	for owner := range left {
+		return right[owner]
+	}
+	return false
+}
+
+// execBranchNodeOwners walks each router target independently until the exact
+// collector elected by the runtime. Bounded back-edges do not create
+// collectors; they stay inside the owner walk and therefore form a legal local
+// cycle. An await node on another path is not necessarily that collector, so
+// it must not truncate the compiler's ownership view while execBranch keeps
+// running past it.
+func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
+	out := make(map[string][]string)
+	for _, edge := range w.Edges {
+		out[edge.From] = append(out[edge.From], edge.To)
+	}
+	owners := make(map[string]map[string]bool)
+	for _, node := range w.Nodes {
+		router, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(router) {
+			continue
+		}
+		var fanEdges []*Edge
+		for _, edge := range w.Edges {
+			if edge.From == router.ID {
+				fanEdges = append(fanEdges, edge)
+			}
+		}
+		convergence := ExecBranchConvergencePoint(w, router.ID, fanEdges)
+		// fan_out_all takes every outgoing edge without evaluating its
+		// condition and fan_out_each takes its single template edge, so their
+		// run-time edge set is exactly the declared one and the collector
+		// above is the collector execBranch stops at. An llm-multi router
+		// dispatches only the subset the model selected, and findConvergencePoint
+		// walks that subset, so it can elect an EARLIER collector than the
+		// declared set does — a cycle the full-set walk sees as branch-local
+		// would then straddle the executed collector. Bound each llm-multi
+		// branch by the boundary its own edge elects alone (the case where the
+		// model selects only that edge): the smallest, hence sound, ownership.
+		perEdgeBoundary := router.RouterMode == RouterLLM && router.RouterMulti
+		for _, edge := range fanEdges {
+			if edge.From != router.ID {
+				continue
+			}
+			boundary := convergence
+			if perEdgeBoundary {
+				boundary = ExecBranchConvergencePoint(w, router.ID, []*Edge{edge})
+			}
+			owner := router.ID + "/" + edge.To
+			seen := make(map[string]bool)
+			var walk func(string)
+			walk = func(id string) {
+				if id == "" || seen[id] || id == boundary || w.Nodes[id] == nil {
+					return
+				}
+				seen[id] = true
+				if owners[id] == nil {
+					owners[id] = make(map[string]bool)
+				}
+				owners[id][owner] = true
+				for _, next := range out[id] {
+					walk(next)
+				}
+			}
+			walk(edge.To)
+		}
+	}
+	return owners
 }
 
 func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
@@ -324,67 +644,23 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 	return ok && routerSpawnsExecBranch(r)
 }
 
-// execBranchBodyNodes is the set of nodes a parallel branch runs before
-// it hits a join. Shared by C243 (persist) and C244 (loop/foreach). For
-// each fan_out_all / fan_out_each / llm-multi router we walk from every
-// outgoing target and stop at any structural join: await != none, or
-// >1 non-iteration predecessors.
+// execBranchBodyNodes approximates the nodes a parallel branch runs before it
+// hits the exact convergence point the runtime pre-computes. C243 uses the
+// complete union; C244 combines it with the more precise per-target ownership
+// map above.
 //
-// On a multi-edge fan (fan_out_all / llm multi) we do not stop at a
-// node findConvergencePoint elects only because of a loop back-edge:
-// that election swallows the real wait_all join in the sibling
-// (a -> a as refine, impl→review→impl). Structural joins still keep
-// trunk loops after a real join and catalog bots like evolve legal.
-//
-// On a single-edge fan (fan_out_each) every replay is the same path,
-// so electing a downstream loop head as the join is correct — the
-// walk stops there (allIn > 1, matching findConvergencePoint) and a
-// trunk loop after the implicit collector is not C244. The template
-// head itself stays in the body even when its own back-edge elects
-// it: stopping there would skip the per-item work.
-//
-// Loops after a non-elected await are a remaining execBranch hole, not
-// claimed by C244.
+// Bounded predecessors remain inside the branch body and therefore do not
+// turn a local loop head into a collector.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
-	allIn := map[string]map[string]bool{}
-	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
-		if allIn[e.To] == nil {
-			allIn[e.To] = map[string]bool{}
-		}
-		allIn[e.To][e.From] = true
-		if e.IsBoundedIteration() {
-			continue
-		}
-		if nonIterIn[e.To] == nil {
-			nonIterIn[e.To] = map[string]bool{}
-		}
-		nonIterIn[e.To][e.From] = true
-	}
-	isStructuralJoin := func(id string) bool {
-		n, ok := w.Nodes[id]
-		if !ok {
-			return false
-		}
-		if NodeAwaitMode(n) != AwaitNone {
-			return true
-		}
-		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	// seen is PER ROUTER: memoizing on the shared body would let a walk
-	// that stopped early (stopOnElected) truncate a later, wider walk
-	// through the same node — C243/C244 then depend on w.Nodes map order.
-	var walk func(id string, stopOnElected bool, fanTargets, seen map[string]bool)
-	walk = func(id string, stopOnElected bool, fanTargets, seen map[string]bool) {
-		if id == "" || seen[id] || isStructuralJoin(id) {
-			return
-		}
-		// Downstream loop head on a single-path fan — not the template
-		// head, whose election would skip per-item work.
-		if stopOnElected && len(allIn[id]) > 1 && !fanTargets[id] {
+	// seen is per router so one router's traversal cannot truncate another's.
+	var walk func(id, convergence string, seen map[string]bool)
+	walk = func(id, convergence string, seen map[string]bool) {
+		if id == "" || seen[id] || id == convergence {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -393,7 +669,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		seen[id] = true
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, stopOnElected, fanTargets, seen)
+			walk(next, convergence, seen)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -402,17 +678,15 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 			continue
 		}
 		var fan []*Edge
-		fanTargets := map[string]bool{}
 		for _, e := range w.Edges {
 			if e.From == r.ID {
 				fan = append(fan, e)
-				fanTargets[e.To] = true
 			}
 		}
-		stopOnElected := len(fan) == 1
+		convergence := ExecBranchConvergencePoint(w, r.ID, fan)
 		seen := map[string]bool{}
 		for _, e := range fan {
-			walk(e.To, stopOnElected, fanTargets, seen)
+			walk(e.To, convergence, seen)
 		}
 	}
 	return body
@@ -434,10 +708,10 @@ func routerSpawnsExecBranch(r *RouterNode) bool {
 // is a silent no-op and the intended bound (e.g. on Godot sessions) never
 // applies — exactly the failure mode the feature exists to prevent.
 func (c *compiler) validateResources(w *Workflow) {
-	for _, node := range w.Nodes {
+	for id, node := range w.Nodes {
 		for _, r := range NodeNeeds(node) {
 			if _, ok := w.Resources[r]; !ok {
-				c.errorf(DiagUnknownResourceInNeeds,
+				c.errorfAt(DiagUnknownResourceInNeeds, id, "",
 					"node %q needs resource %q, which is not declared in the workflow's resources: block",
 					node.NodeID(), r)
 			}
@@ -501,7 +775,7 @@ func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
 			default:
 				label = e.Condition
 			}
-			c.errorf(DiagAmbiguousCondition,
+			c.errorfAt(DiagAmbiguousCondition, nodeID, "",
 				"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s",
 				nodeID, prev.From, prev.To, e.From, e.To, label)
 		} else {
@@ -638,7 +912,7 @@ func (c *compiler) validateDuplicateWithKeys(w *Workflow) {
 		seen := make(map[string]string) // key -> first source
 		for _, ks := range keys {
 			if prevFrom, ok := seen[ks.key]; ok && prevFrom != ks.from {
-				c.errorf(DiagDuplicateWithKey,
+				c.errorfAt(DiagDuplicateWithKey, targetID, "",
 					"node %q receives with-mapping key %q from both %q and %q; keys must be unique across incoming edges",
 					targetID, ks.key, prevFrom, ks.from)
 			} else if !ok {

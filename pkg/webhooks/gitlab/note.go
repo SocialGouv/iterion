@@ -192,15 +192,19 @@ func (p ParsedNote) SubjectID() string {
 	return "note:" + strconv.FormatInt(p.NoteID, 10)
 }
 
-// IsReviewCommand is the `/revi` specialization of Command(): true only
-// for a note on an OPEN merge request whose leading slash-command is
-// `revi` (args tolerated and ignored v1). Built on the generic
-// extractor so the forge-conversations layer and the re-review trigger
-// share one command grammar (quote-reply tolerance included).
-func (p ParsedNote) IsReviewCommand() bool {
-	if p.MRIID == 0 || p.MRState != "opened" {
-		return false
+// ParentSubjectID names the MERGE REQUEST a note hangs off ("mr:7"), or ""
+// when the note sits on an issue. Distinct from SubjectID, which identifies
+// the note itself and is what per-note idempotency keys on: a consumer
+// asking "what did this merge request launch" — the closed-MR stop — cannot
+// find a `/billy` run, or a converse reply, through "note:99". The
+// GitHub/Forgejo twin is prforge.ParsedNote.ParentSubjectID.
+// Anchored on the MR id ALONE, not IsMergeRequestNote: that predicate also
+// demands a discussion id, which is what makes a note answerable in-thread —
+// a routing question. Provenance is a different one, and a launch recorded
+// against an MR must stay findable from it either way.
+func (p ParsedNote) ParentSubjectID() string {
+	if p.MRIID == 0 {
+		return ""
 	}
-	cmd, _ := p.Command()
-	return cmd == "revi"
+	return "mr:" + strconv.FormatInt(p.MRIID, 10)
 }

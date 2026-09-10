@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -25,6 +26,37 @@ func WithSubbotRunner(r SubbotRunner) EngineOption {
 // run's context. nil (the default) disables the hook.
 func WithSandboxRunObserver(fn func(sandbox.Run)) EngineOption {
 	return func(e *Engine) { e.sandboxRunObserver = fn }
+}
+
+// SharedSandbox is what a child engine needs to execute inside a PARENT
+// run's live sandbox: the driver handle its executor routes commands
+// through, the in-container workspace path ${PROJECT_DIR} remaps to, and
+// the host-state directory both sides can reach. Facts only — the parent
+// owns the sandbox's lifecycle; a child never prepares, starts or cleans
+// it up.
+type SharedSandbox struct {
+	Run             sandbox.Run
+	WorkspaceFolder string
+	SharedStateDir  string
+	// The parent's per-run MCP listeners, reachable from the same sandbox:
+	// a child's board-capability and interactive nodes use them instead of
+	// listeners of their own (none are started for a child).
+	BoardEndpoint   string
+	AskUserEndpoint string
+	AskUserToken    string
+}
+
+// WithSharedSandbox makes the engine execute every node in the given
+// live sandbox instead of starting one of its own — the shape of a
+// subbot child under a sandboxed parent. Applies only when the shared
+// Run is non-nil; a nil value leaves the engine's own sandbox decision
+// untouched.
+func WithSharedSandbox(s *SharedSandbox) EngineOption {
+	return func(e *Engine) {
+		if s != nil && s.Run != nil {
+			e.sharedSandbox = s
+		}
+	}
 }
 
 // AttachmentPromoteFunc is invoked once at the start of a run, right
@@ -88,6 +120,23 @@ func WithRepoDevbox(mode string) EngineOption {
 // (`ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>`).
 func WithSandboxDefaultImage(ref string) EngineOption {
 	return func(e *Engine) { e.sandboxDefaultImage = ref }
+}
+
+// WithSandboxDrivers replaces the driver set the sandbox factory selects
+// from. Nil (the default) means the shipped registry, so production
+// wiring is unchanged.
+//
+// The seam exists because the driver was read from a process-global
+// (registry.Default()), which left the sandbox arms of a run — the setup
+// phases, their typed failures, the resume park — testable only by
+// handing the consumer an outcome by hand. A test that supplies what
+// production must produce certifies the consumer alone, and the arm that
+// failed in #669 was a COMPOSITION failure: a phase timeout landing
+// untyped on a resumed run. With this, a test drives the real
+// selectSandboxDriver → Prepare → Start sequence against a driver whose
+// setup it controls.
+func WithSandboxDrivers(drivers map[string]sandbox.DriverConstructor) EngineOption {
+	return func(e *Engine) { e.sandboxDrivers = drivers }
 }
 
 // WithSandboxHostStateOverride sets the CLI / Launch-modal level
@@ -195,6 +244,17 @@ func WithWorkflowSource(src string) EngineOption {
 	return func(e *Engine) { e.workflowSource = src }
 }
 
+// WithExecutionContext supplies the resolved, versioned context contract
+// stamped on the run at launch. The engine clones it so a caller cannot
+// mutate the persisted contract while execution is in flight.
+func WithExecutionContext(c *store.ExecutionContext) EngineOption {
+	return func(e *Engine) {
+		if c != nil {
+			e.executionContext = c.Clone()
+		}
+	}
+}
+
 // WithFilePath records the absolute .bot source path on the run
 // metadata so that resume (and the run console) can re-locate the
 // workflow without the caller having to thread it back through the
@@ -250,6 +310,27 @@ func WithExtraSkills(names []string, origin string) EngineOption {
 	return func(e *Engine) {
 		e.extraSkills = names
 		e.extraSkillsOrigin = origin
+	}
+}
+
+// WithBudgetAsk records the operator's launch-time budget ask (the
+// `--max-*` flags, the launch modal's budget object) so runResolveDoc
+// persists it on the run doc as Run.BudgetOverrides — the replay source
+// every resume surface reads, so an ask-less resume keeps the cap the
+// operator launched with instead of falling back to the .bot's own. The
+// effective caps (Run.Budget) are stamped separately from wf.Budget,
+// which the caller has already applied the ask to. Nil or all-zero
+// persists nothing. Every LOCAL launch surface passes it (the CLI, the
+// in-process service, and through the CLI the detached subprocess); the
+// cloud publisher persists the ask itself at publish time and the
+// runner therefore does not.
+func WithBudgetAsk(o *ir.BudgetOverrides) EngineOption {
+	return func(e *Engine) {
+		if o == nil || o.IsZero() {
+			return
+		}
+		ask := *o
+		e.budgetAsk = &ask
 	}
 }
 
@@ -340,11 +421,37 @@ func WithPermissionOverride(mode string) EngineOption {
 	return func(e *Engine) { e.permissionOverride = mode }
 }
 
+// WithRoutingPolicy pins the launch-frozen outcome contract on the
+// engine; it is persisted on the run doc at start (same
+// replay-from-the-doc doctrine as the model pins).
+func WithRoutingPolicy(p *store.RoutingPolicy) EngineOption {
+	return func(e *Engine) { e.routingPolicy = p }
+}
+
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
 // instead of causing an error.
 func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
+}
+
+// WithArtifactContractsPrevalidated avoids re-running the contract-only gate
+// when an in-process launch authority has just validated the same immutable
+// artifact set synchronously. Under enforce, exact checkpoint bodies are still
+// loaded and identity-checked by Resume because they are required to rebuild
+// execution state; legacy/report retain their compatibility behavior. Do not
+// carry this option across a process or queue boundary.
+func WithArtifactContractsPrevalidated(prevalidated bool) EngineOption {
+	return func(e *Engine) { e.artifactContractsChecked = prevalidated }
+}
+
+// WithArtifactResumePreflight reuses the immutable artifact bodies loaded by
+// ValidateResumeArtifacts at the immediately preceding same-process resume
+// boundary. Resume accepts the snapshot only while the artifact-relevant run
+// state, exact workflow pointer, revision and force decision still match;
+// otherwise it falls back to a fresh authoritative validation.
+func WithArtifactResumePreflight(preflight *ArtifactResumePreflight) EngineOption {
+	return func(e *Engine) { e.artifactResumePreflight = preflight }
 }
 
 // WithWorkDir sets the working directory used for backend subprocesses and
@@ -392,6 +499,19 @@ func WithContributions(c *Contributions) EngineOption {
 // does not conform to its schema will cause the run to fail immediately.
 func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
+}
+
+// WithOutputCorrectionBudget bounds the number of optional correction calls
+// made after a schema-invalid node output. A zero budget disables correction;
+// negative values are treated as zero. The budget is per node episode and is
+// persisted on the run so a resume cannot reset the bound.
+func WithOutputCorrectionBudget(budget int) EngineOption {
+	return func(e *Engine) {
+		if budget < 0 {
+			budget = 0
+		}
+		e.outputCorrectionBudget = budget
+	}
 }
 
 // WithPauseSignal wires an external pause request channel into the

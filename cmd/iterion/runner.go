@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -23,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
+	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -93,14 +95,20 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}()
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
+	// Keep in sync with the natsq.Connect literal in server.go: a field only
+	// one side passes is silently defaulted for the other, and the two then
+	// disagree about the same broker. LockTTL is what just drifted.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:                 cfg.NATS.URL,
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,
+		StreamReplicas:      cfg.NATS.StreamReplicas,
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
+		RunnerEpoch:         cfg.Rollout.RunnerEpoch,
 		MaxDeliver:          cfg.NATS.MaxDeliver,
 		MaxAge:              cfg.NATS.MaxAge,
 		DLQMaxAge:           cfg.NATS.DLQMaxAge,
@@ -147,6 +155,21 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = metrics.ShutdownServer(metricsSrv) }()
 
+	selfEpoch, highWaterEpoch := natsConn.RunnerEpoch()
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("runner").Inc()
+		health.Set(func() runner.Health {
+			return runner.Health{
+				Superseded:     true,
+				Epoch:          selfEpoch,
+				HighWaterEpoch: highWaterEpoch,
+			}
+		})
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch regression detected — staying live but non-ready; no queue consumer started")
+		<-rootCtx.Done()
+		return nil
+	}
+
 	// 4b. BYOK / OAuth wire-up. The runner consumes sealed bundles
 	//     keyed by RunMessage.SecretsRef; the master key MUST match
 	//     the publisher's. Phase C.
@@ -172,7 +195,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	})
 	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised
 	// at claim time. Lets the in-process claw model factory consume a tenant's
-	// resolved OpenAI ChatGPT-forfait in cloud mode (no ~/.codex on the pod).
+	// resolved subscription in cloud mode, where the pod has neither ~/.codex
+	// nor ~/.claude: codex → openai, claude_code → anthropic.
 	model.SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
 		creds, ok := secrets.CredentialsFromContext(ctx)
 		if !ok {
@@ -194,8 +218,14 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// cost/tokens to the org's monthly bucket (the same collection the
 	// server's launch gate + usage views read).
 	orgUsageCounter := orgusage.NewMongoCounter(st.DB())
+	// Per-credential metering: the same attempt, read by credential rather
+	// than by org. Schema ensured beside orgusage's below.
+	credUsageCounter := credusage.NewMongoCounter(st.DB())
 	if err := orgusage.EnsureSchema(rootCtx, st.DB()); err != nil {
 		return fmt.Errorf("runner: ensure org_usage schema: %w", err)
+	}
+	if err := credusage.EnsureSchema(rootCtx, st.DB()); err != nil {
+		return fmt.Errorf("runner: ensure credential_usage schema: %w", err)
 	}
 
 	// Credential pool: a run served by a contributor's lent subscription
@@ -221,6 +251,10 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// percentages live, TTL-cached, so both deployments enforce the same
 	// number without a restart.
 	usageCapEnvPolicy, err := usagecap.FromEnv()
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	usageCapTrust, err := usagecap.TrustFromEnv()
 	if err != nil {
 		return fmt.Errorf("runner: %w", err)
 	}
@@ -269,10 +303,25 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build events bus: %w", err)
 	}
+	// A malformed sandbox scheduling policy must stop the rollout here, before
+	// the consumer exists and the epoch mark advances: the sandbox driver
+	// factory skips constructor errors, so nothing downstream can refuse it —
+	// every run would fail at sandbox start instead.
+	if err := k8ssandbox.ValidateSchedulingEnv(); err != nil {
+		return fmt.Errorf("runner: sandbox scheduling policy: %w", err)
+	}
+
+	// Prove the durable consumer can be created before advancing the rollout
+	// high-water mark. The handle is inert until Runner.Run starts fetching.
+	preparedConsumer, err := natsConn.PrepareConsumer(rootCtx)
+	if err != nil {
+		return fmt.Errorf("runner: prepare queue consumer: %w", err)
+	}
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                natsConn,
+		PreparedConsumer:    preparedConsumer,
 		Events:              eventsBus,
 		Store:               st,
 		RunnerID:            runnerID,
@@ -281,18 +330,27 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		DrainMode:           cfg.Runner.DrainMode,
 		DrainTimeout:        cfg.Runner.DrainTimeout,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		RunnerEpoch:         selfEpoch,
+		HighWaterEpoch:      highWaterEpoch,
+		EpochMismatchDelay:  cfg.Rollout.EpochMismatchDelay,
 		Logger:              logger,
 		Metrics:             mreg,
 		RunSecrets:          runSecretsStore,
 		Sealer:              sealer,
 		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
-		MemoryStore:         memStore,
-		OrgUsage:            orgUsageCounter,
-		CredPool:            credBroker,
-		UsageCapSource:      usageCapSource,
-		UsageCaps:           usageCapStore,
-		BotsPaths:           botsPaths,
-		BotSources:          botsource.NewMongoStore(st.DB()),
+		// BYOK store shared with the publisher — the runner bumps
+		// `last_used_at` at metering time so the studio distinguishes an
+		// idle key from one currently serving (#659 pt 2).
+		ApiKeys:        secrets.NewMongoApiKeyStore(st.DB()),
+		MemoryStore:    memStore,
+		OrgUsage:       orgUsageCounter,
+		CredUsage:      credUsageCounter,
+		CredPool:       credBroker,
+		UsageCapSource: usageCapSource,
+		UsageCaps:      usageCapStore,
+		UsageCapTrust:  usageCapTrust,
+		BotsPaths:      botsPaths,
+		BotSources:     botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's
@@ -306,7 +364,22 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)
 	}
+
+	// Claim only after every fallible dependency and the inert consumer have
+	// been wired. A broken epoch-bump release therefore cannot poison the
+	// durable mark and fence the still-healthy previous generation.
+	if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
+		return fmt.Errorf("runner: claim rollout epoch: %w", err)
+	}
+	selfEpoch, highWaterEpoch = natsConn.RunnerEpoch()
+	r.SetRolloutState(selfEpoch, highWaterEpoch, natsConn.Superseded())
 	health.Set(r.Health)
+	if natsConn.Superseded() {
+		mreg.RolloutEpochRegression.WithLabelValues("runner").Inc()
+		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
+		<-rootCtx.Done()
+		return nil
+	}
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck
 	// (let the in-flight run finish) or interrupt (cancel + checkpoint for

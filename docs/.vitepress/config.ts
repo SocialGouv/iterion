@@ -150,6 +150,7 @@ const sidebar = [
     items: [
       { text: 'Quickstart', link: '/quickstart' },
       { text: 'Current state', link: '/current-state' },
+      { text: 'Changelog', link: '/changelog' },
       { text: 'Why Iterion', link: '/why-iterion' },
       { text: 'Philosophy', link: '/philosophy' },
       { text: 'Install', link: '/install' },
@@ -284,6 +285,7 @@ const sidebar = [
     collapsed: true,
     items: [
       recordsGroup('ADRs', 'adr'),
+      recordsGroup('Changelog archives', 'changelog'),
       recordsGroup('Bot-run bilans', 'bot-runs'),
       recordsGroup('Plans', 'plans'),
       recordsGroup('Reviews', 'reviews'),

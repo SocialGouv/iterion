@@ -44,12 +44,22 @@ function tryRefreshSession(): Promise<boolean> {
 export class ApiError extends Error {
   status: number;
   errorCode?: string;
-  constructor(status: number, message: string, errorCode?: string) {
+  // The server's own message, without the "API error <status>: " prefix the
+  // transport puts on `message` — for a surface that quotes the reason.
+  detail?: string;
+  constructor(status: number, message: string, errorCode?: string, detail?: string) {
     super(message);
     this.status = status;
     this.errorCode = errorCode;
+    this.detail = detail;
     this.name = "ApiError";
   }
+}
+
+// apiErrorFrom is the error every non-2xx response throws. Exported so a test
+// can hand a caller the exact shape production produces, prefix included.
+export function apiErrorFrom(status: number, detail: ExtractedErrorDetail): ApiError {
+  return new ApiError(status, `API error ${status}: ${detail.message}`, detail.errorCode, detail.message);
 }
 
 // is404 reports whether a thrown value represents an HTTP 404. Prefers
@@ -142,12 +152,7 @@ export async function apiRequest<T>(
     onUnauthorized();
   }
   if (!res.ok) {
-    const detail = await extractErrorDetail(res);
-    throw new ApiError(
-      res.status,
-      `API error ${res.status}: ${detail.message}`,
-      detail.errorCode,
-    );
+    throw apiErrorFrom(res.status, await extractErrorDetail(res));
   }
   // 204 No Content (e.g. DELETE endpoints) has an empty body. Don't
   // try to parse it — return undefined and let the typed caller cast.

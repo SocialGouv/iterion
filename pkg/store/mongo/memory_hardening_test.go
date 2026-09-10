@@ -2,15 +2,14 @@ package mongo
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 )
 
@@ -66,7 +65,7 @@ func TestWriteDocumentConcurrent_Mongo(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo concurrency test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 
 	cli, err := mongo.Connect(options.Client().ApplyURI(uri))
@@ -75,7 +74,7 @@ func TestWriteDocumentConcurrent_Mongo(t *testing.T) {
 	}
 	db := cli.Database("iterion_memtest_" + bsonNonce(t))
 	t.Cleanup(func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dctx, dcancel := mongotest.TeardownCtx()
 		defer dcancel()
 		_ = db.Drop(dctx)
 		_ = cli.Disconnect(dctx)

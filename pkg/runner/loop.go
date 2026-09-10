@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,6 +40,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -50,6 +52,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -81,7 +85,18 @@ func logDeliveryErr(logger *iterlog.Logger, op, runID string, err error) {
 // delivery.Ack())` recurs on every ack-and-return path in processOne;
 // this helper is the single point that pairs the action with its
 // breadcrumb.
-func ackTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+// jsDelivery is the slice of *natsq.Delivery the admission, lock and
+// terminal-dispatch helpers touch — an interface so those decisions are
+// unit-testable without a JetStream message.
+type jsDelivery interface {
+	Ack() error
+	Nak() error
+	NakWithDelay(delay time.Duration) error
+	Term() error
+	NumDelivered() int
+}
+
+func ackTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Ack())
 }
 
@@ -89,7 +104,7 @@ func ackTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID str
 // logDeliveryErr. Use for transient failures where JetStream
 // redelivery is the safety net (lock held, store transient, heartbeat
 // loss, generic engine failure).
-func nakTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+func nakTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Nak())
 }
 
@@ -97,7 +112,7 @@ func nakTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID str
 // logDeliveryErr. Use for poisoned/forged messages whose redelivery
 // would loop forever (decode failure, run-not-found, tenant
 // mismatch, DLQ-parked).
-func termTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, op, runID string) {
+func termTerminal(logger *iterlog.Logger, delivery jsDelivery, op, runID string) {
 	logDeliveryErr(logger, op, runID, delivery.Term())
 }
 
@@ -109,6 +124,10 @@ const (
 	actionAck deliveryAction = iota
 	actionNak
 	actionTerm
+	// actionNakDelayed re-offers the delivery after preconditionOutcome.delay
+	// — the under-lock adoption's answer to a running doc younger than the
+	// staleness floor, so the remaining deliveries are not burnt inside it.
+	actionNakDelayed
 )
 
 // logLevel mirrors the three log channels processOne uses for its
@@ -128,14 +147,21 @@ const (
 // loaded preRun; otherwise action + finalStatus + op tell the caller
 // which terminal transition to perform on the delivery.
 type preconditionOutcome struct {
-	proceed     bool
-	preRun      *store.Run
-	finalStatus string
-	op          string // for logDeliveryErr
-	action      deliveryAction
-	level       logLevel
-	logFmt      string
-	logArgs     []any
+	proceed bool
+	preRun  *store.Run
+	// skippedRetry, when set, is the failure code that made this delivery
+	// a deliberate DROP rather than a resume. The caller records it on the
+	// run's timeline: without it a failed_resumable row whose redelivery
+	// was dropped on purpose reads like one still waiting for a pod.
+	skippedRetry store.FailureCode
+	skippedCause string
+	finalStatus  string
+	op           string // for logDeliveryErr
+	action       deliveryAction
+	delay        time.Duration // actionNakDelayed only
+	level        logLevel
+	logFmt       string
+	logArgs      []any
 }
 
 // execOutcome describes the result of classifying engine.Run's
@@ -147,10 +173,37 @@ type execOutcome struct {
 	finalStatus string
 	op          string
 	action      deliveryAction
+	delay       time.Duration // actionNakDelayed only
 	level       logLevel
 	logFmt      string
 	logArgs     []any
 }
+
+// isNakAction reports whether a delivery action hands the message back to
+// JetStream for redelivery — immediately or after a delay. Every consumer
+// that reasons about "will this run come back on its own" (the pool lease
+// report, the continuation promote, the outcome side effects) must read
+// the two the same way: a delayed Nak is still a Nak.
+func isNakAction(a deliveryAction) bool {
+	return a == actionNak || a == actionNakDelayed
+}
+
+// sandboxSetupTimeoutNakDelay spaces the redeliveries of a run whose
+// sandbox setup phase timed out. The stall is infrastructure catching its
+// breath (a stuck kubectl-exec pipe, a rescheduled apiserver, a copy the
+// pod cannot finish in the phase budget); a bare Nak re-offers within
+// seconds, so a copy that ALWAYS stalls burns the whole delivery budget
+// as back-to-back pods (8 × the 15-minute phase budget ≈ 2 hours) before
+// the DLQ park, and nothing on the run's timeline says so in between.
+const sandboxSetupTimeoutNakDelay = 2 * time.Minute
+
+// sandboxCapacityNakDelay spaces the redeliveries of a run whose sandbox
+// pod never got placed. The cure is the cluster growing, not the pod
+// retrying: the measured autoscaler cycle on a full fleet was a
+// TriggeredScaleUp followed by a Ready node about two minutes later, plus
+// the image pull on that cold node. Re-offering sooner just re-hits the
+// same ceiling and spends a delivery for it.
+const sandboxCapacityNakDelay = 3 * time.Minute
 
 // resolveDeliveryPreconditions runs the pre-lock store gauntlet:
 // LoadRun (with its own short detached timeout context so a runner
@@ -164,6 +217,11 @@ type execOutcome struct {
 // logs outcome.{level,logFmt,logArgs} and invokes the corresponding
 // {ack,nak,term}Terminal with outcome.{op, finalStatus} on the
 // delivery before returning.
+//
+// It never WRITES the run: this runs before the per-run lock, and the
+// lock is the only liveness authority. A `running` doc proceeds as-is;
+// whether it is an orphan is decided under the lock
+// (adoptRunningUnderLock).
 //
 // Tenant validation is intentionally OUT of this helper: the failed-
 // Term log message for a tenant mismatch is a security-shaped alarm
@@ -209,57 +267,348 @@ func (r *Runner) resolveDeliveryPreconditions(msg *queue.RunMessage) preconditio
 			logArgs:     []any{msg.RunID, preErr},
 		}
 	}
-	// Redelivered launch messages can arrive after the first attempt
-	// already persisted resumable state (failed_resumable,
-	// paused_operator, or cancellation-with-checkpoint during shutdown).
-	// Re-running them through Engine.Run would be a poison loop because
-	// runResolveDoc refuses to restart non-queued statuses; convert the
-	// in-memory dispatch to Resume so JetStream redelivery actually uses
-	// the checkpoint it exists to protect. A pre-pickup user-cancelled run
-	// has no checkpoint and remains a stale delivery to ack/drop.
-	switch preRun.Status {
+	return dispositionForStatus(msg, preRun)
+}
+
+// dispositionForStatus is the status switch of the admission gauntlet,
+// shared by the pre-lock pass and by the under-lock re-read of a running
+// doc: the same status must mean the same thing wherever it is read.
+//
+// Redelivered launch messages can arrive after the first attempt
+// already persisted resumable state (failed_resumable,
+// paused_operator, or cancellation-with-checkpoint during shutdown).
+// Re-running them through Engine.Run would be a poison loop because
+// runResolveDoc refuses to restart non-queued statuses; convert the
+// in-memory dispatch to Resume so JetStream redelivery actually uses
+// the checkpoint it exists to protect. A pre-pickup user-cancelled run
+// has no checkpoint and remains a stale delivery to ack/drop.
+//
+// `queued` is the one status runResolveDoc DOES restart, so it is the
+// status where a redelivery from an earlier life of the run costs the
+// most: the arm below tells the message apart from the doc's current
+// attempt (QueuedAt) and from its history (the checkpoint) before
+// letting a launch through.
+func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOutcome {
+	switch run.Status {
 	case store.RunStatusCancelled:
-		// Cancelled is terminal for a REDELIVERED launch message,
-		// checkpoint or not: auto-resuming here turned any lost ack of
-		// an operator cancel into a resurrection loop (run 019f8ba3
-		// came back three times, incl. via plain JetStream redelivery
-		// with the runner up, and after every pod roll). The checkpoint
-		// stays on the run doc — an explicit resume (msg.Resume set, or
-		// the resume API) is the only way to continue. A shutdown-drain
-		// whose nak beat the checkpoint write lands here too and now
-		// waits for that explicit resume instead of self-restarting.
-		if msg.Resume == nil {
+		// Cancelled is terminal for a redelivery — checkpoint or not, resume
+		// or not. Every cloud resume CASes the doc to queued BEFORE it
+		// publishes, so a doc that reads cancelled here was cancelled AFTER
+		// the publish: by an operator, or by stop-on-close. That decision
+		// wins over the message (the runner itself never writes cancelled —
+		// a drain or a lost lease parks failed_resumable), and this read is
+		// the only barrier: the per-run NATS cancel is core NATS, lost when
+		// no runner is subscribed yet. The checkpoint stays on the doc; an
+		// operator's explicit resume re-queues it.
+		//
+		// A PR-closed cancel keeps its own line: the redelivered message
+		// does not carry the cancel, so the reason on the doc is the only
+		// signal that the PR is gone. store.EndedBecausePRClosed reads the
+		// TYPED EndReason the cancel writes, and falls back to the message
+		// for a document cancelled before that field existed — the prose is
+		// a migration carrier here, never the protocol.
+		if store.EndedBecausePRClosed(run) {
 			return preconditionOutcome{
 				finalStatus: "cancelled",
-				op:          "ack-already-cancelled",
+				op:          "ack-pr-closed-cancel",
 				action:      actionAck,
-				level:       logInfo,
-				logFmt:      "runner: run %s is cancelled — dropping redelivery (explicit resume required to continue)",
-				logArgs:     []any{msg.RunID},
+				level:       logWarn,
+				logFmt:      "runner: run %s is cancelled because its pull request closed or merged — dropping redelivery (resume=%v; nothing the review would say can matter now)",
+				logArgs:     []any{msg.RunID, msg.Resume != nil},
 			}
 		}
+		level := logInfo
+		if msg.Resume != nil {
+			// A queued resume overridden by a cancel is an operator-visible
+			// decision, not routine housekeeping.
+			level = logWarn
+		}
+		return preconditionOutcome{
+			finalStatus: "cancelled",
+			op:          "ack-cancelled",
+			action:      actionAck,
+			level:       level,
+			logFmt:      "runner: run %s is cancelled (%q) — dropping delivery (resume=%v; an explicit operator resume re-queues it)",
+			logArgs:     []any{msg.RunID, strings.TrimSpace(run.Error), msg.Resume != nil},
+		}
 	case store.RunStatusFailedResumable, store.RunStatusPausedOperator:
+		// A run parked on a BOT-defined code refused deliberately: only an
+		// operator changing something (a raised cap, a different --var)
+		// can change the verdict, so synthesising a resume here re-runs
+		// the guard against identical inputs, forever. The runner holds no
+		// allow-list of its own — the ENGINE's vocabulary is the boundary,
+		// so only a reserved (engine) code may be auto-resumed. An empty
+		// code means UNKNOWN (legacy rows, paused_operator, which never
+		// carries one) and keeps resuming, as it always has.
+		//
+		// The same answer for an ENGINE code the shared classification
+		// calls deterministic (pkg/retrypolicy): a compute expression, a
+		// schema the output cannot meet, a credential the sealed bundle
+		// cannot refresh. Being the engine's own vocabulary does not make a
+		// verdict re-decidable — this arm is what turned each of the seven
+		// redeliveries of run 01a07804 back into a run.
+		if code := run.FailureCode; code != "" && (!code.Reserved() || retrypolicy.IsDeterministic(code)) {
+			origin := "bot-defined"
+			if code.Reserved() {
+				origin = "deterministic"
+			}
+			return preconditionOutcome{
+				finalStatus:  string(run.Status),
+				op:           "ack-deliberate-failure",
+				action:       actionAck,
+				level:        logWarn,
+				skippedRetry: code,
+				skippedCause: strings.TrimSpace(run.Error),
+				logFmt:       "runner: run %s is parked on the %s code %q — dropping the redelivery, NOT auto-resuming (the same step would fail identically; an operator resume with changed inputs re-queues it)",
+				logArgs:      []any{msg.RunID, origin, code},
+			}
+		}
 		if msg.Resume == nil {
 			msg.Resume = &queue.ResumeSpec{}
 			return preconditionOutcome{
 				proceed: true,
-				preRun:  preRun,
+				preRun:  run,
 				level:   logInfo,
 				logFmt:  "runner: run %s redelivered in status %s — resuming",
-				logArgs: []any{msg.RunID, preRun.Status},
+				logArgs: []any{msg.RunID, run.Status},
 			}
 		}
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusPausedWaitingHuman:
 		return preconditionOutcome{
-			finalStatus: string(preRun.Status),
+			finalStatus: string(run.Status),
 			op:          "ack-stale-status",
 			action:      actionAck,
 			level:       logInfo,
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
-			logArgs:     []any{msg.RunID, preRun.Status},
+			logArgs:     []any{msg.RunID, run.Status},
+		}
+	case store.RunStatusQueued:
+		// The publisher's pre-flip — of THIS attempt, or of a LATER one.
+		// A resume publication names itself and proceeds; a LAUNCH message
+		// has to be told apart from the run's own history first, because
+		// Engine.Run restarts it at the entry node.
+		if msg.Resume != nil {
+			break
+		}
+		// Identity: every transition into `queued` refreshes QueuedAt, so
+		// a delivery published BEFORE the marker belongs to an attempt
+		// that is over. The attempt now queued has its own message in
+		// flight (a publish failure rolls the status back), so this one is
+		// dropped rather than converted.
+		if publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC); perr == nil &&
+			run.QueuedAt != nil && run.QueuedAt.After(publishedAt) {
+			return preconditionOutcome{
+				finalStatus: "stale_attempt",
+				op:          "ack-stale-attempt",
+				action:      actionAck,
+				level:       logWarn,
+				logFmt:      "runner: run %s was re-queued at %s, after this launch message was published (%s) — dropping the stale delivery (the current attempt carries its own; re-running this one would restart the run from its entry node)",
+				logArgs:     []any{msg.RunID, run.QueuedAt.UTC().Format(time.RFC3339Nano), msg.PublishedAtRFC},
+			}
+		}
+		// Evidence, when identity is unavailable (a publication with no
+		// usable published_at) or the message is the current attempt's:
+		// a queued doc carrying a checkpoint has already executed, so
+		// running it as a launch would re-spend exactly what the
+		// checkpoint exists to save.
+		if run.Checkpoint != nil {
+			msg.Resume = &queue.ResumeSpec{}
+			return preconditionOutcome{
+				proceed: true,
+				preRun:  run,
+				level:   logInfo,
+				logFmt:  "runner: run %s is queued with a checkpoint from an earlier life — resuming instead of restarting (launch delivery, published_at=%q)",
+				logArgs: []any{msg.RunID, msg.PublishedAtRFC},
+			}
 		}
 	}
-	return preconditionOutcome{proceed: true, preRun: preRun}
+	// running (a live owner, or an orphan — told apart under the lock), a
+	// queued first attempt, and any status this switch does not know:
+	// proceed.
+	return preconditionOutcome{proceed: true, preRun: run}
+}
+
+// runningAdoptionFloor is how old a `running` doc's last write must be
+// before a delivery that holds the run's lock may adopt it as an orphan.
+// The lock proves nobody holds the LEASE; it does not prove the previous
+// holder is gone. A pod whose lease lapsed while it was alive (a NATS
+// blip longer than the TTL, a GC pause) keeps writing from `running`
+// during its unwind, and its terminal write is unconditional — it would
+// land on top of the adopter's resumed run. Sized on that mechanism:
+//
+//	lease TTL (DefaultLockTTL)          60s   the lapse itself
+//	+ heartbeat tick (HeartbeatInterval) 20s   the pod notices at its next refresh
+//	+ unwind (sandbox export, bank)     120s   the interrupted engine's own exit
+//	+ margin                             40s
+//	= 4m
+//
+// A doc written more recently than that is re-offered after the
+// remainder (a delayed Nak) instead of burning a delivery. Not the
+// sweeper's 10m: that floor guards a lock-less probe against a run
+// between claim and first heartbeat; here the lock is held, and the
+// question is only how long a dead pod's last words can arrive late. The
+// floor is a heuristic, not a fence: a pod silent for longer than the
+// floor before losing its lease could still be unwinding.
+const runningAdoptionFloor = 4 * time.Minute
+
+// lockProvesLiveness reports whether a held run lock is a liveness
+// authority: the NATS-KV lease is (the queue sweeper and the k8s reaper
+// trust the same signal); the Mongo store's lock-less no-op is not, and
+// under it an orphan cannot be told from a live owner — the admission
+// then leaves the status to the engine, as it always did.
+func (r *Runner) lockProvesLiveness() bool {
+	return r.cfg.NATS != nil || r.lockLivenessOverride
+}
+
+// maxDeliver is the queue's redelivery budget, 0 when no queue is wired
+// (a test may pin one through maxDeliverOverride, the way
+// lockLivenessOverride pins the lease authority).
+func (r *Runner) maxDeliver() int {
+	if r.cfg.NATS == nil {
+		return r.maxDeliverOverride
+	}
+	return r.cfg.NATS.MaxDeliver()
+}
+
+// adoptRunningUnderLock decides what to do with a doc the pre-lock pass
+// read as `running`, now that this delivery holds the run's lock: nobody
+// holds the lease, so either the holder pod died before its terminal
+// write (an orphan — #669 part 2: seven redeliveries in two minutes each
+// refused on `cannot resume run … with status "running"`, then a DLQ
+// park) or it lapsed while alive and is still unwinding. The doc is
+// re-read under the lock (the pre-lock copy is stale by construction),
+// a status a peer moved meanwhile takes the ordinary disposition, a
+// young `running` doc is re-offered after the floor's remainder, and an
+// old one is promoted to failed_resumable — the continuation is
+// redelivery_pending, because THIS delivery resumes it next: a `final`
+// marker would let the board dispatcher block its card, the stuck-card
+// watchdog re-park it into a duplicate run and the outcome router route
+// it, all inside the seconds before the resume claims it. The delivery
+// is converted into a resume so the checkpoint is honoured.
+func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run, delivery jsDelivery, now time.Time) preconditionOutcome {
+	if !r.lockProvesLiveness() {
+		return preconditionOutcome{
+			proceed: true,
+			preRun:  preRun,
+			level:   logInfo,
+			logFmt:  "runner: run %s reads running with no lease authority wired — an orphan cannot be told from a live owner, leaving the status to the engine",
+			logArgs: []any{msg.RunID},
+		}
+	}
+	loadCtx, loadCancel := context.WithTimeout(
+		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		5*time.Second)
+	run, err := r.cfg.Store.LoadRun(loadCtx, msg.RunID)
+	loadCancel()
+	if err != nil || run == nil {
+		// The lock is released on the way out; a redelivery re-reads.
+		return preconditionOutcome{
+			finalStatus: "store_load_transient",
+			op:          "nak-store-load-transient",
+			action:      actionNak,
+			level:       logWarn,
+			logFmt:      "runner: run %s: re-read under the lock failed (%v) — naking",
+			logArgs:     []any{msg.RunID, err},
+		}
+	}
+	if run.Status != store.RunStatusRunning {
+		// A peer moved it between our two reads (its own terminal write
+		// landing late, the sweeper, an operator): the ordinary
+		// disposition applies to what the doc says now.
+		return dispositionForStatus(msg, run)
+	}
+	age := runningAdoptionFloor
+	if !run.UpdatedAt.IsZero() {
+		age = now.Sub(run.UpdatedAt)
+	}
+	delivered, maxDeliver := delivery.NumDelivered(), r.maxDeliver()
+	if age < runningAdoptionFloor {
+		remaining := runningAdoptionFloor - age
+		if maxDeliver > 0 && delivered >= maxDeliver {
+			// The LAST permitted delivery: JetStream will not re-offer it
+			// whatever we answer, so a delayed Nak here would claim a
+			// re-offer that never comes and leave the doc `running` with
+			// nothing saying who reconciles it. Nothing is written — the
+			// floor exists precisely because the previous holder may still
+			// be alive and about to write its own terminal status, and a
+			// DLQ park over a live writer would be clobbered or clobber it.
+			// The server's orphan sweeper owns this doc: once it crosses the
+			// sweeper's staleness floor with no lease, it is flipped to
+			// failed_resumable (PROCESS_ORPHANED, final), which every
+			// consumer that waits on a dead run — the gate reconciler
+			// foremost — already acts on. Term makes the queue's side
+			// explicit instead of letting the message age out on its
+			// ack-wait.
+			return preconditionOutcome{
+				finalStatus: "running_young_last_delivery",
+				op:          "term-running-young-last-delivery",
+				action:      actionTerm,
+				level:       logWarn,
+				logFmt:      "runner: run %s reads running under our lock but its doc was written %s ago (< %s adoption floor — a lapsed-but-alive pod may still be unwinding) and this is the LAST permitted delivery (%d/%d): JetStream will not re-offer it — terming; if the previous holder never writes its terminal status, the orphan sweeper flips the doc to failed_resumable once it crosses the sweeper's staleness floor",
+				logArgs:     []any{msg.RunID, age.Round(time.Second), runningAdoptionFloor, delivered, maxDeliver},
+			}
+		}
+		return preconditionOutcome{
+			finalStatus: "running_young",
+			op:          "nak-running-young",
+			action:      actionNakDelayed,
+			delay:       remaining,
+			level:       logWarn,
+			logFmt:      "runner: run %s reads running under our lock but its doc was written %s ago (< %s adoption floor — a lapsed-but-alive pod may still be unwinding); delivery %d/%d re-offered in %s",
+			logArgs:     []any{msg.RunID, age.Round(time.Second), runningAdoptionFloor, delivered, maxDeliver, remaining.Round(time.Second)},
+		}
+	}
+	casCtx, casCancel := context.WithTimeout(
+		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+		5*time.Second)
+	defer casCancel()
+	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
+		store.RunStatusFailedResumable,
+		fmt.Sprintf("promoted from running under the delivery's lock: no lease holder, last doc write %s ago (admission-time orphan)", age.Round(time.Second)),
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending},
+		[]store.RunStatus{store.RunStatusRunning})
+	if cerr != nil {
+		// The CAS itself failed (store outage). Fall through unchanged:
+		// the engine refuses a running doc, the delivery naks, the next
+		// one re-decides — loud, and no worse than before.
+		return preconditionOutcome{
+			proceed: true,
+			preRun:  run,
+			level:   logWarn,
+			logFmt:  "runner: run %s: stale-running promote CAS failed (%v) — falling through to the engine",
+			logArgs: []any{msg.RunID, cerr},
+		}
+	}
+	if !changed {
+		// Moved between the re-read and the CAS: read once more and take
+		// what the doc says now.
+		reCtx, reCancel := context.WithTimeout(
+			store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
+			5*time.Second)
+		moved, merr := r.cfg.Store.LoadRun(reCtx, msg.RunID)
+		reCancel()
+		if merr != nil || moved == nil {
+			return preconditionOutcome{
+				finalStatus: "store_load_transient",
+				op:          "nak-store-load-transient",
+				action:      actionNak,
+				level:       logWarn,
+				logFmt:      "runner: run %s: re-read after a declined promote failed (%v) — naking",
+				logArgs:     []any{msg.RunID, merr},
+			}
+		}
+		return dispositionForStatus(msg, moved)
+	}
+	if msg.Resume == nil {
+		msg.Resume = &queue.ResumeSpec{}
+	}
+	return preconditionOutcome{
+		proceed: true,
+		preRun:  run,
+		level:   logWarn,
+		logFmt:  "runner: run %s adopted from stale running (lock acquired, no lease holder; prior status running, last doc write %s ago; delivery %d/%d) — resuming from its checkpoint",
+		logArgs: []any{msg.RunID, age.Round(time.Second), delivered, maxDeliver},
+	}
 }
 
 // classifyExecResult turns engine.Run's (success-or-error) outcome
@@ -340,6 +689,32 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// The WORKFLOW refused on purpose — it reached a `fail` node. This is
+	// the one failure an automatic retry can never fix: the graph
+	// re-executes the same guard against the same inputs and refuses
+	// identically, so every redelivery is a pod and a sandbox spent to
+	// reach the same verdict. Worse than the budget case it sits beside,
+	// because a `resumable: true` fail parks failed_resumable, which
+	// dispositionForStatus otherwise reads as "synthesise a resume" — the
+	// loop then runs to MaxDeliver, where the DLQ park overwrites the
+	// bot's typed code with DLQ_PARKED, destroying the diagnosis the
+	// typed fail existed to publish.
+	//
+	// Matched by SENTINEL, not by code: the code is bot-defined
+	// (PLAN_BUDGET_EXHAUSTED, LOT_NOT_ACTIONABLE, …), so no allow-list the
+	// runner could hold would recognise it. Ack; the run stays exactly as
+	// the engine left it (failed_resumable or failed, with its own code)
+	// and waits for a HUMAN who changed something.
+	if errors.Is(execErr, runtime.ErrDeliberateFailure) {
+		return execOutcome{
+			finalStatus: "deliberate_failure",
+			op:          "ack-deliberate-failure",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s refused deliberately at a fail node — NOT auto-resuming (only changed inputs can change the verdict): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// Infrastructure interruption (runner drain / lost heartbeat): the
 	// engine already wrote failed_resumable (via the ErrRunInterrupted
 	// cancel cause). Nak so JetStream redelivers and the reconciliation
@@ -354,6 +729,74 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, execErr},
 		}
 	}
+	// A sandbox setup phase that hit its own bound (workspace copy / git
+	// fixup, sandbox.ErrPhaseTimeout): the engine wrote failed_resumable
+	// + SANDBOX_SETUP_TIMEOUT. Nak — after sandboxSetupTimeoutNakDelay,
+	// not at once — so a fresh pod retries once the infrastructure has had
+	// a moment: the stall is a transient condition a healthy pod routinely
+	// clears. Deliberately NOT an interruption: the DLQ park on the last
+	// permitted delivery still applies, so a stall that repeats through
+	// every delivery ends parked and announced instead of naking into
+	// nothing.
+	if errors.Is(execErr, sandbox.ErrPhaseTimeout) {
+		return execOutcome{
+			finalStatus: "sandbox_setup_timeout",
+			op:          "nak-sandbox-setup-timeout",
+			action:      actionNakDelayed,
+			delay:       sandboxSetupTimeoutNakDelay,
+			level:       logWarn,
+			logFmt:      "runner: run %s: sandbox setup phase timed out (resumable) — re-offered to a fresh pod in %s (%v)",
+			logArgs:     []any{runID, sandboxSetupTimeoutNakDelay, execErr},
+		}
+	}
+	// A sandbox pod that never got placed (sandbox.ErrCapacity): the
+	// engine wrote failed_resumable + SANDBOX_CAPACITY. Same treatment as
+	// the phase timeout above and for the same reason, with a longer
+	// spacing — the cure is the cluster growing, not the pod retrying, and
+	// an autoscaler cycle is minutes. The DLQ park on the last permitted
+	// delivery still applies, so a fleet that stays full ends parked and
+	// announced instead of naking into nothing.
+	if errors.Is(execErr, sandbox.ErrCapacity) {
+		return execOutcome{
+			finalStatus: "sandbox_capacity",
+			op:          "nak-sandbox-capacity",
+			action:      actionNakDelayed,
+			delay:       sandboxCapacityNakDelay,
+			level:       logWarn,
+			logFmt:      "runner: run %s: the sandbox could not be placed (resumable) — re-offered in %s (%v)",
+			logArgs:     []any{runID, sandboxCapacityNakDelay, execErr},
+		}
+	}
+	// The IR does not load on this runner (a server ahead of the fleet):
+	// deterministic here, so Ack — a redelivery reaches the same runner
+	// image and the same verdict, eight times, then the DLQ park overwrites
+	// the diagnosis with DLQ_PARKED. The run is failed_resumable with
+	// IR_UNLOADABLE (failUnloadableIR); the resume after the fleet is
+	// aligned re-compiles on the server.
+	if errors.Is(execErr, ErrIRUnloadable) {
+		return execOutcome{
+			finalStatus: "ir_unloadable",
+			op:          "ack-ir-unloadable",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s: the IR the server compiled does not load on this runner (%s) — failed_resumable, NOT redelivered: align the runner with the server, then resume (%v)",
+			logArgs:     []any{runID, appinfo.Version, execErr},
+		}
+	}
+	// The bundle names an engine floor this build is below: a comparison
+	// between two constants, so every redelivery reaches the same verdict.
+	// Ack — the run is already terminal (failBotRequiresNewerEngine) and the
+	// cure is a deploy or a bot edit followed by a fresh launch.
+	if errors.Is(execErr, ErrBotRequiresNewerEngine) {
+		return execOutcome{
+			finalStatus: "bot_requires_newer_engine",
+			op:          "ack-bot-requires-newer-engine",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s: the bot declares an engine this runner (%s) is below — failed, NOT redelivered: bump the runner image or relax the bot's requires.iterion, then re-launch (%v)",
+			logArgs:     []any{runID, appinfo.Version, execErr},
+		}
+	}
 	// Operator cancel: terminal cancelled, acked (redelivery drops it).
 	if errors.Is(execErr, runtime.ErrRunCancelled) {
 		return execOutcome{
@@ -363,6 +806,28 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			level:       logInfo,
 			logFmt:      "runner: run %s checkpointed (%v)",
 			logArgs:     []any{runID, execErr},
+		}
+	}
+	// A DETERMINISTIC engine failure: re-executing would run the same step
+	// against the same checkpoint and reach the same verdict, so every
+	// redelivery is a pod, a clone and a sandbox spent to be told the same
+	// thing — then the DLQ park overwrites the diagnosis with DLQ_PARKED.
+	// Measured on run 01a07804: seven attempts in ten minutes on a compute
+	// node's expression error. Ack; the run stays exactly as the engine left
+	// it and waits for an operator who changed something.
+	//
+	// Keyed on the code, through the one table both this path and the CLI's
+	// `--auto-resume` loop read (pkg/retrypolicy). The carve-outs above stay
+	// ahead of it: each names a specific remedy (arm a retry, re-offer to a
+	// fresh pod, bank the work) this generic arm does not know about.
+	if code := runtimeCodeOf(execErr); retrypolicy.IsDeterministic(code) {
+		return execOutcome{
+			finalStatus: "deterministic_failure",
+			op:          "ack-deterministic-failure",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s failed deterministically (%s) — failed_resumable, NOT redelivering (the same inputs produce the same failure; fix the cause, then resume): %v",
+			logArgs:     []any{runID, code, execErr},
 		}
 	}
 	// Generic error → caller checks DLQ trigger before falling back to
@@ -385,9 +850,18 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 // budget_exceeded — a manual-resume death whose redelivery never comes
 // back on its own — and must bank like one. classifyExecResult is pure,
 // so the bank site calls it a second time without side effects.
+//
+// The criterion is NOT "did the run succeed" but "will anything come back
+// for it": a status the runner ACKS has no successor attempt to bank what
+// this one committed in stride, so the work either reaches the forge here
+// or dies with the pod. Every acked death therefore banks —
+// budget_exceeded, deterministic_failure and deliberate_failure alike. The
+// naked statuses (interrupted, sandbox_*) do not: their redelivery
+// re-clones and banks on its own next attempt. Adding a new acked status
+// without adding it here is how a campaign silently loses forty commits.
 func bankableStatus(finalStatus string) bool {
 	switch finalStatus {
-	case "finished", "budget_exceeded", "failed":
+	case "finished", "budget_exceeded", "failed", "deterministic_failure", "deliberate_failure":
 		return true
 	}
 	return false
@@ -400,16 +874,47 @@ func bankableStatus(finalStatus string) bool {
 // which every direct bankRepoWorkspace test is blind to.
 func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
 	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
-	if !bankableStatus(finalStatus) {
+	// The operator refusing the work is honoured on EVERY road out of
+	// here — including a cancel that lands while the run was pausing or
+	// tearing down (the cancel subscription cancels the run ctx from a
+	// NATS goroutine, and the sandbox export gives it a minutes-wide
+	// window to race the engine's own paused/interrupted return).
+	operatorRefused := errors.Is(context.Cause(ctx), runtime.ErrRunCancelled)
+	if bankableStatus(finalStatus) {
+		bankCtx, cancel, ok := bankContext(ctx)
+		if ok {
+			defer cancel()
+			r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+			return
+		}
+		if operatorRefused {
+			// The operator refused the work — it is not parked anywhere.
+			r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled by the operator. This attempt's work stays in the git-meta snapshot.", msg.RunID)
+			return
+		}
+		// The refusal protects the STORAGE branch from a lease that may
+		// already belong to another pod; a ref named after this chain's
+		// own head cannot contest anything, so the work parks there
+		// instead of stranding in the snapshot.
+		r.cfg.Logger.Warn("runner: run %s: NOT banking the storage branch — the run ctx was cancelled (%v), not merely deadlined: this pod's lease may already have moved. Parking this attempt's work on its own ref instead.", msg.RunID, context.Cause(ctx))
+		r.bankAttemptRef(msg, workDir, base, integ, "lease-loss death ("+finalStatus+")")
 		return
 	}
-	bankCtx, cancel, ok := bankContext(ctx)
-	if !ok {
-		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved, and banking from here could race the new owner's push. This attempt's work stays in the git-meta snapshot.", msg.RunID, context.Cause(ctx))
+	if operatorRefused {
+		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the operator cancelled the run; refused work parks nowhere.", msg.RunID, finalStatus)
 		return
 	}
-	defer cancel()
-	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+	switch finalStatus {
+	case "interrupted", "paused", "paused_operator":
+		// Not the storage branch — an interrupted delivery redelivers and
+		// its successor banks that branch; recording FinalBranch on a
+		// paused run would make it merge-eligible mid-flight — but the
+		// work itself is as stranded as a death's (the successor
+		// re-clones at base), so it parks on a uniquely-named ref, run
+		// doc untouched.
+		r.bankAttemptRef(msg, workDir, base, integ, finalStatus)
+	}
+	// cancelled stays unbanked entirely: the operator refused the work.
 }
 
 // bankContext decides whether the bank may outlive the run ctx.
@@ -480,6 +985,20 @@ const bankBudget = 10 * time.Minute
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
+// withDeliveryAttempt suffixes a precondition log line with the JetStream
+// attempt count and stream sequence, so a drop reads on its own line as a
+// first-delivery pre-cancel arrival (delivery=1) or a redelivery
+// (delivery>=2) of one identifiable message. An outcome that logs nothing
+// stays silent.
+func withDeliveryAttempt(format string, args []any, numDelivered int, streamSeq uint64) (string, []any) {
+	if format == "" {
+		return "", nil
+	}
+	out := make([]any, 0, len(args)+2)
+	out = append(out, args...)
+	return format + " (delivery=%d seq=%d)", append(out, numDelivered, streamSeq)
+}
+
 func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 	if format == "" {
 		return
@@ -496,7 +1015,7 @@ func logAt(logger *iterlog.Logger, level logLevel, format string, args ...any) {
 
 // dispatchTerminal performs the JetStream state transition selected
 // by `action` and surfaces any error via logDeliveryErr.
-func dispatchTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, action deliveryAction, op, runID string) {
+func dispatchTerminal(logger *iterlog.Logger, delivery jsDelivery, action deliveryAction, op, runID string) {
 	switch action {
 	case actionAck:
 		ackTerminal(logger, delivery, op, runID)
@@ -507,9 +1026,36 @@ func dispatchTerminal(logger *iterlog.Logger, delivery *natsq.Delivery, action d
 	}
 }
 
+// dispatchPrecondition dispatches an admission outcome, including the
+// delayed Nak the under-lock adoption uses to wait out its floor.
+func dispatchPrecondition(logger *iterlog.Logger, delivery jsDelivery, out preconditionOutcome, runID string) {
+	dispatchDelivery(logger, delivery, out.action, out.delay, out.op, runID)
+}
+
+// dispatchExecOutcome dispatches an execution outcome, including the
+// delayed Nak a sandbox setup timeout is re-offered with.
+func dispatchExecOutcome(logger *iterlog.Logger, delivery jsDelivery, out execOutcome, runID string) {
+	dispatchDelivery(logger, delivery, out.action, out.delay, out.op, runID)
+}
+
+// dispatchDelivery is the one place a delayed Nak is turned into
+// NakWithDelay; every other action goes through dispatchTerminal.
+func dispatchDelivery(logger *iterlog.Logger, delivery jsDelivery, action deliveryAction, delay time.Duration, op, runID string) {
+	if action == actionNakDelayed {
+		logDeliveryErr(logger, op, runID, delivery.NakWithDelay(delay))
+		return
+	}
+	dispatchTerminal(logger, delivery, action, op, runID)
+}
+
 // Config is the runner bootstrap.
 type Config struct {
-	NATS              *natsq.Conn
+	NATS *natsq.Conn
+	// PreparedConsumer, when non-nil, is a durable consumer whose creation was
+	// already proven by the entrypoint before it claims the rollout epoch. It
+	// remains inert until Run starts fetching. Nil preserves the convenient
+	// NewConsumer path for local callers and tests.
+	PreparedConsumer  *natsq.Consumer
 	Store             store.RunStore
 	RunnerID          string
 	WorkDir           string        // base directory for per-run workspaces
@@ -523,6 +1069,15 @@ type Config struct {
 	// an immediate Nak burns it in seconds (issue #481). 0 →
 	// natsq.SchemaMismatchNakDelay.
 	SchemaMismatchDelay time.Duration
+	// RunnerEpoch is this pod's immutable rollout generation. A message from a
+	// higher generation is refused in decodeOrTerm before any execution-side
+	// effect. EpochMismatchDelay controls its delayed redelivery.
+	RunnerEpoch        uint64
+	EpochMismatchDelay time.Duration
+	// HighWaterEpoch and Superseded are startup-gate observations surfaced in
+	// probes. A superseded runner is never passed to Run by the entrypoint.
+	HighWaterEpoch uint64
+	Superseded     bool
 	// DrainMode governs SIGTERM handling. "complete" (default, the
 	// lame-duck posture): stop fetching new runs but let the in-flight run
 	// finish naturally before exiting — a rolling deploy interrupts
@@ -563,6 +1118,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
+	// ApiKeys, when non-nil, is the BYOK store shared with the publisher.
+	// The runner bumps `last_used_at` on every credential the run actually
+	// spent tokens on at metering time (recordOrgSpend), so the studio
+	// distinguishes an idle key from one currently serving — the mute
+	// launch-grant-only signal fixed by #659 pt 2. nil disables the bump;
+	// today's launch-time-only behaviour is preserved byte-identical.
+	ApiKeys secrets.ApiKeyStore
+
 	// UsageCapSource answers the operator's ceiling on the LLM
 	// subscription's own usage windows (pkg/usagecap) — consulted per
 	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
@@ -576,12 +1139,22 @@ type Config struct {
 	// rediscovering a ceiling another pod already hit. nil disables the
 	// pre-flight; the in-run guard still applies.
 	UsageCaps usagecap.Store
+	// UsageCapTrust bounds how long a stored reading is believed by the
+	// pre-flight (usagecap.TrustFromEnv). The zero value applies the
+	// package defaults.
+	UsageCapTrust usagecap.Trust
 
 	// OrgUsage, when non-nil, receives each run's accumulated LLM
 	// cost/tokens into the org's monthly bucket at the end of every
 	// execution attempt (the billing source of truth — Prometheus
 	// counters above stay tenant-unlabelled). nil → no org metering.
 	OrgUsage orgusage.Counter
+
+	// CredUsage, when non-nil, receives the same spend split per
+	// CREDENTIAL — the question the org bucket cannot answer ("what did
+	// this key cost"), since it charges every tier to one org key. nil →
+	// no per-credential metering. See pkg/credusage.
+	CredUsage credusage.Counter
 
 	// CredPool, when non-nil, receives the spend of a run served by a
 	// lending contributor's pooled subscription, closing its lease and
@@ -693,6 +1266,23 @@ type Runner struct {
 	// alone never reaches it. See sandbox_registry.go.
 	sandboxRunsMu sync.Mutex
 	sandboxRuns   map[string]sandbox.Run
+
+	// lockLivenessOverride declares, in unit tests without a queue, that
+	// the store's run lock is a liveness authority (the filesystem flock
+	// is one). False in production; the runner reads r.cfg.NATS then.
+	lockLivenessOverride bool
+	// maxDeliverOverride pins the redelivery budget in unit tests without
+	// a queue. 0 in production; the runner reads r.cfg.NATS then.
+	maxDeliverOverride int
+	// Test seam for the final delivery archive; production uses NATS.PublishDLQ.
+	lockFailureDLQ func(context.Context, jsDelivery, string) error
+	// publishTimeout bounds ONLY the DLQ publish in archiveLockFailure, so a
+	// test can exhaust a publish deadline in microseconds instead of waiting
+	// out a broker outage. 0 in production (archiveWriteTimeout). It must
+	// never reach the audit context: shortening both would expire the audit
+	// write too, and the regression would then fail WITH the fix applied —
+	// proving the opposite of what it exists to prove.
+	publishTimeout time.Duration
 }
 
 type inFlight struct {
@@ -775,9 +1365,13 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		cfg.WorkDir = os.TempDir()
 	}
 
-	cons, err := cfg.NATS.NewConsumer(ctx)
-	if err != nil {
-		return nil, err
+	cons := cfg.PreparedConsumer
+	if cons == nil {
+		var err error
+		cons, err = cfg.NATS.NewConsumer(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Run-completion webhook notifier. ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
 	// relaxes the SSRF guard for self-hosted deployments whose callback
@@ -792,6 +1386,18 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		notify.WithAllowPrivate(allowPrivate),
 		notify.WithSigningSecret(secret))
 	return &Runner{cfg: cfg, consumer: cons, completionNotifier: notifier}, nil
+}
+
+// SetRolloutState publishes the final epoch claim into runner health just
+// before the entrypoint exposes the Runner to probes or starts Run. It must be
+// called before concurrent use.
+func (r *Runner) SetRolloutState(self, highWater uint64, superseded bool) {
+	if r == nil {
+		return
+	}
+	r.cfg.RunnerEpoch = self
+	r.cfg.HighWaterEpoch = highWater
+	r.cfg.Superseded = superseded
 }
 
 // Run drains the queue until ctx is cancelled. Each iteration fetches
@@ -974,7 +1580,9 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	logger := r.cfg.Logger
-	logger.Info("runner: processing run %s (workflow=%s)", msg.RunID, msg.WorkflowName)
+	// The attempt count on the opening line pairs the run with its JetStream
+	// delivery for every line that follows.
+	logger.Info("runner: processing run %s (workflow=%s delivery=%d)", msg.RunID, msg.WorkflowName, delivery.NumDelivered())
 
 	// runs_active{status=running}: incremented as soon as the runner
 	// commits to executing this delivery (post-decode), decremented in
@@ -1053,10 +1661,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// cancelled before we picked it up (T-32 cancel-queued path),
 	// ack the JetStream delivery without doing any work.
 	pre := r.resolveDeliveryPreconditions(msg)
-	logAt(logger, pre.level, pre.logFmt, pre.logArgs...)
+	preFmt, preArgs := withDeliveryAttempt(pre.logFmt, pre.logArgs, delivery.NumDelivered(), delivery.StreamSeq())
+	logAt(logger, pre.level, preFmt, preArgs...)
 	if !pre.proceed {
 		finalStatus = pre.finalStatus
-		dispatchTerminal(logger, delivery, pre.action, pre.op, msg.RunID)
+		if pre.skippedRetry != "" {
+			r.recordRetrySkipped(msg, pre.skippedRetry, pre.skippedCause)
+		}
+		dispatchPrecondition(logger, delivery, pre, msg.RunID)
 		return
 	}
 
@@ -1081,6 +1693,20 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}()
 
+	// A doc still `running` now that we hold its lock has no live lease
+	// holder: an orphan to adopt, or a lapsed-but-alive pod still
+	// unwinding — decided under the lock, never before it. A deferred
+	// answer releases the lock on the way out.
+	if pre.preRun.Status == store.RunStatusRunning {
+		adopt := r.adoptRunningUnderLock(msg, pre.preRun, delivery, time.Now().UTC())
+		logAt(logger, adopt.level, adopt.logFmt, adopt.logArgs...)
+		if !adopt.proceed {
+			finalStatus = adopt.finalStatus
+			dispatchPrecondition(logger, delivery, adopt, msg.RunID)
+			return
+		}
+	}
+
 	// Heartbeat goroutine: refresh the NATS lease while we own it. On
 	// refresh failure it cancels runCtx WITH the interrupted cause so the
 	// engine unwinds to failed_resumable — better to lose progress than to
@@ -1098,6 +1724,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		runCancel(nil)
 		<-hbDone
 	}()
+
+	// Stamped under the lock, before any work: the pair (launcher build,
+	// runner build) is what makes a version skew readable from the run
+	// itself, and an IR that will not load must not be the first place an
+	// operator learns of one.
+	r.recordRunnerBuild(runCtx, msg, pre.preRun)
 
 	var usage *metricsEmitter
 	err := r.executeRun(runCtx, msg, &usage)
@@ -1166,26 +1798,139 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// nothing — and a lease left open there strands the donor's slot and
 	// committed allowance until the 12h TTL.
 	redeliverable := r.cfg.NATS != nil && delivery.NumDelivered() < r.cfg.NATS.MaxDeliver()
-	r.recordPoolSpend(msg, usage, err, outcome.action == actionNak && redeliverable)
+	r.recordPoolSpend(msg, usage, err, isNakAction(outcome.action) && redeliverable)
 
 	if outcomeSideEffectsFire(err, outcome.action) {
 		fireOutcome()
 	}
+	// The continuation promote: only the RUNNER knows whether a Nak
+	// really means a redelivery (the engine has no queue topology, so
+	// its park writers leave continuation unknown). Promote to
+	// redelivery_pending at the actual Nak — a same-status write that
+	// states ownership without touching the engine's cause or message,
+	// and without inventing an episode. A Nak into nothing (last
+	// permitted delivery of an ErrRunInterrupted, exempt from DLQ)
+	// stays unknown, which is honest: nobody owns that run's future.
+	if isNakAction(outcome.action) && redeliverable && r.cfg.Store != nil {
+		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
+		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
+		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
+			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending},
+			[]store.RunStatus{store.RunStatusFailedResumable}); serr != nil {
+			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
+		}
+		cancel()
+		// A DELAYED redelivery leaves the run parked for minutes with
+		// nothing on its timeline between two attempts: say why, and for
+		// how long, where the operator reads.
+		if outcome.action == actionNakDelayed {
+			r.recordRedeliveryDeferred(msg, outcome, err, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
+		}
+	}
+	if outcome.finalStatus == "deterministic_failure" {
+		r.recordRetrySkipped(msg, runtimeCodeOf(err), err.Error())
+	}
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
-	dispatchTerminal(logger, delivery, outcome.action, outcome.op, msg.RunID)
+	dispatchExecOutcome(logger, delivery, outcome, msg.RunID)
+}
+
+// recordRedeliveryDeferred puts a delayed redelivery on the run's
+// timeline — the only trace, between two attempts, of why the run sits
+// failed_resumable and when the next pod picks it up. Best-effort and
+// bounded like every teardown-path timeline write: a wedged store must
+// not pin the pod, and a missed event never changes the disposition.
+func (r *Runner) recordRedeliveryDeferred(msg *queue.RunMessage, outcome execOutcome, execErr error, delivered, maxDeliver int) {
+	if r.cfg.Store == nil {
+		return
+	}
+	data := map[string]any{
+		"reason":        outcome.finalStatus,
+		"delay_seconds": int(outcome.delay / time.Second),
+		"delivery":      delivered,
+		"max_deliver":   maxDeliver,
+	}
+	if execErr != nil {
+		data["error"] = execErr.Error()
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunRedeliveryDeferred,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_redelivery_deferred: %v", msg.RunID, err)
+	}
+}
+
+// recordRunnerBuild stamps the build that is about to EXECUTE this run
+// beside the one that launched it, and says out loud when the two differ.
+//
+// A WARN, never a refusal: skew is normal for the whole length of every
+// rolling deploy, and refusing on it would stop the fleet each time. What
+// was NOT normal is that the run said nothing — five runs died in 75 s on
+// a five-release skew and the operator had to compare the healthz of two
+// deployments to find out. The pair on the document is what makes it
+// answerable from the run alone.
+func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, launched *store.Run) {
+	self := appinfo.FullVersion()
+	launcher := ""
+	if launched != nil {
+		launcher = strings.TrimSpace(launched.IterionVersion)
+	}
+	if launcher != "" && launcher != self {
+		r.cfg.Logger.Warn("runner: run %s was launched by iterion %s and runs on %s — a workflow compiled by one build is executing on another (normal during a rolling deploy; if the run fails to load its IR, align the two)",
+			msg.RunID, launcher, self)
+	}
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if err := r.cfg.Store.SetRunnerVersion(idCtx, msg.RunID, self); err != nil {
+		// Observational: a run whose build stamp did not land still runs.
+		r.cfg.Logger.Warn("runner: run %s: could not stamp the runner build: %v", msg.RunID, err)
+	}
+}
+
+// recordRetrySkipped puts on the run's timeline the fact that no further
+// attempt follows. A failed_resumable row is otherwise ambiguous — a
+// redelivery in flight and a redelivery deliberately dropped look the same
+// — so the operator either waits for a pod that never comes or reads the
+// two deployments' logs to find out. Best-effort and bounded like every
+// teardown-path timeline write.
+func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string) {
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunRetrySkipped,
+		Data: map[string]any{
+			"reason": "deterministic",
+			"code":   string(code),
+			"error":  cause,
+			"hint":   "re-executing would run the same step against the same inputs; fix the cause, then `iterion resume --force`",
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", msg.RunID, err)
+	}
 }
 
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
 // dispatch path (no park) is a FINAL disposition that must fire the
 // run-outcome side effects (completion webhook + run.<outcome> event). A
-// Nak is not final — JetStream redelivers and the run auto-resumes, so
-// user-facing "run failed" episodes must wait for a disposition that
-// actually settles the run. Named (rather than inlined) so the
-// err → fires mapping is pinned by a table test next to
+// Nak — immediate or delayed — is not final: JetStream redelivers and the
+// run auto-resumes, so user-facing "run failed" episodes must wait for a
+// disposition that actually settles the run. Named (rather than inlined)
+// so the err → fires mapping is pinned by a table test next to
 // TestClassifyExecResult.
 func outcomeSideEffectsFire(execErr error, action deliveryAction) bool {
-	return !errors.Is(execErr, runtime.ErrRunInterrupted) && action != actionNak
+	return !errors.Is(execErr, runtime.ErrRunInterrupted) && !isNakAction(action)
 }
 
 // startProcessSpan builds the runner-side OTel root span for this
@@ -1280,6 +2025,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 
 	wf, err := loadWorkflow(ctx, msg, store.AsIRBlobStore(r.cfg.Store))
 	if err != nil {
+		if errors.Is(err, ErrIRUnloadable) {
+			r.failUnloadableIR(ctx, msg, err)
+		}
 		return err
 	}
 
@@ -1324,7 +2072,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// container: at this point the run has cost nothing yet, so a capped
 	// run parks for free instead of paying a workspace and one LLM call to
 	// rediscover a ceiling another pod already measured.
-	if capErr := r.usageCapPreflight(ctx, wf, msg, r.cfg.Logger); capErr != nil {
+	if capErr := r.admitAttempt(ctx, wf, msg); capErr != nil {
 		return capErr
 	}
 
@@ -1333,19 +2081,30 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// private repo) and point the engine there so ${PROJECT_DIR} is the repo
 	// under review. Otherwise use the runner's base WorkDir.
 	workDir := r.cfg.WorkDir
-	// gitBase is the clone's HEAD before the workflow runs — the baseline the
-	// per-run commit/file view is measured against. Captured here (while the
-	// clone is on-disk) so recordRunGitMeta can persist the commit/file
-	// metadata into the store before the pod's ephemeral workspace is wiped;
-	// the server pod, which has no worktree, serves the panels from that.
+	// gitBase is the clone's HEAD before the workflow runs — or, when a
+	// re-execution restored the chain an earlier attempt banked, the base that
+	// chain forked from — the baseline the per-run commit/file view and the
+	// bank are measured against. Captured here (while the clone is on-disk)
+	// so recordRunGitMeta can persist the commit/file metadata into the store
+	// before the pod's ephemeral workspace is wiped; the server pod, which
+	// has no worktree, serves the panels from that.
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
-		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
+		cloneStart := time.Now()
+		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, msg)
+		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
+		// auth failure is exactly what the histogram exists to show), with
+		// the same nil guard every other Metrics site carries.
+		if r.cfg.Metrics != nil {
+			r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
+		}
 		if derr != nil {
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
 		workDir = repoDir
-		if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
+		if baseline != "" {
+			gitBase = baseline
+		} else if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
 			gitBase = head
 		} else {
 			r.cfg.Logger.Warn("runner: run %s: capture git baseline: %v", msg.RunID, herr)
@@ -1491,8 +2250,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// Charge the run's spend whatever the outcome — paused, cancelled and
 	// failed attempts incurred real LLM spend. The credential pool's half is
 	// reported by the caller instead, which alone knows whether this
-	// delivery is the last one.
-	defer func() { r.recordOrgSpend(msg, usage) }()
+	// delivery is the last one. Ctx captures the credentials the executor
+	// runs under so #659 pt 2's `last_used_at` bump reads the same
+	// fingerprints the delegate actually spent tokens on.
+	defer func() { r.recordOrgSpend(ctx, msg, usage) }()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -1528,6 +2289,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// `iterion run` of the same bot.
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
+	if msg.ExecutionContext != nil {
+		engineOpts = append(engineOpts, runtime.WithExecutionContext(msg.ExecutionContext))
+	}
 	// Sandbox-run observer: registers the live sandbox Run so the mid-run
 	// credential refreshers can write rotated tokens THROUGH into the
 	// container (forfait credentials + the k8s workspace's git credential
@@ -1539,8 +2303,21 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	sbObsCtx, stopSbObs := context.WithCancel(ctx)
 	defer stopSbObs()
 	defer r.unregisterSandboxRun(msg.RunID)
+	// A workflow that declares `workspace_checkpoint: off` is telling the
+	// engine it writes no commit for the repository it was pointed at — so
+	// the net would hold nothing, and its push would put a branch on that
+	// repository anyway. Said once, because a net silently not laid is
+	// indistinguishable from one that had nothing to preserve.
+	checkpointOn := runtime.WorkspaceCheckpointEnabled(wf)
+	if !checkpointOn {
+		r.cfg.Logger.Info("runner: run %s: workspace_checkpoint is off — the sandbox tree is NOT preserved mid-run and no checkpoint branch is pushed to the run's remote; node outputs remain durable in the store", msg.RunID)
+	}
 	engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(
-		r.sandboxRunObserver(sbObsCtx, msg.RunID, msg.TenantID, r.sandboxFileSecretRefs(ctx, wf))))
+		r.sandboxRunObserver(sbObsCtx, sandboxObserverOpts{
+			runID: msg.RunID, tenantID: msg.TenantID, ownerID: msg.OwnerID,
+			secretRefs: r.sandboxFileSecretRefs(ctx, wf),
+			checkpoint: checkpointOn,
+		})))
 	// Bundle resources: a bot-qualified run attaches its bundle so the
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
 	// provisions the bot's devbox.json (host devbox provisioning — the
@@ -1555,19 +2332,34 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// cannot honor fails the attempt loudly (nak → redelivery → DLQ with an
 	// actionable status) rather than running the run against stale
 	// resources; a resume re-resolves the ref fresh and self-heals.
+	// The parent bundle's directory, for `subbot` nodes to resolve their
+	// children beside it (see subbotRunnerFor).
+	parentBundleDir := ""
+	snapshotRoot := ""
+	// runBundle is whichever bundle this run executes with, hoisted out of the
+	// two resolution branches so the engine-requirement guard below is ONE
+	// point both traverse rather than a check copied into each.
+	var runBundle *bundle.Bundle
 	if msg.BotBundle != nil {
 		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
 		if berr != nil {
 			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
 		}
 		defer cleanupBundle()
+		parentBundleDir = b.Dir
+		if msg.BotBundle.SnapshotDigest != "" {
+			snapshotRoot = filepath.Dir(b.Dir)
+		}
+		runBundle = b
 		engineOpts = append(engineOpts, runtime.WithBundle(b))
 	} else if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
 		// Best-effort: an unresolvable bot id or a loose .bot just skips the
 		// bundle with a warning — the run proceeds without skills or devbox
 		// tools.
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
+			parentBundleDir = filepath.Dir(mainFile)
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
+				runBundle = b
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
 			} else {
 				r.cfg.Logger.Warn("runner: bot %q bundle open: %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, berr)
@@ -1575,6 +2367,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		} else {
 			r.cfg.Logger.Warn("runner: bot %q not resolvable in %v (skills not mirrored, devbox tools not provisioned)", msg.BotID, r.cfg.BotsPaths)
 		}
+	}
+	// The bundle and the image that executes it move independently — a push
+	// lands in a second, a runner digest bump is a deploy. A bundle that names
+	// an engine this build is below is refused HERE, before the first node.
+	if err := r.guardEngineRequirement(ctx, msg, runBundle); err != nil {
+		return err
 	}
 	// Plugin/library skills the LAUNCHING instance resolved for us. This pod's
 	// iterion home is ephemeral and empty, so local resolution would silently
@@ -1603,12 +2401,23 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	// Credential-slot occupancy: release the run's per-key concurrency
+	// slot while no model-calling node executes (cred_slot.go).
+	if slots := r.credSlotObserver(ctx, msg, wf, runLogger); slots != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(slots.observe))
+	}
 	if superviseHub != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
 		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
 			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
 		defer stopSup()
 	}
+	// `subbot` nodes: the closure that compiles and runs a child bot on
+	// this pod. Every other launch surface wired one; without it a subbot
+	// node dies at dispatch with "no SubbotRunner is wired" — and a
+	// deterministic node failure under the usage-window retry is a
+	// resume loop that recreates the sandbox pod on every attempt.
+	engineOpts = append(engineOpts, runtime.WithSubbotRunner(r.subbotRunnerFor(msg, parentBundleDir, workDir, runLogger, snapshotRoot)))
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
@@ -1620,6 +2429,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runErr = engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
+	}
+	if runErr == nil {
+		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
 	}
 
 	// Persist the run's git metadata (commits + modified files vs the
@@ -1641,18 +2453,16 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// in the git-meta snapshot above, and turning that snapshot back
 		// into a branch takes a manual replay every time (measured: nine
 		// manual recoveries in three days of one campaign). An interrupted
-		// delivery does NOT bank — not because its work survives (the
-		// redelivery re-clones at RepoSHA and banks only its OWN later
-		// commits; this attempt's work strands in the snapshot exactly
-		// like a death's) but because interruption means the lease may
+		// delivery must NOT touch the storage branch — the lease may
 		// already belong to another pod, and a bank from here could race
-		// the new owner's push (bankContext refuses on the same oracle).
-		// A cancel is the operator saying the work is not wanted. Paused runs do
-		// not bank either — NOT because the work is safe (a cloud resume
-		// re-clones at the base, so a paused run's committed work is as
-		// stranded as a death's until it ends) but because FinalBranch on
-		// a half-done run would make it merge-eligible mid-flight; that
-		// trade-off is a product decision deferred, not an oversight.
+		// the new owner's push (bankContext refuses on the same oracle) —
+		// and a paused run must not either: FinalBranch on a half-done
+		// run would make it merge-eligible mid-flight. But their work is
+		// as stranded as a death's (the successor re-clones at RepoSHA
+		// and banks only its OWN later commits), so both park it on a
+		// uniquely-named attempt ref instead — doc untouched, no name
+		// contested (bankAttemptRef). A cancel is the operator saying
+		// the work is not wanted; it parks nowhere.
 		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 
@@ -1683,6 +2493,30 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	return runErr
 }
 
+// resetRetryCircuitAfterSuccessfulExecution closes the shared workflow
+// breaker only when durable run state proves execution reached its terminal
+// success. Some successful Engine.Resume calls deliberately re-pause a review
+// dialogue and return nil; those are not provider-recovery evidence.
+func (r *Runner) resetRetryCircuitAfterSuccessfulExecution(ctx context.Context, runID string) {
+	resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer resetCancel()
+	runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, runID)
+	if loadErr != nil {
+		if r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s: retry circuit reset skipped, cannot read run metadata: %v", runID, loadErr)
+		}
+		return
+	}
+	if runMeta == nil || runMeta.Status != store.RunStatusFinished {
+		return
+	}
+	if key := retrycoord.Key(runMeta); key != "" {
+		if resetErr := retrycoord.RecordSuccess(resetCtx, r.cfg.Store, key, time.Now().UTC()); resetErr != nil && r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s: retry circuit reset failed: %v", runID, resetErr)
+		}
+	}
+}
+
 // loadWorkflow decodes the AST for a run and compiles it to IR. The IR
 // travels inline on RunMessage.IRCompiled for the vast majority of
 // workflows; when it exceeds the NATS max_payload the publisher offloads
@@ -1706,13 +2540,84 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 	}
 	file, err := ast.UnmarshalFile(raw)
 	if err != nil {
-		return nil, fmt.Errorf("runner: decode IR: %w", err)
+		return nil, fmt.Errorf("runner: %w: decode IR: %v", ErrIRUnloadable, err)
 	}
 	cr := ir.Compile(file)
 	if cr.HasErrors() {
-		return nil, fmt.Errorf("runner: compile IR: %d diagnostic(s)", len(cr.Diagnostics))
+		errs := compileErrors(cr.Diagnostics)
+		return nil, fmt.Errorf("runner: %w: compile IR: %d error(s): %s", ErrIRUnloadable, len(errs), summariseDiagnostics(errs))
 	}
 	return cr.Workflow, nil
+}
+
+// ErrIRUnloadable marks a RunMessage whose compiled IR this runner cannot
+// decode or compile — the shape a server ahead of the runner produces. It
+// is deterministic for this runner, so the delivery is acked, not naked:
+// redelivering it burns the delivery budget on the same verdict and parks
+// it on the DLQ with the diagnosis overwritten, which is how five runs died
+// mute on a five-release server/runner skew.
+var ErrIRUnloadable = errors.New("the IR does not load on this runner")
+
+// compileErrors keeps the diagnostics that blocked the load: the compiler
+// appends warnings and errors in compile order, so an unfiltered head of
+// the list can be three warnings while the error sits further down.
+func compileErrors(diags []ir.Diagnostic) []ir.Diagnostic {
+	errs := make([]ir.Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if d.Severity == ir.SeverityError {
+			errs = append(errs, d)
+		}
+	}
+	return errs
+}
+
+// summariseDiagnostics keeps the first few compiler messages for a verdict
+// an operator can read on the run, without the whole list.
+func summariseDiagnostics(diags []ir.Diagnostic) string {
+	parts := make([]string, 0, 3)
+	for i, d := range diags {
+		if i == 3 {
+			parts = append(parts, fmt.Sprintf("… (%d more)", len(diags)-3))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", d.Code, d.Message))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// failUnloadableIR writes the verdict a mute runner never wrote: the run
+// goes failed_resumable with a typed code — resumable, because a resume
+// after the fleet is aligned re-compiles the source on the server — and a
+// run_failed event carries the runner's version beside the workflow hash,
+// so the skew is readable from the run alone.
+func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, cause error) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	// UpdateRunOutcome, not FailRunResumable: the latter assigns the
+	// checkpoint it is handed, and a resume delivery that lands on a stale
+	// image carries a checkpoint worth every node already paid for — a nil
+	// there would erase the anchor the aligned fleet resumes from. The
+	// expected set keeps the cancelled-wins guard: a run the operator
+	// cancelled meanwhile is not flipped back.
+	if changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
+		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
+		store.RunnerVerdictFromStatuses()); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
+	} else if !changed {
+		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
+	}
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunFailed,
+		Data: map[string]any{
+			"code": string(store.FailureIRUnloadable), "error": cause.Error(),
+			"runner_version": appinfo.Version, "runner_commit": appinfo.Commit,
+			"workflow_hash": msg.WorkflowHash,
+			"hint":          "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_failed for the unloadable IR: %v", msg.RunID, err)
+	}
 }
 
 // applyBudgetOverrides folds launch-time budget overrides from the queue
@@ -1725,14 +2630,7 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 	if wf == nil || b == nil {
 		return nil
 	}
-	o := ir.BudgetOverrides{
-		MaxCostUSD:          b.MaxCostUSD,
-		MaxTokens:           b.MaxTokens,
-		MaxDuration:         b.MaxDuration,
-		MaxIterations:       b.MaxIterations,
-		MaxParallelBranches: b.MaxParallelBranches,
-		CapImposed:          b.CapImposed,
-	}
+	o := *runtime.BudgetOverridesFromWire(b)
 	if o.IsZero() {
 		return nil
 	}
@@ -1888,6 +2786,17 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
+		// The operator's run-level fallback chain, carried on the wire for
+		// the same reason as the pins above — and applied through the SAME
+		// ir.ApplyRunFallback screen a local launch passes, so a pod can
+		// never take a crossing the compiler would refuse.
+		RunFallback: runFallbackFromMsg(msg.Fallback),
+		// The same deployment default the engine resolves sandbox modes
+		// against — the fallback screen refuses codex stages on nodes
+		// that will run sandboxed, and sandboxed-or-not is this value's
+		// call for an inherit-everything node.
+		SandboxOverride: r.cfg.SandboxOverride,
+		SandboxDefault:  r.cfg.SandboxDefault,
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the
@@ -1957,4 +2866,35 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// runFallbackFromMsg folds the wire chain into the IR form the executor
+// applies. Names are stamped here (not on the wire) so every consumer
+// reports the stages under the recognisable launch-route label.
+func runFallbackFromMsg(entries queue.RunFallback) []ir.Fallback {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]ir.Fallback, 0, len(entries))
+	for _, f := range entries {
+		out = append(out, ir.Fallback{
+			Name:     ir.RunFallbackName,
+			Backend:  f.Backend,
+			Model:    f.Model,
+			Provider: f.Provider,
+		})
+	}
+	return out
+}
+
+// modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —
+// the one fold runview's launch entries and the publisher's launch/resume
+// entries also go through, so a cloud run resolves per-node models
+// exactly like a local launch with the same flags.
+func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
+	out := make([]model.OverrideEntry, len(entries))
+	for i, e := range entries {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
+	}
+	return model.OverridesFrom(out)
 }

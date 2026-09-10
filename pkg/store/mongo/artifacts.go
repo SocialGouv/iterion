@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -55,10 +56,10 @@ func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
 	_, _ = s.runs.UpdateOne(
 		ctx,
 		withTenantFilter(ctx, bson.M{"_id": a.RunID}),
-		bson.M{"$set": bson.M{
-			fmt.Sprintf("artifact_index.%s", a.NodeID): a.Version,
-			"updated_at": a.WrittenAt,
-		}},
+		versionRunUpdate(bson.M{
+			"$max": bson.M{fmt.Sprintf("artifact_index.%s", a.NodeID): a.Version},
+			"$set": bson.M{"updated_at": a.WrittenAt},
+		}),
 	)
 	return nil
 }
@@ -69,7 +70,7 @@ func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version 
 	body, err := s.blob.GetArtifact(ctx, runID, nodeID, version)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
-			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found", runID, nodeID, version)
+			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found: %w", runID, nodeID, version, os.ErrNotExist)
 		}
 		return nil, fmt.Errorf("store/mongo: blob get %s/%s/%d: %w", runID, nodeID, version, err)
 	}

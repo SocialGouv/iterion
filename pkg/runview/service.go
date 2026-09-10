@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -40,7 +41,11 @@ type LaunchSpec struct {
 	// retained for display and for the runner to recompile against
 	// the same logical workflow.
 	Source string
-	Vars   map[string]string // --var-style overrides
+	// ExecutionContext is an optional caller declaration for the versioned
+	// run-context contract. When omitted, the service resolves a legacy
+	// compatible context from the launch inputs and persists it on the run.
+	ExecutionContext *store.ExecutionContext `json:"execution_context,omitempty"`
+	Vars             map[string]string       // --var-style overrides
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
@@ -120,12 +125,17 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
-	// Fallback is the operator's single run-level fallback route (the
-	// studio Launch row / CLI --fallback). It applies to agent nodes
-	// that declare no `fallbacks:` of their own, and never to judges —
+	// RoutingPolicy is the launch-frozen outcome contract (validated
+	// and hashed by the HTTP layer); persisted on the run doc and
+	// replayed from it on resume.
+	RoutingPolicy *store.RoutingPolicy
+	// Fallback is the operator's ordered run-level fallback chain (the
+	// studio Launch row; a single CLI --fallback becomes a one-stage chain).
+	// It applies to agent nodes that declare no `fallbacks:` of their own,
+	// and never to judges —
 	// a weaker judge still emits a well-formed verdict, so a blanket
-	// launch setting must not reach one. Nil = none. See ADR-087.
-	Fallback *FallbackEntry
+	// launch setting must not reach one. Empty = none. See ADR-087.
+	Fallback []FallbackEntry
 	// Budget carries launch-time budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP equivalent of the CLI --max-cost-usd /
 	// --max-tokens / --max-duration / --max-iterations /
@@ -144,9 +154,13 @@ type LaunchSpec struct {
 	// RunMessage so the runner pod that picks up the work knows it's
 	// part of a sharded set.
 	ParentRunID string
-	ShardIndex  int
-	ShardCount  int
-	ShardLabel  string
+	// ParentNodeID identifies the parent subbot node for nested launches.
+	// Shard children leave it empty; runtime still persists the legacy
+	// ParentNodeID field when the direct engine supplies it.
+	ParentNodeID string
+	ShardIndex   int
+	ShardCount   int
+	ShardLabel   string
 	// CallbackURL, when set, is an http/https endpoint the engine POSTs
 	// a run-completion webhook to when the run terminates (see
 	// pkg/notify). Lets a programmatic caller (chat adapter, CI bridge)
@@ -174,18 +188,22 @@ type LaunchSpec struct {
 	// The cloud publisher uses it to resolve bot-secret bindings during
 	// credential sealing. Empty for plain .bot launches.
 	BotID string
-	// BundleDir, when set, is the launch-materialized directory of a STORED
-	// bot bundle (a team-authored bot or a platform override): compile merges
+	// BundleDir, when set, is the launch-materialized directory of a resolved
+	// cloud bundle (catalog, team bot or platform override): compile merges
 	// its prompts/ into the AST exactly like a baked bundle's, so they
 	// participate in IR validation and the workflow hash. Server-owned temp
 	// dir, cleaned up by the launch surface after Launch returns; never
 	// persisted.
 	BundleDir string
-	// BotBundle is the stored-bundle ref the cloud publisher stamps on the
-	// queue message so the runner rebuilds the SAME bundle from the store
-	// (skills/, devbox.json, attachments) instead of attaching the stale
-	// baked one. Nil for baked catalog bots and plain .bot launches.
+	// BotBundle carries the immutable collection and its origin to the cloud
+	// publisher. Nil for loose/inline launches that bypass bundle resolution.
 	BotBundle *BotBundleRef
+	// BotSourceTier names which tier served this launch (store.BotSourceTier*):
+	// team, platform or baked. Persisted on the run so a launch says which
+	// bundle it ran — BotBundle answers it only for the two STORED tiers, and
+	// a baked resolution is otherwise indistinguishable from no resolution at
+	// all. Empty for loose/inline launches.
+	BotSourceTier string
 	// KeyOverrides pins a specific BYOK key per LLM provider for this run
 	// (provider name → api_key id), overriding the org/user default in
 	// secrets.Resolve. Set by webhook launches that carry per-webhook key
@@ -264,62 +282,47 @@ type ModelOverrideEntry struct {
 	Effort string `json:"effort,omitempty"`
 }
 
-// FallbackEntry is the wire form of the operator's run-level fallback
-// route. A single route rather than a per-node chain: the value is
-// "don't lose a long run to a forfait wall", which one alternative
-// delivers, and a per-node ordered list is unusable on a real bot.
+// FallbackEntry is one stage of the operator's ordered run-level
+// fallback chain.
 type FallbackEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
 }
 
-// toRunFallback folds the launch entry into an IR route. A nil or
-// targetless entry yields the zero value, which ApplyRunFallback treats
-// as "no run-level route".
-func toRunFallback(e *FallbackEntry) ir.Fallback {
-	if e == nil {
-		return ir.Fallback{}
+// toRunFallback folds launch entries into the IR chain. Targetless
+// entries stay in place so ApplyRunFallback can preserve stage indexes
+// while screening every stage independently.
+func toRunFallback(entries []FallbackEntry) []ir.Fallback {
+	if len(entries) == 0 {
+		return nil
 	}
-	return ir.Fallback{
-		Name:     ir.RunFallbackName,
-		Backend:  e.Backend,
-		Model:    e.Model,
-		Provider: e.Provider,
+	out := make([]ir.Fallback, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, ir.Fallback{
+			Name:     ir.RunFallbackName,
+			Backend:  e.Backend,
+			Model:    e.Model,
+			Provider: e.Provider,
+		})
 	}
+	return out
 }
 
-// toModelOverrides folds the launch entries into the engine's ModelOverrides.
+// toModelOverrides folds the launch entries into the engine's ModelOverrides
+// through model.OverridesFrom — the one fold every launch surface shares.
 func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 	return ModelOverridesFromRun(RunModelOverrides(entries))
 }
 
-// ModelOverridesFromRun folds the persisted override rows into the engine's
-// live ModelOverrides. It is the SINGLE fold both launch paths go through: the
-// in-process one via toModelOverrides, and the cloud one in the runner pod,
-// which receives the same rows over the queue. Keeping one implementation is
-// what makes "the model the run record shows" and "the model the pod runs"
-// the same statement.
-//
-// An empty field inherits — a row carrying only Model leaves the matched
-// nodes' backend alone.
+// ModelOverridesFromRun adapts persisted pins through the same fold used by
+// launch and cloud execution, including the operator's reasoning effort.
 func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range rows {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
-		if e.Effort != "" {
-			o.SetEffort(e.Selector, e.Effort)
-		}
+	out := make([]model.OverrideEntry, len(rows))
+	for i, e := range rows {
+		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
-	return o
+	return model.OverridesFrom(out)
 }
 
 // RunModelOverrides converts the launch entries into the persisted
@@ -344,7 +347,8 @@ func RunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride {
 	return out
 }
 
-// BotBundleRef identifies a STORED bot bundle (pkg/botsource row) by its
+// BotBundleRef freezes a cloud bundle collection and identifies a stored
+// origin, when present, by its
 // tenant scope — a team id, or botsource.PlatformTenantID for a
 // deployment-wide override — plus slug and the row version resolved at
 // launch. The runner fetches the row, VERIFIES the version still matches
@@ -355,6 +359,10 @@ type BotBundleRef struct {
 	TenantID string `json:"tenant_id"`
 	Slug     string `json:"slug"`
 	Version  int    `json:"version"`
+	// Snapshot carries the immutable launch-resolved collection (including
+	// sibling subbots). The publisher may offload it; the digest binds bytes.
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	SnapshotDigest string          `json:"snapshot_digest,omitempty"`
 }
 
 // ResumeSpec describes a resume request.
@@ -386,6 +394,25 @@ type ResumeSpec struct {
 	// Supervisors re-states the run-level supervisors kill switch
 	// ("", "on", "off"), for the same reason AutoMemory does.
 	Supervisors string
+	// Automatic marks a machine-initiated resume — the retry sweeper, or any
+	// caller resuming without an operator's request: the resume gate then
+	// applies CanAutoResume() instead of CanOperatorResume(). CanAutoResume
+	// excludes cancelled (an operator's cancel is a decision automation never
+	// overrides), so a cancel landing between a sweeper's claim and its
+	// publish is refused instead of being flipped back to queued by the CAS —
+	// which clears run.Error, the only PR-closed marker the runner admission
+	// reads. Operator surfaces (HTTP resume, WS answers, chat commands,
+	// studio, MCP) leave this false.
+	Automatic bool
+
+	// Budget re-states the operator's cap ask FOR THIS RESUME. Non-nil
+	// overrides the launch-time budget persisted on the run doc (which
+	// is otherwise the replay source) — the "raise the cap + resume"
+	// recovery. Persisted to the run doc so a subsequent auto-retry
+	// keeps the raised cap instead of silently reverting to the launch
+	// ask that already killed the run. Nil = inherit the doc's replay
+	// source (today's behaviour).
+	Budget *ir.BudgetOverrides
 }
 
 // RunSummary is the lightweight per-row shape returned by List.
@@ -417,6 +444,13 @@ type RunSummary struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	// FailureCode is Error's machine-readable classification (ADR-095);
+	// empty = unknown/legacy.
+	FailureCode store.FailureCode `json:"failure_code,omitempty"`
+	// EndReason is the typed WHY the run ended, of which Error is the
+	// human sentence — what tells "cancelled because its pull request
+	// closed" from an operator's click. Empty = unknown/legacy.
+	EndReason store.RunEndReason `json:"end_reason,omitempty"`
 	// Active reports whether the run is currently held by this
 	// process's manager. A run with status "running" but Active=false
 	// belongs to another process or to a previous boot — Cancel won't
@@ -565,6 +599,10 @@ type Service struct {
 	// Resume reuses the same dispatcher rather than allocating a new
 	// recipes map + closure on the per-run hot path.
 	recoveryDispatch runtime.RecoveryDispatch
+	// executionContextPolicy is the service default for newly resolved
+	// contexts. Legacy is deliberately the default; operators can opt into
+	// report or enforce during the rollout.
+	executionContextPolicy store.ContextPolicy
 
 	// extraObservers are runtime EventObservers chained alongside
 	// the broker fan-out. Used to attach Prometheus / OTLP / custom
@@ -606,6 +644,13 @@ type Service struct {
 	// reconcileStopOnce so double-teardown is safe.
 	reconcileStop     chan struct{}
 	reconcileStopOnce sync.Once
+	// reconcileCancel interrupts the scan that goroutine may be running
+	// right now; reconcileDone is closed when it has returned. Signalling
+	// reconcileStop alone only stops the NEXT tick — the scan already in
+	// flight keeps flipping run statuses into a store the caller believes
+	// it has finished with. stopPeriodicReconcile cancels, then awaits.
+	reconcileCancel context.CancelFunc
+	reconcileDone   chan struct{}
 
 	// publisher, when non-nil, intercepts Launch/Resume/Cancel and
 	// routes them through the cloud queue. When nil the service runs
@@ -699,6 +744,16 @@ type Service struct {
 	pipelineReservedInvalidate func()
 }
 
+// WatcherProgressStore exposes the service's run store to the optional
+// supervisor cursor. The coordinator uses a capability assertion, so this
+// does not widen the Observer/Injector contracts used by other callers.
+func (s *Service) WatcherProgressStore() store.RunStore {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 // ServiceOption configures a Service at construction time.
 type ServiceOption func(*Service)
 
@@ -712,6 +767,18 @@ type ServiceOption func(*Service)
 func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
+	}
+}
+
+// WithExecutionContextPolicy selects the policy stamped on contexts that do
+// not provide an explicit policy. It is intentionally opt-in so upgrading a
+// server does not reject legacy launch callers unexpectedly.
+func WithExecutionContextPolicy(policy store.ContextPolicy) ServiceOption {
+	return func(s *Service) {
+		switch policy {
+		case store.ContextPolicyLegacy, store.ContextPolicyReport, store.ContextPolicyEnforce:
+			s.executionContextPolicy = policy
+		}
 	}
 }
 
@@ -902,14 +969,15 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	logger := iterlog.NewFromEnv(os.Stderr)
 
 	s := &Service{
-		storeDir:         storeDir,
-		logger:           logger,
-		broker:           NewEventBroker(),
-		manager:          NewManager(),
-		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
-		runLogs:          make(map[string]*RunLogBuffer),
-		runEngines:       make(map[string]*runtime.Engine),
-		runSteer:         make(map[string]chan *runtime.OverrideMsg),
+		storeDir:               storeDir,
+		logger:                 logger,
+		broker:                 NewEventBroker(),
+		manager:                NewManager(),
+		recoveryDispatch:       recovery.Dispatch(recovery.DefaultRecipes()),
+		executionContextPolicy: ExecutionContextPolicyFromEnv(),
+		runLogs:                make(map[string]*RunLogBuffer),
+		runEngines:             make(map[string]*runtime.Engine),
+		runSteer:               make(map[string]chan *runtime.OverrideMsg),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -1019,9 +1087,9 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 			notify.WithSigningSecret(secret))
 	}
 
-	s.reconcileOrphans()
+	s.reconcileOrphans(context.Background())
 	s.reconcileSandboxContainers()
-	s.reconcileSandboxK8sResources()
+	s.reconcileSandboxK8sResources(context.Background())
 	s.startPeriodicReconcile()
 	// Recover any pipelines left waiting in the queue by a previous
 	// process lifetime (persisted as queued docs), then start the
@@ -1066,11 +1134,30 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		})
 	}))
 
-	runLookup := func(id string) (string, bool) {
+	// Alert callbacks run outside request contexts. Bootstrap the identity
+	// from the exact run already observed by this internal manager, then
+	// restore its tenant for descendant reads and the persisted health event.
+	loadAlertRun := func(ctx context.Context, id string) (*store.Run, context.Context, error) {
 		if s.store == nil {
-			return "", false
+			return nil, ctx, fmt.Errorf("alert store unavailable")
 		}
-		r, err := s.store.LoadRun(context.Background(), id)
+		systemCtx := store.WithoutTenantFilter(ctx)
+		r, err := s.store.LoadRun(systemCtx, id)
+		if err != nil {
+			return nil, ctx, fmt.Errorf("load alert run %s: %w", id, err)
+		}
+		if r == nil {
+			return nil, ctx, fmt.Errorf("alert run %s is missing", id)
+		}
+		if r.TenantID == "" {
+			ctx = systemCtx // local/legacy runs have no tenant identity
+		}
+		return r, store.WithIdentity(ctx, r.TenantID, r.OwnerID), nil
+	}
+	runLookup := func(id string) (string, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		r, _, err := loadAlertRun(ctx, id)
 		if err != nil || r == nil {
 			return "", false
 		}
@@ -1083,6 +1170,13 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
+		alert.WithHumanWaitLookup(func(ctx context.Context, id string, now time.Time) bool {
+			_, ctx, err := loadAlertRun(ctx, id)
+			if err != nil {
+				return false
+			}
+			return store.HasBlockingHumanWait(ctx, s.store, id, now)
+		}),
 		alert.WithBaseURL(set.BaseURL),
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
@@ -1096,6 +1190,13 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			_, ctx, err := loadAlertRun(ctx, a.RunID)
+			if err != nil {
+				if s.logger != nil {
+					s.logger.Warn("alert: recover run identity for %s: %v", a.RunID, err)
+				}
+				return
+			}
 			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
 				Type:      store.EventRunHealth,
 				RunID:     a.RunID,

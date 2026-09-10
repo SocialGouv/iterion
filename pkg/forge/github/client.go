@@ -7,6 +7,8 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -70,6 +72,67 @@ func statusErr(op string, code int) error {
 	return forge.StatusErr("github", op, code)
 }
 
+// doErr is do that also hands back a non-2xx body, for the calls whose
+// refusal has to name its cause.
+func (c *AdminClient) doErr(ctx context.Context, method, path string, body any, out any) (int, []byte, error) {
+	return c.http().DoErrBody(ctx, method, path, body, out)
+}
+
+// refusal maps a non-2xx answer onto an error. A 403 whose body is GitHub's
+// "Resource not accessible by integration" (an installation token) or "… by
+// personal access token" (a fine-grained PAT) is a credential short of a
+// permission, not a forge outage: it becomes a *forge.PermissionError naming
+// need — the grants GitHub gates the endpoint on, per its published
+// per-endpoint permission data — and the step that fits the credential kind
+// the body names. Any other 403 keeps its ErrForbidden identity with GitHub's
+// message attached; every other status maps as statusErr does.
+//
+// A 404 carries need too. GitHub answers 404, not 403, for a resource the
+// credential is not allowed to see (it will not confirm a private object
+// exists), so absence and a withheld grant look identical on the wire: the
+// typed 404 names both possibilities instead of asserting either.
+func refusal(op string, code int, errBody []byte, need ...string) error {
+	if code != http.StatusForbidden {
+		return forge.StatusErrNeeding("github", op, code, need)
+	}
+	msg := githubErrorMessage(errBody)
+	grants := strings.Join(need, ", ")
+	switch {
+	case strings.Contains(msg, "not accessible by integration"):
+		return &forge.PermissionError{
+			Provider: forge.ProviderGitHub, Op: op, Missing: need,
+			Remedy: "approve " + grants + " on the GitHub App installation — an org owner reviews the App's pending " +
+				"permission request; an App that does not request it yet adds it under its Permissions & events settings first",
+			Cause: fmt.Errorf("%w: %s", forge.ErrForbidden, msg),
+		}
+	case strings.Contains(msg, "not accessible by personal access token"):
+		return &forge.PermissionError{
+			Provider: forge.ProviderGitHub, Op: op, Missing: need,
+			Remedy: "grant the fine-grained token " + grants + " on this repository",
+			Cause:  fmt.Errorf("%w: %s", forge.ErrForbidden, msg),
+		}
+	case msg != "":
+		return fmt.Errorf("%w: github: %s: %s", forge.ErrForbidden, op, msg)
+	default:
+		return statusErr(op, code)
+	}
+}
+
+// githubErrorMessage extracts the `message` of a GitHub error body; empty
+// when the body is empty or not GitHub's shape.
+func githubErrorMessage(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var e struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
 func (c *AdminClient) WhoAmI(ctx context.Context) (forge.Identity, error) {
 	return c.http().FetchWhoAmI(ctx, "/user")
 }
@@ -104,6 +167,19 @@ func (c *AdminClient) CollaboratorPermission(ctx context.Context, repo, user str
 		return resp.Permission, nil
 	}
 	return "none", nil
+}
+
+// CollaboratorPermission on an App connection delegates to a management-token
+// AdminClient minted on demand — the webhook command gates read a commenter's
+// role through the connection covering the repo, and the studio's connect
+// wizard creates App connections by default, so a capability implemented only
+// on *AdminClient would be invisible to that path.
+func (a *AppClient) CollaboratorPermission(ctx context.Context, repo, user string) (string, error) {
+	rest, err := a.rest(ctx)
+	if err != nil {
+		return "", err
+	}
+	return rest.CollaboratorPermission(ctx, repo, user)
 }
 
 // OrgMembershipRole reports the caller's role ("admin" | "member") in org and

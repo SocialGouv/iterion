@@ -235,22 +235,19 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	}
 
 	if task.Sandbox != nil {
-		// The permission gate does NOT survive the sandbox IPC boundary:
-		// delegate.IOTask carries no Permission field, so the
-		// in-container `iterion __claw-runner` rebuilds a task whose
-		// policy is disabled and runs bash / file_edit / write_file
-		// ungated. Refusing is the only honest option — pi already
-		// treats the same combination as fail-not-degrade rather than
-		// running a gated node with an inert gate, and a boundary the
-		// author declared must not silently not exist.
-		//
-		// This is a pre-existing hole (sandbox is on by default), not
-		// one the fallback chain introduced; the chain merely adds
-		// another way to reach it. Closing it properly means carrying
-		// the policy on IOTask — a named follow-on.
-		if task.Permission.Enabled() {
+		// The permission gate crosses the sandbox IPC boundary as a
+		// pre-task permission_policy envelope: the in-container
+		// `iterion __claw-runner` rebuilds the policy through the same
+		// parser and enforces it in its own tool loop (see
+		// executeViaSandboxRunner). What CANNOT cross is an Ask
+		// decision — the runner has no seam to pause the parent run for
+		// a human — so a policy that can ever produce one (mode ask, or
+		// any explicit ask rule, which outranks mode deny) is refused
+		// loudly rather than silently degraded to deny; pi treats the
+		// same combination as fail-not-degrade.
+		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares permission: %s but runs sandboxed, where the gate cannot be enforced (the IPC task carries no policy) — run this node unsandboxed, or route it to claude_code/pi",
+				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run this node unsandboxed, or route it to claude_code",
 				task.NodeID, task.Permission.Mode)
 		}
 		return b.executeViaSandboxRunner(ctx, task)
@@ -539,10 +536,31 @@ func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (d
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return delegate.Result{}, ctx.Err()
+			// The retry never happens, so the attempt waiting in `result` is
+			// the last one and what it burned is the node's final bill.
+			// Zeroing it here dropped exactly the spend the loop had just
+			// finished metering (the cancel-during-backoff case the engine
+			// books at its own frame).
+			return result, ctx.Err()
 		}
 
+		prev := result
 		result, err = fn()
+		// The attempt that just failed was BILLED — that is what the
+		// metered-failure results above are for — and overwriting it here
+		// dropped exactly the figure this loop's own cancel arm goes to the
+		// trouble of keeping. The shape that loses the most is the common
+		// one: a tool loop that ran to its step limit and then hit a 429,
+		// retried into an instant auth failure that billed nothing, reporting
+		// the free attempt as the node's whole bill.
+		//
+		// SUMMED, never folded at a MAX: claw opens a fresh conversation per
+		// attempt (it never reads SessionID — it replays from the run's own
+		// store), so no attempt's figure contains another's, and
+		// cost.Annotate prices each from its own tokens. `false` states that
+		// invariant at the call site rather than inferring it. The frame
+		// above applies the same rule (retryDelegateLoop).
+		result = foldSpend(prev, result, false)
 	}
 	return result, err
 }
@@ -590,6 +608,53 @@ func askUserResult(err error) (delegate.Result, bool) {
 	}, true
 }
 
+// meteredFailure renders what an ABANDONED generation already burned, in the
+// shape the engine books from (`_tokens` / `_cost_usd` on the output map).
+//
+// claw is an in-process client, not a CLI: nothing outside this package sees
+// its usage unless a delegate.Result carries it. GenerateTextDirect
+// deliberately returns a partial TextResult beside its error — every step
+// before the failing one was a real, billed request — and returning a bare
+// delegate.Result{} threw that away, so a tool loop that died on its
+// twentieth step reported the same zero as one that never reached the
+// provider. The engine books a failed node's spend from this map, so an
+// empty one is silently free work.
+//
+// Zero usage yields the zero Result: an empty output map with a `_tokens: 0`
+// stamp would read as an output rather than as a bill, and the engine's own
+// guard already skips a spendless failure.
+func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		return delegate.Result{}
+	}
+	output := map[string]any{}
+	tokens := cost.Annotate(output, task.Model, usage.InputTokens, usage.OutputTokens)
+	return delegate.Result{
+		Output:         output,
+		Tokens:         tokens,
+		BackendName:    delegate.BackendClaw,
+		ThinkingTokens: usage.ReasoningTokens,
+		ThinkingMs:     usage.ThinkingMs,
+	}
+}
+
+// partialUsage reads the usage off a best-effort partial result, tolerating
+// the nil an early failure returns.
+func partialUsage(r *TextResult) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.TotalUsage
+}
+
+// objectUsage is partialUsage for a structured generation.
+func objectUsage[T any](r *ObjectResult[T]) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.TotalUsage
+}
+
 func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	// Set the explicit schema for structured output.
 	genOpts := opts
@@ -600,7 +665,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: structured generation: %w", err)
+		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 
 	output := result.Object
@@ -633,7 +698,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
+		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
 	output := map[string]any{"text": result.Text}
@@ -730,7 +795,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation: %w", err)
+		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
 	}
 
 	// A tool-equipped reviewer/judge that ended the loop WITHOUT calling a
@@ -777,7 +842,12 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				return r, nil
 			}
 			if isRetryable(reErr) {
-				return delegate.Result{}, fmt.Errorf("claw backend: nudge re-run: %w", reErr)
+				// The tool loop AND the nudge were both billed before this
+				// gave up; the outer retryLoop re-issues the whole turn, and
+				// if that one fails too this is the figure the node reports.
+				abandoned := result.TotalUsage
+				accumulateUsage(&abandoned, partialUsage(reRun))
+				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
 		}
 	}
@@ -844,22 +914,37 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}, nil
 	}
 
+	// BOTH exits below are past the recovery pass, and both owe its bill: it
+	// is a separate, fully-billed provider call, and its usage reaches here
+	// only because GenerateObjectDirect hands back a partial beside its error
+	// (a bare nil made a billed call indistinguishable from one that never
+	// left the process). The success path above sums the two for the same
+	// reason. ONE figure for both exits — deriving it twice is how the
+	// text-bearing one came to be priced from the tool loop alone.
+	billed := result.TotalUsage
+	if obj != nil {
+		accumulateUsage(&billed, obj.TotalUsage)
+	}
+
 	// Last-ditch: surface whatever text we got as a parse-fallback so
 	// the runtime's existing structured-output retry path can decide
 	// what to do. The error from the recovery pass is logged for
 	// post-mortem.
 	if text == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
+		// The most expensive failure claw has: a whole agentic tool loop ran
+		// (possibly to MaxSteps) and the schema-forced recovery pass ran on
+		// top of it, and the node has nothing to show for either.
+		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := cost.Annotate(output, task.Model, billed.InputTokens, billed.OutputTokens)
 	return delegate.Result{
 		Output:         output,
 		Tokens:         tokens,
 		BackendName:    delegate.BackendClaw,
 		ParseFallback:  true,
-		ThinkingTokens: result.TotalUsage.ReasoningTokens,
-		ThinkingMs:     result.TotalUsage.ThinkingMs,
+		ThinkingTokens: billed.ReasoningTokens,
+		ThinkingMs:     billed.ThinkingMs,
 	}, nil
 }
 
@@ -916,7 +1001,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv := forwardableProviderEnv(ctx)
+	runnerEnv, err := forwardableProviderEnv(ctx, task.Model)
+	if err != nil {
+		return delegate.Result{}, err
+	}
 	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
 		KeepStdinOpen: true,
 		Env:           runnerEnv,
@@ -955,6 +1043,25 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 				_ = cmd.Wait()
 				return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
 			}
+		}
+	}
+
+	// A gated node ships its policy BEFORE the task envelope. The
+	// position is the fail-closed guarantee on a mixed-version fleet: a
+	// runner binary too old to know the type fatals on "unexpected
+	// envelope before task" instead of executing the node with an empty
+	// policy. Execute() already refused any policy that can Ask.
+	if task.Permission.Enabled() {
+		permEnv, err := delegate.NewPermissionPolicyEnvelope(task.Permission.Config())
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: build permission_policy envelope: %w", err)
+		}
+		if err := mux.Send(permEnv); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send permission_policy: %w", err)
 		}
 	}
 
@@ -1031,11 +1138,21 @@ var providerCredentialEnvVars = []string{
 	"ANTHROPIC_API_KEY",
 	// z.ai (GLM) drives claw's Anthropic provider through an
 	// Anthropic-compatible endpoint, so a sandboxed claw reviewer (e.g.
-	// anthropic/glm-5.2 — the forfait-friendly reviewer model, since claw
-	// can't use the Claude Code OAuth forfait) needs the z.ai creds inside
-	// the container. registry.go synthesises the bearer + ZAIDefaultBaseURL
-	// from ZAI_API_KEY when no other anthropic auth is present;
+	// anthropic/glm-5.2) needs the z.ai creds inside the container.
+	// registry.go synthesises the bearer + ZAIDefaultBaseURL from
+	// ZAI_API_KEY when no other anthropic auth is present;
 	// ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL cover the explicit BYOK path.
+	//
+	// claw CAN use a Claude Code OAuth forfait — its anthropic provider takes
+	// the token as an OAuth bearer, and registry.go feeds it one from the env
+	// (desktop) or from the run's materialised OAuthDir (pod). What is missing
+	// is a channel to carry it ACROSS this boundary: the in-container
+	// __claw-runner rebuilds its registry from env alone, and this list is the
+	// only credential channel, so a sandboxed claw anthropic node still falls
+	// back to the ambient ANTHROPIC_API_KEY. Tracked as the sandbox seam of
+	// the forfait work; seeding an in-container CLAUDE_CONFIG_DIR from the
+	// existing ClaudeCodeSandboxConfigDir mount (mirroring CODEX_HOME) is the
+	// shape that closes it.
 	"ZAI_API_KEY",
 	// xai's provider reads XAI_API_KEY from env, so this is the only
 	// channel into the container — and the pool can grant a donated xai
@@ -1102,7 +1219,7 @@ var byokEnvVar = map[secrets.Provider]string{
 // entirely while its donor's lease has already been taken. The failure is
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
-func forwardableProviderEnv(ctx context.Context) map[string]string {
+func forwardableProviderEnv(ctx context.Context, model string) (map[string]string, error) {
 	env := map[string]string{}
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
@@ -1110,20 +1227,20 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 		}
 	}
 	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved
-	// codex-cli version instead. The in-container runner cannot probe
-	// `codex --version` itself (the sandbox image ships no codex binary),
-	// so without a value crossing the boundary it falls back to claw's
-	// baked-in version string — which the ChatGPT-forfait backend refuses
-	// for newer models ("gpt-5.6-sol requires a newer version of Codex")
-	// even though the host's codex install is current.
+	// codex-cli version as a PROBE (ITERION_CODEX_HOST_VERSION), not as the
+	// decision. The in-container runner cannot probe `codex --version`
+	// itself (the sandbox image ships no codex binary); it keeps the newer
+	// of this probe and its own baked release, so neither a stale host
+	// binary nor a stale image can pin the ChatGPT-forfait identity below
+	// what either side would present alone.
 	if env["ITERION_CODEX_VERSION"] == "" {
 		if v := hostCodexVersion(); v != "" {
-			env["ITERION_CODEX_VERSION"] = v
+			env[codexHostVersionEnv] = v
 		}
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
-		return env
+		return env, nil
 	}
 	for provider, key := range creds.APIKeys {
 		if key == "" {
@@ -1155,7 +1272,74 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 			env["ITERION_OPENAI_USE_OAUTH"] = "1"
 		}
 	}
-	return env
+	// The Anthropic twin (#736), and only for a node the forfait can actually
+	// serve. A z.ai/GLM model rides claw's ANTHROPIC provider too — it arrives
+	// as "anthropic/glm-X" and registry.go SYNTHESISES z.ai's base URL from a
+	// bare ZAI_API_KEY — so the wire check below cannot see it: there is no
+	// ANTHROPIC_BASE_URL to inspect. Clearing ZAI_API_KEY for such a node would
+	// remove its only credential channel and leave the forfait bearer asking
+	// api.anthropic.com for a GLM model it cannot serve, breaking exactly the
+	// forfait-carrying tenants this change is for.
+	if !modelServedByZAI(model) {
+		if err := applyForfaitAcrossSandbox(env, creds); err != nil {
+			return nil, err
+		}
+	}
+	return env, nil
+}
+
+// modelServedByZAI reports whether a model pinned on claw's anthropic provider
+// is actually served by z.ai's Anthropic-compatible endpoint. Same predicate
+// anthropicCapabilities uses to split the two families apart.
+func modelServedByZAI(model string) bool {
+	return strings.Contains(strings.ToLower(model), "glm")
+}
+
+// applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
+// the model gate above reads as one line.
+func applyForfaitAcrossSandbox(env map[string]string, creds secrets.Credentials) error {
+	// A resolved Claude Code forfait is mounted by
+	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
+	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
+	// populated for a claw node too. Pointing CLAUDE_CONFIG_DIR at it is what
+	// lets the in-container registry find it: its desktop path reads exactly
+	// that variable.
+	//
+	// Clearing the ambient anthropic-wire vars is not a detail, it is the fix.
+	// The registry reads the disk forfait only when no env credential precedes
+	// it, and the ambient ANTHROPIC_API_KEY forwarded above is the POD's — the
+	// platform's — a machine default rather than a credential resolved FOR THIS
+	// RUN, which is the distinction this function exists to enforce. Left in
+	// place, a forfait-only tenant's sandboxed node authenticates and bills
+	// against the platform account, and does so invisibly, because the ambient
+	// key works.
+	//
+	// Two limits, both deliberate: a BYOK anthropic or z.ai key is the tenant's
+	// own explicit instrument and keeps precedence (otherwise the same run
+	// would spend a different one depending on whether it happened to be
+	// sandboxed); and a redirected wire is a destination the operator chose, so
+	// a bearer carrying the whole Claude account does not travel there.
+	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
+		creds.APIKeys[secrets.ProviderAnthropic] == "" &&
+		creds.APIKeys[secrets.ProviderZAI] == "" &&
+		secrets.AnthropicForfaitWireOK(os.Getenv("ANTHROPIC_BASE_URL")) {
+		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
+		// Validate BEFORE clearing. Once the shadows are gone the forfait is
+		// the node's ONLY credential in the container, and the in-container
+		// resolver is the env factory, which swallows expiry — it returns ""
+		// and builds a client with no credential at all, i.e. #687's opaque
+		// 401 loop with nothing naming the forfait. The in-process twin
+		// (anthropicFromCtxForfait) already refuses rather than degrade there;
+		// this seam must decide the same way, or the two disagree again.
+		if _, terr := secrets.AnthropicForfaitToken(dir); terr != nil {
+			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
+		}
+		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+			delete(env, shadow)
+		}
+	}
+	return nil
 }
 
 // canonicalMCPToolName maps an MCP tool name the model emitted in the
@@ -1225,6 +1409,25 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// Best-effort mirror — failures keep the host store one
 			// snapshot behind but the next capture will reconcile.
 			_ = hostStore.SaveSnapshot(hostRunID, task.NodeID, snapshot)
+		},
+		OnEvent: func(eventType string, payload map[string]any) {
+			// What the in-container loop observed — its LLM steps, the
+			// tools it ran, its retries and compactions, its per-turn
+			// anchors — re-fired through THIS process's hooks so a
+			// sandboxed claw node is persisted, priced, metered and
+			// forkable like an in-process one — see sandbox_relay.go.
+			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
+			if b.logger == nil {
+				return
+			}
+			switch {
+			case err != nil:
+				b.logger.Warn("[%s#%d/claw] the sandbox runner relayed a %s event this host cannot decode — the node's per-step metering is incomplete: %v",
+					task.NodeID, task.Iteration, eventType, err)
+			case !handled:
+				b.logger.Debug("[%s#%d/claw] the sandbox runner relayed a %s event this host does not consume",
+					task.NodeID, task.Iteration, eventType)
+			}
 		},
 	}
 }

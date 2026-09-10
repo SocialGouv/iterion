@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // runEvents is the run-scoped reliable event registry backing the emit/wait
@@ -30,6 +31,54 @@ func newRunEvents() *runEvents {
 		fired:   make(map[string]map[string]any),
 		waiters: make(map[string]chan struct{}),
 	}
+}
+
+// snapshot returns a deep copy of the sticky fired-event set for checkpoint
+// persistence. Waiter channels are process-local and reconstructed as closed
+// channels for these event names on restore.
+func (re *runEvents) snapshot() map[string]map[string]any {
+	if re == nil {
+		return nil
+	}
+	re.mu.Lock()
+	defer re.mu.Unlock()
+	if len(re.fired) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(re.fired))
+	for name, payload := range re.fired {
+		out[name] = clonePayload(payload)
+	}
+	return out
+}
+
+// restore replaces the registry with a checkpoint's sticky fired-event set.
+// A fresh resume has no live waiters yet, so rebuilding one already-closed
+// channel per fired name preserves emit-before-wait delivery exactly.
+func (re *runEvents) restore(fired map[string]map[string]any) {
+	if re == nil {
+		return
+	}
+	re.mu.Lock()
+	defer re.mu.Unlock()
+	re.fired = make(map[string]map[string]any, len(fired))
+	re.waiters = make(map[string]chan struct{}, len(fired))
+	for name, payload := range fired {
+		re.fired[name] = clonePayload(payload)
+		ch := make(chan struct{})
+		close(ch)
+		re.waiters[name] = ch
+	}
+}
+
+func restoreRunEvents(rs *runState, cp *store.Checkpoint) {
+	if rs == nil || cp == nil {
+		return
+	}
+	if rs.events == nil {
+		rs.events = newRunEvents()
+	}
+	rs.events.restore(cp.FiredEvents)
 }
 
 // chanLocked returns the (lazily-created) signal channel for an event. Caller

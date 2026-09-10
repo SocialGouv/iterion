@@ -6,7 +6,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -30,6 +29,7 @@ func compileSource(t *testing.T, name, src string) *ir.Workflow {
 // the persisted artifact / downstream refs. The ladder itself is unit-tested
 // in pkg/backend/model; this pins the engine glue with the stub executor.
 func TestVerifiedActionEngineEmitsAndStrips(t *testing.T) {
+	t.Parallel()
 	src := `tool commit_changes:
   command: "echo wip"
   postcondition: "git rev-parse HEAD"
@@ -58,7 +58,7 @@ workflow w:
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "e2e-va", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

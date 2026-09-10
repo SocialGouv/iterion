@@ -38,6 +38,35 @@ func (p *parser) pos(t Token) ast.Pos {
 }
 
 func (p *parser) addError(code DiagCode, t Token, msg string) {
+	p.addErrorHint(code, t, msg, "")
+}
+
+// addErrorHint records a diagnostic with a site-specific fix line; an empty
+// hint falls back to the code's catalogued one.
+//
+// A diagnostic attributed to a lexer ERROR token is the lexer's diagnosis,
+// whatever the parser wanted at that position: the cause is the character
+// the lexer refused (a tab, an unclosed quote, a bad escape), and only the
+// lexer's message names it. This is the one place every parse site goes
+// through, so no site can report "expected X, got Error" or read the
+// diagnosis as a property name.
+func (p *parser) addErrorHint(code DiagCode, t Token, msg, hint string) {
+	if t.Type == TokenError {
+		// Unconditional — a lexer diagnosis may share a parser code (the
+		// block-scalar opener is E002), and lexerError passes exactly
+		// this pair, so the replacement is idempotent for it.
+		code, msg, hint = lexerCode(t), t.Value, ""
+	}
+	if t.Type == TokenIndent && (code == DiagUnexpectedToken || code == DiagUnknownProperty) {
+		// "unexpected token ''" / "unknown property ''": an indent token
+		// has no text, and what the author sees is a line indented where
+		// no member or property can be — at the top level, in a workflow,
+		// in a node body alike.
+		code, msg, hint = DiagBadIndentation, indentOutsideBlockMsg, ""
+	}
+	if hint == "" {
+		hint = HintFor(code)
+	}
 	p.diags = append(p.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
@@ -45,6 +74,7 @@ func (p *parser) addError(code DiagCode, t Token, msg string) {
 		File:     p.file,
 		Line:     t.Line,
 		Column:   t.Column,
+		Hint:     hint,
 	})
 }
 
@@ -54,8 +84,36 @@ func (p *parser) expect(tt TokenType) (Token, bool) {
 	if t.Type == tt {
 		return t, true
 	}
-	p.addError(DiagExpectedToken, t, "expected "+tt.String()+", got "+t.Type.String())
+	p.expectFailed(t, tt, "expected "+tt.String()+", got "+t.Type.String())
 	return t, false
+}
+
+// expectFailed reports a token that is not the shape the parser wanted, with
+// the remedy for that shape (a lexer error token is reported as the lexer's
+// diagnosis by addErrorHint, never as "expected INDENT, got Error" plus a
+// hint about opening a block the author did open).
+func (p *parser) expectFailed(t Token, want TokenType, msg string) {
+	p.addErrorHint(DiagExpectedToken, t, msg, expectedTokenHint(want, t.Type))
+}
+
+// lexerError surfaces a diagnosis the lexer already made: the error token
+// carries its code and message.
+func (p *parser) lexerError(t Token) {
+	p.addError(lexerCode(t), t, t.Value)
+}
+
+// indentOutsideBlockMsg names an indented line where no member or property
+// can be. Phrased for both causes: it may be the consequence of a header
+// that failed to open (then an error precedes it) or a plain mistake.
+const indentOutsideBlockMsg = "indented line where none can be: it is indented deeper than the block it is in, or the header above it did not open (see the error before this one, if any)"
+
+// lexerCode is the diagnostic code an error token carries (E001 when the
+// lexer did not classify it).
+func lexerCode(t Token) DiagCode {
+	if t.Code == "" {
+		return DiagUnexpectedToken
+	}
+	return t.Code
 }
 
 // skipNewlines consumes any consecutive newlines and inline comments.
@@ -267,6 +325,11 @@ func (p *parser) parseFile() *ast.File {
 				f.AwaitAnswers = append(f.AwaitAnswers, ad)
 			}
 
+		case TokenFail:
+			if fd := p.parseFailDecl(); fd != nil && !p.isReservedName(t, fd.Name, "fail") {
+				f.Fails = append(f.Fails, fd)
+			}
+
 		case TokenSubbot:
 			sd := p.parseSubbotDecl()
 			if sd != nil {
@@ -283,13 +346,17 @@ func (p *parser) parseFile() *ast.File {
 			// Stray dedent at top level — skip
 			p.next()
 
+		case TokenIndent:
+			// An indented line with no block open above it (the same
+			// message addErrorHint substitutes inside a block).
+			p.addError(DiagBadIndentation, t, indentOutsideBlockMsg)
+			p.next()
+			p.skipToNextTopLevel()
+
 		case TokenError:
-			// The lexer packs its diagnostic message into t.Value (e.g.
-			// "source file exceeds maximum size", "maximum nesting depth
-			// exceeded"). Surface it directly instead of wrapping it as
-			// an opaque "unexpected token 'X' at top level" — that
-			// previously hid the actual cause from the operator.
-			p.addError(DiagUnexpectedToken, t, t.Value)
+			// The lexer's own diagnosis (its code and message ride the
+			// token), not an opaque "unexpected token 'X' at top level".
+			p.lexerError(t)
 			p.next()
 			p.skipToNextTopLevel()
 

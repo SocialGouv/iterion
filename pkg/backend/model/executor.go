@@ -978,6 +978,36 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 			fn(nodeID, AssistantTextInfo{Text: text, Iteration: iteration})
 		}
 	}
+	// Mid-call usage progress (claude_code streams it per assistant API
+	// message; the store hook debounces + prices it into usage_progress
+	// events for the supervisor hub's cost_gt monitor).
+	if e.hooks.OnUsageProgress != nil {
+		fn := e.hooks.OnUsageProgress
+		h.OnUsageProgress = func(up delegate.UsageProgress) {
+			fn(nodeID, UsageProgressInfo{
+				Model:            up.Model,
+				InputTokens:      up.InputTokens,
+				OutputTokens:     up.OutputTokens,
+				CacheReadTokens:  up.CacheReadTokens,
+				CacheWriteTokens: up.CacheWriteTokens,
+			})
+		}
+	}
+	// Orchestration-stall classification (claude_code's TaskOutput/Monitor
+	// deadlock guard): persisted as a delegate_stall event, metered by the
+	// runner per backend/model/outcome.
+	if e.hooks.OnOrchestrationStall != nil {
+		fn := e.hooks.OnOrchestrationStall
+		h.OnOrchestrationStall = func(st delegate.OrchestrationStall) {
+			fn(nodeID, OrchestrationStallInfo{
+				Backend:   st.Backend,
+				Tool:      st.Tool,
+				Model:     st.Model,
+				IdleFor:   st.IdleFor,
+				Recovered: st.Recovered,
+			})
+		}
+	}
 	// Usage cap: the backend reports the provider's own window telemetry,
 	// the guard decides. A hard cap answers with the same usage-window
 	// error a real refusal produces, so the run parks and a durable retry
@@ -1033,14 +1063,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 			// the anchor the Fork API uses to relaunch claude with
 			// --resume + --fork-session.
 			fn(nodeID, LLMTurnCaptureInfo{
-				Step:         1,
-				Text:         info.Text,
-				FinishReason: info.FinishReason,
-				InputTokens:  info.InputTokens,
-				OutputTokens: info.OutputTokens,
-				SessionID:    info.SessionID,
-				Backend:      delegate.BackendClaudeCode,
-				Iteration:    iteration,
+				Step:            1,
+				Text:            info.Text,
+				FinishReason:    info.FinishReason,
+				InputTokens:     info.InputTokens,
+				OutputTokens:    info.OutputTokens,
+				AggregateTokens: info.AggregateTokens,
+				SessionID:       info.SessionID,
+				Backend:         delegate.BackendClaudeCode,
+				Iteration:       iteration,
 			})
 		}
 	}

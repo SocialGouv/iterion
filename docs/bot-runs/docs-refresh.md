@@ -13,6 +13,86 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-09-04 — three weeklies: one delivered, two stranded by a masked spend-limit refusal; the schedule row loses its vars on every re-provision (runs 01a031ec, 01a0420c, 01a055f9)
+
+- Status: **one delivered, two stranded** — read after the fact from the prod
+  runs. The 08-24 weekly shipped PR #514 (19 commits, merged). The 08-27
+  one-shot and the 08-31 weekly both died in `campaign` on `structured output
+  invalid: missing required field …` (all seven fields) after banking 11 and
+  33 commits; neither reached the PR tail.
+- Versions: bot 3.5.5 (baked catalog) · iterion prod `:edge` server, runner
+  digests of that week (v3.8x–v3.9x at run time; v3.100.0 today) · backend
+  `claude_code` / `claude-opus-5` on the team OAuth forfait.
+- Method: prod schedule `306ecbc6` (`0 4 * * 1`, repo `SocialGouv/iterion`,
+  `mode: incremental`, `open_mr: true` — the 2026-07-27 configuration fix in
+  place), plus a one-shot row (`dd05430c`) fired by hand on 08-27.
+
+| Run | Window (UTC) | Passes | Commits | Cost (forfait est.) | Ended | Delivered |
+|---|---|---|---|---|---|---|
+| `01a031ec` (08-24) | 04:00 → 19:43 | 4 | 19 | $240 | `finished` | PR #514 |
+| `01a0420c` (08-27) | parked on the cap until 09-02 08:57 → 09:23 | 1 (partial) | 11 | — | `failed_resumable` | no — banked on `iterion/run-01a0420c…` |
+| `01a055f9` (08-31) | parked → 09-01 21:05 → 09-02 13:01 | 3 + 1 aborted | 33 | $188 | `failed_resumable` | no — banked on `iterion/run-01a055f9…` |
+
+- Value: #514 realigned 19 docs over 688 commits of code delta (the inverted
+  quotas-and-limits claim, ~60 undocumented routes, five bot READMEs written).
+  The stranded 33-commit chain is a full incremental pass over #598–#610
+  (outcome-router contract, credential fallback chain, webhooks re-request
+  lane, fair-usage classification) with 25 ledgered dismissals — all 16
+  scanner hints of that pass were verified false positives — and two code
+  bugs filed on the board (`native:b63d7e66`, `native:b74df493`:
+  `webhooks.Config` fields read but never written).
+
+### What the events say
+
+- **A provider refusal was masked as a schema error, again.** Both deaths are
+  the same line: claude_code answered `You've hit your org's monthly spend
+  limit · ask your admin to raise it` (exit 1); the JSON formatting pass then
+  ran against a dead session (exit 1, twice); the claw recovery lane failed on
+  the platform OpenAI key (`429 You have no credits remaining`); and the
+  executor reported `structured output invalid` → `EXECUTION_FAILED`, which
+  the usage-window retry does not park. The forfait was simply exhausted
+  (the team key at its weekly cap, extra usage at the org's monthly ceiling).
+  Fixed one day later by `cca3d20d5` (v3.96.1): the result text now
+  classifies as `ErrRateLimited` with `WindowSpend` evidence. Runner v3.100.0
+  carries it.
+- **The engine's bank kept every commit; nothing delivered them.** Both dead
+  runs banked their chain on `iterion/run-<id>` — the 08-25 fix `24092c416`
+  (the bank pushes through the clone's live credential store) is what made
+  that work; the 08-24 run's own bank push still died on a claim-time token
+  (`Invalid username or token`, hence its `final_branch_error`) while its PR
+  was opened by the bot's tail. But the PR tail is a graph path: a run that
+  dies in `campaign` never reaches `mr_gate`, and a resume re-clones the base,
+  so the banked chain is invisible to the resumed pass. That gap is #652
+  (Billy hit it on 09-03); the follow-up PR fixes it in the runner and resumes
+  `01a055f9` on top.
+- **The schedule row lost its vars a second time.** On 09-03 07:04 a forge
+  re-provision of the repo integration (`forge.integration.provisioned`, 7
+  bots) rebuilt the row (`306ecbc6` → `7db5038c`): `syncSchedules` carried
+  cron, pause and guard settings but not `vars` or `last_fire_at`, and minted
+  a new id. The 07-27 defect ("a recreated schedule's vars do not come
+  along") was the same class, patched by hand on the row instead of at the
+  source. Fixed here at the class: the re-sync keeps the id, merges the
+  operator's vars over the manifest's `default_vars` and keeps the last fire
+  ([pkg/forge/orchestrator.go](../../pkg/forge/orchestrator.go)); and Doki
+  3.5.6 declares `default_vars: {mode: incremental, open_mr: "true"}` on its
+  schedule invocation, so a row built from scratch delivers too. The live
+  row was patched the same morning; the 09-07 tick runs incremental + PR.
+- **Noise worth trimming**: while the 5h window is over its soft cap, the
+  runner logs `usage cap: provider rejected on the five_hour window …
+  finishing this run` once per stream message — a dozen identical lines per
+  second. Cosmetic.
+
+### Lessons for next run
+
+- A green bank is not a delivery. Check `final_branch` AND a PR /
+  `preview_url` — and until #652 is deployed, a resume does not pick the bank
+  up.
+- After ANY re-provision of the repo integration, read the schedule row
+  (`iterion remote schedules list`) until the carry-over fix is deployed
+  server-side.
+- The claw recovery lane is dead on prod as long as the platform OpenAI key
+  has no credits; it costs two extra failed calls per masked refusal.
+
 ## 2026-08-11 — the two prod weeklies both died on the cost cap, 60 commits stranded (runs 019fc5c7, 019fe9d3)
 
 - Status: **failed to deliver, twice**. Read after the fact, from the runs

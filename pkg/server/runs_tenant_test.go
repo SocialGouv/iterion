@@ -41,10 +41,7 @@ func TestRunEndpointsRejectCrossTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	svc, err := runview.NewService(srv.cfg.StoreDir, runview.WithStore(&tenantGuardStore{FilesystemRunStore: realStore, runTenant: "tenant-A"}))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, srv.cfg.StoreDir, runview.WithStore(&tenantGuardStore{FilesystemRunStore: realStore, runTenant: "tenant-A"}))
 	srv.runs = svc // handlers deref s.runs at call time
 
 	cases := []struct {

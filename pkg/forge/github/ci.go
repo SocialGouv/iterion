@@ -13,21 +13,49 @@ import (
 // PullClient capability — linked PRs + CI status (current + history) for board
 // cards. PRs come from /pulls; CI is the union of check-runs (GitHub Actions /
 // Apps) and the legacy combined commit-status, normalized onto forge.CI*.
+//
+// Every refusal below names the grant GitHub gates the endpoint on (its
+// published per-endpoint permission data — the same rule the App client's
+// profiles mint), so a 403 "Resource not accessible by integration" reaches
+// the operator as the permission to approve, not as a bare status.
 var _ forge.PullClient = (*AdminClient)(nil)
+
+// githubHead is a pull request's head ref. GitHub always models the head
+// repository and sends `"repo": null` once a fork is DELETED or blocked;
+// RepoDeclared keeps that apart from an answer that never carried the key,
+// which a plain struct collapses onto the same empty name.
+type githubHead struct {
+	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
+	Repo struct {
+		FullName string `json:"full_name"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repo"`
+	RepoDeclared bool `json:"-"`
+}
+
+func (h *githubHead) UnmarshalJSON(b []byte) error {
+	type plain githubHead // no method set ⇒ no recursion
+	var v plain
+	declared, err := forge.UnmarshalDeclaring(b, &v, "repo")
+	if err != nil {
+		return err
+	}
+	*h = githubHead(v)
+	h.RepoDeclared = declared
+	return nil
+}
 
 // githubPull is the slice of the GitHub pull-request object we map to PullRef.
 type githubPull struct {
-	Number  int    `json:"number"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	State   string `json:"state"` // "open" | "closed"
-	HTMLURL string `json:"html_url"`
-	Draft   bool   `json:"draft"`
-	Head    struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
-	} `json:"head"`
-	Base struct {
+	Number  int        `json:"number"`
+	Title   string     `json:"title"`
+	Body    string     `json:"body"`
+	State   string     `json:"state"` // "open" | "closed"
+	HTMLURL string     `json:"html_url"`
+	Draft   bool       `json:"draft"`
+	Head    githubHead `json:"head"`
+	Base    struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	User struct {
@@ -44,18 +72,21 @@ func (gp githubPull) toRef() forge.PullRef {
 		state = "merged"
 	}
 	return forge.PullRef{
-		Number:       gp.Number,
-		Title:        gp.Title,
-		State:        state,
-		URL:          gp.HTMLURL,
-		SourceBranch: gp.Head.Ref,
-		TargetBranch: gp.Base.Ref,
-		HeadSHA:      gp.Head.SHA,
-		Author:       gp.User.Login,
-		Draft:        gp.Draft,
-		CreatedAt:    gp.CreatedAt,
-		UpdatedAt:    gp.UpdatedAt,
-		LinkedIssues: forge.ParseIssueRefs(false, gp.Title, gp.Body),
+		Number:           gp.Number,
+		Title:            gp.Title,
+		State:            state,
+		URL:              gp.HTMLURL,
+		SourceBranch:     gp.Head.Ref,
+		TargetBranch:     gp.Base.Ref,
+		HeadSHA:          gp.Head.SHA,
+		HeadRepoFullName: gp.Head.Repo.FullName,
+		HeadCloneURL:     gp.Head.Repo.CloneURL,
+		HeadRepoDeclared: gp.Head.RepoDeclared,
+		Author:           gp.User.Login,
+		Draft:            gp.Draft,
+		CreatedAt:        gp.CreatedAt,
+		UpdatedAt:        gp.UpdatedAt,
+		LinkedIssues:     forge.ParseIssueRefs(false, gp.Title, gp.Body),
 	}
 }
 
@@ -80,12 +111,12 @@ func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts fo
 	vals.Set("page", strconv.Itoa(page))
 
 	var raw []githubPull
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+vals.Encode(), nil, &raw)
+	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+vals.Encode(), nil, &raw)
 	if err != nil {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, statusErr("GET pulls", code)
+		return nil, refusal("GET pulls", code, errBody, "pull_requests:read")
 	}
 	out := make([]forge.PullRef, 0, len(raw))
 	for _, gp := range raw {
@@ -94,15 +125,17 @@ func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts fo
 	return out, nil
 }
 
-// GetPullRequest fetches one PR by number.
+// GetPullRequest fetches one PR by number. GitHub gates the single-PR read on
+// contents read as well as pull_requests read (the object carries
+// content-derived fields), unlike the collection read.
 func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
 	var gp githubPull
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), nil, &gp)
+	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), nil, &gp)
 	if err != nil {
 		return forge.PullRef{}, err
 	}
 	if code != http.StatusOK {
-		return forge.PullRef{}, statusErr("GET pull", code)
+		return forge.PullRef{}, refusal("GET pull", code, errBody, "pull_requests:read", "contents:read")
 	}
 	return gp.toRef(), nil
 }
@@ -178,19 +211,21 @@ func tm(p *time.Time) time.Time {
 	return *p
 }
 
-// fetchCheckRuns returns the normalized check-runs for a ref (empty on 404,
-// which a repo without GitHub Actions returns).
+// fetchCheckRuns returns the normalized check-runs for a ref.
+//
+// "No CI" is 200 + an empty list — what GitHub answers for a commit nothing
+// ran on. A 404 is the ref being absent or invisible to the credential (a
+// fine-grained PAT short of `checks:read` gets one), and it surfaces: read
+// as "no check-runs" it would drop the only failing run from the aggregate
+// and render the card green.
 func (c *AdminClient) fetchCheckRuns(ctx context.Context, repo, ref string) ([]forge.CIRun, error) {
 	var cr githubCheckRuns
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/check-runs", nil, &cr)
+	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/check-runs", nil, &cr)
 	if err != nil {
 		return nil, err
 	}
-	if code == http.StatusNotFound {
-		return nil, nil
-	}
 	if code != http.StatusOK {
-		return nil, statusErr("GET check-runs", code)
+		return nil, refusal("GET check-runs", code, errBody, "checks:read")
 	}
 	runs := make([]forge.CIRun, 0, len(cr.CheckRuns))
 	for _, r := range cr.CheckRuns {
@@ -207,18 +242,18 @@ func (c *AdminClient) fetchCheckRuns(ctx context.Context, repo, ref string) ([]f
 	return runs, nil
 }
 
-// fetchCommitStatuses returns the normalized legacy commit-statuses for a ref.
+// fetchCommitStatuses returns the normalized legacy commit-statuses for a
+// ref. Like the check-runs read, a commit with no status is 200 + an empty
+// list; a 404 surfaces (absent ref, or a credential short of
+// `statuses:read`).
 func (c *AdminClient) fetchCommitStatuses(ctx context.Context, repo, ref string) (sha string, _ []forge.CIRun, _ error) {
 	var cs githubCombinedStatus
-	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/status", nil, &cs)
+	code, errBody, err := c.doErr(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/status", nil, &cs)
 	if err != nil {
 		return "", nil, err
 	}
-	if code == http.StatusNotFound {
-		return "", nil, nil
-	}
 	if code != http.StatusOK {
-		return "", nil, statusErr("GET commit status", code)
+		return "", nil, refusal("GET commit status", code, errBody, "statuses:read")
 	}
 	runs := make([]forge.CIRun, 0, len(cs.Statuses))
 	for _, s := range cs.Statuses {
@@ -336,12 +371,12 @@ func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewP
 		body["draft"] = true
 	}
 	var gp githubPull
-	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", body, &gp)
+	code, errBody, err := c.doErr(ctx, http.MethodPost, "/repos/"+repo+"/pulls", body, &gp)
 	if err != nil {
 		return forge.PullRef{}, err
 	}
 	if code/100 != 2 {
-		return forge.PullRef{}, statusErr("create pull", code)
+		return forge.PullRef{}, refusal("create pull", code, errBody, "pull_requests:write")
 	}
 	return gp.toRef(), nil
 }
@@ -364,12 +399,12 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 		body["state"] = *patch.State
 	}
 	var gp githubPull
-	code, err := c.do(ctx, http.MethodPatch, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), body, &gp)
+	code, errBody, err := c.doErr(ctx, http.MethodPatch, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), body, &gp)
 	if err != nil {
 		return forge.PullRef{}, err
 	}
 	if code/100 != 2 {
-		return forge.PullRef{}, statusErr("update pull", code)
+		return forge.PullRef{}, refusal("update pull", code, errBody, "pull_requests:write")
 	}
 	return gp.toRef(), nil
 }
@@ -377,7 +412,11 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 // MergePull merges a PR via PUT /pulls/{n}/merge, then re-fetches it once so the
 // returned ref reflects the merged state. When opts.DeleteBranch is set, the
 // source branch (read off the re-fetched ref) is best-effort deleted afterwards
-// — a failure there does not fail the merge.
+// — a failure there does not fail the merge. GitHub gates the merge on
+// contents write (it writes the base branch), not on pull_requests write: the
+// row under Pull requests for this path is the GET ("check if a pull request
+// has been merged"), a different endpoint — see
+// PullMergeInstallationPermissions for the two rows side by side.
 func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
 	body := map[string]any{"merge_method": forge.MergeMethodWire(opts.Method)}
 	if opts.CommitTitle != "" {
@@ -389,12 +428,12 @@ func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, op
 	if opts.SHA != "" {
 		body["sha"] = opts.SHA
 	}
-	code, err := c.do(ctx, http.MethodPut, "/repos/"+repo+"/pulls/"+strconv.Itoa(number)+"/merge", body, nil)
+	code, errBody, err := c.doErr(ctx, http.MethodPut, "/repos/"+repo+"/pulls/"+strconv.Itoa(number)+"/merge", body, nil)
 	if err != nil {
 		return forge.PullRef{}, err
 	}
 	if code/100 != 2 {
-		return forge.PullRef{}, statusErr("merge pull", code)
+		return forge.PullRef{}, refusal("merge pull", code, errBody, "contents:write")
 	}
 	merged, err := c.GetPullRequest(ctx, repo, number)
 	if err != nil {

@@ -8,8 +8,11 @@ here come from real fields on real records — not aspirational settings.
 Iterion enforces five distinct limits at run launch and one at the
 webhook intake. They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
-called by every code path that creates a run: launch / resume /
-inbound webhook.
+called by every code path that creates a run on a cloud instance: the
+HTTP launch and resume, the inbound webhooks, the retry sweeper's
+automatic resumes and the board dispatcher's launches — the table in
+[Which surfaces are gated](#which-surfaces-are-gated) is the exhaustive
+list, with the two paths that still launch outside it.
 
 ## The launch-admission order
 
@@ -37,6 +40,52 @@ boundary. The one nuance: when `AllowRun` errors at step 5 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
+## Which surfaces are gated
+
+Every launch a cloud instance performs passes `gateLaunch` with the
+identity of whoever is launching, meters one monthly run at step 5, and
+hands the slot back when the run service then refuses the launch (a
+sealing failure, a queue outage, a bot that does not compile — no run
+exists, so nothing was consumed):
+
+| Surface | Identity on the ctx | Gated | Metered |
+|---|---|---|---|
+| `POST /api/runs`, the studio, `iterion remote runs launch`, the MCP `remote_runs_launch` | the caller's | yes | yes, rolled back on a refused launch |
+| `POST /api/runs/{id}/resume`, the WS answer that resumes a run | the caller's | yes | yes |
+| Inbound webhooks, direct launch (`insertAndLaunchWebhook`) — including the merge-gate auto-fix and relaunch lanes, which reuse that tail | the token's synthetic `webhook` identity | yes | yes, rolled back on a refused launch and for the idempotency loser |
+| Inbound webhooks, **board mode** (the command creates a card; the dispatcher launches it) | the token's | pre-check only, at card creation | **no** — a card is not a run; the pre-check's slot is handed back at once and the dispatcher meters the launch when it claims the card |
+| **Board dispatcher** (`processBoardCard`) | `board-dispatcher` on the card's team | yes | yes, rolled back on a refused launch |
+| Retry sweeper (automatic resume of a `failed_resumable` run) | the run's owner | yes | yes, rolled back on a failed resume |
+| `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
+| Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes, rolled back on a refused launch |
+| `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
+| Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
+
+On the board dispatcher a denial is a **launch refusal** of the
+dispatcher's transient class, not a verdict on the card
+([dispatcher.md](dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed)):
+the card returns to its column under the machine provenance
+`launch_refused`, its ledger reads the rule that refused it — `launch
+gate: concurrency_cap_exceeded: org has 3 active runs (cap 3) …` — and
+the next attempt waits out the backoff, so an org at its cap retries its
+ready cards on the backoff schedule, not on every 5s tick. A cap that
+does not free within the attempt cap files the card `blocked` under
+`launch_given_up` with the rule on it, and the pipeline board shows it
+in its *Needs attention* lane.
+
+On the two surfaces that have no request to answer, a denial is recorded
+where an operator reads it, never skipped in silence:
+
+- a **trigger subscription** carries `last_error` + `last_error_at`
+  (`GET /api/v1/triggers`, `iterion remote triggers list`), raised by the
+  refusal and cleared by the next launch that goes through;
+- a **schedule** carries the same two fields
+  (`GET /api/teams/{id}/schedules`, `iterion remote schedules list`), plus
+  the tick-audit row the ticker already wrote.
+
+Both are targeted field writes on both store twins, so an operator editing
+the row between the match and the record does not lose the edit.
+
 ## Limits, fields and platform defaults
 
 Every limit has three knobs: an **override field** (on the Org or the
@@ -57,7 +106,17 @@ existing deployments.
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
 run/cost counters sum every team in the org. `MaxConcurrentRuns` and
 `LaunchRatePerMin` are **Team**-document fields (per-workspace executor
-caps — `pkg/identity.Team`).
+caps — `pkg/identity.Team`), and `Team.Status` is now writable through
+`iterion remote teams status` (org admin) — it was read by the gate below
+and settable by nothing.
+
+A limit this table does NOT carry: **whose credential funds the run**. That
+is a separate question with its own two gates — the org's
+`CredentialAudience` (which teams may spend the org's shared keys) and the
+platform tier's `platform_credentials` audience (which tenants may draw on
+the deployment's). Both are documented in
+[cloud-llm-credentials.md](cloud-llm-credentials.md); neither denies a
+launch, they decide what the run is handed.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
@@ -113,8 +172,12 @@ Cost metering is "floor, not invoice":
   reports `cost_usd` per call.
 - **Every CLI delegate** (`claude_code`, Codex, `pi`, Kimi, and Grok)
   contributes its aggregate token total when the CLI reports usage. The cloud
-  runner's delegate event has no input/output split, so that total is currently
-  booked to `input_tokens`.
+  runner's delegate event carries no input/output split, so that total is
+  reported as **`aggregate_tokens`** — its own field, leaving `input_tokens`
+  and `output_tokens` for splits that were actually measured. **A true total
+  is the sum of the three**, and a per-direction ratio is only meaningful on a
+  row whose aggregate is zero. Zero in all three means *not observed*, never
+  *nothing spent*.
 - A CLI delegate's `cost_usd` **is** added to `org_usage.cost_usd` — the
   `delegate_finished` figure flows through `metricsEmitter.RunTotals` into
   `recordOrgSpend`. `claw` is the one exclusion, and deliberately: being
@@ -124,9 +187,97 @@ Cost metering is "floor, not invoice":
   ([pkg/runner/loop_metrics.go:240-260](../pkg/runner/loop_metrics.go),
   [loop_spend.go](../pkg/runner/loop_spend.go)).
 - It is still a floor, not an invoice: a delegate that reports no cost
-  contributes none, and a subscription-billed run ("forfait") legitimately
-  reports `$0` because no per-call charge exists. Treat the monthly USD cap as
-  a trend signal rather than a billing ledger.
+  contributes none. Treat the monthly USD cap as a trend signal rather than a
+  billing ledger.
+- **A forfait run does NOT report `$0`** — and reading `cost_usd` as money
+  spent is the misreading this bullet exists to prevent. `claude_code` prints
+  `total_cost_usd` on every call whatever pays for it: on a **subscription**
+  it is the price those same calls WOULD have cost metered, cache creation
+  billed at 1.25× and cache reads at 0.1× included. Measured 2026-09-03 on a
+  cloud runner holding a forfait: `claude -p "reply pong"` — three input
+  tokens, five output — reported **$0.0402**, because it created 5 751 cache
+  tokens and read 17 120. Nothing was charged; the plan is flat. So an org
+  showing `cost_usd_this_month: 1991` on forfait-served runs has spent that in
+  *equivalent API price*, not in money: the only real money on a subscription
+  is the **extra-usage** overage, which the provider's own console is the sole
+  authority on.
+- And the bucket is the **ORG**, not the credential: `recordOrgSpend` charges
+  `msg.OrgID` whatever tier served the run (team forfait, credential pool,
+  platform keys, BYOK). The figure answers "what did this org consume", never
+  "what did this key cost" — which is what the **per-credential ledger**
+  below answers.
+
+## Per-credential usage — what did THIS key cost
+
+[`pkg/credusage`](../pkg/credusage/credusage.go) is the second bucket, fed
+from the same attempt beside `recordOrgSpend`. It keys on
+`{fingerprint, provider, tier, tenant} × month` and answers the question the
+org counter structurally cannot.
+
+Two properties carry it:
+
+- **Split by backend.** A run can spend a `claude_code` forfait on its
+  implementer and a platform codex key on its plan review, while
+  `RunTotals()` is one number that belongs to neither. The spend is taken per
+  `(backend, model)` ROUTE, and the MODEL is what names the provider (a
+  `claw` node can be pointed anywhere). A route iterion cannot attribute —
+  a bare model id on a multi-provider backend, a provider the run holds no
+  credential for — is charged to **nobody**: no figure beats a wrong one.
+- **Nature, in the API.** Every amount is typed `metered` (real money on an
+  invoice: a BYOK or lent API key) or `estimate` (a subscription — see the
+  `total_cost_usd` bullet above). The same line
+  `credpool.CredentialSource.Metered()` draws, asserted equal by
+  `TestCredentialNature_AgreesWithCredpoolMetered`. The list responses keep
+  `metered_usd` and `estimated_usd` **apart** for that reason: summing them
+  reproduces exactly the misreading the ledger exists to remove.
+
+The `tier` (`team` | `pool` | `platform`) is part of the meter identity, not
+a label: the same key lent through the pool and used by its owner are two
+different economic facts.
+
+**Where a route's model comes from.** The runner's metrics emitter names each
+node's route from three events, in order: `delegate_started.declared_model`
+(the node's spec, provider included — every backend emits it), then each
+`llm_request` (the id the call actually went to), then
+`delegate_finished.effective_model` when the backend reports one. A backend
+reports the id it CALLED, and claw strips the provider before the request —
+so a claw step reports `gpt-5.6-sol`, not `openai/gpt-5.6-sol`. A bare id
+names no provider and would fall to the backend's default wire (anthropic for
+claw), charging an OpenAI model's tokens to the Claude forfait; when the
+reported id is the declared model without its prefix, the route keeps the
+declared, provider-qualified name. A different id (a fallback element) is kept
+as reported.
+
+**claw inside a sandbox.** The LLM loop runs in `iterion __claw-runner` in the
+container, and the runner relays its per-step `llm_request` /
+`llm_step_finished` to the launcher over the IPC ([sandbox.md](sandbox.md#claw-backend-in-sandbox)),
+so a sandboxed claw node is metered from its steps exactly like an in-process
+one — and the `delegate_finished` total, a summary of those steps, is not
+counted again (cost or tokens). When a run's container carries an older
+runner that relays nothing, that total is the only observation: it is booked
+on the route and, when the event carries no `cost_usd`, priced from the table
+at the model's **input** rate — a floor, since one aggregate count cannot be
+split into input and output — or left unpriced when no source knows the
+model. Zero is unknown, never free.
+
+A route iterion cannot attribute is logged at **warn** by the runner, once per
+route per attempt (`no credential iterion can name`): the decline is
+definitive for that attempt, so it has to be visible.
+
+```sh
+# This team's credentials, this month
+iterion remote usage --by-credential
+# GET /api/teams/{id}/credentials/usage
+
+# The platform tier across every tenant it served (super-admin)
+iterion remote api GET /api/admin/credentials/usage
+# ?tier=team|pool|platform — or ?fingerprint=<fp> for one credential,
+# whose rows live under each tenant that drew on it.
+```
+
+Metering is best effort throughout, like the org bucket: a missing counter,
+an unattributable route or a store failure leave the observation on the
+floor rather than turn a finished run into a failed one.
 
 ## Reading usage
 
@@ -143,6 +294,7 @@ Both views share the same JSON shape
   "cost_usd_this_month":          18.91,
   "input_tokens_this_month":      4123890,
   "output_tokens_this_month":      921334,
+  "aggregate_tokens_this_month":  2210544,
   "monthly_cost_cap_usd":         80.0,
   "max_concurrent_runs":          5,
   "active_runs":                  2,

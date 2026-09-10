@@ -1,0 +1,331 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/brand"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// forgeAvatarReq is the body of POST /api/teams/{id}/forge/connections/{conn_id}/avatar.
+type forgeAvatarReq struct {
+	// Variant is the mascot rendering to upload: "plain" (default — the
+	// iterion-bot account's own avatar) or "circle" (the badge).
+	Variant string `json:"variant,omitempty"`
+	// Force applies the avatar to a PAT connection whose account the forge
+	// does NOT flag as a bot — the operator vouching it is a dedicated
+	// account (a Forgejo bot user, a hand-made GitLab user), not a person.
+	Force bool `json:"force,omitempty"`
+}
+
+// forgeAvatarResp is what a successful apply returns.
+type forgeAvatarResp struct {
+	Connection *forge.Connection `json:"connection"`
+	// AvatarURL is the forge's own URL for the new avatar, when it reports one.
+	AvatarURL string `json:"avatar_url,omitempty"`
+}
+
+// avatarRefusal is a policy refusal the operator can act on: the HTTP status
+// the endpoint answers with, and the fields the studio renders next to the
+// message (where to upload by hand, whether a forced retry is allowed).
+type avatarRefusal struct {
+	status int
+	msg    string
+	fields map[string]any
+}
+
+func (r *avatarRefusal) Error() string { return r.msg }
+
+// avatarForceHint closes every 409 message: "<why iterion cannot vouch>; <the
+// forced retry>". The studio dialog strips the clause and words the retry as
+// its own button, so the reason must stay a single clause before it.
+const avatarForceHint = "; if it is a dedicated account for iterion (not a person's), apply with force"
+
+// brandLogoPath is the public route serving a mascot variant, for the uploads
+// an operator has to do by hand.
+func brandLogoPath(v brand.Variant) string { return "/brand/" + v.Filename() }
+
+// defaultAvatarApplyTimeout bounds one apply's forge round-trips (a WhoAmI
+// for a connection older than AccountKind, then the upload). The apply rides
+// its own context, detached from the caller's: the connection exists, so a
+// caller that gives up must not leave its avatar state half-written, and a
+// hanging forge must not hold a connect or a click for longer than this.
+// Server.avatarApplyTimeout overrides it (a test shortens it against a forge
+// that hangs).
+const defaultAvatarApplyTimeout = 20 * time.Second
+
+func (s *Server) avatarApplyDeadline() time.Duration {
+	if s.avatarApplyTimeout > 0 {
+		return s.avatarApplyTimeout
+	}
+	return defaultAvatarApplyTimeout
+}
+
+// avatarRecordTimeout bounds one write of the outcome onto the connection —
+// on a budget of its OWN: the failure worth recording is a slow forge, i.e.
+// exactly when the round-trips' deadline has expired.
+const avatarRecordTimeout = 10 * time.Second
+
+// applyBotAvatar uploads the iterion-bot avatar onto the account behind conn
+// and records the outcome on the connection. The policy is the point:
+//   - an OAuth connection is a person's authorization → refused, no override;
+//   - GitHub has no avatar/logo API → refused, pointing at the App's settings
+//     page where the logo is uploaded by hand;
+//   - a PAT connection is applied when the forge flags the account as a bot
+//     (GitLab group/project tokens, service accounts), or when the operator
+//     forces it for a dedicated account the forge cannot flag (Forgejo).
+//
+// A connection older than AccountKind learns it here, from the forge, so the
+// bot gate judges the account and not the field's absence — the kind is
+// recorded either way. A refusal comes back as *avatarRefusal and persists
+// nothing else. A forge-side failure is persisted on AvatarError — so the card
+// can name it and offer a retry — and returned as-is.
+func (s *Server) applyBotAvatar(parent context.Context, conn forge.Connection, variant brand.Variant, force bool) (forge.Connection, string, error) {
+	switch {
+	case conn.Kind == forge.KindOAuthApp:
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+			msg: fmt.Sprintf("connection %s authenticates as the person who authorized it (@%s) — iterion never rebrands a personal account; connect a dedicated bot account (a group/project access token) instead", conn.ID, conn.AccountLogin)}
+	case conn.Provider == forge.ProviderGitHub:
+		fields := map[string]any{
+			"logo_url":        brandLogoPath(brand.VariantPlain),
+			"logo_circle_url": brandLogoPath(brand.VariantCircle),
+		}
+		msg := "GitHub exposes no API for an account's avatar or an App's logo"
+		if conn.Kind == forge.KindGitHubApp {
+			if u := s.githubAppLogoUploadURL(parent, conn); u != "" {
+				fields["manage_url"] = u
+			}
+			msg += " — upload the logo on the App's settings page (Display information)"
+		} else {
+			msg += " — set it on the account's profile page"
+		}
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity, msg: msg, fields: fields}
+	case conn.Kind != forge.KindPAT:
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+			msg: fmt.Sprintf("connection kind %q cannot carry an avatar", conn.Kind)}
+	case conn.Status == forge.StatusRevoked:
+		// The forge already rejected this token (a live 401 met by an apply
+		// below): a reconnect problem, never an avatar one.
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+			msg: fmt.Sprintf("%s rejected this connection's token (status %s) — reconnect it first", conn.Host(), conn.Status)}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), s.avatarApplyDeadline())
+	defer cancel()
+	admin, err := s.forgeAdminFor(ctx, conn)
+	if err != nil {
+		// Nothing has reached the forge yet, and on the only kind that gets
+		// here this call cannot: the switch above refuses every kind but
+		// KindPAT, so forgeAdminFor opens the sealed token (a nil sealer, a
+		// master key that no longer opens the blob, a payload that will not
+		// unmarshal) and builds a bearer client — all local. Unmarked, none
+		// of it carries a forge sentinel or a *url.Error, so it would fall
+		// through the handler's 502 default and blame the forge for
+		// iterion's own seal — the #969 inversion, one step earlier.
+		return conn, "", newIterionFault(err)
+	}
+	setter, ok := admin.(forge.AvatarSetter)
+	if !ok {
+		return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+			msg: fmt.Sprintf("%s connections cannot set an avatar through iterion", conn.Provider)}
+	}
+	// The upload is a forge round-trip, and another writer (the orchestrator
+	// stamping ManagedSecretID on a provision) may touch the document
+	// meanwhile — so every outcome is written onto a FRESH read, on a record
+	// budget independent of the round-trips' deadline, carrying only what this
+	// apply learned: the account kind, and — when asked — the avatar fields.
+	learned := ""
+	record := func(mutate func(*forge.Connection)) (forge.Connection, error) {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(parent), avatarRecordTimeout)
+		defer cancel()
+		rctx = store.WithTenant(rctx, conn.TenantID)
+		fresh, err := s.forgeConnections.Get(rctx, conn.ID)
+		if err != nil {
+			return conn, err
+		}
+		if learned != "" && fresh.AccountKind == "" {
+			fresh.AccountKind = learned
+		}
+		mutate(&fresh)
+		fresh.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(rctx, fresh); err != nil {
+			return conn, err
+		}
+		return fresh, nil
+	}
+	persist := func(appliedAt *time.Time, avatarErr string) (forge.Connection, error) {
+		return record(func(c *forge.Connection) { c.AvatarAppliedAt, c.AvatarError = appliedAt, avatarErr })
+	}
+	if conn.AccountKind == "" {
+		// Older than the field: ask the forge who the token is, and remember.
+		// A forced apply is the operator vouching for the account — it does
+		// not hang on /user REFUSING to answer. A /user that does not answer
+		// at all has spent the apply's budget: the upload would only fail on
+		// the dead context and stamp a misleading reason on the connection.
+		ident, err := admin.WhoAmI(ctx)
+		switch {
+		case err == nil:
+			conn.AccountKind, learned = ident.Kind, ident.Kind
+		case ctx.Err() != nil:
+			// The apply's budget is spent, whatever the forge managed to send:
+			// the upload would only fail on the dead context and stamp a
+			// misleading reason on the connection.
+			//
+			// The forge's own error is DIAGNOSTIC here, never routing: it may
+			// itself be ErrForbidden / ErrUnauthorized, and %w-wrapping it
+			// would keep what it MATCHES (403, 422) while changing what the
+			// error MEANS (the deadline). This error carries the expiry it is
+			// about; the forge's partial answer is logged and rendered, not
+			// wrapped.
+			if s.logger != nil {
+				s.logger.Warn("forge avatar: connection %s on %s spent the apply budget; the forge's partial answer was: %v", conn.ID, conn.Host(), err)
+			}
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s within %s (the forge answered %v): %w",
+				conn.ID, conn.Host(), s.avatarApplyDeadline(), err, ctx.Err())
+		case errors.Is(err, forge.ErrUnauthorized):
+			// The credential itself is rejected. Nothing else probes a PAT,
+			// so this is where the connection learns it: mark it revoked so
+			// the card and every later apply say so, and refuse — no force
+			// can carry an upload the forge would refuse the same way.
+			if updated, rerr := record(func(c *forge.Connection) {
+				c.Status, c.StatusReason = forge.StatusRevoked, "the forge rejected the token on an avatar apply (HTTP 401)"
+			}); rerr == nil {
+				conn = updated
+			} else if s.logger != nil {
+				s.logger.Error("forge avatar: mark connection %s revoked: %v", conn.ID, rerr)
+			}
+			return conn, "", &avatarRefusal{status: http.StatusUnprocessableEntity,
+				msg: fmt.Sprintf("%s rejected this connection's token — reconnect it first", conn.Host())}
+		case errors.Is(err, forge.ErrNotFound):
+			// The user endpoint itself is missing, i.e. the base URL is wrong.
+			return conn, "", fmt.Errorf("could not read the account behind connection %s: %s does not serve the user endpoint (HTTP 404) — check the forge base URL", conn.ID, conn.Host())
+		case errors.Is(err, forge.ErrForbidden) && force:
+			// The forge answered but would not describe the account: the
+			// operator's word carries the apply, the kind stays unknown.
+		case errors.Is(err, forge.ErrForbidden):
+			// iterion cannot vouch for an account the forge will not
+			// describe (a token without the scope) — the operator can: the
+			// same rung as an unflagged account, so every surface offers the
+			// forced retry instead of a 502 that records nothing and repeats
+			// on the next attempt.
+			return conn, "", &avatarRefusal{status: http.StatusConflict,
+				msg:    fmt.Sprintf("%s would not say whether @%s is a bot account (%v)%s", conn.Host(), conn.AccountLogin, err, avatarForceHint),
+				fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
+		default:
+			// Not an answer — an unreachable forge, a 5xx, a body that is not
+			// JSON: nothing to vouch for, and the upload would only fail the
+			// same way and stamp a misleading reason on the connection.
+			return conn, "", fmt.Errorf("could not read the account behind connection %s on %s: %w", conn.ID, conn.Host(), err)
+		}
+	}
+	if conn.AccountKind != forge.AccountKindBot && !force {
+		if learned != "" {
+			// Remember the kind only; the avatar fields are the fresh document's.
+			if updated, err := record(func(*forge.Connection) {}); err == nil {
+				conn = updated
+			}
+		}
+		return conn, "", &avatarRefusal{status: http.StatusConflict,
+			msg:    fmt.Sprintf("%s does not flag @%s as a bot account%s", conn.Host(), conn.AccountLogin, avatarForceHint),
+			fields: map[string]any{"needs_force": true, "account_login": conn.AccountLogin}}
+	}
+	avatarURL, err := setter.SetAvatar(ctx, brand.BotAvatar(variant))
+	if err != nil {
+		recorded, perr := persist(conn.AvatarAppliedAt, err.Error())
+		if perr != nil && s.logger != nil {
+			s.logger.Error("forge avatar: record the failure on connection %s: %v", conn.ID, perr)
+		}
+		return recorded, "", err
+	}
+	now := time.Now().UTC()
+	recorded, err := persist(&now, "")
+	if err != nil {
+		// The forge answered 200 to the upload; iterion's OWN store then
+		// failed to write it down. Mark it so the handler answers 500 (this
+		// really is iterion's) instead of the 502 its default arm serves
+		// for a forge that broke. Body still names the connection and the
+		// underlying cause so the operator can act on it.
+		return conn, avatarURL, newIterionFault(fmt.Errorf("avatar uploaded but could not be recorded on connection %s: %w", conn.ID, err))
+	}
+	return recorded, avatarURL, nil
+}
+
+// githubAppLogoUploadURL resolves the settings page of the App behind a
+// github_app connection, when that App is one iterion created (its record
+// carries the manage URL). Empty otherwise — a guessed link that 404s on
+// GitHub is worse than none.
+func (s *Server) githubAppLogoUploadURL(ctx context.Context, conn forge.Connection) string {
+	if s.forgeOAuthApps == nil || conn.OAuthAppID == "" {
+		return ""
+	}
+	app, err := s.forgeOAuthApps.Get(ctx, conn.OAuthAppID)
+	if err != nil || app.TenantID != conn.TenantID {
+		return ""
+	}
+	return app.DeriveLogoUploadURL()
+}
+
+// handleForgeConnectionAvatar is the explicit apply action: the operator asks
+// for the iterion-bot avatar on one connection's account (the auto path at
+// connect time only covers bot identities).
+func (s *Server) handleForgeConnectionAvatar(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	if s.forgeConnections == nil {
+		httpError(w, http.StatusNotFound, "forge integrations disabled")
+		return
+	}
+	conn, ok := s.forgeConnForTenant(w, r, teamID, r.PathValue("conn_id"))
+	if !ok {
+		return
+	}
+	var req forgeAvatarReq // body optional: the plain variant, no force
+	if err := decodeJSONOptional(r, &req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	variant, err := brand.ParseVariant(req.Variant)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	updated, avatarURL, err := s.applyBotAvatar(r.Context(), conn, variant, req.Force)
+	var refusal *avatarRefusal
+	if errors.As(err, &refusal) {
+		body := map[string]any{"error": refusal.msg}
+		for k, v := range refusal.fields {
+			body[k] = v
+		}
+		writeJSONStatus(w, refusal.status, body)
+		return
+	}
+	if err != nil {
+		// This route mixes three failure sources under one default arm.
+		// Only ONE of them is the forge's: the round-trip (502 is the true
+		// code for what the classifier does not recognise — a broken
+		// transport, a body that is not the shape pkg/forge parses). The
+		// other two are iterion's own state — the seal/client construction
+		// BEFORE any forge call (forgeAdminFor), and the persist AFTER the
+		// upload already landed. Both are marked at their wrap site, where
+		// which step failed is still known, and writeForgeUpstreamError
+		// answers a marked error 500 instead of letting it share the 502 a
+		// genuine forge outage gets.
+		if !writeForgeUpstreamError(w, err, "%v", err) {
+			httpError(w, http.StatusBadGateway, "%v", err)
+		}
+		return
+	}
+	s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", conn.ID,
+		map[string]any{"provider": conn.Provider, "variant": string(variant), "forced": req.Force})
+	updated.SealedPayload = nil // never serialise
+	writeJSON(w, forgeAvatarResp{Connection: &updated, AvatarURL: avatarURL})
+}

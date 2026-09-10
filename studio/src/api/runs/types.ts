@@ -44,6 +44,89 @@ export type RunSourceKind =
   | "fork"
   | "shard";
 
+// Versioned launch-context contract. These fields are optional at the run
+// level because runs persisted before context stamping remain valid.
+export interface ContextRef {
+  id: string;
+  kind: string;
+  namespace?: string;
+  revision?: string;
+  required?: boolean;
+}
+
+export interface WorkspaceContext {
+  mode?: string;
+  declared_mode?: string;
+  workspace_id?: string;
+  declared_root?: string;
+}
+
+export interface WorkflowContext {
+  workflow_revision?: string;
+  workflow_root?: string;
+  bundle_revision?: string;
+}
+
+export interface LineageContext {
+  root_run_id?: string;
+  parent_run_id?: string;
+  parent_node_id?: string;
+}
+
+export interface ExecutionContext {
+  version: number;
+  policy?: string;
+  run_store: ContextRef;
+  business_stores?: ContextRef[];
+  workspace: WorkspaceContext;
+  workflow: WorkflowContext;
+  lineage: LineageContext;
+  launch_surface?: string;
+}
+
+export interface AdmissionDecision {
+  decision: string;
+  phase?: string;
+  code?: string;
+  reason?: string;
+  policy?: string;
+  context_version?: number;
+  workflow_revision?: string;
+  checked_at: string;
+}
+export interface OutputCorrectionEpisode {
+  episode_id?: string;
+  invocation_id?: string;
+  node_id?: string;
+  budget?: number;
+  attempts?: number;
+  status?: string;
+  input_fingerprint?: string;
+  last_output_fingerprint?: string;
+  last_violation_fingerprint?: string;
+  last_error?: string;
+  started_at?: string;
+  updated_at?: string;
+}
+
+export interface WatcherCursor {
+  watcher_id?: string;
+  last_progress_fingerprint?: string;
+  last_progress_at?: string;
+  last_evaluation_at?: string;
+  last_action_fingerprint?: string;
+  last_action?: string;
+  last_trigger_fingerprint?: string;
+  next_evaluation_at?: string;
+  consecutive_no_progress?: number;
+  progress_sequence?: number;
+  intervention_sequence?: number;
+  pending_intervention_id?: string;
+  pending_intervention_trigger?: string;
+  pending_intervention_sequence?: number;
+  updated_at?: string;
+}
+
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
@@ -65,6 +148,8 @@ export interface RunSummary {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   active: boolean;
   // When a failed_resumable run will be resumed automatically, once the
   // provider quota window that killed it reopens. Absent when no retry is
@@ -133,7 +218,11 @@ export type MergeStatus =
   // currently in the conflicted state (markers on disk, UU paths in
   // the index). The studio renders MergeConflictView until the
   // operator resolves every file + finalizes or aborts.
-  | "conflicted";
+  | "conflicted"
+  // A worker holds the merge claim (ClaimMerge CAS) and is squashing/
+  // pushing right now; a second merge request is refused server-side
+  // until the claim resolves or goes stale.
+  | "merging";
 
 // Mirror of sessionboard.Widget / sessionboard.Spec (Go). The LLM
 // curation layer (Phase 2) emits these; the studio renders one card per
@@ -197,6 +286,12 @@ export interface NodeServed {
   declared_model?: string;
   context_window?: number;
   max_output_tokens?: number;
+  // Provider routing label of the session behind this record
+  // ("anthropic-oauth", "facade:<base url>", …). A model id alone cannot
+  // tell that an Anthropic-shaped facade answered a claude id with
+  // whatever it aliases it to. Absent when the backend reports none —
+  // that reads "route unknown", never "not a facade".
+  fingerprint?: string;
 }
 
 // Effective budget cap set captured at launch — the workflow's `budget:`
@@ -230,11 +325,18 @@ export interface CheckpointBudget {
 export type RunCheckpoint = CheckpointBudget & {
   node_id?: string;
   interaction_id?: string;
+  parallel?: {
+    pending_node_id?: string;
+  };
   [key: string]: unknown;
 };
 
 export interface RunHeader {
   id: string;
+  execution_context?: ExecutionContext;
+  admission?: AdmissionDecision;
+  output_corrections?: Record<string, OutputCorrectionEpisode>;
+  watcher_cursors?: Record<string, WatcherCursor>;
   // Deterministic, human-friendly run label. Empty for legacy runs
   // persisted before this field existed; UI falls back to workflow_name.
   name?: string;
@@ -254,6 +356,16 @@ export interface RunHeader {
   // Workflow-declared tool-permission gate mode ("off" | "ask" | "deny").
   // Empty/off = no gate. The header badges ask/deny. See docs/permissions.md.
   permission_mode?: string;
+  // Audit fingerprints of the credentials the run can spend (the same
+  // identities the key/connection views show — never secrets); what the
+  // per-key concurrency ceiling counts. Absent for local runs.
+  cred_fingerprints?: string[];
+  // Set while the run executes no model-calling node: it then holds none
+  // of its credentials' concurrency slots.
+  llm_idle_since?: string;
+  // When the earliest credential the launch passed over reopens — the
+  // instant a usage-window retry may arm on.
+  skipped_cred_reopens_at?: string;
   // Launch-time per-node/-group model/backend pins captured on the run
   // (studio dropdowns / CLI --model/--backend / HTTP model_overrides).
   // Display-only, surfaced in the Overview's "Launched with". Empty when
@@ -271,6 +383,8 @@ export interface RunHeader {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   // Typed for the budget-consumption + paused-node fields the UI reads;
   // the rest of the checkpoint stays opaque. See RunCheckpoint.
   checkpoint?: RunCheckpoint;
@@ -282,6 +396,15 @@ export interface RunHeader {
   // run's repo identity (work_dir is a runner-pod path there). Empty
   // for local and repo-less runs.
   project_path?: string;
+  // Which tier resolved this run's bundle at launch: "team" (the
+  // launching team's own botsource row — a studio-editor fork), "platform"
+  // (a deployment-wide override) or "baked" (the catalog in the image).
+  // ABSENT on local runs and on runs predating the stamp — an absent tier
+  // is NOT "baked"; render nothing rather than a claim (runBotSourceMeta).
+  bot_source_tier?: string;
+  // Owner of the stored row bot_source_tier names — the team id, or the
+  // platform sentinel. Absent on the baked tier and on unstamped runs.
+  bot_source_tenant?: string;
   worktree?: boolean;
   // True when work_dir still exists on the server's filesystem — i.e. the
   // inline file editor + live diff surfaces can be served without a 409.
@@ -476,6 +599,43 @@ export interface RunSnapshot {
   run: RunHeader;
   executions: ExecutionState[];
   last_seq: number; // -1 sentinel when no events have been applied
+  diagnostic?: DiagnosticProjection;
+}
+
+export type DiagnosticOutcome =
+  | "active"
+  | "finished"
+  | "blocked"
+  | "interrupted"
+  | "failed";
+
+export type DiagnosticAction =
+  | "none"
+  | "resume"
+  | "wait"
+  | "answer_or_resume"
+  | "inspect"
+  | "fix_then_resume";
+
+export interface DiagnosticEvidence {
+  seq: number;
+  type: string;
+  node_id?: string;
+  details?: Record<string, string>;
+}
+
+export interface DiagnosticProjection {
+  version: number;
+  run_id: string;
+  parent_run_id?: string;
+  status: string;
+  outcome: DiagnosticOutcome;
+  recoverable: boolean;
+  failure_code?: string;
+  node_id?: string;
+  message?: string;
+  next_action: DiagnosticAction;
+  evidence?: DiagnosticEvidence[];
 }
 
 // RunEvent (mirror of store.Event) lives in ./events.ts as a
@@ -488,6 +648,30 @@ export interface ArtifactSummary {
   written_at: string;
 }
 
+export interface ArtifactDependency {
+  logical_ref: string;
+  node_id?: string;
+  version: number;
+  required?: boolean;
+}
+
+export interface ArtifactContract {
+  logical_ref: string;
+  producer_node: string;
+  producer_revision?: string;
+  version: number;
+  schema?: string;
+  // Fingerprint of the resolved schema DEFINITION. `schema` alone is a
+  // label — editing a schema's fields keeps the name. Absent on artifacts
+  // written before this field existed.
+  schema_hash?: string;
+  dependencies?: ArtifactDependency[];
+  // Reserved, mirroring store.ArtifactContract: nothing writes `mutable` and
+  // nothing reads either field yet. Don't render one as a decision.
+  mutable?: boolean;
+  effects?: string[];
+}
+
 export interface Artifact {
   run_id: string;
   node_id: string;
@@ -496,6 +680,7 @@ export interface Artifact {
   // Labels categorise the artifact (e.g. "plan", "verdict"). Mirror of
   // store.Artifact.Labels. Empty/absent on legacy artifacts.
   labels?: string[];
+  contract?: ArtifactContract;
   written_at: string;
 }
 

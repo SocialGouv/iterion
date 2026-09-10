@@ -24,6 +24,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -44,6 +45,9 @@ const gitCmdTimeout = 60 * time.Second
 // rebuilds the dev-mode backend during an in-flight squash merge —
 // doesn't propagate and kill `git commit` mid-write with the
 // "signal: terminated" failure mode observed in run_1778021294883.
+// Isolation only, deliberately NOT proc.TerminateGroupOnCancel: the ctx
+// here is the package's own timeout over context.Background(), so the
+// run's cancellation must not abort a commit that is already writing.
 //
 // Returns the CancelFunc alongside the command; callers must `defer
 // cancel()` immediately (releases the timeout timer once the command
@@ -54,8 +58,23 @@ func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	// Strip what would override the repository this command names for itself.
 	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
-	detachGitProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd, cancel
+}
+
+// gitCommitMessage runs `git commit` in dir with message fed over STDIN
+// (`-F -`), never as an argv element. Linux caps one argument at 128 KiB
+// (MAX_ARG_STRLEN), so `-m <msg>` fails with "argument list too long" as soon
+// as a message aggregates a run's report — which is exactly the size a
+// converged campaign's squash reaches. Every commit whose message is built
+// from run content or supplied by an operator goes through here. Returns
+// git's combined output alongside the error, for the caller's diagnostics.
+func gitCommitMessage(dir, message string) (string, error) {
+	cmd, cancel := gitCmd("-C", dir, "commit", "-F", "-")
+	defer cancel()
+	cmd.Stdin = strings.NewReader(message)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 // worktreeContext is the state captured at setupWorktree time and
@@ -392,9 +411,9 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
 			}
 			res.PreserveWorktree = true
-		} else if err := runGitInDir(wc.wtPath, "commit", "-m", msg); err != nil {
+		} else if out, err := gitCommitMessage(wc.wtPath, msg); err != nil {
 			if logger != nil {
-				logger.Warn("runtime: finalize: wip bank commit failed: %v — preserving worktree at %s", err, wc.wtPath)
+				logger.Warn("runtime: finalize: wip bank commit failed: %v (output: %s) — preserving worktree at %s", err, strings.TrimSpace(out), wc.wtPath)
 			}
 			res.PreserveWorktree = true
 		} else {
@@ -519,7 +538,7 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		return res
 
 	case "squash":
-		message := buildSquashMessage(wc.anchor(), wc.originalTip, finalSHA, opts.runName)
+		message := BuildSquashMessageForMerge(wc.anchor(), wc.originalTip, target, finalSHA, opts.runName)
 		merged, mergeErr := trySquashMerge(wc.anchor(), target, finalName, wc.originalBranch, message, logger)
 		if mergeErr != nil {
 			res.MergeStatus = "failed"
@@ -697,26 +716,23 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 		return "", fmt.Errorf("git merge --squash failed: %v\noutput: %s", sqErr, string(out))
 	}
 
-	// Step 2: commit the squashed index. --no-edit prevents the studio
-	// from being invoked when MERGE_MSG was populated by --squash; -m
-	// supplies our aggregated message regardless. `-m` consumes the
-	// very next argv element as the value, so a leading "-" in the
-	// message is fine here — exec.Command bypasses the shell.
-	coCmd, coCancel := gitCmd("-C", repoRoot, "commit", "-m", message)
-	out, coErr := coCmd.CombinedOutput()
-	coCancel()
+	// Step 2: commit the squashed index. The message rides stdin (see
+	// gitCommitMessage): an aggregated squash message can exceed what a
+	// single argv element may carry, and `-m` would fail the merge of
+	// exactly the runs that produced the most.
+	coOut, coErr := gitCommitMessage(repoRoot, message)
 	if coErr != nil {
 		// `git commit` exits non-zero with "nothing to commit" if the
 		// squash diff was empty (e.g. branch already merged). Treat
 		// that as a soft success: nothing changed, target stays put.
 		// Anything else is a real failure — reset the index.
-		if strings.Contains(string(out), "nothing to commit") || strings.Contains(string(out), "no changes added to commit") {
+		if strings.Contains(coOut, "nothing to commit") || strings.Contains(coOut, "no changes added to commit") {
 			return baseHead, nil
 		}
 		rsCmd, rsCancel := gitCmd("-C", repoRoot, "reset", "--merge")
 		_ = rsCmd.Run()
 		rsCancel()
-		return "", fmt.Errorf("git commit (squash) failed: %v\noutput: %s", coErr, string(out))
+		return "", fmt.Errorf("git commit (squash) failed: %v\noutput: %s", coErr, coOut)
 	}
 
 	// Read the new HEAD SHA — that's the squash commit on target.
@@ -734,6 +750,66 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 	return buildSquashMessage(repoRoot, base, head, runName)
 }
 
+// BuildSquashMessageForMerge is BuildSquashMessage for a merge that knows its
+// TARGET, which is what lets the range be bounded when the run's recorded base
+// is missing or does not resolve in this repository.
+func BuildSquashMessageForMerge(repoRoot, base, target, head, runName string) string {
+	return buildSquashMessage(repoRoot, squashRangeBase(repoRoot, base, target, head), head, runName)
+}
+
+// squashRangeBase resolves the commit the squash message's range starts at.
+//
+// The run's recorded base is authoritative when it resolves HERE: it is the
+// exact commit the run started from, which merge-base only approximates once
+// the target has moved on. But a repo-targeted merge materialises its own
+// clone, where that base is frequently absent — and an unresolvable base makes
+// gitlib.Log walk `git log <head>`, i.e. the whole repository from its root,
+// whose --reverse ordering then makes the OLDEST commit the message's title.
+// That is how a lot delivery landed on a production target under the subject
+// "Initial commit" with 204 lines of the repository's own past.
+//
+// The rungs, in order:
+//
+//  1. base, when it names a commit head descends from;
+//  2. merge-base(target, head) — the point the work branch left the target;
+//  3. "" when the TARGET itself does not resolve. A greenfield run
+//     (`worktree: auto` degrading in place, the bot `git init`-ing from slice
+//  0. genuinely owns every commit in the repository, so the full walk is
+//     the right answer there — the only case where it is;
+//  4. head itself otherwise: the target exists but shares no history with the
+//     head, so no range describes the run. An empty range degrades to the
+//     run's own name as the title, which says nothing false — enumerating an
+//     unrelated history would.
+func squashRangeBase(repoRoot, base, target, head string) string {
+	if repoRoot == "" || head == "" {
+		return base
+	}
+	if base != "" && gitlib.IsAncestor(repoRoot, base, head) {
+		return base
+	}
+	if target != "" {
+		if mb := gitlib.MergeBase(repoRoot, target, head); mb != "" {
+			return mb
+		}
+		if resolveCommitish(repoRoot, target) != "" {
+			return head
+		}
+	}
+	return ""
+}
+
+// resolveCommitish returns the full SHA target names in repoRoot, or "" when
+// it names nothing (an unborn branch, a repository with no commits).
+func resolveCommitish(repoRoot, target string) string {
+	cmd, cancel := gitCmd("-C", repoRoot, "rev-parse", "--verify", "--quiet", target+"^{commit}")
+	out, err := cmd.Output()
+	cancel()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // BuildSquashMessageFromCommits is the cached-input form for callers
 // that already fetched the commit slice (e.g. the /api/runs/{id}/commits
 // handler renders the same data and would otherwise re-shell `git log`
@@ -744,10 +820,44 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 func BuildSquashMessageFromCommits(repoRoot, head, runName string, commits []gitlib.CommitInfo) string {
 	if len(commits) == 1 {
 		if full := readFullCommitMessage(repoRoot, head); full != "" {
-			return full
+			return boundSquashMessage(full)
 		}
 	}
-	return assembleSquashMessage(commits, runName)
+	return boundSquashMessage(assembleSquashMessage(commits, runName))
+}
+
+// The squash message is a SUMMARY. The run's storage branch keeps every
+// commit with its full body, so the message landing on the target branch has
+// no reason to carry a campaign's whole report — and past a point it cannot
+// travel at all (see gitCommitMessage). Both bounds are far above anything a
+// hand-written history produces; they only ever bite on machine-aggregated
+// output.
+const (
+	// maxSquashMessageCommits is how many `- <sha> <subject>` lines the
+	// multi-commit body lists before the rest is elided into one count.
+	maxSquashMessageCommits = 200
+	// maxSquashMessageBytes bounds the whole message, whichever branch built
+	// it (a single commit's verbatim body included).
+	maxSquashMessageBytes = 64 << 10
+)
+
+// boundSquashMessage cuts msg at a line boundary under maxSquashMessageBytes
+// and says so in the message itself — a silent cut would read as a complete
+// report that happens to stop. The title line always survives.
+func boundSquashMessage(msg string) string {
+	if len(msg) <= maxSquashMessageBytes {
+		return msg
+	}
+	cut := strings.LastIndex(msg[:maxSquashMessageBytes], "\n")
+	if firstLine := strings.Index(msg, "\n"); cut < firstLine {
+		cut = firstLine
+	}
+	if cut < 0 {
+		cut = maxSquashMessageBytes
+	}
+	kept := strings.TrimRight(msg[:cut], "\n")
+	return fmt.Sprintf("%s\n\n[message truncated by iterion: %d bytes elided — the run's storage branch carries the full text]\n",
+		kept, len(msg)-len(kept))
 }
 
 // RunDisplayName returns the human-friendly label for a run: its
@@ -812,7 +922,11 @@ func assembleSquashMessage(commits []gitlib.CommitInfo, runName string) string {
 	}
 
 	body.WriteString("\n")
-	for _, c := range commits {
+	for i, c := range commits {
+		if i == maxSquashMessageCommits {
+			fmt.Fprintf(&body, "- … and %d more commits (the run's storage branch carries the full history)\n", len(commits)-i)
+			break
+		}
 		body.WriteString("- ")
 		body.WriteString(c.Short)
 		body.WriteString(" ")

@@ -14,10 +14,11 @@ type MemoryCounter struct {
 }
 
 type memUsage struct {
-	runs          int
-	costUSDMillis int64
-	inputTokens   int64
-	outputTokens  int64
+	runs            int
+	costUSDMillis   int64
+	inputTokens     int64
+	outputTokens    int64
+	aggregateTokens int64
 }
 
 func NewMemoryCounter() *MemoryCounter {
@@ -57,7 +58,7 @@ func (c *MemoryCounter) ReleaseRun(_ context.Context, tenantID string, when time
 	return nil
 }
 
-func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error {
+func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	u := c.get(tenantID, when)
@@ -67,6 +68,9 @@ func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.T
 	}
 	if outputTokens > 0 {
 		u.outputTokens += outputTokens
+	}
+	if aggregateTokens > 0 {
+		u.aggregateTokens += aggregateTokens
 	}
 	return nil
 }
@@ -80,6 +84,7 @@ func (c *MemoryCounter) Usage(_ context.Context, tenantID string, when time.Time
 		out.CostUSD = millisToCost(u.costUSDMillis)
 		out.InputTokens = u.inputTokens
 		out.OutputTokens = u.outputTokens
+		out.AggregateTokens = u.aggregateTokens
 	}
 	return out, nil
 }

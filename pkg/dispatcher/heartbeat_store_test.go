@@ -3,8 +3,10 @@ package dispatcher
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -63,5 +65,96 @@ func TestHeartbeatStoreTurnWriteNoopWithoutCapability(t *testing.T) {
 	// a panic or error.
 	if err := hb.WriteTurn(context.Background(), &store.TurnCheckpoint{RunID: "r"}); err != nil {
 		t.Fatalf("WriteTurn no-op should not error, got %v", err)
+	}
+}
+
+// TestHeartbeatStoreForwardsCreateChildRun: the engine probes the store it
+// is handed with store.AsParentedRunCreator to create a subbot child WITH
+// its parent link in the create write. An embedded interface promotes only
+// the RunStore methods, so without an explicit forward the wrapper hides
+// the capability and every dispatched child is created parentless, linked
+// only by the engine's later stamping write.
+func TestHeartbeatStoreForwardsCreateChildRun(t *testing.T) {
+	fs, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	hb := newHeartbeatStore(fs, func(string) {})
+	pc := store.AsParentedRunCreator(hb)
+	if pc == nil {
+		t.Fatal("*heartbeatStore hides CreateChildRun; a dispatched subbot child is created with no ParentRunID")
+	}
+	ctx := context.Background()
+	r, err := pc.CreateChildRun(ctx, "child", "wf", "parent", nil)
+	if err != nil {
+		t.Fatalf("CreateChildRun: %v", err)
+	}
+	if r.ParentRunID != "parent" {
+		t.Fatalf("returned run parent = %q, want parent", r.ParentRunID)
+	}
+	loaded, err := fs.LoadRun(ctx, "child")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if loaded.ParentRunID != "parent" {
+		t.Fatalf("persisted parent = %q, want parent in the create write", loaded.ParentRunID)
+	}
+}
+
+func TestHeartbeatStoreForwardsReliabilityCapabilities(t *testing.T) {
+	fs, err := store.New(t.TempDir(), store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := fs.CreateRun(ctx, "run", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	hb := newHeartbeatStore(fs, func(string) {})
+
+	once := store.AsQueuedMessageInsertOnceStore(hb)
+	if once == nil {
+		t.Fatal("*heartbeatStore hides QueuedMessageInsertOnceStore")
+	}
+	msg := store.QueuedUserMessage{ID: "msg_stable", Text: "fix it"}
+	inserted, err := once.AppendQueuedMessageOnce(ctx, "run", msg)
+	if err != nil || !inserted {
+		t.Fatalf("first AppendQueuedMessageOnce = (%t, %v), want inserted", inserted, err)
+	}
+	inserted, err = once.AppendQueuedMessageOnce(ctx, "run", msg)
+	if err != nil || inserted {
+		t.Fatalf("replayed AppendQueuedMessageOnce = (%t, %v), want no-op", inserted, err)
+	}
+
+	cursors := store.AsWatcherCursorStore(hb)
+	if cursors == nil {
+		t.Fatal("*heartbeatStore hides WatcherCursorStore")
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := cursors.SetWatcherCursor(ctx, "run", "supervisor:safe", store.WatcherCursor{WatcherID: "supervisor:safe", LastProgressAt: now}); err != nil {
+		t.Fatalf("SetWatcherCursor: %v", err)
+	}
+
+	corrections := store.AsOutputCorrectionStore(hb)
+	if corrections == nil {
+		t.Fatal("*heartbeatStore hides OutputCorrectionStore")
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, "run", "agent_root", store.OutputCorrectionEpisode{EpisodeID: "agent/root", Status: "active", UpdatedAt: now}); err != nil {
+		t.Fatalf("SetRunOutputCorrection: %v", err)
+	}
+
+	loaded, err := fs.LoadRun(ctx, "run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	queued, err := fs.ListQueuedMessages(ctx, "run")
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("queued messages = (%d, %v), want one", len(queued), err)
+	}
+	if got := loaded.WatcherCursors["supervisor:safe"].WatcherID; got != "supervisor:safe" {
+		t.Fatalf("persisted watcher id = %q", got)
+	}
+	if got := loaded.OutputCorrections["agent_root"].EpisodeID; got != "agent/root" {
+		t.Fatalf("persisted correction episode = %q", got)
 	}
 }

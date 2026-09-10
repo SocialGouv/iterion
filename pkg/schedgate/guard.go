@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // TailCap bounds the stdout/stderr tails stored on audit records. The
@@ -92,6 +94,11 @@ func RunGuard(parentCtx context.Context, spec GuardSpec) GuardResult {
 	}
 
 	cmd := exec.CommandContext(cctx, "sh", "-lc", spec.Command)
+	// The timeout must end the guard's work, not just iterion's wait: a
+	// guard that backgrounds a probe would otherwise keep running against
+	// the repo after the tick moved on. WaitDelay stays as the final
+	// unblock for anything that escapes the group.
+	proc.TerminateGroupOnCancel(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = spec.Dir
 	cmd.Env = append(os.Environ(), spec.Env...)

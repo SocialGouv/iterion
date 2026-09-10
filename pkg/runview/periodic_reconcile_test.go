@@ -37,6 +37,14 @@ func TestPeriodicReconcileFlipsLateOrphan(t *testing.T) {
 	}
 	backdateRun(t, seed, id)
 
+	// Wait for the sweep's LAST write, not its first. Reaping an orphan is
+	// TWO writes — the status flip, then the run_failed the timeline needs
+	// (a terminal status nothing explains is the defect #697 closes) — so
+	// returning on the status alone leaves the event append racing this
+	// test's own TempDir removal, which fails the run with `unlinkat …:
+	// directory not empty` about once in two hundred. Once the event has
+	// landed the sweep is write-quiet for this store: later ticks re-read a
+	// run that is no longer `running` and skip it.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		r, err := svc.store.LoadRun(context.Background(), id)
@@ -44,11 +52,30 @@ func TestPeriodicReconcileFlipsLateOrphan(t *testing.T) {
 			if r.Status != store.RunStatusFailed {
 				t.Fatalf("status = %q, want failed (no checkpoint)", r.Status)
 			}
-			return
+			if reapEventLanded(t, svc, id) {
+				return
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("periodic reconcile never flipped the late orphan (still `running` after 5s)")
+}
+
+// reapEventLanded reports whether the sweep has finished writing this run:
+// the run_failed carrying its PROCESS_ORPHANED verdict is the last thing it
+// appends for a reaped orphan.
+func reapEventLanded(t *testing.T, svc *Service, runID string) bool {
+	t.Helper()
+	events, err := svc.store.LoadEvents(context.Background(), runID)
+	if err != nil {
+		return false
+	}
+	for _, e := range events {
+		if e.Type == store.EventRunFailed {
+			return true
+		}
+	}
+	return false
 }
 
 // TestPeriodicReconcileStopsOnTeardown pins the goroutine lifecycle:

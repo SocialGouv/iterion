@@ -2,6 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useRef, useState } from "react";
 
 import { getRun, resumeRun } from "@/api/runs";
+import { isForceResumeRequiredError } from "@/api/runs/lifecycle";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Select } from "@/components/ui/Select";
@@ -27,6 +28,11 @@ const ACTION_KEY = "__review_action";
 const REPLY_KEY = "__review_reply";
 const MESSAGE_KEY = "__review_message";
 const STRATEGY_KEY = "__review_merge_strategy";
+
+type ForceRetry =
+  | { kind: "reply" }
+  | { kind: "merge"; action: "approve_merge" | "force_merge" }
+  | { kind: "request-changes" };
 
 // ReviewMergeCard renders a guided review-&-merge gate (interaction: review):
 // the companion↔human dialogue thread, an optional "open review env" link,
@@ -60,6 +66,7 @@ function ReviewMergeCardTurn({
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forceRetry, setForceRetry] = useState<ForceRetry | null>(null);
   const [reply, setReply] = useState("");
   const [strategy, setStrategy] = useState(review?.mergeStrategy ?? "squash");
   const [commitMsg, setCommitMsg] = useState("");
@@ -77,11 +84,20 @@ function ReviewMergeCardTurn({
   // Same post-resume re-sync dance as HumanPromptForm: the broker dropped
   // this run's subscribers at the pause, so redial + re-pull events, with a
   // REST snapshot fallback for very short resumes.
-  const resume = async (answers: Record<string, unknown>) => {
+  const resume = async (
+    answers: Record<string, unknown>,
+    retryIntent: ForceRetry,
+    force = false,
+  ) => {
     setBusy(true);
     setError(null);
+    setForceRetry(null);
     try {
-      await resumeRun(runId, { answers, source: resolvedSource });
+      await resumeRun(runId, {
+        answers,
+        source: resolvedSource,
+        ...(force ? { force: true } : {}),
+      });
       setSubmitted(true);
       if (onResumed) {
         onResumed();
@@ -106,19 +122,47 @@ function ReviewMergeCardTurn({
       }, 600);
     } catch (e) {
       setError(errorMessage(e));
-      setBusy(false); // keep the card interactive on failure
+      if (isForceResumeRequiredError(e)) setForceRetry(retryIntent);
+    } finally {
+      setBusy(false); // keep the card interactive when an attempt is refused
     }
   };
 
-  const sendReply = () =>
-    resume({ [ACTION_KEY]: "reply", [REPLY_KEY]: reply });
-  const merge = (action: "approve_merge" | "force_merge") =>
-    resume({
-      [ACTION_KEY]: action,
-      [STRATEGY_KEY]: strategy,
-      ...(commitMsg.trim() ? { [MESSAGE_KEY]: commitMsg } : {}),
-    });
-  const requestChanges = () => resume({ [ACTION_KEY]: "request_changes" });
+  const sendReply = (force = false) =>
+    resume(
+      { [ACTION_KEY]: "reply", [REPLY_KEY]: reply },
+      { kind: "reply" },
+      force,
+    );
+  const merge = (action: "approve_merge" | "force_merge", force = false) =>
+    resume(
+      {
+        [ACTION_KEY]: action,
+        [STRATEGY_KEY]: strategy,
+        ...(commitMsg.trim() ? { [MESSAGE_KEY]: commitMsg } : {}),
+      },
+      { kind: "merge", action },
+      force,
+    );
+  const requestChanges = (force = false) =>
+    resume(
+      { [ACTION_KEY]: "request_changes" },
+      { kind: "request-changes" },
+      force,
+    );
+
+  const retryWithForce = () => {
+    if (!forceRetry) return;
+    switch (forceRetry.kind) {
+      case "reply":
+        if (reply.trim().length === 0) return;
+        return sendReply(true);
+      case "merge":
+        return merge(forceRetry.action, true);
+      case "request-changes":
+        return requestChanges(true);
+    }
+  };
 
   const turns = review.turns ?? [];
   const noMerge = review.mergeInto === "none";
@@ -170,7 +214,7 @@ function ReviewMergeCardTurn({
         <Button
           size="sm"
           variant="secondary"
-          onClick={sendReply}
+          onClick={() => void sendReply()}
           disabled={busy || reply.trim().length === 0}
         >
           Send reply
@@ -217,7 +261,7 @@ function ReviewMergeCardTurn({
           <Button size="sm" variant="ghost" onClick={() => merge("force_merge")} disabled={busy}>
             Force-merge
           </Button>
-          <Button size="sm" variant="ghost" onClick={requestChanges} disabled={busy}>
+          <Button size="sm" variant="ghost" onClick={() => void requestChanges()} disabled={busy}>
             Request changes
           </Button>
         </div>
@@ -231,6 +275,18 @@ function ReviewMergeCardTurn({
         <InlineBanner tone="danger" layout="inline">
           {error}
         </InlineBanner>
+      )}
+      {forceRetry && (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={
+            busy || (forceRetry.kind === "reply" && reply.trim().length === 0)
+          }
+          onClick={() => void retryWithForce()}
+        >
+          Resume with updated workflow (force)
+        </Button>
       )}
     </div>
   );

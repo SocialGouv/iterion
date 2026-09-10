@@ -8,7 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // GitLab numeric access levels.
@@ -169,12 +170,10 @@ func NotesHaveAuthor(notes []DiscussionNote, userID int64) bool {
 // FormatThreadTranscript renders a discussion's notes as the plain-text
 // transcript the converse bot receives as {{vars.thread_context}}:
 // chronological, system notes skipped, the bot's own notes labelled so the
-// model knows which earlier statements are its own. maxChars caps the
-// result — the FIRST note (the thread anchor, typically the review comment
-// the operator replied to) is always kept, then the most recent notes fill
-// the remaining budget with an omission marker for the middle.
+// model knows which earlier statements are its own. The budget policy
+// (anchor kept, newest notes fill, omission marker) is the shared
+// webhooks.CapTranscript, one policy for every forge's conversation lane.
 func FormatThreadTranscript(notes []DiscussionNote, botUserID int64, maxChars int) string {
-	const sep = "\n\n---\n\n"
 	rendered := make([]string, 0, len(notes))
 	for _, n := range notes {
 		if n.System {
@@ -186,40 +185,5 @@ func FormatThreadTranscript(notes []DiscussionNote, botUserID int64, maxChars in
 		}
 		rendered = append(rendered, who+":\n"+strings.TrimSpace(n.Body))
 	}
-	if len(rendered) == 0 {
-		return ""
-	}
-	full := strings.Join(rendered, sep)
-	if maxChars <= 0 || len(full) <= maxChars {
-		return full
-	}
-	// Over budget: anchor + newest notes, omission marker in between.
-	const omitted = "[… earlier notes omitted …]"
-	anchor := rendered[0]
-	budget := maxChars - len(anchor) - len(omitted) - 2*len(sep)
-	var tail []string
-	for i := len(rendered) - 1; i >= 1; i-- {
-		need := len(rendered[i]) + len(sep)
-		if need > budget {
-			break
-		}
-		budget -= need
-		tail = append([]string{rendered[i]}, tail...)
-	}
-	parts := []string{anchor}
-	if len(tail) < len(rendered)-1 {
-		parts = append(parts, omitted)
-	}
-	parts = append(parts, tail...)
-	out := strings.Join(parts, sep)
-	if len(out) > maxChars {
-		// The anchor alone overflows the budget — hard-truncate on a rune
-		// boundary so the transcript stays valid UTF-8.
-		cut := maxChars
-		for cut > 0 && !utf8.RuneStart(out[cut]) {
-			cut--
-		}
-		out = out[:cut] + "\n[… truncated …]"
-	}
-	return out
+	return webhooks.CapTranscript(rendered, maxChars)
 }

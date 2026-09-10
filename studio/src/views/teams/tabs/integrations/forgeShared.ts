@@ -40,6 +40,12 @@ export function statusTone(
   return "danger";
 }
 
+// The iterion-bot mascot the server embeds (pkg/brand) and serves publicly:
+// the file an operator downloads for the one upload iterion cannot do itself,
+// a GitHub App's logo. Plain = the account avatar; circle = the badge form.
+export const BRAND_LOGO_URL = "/brand/iterion-bot.png";
+export const BRAND_LOGO_CIRCLE_URL = "/brand/iterion-bot-circle.png";
+
 // Shape of the confirm() handler threaded from useConfirm() down to the
 // connection card and OAuth-apps sections — identical to
 // ReturnType<typeof useConfirm>["confirm"], named so children don't each

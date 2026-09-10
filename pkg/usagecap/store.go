@@ -19,12 +19,33 @@ import (
 // order.
 type Store interface {
 	// Record stores a reading for a credential key, keeping the newest
-	// per window.
+	// per window, and maintains Reading.Refusals: a refusal with no reset
+	// instant continues the window's streak, anything else ends it. The
+	// count belongs to the store because a caller only ever sees its own
+	// observation — the escalating rest needs the history, and several
+	// pods write it.
 	Record(ctx context.Context, key string, r Reading) error
 	// Latest returns the newest reading per window for a credential key.
 	// An unknown key is not an error: it means "nothing learned yet",
 	// which must read as "not blocked".
 	Latest(ctx context.Context, key string) ([]Reading, error)
+	// DeleteByFingerprint forgets every reading recorded for ONE
+	// credential, under every key its meter was composed with (any
+	// backend, any scope — a lent or platform credential is metered under
+	// several). It is the operator's escape hatch when a reset is known
+	// to have happened that the ledger cannot see (the provider reset the
+	// window early): the credential reads "nothing learned yet" until the
+	// next session re-measures it. Fingerprint-less legacy keys name a
+	// slot, not a credential, and are never matched. Returns how many
+	// readings were dropped; an unknown fingerprint drops zero and is not
+	// an error.
+	DeleteByFingerprint(ctx context.Context, fingerprint string) (int, error)
+}
+
+// keyFingerprintSuffix is the exact tail Key appends for a credential
+// fingerprint — the segment DeleteByFingerprint matches on.
+func keyFingerprintSuffix(credFP string) string {
+	return "|fp:" + strings.TrimSpace(credFP)
 }
 
 // Key identifies the credential whose windows a reading describes.
@@ -54,7 +75,7 @@ func Key(backend, scope, credFP string) string {
 	}
 	k := backend + "|" + scope
 	if fp := strings.TrimSpace(credFP); fp != "" {
-		k += "|fp:" + fp
+		k += keyFingerprintSuffix(fp)
 	}
 	return k
 }
@@ -67,6 +88,12 @@ const (
 	ScopeLocal = "local"
 	// ScopeTenantPrefix prefixes a tenant that brought its own credential.
 	ScopeTenantPrefix = "tenant:"
+	// ScopeOrgPrefix prefixes an ORG that lent its own credential to the
+	// teams of its audience. It is its own scope for the same reason
+	// ScopePlatform is: one account serves several tenants, so keying it
+	// per tenant would open one ledger per team and what one team measured
+	// — a refusal, a window at 95% — would reach none of the others.
+	ScopeOrgPrefix = "org:"
 )
 
 // TenantScope builds the scope for a tenant's own credential.
@@ -76,6 +103,19 @@ func TenantScope(tenantID string) string {
 		return ScopePlatform
 	}
 	return ScopeTenantPrefix + tenantID
+}
+
+// OrgScope builds the scope for an org's own shared credential. An unknown
+// org falls back to the platform meter rather than to a per-tenant one:
+// merging with the deployment's meter is conservative (it can only make the
+// walk skip a credential sooner), while fragmenting per team is the failure
+// this scope exists to prevent.
+func OrgScope(orgID string) string {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return ScopePlatform
+	}
+	return ScopeOrgPrefix + orgID
 }
 
 // MemStore is an in-process Store: the local CLI's whole world, and the
@@ -90,7 +130,8 @@ func NewMemStore() *MemStore {
 	return &MemStore{data: map[string]map[Window]Reading{}}
 }
 
-// Record keeps the newest reading per window.
+// Record keeps the newest reading per window and continues (or ends) the
+// window's refusal streak.
 func (s *MemStore) Record(_ context.Context, key string, r Reading) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,11 +140,29 @@ func (s *MemStore) Record(_ context.Context, key string, r Reading) error {
 		byWindow = map[Window]Reading{}
 		s.data[key] = byWindow
 	}
-	if prev, ok := byWindow[r.Window]; ok && prev.ObservedAt.After(r.ObservedAt) {
+	prev, had := byWindow[r.Window]
+	if had && prev.ObservedAt.After(r.ObservedAt) {
+		// The loser of a newest-wins race changes nothing, streak included.
 		return nil
 	}
+	r.Refusals = nextRefusalCount(prev, had, r)
 	byWindow[r.Window] = r
 	return nil
+}
+
+// nextRefusalCount is the streak arithmetic both twins implement (the
+// Mongo one as the equivalent aggregation expression): a refusal with no
+// reset instant continues the window's streak, anything else ends it.
+// Dated refusals are excluded because they expire at their own reset and
+// need no escalation.
+func nextRefusalCount(prev Reading, had bool, next Reading) int {
+	if next.Status != StatusRejected || !next.ResetsAt.IsZero() {
+		return 0
+	}
+	if had && prev.Status == StatusRejected && prev.ResetsAt.IsZero() {
+		return prev.Refusals + 1
+	}
+	return 1
 }
 
 // Latest returns the newest reading per window.
@@ -116,4 +175,22 @@ func (s *MemStore) Latest(_ context.Context, key string) ([]Reading, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// DeleteByFingerprint drops every key carrying the credential's fp segment.
+func (s *MemStore) DeleteByFingerprint(_ context.Context, fingerprint string) (int, error) {
+	if strings.TrimSpace(fingerprint) == "" {
+		return 0, nil
+	}
+	suffix := keyFingerprintSuffix(fingerprint)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for key, byWindow := range s.data {
+		if strings.HasSuffix(key, suffix) {
+			n += len(byWindow)
+			delete(s.data, key)
+		}
+	}
+	return n, nil
 }

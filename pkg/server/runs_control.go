@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -253,6 +254,7 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 type rewindRunRequest struct {
 	NodeID string `json:"node_id"`
 	Auto   bool   `json:"auto,omitempty"`
+	Force  bool   `json:"force,omitempty"`
 	// KeepFiles is the legacy spelling of RestoreScope "none".
 	KeepFiles bool `json:"keep_files,omitempty"`
 	// RestoreScope is "none" | "produced" | "full". Omitted means "let
@@ -321,13 +323,14 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		RunID:        id,
 		NodeID:       req.NodeID,
 		Auto:         req.Auto,
+		Force:        req.Force,
 		KeepFiles:    req.KeepFiles,
 		RestoreScope: restoreScope,
 		SourcePath:   sourcePath,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, runview.ErrRewindNotRewindable):
+		case errors.Is(err, runview.ErrRewindNotRewindable), errors.Is(err, store.ErrRunConflict):
 			// 409: the run is running or terminal — a state conflict the
 			// caller resolves by cancelling/pausing first, not a bad request.
 			s.httpErrorFor(w, r, http.StatusConflict, "rewind: %v", err)
@@ -335,7 +338,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, runview.ErrRewindNodeNotReached),
 			errors.Is(err, runview.ErrRewindNoSourceRecorded),
 			errors.Is(err, runview.ErrRewindNoChange),
-			errors.Is(err, runview.ErrRewindAmbiguous):
+			errors.Is(err, runview.ErrRewindAmbiguous),
+			errors.Is(err, runtime.ErrArtifactContractIncompatible):
 			s.httpErrorFor(w, r, http.StatusBadRequest, "rewind: %v", err)
 		default:
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "rewind: %v", err)

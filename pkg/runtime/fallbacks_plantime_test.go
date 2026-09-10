@@ -20,7 +20,7 @@ func TestContainsClawNode_SeesFallbackRoutes(t *testing.T) {
 			Fallbacks: []ir.Fallback{{Name: "api", Backend: "claw", Model: "openai/gpt-5.5"}},
 		},
 	}}
-	if !containsClawNode(wf) {
+	if !containsClawNode(wf, nil) {
 		t.Error("a claw route inside a fallbacks: block must still mount the iterion binary")
 	}
 }
@@ -36,7 +36,7 @@ func TestContainsClawNode_JudgeFallbackRoutesToo(t *testing.T) {
 			Fallbacks: []ir.Fallback{{Name: "api", Backend: "claw", Model: "openai/gpt-5.5"}},
 		},
 	}}
-	if !containsClawNode(wf) {
+	if !containsClawNode(wf, nil) {
 		t.Error("a judge's claw route must mount the binary too")
 	}
 }
@@ -54,7 +54,7 @@ func TestContainsClawNode_InheritingRouteAddsNothing(t *testing.T) {
 			Fallbacks: []ir.Fallback{{Name: "same", Model: "claude-sonnet-5"}},
 		},
 	}}
-	if containsClawNode(wf) {
+	if containsClawNode(wf, nil) {
 		t.Error("a route with no backend of its own must not be read as claw")
 	}
 }

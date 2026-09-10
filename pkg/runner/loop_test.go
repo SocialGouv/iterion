@@ -19,7 +19,9 @@ import (
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -407,6 +409,10 @@ func TestClassifyExecResult(t *testing.T) {
 		{"interrupted naks for resume", runtime.ErrRunInterrupted, "interrupted", actionNak},
 		{"wrapped interrupted naks", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), "interrupted", actionNak},
 		{"generic failure naks", errors.New("boom"), "failed", actionNak},
+		// An IR this runner cannot load is deterministic for this runner:
+		// Ack (the run is failed_resumable + IR_UNLOADABLE), never a
+		// redelivery that reaches the same image and the same verdict.
+		{"unloadable IR acks (no redelivery)", fmt.Errorf("runner: %w: compile IR: 3 diagnostic(s)", ErrIRUnloadable), "ir_unloadable", actionAck},
 		// Budget exceeded is a resumable checkpoint — Ack, never auto-resume
 		// (auto-redelivery re-fails on the same spent budget and its fresh-pod
 		// recordRunGitMeta clobbers the exported commits; run 019f8e08). It is
@@ -429,6 +435,24 @@ func TestClassifyExecResult(t *testing.T) {
 		// the first attempt's. errors.Is short-circuits, so this is one
 		// reordering away from silently regressing.
 		{"budget beats interrupted", errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), "budget_exceeded", actionAck},
+		// A sandbox setup phase that hit its own bound: the engine wrote
+		// failed_resumable + SANDBOX_SETUP_TIMEOUT; Nak — DELAYED — so a
+		// fresh pod retries once the infrastructure has had a moment. Its
+		// own status label, not "interrupted": the DLQ park on the last
+		// delivery must still apply to it.
+		{"sandbox phase timeout naks for a fresh pod, after a delay", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed"))),
+			"sandbox_setup_timeout", actionNakDelayed},
+		// The resume arms' sandbox-start park returns the same sentinels the
+		// status carries (runtime.parkResumeSandboxFailure): an operator
+		// cancel during sandbox start acks, a drain naks exempt from the DLQ
+		// park. A bare "runtime: sandbox: docker start: context canceled"
+		// would classify as a generic failure — an operator cancel burning a
+		// delivery, a drain parked on the DLQ.
+		{"resume-arm cancel during sandbox start acks", fmt.Errorf("%w: sandbox start: %v", runtime.ErrRunCancelled, errors.New("docker start: context canceled")),
+			"cancelled", actionAck},
+		{"resume-arm drain during sandbox start naks", fmt.Errorf("%w: sandbox start: %v", runtime.ErrRunInterrupted, errors.New("kubectl exec: signal: killed")),
+			"interrupted", actionNak},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -440,6 +464,96 @@ func TestClassifyExecResult(t *testing.T) {
 				t.Errorf("action = %v, want %v", out.action, c.wantAction)
 			}
 		})
+	}
+}
+
+// A sandbox setup timeout is re-offered with sandboxSetupTimeoutNakDelay,
+// through NakWithDelay — a bare Nak re-offers within seconds, and a copy
+// that always stalls then burns the delivery budget as back-to-back pods
+// (8 × the phase budget before the DLQ park, #669's measured shape).
+func TestClassifyExecResult_SandboxSetupTimeoutIsReofferedAfterADelay(t *testing.T) {
+	err := fmt.Errorf("runtime: sandbox: %w",
+		errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("in-pod tar extract: signal: killed")))
+	out := classifyExecResult(err, "run-1")
+	if out.delay != sandboxSetupTimeoutNakDelay || out.delay <= 0 {
+		t.Fatalf("delay = %s, want %s — an immediate re-offer is 8 back-to-back pods", out.delay, sandboxSetupTimeoutNakDelay)
+	}
+	d := &fakeDelivery{delivered: 3}
+	dispatchExecOutcome(iterlog.Nop(), d, out, "run-1")
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != sandboxSetupTimeoutNakDelay || d.naks != 0 || d.terms != 0 || d.acks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one NakWithDelay(%s)", d, sandboxSetupTimeoutNakDelay)
+	}
+}
+
+// A pod that never got placed is re-offered too, after long enough for a
+// cluster autoscaler to add a node (the measured scale-up was ~2 min).
+// Deliberately a delayed NAK and not an interruption: the DLQ park on the
+// last permitted delivery still applies, so a fleet that stays full ends
+// parked and announced rather than naking into nothing.
+func TestClassifyExecResult_SandboxCapacityIsReofferedAfterADelay(t *testing.T) {
+	err := fmt.Errorf("runtime: sandbox: %w",
+		errors.Join(sandbox.ErrCapacity, errors.New("0/12 nodes are available: 11 Insufficient cpu")))
+	out := classifyExecResult(err, "run-1")
+	if out.finalStatus != "sandbox_capacity" {
+		t.Fatalf("finalStatus = %q, want sandbox_capacity", out.finalStatus)
+	}
+	if out.delay != sandboxCapacityNakDelay || out.delay <= 0 {
+		t.Fatalf("delay = %s, want %s — an immediate re-offer re-hits a cluster that has not grown yet", out.delay, sandboxCapacityNakDelay)
+	}
+	if bankableStatus(out.finalStatus) {
+		t.Fatal("a pod that never started has nothing to bank")
+	}
+	d := &fakeDelivery{delivered: 3}
+	dispatchExecOutcome(iterlog.Nop(), d, out, "run-1")
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != sandboxCapacityNakDelay || d.naks != 0 || d.terms != 0 || d.acks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one NakWithDelay(%s)", d, sandboxCapacityNakDelay)
+	}
+}
+
+// The delayed redelivery lands on the run's timeline, naming the phase
+// timeout, the delay and the attempt's rank — the only trace between two
+// attempts of why the run sits failed_resumable.
+func TestRecordRedeliveryDeferred_PutsThePhaseTimeoutOnTheTimeline(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-deferred"
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{ID: id, TenantID: "team-1", OwnerID: "u1", Status: store.RunStatusFailedResumable}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	execErr := fmt.Errorf("runtime: sandbox: %w", errors.Join(sandbox.ErrPhaseTimeout, errors.New("workspace copy stalled")))
+	out := classifyExecResult(execErr, id)
+
+	r.recordRedeliveryDeferred(msg, out, execErr, 3, 8)
+
+	events, err := st.LoadEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev *store.Event
+	for _, e := range events {
+		if e.Type == store.EventRunRedeliveryDeferred {
+			ev = e
+		}
+	}
+	if ev == nil {
+		t.Fatal("no run_redelivery_deferred on the timeline — between two attempts the operator sees nothing")
+	}
+	if got, _ := ev.Data["reason"].(string); got != "sandbox_setup_timeout" {
+		t.Fatalf("reason = %q, want sandbox_setup_timeout", got)
+	}
+	if got, _ := ev.Data["delay_seconds"].(float64); int(got) != int(sandboxSetupTimeoutNakDelay/time.Second) {
+		t.Fatalf("delay_seconds = %v, want %d", ev.Data["delay_seconds"], int(sandboxSetupTimeoutNakDelay/time.Second))
+	}
+	if got, _ := ev.Data["error"].(string); !strings.Contains(got, "workspace copy stalled") {
+		t.Fatalf("error = %q, want the engine's cause", got)
+	}
+	if d, _ := ev.Data["delivery"].(float64); int(d) != 3 {
+		t.Fatalf("delivery = %v, want 3", ev.Data["delivery"])
 	}
 }
 
@@ -459,6 +573,11 @@ func TestOutcomeSideEffectsFire(t *testing.T) {
 	}{
 		{"finished fires", nil, true},
 		{"paused fires", runtime.ErrRunPaused, true},
+		// A DELAYED nak is still a nak: the run comes back on its own, so
+		// firing here would push one "run failed" episode per stalled
+		// sandbox attempt.
+		{"sandbox setup timeout (delayed nak) does not fire", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrPhaseTimeout, context.DeadlineExceeded, errors.New("copy stalled"))), false},
 		{"operator pause fires", runtime.ErrRunPausedOperator, true},
 		{"operator cancel fires", runtime.ErrRunCancelled, true},
 		{"budget exceeded fires (acked, no auto-resume)", runtime.ErrBudgetExceeded, true},
@@ -466,6 +585,9 @@ func TestOutcomeSideEffectsFire(t *testing.T) {
 		{"wrapped generic failure naks — no fire", fmt.Errorf("engine: %w", errors.New("boom")), false},
 		{"interrupted naks — no fire", runtime.ErrRunInterrupted, false},
 		{"wrapped interrupted naks — no fire", fmt.Errorf("%w: at node n1", runtime.ErrRunInterrupted), false},
+		{"sandbox phase timeout naks — no fire", fmt.Errorf("runtime: sandbox: %w", sandbox.ErrPhaseTimeout), false},
+		{"sandbox capacity (delayed nak) does not fire", fmt.Errorf("runtime: sandbox: %w",
+			errors.Join(sandbox.ErrCapacity, errors.New("11 Insufficient cpu"))), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -504,6 +626,27 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 	save("run-failres", store.RunStatusFailedResumable, &store.Checkpoint{NodeID: "n1"})
 	save("run-pausedop", store.RunStatusPausedOperator, &store.Checkpoint{NodeID: "n1"})
 	save("run-finished", store.RunStatusFinished, nil)
+	// A PR-closed cancel writes the reason (wrapped by CancelRunWithReason)
+	// into run.Error. The runner admission MUST detect it and drop the
+	// redelivery even when it carries an explicit resume — see the new
+	// case rows below (#663).
+	saveErr := func(id string, status store.RunStatus, cp *store.Checkpoint, errText string) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{ID: id, WorkflowName: "wf", Status: status, Checkpoint: cp, Error: errText}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	// A document cancelled before EndReason existed: the message, wrapped
+	// as CancelRunWithReason wraps it ("(was <status>: <prior>)"), is the
+	// only carrier — which is what store.EndedBecausePRClosed's migration
+	// half reads.
+	saveErr("run-cancel-pr-closed", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"},
+		store.RunEndReasonPRClosed.Message()+" (was failed_resumable: node \"campaign\": rate_limited)")
+	// An operator cancel of a QUEUED resume: every cloud resume CASes the
+	// doc to queued before publishing, so `cancelled` at admission always
+	// post-dates the publish — whatever the error shape.
+	saveErr("run-cancelled-op", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled")
+	saveErr("run-cancelled-interrupted", store.RunStatusCancelled, &store.Checkpoint{NodeID: "n1"}, "cancelled (was running: runtime: run interrupted)")
 
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
 
@@ -523,7 +666,20 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 		// auto-resume here resurrected operator-cancelled runs (live:
 		// 019f8ba3, three times). Only an explicit resume proceeds.
 		{"cancel checkpoint stays cancelled", "run-cancelled-cp", nil, false, actionAck, "cancelled", false},
-		{"cancel checkpoint explicit resume proceeds", "run-cancelled-cp", &queue.ResumeSpec{}, true, 0, "", true},
+		// A resume message on a cancelled doc: the cancel post-dates the
+		// publish (every cloud resume CASes to queued first), so it is an
+		// operator's decision the message must not override.
+		{"cancel checkpoint with resume set still drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"operator cancel of a queued resume drops", "run-cancelled-op", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"interrupted-shaped cancel with resume set drops", "run-cancelled-interrupted", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"empty-reason cancel with resume set drops", "run-cancelled-cp", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		// #663: a PR-closed cancel is terminal for EVERY redelivery,
+		// including one that carries msg.Resume set (from the retry
+		// sweeper's SubmitResume or a Nak of the previous attempt).
+		// Without this the run 01a06885 dogfood on #646 re-launched a
+		// review 2s after the PR merged, burning provider quota.
+		{"cancel PR-closed drops resume redelivery", "run-cancel-pr-closed", &queue.ResumeSpec{}, false, actionAck, "cancelled", true},
+		{"cancel PR-closed drops bare redelivery too", "run-cancel-pr-closed", nil, false, actionAck, "cancelled", false},
 		{"failed_resumable converts to resume", "run-failres", nil, true, 0, "", true},
 		{"paused_operator converts to resume", "run-pausedop", nil, true, 0, "", true},
 		{"explicit resume passes through", "run-failres", &queue.ResumeSpec{}, true, 0, "", true},
@@ -552,6 +708,131 @@ func TestResolveDeliveryPreconditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #714: a stale LAUNCH redelivery on a run that lived a second life must
+// not restart it from node 1. The sequence is the live one: the run is
+// cancelled with its checkpoint kept, an operator resumes it (the
+// publisher CASes the doc back to `queued`, refreshing QueuedAt, and
+// publishes a RESUME message), and JetStream redelivers the ORIGINAL
+// LAUNCH message first. That message carries no Resume and meets a
+// `queued` doc, so the admission gauntlet used to wave it through:
+// runResolveDoc flips queued → running and Engine.Run starts at the entry
+// node, re-spending the tokens the checkpoint exists to save and
+// re-posting whatever the first pass already posted — while the real
+// RESUME message then finds a `running` doc.
+//
+// QueuedAt is the fence: every transition into `queued` refreshes it, so
+// a delivery published BEFORE it belongs to an earlier attempt.
+func TestResolveDeliveryPreconditions_StaleLaunchOnRequeuedRun(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+
+	// Life 1: launched, executed, checkpointed, then cancelled — the
+	// checkpoint survives the cancel by contract.
+	const runID = "run-requeued"
+	if err := st.SaveRun(ctx, &store.Run{ID: runID, WorkflowName: "wf", Status: store.RunStatusRunning}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := st.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "implement"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := st.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "operator cancelled"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	launchedAt := time.Now().UTC().Add(-time.Hour)
+
+	// Life 2: the operator's resume claims the doc back to `queued`,
+	// which refreshes QueuedAt — the durable attempt marker.
+	changed, err := st.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled})
+	if err != nil || !changed {
+		t.Fatalf("resume claim = (%t, %v), want (true, nil)", changed, err)
+	}
+	requeued, err := st.LoadRun(ctx, runID)
+	if err != nil || requeued.QueuedAt == nil {
+		t.Fatalf("LoadRun after requeue = (%+v, %v), want a QueuedAt marker", requeued, err)
+	}
+	if requeued.Checkpoint == nil {
+		t.Fatal("the requeue dropped the checkpoint — the premise of this test no longer holds")
+	}
+
+	t.Run("stale launch redelivery is dropped", func(t *testing.T) {
+		msg := &queue.RunMessage{
+			RunID:          runID,
+			TenantID:       "team-1",
+			PublishedAtRFC: launchedAt.Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if out.proceed && msg.Resume == nil {
+			t.Fatal("a launch message published before the current attempt proceeded as a LAUNCH — Engine.Run restarts it from the entry node with the checkpoint on the doc ignored")
+		}
+		if out.proceed {
+			t.Fatalf("the stale delivery proceeded (as a resume) — the run's own resume message is already in flight, so this one must be dropped: %+v", out)
+		}
+		if out.action != actionAck {
+			t.Errorf("action = %v, want actionAck (a stale delivery is dropped, not redelivered)", out.action)
+		}
+		if out.finalStatus != "stale_attempt" {
+			t.Errorf("finalStatus = %q, want stale_attempt", out.finalStatus)
+		}
+	})
+
+	t.Run("the attempt's own resume message proceeds", func(t *testing.T) {
+		msg := &queue.RunMessage{
+			RunID:          runID,
+			TenantID:       "team-1",
+			Resume:         &queue.ResumeSpec{},
+			PublishedAtRFC: requeued.QueuedAt.Add(time.Millisecond).Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("the resume publication of the CURRENT attempt was refused: %+v", out)
+		}
+		if msg.Resume == nil {
+			t.Fatal("msg.Resume was cleared")
+		}
+	})
+
+	// A message with no published_at (a legacy publication, or a store
+	// that never stamped one) cannot be told apart by identity. The
+	// checkpoint on the doc is then the evidence: a queued doc that
+	// carries one has already executed, so the delivery resumes rather
+	// than restarting.
+	t.Run("undatable launch honours the checkpoint", func(t *testing.T) {
+		msg := &queue.RunMessage{RunID: runID, TenantID: "team-1"}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("an undatable delivery on a resumable queued doc was dropped: %+v", out)
+		}
+		if msg.Resume == nil {
+			t.Fatal("no resume synthesised — Engine.Run would restart the run from its entry node, ignoring the checkpoint")
+		}
+	})
+
+	// The fence must not swallow a FIRST attempt: a freshly queued doc
+	// with no checkpoint is exactly what the queued arm exists to admit.
+	t.Run("a first launch still proceeds as a launch", func(t *testing.T) {
+		const freshID = "run-fresh"
+		if _, err := st.CreateQueuedRun(ctx, freshID, "wf", "", "", nil); err != nil {
+			t.Fatalf("CreateQueuedRun: %v", err)
+		}
+		msg := &queue.RunMessage{
+			RunID:          freshID,
+			TenantID:       "team-1",
+			PublishedAtRFC: time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano),
+		}
+		out := r.resolveDeliveryPreconditions(msg)
+		if !out.proceed {
+			t.Fatalf("a first launch was refused: %+v", out)
+		}
+		if msg.Resume != nil {
+			t.Fatal("a first launch was converted to a resume — it has no checkpoint to resume from")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,4 +1352,377 @@ func TestRecordRunGitMeta(t *testing.T) {
 			t.Error("pod-confirmed empty snapshot was not persisted")
 		}
 	})
+}
+
+// A precondition drop must carry the JetStream attempt count and stream
+// sequence on its own line; a silent outcome stays silent.
+func TestWithDeliveryAttempt(t *testing.T) {
+	f, a := withDeliveryAttempt("runner: run %s is cancelled — dropping redelivery (resume=%v)", []any{"run-1", true}, 2, 77)
+	if got := fmt.Sprintf(f, a...); got != "runner: run run-1 is cancelled — dropping redelivery (resume=true) (delivery=2 seq=77)" {
+		t.Fatalf("rendered %q", got)
+	}
+	if f, a := withDeliveryAttempt("", nil, 3, 9); f != "" || a != nil {
+		t.Fatalf("silent outcome must stay silent, got %q %v", f, a)
+	}
+}
+
+// The admission gauntlet runs BEFORE the per-run lock. A `running` doc
+// must leave it untouched: the lease is the only liveness authority, and
+// a write here — with the lease possibly held by a live sibling — would
+// mislabel a live run, then Nak away when the lock refuses. Adoption of
+// an orphan happens under the lock, never here.
+func TestResolveDeliveryPreconditions_RunningIsNotWrittenBeforeTheLock(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: "run-running-prelock", TenantID: "team-1", OwnerID: "u1",
+		WorkflowName: "wf", Status: store.RunStatusRunning,
+		Checkpoint: &store.Checkpoint{NodeID: "n1"},
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: "run-running-prelock", TenantID: "team-1", OwnerID: "u1"}
+	out := r.resolveDeliveryPreconditions(msg)
+	if !out.proceed {
+		t.Fatalf("a running doc must proceed to the lock, got %+v", out)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the delivery was converted to a resume BEFORE the lock — the write it implies raced whoever holds the lease")
+	}
+	got, err := st.LoadRun(ctx, "run-running-prelock")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusRunning {
+		t.Fatalf("status = %s: the doc was written BEFORE the lock — a live sibling's run just got mislabelled", got.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Under-lock adoption of a stale `running` doc
+// ---------------------------------------------------------------------------
+
+// fakeDelivery records the JetStream transition a decision takes.
+type fakeDelivery struct {
+	delivered         int
+	acks, naks, terms int
+	nakDelays         []time.Duration
+}
+
+func (d *fakeDelivery) Ack() error  { d.acks++; return nil }
+func (d *fakeDelivery) Nak() error  { d.naks++; return nil }
+func (d *fakeDelivery) Term() error { d.terms++; return nil }
+func (d *fakeDelivery) NakWithDelay(delay time.Duration) error {
+	d.nakDelays = append(d.nakDelays, delay)
+	return nil
+}
+func (d *fakeDelivery) NumDelivered() int { return d.delivered }
+
+// lockHeldStore answers every LockRun with the lease-held signal: a
+// sibling pod owns the run.
+type lockHeldStore struct{ store.RunStore }
+
+func (lockHeldStore) LockRun(context.Context, string) (store.RunLock, error) {
+	return nil, natsq.ErrLockHeld
+}
+
+// seedRunningRun persists a `running` doc with a checkpoint and returns
+// it as the store reads it (UpdatedAt stamped by the save).
+func seedRunningRun(t *testing.T, st store.RunStore, id string) *store.Run {
+	t.Helper()
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.SaveRun(ctx, &store.Run{
+		ID: id, TenantID: "team-1", OwnerID: "u1", WorkflowName: "wf",
+		Status: store.RunStatusRunning, Checkpoint: &store.Checkpoint{NodeID: "n1"},
+		// Every real doc carries a last-write time (CreateRun and each
+		// status transition stamp it); a zero one is the legacy shape.
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	run, err := st.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	return run
+}
+
+func loadStatus(t *testing.T, st store.RunStore, id string) *store.Run {
+	t.Helper()
+	run, err := st.LoadRun(store.WithIdentity(context.Background(), "team-1", "u1"), id)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	return run
+}
+
+// A lease held by another pod is a live owner: the delivery naks away and
+// NOTHING is written — adoption never runs, because it runs after the
+// lock and the lock refused.
+func TestAcquireRunLock_LeaseHeldByAnotherDefersWithoutWrite(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-held"
+	seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: lockHeldStore{st}, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 3}
+
+	_, ok, status := r.acquireRunLock(context.Background(), msg, d, iterlog.Nop())
+
+	if ok || status != "lock_held" {
+		t.Fatalf("acquireRunLock = (%v, %q), want (false, lock_held)", ok, status)
+	}
+	if d.naks != 0 || d.acks != 0 || d.terms != 0 || len(d.nakDelays) != 1 || d.nakDelays[0] != natsq.DefaultLockTTL {
+		t.Fatalf("delivery transitions = %+v, want one delayed Nak (the sibling keeps the run)", d)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning || got.FailureCode != "" {
+		t.Fatalf("doc = %s/%q after a refused lock — a live sibling's run was written to", got.Status, got.FailureCode)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the delivery was converted to a resume although the lock refused")
+	}
+}
+
+// A `running` doc written more recently than the adoption floor is not
+// adopted: the previous holder may be a lapsed-but-alive pod still
+// unwinding, whose unconditional terminal write would land on top of the
+// adopter. The delivery is re-offered after the floor's remainder — a
+// delayed Nak, so the redelivery budget is not burnt inside the floor —
+// and the lock is released for it.
+func TestAdoptRunningUnderLock_YoungDocIsReofferedAfterTheFloor(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-young"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	lock, err := st.LockRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LockRun: %v", err)
+	}
+	d := &fakeDelivery{delivered: 2}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(time.Minute))
+
+	if out.proceed {
+		t.Fatalf("a doc written 1m ago was adopted (%+v) — inside the %s floor a lapsed pod may still be unwinding", out, runningAdoptionFloor)
+	}
+	if out.action != actionNakDelayed {
+		t.Fatalf("action = %v, want a delayed Nak", out.action)
+	}
+	if want := runningAdoptionFloor - time.Minute; out.delay > want || out.delay < want-2*time.Second {
+		t.Fatalf("delay = %s, want the floor's remainder ≈ %s", out.delay, want)
+	}
+	dispatchPrecondition(iterlog.Nop(), d, out, id)
+	if len(d.nakDelays) != 1 || d.nakDelays[0] != out.delay || d.naks != 0 {
+		t.Fatalf("delivery transitions = %+v, want one NakWithDelay(%s) and no bare Nak (seven bare naks in two minutes is the #669 log)", d, out.delay)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning {
+		t.Fatalf("doc = %s, want running left untouched", got.Status)
+	}
+	if msg.Resume != nil {
+		t.Fatal("a deferred delivery must not be converted to a resume")
+	}
+	// The lock is released on the way out of processOne; the next
+	// delivery must be able to take it.
+	if err := lock.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	next, err := st.LockRun(context.Background(), id)
+	if err != nil {
+		t.Fatalf("the lock was not released for the re-offered delivery: %v", err)
+	}
+	_ = next.Unlock()
+}
+
+// A young `running` doc on the LAST permitted delivery: JetStream will not
+// re-offer it whatever we answer, so the delivery must not claim a
+// re-offer ("re-offered in Ns") that never comes. Nothing is written — the
+// floor exists because the previous holder may still be unwinding — the
+// message is termed, and the log names the owner of what happens next:
+// the orphan sweeper.
+func TestAdoptRunningUnderLock_YoungDocOnLastDeliveryTermsAndNamesTheSweeper(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-young-last"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true, maxDeliverOverride: 8}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 8}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(time.Minute))
+
+	if out.proceed {
+		t.Fatalf("a young doc was adopted on the last delivery (%+v) — the floor still applies", out)
+	}
+	if out.action == actionNakDelayed {
+		t.Fatalf("action = delayed Nak on delivery %d/%d — JetStream will not re-offer it, so a 're-offered in Ns' log line is false and nothing parks or reconciles the doc", d.delivered, r.maxDeliver())
+	}
+	if out.action != actionTerm {
+		t.Fatalf("action = %v, want Term (explicit on the queue side; the sweeper owns the doc)", out.action)
+	}
+	if !strings.Contains(out.logFmt, "LAST permitted delivery") || !strings.Contains(out.logFmt, "orphan sweeper") {
+		t.Fatalf("the log must say this is the last delivery and who reconciles the doc, got %q", out.logFmt)
+	}
+	dispatchPrecondition(iterlog.Nop(), d, out, id)
+	if d.terms != 1 || len(d.nakDelays) != 0 || d.naks != 0 {
+		t.Fatalf("delivery transitions = %+v, want exactly one Term", d)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning || got.FailureCode != "" {
+		t.Fatalf("doc = %s/%q, want running left untouched — a park over a possibly-live writer clobbers or is clobbered", got.Status, got.FailureCode)
+	}
+	if msg.Resume != nil {
+		t.Fatal("the termed delivery was converted to a resume")
+	}
+}
+
+// A `running` doc older than the floor, under our lock, is an orphan:
+// promoted to failed_resumable + PROCESS_ORPHANED with continuation
+// redelivery_pending — THIS delivery resumes it next, so nothing that
+// acts on `final` (the board dispatcher, the stuck-card watchdog, the
+// outcome router) may act in the window — and the delivery is converted
+// into a resume so the checkpoint is honoured.
+func TestAdoptRunningUnderLock_OldDocIsAdoptedAsRedeliveryPending(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-orphan"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+	d := &fakeDelivery{delivered: 2}
+
+	out := r.adoptRunningUnderLock(msg, doc, d, doc.UpdatedAt.Add(10*time.Minute))
+
+	if !out.proceed {
+		t.Fatalf("an orphan older than the floor was not adopted: %+v", out)
+	}
+	if msg.Resume == nil {
+		t.Fatal("msg.Resume still nil after the promote — Engine.Resume would refuse `running` and burn the delivery (#669 part 2)")
+	}
+	got := loadStatus(t, st, id)
+	if got.Status != store.RunStatusFailedResumable {
+		t.Fatalf("status = %s, want failed_resumable", got.Status)
+	}
+	if got.FailureCode != store.FailureProcessOrphaned {
+		t.Fatalf("FailureCode = %q, want PROCESS_ORPHANED", got.FailureCode)
+	}
+	if got.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("ContinuationState = %q, want redelivery_pending — `final` lets three consumers act on a run this very delivery is about to resume", got.ContinuationState)
+	}
+	if !strings.Contains(out.logFmt, "delivery %d/%d") || !strings.Contains(out.logFmt, "last doc write") {
+		t.Fatalf("the promote line must carry the doc age and the delivery count, got %q", out.logFmt)
+	}
+}
+
+// Without a lease authority (no queue wired, a lock-less store) a held
+// lock proves nothing: the doc is left to the engine, unwritten.
+func TestAdoptRunningUnderLock_NoLeaseAuthorityLeavesTheDocAlone(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-no-authority"
+	doc := seedRunningRun(t, st, id)
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+
+	out := r.adoptRunningUnderLock(msg, doc, &fakeDelivery{}, doc.UpdatedAt.Add(time.Hour))
+
+	if !out.proceed || msg.Resume != nil {
+		t.Fatalf("no-authority path must proceed unchanged, got %+v (resume=%v)", out, msg.Resume != nil)
+	}
+	if got := loadStatus(t, st, id); got.Status != store.RunStatusRunning {
+		t.Fatalf("doc = %s, want running — a wrong promote under an untestable premise", got.Status)
+	}
+}
+
+// The pre-lock copy is stale by construction: a peer's terminal write
+// that landed between the two reads is honoured through the ordinary
+// disposition — resumed now, not deferred on the stale copy's age, and
+// with no CAS of our own over its cause.
+func TestAdoptRunningUnderLock_PeerMovedTheDocTakesItsDisposition(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const id = "run-moved"
+	stale := seedRunningRun(t, st, id)
+	ctx := store.WithIdentity(context.Background(), "team-1", "u1")
+	if err := st.UpdateRunStatusCoded(ctx, id, store.RunStatusFailedResumable, "interrupted at node n1", store.FailureInterrupted); err != nil {
+		t.Fatalf("peer write: %v", err)
+	}
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, lockLivenessOverride: true}
+	msg := &queue.RunMessage{RunID: id, TenantID: "team-1", OwnerID: "u1"}
+
+	// The stale copy reads young: judged on it, the delivery would be
+	// deferred for the floor's remainder while the doc is resumable NOW.
+	out := r.adoptRunningUnderLock(msg, stale, &fakeDelivery{}, stale.UpdatedAt.Add(time.Minute))
+
+	if !out.proceed || msg.Resume == nil {
+		t.Fatalf("a peer-moved failed_resumable must convert to a resume now, got %+v (resume=%v)", out, msg.Resume != nil)
+	}
+	if got := loadStatus(t, st, id); got.FailureCode != store.FailureInterrupted {
+		t.Fatalf("FailureCode = %q, want the peer's INTERRUPTED kept — the adoption must not overwrite a cause it did not establish", got.FailureCode)
+	}
+}
+
+// The PR-closed drop is a PROTOCOL between the webhook layer that cancels and
+// the runner that admits. Its carrier is the typed EndReason on the run doc,
+// not the prose in run.Error: a reworded, translated or truncated message must
+// not silently re-arm the redelivery this admission exists to refuse.
+func TestResolveDeliveryPreconditions_PRClosedIsReadFromTheTypedEndReason(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	save := func(id string, end store.RunEndReason, errText string) {
+		t.Helper()
+		if err := st.SaveRun(ctx, &store.Run{
+			ID: id, WorkflowName: "wf", Status: store.RunStatusCancelled,
+			Checkpoint: &store.Checkpoint{NodeID: "n1"},
+			EndReason:  end, Error: errText,
+		}); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	// The typed reason with a message that shares nothing with the constant.
+	save("run-typed", store.RunEndReasonPRClosed, "la pull request est fermée (was running: node \"campaign\")")
+	// A doc written before the field existed: the prose is all there is.
+	save("run-legacy", "", store.RunEndReasonPRClosed.Message()+" (was failed_resumable: node \"campaign\": rate_limited)")
+	// An operator cancel must NOT be mistaken for one.
+	save("run-operator", store.RunEndReasonOperator, "cancelled by user")
+
+	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
+	for _, c := range []struct {
+		name, runID, wantOp string
+	}{
+		{"the typed reason decides", "run-typed", "ack-pr-closed-cancel"},
+		{"a pre-field doc still reads its prose", "run-legacy", "ack-pr-closed-cancel"},
+		{"an operator cancel keeps its own line", "run-operator", "ack-cancelled"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			msg := &queue.RunMessage{RunID: c.runID, TenantID: "team-1", Resume: &queue.ResumeSpec{}}
+			out := r.resolveDeliveryPreconditions(msg)
+			if out.proceed {
+				t.Fatalf("a cancelled run must never proceed (outcome %+v)", out)
+			}
+			if out.op != c.wantOp {
+				t.Fatalf("op = %q, want %q", out.op, c.wantOp)
+			}
+		})
+	}
 }

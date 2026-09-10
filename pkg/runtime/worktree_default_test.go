@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -193,8 +194,8 @@ func TestEngineRun_UnmanagedLinkedWorktreeRecordsBaseline(t *testing.T) {
 	s := tmpStore(t)
 	repo, originalTip := initBareishRepo(t)
 	linked := filepath.Join(t.TempDir(), "linked-wt")
-	mustRun(t, repo, "git", "worktree", "add", "--detach", linked, "HEAD")
-	t.Cleanup(func() { mustRun(t, repo, "git", "worktree", "remove", "--force", linked) })
+	gittest.Run(t, repo, "worktree", "add", "--detach", linked, "HEAD")
+	t.Cleanup(func() { gittest.Run(t, repo, "worktree", "remove", "--force", linked) })
 
 	eng := New(wf, s, newStubExecutor(),
 		WithWorkDir(linked),

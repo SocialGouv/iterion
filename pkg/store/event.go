@@ -47,6 +47,11 @@ const (
 	EventToolCalled      EventType = "tool_called"
 	EventToolError       EventType = "tool_error"
 	EventArtifactWritten EventType = "artifact_written"
+	// EventArtifactContractViolation records mismatches observed under the
+	// report-only rollout policy. Execution continues, but the pilot remains
+	// distinguishable from a successful contract validation.
+	// Data: {policy, violations}
+	EventArtifactContractViolation EventType = "artifact_contract_violation"
 	// EventPlanWritten marks a new persisted plan snapshot (an agent's
 	// TodoWrite/todo_write living TODO list, captured to runs/<id>/plans/).
 	// Best-effort + additive; the studio Plans panel refreshes on it.
@@ -113,6 +118,17 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventRunRetrySkipped marks a failure the platform deliberately did
+	// NOT bring back. It is the counterpart of run_retry_scheduled: without
+	// it, a failed_resumable row whose redelivery was dropped on purpose
+	// reads exactly like one whose next attempt is still in flight, and the
+	// operator waits for a pod that will never come. Data:
+	//   - reason: why no attempt follows ("deterministic" — re-executing
+	//     would run the same step against the same inputs)
+	//   - code: the failure code that decided it (EXPRESSION_FAILED,
+	//     SCHEMA_VALIDATION, AUTH_FAILED, …)
+	//   - error: the engine's own words, so the offending step is named
+	EventRunRetrySkipped EventType = "run_retry_skipped"
 	// EventUsageCap marks the provider's subscription telemetry crossing a
 	// cap the OPERATOR set, below the provider's own wall (see
 	// pkg/usagecap). It is the difference between "the provider refused
@@ -144,6 +160,50 @@ const (
 	//     resume publish) or "redelivery" (a checkpoint with no resume spec)
 	//   - repo_url / repo_sha: what the clone was re-anchored on
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
+	// EventRunWorkspaceBankRestored marks a re-executing repo-backed run being
+	// put back on the commits its earlier attempt banked (the storage branch
+	// on the run doc) or parked (a run_bank_attempt ref), instead of starting
+	// on a bare clone of the target branch. Emitted right after the
+	// run_workspace_reset marker of the same claim; absent when the run had
+	// nothing banked. The restore checks out the chain's own base first and
+	// fast-forwards to its head, so the clone's reflog still names that base
+	// as the run's starting point. Data:
+	//   - restored: whether the tree now sits on the chain (false = refused,
+	//     fresh clone kept)
+	//   - source: "bank" (FinalBranch/FinalCommit) or "parked" (attempt ref)
+	//   - ref / head: the branch restored and the sha it was recorded at
+	//   - base / from / base_moved: the chain's base, the fresh clone's HEAD,
+	//     and whether the target branch moved under the run meanwhile
+	//   - reason / error: why a restore was refused (ref_moved when the
+	//     branch advanced past the recorded head, unrelated_history,
+	//     fetch_failed, …) — the failure shape, with restored=false
+	EventRunWorkspaceBankRestored EventType = "run_workspace_bank_restored"
+	// EventRunRedeliveryDeferred marks a delivery the runner handed back
+	// to the queue with a DELAY instead of at once — a sandbox setup
+	// phase that timed out is re-offered to a fresh pod minutes later so
+	// the infrastructure can clear the stall. Between two attempts the run
+	// sits failed_resumable with nothing else on its timeline; this event
+	// says why and for how long. Data:
+	//   - reason: the runner's outcome label ("sandbox_setup_timeout")
+	//   - delay_seconds: how long JetStream holds the message
+	//   - delivery / max_deliver: this attempt's rank in the redelivery
+	//     budget (the DLQ park follows the last one)
+	//   - error: the engine's error text
+	EventRunRedeliveryDeferred EventType = "run_redelivery_deferred"
+	// EventRunDeliveryExhausted records a queue delivery that could not acquire
+	// ownership before exhausting its attempts. It does NOT end the run: no
+	// writer may change a run's outcome or continuation without holding its
+	// lock, and this delivery never got one. Data:
+	//   - reason: the reason archived on the DLQ entry, naming which of the
+	//     two lock-failure classes this was — ownership CONFIRMED held by a
+	//     sibling, or a lock error that leaves ownership unconfirmed
+	//   - delivered: this attempt's rank in the redelivery budget (the last)
+	//   - parked: whether the DLQ publish was ACKNOWLEDGED. false means the
+	//     archive could not be confirmed, NOT that no copy exists —
+	//     PublishDLQ waits for a PubAck, so a lost ack hides a copy that
+	//     landed. Triage reads the DLQ, it does not infer absence from here
+	//   - error: why the archive was not confirmed (absent when parked)
+	EventRunDeliveryExhausted EventType = "run_delivery_exhausted"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
 	// the storage branch — because that attempt banked a strictly richer
@@ -166,6 +226,21 @@ const (
 	//     integrity-check refusal only
 	//   - reason ("push_failed") / error: the forge refused this
 	//     attempt's push — the push-failure refusal only
+	//   - reason ("doc_load_failed" / "doc_save_failed" /
+	//     "cancelled_while_banking") + head/branch/error/push_error: the
+	//     bank's doc I/O died or was refused AFTER the side effect — the
+	//     branch may sit on the forge with the doc naming nothing, or an
+	//     integrity refusal may have lost its FinalBranchError write; the
+	//     event is then the only durable carrier of what happened. On
+	//     these shapes head sits on the forge ONLY when push_error is
+	//     absent — a present push_error is the explicit marker that the
+	//     push was not confirmed (a deadline can kill the client after
+	//     the server applied the update, so "unconfirmed", not "never
+	//     arrived"). Two producers share the doc_*_failed reasons:
+	//     pushBank's post-push exits carry head/branch (a possibly
+	//     orphaned branch), recordBankFailure's pre-push ones carry
+	//     cause and no head (an integrity refusal that lost its
+	//     FinalBranchError write) — head-vs-cause is the discriminant
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
@@ -183,6 +258,45 @@ const (
 	//     recoverable from the run's git-meta snapshot) — the failure
 	//     shape; exactly one of the two is present
 	EventRunBankSuperseded EventType = "run_bank_superseded"
+	// EventRunBankAttempt marks an attempt's work being parked on its own
+	// uniquely-named ref (iterion/run-<id>-parked-<sha12> — a distinct
+	// infix from the supersede archives' -attempt-, so a pruning policy
+	// can tell a dead attempt's archive from a live run's parked work by
+	// name alone) because the
+	// STORAGE branch must not be touched: an interrupted delivery (the
+	// lease may already belong to another pod — a ref named after this
+	// chain's own head cannot contest anything), a paused run (recording
+	// FinalBranch would make a half-done run merge-eligible), or a
+	// bankable death whose run ctx was cancelled for lease loss. The run
+	// doc is deliberately left alone — no FinalBranch/FinalCommit/
+	// FinalBranchError — so this event is the ONLY durable record that
+	// the ref exists (or why it could not be pushed). Data:
+	//   - ref / head: the parked ref and the commit it holds — the
+	//     success shape (head also rides the doc-cancelled skip, naming
+	//     the commit that was NOT parked)
+	//   - cause: which outcome parked it (interrupted, paused,
+	//     paused_operator, or the lease-loss death)
+	//   - error: why the head could not be resolved or pushed (the work
+	//     stays recoverable from the git-meta snapshot) — the failure
+	//     shape; exactly one of ref/error is present
+	EventRunBankAttempt EventType = "run_bank_attempt"
+	// EventRunWorkspaceCheckpoint marks the runner preserving a
+	// COPY-BASED sandbox's work outside the pod, mid-run, on
+	// iterion/run-<id>-checkpoint. On such a driver nothing a run
+	// produces leaves the pod before teardown, so a hard pod death takes
+	// everything — measured: eight hours and 655 tool calls lost with an
+	// export that could no longer read the pod. The checkpoint is not a
+	// bank: the run doc is untouched (no FinalBranch — a half-done run
+	// must not read as merge-eligible), the commit is authored by
+	// iterion rather than by the run, and this event is the only durable
+	// record of the successful push. Run inspection projects the latest
+	// success as workspace_checkpoint, separately from final-bank fields.
+	// Data:
+	//   - ref / commit: the checkpoint ref and what it holds — the
+	//     success shape
+	//   - ref / error: why the push failed and the work is still only
+	//     inside the pod — the failure shape
+	EventRunWorkspaceCheckpoint EventType = "run_workspace_checkpoint"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from
@@ -238,6 +352,16 @@ const (
 	EventEdgeSelected   EventType = "edge_selected"
 	EventBudgetWarning  EventType = "budget_warning"
 	EventBudgetExceeded EventType = "budget_exceeded"
+	// EventUsageProgress is an OBSERVATIONAL mid-node usage sample —
+	// data: {tokens, used?, model} where tokens is the node's cumulative
+	// billed-token estimate so far and used its estimated USD cost
+	// (omitted when the model is unpriced: zero means unknown, never
+	// free). Budget accounting is untouched — the node's spend is still
+	// recorded once, at node end. Emitted debounced (on significant
+	// growth, not per turn); its consumer is the supervisor hub's
+	// cost_gt monitor, which without it only fires after the node
+	// completes — too late to steer.
+	EventUsageProgress EventType = "usage_progress"
 	// EventBudgetExitGrace records that a node ran on a SPENT budget
 	// because it sits on the run's exit path — data: {dimension, used,
 	// limit, node}. A run that emits it has, deliberately, spent past
@@ -269,6 +393,14 @@ const (
 	EventDelegateFinished EventType = "delegate_finished"
 	EventDelegateError    EventType = "delegate_error"
 	EventDelegateRetry    EventType = "delegate_retry"
+	// EventDelegateStall records a session the backend classified as
+	// deadlocked — blocked on an orchestration tool (TaskOutput / Monitor)
+	// with no background work to wait on — and how the stall ended.
+	// Data: backend, tool, idle_ms, outcome (recovered|aborted), recovered,
+	// model (omitted when unknown). `recovered` means the session was
+	// interrupted and nudged in place and went on; `aborted` means it was
+	// killed for the executor's retry (a delegate_error follows).
+	EventDelegateStall EventType = "delegate_stall"
 
 	// EventModelFallback is emitted once each time a node's fallback
 	// chain falls through from a failed element to the next one — a
@@ -278,8 +410,10 @@ const (
 	// Data keys: from_backend, to_backend, from_model, to_model,
 	// from_provider, to_provider (the credential hints, "" = auto),
 	// reason (delegate.FallbackCategory), attempts (budget spent on the
-	// failed element), error. A reactive skip additionally carries cooldown
-	// (true) and cooldown_until, with attempts=0 and no error.
+	// failed element), error. A launch-time run fallback also carries
+	// fallback_index (its zero-based destination stage). A reactive skip
+	// additionally carries cooldown (true) and cooldown_until,
+	// with attempts=0 and no error.
 	//
 	// This is the record that a fallback *chain* fired. Proxy / env
 	// overrides that rewrite the model without changing backend are
@@ -300,6 +434,18 @@ const (
 	//
 	// Data keys: backend, declared_model, effective_model.
 	EventModelDrift EventType = "model_drift"
+	// EventModelServedViaFacade: the backend served the node through an
+	// Anthropic-shaped facade (session fingerprint "facade:<base url>")
+	// rather than the provider the model id names. The reported model id is
+	// unchanged — the facade aliases it silently — so this is the only
+	// signal that a "claude-*" node was answered by another family. Emitted
+	// once per node and facade, and only for a delegation that FINISHED:
+	// the name is a claim the node was served, so counting these counts
+	// nodes SERVED through a facade, never attempts. A delegation that
+	// failed on a facade route leaves it on run.json's
+	// nodes_served[<node>].fingerprint instead. Data: backend,
+	// declared_model, effective_model, fingerprint.
+	EventModelServedViaFacade EventType = "model_served_via_facade"
 
 	// EventSandboxSkipped is emitted at run start when the workflow or a
 	// node requested an active sandbox mode (auto/inline) but the
@@ -321,6 +467,11 @@ const (
 	//   - skills: []string of the names added (never the workflow's own)
 	//   - origin: "flag" | "env" — where the list came from
 	EventSkillsInjected EventType = "skills_injected"
+	// EventSandboxShared is emitted at run start when the run executes in
+	// its PARENT run's live sandbox instead of one of its own (a subbot
+	// child): {driver, workspace, parent_run}. The parent's sandbox_started
+	// is the only container this lineage starts.
+	EventSandboxShared EventType = "sandbox_shared"
 	// EventSandboxStarted fires after the active sandbox driver finishes
 	// `Start` (container running, postCreate executed). The data block
 	// makes the resolved spec visible to operators without parsing
@@ -423,6 +574,21 @@ const (
 	// Data keys: backend, session_id (the id that failed to serve),
 	// reason (delegate.FallbackCategory), error.
 	EventSessionDegraded EventType = "session_degraded"
+	// EventMCPServerDegraded records an AMBIENT MCP server (inherited from
+	// the target repo's .mcp.json or the plugin catalog — never named by
+	// the node) that failed to boot when the executor spliced the node's
+	// active servers into its tool set. The node runs on WITHOUT that
+	// server's tools instead of failing: the node never asked for it, and
+	// the other backends already degrade per-server (claude_code's CLI
+	// skips a server it cannot start; pi bounds each connect with a
+	// timeout) — failing the run here was a claw-path parity defect that
+	// let one unbootable repo server (e.g. a token-less sentry on a
+	// runner pod) kill every plan/review node. A server the node names
+	// EXPLICITLY (a concrete mcp.<server>.<tool> in tools:) still fails
+	// loud at resolution.
+	//
+	// Data keys: server, source ("ambient"), error.
+	EventMCPServerDegraded EventType = "mcp_server_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:

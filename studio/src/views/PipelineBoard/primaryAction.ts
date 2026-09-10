@@ -7,6 +7,7 @@ import {
   canPauseRun,
   canResetTicket,
   canResumeRun,
+  canRetryFromZero,
   canStopRun,
   canUnmarkReady,
   isTicketEditable,
@@ -36,6 +37,9 @@ export type MenuItemKind =
   | "pause"
   | "stop"
   | "reset"
+  // retry_fresh is Retry with the last-run pointer dropped first, so the
+  // relaunch cannot be turned into a resume by whoever claims the ticket.
+  | "retry_fresh"
   | "close"
   | "full_page"
   | "edit_bot"
@@ -139,6 +143,13 @@ export function resolveMenuItems(
 
   if (card.column_id === "needs_attention") {
     if (canMarkReady(card)) add({ kind: "retry", label: "Retry" });
+    // The two DELIBERATE exits sit side by side and say exactly what they
+    // do: from zero (the pointer is discarded first, so nothing can resume
+    // it) or from the checkpoint. Plain Retry above leaves the choice to
+    // whoever claims the ticket.
+    if (canRetryFromZero(card)) {
+      add({ kind: "retry_fresh", label: "Retry from zero", danger: true });
+    }
     // Resume picks the run back up at its checkpoint instead of re-running
     // from zero — only meaningful when the engine actually saved one.
     if (card.status === "failed_resumable" && card.run_id) {
@@ -153,6 +164,9 @@ export function resolveMenuItems(
   if (card.column_id === "closed") {
     if (card.failed && canMarkReady(card)) {
       add({ kind: "retry", label: "Retry" });
+    }
+    if (canRetryFromZero(card)) {
+      add({ kind: "retry_fresh", label: "Retry from zero", danger: true });
     }
     if (isTicketEditable(card)) add({ kind: "edit", label: "Edit" });
     if (card.run_id) add({ kind: "open_run", label: "Open run console" });

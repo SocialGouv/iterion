@@ -36,6 +36,24 @@ flowchart LR
 | `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
+### Parity doctrine: `claw` ↔ `claude_code`
+
+These two are not alternatives at different tiers — they are meant to be
+**feature-paritary and interchangeable on the same node**. `claude_code` is
+the more stable, mature harness today; `claw` is the in-process twin that
+reaches every provider the registry knows (including providers the CLI
+cannot speak to). The settled rules:
+
+- A claw gap, error or limitation found in real use is a **claw-code-go
+  backlog item, not a disqualification**: fix the harness first, then
+  re-judge the model that ran on it.
+- Engine capabilities (credentials, fingerprints/meters, permission gate,
+  session resume, events) must land on **both** backends — or refuse with
+  a typed diagnostic on the one that cannot honour them yet.
+- Run-level `fallback` and per-node overrides are the switching mechanism;
+  every production switch doubles as a parity measurement, so switches
+  stay observable (events carry the backend and the served model).
+
 ## TL;DR
 
 If you have **at least one** of:
@@ -429,6 +447,13 @@ Nothing about it is silent:
   also changed the model). `delegate_started` carries `declared_model`;
   `delegate_finished` / `delegate_error` add `effective_model`;
   `run.json` `nodes_served` is the last pair per node;
+- a `model_served_via_facade` event when the session ran through an
+  Anthropic-shaped facade (`ANTHROPIC_BASE_URL`). The facade answers
+  whatever `claude-*` id it is asked for with the model it aliases it
+  to, so the declared and effective ids AGREE and `model_drift` stays
+  silent — the session fingerprint is the only evidence. Raised from the
+  success path only (a delegation that failed was not served); the
+  attempted route still lands on `nodes_served[<node>].fingerprint`;
 - `_backend` / `_model` on the node output name the route that
   **served**, not the one requested;
 - `_fallback_used` and `_served_by` are stamped so a bot's deterministic
@@ -566,17 +591,23 @@ CLI contract that structurally cannot return an error, so no typed
 trigger can fire for them; Codex is not included in the v1 fallback lane. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
 types correctly — but its own failure is always unclassifiable, and it
-**cannot serve a node with `permission: ask|deny`**.
+**cannot serve a node whose permission policy can produce an Ask
+decision** (mode `ask`, or any explicit `ask:` rule — which outranks
+mode `deny`).
 
-> ⚠️ **Sandboxed `claw` cannot enforce the permission gate**, chain or no
-> chain. The IPC task the in-container `iterion __claw-runner` rebuilds
-> carries no policy, so `bash` / `file_edit` / `write_file` run ungated.
-> Since sandbox is on by default, a `permission:`-declaring claw node has
-> silently had no gate. That combination now **fails loudly at dispatch**
-> rather than running with an inert boundary — the same fail-not-degrade
-> posture `pi` already takes. Run the node unsandboxed, or route it to
-> `claude_code`/`pi`. Carrying the policy across the IPC boundary is a
-> named follow-on.
+> **Sandboxed `claw` enforces the permission gate for deny-shaped
+> policies.** The policy crosses the IPC as a pre-task
+> `permission_policy` envelope (`permission.PolicyConfig`, re-parsed
+> in-container by the same parser), and the `__claw-runner`'s own tool
+> loop applies it before every tool — local builtins and proxied tools
+> alike. The pre-task position is the mixed-fleet guarantee: a runner
+> binary too old to know the envelope fatals on "unexpected envelope
+> before task" instead of running the gated node with an empty policy,
+> so the combination fails CLOSED, never open. What cannot cross is an
+> **Ask decision** — nothing inside the container can pause the parent
+> run — so an ask-capable policy is refused loudly at dispatch (and
+> C136 warns at compile time). Run such a node unsandboxed, or route it
+> to `claude_code`.
 
 ## Transient-error & network resilience
 
@@ -642,6 +673,48 @@ subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
 restores host-config inheritance. Settings remain inherited independently
 (`--setting-sources`, above).
 
+**Ambient servers degrade per-server, on every backend.** A server a node
+never named — inherited from the target repo's `.mcp.json` or the plugin
+catalog — that fails to boot costs its OWN tools, never the run:
+claude_code's CLI skips a server it cannot start, pi bounds each connect
+with `ITERION_PI_MCP_CONNECT_TIMEOUT_MS`, and claw's in-process splice
+skips it with a Warn log plus a `mcp_server_degraded` run event (server,
+source, error), so the drop is in the run record, not just the process
+log. Typical case: a repo-scoped server needing a credential the
+execution host doesn't have (a token-less Sentry server on a cloud
+runner pod). A tool the node names EXPLICITLY on a dead server still
+fails loud at resolution — a declared dependency is never silently
+dropped.
+
+**Orchestration-stall guard.** A session blocked on `TaskOutput` / `Monitor`
+with no background work to wait on — no `Agent`/`Task` spawned, no
+`run_in_background` command — can never return; observed on a facade-served
+model that waited on a task id it had never created. iterion classifies
+that silence on a short budget (`ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT`),
+then recovers **in place**: the CLI's interrupt aborts the pending call, the
+model is told which wait could not return, and the session continues —
+instead of the node restart a killed session costs. A recovery that does not
+close the turn (`ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT`), or a second
+stall on the same session, aborts for the executor's retry as before. Each
+classification is a `delegate_stall` event (`outcome: recovered|aborted`)
+and increments `iterion_delegate_idle_deadlock_total{backend,model,outcome}`
+on the runner, so a provider's admission can rest on a number. A blocking
+call that follows real background work keeps the full hot budget. For a
+deployment that would rather not expose the surface at all,
+`ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS=1` withholds `Agent`,
+`Task`, `TaskOutput` and `Monitor` from non-`ultracode` nodes (opt-in; the
+default keeps that single-subagent surface — see
+[environment-variables.md](environment-variables.md)).
+
+The multi-agent **`Workflow`** tool is a different matter: it is withheld
+from every node that is not `reasoning_effort: ultracode`, knob or not.
+Claude Code arms that tool on the word `ultracode` anywhere in its prompt,
+and a node's prompt carries the content it works on — a PR whose title or
+diff mentions the mode would otherwise switch a reviewer into a background
+multi-agent orchestration the operator never asked for (measured on
+2026-09-05: four `revi/review` runs died at 3–5× their cost cap that way).
+The mode grants the tool; the effort is the escape hatch.
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent
@@ -660,7 +733,7 @@ auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 A Codex node receives OpenAI's hosted native Web search only when it declares
 the canonical DSL tool:
 
-```iter
+```iter fragment
 agent researcher:
   backend: "codex"
   model: "gpt-5.6-terra"
@@ -1002,6 +1075,15 @@ extension supplies the MCP half; the rest stands. Consequences for a
 - **node `tools:` lists are advisory**, as for every CLI-agent backend. The
   one exception iterion enforces is a `readonly:` node, which pins pi to
   `--tools read,grep,find,ls`.
+- **A rejected credential is recorded as meter evidence, on the anthropic
+  wire only.** pi mints `ErrAuthFailed` from the upstream `401`/`403`, and
+  iterion records it as a `usagecap` `auth` refusal so the next resolution
+  routes around the dead credential instead of re-picking it — the same
+  behaviour as `claude_code` ([usage-caps.md](usage-caps.md)). A refusal on
+  any other provider is recorded NOWHERE: pi routes ~36 providers behind
+  one process, the credential-skip evidence is claude_code-metered end to
+  end, and a mislabelled reading would bench a healthy key. Visible as a
+  `debug` line naming the provider.
 
 A node that needs the remaining native gaps — subagents, todo, web
 fetch/search, notebooks, or background shell — should stay on `claude_code` or
@@ -1221,19 +1303,22 @@ To pin a backend across an entire workflow (e.g. force `claude_code`
 even when OAuth is missing, expecting CI to inject it later):
 
 ```iter
-default_backend: claude_code
+workflow review:
+  entry: reviewer
+  default_backend: "claude_code"   # every node without its own backend: uses it
+  reviewer -> done
 
 agent reviewer:
   # inherits backend: claude_code
-  ...
+  model: "anthropic/claude-sonnet-4-6"
 ```
 
 Per-node overrides take precedence:
 
-```iter
+```iter fragment
 agent reviewer:
-  backend: claw
-  model: anthropic/claude-haiku-4-5-20251001
+  backend: "claw"
+  model: "anthropic/claude-haiku-4-5-20251001"
 ```
 
 ## Using a non-Anthropic provider via the Anthropic wire format (z.ai / GLM)

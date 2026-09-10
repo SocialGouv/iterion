@@ -103,6 +103,18 @@ func (p ParsedNote) SubjectID() string {
 	return "comment:" + strconv.FormatInt(p.CommentID, 10)
 }
 
+// ParentSubjectID names the PULL REQUEST a comment hangs off ("pr:7"), or
+// "" when the comment sits on a plain issue. Distinct from SubjectID,
+// which identifies the comment itself and is what per-comment idempotency
+// keys on: a consumer asking "what did this pull request launch" — the
+// closed-PR stop — cannot find a `/billy` run through "comment:99".
+func (p ParsedNote) ParentSubjectID() string {
+	if !p.IsPullRequest || p.IssueNumber == 0 {
+		return ""
+	}
+	return "pr:" + strconv.FormatInt(p.IssueNumber, 10)
+}
+
 // Command extracts a leading slash-command from the comment body, e.g.
 // "/featurly add export" → ("featurly", "add export"). Returns ("", "") when
 // the comment does not start with a command. Delegates to

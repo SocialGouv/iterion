@@ -104,6 +104,9 @@ type Config struct {
 	// OutputFormat controls output mode: "text" (default), "json", "stream-json".
 	// Maps to Rust's --output-format flag.
 	OutputFormat string
+	// AllowImmediateStructuredOutput disables the default requirement that a
+	// work-capable session complete work before returning structured output.
+	AllowImmediateStructuredOutput bool
 
 	// Prompt holds the resolved system-prompt section toggles.
 	// nil means "all defaults" (every section on) — callers constructing a
@@ -368,6 +371,9 @@ func LoadConfig() *Config {
 	}
 	if s.Theme != "" {
 		cfg.Theme = s.Theme
+	}
+	if s.AllowImmediateStructuredOutput != nil {
+		cfg.AllowImmediateStructuredOutput = *s.AllowImmediateStructuredOutput
 	}
 
 	// Plugin configuration

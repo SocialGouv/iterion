@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestE2ECoverageMatrixGate guards the deterministic MATRIX CONTRACT half of
@@ -56,6 +58,11 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 
 	runTarget := func(t *testing.T, ws, scratch, target string) verifyResult {
 		t.Helper()
+		// Commit whatever the test set up before verify_run runs. The
+		// net_dirty gate (issue #799) refuses a dirty tree; the campaign
+		// contract already commits its work before the deterministic gate,
+		// so the test represents the SAME state a real pass would present.
+		commitFixture(t, ws)
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		cmd = strings.ReplaceAll(cmd, "{{vars.matrix_path}}", matrixRel)
@@ -81,9 +88,7 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 	gitWorkspace := func(t *testing.T) string {
 		t.Helper()
 		ws := t.TempDir()
-		if out, err := exec.Command("git", "-C", ws, "init", "-q").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v (%s)", err, out)
-		}
+		gittest.Run(t, ws, "init", "-q")
 		return ws
 	}
 

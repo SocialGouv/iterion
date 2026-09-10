@@ -109,6 +109,7 @@ func (s *Store) createLocked(in Issue) (created *Issue, err error) {
 	now := time.Now().UTC()
 	in.CreatedAt = now
 	in.UpdatedAt = now
+	in.StateReason = "" // derived by the store at every transition, never supplied — like StateAt
 	if err := s.writeIssueLocked(&in); err != nil {
 		return nil, err
 	}
@@ -185,14 +186,12 @@ func (s *Store) List(filter ListFilter) ([]*Issue, error) {
 // own mutable instance and cannot mutate the in-memory cache.
 func cloneIssue(in *Issue) *Issue {
 	c := *in
-	if in.External != nil {
-		ext := *in.External
-		c.External = &ext
-	}
+	c.External = in.External.Clone()
 	if in.GaveUp != nil {
 		g := *in.GaveUp
 		c.GaveUp = &g
 	}
+	c.LaunchRefusal = in.LaunchRefusal.Clone()
 	if in.Labels != nil {
 		c.Labels = append([]string(nil), in.Labels...)
 	}
@@ -339,8 +338,7 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		changed = append(changed, "fields")
 	}
 	if p.External != nil {
-		ext := *p.External
-		iss.External = &ext
+		iss.External = p.External.Clone()
 		changed = append(changed, "external")
 	}
 	if p.Bot != nil && *p.Bot != iss.Bot {
@@ -398,14 +396,114 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.board.StateByName(newState) == nil {
-		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
+	return s.setStateLocked(iss, newState, "")
+}
+
+// SetStateOwned is SetState fenced on the claim token — the transition
+// an owning worker performs while it still holds the card (one critical
+// section: check-then-call would reopen the TOCTOU the fence closes).
+func (s *Store) SetStateOwned(id, newState string, tok tracker.ClaimToken) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwned", &err)
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, err
 	}
-	if iss.State == newState {
-		return iss, nil
+	return s.setStateLocked(iss, newState, tok.Marker)
+}
+
+// SetStateOwnedReason is SetStateOwned with an EXPLICIT provenance
+// overriding the marker-derived one — the watchdog's terminal filings
+// carry the run's own verdict (run_finished / run_failed, descriptive)
+// so the card's downstream chain fires as it would have for the living
+// owner; its reparks keep the marker-derived machine reason.
+func (s *Store) SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwnedReason", &err)
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, err
+	}
+	// The zero value falls back to the marker-derived provenance — the
+	// SEAM decides, not a guard recopied at every call site: without
+	// this the twins diverged on reason=="" (Mongo marker-derived, FS
+	// none), a trap armed for the first caller that passes it through.
+	if reason == "" {
+		return s.setStateLocked(iss, newState, tok.Marker)
+	}
+	return s.setStateReasonLocked(iss, newState, "", reason)
+}
+
+// SetStateOwnedFrom is SetStateOwned with a source-state precondition —
+// ownership, the drift check and the move share ONE critical section
+// (see BoardStore). Ownership is judged first: a stolen claim reported
+// as "drifted" would be swallowed by the caller as an ordinary operator
+// move, losing the one signal the fence exists to surface.
+func (s *Store) SetStateOwnedFrom(id, from, to string, tok tracker.ClaimToken) (updated *Issue, changed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateOwnedFrom", &err)
+	if s.board.StateByName(to) == nil {
+		return nil, false, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, to)
+	}
+	// Guard BEFORE the drift check (the SetStateFrom contract): an
+	// automated writer declaring a terminal source is a programming error
+	// and is refused loudly whatever the card currently reads.
+	if from != to {
+		if err := ValidateStateExit(s.board, from, to); err != nil {
+			return nil, false, err
+		}
+	}
+	iss, err := s.ownedIssueLocked(id, tok)
+	if err != nil {
+		return nil, false, err
+	}
+	if iss.State != from || from == to {
+		return cloneIssue(iss), false, nil
+	}
+	out, err := s.setStateLocked(iss, to, tok.Marker)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+// Reopen is the ONE sanctioned exit from a terminal state — an
+// operator-surface op, refused when dependents were already promoted on
+// this card's completion (deterministic v1). It emits the ordinary
+// state event (tailers and the trigger spine must see the truth) with a
+// reopened marker.
+func (s *Store) Reopen(id, toState string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("Reopen", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	st := s.board.StateByName(iss.State)
+	if st == nil || !st.Terminal {
+		return nil, fmt.Errorf("%w: %q is not terminal — use an ordinary state move", tracker.ErrTransitionRejected, iss.State)
+	}
+	if s.board.StateByName(toState) == nil {
+		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, toState)
+	}
+	if to := s.board.StateByName(toState); to.Terminal && toState != iss.State {
+		return nil, fmt.Errorf("%w: reopen targets a working state, not another terminal (%q)", tracker.ErrTransitionRejected, toState)
+	}
+	all := make([]*Issue, 0, len(s.index))
+	for _, dep := range s.index {
+		all = append(all, dep)
+	}
+	if err := ReopenBlockedByDependents(all, id, iss.State); err != nil {
+		return nil, err
 	}
 	old := iss.State
-	iss.State = newState
+	iss.State = toState
+	iss.StateReason = ""    // an operator gesture: whatever parked the card no longer describes it
+	iss.LaunchRefusal = nil // …and its launch retries start afresh
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, err
@@ -414,14 +512,106 @@ func (s *Store) SetState(id, newState string) (updated *Issue, err error) {
 	if err := s.emitPostCommitEvent(Event{
 		Type:    EvtIssueState,
 		IssueID: iss.ID,
-		Payload: map[string]any{"from": old, "to": newState},
+		Payload: map[string]any{"from": old, "to": toState, "reopened": true},
+	}); err != nil {
+		return nil, err
+	}
+	return iss, nil
+}
+
+// SetStateFrom is the CAS form for AUTOMATED writers: the move lands
+// only when the current state is exactly `from` (changed=false when it
+// drifted — an operator got there first), and the terminal guard still
+// applies (automation never exits a sink).
+func (s *Store) SetStateFrom(id, from, to string) (updated *Issue, changed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateFrom", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, false, err
+	}
+	// Guard BEFORE the drift check (twin contract): an automated writer
+	// that declares a terminal source is a programming error and must be
+	// refused loudly whatever the card currently reads.
+	if from != to {
+		if err := ValidateStateExit(s.board, from, to); err != nil {
+			return nil, false, err
+		}
+	}
+	if iss.State != from {
+		return cloneIssue(iss), false, nil
+	}
+	if from == to {
+		// Nothing to perform, so nothing was CHANGED. setStateLocked
+		// already no-ops on the same state, but returning true for it made
+		// the two twins disagree on the flag (Mongo returns false), and a
+		// caller that reads changed==false as a refusal — the shape this
+		// CAS invites — then behaved differently on each backend.
+		return cloneIssue(iss), false, nil
+	}
+	out, err := s.setStateLocked(iss, to, "")
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+// SetStateWithReason is SetState carrying an explicit DESCRIPTIVE
+// provenance (StateReasoner) — the FS half of the twin contract the
+// shared auto-promote writes through. Without it the exported
+// PromoteUnblockedDependents silently degraded to the bare SetState on
+// this twin (its other caller, the board deps surface) and the promote
+// lost its reason here while Mongo stamped it.
+func (s *Store) SetStateWithReason(id, newState, reason string) (updated *Issue, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetStateWithReason", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.setStateReasonLocked(iss, newState, "", reason)
+}
+
+// byMarker is the WRITER's identity (the claim token a fenced write
+// presented; "" for tokenless operator/automation writes) — provenance
+// describes who acted, never who happens to hold the card.
+func (s *Store) setStateLocked(iss *Issue, newState, byMarker string) (*Issue, error) {
+	return s.setStateReasonLocked(iss, newState, byMarker, "")
+}
+
+func (s *Store) setStateReasonLocked(iss *Issue, newState, byMarker, reason string) (*Issue, error) {
+	if s.board.StateByName(newState) == nil {
+		return nil, fmt.Errorf("%w: unknown state %q", tracker.ErrTransitionRejected, newState)
+	}
+	if iss.State == newState {
+		return iss, nil
+	}
+	if err := ValidateStateExit(s.board, iss.State, newState); err != nil {
+		return nil, err
+	}
+	old := iss.State
+	iss.State = newState
+	// The card records the same provenance the event carries — derived
+	// once, here, from the same two inputs, so the two cannot disagree.
+	iss.StateReason = StateProvenance(byMarker, reason)
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return nil, err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	if err := s.emitPostCommitEvent(Event{
+		Type:    EvtIssueState,
+		IssueID: iss.ID,
+		Payload: StateEventPayload(old, newState, byMarker, reason),
 	}); err != nil {
 		return nil, err
 	}
 	if newState == StateDone {
 		// Best-effort: a failed auto-promote must not roll back the
 		// successful transition that just committed.
-		_ = s.promoteUnblockedDependentsLocked(id)
+		_ = s.promoteUnblockedDependentsLocked(iss.ID)
 	}
 	return iss, nil
 }
@@ -444,7 +634,15 @@ func (s *Store) ClaimForLaunch(id string) (claimed *Issue, won bool, err error) 
 	if iss.State != StateReady {
 		return nil, false, nil
 	}
+	// A claimed card already has a launcher: the dispatcher wins with the
+	// CLAIM (its move to in_progress is offloaded off the actor), so the
+	// state alone cannot say the card is free. Admitting it here made
+	// this a second launch authority and double-launched the card.
+	if iss.Claim != "" {
+		return nil, false, nil
+	}
 	iss.State = StateInProgress
+	iss.StateReason = "" // the admission loop launching a run: a lifecycle move, not machine bookkeeping
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.writeIssueLocked(iss); err != nil {
 		return nil, false, err
@@ -508,6 +706,7 @@ func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
 		// Mutate a clone then write — index holds shared pointers.
 		next := cloneIssue(iss)
 		next.State = target
+		next.StateReason = tracker.ReasonUnblocked
 		next.UpdatedAt = time.Now().UTC()
 		if err := s.writeIssueLocked(next); err != nil {
 			return err
@@ -528,7 +727,7 @@ func (s *Store) promoteUnblockedDependentsLocked(closedID string) error {
 		if err := s.emitPostCommitEvent(Event{
 			Type:    EvtIssueState,
 			IssueID: id,
-			Payload: map[string]any{"from": from, "to": target, "reason": "unblocked"},
+			Payload: map[string]any{"from": from, "to": target, "reason": tracker.ReasonUnblocked},
 		}); err != nil {
 			return err
 		}
@@ -560,6 +759,7 @@ func (s *Store) Delete(id string) (err error) {
 		return fmt.Errorf("native store: remove issue: %w", err)
 	}
 	delete(s.index, id)
+	s.writes++
 	return s.emitPostCommitEvent(Event{Type: EvtIssueDeleted, IssueID: id})
 }
 
@@ -595,6 +795,7 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := validateIssueID(iss.ID); err != nil {
 		return err
 	}
+	stampStateAtLocked(s.index[iss.ID], iss)
 	expireGiveUp(iss)
 	if err := os.MkdirAll(filepath.Join(s.root, issuesDir), dirPerm); err != nil {
 		return err
@@ -607,7 +808,61 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := store.WriteFileAtomic(p, data, filePerm); err != nil {
 		return fmt.Errorf("native store: write issue: %w", err)
 	}
+	s.writes++
 	return nil
+}
+
+// stampStateAtLocked derives Issue.StateAt from the write itself: prev is the
+// INDEXED record (what is persisted right now), next the value about to
+// replace it, so the column changing is the only thing that advances the
+// stamp. Every FS mutator funnels through writeIssueLocked, which is why the
+// derivation lives there instead of at each of the seven state writers — a new
+// one cannot forget it, and a label edit cannot forge it.
+//
+// A card with no indexed record is a CREATE: its column was decided now.
+func stampStateAtLocked(prev, next *Issue) {
+	if prev != nil && prev.State == next.State {
+		return
+	}
+	next.StateAt = time.Now().UTC()
+}
+
+// StateProvenance is the ONE derivation of a state write's provenance —
+// the value that lands on the event's `reason` AND on the card
+// (Issue.StateReason): the explicit reason when the writer gave one, else
+// the machine ReasonWatchdog when the WRITER is a watchdog, else none.
+// byMarker is the writer's own claim marker — the token a fenced write
+// presented — never the marker the card happens to carry: an operator
+// moving a card the watchdog is conserving is still an operator gesture.
+// Downstream consumers launch bots, spend one-shot label gates and reflect
+// columns onto external boards from this value, and a machine repairing a
+// dead owner is not the operator gesture they are written for. Exported
+// for the Mongo twin, which builds the same event from its own CAS.
+func StateProvenance(byMarker, reason string) string {
+	if reason != "" {
+		return reason
+	}
+	if tracker.IsReaperMarker(byMarker) {
+		return tracker.ReasonWatchdog
+	}
+	return ""
+}
+
+// StateEventPayload builds the state-change event body carrying
+// StateProvenance(byMarker, reason) — omitted when empty, so an
+// unattributed move keeps the bare {from, to} shape its consumers expect.
+func StateEventPayload(from, to, byMarker, reason string) map[string]any {
+	p := map[string]any{"from": from, "to": to}
+	if prov := StateProvenance(byMarker, reason); prov != "" {
+		p["reason"] = prov
+	}
+	return p
+}
+
+// StateChangePayload is StateEventPayload for a write with no explicit
+// reason — the ordinary fenced move.
+func StateChangePayload(from, to, byMarker string) map[string]any {
+	return StateEventPayload(from, to, byMarker, "")
 }
 
 // expireGiveUp drops a give-up stamp that no longer describes the state the

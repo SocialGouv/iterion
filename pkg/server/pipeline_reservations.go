@@ -131,8 +131,17 @@ func (s *Server) pipelineReservedSetMemo(
 		return nil
 	}
 
+	board, err := boardStore.Board()
+	if err != nil {
+		// Fail OPEN, same as the list above: without the terminal set every
+		// closed ticket would read as active and withhold a slot.
+		if s.logger != nil {
+			s.logger.Warn("pipeline reservations: read board: %v", err)
+		}
+		return nil
+	}
 	terminal := map[string]struct{}{}
-	if board := boardStore.Board(); board != nil {
+	if board != nil {
 		for _, st := range board.States {
 			if st.Terminal {
 				terminal[st.Name] = struct{}{}

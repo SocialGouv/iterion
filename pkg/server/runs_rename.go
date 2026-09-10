@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"net/http"
 	"strings"
 )
@@ -45,7 +47,11 @@ func (s *Server) handleRenameRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := s.runs.RenameRunCtx(r.Context(), id, name)
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "rename failed: %v", err)
+		code := http.StatusNotFound
+		if errors.Is(err, store.ErrRunConflict) {
+			code = http.StatusConflict
+		}
+		s.httpErrorFor(w, r, code, "rename failed: %v", err)
 		return
 	}
 	s.writeJSONFor(w, r, map[string]any{

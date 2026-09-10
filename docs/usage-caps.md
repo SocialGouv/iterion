@@ -50,10 +50,14 @@ path wholesale rather than inventing a recovery of its own.
 | `ITERION_USAGE_CAP_WEEK_PCT` | `0`–`100` (`0`/unset = no cap) | unset |
 | `ITERION_USAGE_CAP_WEEK_MODE` | `off` \| `soft` \| `hard` | `hard` |
 | `ITERION_USAGE_CAP` | `off` disarms both caps | unset |
+| `ITERION_USAGE_CAP_TRUST_WINDOW` | a Go duration (`3h`, `90m`) — how long a stored *dated* reading is believed, see [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time) | `3h` |
+| `ITERION_USAGE_CAP_REFUSAL_REST_MAX` | a Go duration, or `off` — the ceiling of the escalating rest an account-level refusal earns, see [A repeatedly-refused credential rests longer](#a-repeatedly-refused-credential-rests-longer) | `6h` |
 
 A malformed value **refuses to start** rather than falling back to no cap:
 every wrong answer here fails open, and a guard silently disabled by a typo
-is the failure the feature exists to prevent.
+is the failure the feature exists to prevent. That includes the trust
+window, and it holds under `ITERION_USAGE_CAP=off` too: the window also
+bounds the credential-skip evidence, which the kill switch does not disarm.
 
 There is deliberately **no per-run flag and no DSL field**. The cap protects
 a credential and the deployment that owns it, not a run — a bot able to lift
@@ -108,7 +112,28 @@ Semantics that stay put:
 - **Verification without DB access.** `/healthz` (and `/readyz`) echo the
   EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
   `db+env`) — curl it after a change and watch the new number appear within
-  the propagation bound.
+  the propagation bound. This is also the FIRST diagnostic for "a scheduled
+  bot posted nothing this morning": every LLM-bearing run failing on
+  `usage cap: <window> at N% ≥ M%` while zero-LLM runs (collectors) pass is
+  the cap's signature, and `/healthz` names the ceiling in one curl. Grep
+  the `usage cap:` substring, NOT `rate_limited`: a workflow whose every
+  path reaches a model is refused before its first node by the runner
+  pre-flight and carries the bare reason (no `rate_limited` prefix, no node
+  id), while a workflow with a model-free path is let through and stops
+  mid-run with `rate_limited (<backend>): usage cap: …`. Measured on the
+  2026-08-31 Vigie outage, where a 70% DB record was the whole story — and
+  where the morning's first signal, the 04:00 docs-refresh run, was the
+  pre-flight shape.
+- **Don't wait for the silent morning: wire the operator webhook.** With
+  `ITERION_ALERTS_WEBHOOK_URL` set on the server deployment, every run that
+  parks `failed_resumable` (usage cap, provider window — with the armed
+  retry's reset ETA) or fails hard produces ONE message on the webhook
+  (Mattermost/Slack `{"text": ...}` shape), deduped across replicas and
+  backed by a 2-minute reconciliation sweep, with a `/runs/<id>` deep link.
+  The five silent Monday digests would have been five messages at 06:0x
+  instead of a manual discovery hours later. (This is the cloud
+  `alert.OpsDispatcher`; the same env var also feeds the in-process alert
+  Manager for local runs.)
 - **Settings reads fail toward the last-known value** (env defaults before
   the first successful read), retried once per TTL window: a settings-store
   blip changes nothing abruptly in either direction.
@@ -137,9 +162,115 @@ Consequences worth knowing:
 
 - The cap is **claude_code-shaped today**. Other backends have no equivalent
   telemetry surface; a run on `claw` or `pi` is not capped.
+- **One event names one window.** A `rate_limit_event` carries a single
+  `rateLimitType`, emitted when that window's numbers move — so a session
+  refreshes the windows the CLI happens to report, not all of them, and a
+  run refused *before* its first call (the pre-flights below) refreshes
+  nothing at all.
 - A reading **expires at its own reset instant**. Past it the window has
   rolled over and the number describes a window that no longer exists, so a
-  stale reading stops blocking by itself — no sweeper, no TTL to tune.
+  stale reading stops blocking by itself — no sweeper.
+- A reading is also **trusted for a bounded time** after it was observed —
+  the next section.
+- **Recording is not enforcing.** Readings are collected whether or not a
+  cap is configured. They are the only input the credential-tier skips have
+  (a fair-usage refusal, a rejected credential — `frequency` / `auth` /
+  `spend`, which no operator cap governs), so a deployment that never asked
+  for a ceiling would otherwise send every run into the same wall. A run
+  carries the observing guard as soon as there is a ledger to publish to;
+  with no cap configured it blocks nothing.
+
+### A reading is trusted for a bounded time
+
+The premise "a window's utilization cannot drop before its reset" is
+**false** for this provider: it has reset every window early, out of cycle.
+On 2026-09-04 the seven-day windows of the deployment's forfaits went to 0%
+at the provider while the ledger still held 93–99% readings taken hours
+earlier, each carrying a reset instant three to four days out. Every
+credential walk skipped both forfaits on them, and every claude_code run
+was refused at admission — including the `revi/review` merge gate of two
+PRs, which then read as "review in progress" forever. The lock was
+self-sustaining: the only writer of a fresh reading is a live session, and
+the refusal is what prevented one. Nothing could recover on its own before
+the recorded reset, four days later.
+
+So a reading is **authoritative only for `ITERION_USAGE_CAP_TRUST_WINDOW`
+(default 3h) after it was observed**, whatever its reset instant says. Past
+that it is suggestive, not binding: the walk lets the credential through,
+the pre-flight admits the run, and the run's own session re-measures the
+window within one call. If the wall is really still there, that costs one
+call and one park — the ordinary wait, with the retry armed for the reset —
+which is the price of never locking a credential out through a reset the
+ledger cannot see. Readings with **no** reset instant (a relayed refusal, a
+dead credential) are not bounded by the trust window at all — it exists
+because a *dated* window can roll over early, which an account-level refusal
+cannot do — and keep their own 1h staleness bound instead, escalating with
+the streak (next section).
+
+The same bound governs **both** consumers of the ledger — the cap
+pre-flights and the credential-skip evidence — because both read the same
+readings and must forget a pre-reset one at the same moment.
+
+**The launch walk asks the provider instead of guessing.** When a forfait's
+stored readings are stale-but-suggestive — past the trust window, window not
+rolled over, and saying "closed" when they were taken — the cloud publisher
+re-measures the credential at Anthropic's OAuth usage endpoint with the
+forfait's own token (`pkg/backend/forfait.FetchWindows`), records every
+window it reports under the same key the runner meters, and decides on
+that: the forfait is skipped when the wall is real and granted when the
+window reset early, with no pod spent either way. Best effort and bounded
+(5s): a credential the endpoint refuses (a `claude setup-token` lacks the
+`user:profile` scope and gets `403`), a network error or a malformed body
+each cost one Info line and fall back to trusting the credential — the
+trust-window behaviour. Fresh readings and low stale readings never trigger
+a round trip.
+
+### A repeatedly-refused credential rests longer
+
+Three refusals carry no reset instant, because the provider relays them as
+text rather than as window telemetry: `auth` (the credential itself was
+rejected), `frequency` (a fair-usage limit on the request rate) and `spend`
+(the account's own money ceiling). Nothing but the 1h staleness bound ever
+expires them — so a credential the provider has frozen for *days* was asked
+again every hour, forever: one pod and one parked run each time, on a
+condition only a human can end.
+
+The rest now **escalates with the streak**. The ledger counts how many times
+in a row a credential was refused on a window (the store does it, not the
+caller: one pod sees one refusal, and several pods write the same ledger),
+and the bound doubles per refusal — 1h, 2h, 4h — capped at
+`ITERION_USAGE_CAP_REFUSAL_REST_MAX` (default `6h`, so a frozen account is
+probed four times a day instead of twenty-four). Set it to `off` for the old
+flat 1h re-probe.
+
+It stays a **rest, not a lock**, on three counts: the ceiling is bounded, so
+a re-probe always happens; the streak resets to zero the moment the
+credential serves a call; and rotating the credential opens a fresh meter
+key anyway (see [Rotating a credential resets its
+meter](#rotating-a-credential-resets-its-meter--on-purpose)). To cut the
+wait short after fixing an account *in place* — same token, same
+fingerprint — clear its readings by hand, below.
+
+### Forgetting a credential's readings by hand
+
+An operator who *knows* a reset happened does not have to wait out the
+trust window, and should not raise the global cap to unstick one
+fingerprint (that lifts the guard for every tenant and every bot). The
+scalpel clears **one credential's** readings, under every key it was
+metered with, and leaves the caps alone:
+
+```sh
+iterion remote admin usage-readings clear e4ecd2283afb305f
+# → {"fingerprint":"e4ecd2283afb305f","deleted":2}
+```
+
+The fingerprint is the credential's audit identity — shown on the key and
+connection views, and in the server's `SKIPPED … fp=` / `AT ITS CEILING`
+lines. Raw surface: `DELETE /api/admin/usage-readings/{fingerprint}`
+(super-admin). Every call lands in the platform audit log
+(`platform.usage_readings.cleared`, with the count). Afterwards the
+credential reads "nothing learned yet": the next run is admitted and
+re-measures.
 
 ## What it looks like when it fires
 
@@ -151,6 +282,61 @@ Consequences worth knowing:
 - the run's own error, carrying the same sentence;
 - then the ordinary wait: `run_retry_scheduled` with `retry_after` at the
   window's reopening, and `run_auto_resumed` when it fires.
+
+### Two shapes, three situations — and the number is what tells them apart
+
+The warn line comes in two shapes, and the shape alone does **not** say who
+refused. Reading it as if it did is what wastes the time this page exists to
+save.
+
+```
+usage cap: provider rejected on the seven_day window (week cap 85%, hard), resets …
+```
+
+**The provider refused, and said so without a number.** `evaluate` picks this
+wording only when the reading's status is *rejected* AND it carries no
+utilization figure. The `(week cap 85%, hard)` in parentheses names the policy
+in force, **not the reason** — which is what makes it easy to misread. Touching
+the cap changes nothing: the call never got as far as the cap.
+
+```
+usage cap: seven_day window at 76% ≥ 75% (week, hard), resets …
+```
+
+**This one is ambiguous, and the percentage resolves it.**
+
+- **Below 100%** — we stopped ourselves. The provider is still serving and
+  iterion refused because its own telemetry crossed the operator's percentage.
+  Raising the cap (`iterion remote admin caps set --week …`) lets work through
+  immediately.
+- **At or above 100%** — the provider refused, in the same words. A reading can
+  be *rejected* and still carry a number, and it then renders in this shape;
+  the Anthropic forfait probe marks every window at ≥100% rejected while
+  keeping the figure. A rejected reading is blocked at **any** cap — the guard
+  reads `if !rejected && pct < cap`, so even a cap of 100% refuses it. Raise
+  nothing; the reset instant is the only lever.
+
+So the rule to carry is not *"which sentence is it"* but **"is the reading
+rejected"**, and the two things that answer it are the missing number and the
+percentage at or above 100%.
+
+Two consequences worth having in mind before touching anything:
+
+- A refusal can appear while the provider's own dashboard shows headroom on
+  the *other* window. The weekly and five-hour walls are independent, and a run
+  refused on one says nothing about the other.
+- `iterion remote admin usage-readings clear` will happily forget a refusal
+  too, and it buys nothing: the next run is admitted and then refused at the
+  call instead of at admission. That command earns its keep on the *opposite*
+  shape — a dated reading trusted past a reset the ledger could not see (see
+  [A reading is trusted for a bounded time](#a-reading-is-trusted-for-a-bounded-time)).
+  Reach for it when the provider's dashboard disagrees with iterion, not when
+  the provider itself is saying no.
+
+Measured on 2026-09-08: fifteen review runs refused over an hour on a
+deployment whose caps had just been lowered — the caps were not the cause, and
+every one of the fifteen resumed and delivered by itself once the window
+reopened.
 
 ## What a cap does NOT stop
 
@@ -195,6 +381,31 @@ workflow in hand) and the local launch path's (which compiles only when the
 cap is blocking, so the common case pays nothing). The mid-run guard stays
 armed in both cases, so a workflow that turns out to spend anyway is still
 stopped at the call.
+
+**And only when it could spend the wire the cap meters.** The readings come
+from the claude_code delegate's session telemetry and nowhere else, and the
+pre-flight key is built from the run's Anthropic-wire credentials (or the
+platform's). A run whose every route is pinned off that wire — both LLM nodes
+on `claw` + `openai/…`, a `codex` bot — cannot spend the capped subscription,
+and parking it for the anthropic weekly reset strands it for nothing: a fully
+pinned two-node rite froze for five days that way while its single-node
+sibling on the identical pin ran (#668). The cloud runner's pre-flight asks
+[`model.AnthropicWireReachable`](../pkg/backend/model/wire_reach.go) under the
+launch's own overrides, and lets the run through when the answer is no. Every
+uncertainty answers "reachable" and keeps the guard armed: an empty, `auto` or
+`claude_code` backend, `claw`/`pi` with a provider it cannot resolve, any
+`anthropic`/`zai` hint on any backend, a model-answering node with no
+`LLMFields`.
+
+**Primary routes only.** A `fallbacks:` route or a run-level `--fallback`
+stage onto the wire does not arm the pre-flight: the primary can carry the
+whole run without ever touching the wire, and the rescue route fires only on
+a failure the mid-run guard and the delegate's own usage-window
+classification already refuse at dispatch. Refusing such a run in advance
+would park work that could not possibly spend the capped subscription — the
+one thing the pre-flight promises not to do. The credential the rescue route
+needs is still sealed into the run: the wants derivation widens on the chain,
+it is only this guard that ignores it.
 
 ## Cloud
 
@@ -271,5 +482,9 @@ kubectl -n iterion annotate scaledobject iterion-runner \
   autoscaling.keda.sh/paused-replicas-                  # thaw
 ```
 
-Cancel in-flight runs *before* freezing: a pod killed mid-run ends
-`failed` (not resumable), where a cancel checkpoints it.
+In-flight runs survive the freeze: a scaled-down pod SIGTERMs into the
+lame-duck drain (`ErrRunInterrupted` → `failed_resumable`, auto-resumed
+when capacity returns), and even a SIGKILL leaves the run to the orphan
+sweeper, which flips it to `failed_resumable` within minutes. Cancel
+first only when you do NOT want the run to come back after the thaw —
+a cancel is terminal until an explicit resume.

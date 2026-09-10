@@ -10,92 +10,6 @@ import (
 // Edge evaluation
 // ---------------------------------------------------------------------------
 
-// evaluateEdges walks the workflow edges originating from fromNodeID and returns
-// the first conditional match (or the first unconditional fallback). It returns
-// nil when no edge matches. The logPrefix is included in warning messages.
-// This variant does NOT check loop counters — use evaluateEdgesWithLoops for
-// loop-aware selection.
-//
-// Branches inside fan-out / llm-multi call this variant. The runState's
-// loop counters are owned by the main execution loop and not propagated
-// to branches (branches run concurrently with arbitrary topology; sharing
-// the loop counter would be racy and the semantics — global vs per-branch
-// — are not defined). To prevent runaway iteration when a workflow
-// accidentally places a loop or foreach edge inside an execBranch body
-// (which would otherwise be selected without the MaxIterations /
-// collection-exhaustion guard — foreach with an empty Condition is an
-// unconditional back-edge), we skip every IsBoundedIteration() edge.
-// The compiler refuses those graphs (C244); this skip is defence in
-// depth. The intent matches the existing comment on the Expression case:
-// "branches don't iterate, so loop/run namespaces have no meaning."
-func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {
-	var unconditional, elseEdge *ir.Edge
-
-	for _, edge := range e.workflow.Edges {
-		if edge.From != fromNodeID {
-			continue
-		}
-		if edge.IsBoundedIteration() {
-			// Defensive: a loop/foreach edge inside a branch would otherwise
-			// iterate without the main loop's MaxIterations / foreach
-			// bookkeeping (evaluateEdgesWithLoopsRS). Skip with a warning
-			// so a hand-built IR or a validator miss cannot run away.
-			kind, name := "loop", edge.LoopName
-			if edge.ForeachName != "" {
-				kind, name = "foreach", edge.ForeachName
-			}
-			if e.logger != nil {
-				e.logger.Warn("%s: node %q: edge to %q is a %s edge (%q) inside a parallel branch — skipped (loop semantics are undefined inside branches)",
-					logPrefix, fromNodeID, edge.To, kind, name)
-			}
-			continue
-		}
-		if edge.Expression != nil {
-			// Expression-form `when` is unsupported in branch-local edge
-			// selection — branches don't iterate, so loop/run namespaces
-			// have no meaning. Use a simple boolean field condition or
-			// compute the predicate in a `compute` node upstream.
-			e.logger.Debug("%s: node %q: edge to %q has an expression `when` but branch evaluator has no runState — edge skipped",
-				logPrefix, fromNodeID, edge.To)
-			continue
-		}
-		if edge.Condition == "" {
-			// `else` edges and bare unconditional edges share the
-			// fallback role; the validator forbids coexistence, and the
-			// explicit form wins the tie-break defensively.
-			if edge.IsElse {
-				if elseEdge == nil {
-					elseEdge = edge
-				}
-			} else if unconditional == nil {
-				unconditional = edge
-			}
-			continue
-		}
-		val, ok := output[edge.Condition]
-		if !ok {
-			continue
-		}
-		boolVal, isBool := val.(bool)
-		if !isBool {
-			e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
-				logPrefix, fromNodeID, edge.Condition, val, edge.To)
-			continue
-		}
-		if edge.Negated {
-			boolVal = !boolVal
-		}
-		if boolVal {
-			return edge
-		}
-	}
-
-	if elseEdge != nil {
-		return elseEdge
-	}
-	return unconditional
-}
-
 // unitSuffix renders a display unit for log interpolation (" seconds"),
 // or nothing for the axes that carry their own.
 func unitSuffix(unit string) string {
@@ -194,21 +108,10 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				// hands the run to its exit path with the work it banked,
 				// where dying mid-iteration on the hard cap would strand it.
 				if v := e.loopBudgetShortfall(edge.LoopName, rs); v != nil {
-					spent, remaining, used, limit, unit := v.display()
+					spent, remaining, _, _, unit := v.display()
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f%s left, last one took %.2f%s), falling through to the exit path",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, v.dimension, remaining, unitSuffix(unit), spent, unitSuffix(unit))
-					data := map[string]any{
-						"loop": edge.LoopName, "reason": "loop_budget_guard",
-						"dimension": v.dimension, "remaining": remaining, "needed": spent,
-						// used/limit are what every other budget_warning
-						// carries — the run report and the alert manager
-						// render the axis from them.
-						"used": used, "limit": limit,
-					}
-					if unit != "" {
-						data["unit"] = unit
-					}
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, data); err != nil {
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, v.eventData(edge.LoopName)); err != nil {
 						e.logger.Warn("failed to emit loop_budget_guard warning: %v", err)
 					}
 					continue

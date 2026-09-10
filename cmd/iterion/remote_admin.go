@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -134,6 +135,9 @@ var (
 	remoteLLMName     string
 	remoteLLMDefault  bool
 	remoteLLMKeyData  string
+	// remoteLLMAccountLabel names the ACCOUNT behind a forfait, so a
+	// listing says "jothedev" instead of a bare fingerprint.
+	remoteLLMAccountLabel string
 )
 
 var remoteAdminLLMCmd = &cobra.Command{
@@ -198,7 +202,7 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 }
 
 var remoteAdminLLMOAuthCmd = &cobra.Command{
-	Use:   "oauth [set|connect|refresh|delete] [kind]",
+	Use:   "oauth [set|connect|name|refresh|delete] [kind]",
 	Short: "Platform OAuth-forfait: list connections (default) or act on one kind (claude_code|codex)",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
@@ -219,18 +223,47 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			blob, err := cli.ReadSecretBlob(remoteLLMFromEnv, remoteLLMFromFile)
+			// ReadCredentialBlob, not ReadSecretBlob: a forfait payload
+			// is routinely copied out of a terminal, and the escapes it
+			// carries used to surface as a server-side JSON parse error
+			// pointing at "\x1b". Normalise and validate the shape here,
+			// where the file name is still known.
+			blob, err := cli.ReadCredentialBlob(remoteLLMFromEnv, remoteLLMFromFile, kind)
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+kind+"/credentials", blob)
+			path := "/api/admin/llm/oauth/" + kind + "/credentials"
+			if lbl := strings.TrimSpace(remoteLLMAccountLabel); lbl != "" {
+				path += "?account_label=" + url.QueryEscape(lbl)
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", path, blob)
 		case "connect":
 			// Browser code flow; only claude_code supports it, so it defaults.
 			kind := "claude_code"
 			if len(args) == 2 {
 				kind = args[1]
 			}
-			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind)
+			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind, strings.TrimSpace(remoteLLMAccountLabel))
+		case "name":
+			// Names the ACCOUNT behind a platform forfait. The listing
+			// prints only kind + fingerprint otherwise, and a fingerprint
+			// is what the server logs print — not what a human recalls.
+			kind, err := needKind()
+			if err != nil {
+				return err
+			}
+			// The server reads "" as "clear the label", so a forgotten flag
+			// must be refused rather than sent — `name` exists because
+			// operators forget the naming step, and un-naming on that very
+			// mistake would be the worst possible default.
+			if !cmd.Flags().Changed("account-label") {
+				return fmt.Errorf("usage: admin llm oauth name %s --account-label <name> (pass --account-label \"\" to clear it)", kind)
+			}
+			body, err := json.Marshal(map[string]string{"account_label": strings.TrimSpace(remoteLLMAccountLabel)})
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", "/api/admin/llm/oauth/"+kind, body)
 		case "refresh":
 			kind, err := needKind()
 			if err != nil {
@@ -244,7 +277,7 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 			}
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/oauth/"+kind, nil)
 		default:
-			return fmt.Errorf("unknown oauth action %q (want set|connect|refresh|delete)", action)
+			return fmt.Errorf("unknown oauth action %q (want set|connect|name|refresh|delete)", action)
 		}
 	}),
 }
@@ -252,8 +285,9 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 // --- platform bot overrides (DB-backed catalog) ---
 
 var (
-	remoteAdminBotSlug string
-	remoteAdminBotOut  string
+	remoteAdminBotSlug  string
+	remoteAdminBotOut   string
+	remoteAdminBotForce bool
 )
 
 var remoteAdminBotsCmd = &cobra.Command{
@@ -266,6 +300,7 @@ the next launch; deleting it reverts to the baked catalog.
 
   iterion remote admin bots                       # list overrides (slug, version, digest)
   iterion remote admin bots push bots/review-pr   # push a local bundle dir
+  iterion remote admin bots push bots/review-pr --force   # ... even below its requires.iterion
   iterion remote admin bots show review-pr        # stored files + metadata
   iterion remote admin bots pull review-pr --out /tmp/review-pr
   iterion remote admin bots fork review-pr        # seed the override from the baked bundle
@@ -291,7 +326,7 @@ every mutation lands on the platform audit log with a content digest.`,
 			if err != nil {
 				return err
 			}
-			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug)
+			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug, remoteAdminBotForce)
 		case "show":
 			slug, err := needArg("slug")
 			if err != nil {
@@ -382,6 +417,37 @@ advertised propagation bound (no restart). Enforcement postures
 		}
 		body += "}"
 		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(body))
+	}),
+}
+
+var remoteAdminUsageReadingsCmd = &cobra.Command{
+	Use:   "usage-readings clear <fingerprint>",
+	Short: "Forget one credential's stored usage-window readings (after a provider reset the ledger cannot see)",
+	Long: `Usage-window readings — the fleet's shared ledger of what each
+credential's provider windows last reported.
+
+A reading normally expires on its own (its reset instant, the trust
+window). When the provider resets a window EARLY, the stored reading
+still says 99% and every run of that credential is refused pre-flight,
+which is exactly what keeps it from being refreshed. This clears ONE
+credential's readings, by fingerprint (as shown on the key/connection
+views and in the "SKIPPED … fp=" server lines), without touching the
+caps:
+
+  iterion remote admin usage-readings clear e4ecd2283afb305f
+
+The credential then reads "nothing learned yet": the next run is
+admitted and its own session re-measures the windows. Audited.`,
+	Args: cobra.ExactArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if args[0] != "clear" {
+			return fmt.Errorf("unknown usage-readings action %q (want clear)", args[0])
+		}
+		fp := strings.TrimSpace(args[1])
+		if fp == "" {
+			return fmt.Errorf("usage: admin usage-readings clear <fingerprint>")
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/usage-readings/"+url.PathEscape(fp), nil)
 	}),
 }
 
@@ -485,6 +551,79 @@ Changes propagate to every replica within the resolver TTL (no restart).`,
 		}
 		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, body)
 	}),
+}
+
+var (
+	remotePlatformCredEnforce string
+	remotePlatformCredTeams   string
+	remotePlatformCredOrgs    string
+)
+
+var remoteAdminPlatformCredsCmd = &cobra.Command{
+	Use:   "platform-credentials [set]",
+	Short: "Who may draw on the deployment's own LLM credentials",
+	Long: `Show the platform credential audience, or set it.
+
+Every tenant with no credential of its own used to reach the deployment's
+keys in silence. This gates that, and enforcement is OPT-IN: an absent
+record, or one whose enforce is off, admits everyone — so naming a team
+does not by itself cut the fleet off from its only credential.
+
+  iterion remote admin platform-credentials
+  iterion remote admin platform-credentials set --orgs <org-id>
+  iterion remote admin platform-credentials set --enforce true
+  iterion remote admin platform-credentials set --enforce false   # back to open
+
+Enforcing an audience that names nobody is refused: its symptom would be
+every credential-less run failing at its first LLM call.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/platform-credentials"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		if args[0] != "set" {
+			return fmt.Errorf("unknown platform-credentials action %q (want set)", args[0])
+		}
+		body := map[string]any{}
+		if cmd.Flags().Changed("enforce") {
+			switch remotePlatformCredEnforce {
+			case "true", "on", "yes":
+				body["enforce"] = true
+			case "false", "off", "no":
+				body["enforce"] = false
+			default:
+				return fmt.Errorf("--enforce wants true|false, got %q", remotePlatformCredEnforce)
+			}
+		}
+		if cmd.Flags().Changed("teams") {
+			body["teams"] = splitCSV(remotePlatformCredTeams)
+		}
+		if cmd.Flags().Changed("orgs") {
+			body["orgs"] = splitCSV(remotePlatformCredOrgs)
+		}
+		if len(body) == 0 {
+			return fmt.Errorf("usage: admin platform-credentials set --enforce true|false [--teams a,b] [--orgs a,b]")
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, raw)
+	}),
+}
+
+// splitCSV turns a comma list into a slice, dropping blanks. An explicit
+// empty string yields an empty slice — the way an operator CLEARS a list,
+// which must not be read as "unset".
+func splitCSV(v string) []string {
+	out := []string{}
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 var (
@@ -641,6 +780,7 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
 	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
+	remoteAdminLLMOAuthCmd.Flags().StringVar(&remoteLLMAccountLabel, "account-label", "", "Name the account behind this forfait (with `set`/`connect`, or alone with `name`; `name --account-label \"\"` clears it)")
 	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
 
 	remoteAdminCapsCmd.Flags().IntVar(&remoteCapsFiveHour, "five-hour", 0, "Five-hour window cap percentage (0–100; 0 = no cap)")
@@ -650,6 +790,7 @@ func init() {
 
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotSlug, "slug", "", "Override slug (push; default: bundle dir basename)")
 	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotOut, "out", "", "Output directory (pull; default: ./<slug>)")
+	remoteAdminBotsCmd.Flags().BoolVar(&remoteAdminBotForce, "force", false, "Push even when the deployment's engine is below the bundle's requires.iterion (the push then carries the warning)")
 
 	for _, role := range []string{"reviewer", "revi_converse", "brancher", "implementer"} {
 		flag := strings.ReplaceAll(role, "_", "-")
@@ -659,7 +800,11 @@ func init() {
 	remoteAdminSandboxCmd.Flags().StringVar(&remoteSandboxImage, "default-image", "", "`sandbox: auto` fallback image ref (prefer an @sha256 digest)")
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd)
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredEnforce, "enforce", "", "true|false — gate who may draw on the platform credentials")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredTeams, "teams", "", "Comma-separated team ids admitted (empty string clears)")
+	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredOrgs, "orgs", "", "Comma-separated org ids whose every team is admitted (empty string clears)")
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd, remoteAdminPlatformCredsCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

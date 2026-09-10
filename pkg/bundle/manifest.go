@@ -66,6 +66,13 @@ type Manifest struct {
 	// produce a clear error pointing at the user's iterion build.
 	SchemaVersion int `yaml:"schema_version"`
 
+	// Requires states the engine this bundle needs — the contract that
+	// keeps a bot from reaching a build whose evaluator cannot run it.
+	// Deliberately NOT under Compat: a requirement is only worth
+	// declaring if the engine that cannot honour it refuses instead of
+	// dropping it. See requires.go.
+	Requires *Requires `yaml:"requires,omitempty"`
+
 	// Compat is a forward-compatible bag for additive fields. Unknown
 	// keys here are ignored without breaking loads from newer bundles.
 	Compat map[string]any `yaml:"compat,omitempty"`
@@ -476,15 +483,25 @@ type ConfigShareSpec struct {
 // block. The auto-provisioner (pkg/forge) maps each entry to the
 // per-provider native event when it creates the forge-side hook:
 //
-//	pull_request          -> gitlab "merge_requests_events",
-//	                         github / forgejo "pull_request"
-//	pull_request_comment  -> gitlab "note_events",
-//	                         github / forgejo "issue_comment"
-//	issue_labeled         -> github / forgejo "issues"
-//	                         (gitlab "issues_events" — not yet wired inbound)
+//	pull_request                 -> gitlab "merge_requests_events",
+//	                                github / forgejo "pull_request"
+//	pull_request_comment         -> gitlab "note_events",
+//	                                github / forgejo "issue_comment"
+//	pull_request_review_comment  -> gitlab "note_events",
+//	                                github "pull_request_review_comment"
+//	                                (forgejo — not wired)
+//	issue_labeled                -> github / forgejo "issues"
+//	                                (gitlab "issues_events" — not yet wired inbound)
 const (
 	ForgeEventPullRequest        = "pull_request"
 	ForgeEventPullRequestComment = "pull_request_comment"
+	// ForgeEventPullRequestReviewComment subscribes the comments INSIDE PR
+	// review threads (GitHub fires one delivery per inline comment of every
+	// submitted review — a firehose). Deliberately its own event, not part
+	// of pull_request_comment: only a bot that actually consumes
+	// review-thread replies (the conversational reply-to-a-suggestion lane)
+	// should make every repo pay that delivery volume.
+	ForgeEventPullRequestReviewComment = "pull_request_review_comment"
 	// ForgeEventIssueLabeled subscribes the repo hook to the forge-native
 	// "issues" event; labeling an issue launches an implementer bot that
 	// opens a PR back-linked to the issue (see the GitHub issues handler).
@@ -501,9 +518,10 @@ const DefaultForgeSecretName = "forge_token"
 // manifest may declare in forge.events. decodeManifest rejects anything
 // else so a typo fails fast at parse time (same bar as attachments:).
 var KnownForgeEvents = map[string]bool{
-	ForgeEventPullRequest:        true,
-	ForgeEventPullRequestComment: true,
-	ForgeEventIssueLabeled:       true,
+	ForgeEventPullRequest:              true,
+	ForgeEventPullRequestComment:       true,
+	ForgeEventPullRequestReviewComment: true,
+	ForgeEventIssueLabeled:             true,
 }
 
 // knownForgeEventNames lists the accepted events, sorted for a stable
@@ -1003,6 +1021,14 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	m.Icon = strings.TrimSpace(m.Icon)
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
+	}
+	// The engine contract is parsed HERE, at the one door every manifest
+	// load goes through, so a requirement this build cannot read fails on
+	// the manifest rather than at the admission site that meant to enforce
+	// it — a requirement silently skipped is the failure mode the field
+	// exists to close.
+	if err := m.Requires.Validate(); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	// Soft-normalize only — launch names may reference workflow vars,
 	// which the manifest loader cannot see, so nothing here hard-fails.

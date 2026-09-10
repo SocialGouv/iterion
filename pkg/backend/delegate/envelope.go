@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 // EnvelopeType discriminates the payload carried over the multiplexed
@@ -56,6 +58,18 @@ const (
 	// pre-loads a previously captured store at startup so the
 	// runner resumes from it. Data is the same opaque JSON.
 	EnvelopeSessionReplay EnvelopeType = "session_replay"
+
+	// EnvelopePermissionPolicy: launcher → runner. Sent BEFORE the task
+	// envelope when the node carries an enabled permission policy, so
+	// the in-container runner enforces the same gate the launcher
+	// would. Data is [permission.PolicyConfig] — the raw rule strings,
+	// re-parsed runner-side by the same parser (NewPolicyFromConfig).
+	//
+	// The pre-task position is load-bearing: a runner binary too old to
+	// know this type fatals on "unexpected envelope before task" instead
+	// of running the gated node with an empty policy, so a mixed-version
+	// fleet fails CLOSED with no protocol handshake.
+	EnvelopePermissionPolicy EnvelopeType = "permission_policy"
 
 	// EnvelopeEvent: runner → launcher. Observability passthrough —
 	// the runner forwards events that should be appended to the run's
@@ -147,9 +161,14 @@ type AskUserAnswerData struct {
 }
 
 // EventData is the payload of an [EnvelopeEvent]. The runner forwards
-// observability events that belong in the run's events.jsonl
-// (tool_called, llm_request, …) — the launcher persists them via the
-// engine's normal emit path.
+// what its own loop observes and the launcher otherwise could not see:
+// the per-step LLM observations (`llm_request`, `llm_step_finished`), the
+// tools it executes inside the container (`tool_started`, `tool_called`),
+// its `llm_retry` and `llm_compacted` rounds, and its per-turn
+// `llm_turn_capture` anchors — each payload a wire form defined beside
+// model.SandboxRelayHooks. The launcher re-fires them through its own
+// event hooks, so they are persisted, priced and metered exactly like an
+// in-process node's.
 type EventData struct {
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload,omitempty"`
@@ -157,10 +176,25 @@ type EventData struct {
 
 // MaxEnvelopeLineBytes caps each NDJSON line. 4 MiB covers typical
 // `git log` outputs of large repos and big LLM tool_use payloads
-// without unbounded memory exposure. Lines exceeding this trigger an
-// error rather than truncation: a side-channel (shared volume) for
-// gigantic tool results is V3.
+// without unbounded memory exposure. A line over it fails the WHOLE
+// channel on the reading side, so nothing may write one: the producers
+// clamp their payloads first (see [MaxToolResultBytes] and the relay's
+// event clamp), and [EnvelopeWriter.Write] refuses what is still too
+// long rather than emitting a line that kills the peer.
 const MaxEnvelopeLineBytes = 4 * 1024 * 1024
+
+// MaxToolResultBytes caps the text a single tool_result carries to the
+// runner (its output, or its error message). A host-side tool can return
+// far more than the line cap — an MCP call's result, a large file read, a
+// `go test ./...` transcript — and an unclamped one would kill the run's
+// IPC instead of reaching the model.
+//
+// It equals the ceiling the executor's own hooks already apply to a
+// claude_code / claw tool payload in-process, so the sandboxed and
+// in-process paths bound the model's view identically (a conformance test
+// in pkg/backend/model keeps the two from drifting). Several such fields
+// still fit under one line.
+const MaxToolResultBytes = 1 << 20
 
 // ErrEnvelopeLineTooLong is returned when an incoming NDJSON line
 // exceeds [MaxEnvelopeLineBytes]. Callers should surface a clear error
@@ -224,10 +258,23 @@ func NewEnvelopeWriter(w io.Writer) *EnvelopeWriter {
 // Write marshals env and emits it as a single NDJSON line. Holds the
 // internal mutex for the duration of the write to keep lines
 // uninterleaved across concurrent goroutines.
+//
+// A line over [MaxEnvelopeLineBytes] is REFUSED here, at the source, and
+// nothing is written: the peer's reader fails the whole channel on such a
+// line and can only report the size it rejected, naming nothing that
+// produced it. Every writer on the channel — both directions — therefore
+// gets a typed error naming its own envelope type instead of a dead
+// channel elsewhere. Producers that can legitimately exceed the cap clamp
+// first ([ClampToolResult], the relay's event clamp); reaching this
+// refusal means one did not.
 func (ew *EnvelopeWriter) Write(env Envelope) error {
 	buf, err := json.Marshal(env)
 	if err != nil {
 		return fmt.Errorf("delegate: encode envelope: %w", err)
+	}
+	if len(buf)+1 > MaxEnvelopeLineBytes {
+		return fmt.Errorf("delegate: refusing to write a %q envelope of %d bytes (line cap %d): %w",
+			env.Type, len(buf)+1, MaxEnvelopeLineBytes, ErrEnvelopeLineTooLong)
 	}
 	buf = append(buf, '\n')
 	ew.mu.Lock()
@@ -261,13 +308,10 @@ func NewToolCallEnvelope(id, name string, input json.RawMessage) (Envelope, erro
 }
 
 // NewToolResultEnvelope builds a tool_result envelope. ID MUST match
-// the corresponding [EnvelopeToolCall].
+// the corresponding [EnvelopeToolCall]. The payload is clamped to
+// [MaxToolResultBytes] — see [ClampToolResult].
 func NewToolResultEnvelope(id, output, errMsg string) (Envelope, error) {
-	data, err := json.Marshal(ToolResultData{Output: output, Error: errMsg})
-	if err != nil {
-		return Envelope{}, fmt.Errorf("delegate: marshal tool_result: %w", err)
-	}
-	return Envelope{Type: EnvelopeToolResult, ID: id, Data: data}, nil
+	return newToolResultData(id, ToolResultData{Output: output, Error: errMsg})
 }
 
 // NewResultEnvelope builds the terminal result envelope. The runner
@@ -322,4 +366,15 @@ func NewSessionCaptureEnvelope(snapshot json.RawMessage) Envelope {
 // the runner can pre-load it before the LLM loop starts.
 func NewSessionReplayEnvelope(snapshot json.RawMessage) Envelope {
 	return Envelope{Type: EnvelopeSessionReplay, Data: snapshot}
+}
+
+// NewPermissionPolicyEnvelope carries the node's permission policy in
+// its serialisable form so the in-container runner enforces the same
+// gate as an unsandboxed run.
+func NewPermissionPolicyEnvelope(cfg permission.PolicyConfig) (Envelope, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("marshal permission policy: %w", err)
+	}
+	return Envelope{Type: EnvelopePermissionPolicy, Data: data}, nil
 }

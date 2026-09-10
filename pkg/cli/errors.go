@@ -23,6 +23,13 @@ import (
 // chain marked it as a user-input failure.
 var ErrUserInput = errors.New("user input")
 
+// ErrReported marks a failure whose diagnosis the command has ALREADY
+// written to its output — a `--json` result carrying `valid: false` and
+// its diagnostics. The CLI exits non-zero on it without printing a second
+// JSON document after the first, which would break every parser reading
+// the stream.
+var ErrReported = errors.New("already reported")
+
 // UserInputError wraps err with ErrUserInput so the CLI exits with
 // status 2. Returns nil when err is nil so the caller can chain
 // `return cli.UserInputError(maybeErr)` without a nil check.

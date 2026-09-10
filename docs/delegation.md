@@ -7,7 +7,7 @@ environment, and credential resolution chain chooses one — `model:` alone does
 direct API call. Delegated coding-agent backends are the richest choice for
 editing files, running shell, and driving git:
 
-```iter
+```iter fragment
 agent implementer:
   backend: "codex"                # or claude_code / pi / kimi / grok
   input: plan_schema
@@ -32,7 +32,7 @@ review, judge, or plan that should call a provider API in-process, pin both the
 `claw` backend and the model; `readonly: true` constrains the node independently
 of that selection:
 
-```iter
+```iter fragment
 agent reviewer:
   backend: "claw"                      # Force an in-process provider call
   model: "anthropic/claude-sonnet-5"

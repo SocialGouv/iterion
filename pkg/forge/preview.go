@@ -1,6 +1,10 @@
 package forge
 
-import "github.com/SocialGouv/iterion/pkg/bundle"
+import (
+	"context"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
+)
 
 // EnablePreview is the read-only projection of what enabling a set of bots on
 // a repo will provision: the webhook events to subscribe to, the slash-command
@@ -19,7 +23,7 @@ type EnablePreview struct {
 // event) so the studio's enable dialog shows exactly what Provision will set
 // up — and, crucially, does NOT flag a command-only bot as a conflict. Pure:
 // no forge calls, no persistence.
-func PreviewEnable(botFn BotForgeLookup, invFn BotInvocationsLookup, bots []string) EnablePreview {
+func PreviewEnable(ctx context.Context, teamID string, botFn BotForgeLookup, invFn BotInvocationsLookup, bots []string) EnablePreview {
 	frByBot := map[string]*bundle.ForgeRequirements{}
 	invByBot := map[string][]bundle.Invocation{}
 	binds := map[string]string{}
@@ -29,14 +33,14 @@ func PreviewEnable(botFn BotForgeLookup, invFn BotInvocationsLookup, bots []stri
 	var provisionable []string
 
 	for _, b := range dedupSorted(bots) {
-		fr, err := botFn(b)
+		fr, err := botFn(ctx, teamID, b)
 		if err != nil {
 			conflicts = append(conflicts, b+": "+err.Error())
 			continue
 		}
 		var invs []bundle.Invocation
 		if invFn != nil {
-			invs, _ = invFn(b)
+			invs, _ = invFn(ctx, teamID, b)
 		}
 		if fr == nil && !hasForgeReachableInvocation(invs) {
 			conflicts = append(conflicts, b+": declares neither a forge: block nor a forge/command invocation — not installable")

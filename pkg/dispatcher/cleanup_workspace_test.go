@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -427,11 +428,7 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "Test"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = wsPath
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, wsPath, args...)
 	}
 	if err := os.WriteFile(filepath.Join(wsPath, "uncommitted.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatalf("write uncommitted file: %v", err)
@@ -459,11 +456,5 @@ func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
 
 func runCleanupGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-	}
-	return string(out)
+	return gittest.Run(t, dir, args...)
 }

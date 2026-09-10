@@ -194,6 +194,34 @@ output says whether the PR **is** a draft, not whether one was asked for.
 Set `--var mr_draft=false` for a repo whose review flow does not use
 drafts.
 
+## Publication (opt-in)
+
+`publish=true` appends a publication tail after the PR tail: a
+deterministic `publish_gate` (opt-in + `publish_base_url` + `publish_image`
++ both credentials mounted + a `deploy-target` skill actually mirrored into
+the workspace, else the tail is skipped with its reason), the `publish`
+agent, and a deterministic `verify_publish` truth gate that polls the live
+URL from outside the agent's narrative and FAILS the run when the site is
+not serving under `publish_base_url`.
+
+The agent follows two skills. The bundle's own `publish-static-site.md`
+builds the docs into a MkDocs Material site (`deploy/gitbook_to_mkdocs.py`
+converts the GitBook blocks) and packages it with `crane` as one layer on
+`nginxinc/nginx-unprivileged` (port 8080, uid 101), pushed to
+`publish_image:<docs commit>` with the `registry_token` secret (stdin
+login, never argv, and a `DOCKER_CONFIG` scoped to the scratch directory so
+the login does not outlive the run). The operator-attached **`deploy-target`**
+skill — a plugin or library skill resolved by name, exactly as app-dev's
+deploy phase — then runs that image, BY DIGEST (`publish_image@sha256:…`,
+resolved from the registry after the push: the docs-sha tag is a mutable
+alias, and an unchanged tag is an unchanged pod spec, so a rebuilt site
+would never roll out), with the `deploy_credential` secret by reference,
+and returns the URL. No platform
+literal lives in the DSL: swap platforms by attaching another
+`deploy-target` skill and credential. `bots/product-docs/deploy/` also
+keeps `onyxia-serve-init.sh`, the standing-service half of the former SSP
+Cloud datalab target, for the plugin that still uses it.
+
 ## Run
 
 ```bash

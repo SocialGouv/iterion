@@ -27,12 +27,24 @@ func (c *compiler) expandGroups() {
 	if len(c.file.Workflows) > 0 {
 		wf = c.file.Workflows[0]
 	}
+	prefixes := make(map[string]bool, len(c.file.Uses))
 	for _, use := range c.file.Uses {
 		g, ok := groups[use.Group]
 		if !ok {
 			c.errorf(DiagUseUnknownGroup, "use references unknown group %q", use.Group)
 			continue
 		}
+		// Two `use` blocks with one prefix would expand to the same node
+		// ids; reported HERE, on the repeated `use` line — the line to
+		// change — rather than as duplicate ids positioned on the group
+		// body, which both instances share and which is not the mistake.
+		if prefixes[use.Prefix] {
+			c.errorfAtSpan(DiagDuplicateNodeID, use.Span,
+				"use %q as %q: prefix %q is already used by an earlier `use` — every instantiation needs its own prefix",
+				use.Group, use.Prefix, use.Prefix)
+			continue
+		}
+		prefixes[use.Prefix] = true
 		binds := c.bindGroupParams(g, use)
 		c.instantiateGroup(g, names[use.Group], use.Prefix, binds, wf)
 	}
@@ -72,15 +84,7 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		}
 		return name // terminals (done/fail) and external refs stay as-is
 	}
-	subst := func(s string) string {
-		if s == "" || !strings.Contains(s, "{{params.") {
-			return s
-		}
-		for k, v := range binds {
-			s = strings.ReplaceAll(s, "{{params."+k+"}}", v)
-		}
-		return s
-	}
+	subst := func(s string) string { return substParams(s, binds) }
 
 	for _, a := range g.Agents {
 		na := *a
@@ -151,6 +155,46 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		}
 		wf.Edges = append(wf.Edges, ne)
 	}
+}
+
+// substParams replaces every `{{params.<key>}}` marker in s with its bound
+// value, in ONE pass over s: the scan walks the source once and a
+// substituted value is never re-examined, so a bound value that reads like
+// another parameter reference is inserted verbatim. That also makes the
+// result independent of the bind map's iteration order.
+//
+// A `{{params.x}}` with no binding — and any other `{{...}}` namespace —
+// is copied through unchanged, leaving the reference validator to report
+// it. An unterminated `{{` ends the scan with the remainder copied as-is.
+func substParams(s string, binds map[string]string) string {
+	if s == "" || !strings.Contains(s, "{{params.") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if i+1 < len(s) && s[i] == '{' && s[i+1] == '{' {
+			end := strings.Index(s[i:], "}}")
+			if end == -1 {
+				b.WriteString(s[i:])
+				return b.String()
+			}
+			raw := s[i : i+end+2]
+			if key, ok := strings.CutPrefix(raw[2:len(raw)-2], "params."); ok {
+				if v, bound := binds[key]; bound {
+					b.WriteString(v)
+					i += end + 2
+					continue
+				}
+			}
+			b.WriteString(raw)
+			i += end + 2
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // groupNodeNames returns the set of node names declared inside a group.

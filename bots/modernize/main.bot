@@ -33,6 +33,11 @@ vars:
   ## report and the surface they probed uncovered — which is the status quo, and
   ## which nothing goes red about.
   reanchor: bool = true
+  ## Act the lot's EXTENSION requests (new observation points, by pure
+  ## addition) by running the net's own bot as a subbot. Off leaves the
+  ## requests pending in the ledger, where the oracle gate refuses until a
+  ## human acts them — pending is loud by design, never a silent skip.
+  extend: bool = true
   source_issue_ref: string = ""
 
 secrets:
@@ -51,7 +56,7 @@ prompt campaign_system:
   Read the bundled skills before acting: `modernize-lots` for what a lot is and
   how one goes wrong, `plan-contract` for the contract you are working from.
 
-  Three rules override any instinct to make the gate pass:
+  Four rules override any instinct to make the gate pass:
 
   1. Stay inside the lot. The lot's intent says what may change. A change that
      reaches beyond it is not initiative, it is an unreviewable diff — and the
@@ -61,10 +66,21 @@ prompt campaign_system:
   2. Never touch the oracle. The behavioural net that judges this work is
      off-limits: not its references, not its comparators, not its fixtures. A
      reference that moves is a REGRESSION YOU CAUSED until proven otherwise,
-     and the proof is not yours to write.
+     and the proof is not yours to write. QUALIFYING it is: a behaviour
+     someone chose is repaired in the product and its reference stays; an
+     artefact nobody specified (the order of ties, an id, a timestamp) is
+     made deterministic in the product, and the references that move then
+     are still announced. ONE written request per red episode, naming
+     exactly what the report shows, classified path by path inside it. See
+     `modernize-lots`.
   3. Never weaken the gate. Skipping a check, loosening a version constraint to
      dodge a conflict, or excluding a failing module are all ways of passing
      without having done the work.
+  4. Never write `status: done`. That word is the gate's: a tool node writes it
+     after the gate has proven the lot, in a commit of its own. Write
+     `status: blocked` — with the reason committed — when you must stop. A
+     claim of failure cannot cheat toward green; a claim of completion can,
+     and a run interrupted after one relaunches as a green no-op.
 
   Commit as you go, so an interrupted run leaves landed work.
 
@@ -121,6 +137,22 @@ schema plan_state:
   base_sha: string
   refs_dir: string
   notice: string
+  ## True ONLY when only_lot named a lot the reader resolved as
+  ## non-actionable (done / blocked / absent from the contract) -- NEVER
+  ## true at the same time as nothing_to_do (native:670). An unfiltered
+  ## "pick next" scan that finds nothing ready is a legitimate no-op
+  ## (nothing_to_do, silent green); an EXPLICIT only_lot request that
+  ## cannot be honoured is not the same outcome and must not exit the
+  ## same way -- work_gate routes it to a typed fail instead.
+  lot_not_actionable: bool
+  ## The named lot's actual status when lot_not_actionable: "done",
+  ## "blocked", or "absent" (no lot with that id in the contract).
+  lot_status: string
+  ## The contract could not be READ or cannot be EDITED by the gate
+  ## (CONTRACT_UNREADABLE, LOT_UNEDITABLE): a verdict work_gate routes to
+  ## `fail` — never a tool error, which the engine retries once and then
+  ## leaves `failed_resumable`, a terminal a router may probe-resume.
+  refused: bool
 
 ## The deterministic verdict. Not one field here is an opinion.
 schema lot_report:
@@ -140,14 +172,83 @@ schema lot_report:
   ## read it and nothing ever did — a signal that exists in a log and not in the
   ## contract is not a signal.
   oracle_invalid: json
+  ## Extension requests the lot left pending in the net's ledger — read by the
+  ## harness's own code, and routed to the net's extension subbot. A lot may
+  ## ASK for a new observation point; it may never write one.
+  extension_pending: json
+  ## An act in the ledger was not the net subbot's — introduced by a commit
+  ## the subbot did not report, or a certified path rewritten since — or the
+  ## net's harness could not say it applied the provenance rule at all (an
+  ## older copy, which judges by the bypassable same-commit rule). Refused and
+  ## TYPED, and terminal on its own edge: neither shape is repairable by a
+  ## pass. Dropping the act block breaks ledger_append_only, deleting the
+  ## reference makes the recorded path absent at HEAD, amending yields a sha
+  ## still outside the subbot's commits, and a harness sync is the net
+  ## owner's act, not the worker's.
+  extension_forged: bool
+  ## The worker wrote `done` into the contract. `done` is the gate's word: this
+  ## verdict is refused BEFORE any gate command runs, so the revert costs the
+  ## worker seconds, never the hour a full gate would spend confirming a
+  ## completion it had already written for itself.
+  done_self_written: bool
+  ## A gate command outlived `gate_timeout_s`. A VERDICT, not an execution
+  ## failure: an expiry that surfaced as a tool error was retried once by the
+  ## engine — the same hour replayed for nothing — then left the run
+  ## `failed_resumable` with no line to read, and the engine's own auto-resume
+  ## replayed the same hour on a fresh pod until the budget. The gate ends the
+  ## run at `fail`, once, with `block_reason` naming the wall: a wall the next
+  ## pass would hit again is a finding about the wall, not a reason to pay
+  ## four passes for it — nor a stop that reads `finished`.
+  gate_timed_out: bool
+  ## The oracle delivered NO verdict: the gate wrapper or the harness died
+  ## before printing a report — a redirect into a directory the pod never
+  ## had, a crashed harness, a temp dir that resolves inside the workspace.
+  ## Named here so an environment failure never reads as a RED over the
+  ## tree: measured, four lots read "oracle RED" out of "Directory
+  ## nonexistent", and one spent three hours repairing an environment. The
+  ## gate ends the run at `fail`, typed ORACLE_NOT_RUN, once.
+  oracle_not_run: bool
+  ## The harness report as the wrapper printed it, read from the wrapper's
+  ## FULL stdout. The log tail keeps the last 4000 characters of stdout then
+  ## stderr — a harness that logs progress pushes its own report out first.
+  oracle_report: json
+  ## The contract was rewritten during the lot: an existing lot's normative
+  ## fields changed, a lot disappeared, or another lot's status moved. One
+  ## entry per rewrite. Refused before any gate command runs, like `done`.
+  contract_rewritten: string[]
+  ## The contract could not be READ (CONTRACT_UNREADABLE): a failure to LOOK
+  ## is never turned into a verdict over the lot — every conjunct stays false
+  ## and lot_gate fails the run at once, no repair pass.
+  contract_unreadable: bool
   log_tail: string
 
 schema gate_state:
   converged: bool
   ## Converged OR declared blocked — both end the run, for opposite reasons.
   stop: bool
+  ## The verifier REFUSED to judge: a worker-written `done`, a rewritten
+  ## contract. Sent back to the worker while the repair loop lasts; past it,
+  ## the run fails — it never leaves through the exhaustion edge as
+  ## `finished` with the forged word still in the contract.
+  refused: bool
+  ## A gate command outlived the contract's wall. Ends the run at `fail` on
+  ## the first occurrence — never a repair pass against the same wall, never
+  ## a `finished` the programme would relaunch into the same wall.
+  timed_out: bool
+  ## The oracle delivered no verdict. Ends the run at `fail`, typed, on the
+  ## first occurrence: a repair pass would spend the worker's hour on an
+  ## environment it cannot fix.
+  oracle_not_run: bool
+  ## The verifier could not read the contract. Fails the run at once.
+  unreadable: bool
+  ## An extension act the certifier refused on PROVENANCE — written by the
+  ## constrained party, or judged by a harness that could not say it applied
+  ## the rule. Terminal on its own edge, ahead of the repair loop: no pass of
+  ## this lot can produce the missing commit or the missing sync.
+  forged: bool
   fail_log: string
   needs_reanchor: bool
+  needs_extend: bool
 
 schema verify_input:
   lot_id: string
@@ -155,6 +256,31 @@ schema verify_input:
   base_sha: string
   refs_dir: string
   exit_gate: string
+  ## The net subbot's provenance (see extend_result) — empty until the
+  ## subbot has run, and passed to the harness EVEN THEN: the only pass that
+  ## judges a lot acting its own extension is the one where no subbot ran.
+  acted_commits: string
+  ## The request ids the subbot reports having ACTED. The content rule that
+  ## lets a rewritten history through covers the act the subbot judged, not
+  ## any act naming a path it certified — without this the lot files a second
+  ## request, has it REFUSED, and acts it itself on the first one's path.
+  acted_ids: string
+  acted_blobs: string
+
+schema mark_input:
+  lot_id: string
+  plan_path: string
+  base_sha: string
+
+## What the gate wrote, and where. `marked` is false on the idempotent path
+## (the contract already read `done`) — nothing was written, nothing committed.
+schema mark_state:
+  marked: bool
+  commit: string
+  notice: string
+  ## The gate could not write its word (contract shape, git): the run fails
+  ## here, typed, with the lot's work banked — never a tool error.
+  refused: bool
 
 ## ─── Nodes ─────────────────────────────────────────────────────────
 
@@ -169,6 +295,7 @@ tool plan_read:
   script: |
     import json
     import os
+    import re
     import subprocess
     import sys
 
@@ -177,10 +304,30 @@ tool plan_read:
     only = {{vars.only_lot}}
 
     out = {"nothing_to_do": True, "lot_id": "", "lot_title": "", "lot_intent": "",
-           "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": ""}
+           "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": "",
+           "lot_not_actionable": False, "lot_status": "", "refused": False}
 
     def emit(notice):
         """A legitimate no-op: there is genuinely nothing to carry out."""
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def not_actionable(status, notice):
+        """only_lot named a lot that cannot be actioned: done, blocked, or
+        absent from the contract entirely.
+
+        NOT the same outcome as emit()'s legitimate nothing_to_do, and must
+        not exit the same way: an unfiltered "pick next" scan finding
+        nothing ready is silent-green by design, but the operator here
+        asked for THIS lot specifically. Reporting it the same way a
+        finished programme reports "every lot is done" hid the real
+        answer -- exit 0, JSON printed, so work_gate (which reads this
+        field) routes to a typed fail instead of straight to done.
+        """
+        out["nothing_to_do"] = False
+        out["lot_not_actionable"] = True
+        out["lot_status"] = status
         out["notice"] = notice
         print(json.dumps(out))
         raise SystemExit(0)
@@ -198,12 +345,15 @@ tool plan_read:
         nothing at all.
 
         A bot whose whole job is to execute a declared lot must refuse when it
-        cannot read what was declared.
+        cannot read what was declared. The refusal is a VERDICT (`refused`),
+        exit 0: work_gate routes it to `fail`, once, readable in the tree.
         """
+        out["nothing_to_do"] = False
+        out["refused"] = True
         out["notice"] = notice
         print(json.dumps(out))
         sys.stderr.write("modernize: %s\n" % notice)
-        raise SystemExit(1)
+        raise SystemExit(0)
 
     if not os.path.isfile(plan_path):
         emit("no programme contract at %s — nothing to carry out. Write one "
@@ -264,10 +414,48 @@ tool plan_read:
     rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
                          capture_output=True, text=True, timeout=30)
     if rev.returncode != 0:
-        emit("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+        # A failure to LOOK, never a no-op: refs_immutable_gate compares
+        # against this commit, and a run that cannot read it has nothing to
+        # judge against.
+        refuse("CONTRACT_UNREADABLE: cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
     out["base_sha"] = rev.stdout.strip()
 
     lots = plan.get("lots") or []
+    # An id is a KEY. A contract declaring one twice is not one this bot can
+    # read: the reader would take the first, the verifier the last, and a
+    # worker could add a homonym ahead of its lot, carrying the gate of its
+    # choice (adversarial finding, executed). Refused here — the single point
+    # every later node relies on — for both launch modes.
+    ids = [l.get("id") for l in lots]
+    if any(not isinstance(i, str) or not i for i in ids):
+        refuse("CONTRACT_UNREADABLE: every lot needs a non-empty string id; "
+               "got %r" % [i for i in ids if not isinstance(i, str) or not i][:5])
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        refuse("CONTRACT_UNREADABLE: duplicate lot id(s) %s — an id is a key, "
+               "and a contract that declares one twice is not readable."
+               % ", ".join(dupes))
+
+    # only_lot is an EXPLICIT request for one lot, not a scope filter over
+    # an otherwise-normal scan. Resolve its actual status FIRST: a lot
+    # that is already done, already blocked, or not in the contract at
+    # all is not a legitimate nothing_to_do (that outcome is reserved for
+    # the unfiltered "pick next" scan below finding nothing ready) --
+    # collapsing the two hid a bad run behind a green one (native:670: a
+    # request for a blocked lot silently reported "every lot is done").
+    if only:
+        named = next((l for l in lots if l.get("id") == only), None)
+        if named is None:
+            not_actionable("absent",
+                "only_lot %r names a lot that does not exist in %s. Check "
+                "the lot id against the contract's lots: list." % (only, plan_path))
+        if named.get("status") in ("done", "blocked"):
+            not_actionable(named.get("status"),
+                "only_lot %r is not actionable: its status is %r. A done "
+                "lot has nothing left to do; a blocked lot needs a human "
+                "to act on its committed report before it can be "
+                "re-attempted." % (only, named.get("status")))
+
     # UN LOT BLOQUE NE SE RE-TENTE PAS A CHAQUE RUN.
     #
     # `blocked` ne veut pas dire « ce lot n'a rien fait » : il veut dire « il n'a
@@ -304,6 +492,21 @@ tool plan_read:
             continue
         chosen = lot
         break
+
+    if chosen is None and only:
+        # An EXPLICIT request is answered explicitly. The unfiltered mode may
+        # legitimately find nothing to do; a launch that NAMES a lot which
+        # cannot be carried out is refused, typed, rather than reported as a
+        # green no-op — a `finished` run that crossed no gate reads as
+        # convergence. Measured on a live campaign: four such greens in 24 h,
+        # every one a relaunch from a banked branch whose contract carried a
+        # `done` no gate had proven.
+        target = next((l for l in lots if l.get("id") == only), None)
+        # done / blocked / absent were resolved above, by not_actionable().
+        missing = [d for d in (target.get("depends_on") or []) if d not in done_ids]
+        not_actionable("waiting",
+            "only_lot %r is not actionable: it waits on %s — an explicit request "
+            "cannot skip the contract's order." % (only, ", ".join(missing) or "an unmet dependency"))
 
     if chosen is None:
         if waiting:
@@ -350,9 +553,50 @@ tool plan_read:
                "must be a single line; put multi-line logic in a script file "
                "and invoke it." % chosen.get("id"))
     if not gate:
-        emit("lot %s declares no exit_gate. A lot with no gate cannot be "
-             "verified, and an unverifiable lot is indistinguishable from one "
-             "that was never done." % chosen.get("id"))
+        # In BOTH modes: the unfiltered scan re-picks this same first ready
+        # lot at every relaunch, so a green no-op here would park the whole
+        # programme in `finished`-at-zero-minutes runs — the same reading-as-
+        # convergence an explicit request is refused for (review finding).
+        not_actionable("no_gate",
+            "lot %s is not actionable: it declares no exit_gate. A lot with no "
+            "gate cannot be verified, an unverifiable lot is indistinguishable "
+            "from one that was never done, and the programme cannot advance past "
+            "it — give it a gate in the contract, then relaunch." % chosen.get("id"))
+
+    # The gate writes `done` by editing ONE line of this file (mark_done), and
+    # it must be able to. A lot whose block the editor cannot locate — flow
+    # mapping, `- id:` not opening the item, no `status:` at the item's key
+    # column — would be refused AFTER convergence, when the work is done and
+    # the campaign has no way to mark it: check the shape now, before a token
+    # is spent. Same regexes as mark_done, on purpose.
+    def block_shape_ok(text, lot_id):
+        lines = text.splitlines()
+        id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+        start = m0 = None
+        for i, l in enumerate(lines):
+            m0 = id_re.match(l)
+            if m0:
+                start = i
+                break
+        if start is None:
+            return "its `- id:` line was not found (only `- id: <id>` opening a block item is edited)"
+        dash_indent = len(m0.group(1))
+        key_col = dash_indent + 1 + len(m0.group(2))
+        same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+        end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
+        status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
+        if not any(status_re.match(lines[i]) for i in range(start, end)):
+            return "no `status:` line at its key column inside its block"
+        return ""
+    try:
+        with open(plan_path, encoding="utf-8") as f:
+            shape = block_shape_ok(f.read(), chosen.get("id"))
+    except OSError as e:
+        refuse("CONTRACT_UNREADABLE: %s" % e)
+    if shape:
+        refuse("LOT_UNEDITABLE: lot %s — %s; the gate could never write its "
+               "`done`. Write the lot as a block item (`- id: %s` then its keys "
+               "at one column) before running it." % (chosen.get("id"), shape, chosen.get("id")))
 
     out["nothing_to_do"] = False
     out["lot_id"] = chosen.get("id") or ""
@@ -373,6 +617,19 @@ compute work_gate:
     base_sha: "outputs.plan_read.base_sha"
     refs_dir: "outputs.plan_read.refs_dir"
     notice: "outputs.plan_read.notice"
+    lot_not_actionable: "outputs.plan_read.lot_not_actionable"
+    lot_status: "outputs.plan_read.lot_status"
+    refused: "outputs.plan_read.refused"
+
+## lot_not_actionable — an EXPLICIT only_lot request naming a lot the
+## reader resolved as done / blocked / absent (native:670). Terminal by
+## design: the answer only changes when the contract does, so a resume
+## would re-read the same lot and refuse identically.
+fail lot_not_actionable:
+  description: "only_lot named a lot that cannot be actioned"
+  code: LOT_NOT_ACTIONABLE
+  message: "lot '{{vars.only_lot}}' is {{outputs.work_gate.lot_status}} — {{outputs.work_gate.notice}}"
+  resumable: false
 
 agent upgrade_campaign:
   backend: "claude_code"
@@ -399,40 +656,360 @@ tool lot_verify:
     import os
     import shlex
     import subprocess
+    import time
+    import sys
 
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
     ws = {{vars.workspace_dir}}
     base = {{input.base_sha}}
     refs_dir = {{input.refs_dir}}
+    # The net subbot's provenance: `null` (rendered for a node that has not
+    # run) reads as "none reported", and is STILL handed to the harness —
+    # presence, even empty, is what makes the certifier strict.
+    acted_commits = ({{input.acted_commits}} or "")
+    acted_ids = ({{input.acted_ids}} or "")
+    acted_blobs = ({{input.acted_blobs}} or "")
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
+              "gate_timed_out": False, "contract_unreadable": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
-              "oracle_invalid": []}
+              "oracle_invalid": [], "oracle_not_run": False, "oracle_report": {}, "extension_pending": [], "extension_forged": False, "done_self_written": False,
+              "contract_rewritten": []}
     problems = []
 
-    # Did the campaign declare this lot blocked? Read from the contract, which
-    # it had to commit to say so — a claim in a control-plane message would be
-    # cheaper to make and impossible to review.
-    try:
-        raw = subprocess.run(["yq", "-o=json", os.path.join(ws, {{input.plan_path}})],
-                             capture_output=True, text=True, timeout=60)
-        if raw.returncode == 0:
-            for lot in (json.loads(raw.stdout).get("lots") or []):
-                if lot.get("id") == {{input.lot_id}} and lot.get("status") == "blocked":
-                    report["lot_blocked"] = True
-                    report["block_reason"] = (lot.get("title") or "") + " -- see the committed report"
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+    def emit():
+        """The ONE exit of this node — and the one place this rule holds.
 
-    def run(cmd, timeout=3600):
-        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
-                           text=True, timeout=timeout)
-        return p.returncode, (p.stdout + p.stderr)[-4000:]
+        A refused verdict is never a clean stop. `stop` is
+        `converged || lot_blocked`, `lot_blocked` is what the CONSTRAINED
+        party wrote into its own contract, and `lot_gate -> done when stop`
+        is declared ahead of the fail edges: a lot that writes
+        `status: blocked` for itself would carry ANY refusal out through the
+        green door — run `finished`, work banked, mergeable. Two refusals
+        cleared the flag at their own site, the third did not, and two of the
+        three early exits are prints a rule written at the tail never reaches
+        (review finding, executed). One rule, on the one path out.
+        """
+        if report["done_self_written"] or report["contract_rewritten"] \
+                or report["extension_forged"]:
+            report["lot_blocked"] = False
+        print(json.dumps(report))
+
+    # 0. Who wrote the status? The contract is read at HEAD and at the run's
+    #    base, and the two claims it can carry are believed asymmetrically.
+    #    `blocked` is believed as a STOP: it had to be committed to be said, and
+    #    a claim of failure cannot cheat its way to green. `done` is the GATE's
+    #    word — a tool node writes it after this verdict, in a commit of its
+    #    own — so a `done` the worker wrote is refused HERE, before a single
+    #    gate command runs: the revert costs seconds, the gate costs an hour,
+    #    and a run interrupted after such a write relaunches as a green no-op.
+    # Same lookup as plan_read and mark_done: yq on PATH, then the TARGET's
+    # devbox profile — declared is not realised, and a verifier that cannot
+    # find its parser must say so, never fall through to a verdict that skips
+    # the checks it could not make (adversarial finding, executed: with yq
+    # off PATH, a worker-written `done` and an amputated gate converged green).
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    def unreadable(why):
+        """A failure to LOOK is refused, never turned into a verdict: a verdict
+        over a contract this node could not read would skip exactly the checks
+        that exist to catch a rewritten one."""
+        sys.stderr.write("modernize: CONTRACT_UNREADABLE: %s\n" % why)
+        report["contract_unreadable"] = True
+        report["log_tail"] = "CONTRACT_UNREADABLE: %s" % why
+        emit()
+        raise SystemExit(0)
+
+    def plan_doc(text, what):
+        """The whole contract as JSON — `lots` and the top-level keys."""
+        import tempfile
+        yq = find_yq()
+        if not yq:
+            unreadable("yq is not on PATH and was not found in the target's devbox "
+                       "profile, so the contract cannot be read (%s)" % what)
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            raw = subprocess.run([yq, "-o=json", tmp], capture_output=True,
+                                 text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            unreadable("cannot run yq on the contract (%s): %s" % (what, e))
+        finally:
+            os.unlink(tmp)
+        if raw.returncode != 0:
+            unreadable("the contract does not parse (%s): %s" % (what, raw.stderr[-400:]))
+        try:
+            doc = json.loads(raw.stdout)
+        except ValueError as e:
+            unreadable("yq produced no JSON for the contract (%s): %s" % (what, e))
+        return doc if isinstance(doc, dict) else {}
+
+    def plan_lots(text, what):
+        return plan_doc(text, what).get("lots") or []
+
+    def lot_of(lots, lot_id):
+        for lot in lots or []:
+            if lot.get("id") == lot_id:
+                return lot
+        return None
+
+    plan_rel = {{input.plan_path}}
+    try:
+        head_text = open(os.path.join(ws, plan_rel), encoding="utf-8").read()
+    except OSError as e:
+        unreadable("the contract is missing from the working tree (%s): %s" % (plan_rel, e))
+    base_show = subprocess.run(["git", "-C", ws, "show", "%s:%s" % (base, plan_rel)],
+                               capture_output=True, text=True, timeout=60)
+    if base_show.returncode != 0:
+        unreadable("the contract is not committed at the run's base %s — a programme "
+                   "that lives only in the working tree cannot be judged: %s"
+                   % (base[:12], base_show.stderr[-300:]))
+    head_lots = plan_lots(head_text, "the working tree")
+    base_doc = plan_doc(base_show.stdout, "base %s" % base[:12])
+    base_lots = base_doc.get("lots") or []
+    head_lot = lot_of(head_lots, {{input.lot_id}})
+    base_lot = lot_of(base_lots, {{input.lot_id}})
+
+    # The wall each gate command gets, from the contract the owner committed at
+    # the base: `gate_timeout_s` on the lot, else at the top level, else 3600.
+    # Bounded to a day, and an unreadable value is a refusal — a wall this
+    # node guessed would be a verdict nobody wrote.
+    def gate_timeout_from(doc, lot):
+        src, raw = None, None
+        if isinstance(lot, dict) and "gate_timeout_s" in lot:
+            src, raw = "lot %s" % {{input.lot_id}}, lot.get("gate_timeout_s")
+        elif isinstance(doc, dict) and "gate_timeout_s" in doc:
+            src, raw = "the top level", doc.get("gate_timeout_s")
+        if src is None:
+            return 3600
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 86400:
+            unreadable("gate_timeout_s at %s is %r — an integer number of seconds "
+                       "between 1 and 86400 is the only shape this node reads"
+                       % (src, raw))
+        return raw
+    gate_timeout = gate_timeout_from(base_doc, base_lot)
+    head_status = (head_lot or {}).get("status")
+    if head_status == "blocked":
+        report["lot_blocked"] = True
+        report["block_reason"] = ((head_lot or {}).get("title") or "") + " -- see the committed report"
+    if head_status == "done" and (base_lot or {}).get("status") != "done":
+        report["done_self_written"] = True
+        # Not a stop — cleared once, at the end of this node, for every
+        # refusal: the verdict goes back to the worker with the refusal in
+        # fail_log, whatever else the contract says.
+        report["block_reason"] = ""
+        problems.append(
+            "the contract marks lot %s `done` in the working tree while it was `%s` at base "
+            "%s: the worker wrote the verdict. `done` is the gate's word — a "
+            "tool node writes it after the gate has proven the lot. Revert that "
+            "status line (nothing else) and let the gate decide; this verdict "
+            "ran no command."
+            % ({{input.lot_id}}, (base_lot or {}).get("status") or "absent", base[:12]))
+        report["log_tail"] = "\n".join(problems)[-6000:]
+        emit()
+        raise SystemExit(0)
+
+    # 0b. The contract is read-only inside a lot — and that is checked in git,
+    #     not asked nicely. Existing lots keep their normative fields (title,
+    #     intent, exit_gate, depends_on, rebaseline_allowed, crosses_major),
+    #     no lot disappears, and no OTHER lot's status moves; the worker may
+    #     flip its own status to `blocked` and may ADD lots — an addition is a
+    #     proposal the programme's owner re-takes at the handoff. A gate
+    #     loosened, an intent rewritten or a lot dropped mid-run is the
+    #     contract rewritten by the party it binds: refused here, before any
+    #     gate command runs, with the rewrites named.
+    def gate_list(v):
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            return v
+        return [c.strip() for c in v if isinstance(c, str) and c.strip()]
+    if True:
+        head_ids = [l.get("id") for l in head_lots]
+        head_by = {l.get("id"): l for l in head_lots}
+        # The normative keys the contract carries OUTSIDE `lots` — the wall
+        # every lot gets and where the net lives — are read from the NEXT
+        # run's base, which is this tree once landed: one committed line would
+        # disarm the wall for the rest of the programme (review finding,
+        # executed: top-level gate_timeout_s 3600 -> 1 converged unrefused).
+        head_doc = plan_doc(head_text, "the working tree")
+        rewritten = []
+        for k in ("gate_timeout_s", "oracle"):
+            if base_doc.get(k) != head_doc.get(k):
+                rewritten.append("top-level %s moved from %r to %r" % (k, base_doc.get(k), head_doc.get(k)))
+        rewritten += ["duplicate lot id %s in the working tree" % i
+                     for i in sorted({i for i in head_ids if head_ids.count(i) > 1})]
+        for bl in base_lots:
+            hl = head_by.get(bl.get("id"))
+            if hl is None:
+                rewritten.append("lot %s was REMOVED" % bl.get("id"))
+                continue
+            for k in ("title", "intent", "depends_on", "rebaseline_allowed", "crosses_major", "gate_timeout_s"):
+                if bl.get(k) != hl.get(k):
+                    rewritten.append("%s.%s changed" % (bl.get("id"), k))
+            if gate_list(bl.get("exit_gate")) != gate_list(hl.get("exit_gate")):
+                rewritten.append("%s.exit_gate changed" % bl.get("id"))
+            if bl.get("id") != {{input.lot_id}} and bl.get("status") != hl.get("status"):
+                rewritten.append("%s.status moved from %r to %r"
+                                 % (bl.get("id"), bl.get("status"), hl.get("status")))
+        if rewritten:
+            report["contract_rewritten"] = rewritten
+            # Never a clean stop either, even under a lot the worker declared
+            # blocked: `stop` would end the run with the rewrite landed
+            # (adversarial finding, executed). Cleared at the same one point
+            # as every other refusal; the worker gets it in fail_log.
+            report["block_reason"] = ""
+            problems.append(
+                "the contract was rewritten during lot %s (%s). The plan is "
+                "read-only inside a lot: existing lots keep their gates, intents "
+                "and dependencies, no lot disappears, no other lot's status "
+                "moves. Revert those lines (nothing else); ADD a lot if the "
+                "programme needs one, never reshape or drop the ones it has. "
+                "This verdict ran no command."
+                % ({{input.lot_id}}, "; ".join(rewritten)[:1500]))
+            report["log_tail"] = "\n".join(problems)[-6000:]
+            emit()
+            raise SystemExit(0)
+
+    def run(cmd, timeout=None):
+        """(exit code, tail, full stdout). An expiry returns (None, tail, "") —
+        the caller records it as the GATE_TIMEOUT verdict; raised, it was a
+        tool error the engine retried once (the same hour replayed) before
+        failed_resumable. The tail is the last 4000 characters of stdout then
+        stderr; a reader that needs one whole line of stdout (the oracle's
+        report) takes it from the third value, never from the tail."""
+        started = time.monotonic()
+        try:
+            p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
+                               text=True, timeout=timeout or gate_timeout)
+        except subprocess.TimeoutExpired as e:
+            def text_of(v):
+                return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
+            tail = (text_of(e.stdout) + text_of(e.stderr))[-4000:]
+            return None, "exceeded gate_timeout_s=%d after %ds; last output:\n%s" % (
+                timeout or gate_timeout, int(time.monotonic() - started), tail), ""
+        return p.returncode, (p.stdout + p.stderr)[-4000:], p.stdout
+
+    def timed_out(what, cmd, log):
+        # Not a `lot_blocked` stop: that one ends the run `finished`, and a
+        # wall the run never crossed must not read as a stop the worker
+        # declared — the lot would stay `todo` and every relaunch would hit
+        # the wall and finish green again. The gate routes it to `fail`, once.
+        report["gate_timed_out"] = True
+        report["block_reason"] = "GATE_TIMEOUT: %s `%s` %s" % (what, cmd, log.splitlines()[0] if log else "")
+        problems.append("GATE_TIMEOUT: %s `%s` %s — a verdict, not a retry: raise "
+                        "gate_timeout_s in the contract (lot or top level) if the "
+                        "gate legitimately needs longer, or shorten the gate."
+                        % (what, cmd, log))
+
+    def oracle_not_run(why):
+        # Not a verdict over the tree: the oracle never judged it. Typed like
+        # GATE_TIMEOUT — block_reason carries the cause the fail node reports.
+        # A lot the campaign already declared blocked keeps its own reason and
+        # its own stop: the environment failure is logged, never typed over it.
+        problems.append("ORACLE_NOT_RUN: %s — an environment failure of the run, "
+                        "never a verdict on the tree: the oracle never delivered one. "
+                        "Read the wrapper's output — a missing directory, a broken net, "
+                        "a crashed harness — fix that, then relaunch." % why)
+        if report["lot_blocked"]:
+            return
+        report["oracle_not_run"] = True
+        # Collapsed, and cut from BOTH ends: the cause is the wrapper's LAST
+        # output, and a chatty wrapper puts it after thousands of characters
+        # — the head of the sentence and the tail of the output both stay.
+        flat = " ".join((why or "").split())
+        if len(flat) > 400:
+            flat = flat[:120] + " … " + flat[-277:]
+        report["block_reason"] = "ORACLE_NOT_RUN: %s" % flat
+
+    def last_json_object(text):
+        """The report is the last JSON object on stdout — one line, as the
+        harness prints it, or a pretty-printed block: the wrapper prints
+        exactly one, after the harness has logged to stderr. A format is not
+        a verdict, so both shapes read the same."""
+        # One in-place decoder pass per "{" line of the window, from the
+        # last upward (raw_decode(text, idx)): a noise line — a python repr
+        # the harness logged — fails on its first bad token, a report parses
+        # once whatever follows it. No join per pair of lines (30 s on 2000
+        # lines), no budget that noise printed after the report could spend
+        # (a green oracle was typed ORACLE_NOT_RUN by one), no guess at
+        # which "{" starts a block (`indent=0` puts a list's objects at
+        # column 0; a logger indents — the line is lstripped).
+        #
+        # Only a REPORT is handed back: an object naming itself (`mode`) or
+        # carrying two of the verdict's fields — what every mode-less
+        # harness generation writes, and what a progress line ({"ok": true})
+        # or a ledger entry an agent wrote never has both of.
+        REPORT_FIELDS = ("stable", "ok", "invalid", "blind_lanes", "holdout_total")
+
+        def is_report(obj):
+            return isinstance(obj, dict) and ("mode" in obj or sum(k in obj for k in REPORT_FIELDS) >= 2)
+
+        # The window is capped in characters as well as lines: a failing
+        # parse counts lines up to its offset, quadratic on a 40 MB stdout
+        # (7.9 s measured, 0.02 s capped). split("\n"), not splitlines():
+        # the latter also cuts on U+2028/U+2029/U+0085, which a report
+        # printed with ensure_ascii=False may carry inside a string.
+        text = text or ""
+        cut = len(text) > 2000000 or text.count("\n") >= 2000
+        lines = text[-2000000:].split("\n")[-2000:]
+        window = "\n".join(lines)
+        starts, pos = [], 0
+        for l in lines:
+            body = l.lstrip()
+            if body.startswith("{"):
+                starts.append(pos + len(l) - len(body))
+            pos += len(l) + 1
+        decoder = json.JSONDecoder()
+        # Selection, scanning last → first. A candidate ENCLOSING the one
+        # held (its parse ends at or after it) always replaces it: the
+        # outermost object of a block is the report, its nested entries —
+        # a lane carrying `mode`, a ledger block carrying `ok` — are not.
+        # Among disjoint candidates a NAMED report never loses to an
+        # unnamed one (an object with two verdict fields printed after the
+        # report would be read as a gate by the mode default); otherwise
+        # the last one wins. No early stop — a stop on the first
+        # non-enclosing candidate fired between two siblings of one block.
+        best = None  # (named, end, report)
+        for at in reversed(starts):
+            try:
+                obj, end = decoder.raw_decode(window, at)
+            except (ValueError, RecursionError):
+                continue
+            if not is_report(obj):
+                continue
+            named = "mode" in obj
+            if best is None or end >= best[1] or (named and not best[0]):
+                best = (named, end, obj)
+        if best is None:
+            return None
+        if cut and window[best[1]:].lstrip()[:1] in (",", "}", "]"):
+            # The window lost its head, and the object held is followed by
+            # a separator or a closer: by JSON's own grammar that makes it
+            # an entry of a report whose first line the cut took, named or
+            # not — an intact trailing report is followed by nothing, or by
+            # a log line. Without the report itself there is no verdict.
+            return None
+        return best[2]
 
     # 1. The lot's own gate, every command, in order.
     report["gate_passed"] = True
     for cmd in gate_cmds:
-        code, log = run(cmd)
+        code, log, _ = run(cmd)
+        if code is None:
+            report["gate_passed"] = False
+            timed_out("exit_gate command", cmd, log)
+            break
         if code != 0:
             report["gate_passed"] = False
             problems.append("exit_gate command failed (exit %d): %s\n%s" % (code, cmd, log))
@@ -442,33 +1019,99 @@ tool lot_verify:
     #    without the net is a lot verified against nothing, and reporting that
     #    as success is the failure this whole programme exists to prevent.
     verify = os.path.join(ws, ".golden-master", "verify-oracle.sh")
-    if not os.path.isfile(verify):
+    if report["gate_timed_out"]:
+        problems.append("the behavioural oracle was not replayed: the exit gate expired first, "
+                        "and the run ends on that wall.")
+    elif not os.path.isfile(verify):
         problems.append("no behavioural oracle at %s. Build the net before "
                         "modernising against it — a green build proves the code "
                         "compiles, never that it still behaves." % verify)
     else:
-        code, log = run(verify)
-        report["oracle_passed"] = code == 0
-        if code != 0:
-            problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
-        # WHICH mutants the oracle could no longer apply, read rather than
-        # guessed. A mutant goes invalid for two very different reasons: it
-        # mutates nothing — it never proved anything — or its anchor vanished
-        # under a change this lot was entitled to make, which means it DID prove
-        # something and has stopped. Only the second is mechanically repairable,
-        # and telling them apart requires reading the field instead of matching
-        # a phrase in a log.
-        #
-        # Repairing it is NOT this bot's to do: a mutant belongs to the net. The
-        # signal is surfaced so the party that owns the net can act on it.
-        for line in reversed((log or "").splitlines()):
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    report["oracle_invalid"] = json.loads(line).get("invalid") or []
-                except ValueError:
-                    pass
-                break
+        # The gate wrapper writes its report where GM_REPORT_TMP says, and
+        # defaults to a dotfile INSIDE the net. Judged next, that file reads
+        # as uncommitted work of the run — and the finalize banks it as wip,
+        # which a converged lot then never lands over. So the report goes to
+        # a temp file of THIS process: created here, named here, removed
+        # here — never a path the environment announces or inherits. A
+        # directory announced but absent killed the redirect before the
+        # oracle ran, and four lots read "oracle RED" out of it; a temp dir
+        # that resolves inside the workspace would put the report back in
+        # the tree. Neither is a verdict, and neither is read as one.
+        import tempfile
+        fd, report_tmp = tempfile.mkstemp(prefix="gm-last-report-", suffix=".json")
+        os.close(fd)
+        if os.path.realpath(report_tmp).startswith(os.path.realpath(ws) + os.sep):
+            os.unlink(report_tmp)
+            oracle_not_run("the temp dir resolves inside the workspace (%s): a report "
+                           "written there reads as work of the run"
+                           % os.path.dirname(report_tmp))
+        else:
+            os.environ["GM_REPORT_TMP"] = report_tmp
+            code, log, out = run(verify)
+            if os.path.exists(report_tmp):
+                os.unlink(report_tmp)
+            # The report is read from the wrapper's FULL stdout: the log tail
+            # keeps the last 4000 characters of stdout then stderr, which is
+            # where a harness that logs its progress pushes its report out.
+            oracle_report = last_json_object(out)
+            if oracle_report is not None:
+                # Bounded like log_tail: the verdict rides the artifact and the
+                # checkpoint on every pass. The fields the graph reads
+                # (`mode`, `invalid`) are taken from the whole object below.
+                as_text = json.dumps(oracle_report)
+                if len(as_text) <= 65536:
+                    report["oracle_report"] = oracle_report
+                else:
+                    report["oracle_report"] = {"mode": oracle_report.get("mode"),
+                                               "truncated": True, "bytes": len(as_text)}
+            # An older harness's report carries no `mode` and is a gate; the
+            # default is safe only because the reader above hands back
+            # nothing but reports (an object carrying a verdict field) — a
+            # `{}` or a fragment never reaches this line.
+            mode = (oracle_report or {}).get("mode") or "gate"
+            if code is None:
+                timed_out("the behavioural oracle", verify, log)
+            elif oracle_report is not None and mode != "gate":
+                # The harness said so itself: a subset (an ambient GM_MUTANTS)
+                # or a non-gate mode is "not a gate; no verdict". The wrapper
+                # exits 0 on it — read as a pass, one mutant would be the
+                # cheapest green in the whole programme.
+                oracle_not_run("the wrapper reported mode=%s — a subset or a non-gate "
+                               "run, not a verdict on the tree" % mode)
+            elif oracle_report is None:
+                # No report at all: the wrapper or the harness died before
+                # judging — or a wrapper that says nothing exited 0, which is
+                # not a pass either. "cannot create …/gm-last-report.json"
+                # was read as an oracle RED four times in one night.
+                oracle_not_run("the gate wrapper exited %d without printing a report; "
+                               "last output:\n%s" % (code, log))
+            elif code == 0:
+                report["oracle_passed"] = True
+            else:
+                problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
+            # WHICH mutants the oracle could no longer apply, read rather than
+            # guessed. A mutant goes invalid for two very different reasons: it
+            # mutates nothing — it never proved anything — or its anchor vanished
+            # under a change this lot was entitled to make, which means it DID prove
+            # something and has stopped. Only the second is mechanically repairable,
+            # and telling them apart requires reading the field instead of matching
+            # a phrase in a log.
+            #
+            # Repairing it is NOT this bot's to do: a mutant belongs to the net. The
+            # signal is surfaced so the party that owns the net can act on it.
+            if oracle_report is not None:
+                invalid = oracle_report.get("invalid") or []
+                if not isinstance(invalid, list):
+                    invalid = []
+                # Bounded like oracle_report: this list rides the checkpoint on
+                # every pass and is handed to the reanchor subbot as a var. Never
+                # silently: the cut is written where the verdict's log is read.
+                if len(invalid) > 200:
+                    problems.append("the oracle reported %d invalid mutants; the verdict carries "
+                                    "the first 200 — read the net's own report for the rest."
+                                    % len(invalid))
+                    invalid = invalid[:200]
+                report["oracle_invalid"] = invalid
 
     # 3. Did the oracle's references move? This is the separation of powers,
     #    and it is checked in git rather than trusted: the party that changes
@@ -494,22 +1137,157 @@ tool lot_verify:
         # et un vert ne peut pas rapporter ce retrecissement (mesure au tour
         # 6). Un changement legitime de ces fichiers est une EXTENSION du
         # filet : elle appartient a son proprietaire, par le registre.
-        judged = [refs_dir,
-                  os.path.join(gm_dir, "verify-oracle.sh"),
-                  os.path.join(gm_dir, "harness.py"),
-                  os.path.join(gm_dir, "canon"),
-                  os.path.join(gm_dir, "config.json"),
-                  os.path.join(gm_dir, "corpus.json"),
-                  os.path.join(gm_dir, "route-coverage.json"),
-                  os.path.join(gm_dir, "feature-coverage.json")]
-        code, log = run("git diff --name-only %s -- %s"
+        # The WHOLE net directory is judged, not a fixed file list: a fixed
+        # list leaves a NEW file invisible, and `python3 <net>/harness.py`
+        # puts that directory at sys.path[0] — a dropped <net>/json.py
+        # executes before any verdict is read, so an unjudged new file is a
+        # certifier hijack, not clutter (review finding). Three exclusions,
+        # each owned by another deterministic check: the two ledgers (the
+        # lot legitimately writes its requests there; the harness judges
+        # append-only and act shape), and mutants/ (reanchor's own scope
+        # check owns every path under it).
+        judged = [gm_dir]
+        unjudged_prefixes = (os.path.join(gm_dir, "mutants") + "/",)
+        unjudged_exact = {os.path.join(gm_dir, "EXTENSIONS.md"),
+                          os.path.join(gm_dir, "REBASELINE.md")}
+
+        # The extension ledger, read and judged by the HARNESS's own code —
+        # never by this bot's. Pending requests route to the net's extension
+        # subbot; ACTED extensions that the harness certifies as pure
+        # additions are exempted from the immutability verdict below, and
+        # ONLY those: an addition cannot mask an existing divergence, which
+        # is the one property that makes the exemption safe to grant.
+        # A net materialised BEFORE the extension feature has no `extend-verify`
+        # mode: that is the legal state of an older net — no extension
+        # machinery, no exemption, the immutability diff alone judges (the
+        # pre-feature behaviour) — and it is NOT the same event as a certifier
+        # that exists and cannot answer, which is a refusal. Two sentinels,
+        # because conflating them refused every lot on every older net.
+        CAPABILITY_ABSENT = {"__capability_absent__": True}
+
+        def harness_json(mode, **extra):
+            hp = os.path.join(ws, gm_dir, "harness.py")
+            if not os.path.isfile(hp):
+                return CAPABILITY_ABSENT
+            # A net materialised BEFORE this feature has no extension modes:
+            # its main() would fall through to the FULL gate path — boot the
+            # app, run the campaign — and die on this call's timeout (review
+            # finding, executed against the merge-base harness). Capability
+            # is read from the file, and its absence is the legal state of
+            # an older net: no extension machinery, no exemption, exactly
+            # the pre-feature behaviour until the net's owner re-materialises.
+            try:
+                with open(hp, encoding="utf-8") as f:
+                    if 'mode == "extend-verify"' not in f.read():
+                        return CAPABILITY_ABSENT
+            except OSError as e:
+                problems.append("cannot read %s to probe its capabilities: %s"
+                                % (hp, e))
+                return None
+            env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws,
+                       GM_DIR=gm_dir, **extra)
+            try:
+                p = subprocess.run(["python3", hp], cwd=ws, env=env,
+                                   capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                problems.append("the harness did not answer GM_MODE=%s "
+                                "within 300s — refusing, not exempting" % mode)
+                return None
+            try:
+                return json.loads((p.stdout or "").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                problems.append("the harness did not answer GM_MODE=%s "
+                                "(exit %d): %s"
+                                % (mode, p.returncode,
+                                   (p.stdout + p.stderr)[-400:]))
+                return None
+
+        listing = harness_json("extensions")
+        if listing is not None and listing is not CAPABILITY_ABSENT:
+            report["extension_pending"] = listing.get("pending") or []
+        exempt = set()
+        verdict = harness_json("extend-verify", GM_BASE=base,
+                               GM_ACTED_COMMITS=acted_commits,
+                               GM_ACTED_IDS=acted_ids, GM_ACTED_BLOBS=acted_blobs)
+        if verdict is not None and verdict is not CAPABILITY_ABSENT and not verdict.get("error"):
+            exempt = set(verdict.get("ok_paths") or [])
+
+        # The certifier is the TARGET's harness copy — a file the lot could
+        # write. Two mechanical bounds keep its word from mattering when it
+        # shouldn't (adversarial finding, executed: a 12-line harness.py
+        # exempted itself and every reference):
+        #   1. only the extension surface is ever exemptible, whatever the
+        #      harness claims;
+        #   2. if ANY judged path outside that surface moved — the harness,
+        #      the canon, the runner, the config — the certifier itself is
+        #      suspect and its certificate is worth nothing: exempt nothing.
+        # quotePath=false, or a non-ASCII reference path comes back quoted
+        # and the exemption misses it — a legitimate extension accused of
+        # rewriting the net (same finding, same class in the two subbots).
+        surface_prefix = refs_dir.rstrip("/") + "/"
+        corpus_path = os.path.join(gm_dir, "corpus.json")
+        exempt = {p for p in exempt
+                  if p == corpus_path or p.startswith(surface_prefix)}
+
+        # The certificate is judged on COMMITTED content (git show), while
+        # the diff below reads the WORKING TREE — so an exempted path with
+        # uncommitted worktree damage would escape the verdict wearing its
+        # certificate (review finding, executed: additions-only committed,
+        # entry deleted in the worktree, green). A dirty net voids the
+        # certificate: commit, then verify.
+        # `net_dirty` is carried to the final assignment below: a refusal
+        # written into report["refs_untouched"] here was silently overwritten
+        # there by the diff's own result — a dirty net converged and the gate
+        # committed `done` (review finding, executed).
+        net_dirty = False
+        code, log, _ = run("git -c core.quotePath=false status --porcelain -- %s"
+                        % shlex.quote(gm_dir))
+        if code != 0:
+            problems.append("cannot read the net's worktree state: %s" % log)
+            exempt = set()
+            net_dirty = True
+        elif log.strip():
+            net_dirty = True
+            dirty = sorted(l[3:] for l in log.splitlines() if l.strip())
+            problems.append("%d uncommitted path(s) under the net (%s) — the "
+                            "extension certificate reads commits, the verdict "
+                            "reads the tree; a dirty net voids the certificate."
+                            % (len(dirty), ", ".join(dirty[:12])))
+            exempt = set()
+            # A voided certificate is a REFUSAL, not a remark: the pending
+            # term reads the worktree while every ledger judgement reads
+            # HEAD, so an uncommitted ledger edit could retire a committed
+            # request from the term with nothing to refuse it (adversarial
+            # finding, executed).
+            report["refs_untouched"] = False
+
+        # The net must EXIST at the base to be judged: `refs_untouched` over
+        # an absent net would be true by absence, which is not a term (an
+        # absent oracle already reads red above; this keeps the second term
+        # honest on its own). The judged directory itself is probed — an
+        # older net has no harness, every net has the directory.
+        probe = subprocess.run(["git", "-C", ws, "cat-file", "-e", "%s:%s" % (base, gm_dir)],
+                               capture_output=True, text=True, timeout=60)
+        net_at_base = probe.returncode == 0
+        if not net_at_base:
+            problems.append("no net at the run's base %s (%s is not committed there): "
+                            "nothing to judge the references against — build and commit "
+                            "the net before modernising against it." % (base[:12], gm_dir))
+
+        code, log, _ = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
-            changed = [l.strip() for l in log.splitlines() if l.strip()]
+            raw = [l.strip() for l in log.splitlines()
+                   if l.strip() and l.strip() not in unjudged_exact
+                   and not any(l.strip().startswith(u) for u in unjudged_prefixes)]
+            if any(p != corpus_path and not p.startswith(surface_prefix)
+                   for p in raw):
+                exempt = set()
+            changed = [p for p in raw if p not in exempt]
             report["refs_changed"] = changed
-            report["refs_untouched"] = not changed
+            report["refs_untouched"] = not changed and net_at_base and not net_dirty
             if changed:
                 problems.append("%d oracle artefact(s) were MODIFIED during this "
                                 "lot: %s. Either the lot changed behaviour it was "
@@ -518,8 +1296,76 @@ tool lot_verify:
                                 "edited to hide that it did. Both are stop conditions."
                                 % (len(changed), ", ".join(changed[:20])))
 
+        # The certifier's REFUSALS are as binding as its certificates. The
+        # ledger is not in the judged diff (a lot legitimately writes its
+        # requests there), so without this term a lot could rewrite the
+        # ledger or append a sham act, extinguish the pending term, and ride
+        # a green — extension_verdict SEES both frauds and its verdict was
+        # read for ok_paths only (consolidation finding, executed: emptied
+        # ledger and act recording "peu-importe-quoi" both came out green).
+        if verdict is CAPABILITY_ABSENT:
+            # Older net: nothing to certify and nothing to refuse. The
+            # references are still judged, in git, two blocks above.
+            pass
+        elif verdict is not None and not verdict.get("error"):
+            bad = [r for r in (verdict.get("acted") or []) if not r.get("ok")]
+            if verdict.get("problems") or bad \
+                    or not verdict.get("ledger_append_only", True):
+                problems.extend(verdict.get("problems") or [])
+                problems.extend("extension %s refused: %s"
+                                % (r.get("id"),
+                                   "; ".join(r.get("problems") or []))
+                                for r in bad)
+                report["refs_untouched"] = False
+            # Provenance refused = the constrained party acted its own
+            # request, or an act introduced outside the subbot's commits:
+            # typed and terminal, never a repair pass — a resume from the
+            # banked branch would find the act at its base and certify it.
+            # A rewritten certificate is NOT in this set: it is refused as an
+            # ordinary non-converged row above, and repaired by a pass.
+            if any(r.get("forged") for r in (verdict.get("acted") or [])):
+                report["extension_forged"] = True
+                report["refs_untouched"] = False
+                report["block_reason"] = ("EXTENSION_FORGED: " + "; ".join(
+                    "%s: %s" % (r.get("id"), "; ".join(r.get("problems") or []))
+                    for r in (verdict.get("acted") or []) if r.get("forged")))[:600]
+            # The certifier must SAY it honoured the provenance it was handed.
+            # A net synced before the rule answers `extend-verify`, passes the
+            # capability probe, and judges by the same-commit rule alone — the
+            # one a lot passes by acting in a second commit. Nothing in the run
+            # report said so, and the deploy order makes the net's sync a step
+            # of its own AFTER the engine's (review finding, executed). Acts to
+            # certify + no echo = refused, terminal: the remedy is the net
+            # owner's sync, and no pass of this lot can produce it.
+            fresh = [r for r in (verdict.get("acted") or [])
+                     if not r.get("acted_at_base")]
+            if fresh and verdict.get("provenance") != "strict":
+                report["extension_forged"] = True
+                report["refs_untouched"] = False
+                report["block_reason"] = (
+                    "EXTENSION_UNCERTIFIED: the net's harness answered without "
+                    "honouring the provenance handed to it (provenance=%r), so "
+                    "%d act(s) were judged by the same-commit rule alone — the "
+                    "rule a lot passes by acting in a second commit. Sync the "
+                    "net's harness from the bot (a lot may not: it is judged), "
+                    "then relaunch."
+                    % (verdict.get("provenance"), len(fresh)))[:600]
+        else:
+            # No verdict is not "nothing to refuse". The certifier runs on
+            # ledger content the constrained party writes, so a crash there
+            # is reachable from the ledger itself — reading its silence as
+            # absolution let a rewritten ledger ride a green (adversarial
+            # finding, executed).
+            problems.append(
+                "the extension certifier returned no usable verdict (%s) — "
+                "a certifier that cannot answer is a refusal, not an absence"
+                % ((verdict or {}).get("error")
+                   or (verdict or {}).get("__unparsed__")
+                   or "no output")[:300])
+            report["refs_untouched"] = False
+
     report["log_tail"] = "\n".join(problems)[-6000:]
-    print(json.dumps(report))
+    emit()
 
 ## A pure CONJUNCTION, never an aggregate. Two of three green is not "mostly
 ## done" — it is a lot that built and lies, or one that behaves and cheated.
@@ -528,6 +1374,13 @@ compute lot_gate:
   expr:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
+    refused: "outputs.lot_verify.done_self_written || length(outputs.lot_verify.contract_rewritten) > 0 || outputs.lot_verify.extension_forged"
+    ## Its own term, because it takes its own door: a refusal no pass can
+    ## repair must not be paid for max_passes times (see the edge below).
+    forged: "outputs.lot_verify.extension_forged"
+    timed_out: "outputs.lot_verify.gate_timed_out"
+    oracle_not_run: "outputs.lot_verify.oracle_not_run"
+    unreadable: "outputs.lot_verify.contract_unreadable"
     fail_log: "outputs.lot_verify.log_tail"
     ## Read on EVERY outcome, including a converged one, and that is the point.
     ## An invalidated mutant does not fail the gate: its verdict is excluded
@@ -535,6 +1388,54 @@ compute lot_gate:
     ## stops being covered in silence. A lot can therefore go green while the
     ## net gets narrower — which is the one failure mode a green cannot report.
     needs_reanchor: "vars.reanchor && length(outputs.lot_verify.oracle_invalid) > 0"
+    ## Unlike needs_reanchor, a pending extension CANNOT ride a green: the
+    ## oracle gate refuses on it, so this only routes the repair — it never
+    ## decides the verdict.
+    needs_extend: "vars.extend && length(outputs.lot_verify.extension_pending) > 0"
+
+## gate_timeout — a gate command outlived the contract's `gate_timeout_s`.
+## The verdict is in the tree; ending on the bare `fail` reported the same
+## FAIL_NODE as a forged `done`, and the wall is what the operator must
+## act on. Terminal: a resume would replay the same hour against the same
+## wall — raise gate_timeout_s or shorten the gate, then relaunch.
+fail gate_timeout:
+  description: "a gate command outlived the contract's gate_timeout_s"
+  code: GATE_TIMEOUT
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## oracle_environment — the oracle delivered no verdict: the gate wrapper or
+## the harness died before printing a report. An environment failure of the
+## run, never a verdict over the tree — reported under its own code so the
+## operator repairs the environment instead of reading a RED. Terminal: a
+## resume would replay the gate in the same environment; relaunch on the
+## bank once it is fixed.
+fail oracle_environment:
+  description: "the behavioural oracle delivered no verdict"
+  code: ORACLE_NOT_RUN
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## extension_provenance — an act in the extension ledger was not the net
+## subbot's, or the net's harness could not say it applied the provenance
+## rule. Typed rather than left on the bare `fail`, because the operator's
+## action differs per shape and the code is what routes it: a forged act is a
+## finding about the lot, an uncertified one is a net whose harness is behind
+## the bot. Terminal: no pass produces the missing commit or the missing sync.
+fail extension_provenance:
+  description: "an extension act was refused on provenance"
+  code: EXTENSION_PROVENANCE
+  message: "{{outputs.lot_verify.block_reason}}"
+  resumable: false
+
+## contract_unreadable — the verifier could not READ the contract. Never a
+## verdict over the lot (every conjunct stays false), so it must not read
+## as one on the run either. Terminal: the contract has to be fixed.
+fail contract_unreadable:
+  description: "the verifier could not read the programme contract"
+  code: CONTRACT_UNREADABLE
+  message: "{{outputs.lot_gate.fail_log}}"
+  resumable: false
 
 ## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
 ## invalidated.
@@ -563,6 +1464,249 @@ schema reanchor_result:
   repaired: int
   notice: string
 
+## extend — the net's OWN bot, run as a subbot, to act the extension requests
+## this lot wrote in the ledger.
+##
+## Same placement logic as reanchor, and the same missing `isolated:`: the
+## child works on THIS lot's checkout, and what keeps it honest is its own
+## deterministic check — every path it touches must be a pure ADDITION on the
+## extension surface, judged by the harness's code. The lot may ASK for an
+## observation point; only the net's bot may grant one, and only additively —
+## a rewrite, a delete or a rename goes to the re-baseline ledger and a human.
+subbot extend:
+  source: "../golden-master/extend.bot"
+  with {
+    lot_id: "{{outputs.work_gate.lot_id}}"
+  }
+  output: extend_result
+
+schema extend_result:
+  converged: bool
+  extended: int
+  notice: string
+  ## The net subbot's provenance, handed to the harness at this bot's gate:
+  ## the commits it made, the request ids it acted, the blob it certified
+  ## per surface path. Strings, so they travel through edges as text.
+  acted_commits: string
+  acted_ids: string
+  acted_blobs: string
+
+## mark_done — `done` is the GATE's word, and this is where it is written.
+##
+## The worker reads `status` to know what to skip and may declare `blocked`;
+## it never writes `done`. A converged verdict lands here, and this node flips
+## the ONE line, verifies it changed nothing else, and commits it alone — so a
+## landing has exactly one commit to check for "what did the programme accept",
+## and a bank taken before the verdict can never carry a completion nobody
+## proved. Idempotent: a contract that already reads `done` is left as it is,
+## with nothing committed.
+tool mark_done:
+  input: mark_input
+  output: mark_state
+  language: py
+  script: |
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{input.plan_path}}
+    lot_id = {{input.lot_id}}
+    base = {{input.base_sha}}
+
+    out = {"marked": False, "commit": "", "notice": "", "refused": False}
+
+    def refuse(notice):
+        out["refused"] = True
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("modernize: %s\n" % notice)
+        raise SystemExit(0)
+
+    def finish(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    # Same lookup as plan_read: yq is sought on PATH, then in the target's
+    # devbox profile — declared is not realised.
+    def find_yq():
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    def lots_json(path, what=None):
+        yq = find_yq()
+        if not yq:
+            refuse("yq is not on PATH and was not found in the target's devbox "
+                   "profile, so the contract cannot be re-read after the write.")
+        raw = subprocess.run([yq, "-o=json", path], capture_output=True, text=True, timeout=60)
+        if raw.returncode != 0:
+            refuse("the contract %s does not parse: %s" % (what or ("at " + path), raw.stderr[-400:]))
+        return json.loads(raw.stdout).get("lots") or []
+
+    def lots_json_text(text, what):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tf:
+            tf.write(text)
+            tmp = tf.name
+        try:
+            return lots_json(tmp, what)
+        finally:
+            os.unlink(tmp)
+
+    def git(*args):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, timeout=120)
+
+    plan_path = os.path.join(ws, plan_rel)
+    try:
+        text = open(plan_path, encoding="utf-8").read()
+    except OSError as e:
+        refuse("cannot read the contract at %s: %s" % (plan_path, e))
+
+    # Idempotence is judged at HEAD, never in the working tree: an attempt
+    # killed between the write and the commit leaves `done` on disk and
+    # nothing in git, and a re-execution that read the tree would skip the
+    # commit and let the run end green with the gate's word uncommitted.
+    head = git("show", "HEAD:%s" % plan_rel)
+    if head.returncode != 0:
+        refuse("the contract is not committed at HEAD (%s): %s" % (plan_rel, head.stderr[-300:]))
+    head_lots = lots_json_text(head.stdout, "at HEAD")
+    hidx = next((i for i, l in enumerate(head_lots) if l.get("id") == lot_id), None)
+    if hidx is None:
+        refuse("lot %s is not in the contract at HEAD — nothing to mark." % lot_id)
+    if head_lots[hidx].get("status") == "done":
+        finish("lot %s already reads `done` at HEAD — nothing written, nothing committed." % lot_id)
+
+    before = lots_json(plan_path, "in the working tree")
+    idx = next((i for i, l in enumerate(before) if l.get("id") == lot_id), None)
+    if idx is None:
+        refuse("lot %s is in the contract at HEAD but not in the working tree — "
+               "the tree is not one this node writes into." % lot_id)
+
+    # The one line, edited in place: locate the lot's block by its `- id:` line
+    # and the first `status:` line inside it. A structural rewrite of the file
+    # (yq -i) would reflow a contract humans read and diff; a line edit keeps
+    # the diff to the word that changed. A tree that already reads `done` is
+    # an interrupted attempt: nothing to write, the commit is what is owed.
+    lines = text.splitlines(keepends=True)
+    already_written = before[idx].get("status") == "done"
+    # Anchored on INDENTATION, not on the first line that looks right: the
+    # block ends at the next `- id:` at the SAME list level, and the status
+    # line is the one at the item's key column — so a `status:` or `- id:`
+    # written inside an `intent: |` block scalar (deeper) is text, not a key.
+    id_re = re.compile(r"^(\s*)-(\s+)id:\s*['\"]?%s['\"]?\s*(#.*)?$" % re.escape(lot_id))
+    start = m0 = None
+    for i, l in enumerate(lines):
+        m0 = id_re.match(l)
+        if m0:
+            start = i
+            break
+    if start is None:
+        refuse("lot %s: its `- id:` line was not found in %s — the contract's "
+               "shape is not one this node knows how to edit." % (lot_id, plan_rel))
+    dash_indent = len(m0.group(1))
+    key_col = dash_indent + 1 + len(m0.group(2))
+    same_level = re.compile(r"^\s{%d}-\s+id:" % dash_indent)
+    end = next((i for i in range(start + 1, len(lines)) if same_level.match(lines[i])), len(lines))
+    status_re = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % key_col)
+    hit = next((i for i in range(start, end) if status_re.match(lines[i])), None)
+    if hit is None:
+        refuse("lot %s: no `status:` line inside its block — the contract's "
+               "shape is not one this node knows how to edit." % lot_id)
+    if not already_written:
+        m = status_re.match(lines[hit])
+        lines[hit] = "%sstatus: done%s%s" % (m.group(1), m.group(2) or "", m.group(3) or "")
+        with open(plan_path, "w", encoding="utf-8") as f:
+            f.write("".join(lines))
+
+    # Verified, not trusted: the only difference between the two parses is this
+    # lot's status. Anything else is a rewrite, and the write is undone.
+    after = lots_json(plan_path)
+    expect = [dict(l) for l in before]
+    expect[idx]["status"] = "done"
+    if after != expect:
+        with open(plan_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        refuse("the status edit changed more than lot %s's status — reverted, "
+               "the contract is not one this node knows how to edit." % lot_id)
+
+    # The committed content derives from HEAD's contract, not the working
+    # tree's: the same one-line flip applied to HEAD's text, so nothing the
+    # worker left uncommitted in the contract rides along under the gate's
+    # subject (review finding: an added lot, accepted by the verdict as a
+    # proposal, was swept into the gate's commit). Built with plumbing on a
+    # scratch index — no hook runs (a pre-commit that reformats would commit
+    # a contract other than the one just verified; one that rejects would
+    # fail a converged lot at its last node), and no other staged change is
+    # swept in either.
+    subject = "%s: done — gate, oracle and references green at %s" % (lot_id, base[:12])
+    hlines = head.stdout.splitlines(keepends=True)
+    hstart = next((i for i, l in enumerate(hlines) if id_re.match(l)), None)
+    if hstart is None:
+        refuse("lot %s: its `- id:` line was not found in HEAD's contract — nothing committed." % lot_id)
+    hm = id_re.match(hlines[hstart])
+    h_dash = len(hm.group(1))
+    h_col = h_dash + 1 + len(hm.group(2))
+    h_same = re.compile(r"^\s{%d}-\s+id:" % h_dash)
+    h_end = next((i for i in range(hstart + 1, len(hlines)) if h_same.match(hlines[i])), len(hlines))
+    h_status = re.compile(r"^(\s{%d})status:\s*\S+(\s*#.*)?(\r?\n?)$" % h_col)
+    hhit = next((i for i in range(hstart, h_end) if h_status.match(hlines[i])), None)
+    if hhit is None:
+        refuse("lot %s: no `status:` line inside its block at HEAD — nothing committed." % lot_id)
+    hm2 = h_status.match(hlines[hhit])
+    hlines[hhit] = "%sstatus: done%s%s" % (hm2.group(1), hm2.group(2) or "", hm2.group(3) or "")
+    committed_text = "".join(hlines)
+    expect_head = [dict(l) for l in head_lots]
+    expect_head[hidx]["status"] = "done"
+    if lots_json_text(committed_text, "to be committed") != expect_head:
+        refuse("the status edit on HEAD's contract changed more than lot %s's status — nothing committed." % lot_id)
+
+    def plumb(args, **kw):
+        return subprocess.run(["git", "-C", ws] + list(args), capture_output=True,
+                              text=True, timeout=120, **kw)
+
+    head_sha = git("rev-parse", "HEAD").stdout.strip()
+    ls = git("ls-tree", "HEAD", "--", plan_rel).stdout.split()
+    mode = ls[0] if ls else "100644"
+    blob = plumb(["hash-object", "-w", "--stdin"], input=committed_text).stdout.strip()
+    if not blob:
+        refuse("git hash-object failed — nothing committed.")
+    import tempfile
+    tmp_index = tempfile.mktemp(prefix="modernize-index-")
+    env = dict(os.environ, GIT_INDEX_FILE=tmp_index)
+    try:
+        if plumb(["read-tree", "HEAD"], env=env).returncode != 0:
+            refuse("git read-tree HEAD failed — nothing committed.")
+        if plumb(["update-index", "--cacheinfo", "%s,%s,%s" % (mode, blob, plan_rel)], env=env).returncode != 0:
+            refuse("git update-index failed — nothing committed.")
+        tree = plumb(["write-tree"], env=env).stdout.strip()
+    finally:
+        if os.path.exists(tmp_index):
+            os.unlink(tmp_index)
+    c = plumb(["-c", "user.name=iterion-modernize", "-c", "user.email=modernize@iterion.local",
+               "commit-tree", tree, "-p", head_sha, "-m", subject])
+    if c.returncode != 0:
+        refuse("committing the status failed: %s" % (c.stdout + c.stderr)[-600:])
+    sha = c.stdout.strip()
+    if git("update-ref", "HEAD", sha, head_sha).returncode != 0:
+        refuse("HEAD moved while the gate wrote its word — nothing committed (%s is unreferenced)." % sha[:12])
+    # The real index follows the commit for this path: the tree reads clean
+    # unless the worker left something else uncommitted in the contract,
+    # which then stays theirs, unstaged.
+    git("update-index", "--cacheinfo", "%s,%s,%s" % (mode, blob, plan_rel))
+    out["marked"] = True
+    out["commit"] = sha
+    finish("lot %s marked `done` by the gate in %s" % (lot_id, sha[:12]))
+
 workflow modernize:
   entry: plan_read
 
@@ -582,6 +1726,19 @@ workflow modernize:
 
   plan_read -> work_gate
 
+  ## lot_not_actionable is checked FIRST and is never true alongside
+  ## nothing_to_do (plan_read's not_actionable() sets nothing_to_do=False,
+  ## native:670) — an explicit only_lot request naming a done/blocked/
+  ## absent lot fails loud instead of falling into the done/campaign pair
+  ## below, which is exhaustive only over the unfiltered "pick next" scan.
+  ## An unreadable or uneditable contract is a verdict, not a tool error:
+  ## the run fails here, before any token is spent — on the bare `fail`,
+  ## because one bool carries two codes (CONTRACT_UNREADABLE and
+  ## LOT_UNEDITABLE) and a named fail may only stamp one; plan_read's
+  ## notice names which.
+  work_gate -> fail when refused
+  work_gate -> lot_not_actionable when lot_not_actionable
+
   ## Exhaustive pair on one bool (C012): an already-finished programme is a
   ## clean no-op, not an error — running a done programme must cost nothing and
   ## say why.
@@ -598,14 +1755,53 @@ workflow modernize:
   ## touched the tree. Comparing the references against anything later would
   ## compare the work with itself and always pass.
   upgrade_campaign -> lot_verify with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
-    plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}",
-    refs_dir:  "{{outputs.work_gate.refs_dir}}",
-    exit_gate: "{{outputs.work_gate.exit_gate}}"
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
   lot_verify -> lot_gate
+
+  ## A wall the run never crossed: the verdict is in the tree (gate_timed_out,
+  ## block_reason GATE_TIMEOUT), the run fails at once — no repair pass
+  ## replays an hour against the same wall, and no `finished` invites a
+  ## relaunch into it. Raise `gate_timeout_s` in the contract, or shorten the
+  ## gate, then relaunch. Declared FIRST among lot_gate's edges on purpose: the
+  ## engine takes the first `when` that holds, and a timed-out verdict may
+  ## also carry an invalidated mutant or a pending extension — routed to a
+  ## subbot, it would replay the same gate before failing.
+  lot_gate -> gate_timeout when timed_out
+  lot_gate -> oracle_environment when oracle_not_run
+  lot_gate -> contract_unreadable when unreadable
+
+  ## An extension act refused on PROVENANCE — written by the constrained
+  ## party, or judged by a net harness that could not say it applied the rule.
+  ## Declared here, ahead of the subbot and loop edges, for the same reason
+  ## the timeout is: the engine takes the first `when` that holds, and this
+  ## verdict may ALSO carry a pending request — routed to `extend`, the net's
+  ## own subbot would act on a tree that already carries a forged reference.
+  ## And what reaches this edge is structurally unrepairable by a pass: the
+  ## act was introduced OUTSIDE the subbot's commits (amending yields a sha
+  ## still outside them), the requester acted its own request (the two commits
+  ## are in history), or the net's harness never said it applied the rule and
+  ## a sync is the net owner's act. Each repair pass would be a guaranteed-red
+  ## campaign plus a full exit gate, paid max_passes times.
+  ##
+  ## What does NOT reach it, since the certificate-content refusals stopped
+  ## setting `forged`: a duplicate act block, a path recorded without a
+  ## certificate, a certified reference rewritten after the act. Those sit
+  ## ABOVE the run's base — and `ledger_append_only` is
+  ## `head_txt.startswith(base_txt)`, which pins only the text below it — so
+  ## narrowing the block or restoring the blob is a legal edit and one pass
+  ## does it. They stay ordinary non-converged refusals and go round the
+  ## repair loop, which is where they went before the provenance work
+  ## (review finding Rf213cf, executed).
+  lot_gate -> extension_provenance when forged
 
   ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
   ## lot is exactly the case where a lost mutant would never be noticed. Bounded
@@ -618,27 +1814,73 @@ workflow modernize:
   ## is part of that verdict, so reading it again is what stops a failed repair
   ## from looking like a successful one.
   reanchor -> lot_verify with {
-    lot_id:    "{{outputs.work_gate.lot_id}}",
-    plan_path: "{{vars.plan_path}}",
-    base_sha:  "{{outputs.work_gate.base_sha}}",
-    refs_dir:  "{{outputs.work_gate.refs_dir}}",
-    exit_gate: "{{outputs.work_gate.exit_gate}}"
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
   }
 
-  ## Converged, or declared blocked with a committed reason. Both end the run;
-  ## looping against a wall the agent has already described and proven costs
-  ## money and produces nothing.
+  ## Act the lot's extension requests, after any reanchor and before the lot
+  ## is decided: the oracle gate refuses on a pending request, so a lot that
+  ## asked for an observation point cannot converge until the net's bot has
+  ## granted it — or refused it in writing, which stays pending and loud.
+  ## Bounded to a single attempt for the same reason as reanchor: the child
+  ## has its own repair loop.
+  lot_gate -> extend when needs_extend as extend_loop("1")
+
+  ## The verdict is re-taken on the extended net. The harness re-certifies
+  ## the additions inside lot_verify — exemption is re-derived every pass,
+  ## never remembered.
+  extend -> lot_verify with {
+    lot_id:        "{{outputs.work_gate.lot_id}}",
+    plan_path:     "{{vars.plan_path}}",
+    base_sha:      "{{outputs.work_gate.base_sha}}",
+    refs_dir:      "{{outputs.work_gate.refs_dir}}",
+    exit_gate:     "{{outputs.work_gate.exit_gate}}",
+    acted_commits: "{{outputs.extend.acted_commits}}",
+    acted_ids:     "{{outputs.extend.acted_ids}}",
+    acted_blobs:   "{{outputs.extend.acted_blobs}}"
+  }
+
+  ## Converged: the gate writes `done` — one line, one commit — then the run
+  ## ends. Declared blocked with a committed reason: the run ends as it is.
+  ## Both end the run; looping against a wall the agent has already described
+  ## and proven costs money and produces nothing.
+  lot_gate -> mark_done when converged with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha:  "{{outputs.work_gate.base_sha}}"
+  }
+  mark_done -> fail when refused
+  mark_done -> done
   lot_gate -> done when stop
 
   ## Not converged → another pass on the SAME lot, carrying the deterministic
   ## failure back so the agent fixes the cause rather than re-deriving it.
-  lot_gate -> upgrade_campaign as repair_loop("{{vars.max_passes}}") with {
+  ## Conditional on purpose: a bare `when` edge is taken in declaration order
+  ## as soon as it holds, while an unconditional edge is only the fallback —
+  ## so the loop, while it lasts, must beat the `fail when refused` edge below,
+  ## and only an EXHAUSTED loop (skipped by the engine) lets that edge fire.
+  lot_gate -> upgrade_campaign when not stop as repair_loop("{{vars.max_passes}}") with {
     lot_id:     "{{outputs.work_gate.lot_id}}",
     lot_title:  "{{outputs.work_gate.lot_title}}",
     lot_intent: "{{outputs.work_gate.lot_intent}}",
     exit_gate:  "{{outputs.work_gate.exit_gate}}",
     fail_log:   "{{outputs.lot_gate.fail_log}}"
   }
+
+  ## A refusal that outlived the loop — the worker kept its `done`, or its
+  ## rewrite, through every pass — must not exit through the green door: the
+  ## forged word is still in the contract, a merge of a `finished` run would
+  ## land it, and the lot would vanish from the programme (an only_lot
+  ## relaunch is refused as not actionable, a free relaunch skips it as
+  ## landed). The run FAILS, in words, with the work banked — after the loop
+  ## above has been exhausted, never instead of it.
+  lot_gate -> fail when refused
 
   ## Loop exhausted → stop and leave the committed work in place. A lot that
   ## will not converge in max_passes is a finding about the lot, not a reason

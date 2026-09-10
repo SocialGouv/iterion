@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -159,6 +160,33 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 	}
 	if raised {
 		b.everRaised = true
+		// A pending overrun was measured against a cap that no longer
+		// exists. Acting on it after the operator has raised that very cap
+		// would kill the run with the grant already applied — the exact case
+		// raise_budget exists for, since a raise reaches a run busy inside a
+		// long node only at the boundary where that node's own overrun is
+		// taken. So the stop is RE-DERIVED against the caps as they now
+		// stand, and only a raise that leaves every axis under its ceiling
+		// drops it.
+		//
+		// Re-derived across ALL FOUR axes, never just the recorded one:
+		// noteExceeded keeps only the FIRST overrun a node produced
+		// (checkLocked's order — iterations, tokens, cost_usd, duration), so
+		// a node that blew tokens AND cost is remembered as "tokens" alone.
+		// Clearing on a tokens raise would drop a cost overrun nobody funded.
+		//
+		// And it cannot be left to the next node's pre-exec check, which is
+		// what an earlier draft of this claimed: checkBudgetBeforeExec runs
+		// on the STANDARD node path only. A Done/Fail terminal, a compute,
+		// subbot, emit, wait or await_answers node — and every router mode
+		// but `condition` — is dispatched by execLoopDispatchSpecial before
+		// that check is ever reached. A dropped overrun whose successor is
+		// one of those is gone for good (takeExceeded has a single consumer)
+		// and the run finishes over its cap with no budget_exceeded event at
+		// all.
+		if b.exceeded != nil {
+			b.exceeded = b.liveOverrunLocked()
+		}
 	}
 	return b.capsLocked(), raised
 }
@@ -359,6 +387,47 @@ func (b *SharedBudget) DurationStatus() (used, limit float64, bounded bool) {
 	return float64(time.Since(b.startedAt)), float64(b.maxDuration), true
 }
 
+// BudgetStatus is a consistent snapshot of what a run has consumed and of
+// the caps in force at that instant — the EFFECTIVE ones, after CLI/recipe
+// overrides and any live raise_budget, not the literals in the `budget:`
+// block. A zero cap means UNBOUNDED on that axis (the same convention
+// SharedBudget itself uses internally), never "no allowance left".
+type BudgetStatus struct {
+	Elapsed    time.Duration
+	CostUSD    float64
+	Tokens     int
+	Iterations int
+
+	MaxDuration   time.Duration
+	MaxCostUSD    float64
+	MaxTokens     int
+	MaxIterations int
+}
+
+// Status snapshots consumption and caps together under ONE lock, so a
+// reader can never pair a used value with a cap from a different instant
+// (a raise landing between two accessors would otherwise make a guard
+// compute a ratio against a ceiling that was never in force with that
+// spend). Nil-safe: a workflow with no `budget:` block has no tracker, and
+// the zero value reads as "nothing metered, nothing capped".
+func (b *SharedBudget) Status() BudgetStatus {
+	if b == nil {
+		return BudgetStatus{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return BudgetStatus{
+		Elapsed:       time.Since(b.startedAt),
+		CostUSD:       b.costUsed,
+		Tokens:        b.tokensUsed,
+		Iterations:    b.iterationsUsed,
+		MaxDuration:   b.maxDuration,
+		MaxCostUSD:    b.maxCostUSD,
+		MaxTokens:     b.maxTokens,
+		MaxIterations: b.maxIterations,
+	}
+}
+
 // budgetAxis is one enforced budget dimension's standing: what the run
 // has consumed on it, and what it has left before the cap.
 type budgetAxis struct {
@@ -432,6 +501,38 @@ func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
 		room("cost_usd", b.costUsed, b.maxCostUSD) &&
 		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 	return graced, ok && graced != ""
+}
+
+// liveOverrunLocked returns the first axis whose LIVE usage is at or past its
+// cap — in checkLocked's own order, so the dimension an operator is shown never
+// depends on which path derived it — or nil when every axis is under. Caller
+// holds b.mu.
+//
+// Deliberately NOT checkLocked(): that one mutates warningsEmitted for the 80%
+// tier, and its sole caller here (RaiseCaps) has just deleted those flags to
+// re-arm a fresh warning against the new ceiling. Routing through it would
+// consume that re-arm and then discard the warning it produced — the one-shot
+// hazard unpricedWarningLocked's own comment already documents.
+//
+// `used >= limit` is checkLocked's `ratio >= 1.0` without the division, and the
+// `limit <= 0` skip is its "an axis at 0 is unlimited" convention.
+func (b *SharedBudget) liveOverrunLocked() *budgetCheckResult {
+	over := func(dimension string, used, limit float64) *budgetCheckResult {
+		if limit <= 0 || used < limit {
+			return nil
+		}
+		return &budgetCheckResult{exceeded: true, dimension: dimension, used: used, limit: limit}
+	}
+	if r := over("iterations", float64(b.iterationsUsed), float64(b.maxIterations)); r != nil {
+		return r
+	}
+	if r := over("tokens", float64(b.tokensUsed), float64(b.maxTokens)); r != nil {
+		return r
+	}
+	if r := over("cost_usd", b.costUsed, b.maxCostUSD); r != nil {
+		return r
+	}
+	return over("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 }
 
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
@@ -641,6 +742,85 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 	return e.recordBudget(rs, nodeID, output, false)
 }
 
+// recordFailedNodeSpend books what a node burned before it failed.
+//
+// Accounting only: the node's own failure is the run's verdict, and a
+// budget verdict raised here would replace a named cause with a generic
+// one on a run that is already ending. The figure still has to land — a
+// failed agent node can be the most expensive thing a run did.
+//
+// WHAT IT REACHES, exactly, so no reader over-reads the booking:
+//   - the run's shared budget, which is what max_cost_usd / max_tokens /
+//     max_iterations are enforced against for the rest of the run — and,
+//     through it, a credential-pool donor's allowance, since that
+//     allowance is enforced by CLAMPING this run's own max_cost_usd;
+//   - the daily spend-cap ledger (dailyCap.Record);
+//   - the budget carry a resume reads off the checkpoint — which is why
+//     every caller books BEFORE the exit that writes one.
+//
+// What it does NOT reach is the runner's per-run totals, and from them the
+// org monthly bucket and the donor's post-hoc ledger: those accumulate
+// from EVENTS (`llm_step_finished`, `delegate_finished`), and a failed
+// delegation emits `delegate_error`, which metricsEmitter.observe has no
+// case for. claw reports step by step and fires that event BEFORE its
+// structured parse, so the in-process backend still reaches the org bucket
+// for everything but a stream that died mid-answer; a CLI backend reaches
+// it for nothing a failed node burned. Closing that half is a pkg/runner change
+// (a delegate_error case carrying cost_usd, with the same
+// already-summarised guard delegate_finished uses for claw), deliberately
+// not made here.
+//
+// A booking also counts an iteration, as every recordBudget does — so a
+// failed node that spent consumes a max_iterations slot and one that spent
+// nothing does not. That asymmetry is deliberate: the guard below is what
+// keeps a spendless tool failure from writing a phantom zero row, and an
+// attempt that burned a session did do the work the iterations axis counts.
+// It cannot end a run on its own — the deferring variant only NOTES an
+// overrun, and the note is taken at a success boundary no failure exit
+// reaches.
+func (e *Engine) recordFailedNodeSpend(rs *runState, nodeID string, output map[string]any) {
+	if tokens, costUSD := extractUsage(output); tokens == 0 && costUSD == 0 {
+		return
+	}
+	// DEFERRING variant, and that is the whole contract: the immediate one
+	// routes an exceeded axis through graceOrFailBudget → failBudgetExceeded,
+	// which EMITS budget_exceeded and WRITES the run failed_resumable
+	// (captureFailureBoundary + FailRunResumable + a run_failed event) —
+	// side effects swallowing the returned error does not undo. On the
+	// recovery-pause exit that would overwrite a just-parked
+	// paused_waiting_human, losing the operator's pending question; on the
+	// others it prepends a phantom budget verdict to the real one. Deferred,
+	// the overrun is only NOTED, and the note is taken exclusively at
+	// execLoopAfterExec — a success-path boundary no failure exit reaches —
+	// so it stays what this helper says it is: accounting.
+	//
+	// On a DETACHED context, because half the exits that reach this helper
+	// are reached BECAUSE the run's own context is done — a teardown mid-node,
+	// a cancel during the retry backoff. The writes recordBudget makes (the
+	// daily-cap record, a budget_warning) go through that context, so booking
+	// on it would drop the ledger write on exactly the exits where the figure
+	// is most certainly final: the FS store ignores ctx, but on Mongo the
+	// day's spend would silently miss a cancelled run's last node. Same shape
+	// handleContextDoneWithCheckpoint uses for its own last writes.
+	ctx, cancel := detachedBookingCtx(rs.ctx)
+	defer cancel()
+	if err := e.recordBudgetOn(ctx, rs, nodeID, output, true); err != nil {
+		e.logger.Debug("budget: booking node %q's spend after its failure: %v", nodeID, err)
+	}
+}
+
+// detachedBookingCtx builds the bounded, cancellation-free context a spend
+// booking persists through. The parent keeps its values (a store handle, a
+// trace span) and loses only its cancellation; a nil one — runStates built
+// directly in tests carry no context — degrades to Background rather than
+// panicking inside the accounting path.
+func detachedBookingCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+}
+
 // recordAndDeferBudget records usage and DEFERS a hard overrun to the
 // next node boundary — see the deferral rationale below. Only the
 // standard node path may use it: it is the one that computes a
@@ -650,6 +830,14 @@ func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[st
 }
 
 func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
+	return e.recordBudgetOn(rs.ctx, rs, nodeID, output, deferExceeded)
+}
+
+// recordBudgetOn is recordBudget with the context its two persistence writes
+// use made explicit, so a caller that is reached ON a cancelled run can still
+// land the ledger entry (see recordFailedNodeSpend). Everything else — the
+// in-memory totals, the exceeded decision — is context-free.
+func (e *Engine) recordBudgetOn(ctx context.Context, rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -658,7 +846,7 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 	// checkpoint at a not-yet-executed node.
 	if e.dailyCap != nil && costUSD > 0 {
 		rs.costUSDTotal += costUSD
-		if _, err := e.dailyCap.Record(rs.ctx, rs.runID, rs.costUSDTotal); err != nil {
+		if _, err := e.dailyCap.Record(ctx, rs.runID, rs.costUSDTotal); err != nil {
 			e.logger.Warn("daily spend cap: record failed: %v", err)
 		}
 	}
@@ -671,7 +859,7 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
+		_ = e.emit(ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 
 	// Exceeded by a node that ALREADY SUCCEEDED: note it and let the

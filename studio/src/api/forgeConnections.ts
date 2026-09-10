@@ -40,6 +40,12 @@ export interface ForgeIntegration {
    *  board (one-way forge→board sync). Toggled per-integration from the
    *  Integrations tab; absent on servers that predate the feature. */
   sync_issues_enabled?: boolean;
+  /** Operator overrides stamped onto every run this integration launches
+   *  (pkg/forge.RepoIntegration.LaunchVars) — durable across
+   *  re-provisioning. `review_tier` (glance/guard/audit, review-pr only)
+   *  is the one the studio surfaces today; any other key round-trips
+   *  through updateForgeRepoBots unmodified. */
+  launch_vars?: Record<string, string>;
   created_at: string;
 }
 
@@ -82,6 +88,29 @@ export async function getForgeConnectionHealth(
   return (await apiGet("/api/teams/{id}/forge/connections/{conn_id}/health", {
     params: { id: teamID, conn_id: connID },
   })) as ForgeConnectionHealth;
+}
+
+// ForgeAvatarResult is what the apply-avatar action returns: the refreshed
+// connection (avatar_applied_at / avatar_error) and, when the forge reports
+// one, the new avatar's URL.
+export type ForgeAvatarResult = Omit<components["schemas"]["forgeAvatarResp"], "connection"> & {
+  connection?: ForgeConnection;
+};
+
+// applyForgeConnectionAvatar uploads the iterion-bot avatar onto the account
+// behind a PAT connection. The server refuses an OAuth connection (a person's
+// account) and GitHub (no API — its error names where to upload by hand); an
+// account the forge does not flag as a bot needs `force`, which the card asks
+// the operator to confirm first.
+export async function applyForgeConnectionAvatar(
+  teamID: string,
+  connID: string,
+  input: { variant?: "plain" | "circle"; force?: boolean } = {},
+): Promise<ForgeAvatarResult> {
+  return (await apiPost("/api/teams/{id}/forge/connections/{conn_id}/avatar", {
+    params: { id: teamID, conn_id: connID },
+    body: input,
+  })) as ForgeAvatarResult;
 }
 
 // createForgeRepo creates a NEW repository on a connected forge (the
@@ -133,6 +162,11 @@ export interface ForgeProvisionResult {
   managed_secret_id: string;
   bot_ids: string[];
   created: boolean;
+  // Set (202) when the org requires an org admin's approval: nothing was
+  // provisioned yet — the request is parked in the org approval queue.
+  pending_approval?: boolean;
+  approval_id?: string;
+  detail?: string;
 }
 
 // ForgeOAuthApp is a per-tenant, per-instance OAuth application's credentials
@@ -256,11 +290,17 @@ export async function enableForgeRepoBots(
 // updateForgeRepoBots sets an integration's EXACT bot set (replace
 // semantics — the per-bot unbind). Empty lists are rejected server-side;
 // removing the last bot is disableForgeIntegration.
+//
+// launchVars, when passed, REPLACES the integration's whole launch_vars map
+// server-side (forge.RepoIntegration.LaunchVars is not merged on PATCH) —
+// callers that want to change one key must spread the integration's
+// current launch_vars first (see ReviewTierSelect).
 export async function updateForgeRepoBots(
   teamID: string,
   integrationID: string,
   botIDs: string[],
   scheduleCrons?: Record<string, string>,
+  launchVars?: Record<string, string>,
 ): Promise<ForgeProvisionResult> {
   return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
     method: "PATCH",
@@ -268,6 +308,7 @@ export async function updateForgeRepoBots(
       bot_ids: botIDs,
       schedule_crons:
         scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
+      launch_vars: launchVars,
     }),
   });
 }
@@ -387,6 +428,9 @@ export async function startGitHubManifest(
   // allow_security_read requests vulnerability_alerts:read so a bot can read
   // the org's Dependabot alerts (docs/forge-security-read.md); off by default
   // and only ever minted into a dedicated token.
+  // allow_project_board requests organization_projects:write so a team can
+  // bind a GitHub Projects v2 board to its native board (docs/github-board-
+  // sync.md); off by default and only ever minted per board call.
   // security_read_only builds a WATCH-ONLY App instead: metadata + Dependabot
   // alerts, both read, and nothing else — the shape meant to be installed on
   // ALL repositories without granting write anywhere. It replaces the runtime
@@ -399,6 +443,7 @@ export async function startGitHubManifest(
     allow_repo_creation?: boolean;
     allow_app_delivery?: boolean;
     allow_security_read?: boolean;
+    allow_project_board?: boolean;
     security_read_only?: boolean;
   },
 ): Promise<GitHubManifestStart> {

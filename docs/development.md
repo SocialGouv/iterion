@@ -56,6 +56,58 @@ go test ./...
 
 Prefer `task build` after editing studio assets or any of the nine embedded dispatcher bots because it runs `studio:build` and `templates:dispatch-bots` first.
 
+## Running the Mongo conformance harness locally
+
+Every suite gated on `ITERION_TEST_MONGO_URI` skips under a plain `go test
+./...`; CI's `mongo-conformance` job is what enforces the contract, over the
+package trees listed in its `go test` line — and `TestMongoGatedPackagesAreInTheCIJob`
+(`pkg/store/mongo/ci_mongo_gate_test.go`) fails the build when a package whose
+tests actually READ the variable is missing from that list (a package that
+merely names it in a comment does not count). A change to a store twin or a
+conformance row is therefore unverified until it ran against a real replica
+set. The recipe below mirrors the job (`mongo:8.0`, one-member replica set for
+change streams and transactions) and was run verbatim on 2026-09-06: every
+listed tree green in 95 s.
+
+```bash
+# mongod listens on 27018 INSIDE the container too (--port), so the member
+# it advertises resolves to itself; 27017 is left to a studio's own Mongo.
+docker run --rm -d --name iterion-mongo-conf --ulimit nofile=131072:131072 \
+  -p 27018:27018 mongo:8.0 --replSet rs0 --bind_ip_all --port 27018
+docker exec iterion-mongo-conf mongosh --port 27018 --quiet \
+  --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27018" }] })'
+# wait for the election — a single status read is not a wait:
+for i in $(seq 1 30); do
+  st=$(docker exec iterion-mongo-conf mongosh --port 27018 --quiet \
+        --eval 'try { print(rs.status().members[0].stateStr) } catch (e) { print("NOTREADY") }' | tail -1)
+  [ "$st" = "PRIMARY" ] && break; sleep 2
+done; [ "$st" = "PRIMARY" ] || { echo "replica set never became PRIMARY"; exit 1; }
+
+# the same trees the CI job runs, read from the job itself:
+pkgs=$(sed -n '/^  mongo-conformance:/,/^  [a-z-]*:$/p' .github/workflows/tests.yml | grep -oE '\./pkg/[a-z/]+/\.\.\.' | tr '\n' ' ')
+ITERION_TEST_MONGO_URI='mongodb://localhost:27018/?replicaSet=rs0' \
+  devbox run -- go test -count=1 $pkgs
+docker rm -f iterion-mongo-conf
+```
+
+Three details that each cost a session: `-p 27018:27017` with a member
+advertised as `localhost:27018` never initiates (docker's port mapping is
+host-side; inside the container nothing listens on 27018, so
+`replSetInitiate` finds no member that is itself) — bind mongod on the
+published port; poll for `PRIMARY`, or `go test` connects mid-election and a
+`ReplicaSetNoPrimary` reads as a store regression; and `--ulimit nofile` is
+not optional — the suites create a fresh database with ~10 indexes per
+subtest, and a container's default file-descriptor limit makes `mongod` panic
+with `Too many open files` minutes in, which the test reports as
+`connection refused`.
+
+Both store twins start a run differently on purpose — the filesystem store
+goes straight to `running`, the cloud store to `queued`
+(`storetest.Opts.InitialStatus` models it). A conformance row that
+compares-and-sets from a status it did not set itself passes on one twin by
+accident and can never match on the other; state the status the row tests
+from.
+
 ## Frontend and local services
 
 ```bash

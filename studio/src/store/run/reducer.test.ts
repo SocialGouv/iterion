@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ExecutionState, RunEvent, RunSnapshot } from "@/api/runs";
 
-import { execKey, reduceEvents } from "./reducer";
+import { execKey, reduceEvents, rehydratePendingHumanInput } from "./reducer";
 
 // Minimal ReduceInput state: one finished exec for `analyze` (pre-pivot)
 // and one finished exec for `verify` (rewind pivot), plus the lookup
@@ -83,6 +83,37 @@ function rewindEvent(seq: number, dropped: string[]): RunEvent {
     data: { dropped_nodes: dropped, to_node: "verify" },
   };
 }
+
+describe("rehydratePendingHumanInput", () => {
+  it("uses the pending branch gate instead of the router checkpoint anchor", () => {
+    const snapshot = baseSnapshot();
+    snapshot.run.status = "paused_waiting_human";
+    snapshot.run.checkpoint = {
+      node_id: "dispatch",
+      interaction_id: "interaction-branch-gate",
+      interaction_questions: { approved: "bool" },
+      parallel: { pending_node_id: "approval" },
+    };
+
+    expect(rehydratePendingHumanInput(snapshot)).toEqual({
+      interaction_id: "interaction-branch-gate",
+      node_id: "approval",
+      questions: { approved: "bool" },
+    });
+  });
+
+  it("keeps the trunk node fallback for non-parallel pauses", () => {
+    const snapshot = baseSnapshot();
+    snapshot.run.status = "paused_waiting_human";
+    snapshot.run.checkpoint = {
+      node_id: "approval",
+      interaction_id: "interaction-trunk-gate",
+      interaction_questions: {},
+    };
+
+    expect(rehydratePendingHumanInput(snapshot)?.node_id).toBe("approval");
+  });
+});
 
 describe("reduceEvents run_rewound", () => {
   it("erases the dropped nodes' execs and keeps the pre-pivot ones", () => {

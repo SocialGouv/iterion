@@ -37,8 +37,15 @@ type ResponseOf<P extends keyof paths, M extends Method> =
         : unknown
     : unknown;
 
+// A body the server accepts EMPTY is `requestBody?:` in the spec; the optional
+// form still names the shape, so it is inferred through NonNullable. An
+// operation without any requestBody infers `unknown` here and stays `never`.
 type BodyOf<P extends keyof paths, M extends Method> =
-  Op<P, M> extends { requestBody: { content: { "application/json": infer B } } } ? B : never;
+  Op<P, M> extends { requestBody?: infer RB }
+    ? NonNullable<RB> extends { content: { "application/json": infer B } }
+      ? B
+      : never
+    : never;
 
 type ParamsOf<P extends keyof paths, M extends Method> =
   Op<P, M> extends { parameters: { path: infer Pa } }

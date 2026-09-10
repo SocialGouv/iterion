@@ -153,9 +153,20 @@ func (s *Server) routes() {
 	// place — caller must wire AuthService + ApiKeys + Sealer.
 	if s.apiKeys != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerBYOKRoutes()
+		// The ORG credential tier rides the same stores under a reserved
+		// scope: an org's shared keys/forfaits plus the audience naming
+		// which of its teams may spend them. The OAuth half is a no-op
+		// without an OAuth store, which its own handlers already tolerate.
+		if s.authStore() != nil {
+			s.registerOrgCredentialRoutes()
+		}
 	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
+	}
+	// Per-credential usage views (#641): what the org bucket cannot answer.
+	if s.credUsage != nil && s.authSvc != nil {
+		s.registerCredUsageRoutes()
 	}
 	// Local (non-cloud) single-operator secret store: unauthenticated
 	// /api/local/secrets, gated on local mode + a wired store + sealer.
@@ -223,6 +234,9 @@ func (s *Server) routes() {
 	if s.forgeOrchestrator != nil && s.authSvc != nil {
 		s.registerForgeRoutes()
 		s.registerForgeProvisioningRoutes()
+		// Org ex-ante approval queue over provisioning (handlers are
+		// nil-safe when no approval store is wired).
+		s.registerForgeApprovalRoutes()
 		if s.forgeOAuthApps != nil {
 			s.registerForgeOAuthAppRoutes()
 		}
@@ -230,6 +244,8 @@ func (s *Server) routes() {
 		// per-card push-to-forge + linked-PR/CI views (no-op without a cloud
 		// board). See board_forge.go.
 		s.registerBoardForgeRoutes()
+		// Team ⇄ forge PROJECT board binding (ADR-097).
+		s.registerBoardBindingRoutes()
 	}
 
 	// Per-tenant SSO providers (a tenant's own Keycloak + GitHub team-gating).
@@ -296,6 +312,10 @@ func (s *Server) routes() {
 	// operational env vars — first family: the usage-cap percentages.
 	s.registerAdminSettingsRoutes()
 
+	// Usage-window readings (super-admin): clear one credential's stored
+	// readings after a provider reset the ledger cannot see.
+	s.registerAdminUsageReadingsRoutes()
+
 	// Platform bot overrides (super-admin): the DB-backed form of the baked
 	// bot catalog, so iterating on a native bot needs no image rollout.
 	s.registerAdminBotRoutes()
@@ -336,6 +356,9 @@ func (s *Server) routes() {
 	// by injectForgePublishVars), so it intentionally bypasses requireAuth.
 	if s.forgeConnections != nil && s.forgePublishTokens != nil {
 		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/publish-review", s.handleForgePublishReview)
+		// The read half of the same grant: a delivery tail asks whether the
+		// pull request is still open before it pushes or posts.
+		s.mux.ServeMux.HandleFunc("GET /api/v1/forge/pull-request", s.handleForgePullRequest)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.
@@ -359,6 +382,9 @@ func (s *Server) routes() {
 	// `iterion remote openapi` / `routes`. Registered LAST so every route
 	// above is captured before the spec is first served.
 	s.registerOpenAPIRoutes()
+
+	// The iterion-bot mascot, for the studio's download links and the docs.
+	s.registerBrandRoutes()
 
 	// Serve static frontend files with SPA fallback so client-side routes
 	// (e.g. /runs/abc) render index.html instead of 404.

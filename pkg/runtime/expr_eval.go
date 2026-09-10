@@ -29,8 +29,10 @@ func (e *Engine) exprContext(rs *runState, input map[string]any) *expr.Context {
 }
 
 // exprContextScoped builds an expression context against an explicit
-// resolveScope for vars/outputs/artifacts, while loop/run namespaces still
-// resolve against rs (read-only, parent-owned even inside a branch). The trunk
+// resolveScope for vars/outputs/artifacts. loop/run namespaces still
+// resolve against rs: inside a branch, runStateIterationCounters and
+// loopPreviousOutputView compose the enclosing trunk snapshots with any
+// branch-local loop state (C244 keeps those names disjoint). The trunk
 // case (sc == rs.scope()) is behaviorally identical to the old exprContext.
 func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[string]any) *expr.Context {
 	mapResolver := func(m map[string]any) func([]string) any {
@@ -55,11 +57,11 @@ func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[stri
 		}
 		return e.resolveLoopPath(path, rs)
 	}
+	// Resolved per lookup, not snapshotted with the context: a compute
+	// node's expression must see the run's consumption as of its own
+	// evaluation, not as of the node's dispatch.
 	runResolver := func(path []string) any {
-		if len(path) == 1 && path[0] == "id" {
-			return rs.runID
-		}
-		return nil
+		return resolveRunPath(rs, path)
 	}
 	return &expr.Context{
 		Vars:      mapResolver(sc.vars),

@@ -104,6 +104,7 @@ func autoResumeEvents(t *testing.T, storeDir, runID string) []*store.Event {
 	return out
 }
 
+// Serial: its fixture calls t.Setenv (ITERION_FORFAIT_CAP_PCT, to keep the cap probe off the network), which Go refuses in a parallel test.
 func TestRunAutoResumeRecoversRetryableFailure(t *testing.T) {
 	storeDir, counts, err := runAutoResumeFixture(t, "auto-resume-ok", 2, 1, runtime.ErrCodeUsageLimitBlocked)
 	if err != nil {
@@ -148,6 +149,7 @@ func TestRunAutoResumeRecoversRetryableFailure(t *testing.T) {
 	}
 }
 
+// Serial: its fixture calls t.Setenv (ITERION_FORFAIT_CAP_PCT, to keep the cap probe off the network), which Go refuses in a parallel test.
 func TestRunAutoResumeStaysOffByDefault(t *testing.T) {
 	storeDir, counts, err := runAutoResumeFixture(t, "auto-resume-off", 0, 1, runtime.ErrCodeUsageLimitBlocked)
 	if err == nil {
@@ -164,6 +166,7 @@ func TestRunAutoResumeStaysOffByDefault(t *testing.T) {
 	}
 }
 
+// Serial: its fixture calls t.Setenv (ITERION_FORFAIT_CAP_PCT, to keep the cap probe off the network), which Go refuses in a parallel test.
 func TestRunAutoResumeRefusesNonRetryableCause(t *testing.T) {
 	// WORKSPACE_SAFETY is a deterministic wall: resuming would re-hit it, so
 	// the loop must leave the run for manual review.
@@ -182,6 +185,7 @@ func TestRunAutoResumeRefusesNonRetryableCause(t *testing.T) {
 	}
 }
 
+// Serial: its fixture calls t.Setenv (ITERION_FORFAIT_CAP_PCT, to keep the cap probe off the network), which Go refuses in a parallel test.
 func TestRunAutoResumeStopsAtTheAttemptBudget(t *testing.T) {
 	storeDir, counts, err := runAutoResumeFixture(t, "auto-resume-exhausted", 2, -1, runtime.ErrCodeUsageLimitBlocked)
 	if err == nil {

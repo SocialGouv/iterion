@@ -677,6 +677,17 @@ func isCodexBareLimitNotice(text string) bool {
 			}
 		}
 	}
+	// The enumerated prefixes carry no qualifier, so every inserted-noun
+	// variant ("… your weekly limit", "… your org's monthly spend limit")
+	// escapes them — the same masking bug the claude_code detector was
+	// widened for. hitYourLimitRe subsumes the whole family; anchoring it
+	// to a leading "you(')ve hit your" keeps the prefix discipline that
+	// stops an agent quoting a limit mid-paragraph from qualifying.
+	for _, opener := range []string{"you've hit your", "you’ve hit your", "you have hit your"} {
+		if strings.HasPrefix(lower, opener) && hitYourLimitRe.MatchString(lower) {
+			return true
+		}
+	}
 	return false
 }
 

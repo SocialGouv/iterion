@@ -212,6 +212,10 @@ export interface RunPausedEvent extends RunEventBase {
 
 export interface RunResumedEvent extends RunEventBase {
   type: "run_resumed";
+  // A plain human-pause resume carries no data. The failure path stamps
+  // {resumed_from: "failed", restart_node, from_entry?}; a recovery-pause
+  // resume (a FAILED node acknowledged by the operator, re-executed) stamps
+  // {resumed_from: "recovery_pause", restart_node, recovery_code}.
   data?: Record<string, unknown>;
 }
 
@@ -406,8 +410,13 @@ export type PassthroughEventType =
   | "run_health"
   | "run_auto_resumed"
   | "run_workspace_reset"
+  | "run_workspace_bank_restored"
+  | "run_redelivery_deferred"
+  | "run_retry_skipped"
+  | "run_delivery_exhausted"
   | "run_bank_refused"
   | "run_bank_superseded"
+  | "run_bank_attempt"
   | "review_turn"
   | "review_verdict"
   | "review_merged"
@@ -418,8 +427,10 @@ export type PassthroughEventType =
   | "delegate_finished"
   | "delegate_error"
   | "delegate_retry"
+  | "delegate_stall"
   | "model_fallback"
   | "model_drift"
+  | "model_served_via_facade"
   | "session_degraded"
   | "sandbox_skipped"
   | "sandbox_started"

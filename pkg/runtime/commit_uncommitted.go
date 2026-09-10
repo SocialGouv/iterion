@@ -65,8 +65,8 @@ func CommitUncommittedAndFinalize(
 	if err := runGitInDir(r.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("runtime: commit-uncommitted: git add: %w", err)
 	}
-	if err := runGitInDir(r.WorkDir, "commit", "-m", message); err != nil {
-		return fmt.Errorf("runtime: commit-uncommitted: git commit: %w", err)
+	if out, err := gitCommitMessage(r.WorkDir, message); err != nil {
+		return fmt.Errorf("runtime: commit-uncommitted: git commit: %w (output: %s)", err, strings.TrimSpace(out))
 	}
 	if logger != nil {
 		logger.Info("runtime: committed uncommitted workdir for run %s", r.ID)

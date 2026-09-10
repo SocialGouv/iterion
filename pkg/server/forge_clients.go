@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -51,9 +53,10 @@ func (s *Server) githubAppConfig() forgegithub.AppConfig {
 
 // ---- factories (provider dispatch) ----
 
-// forgeBotForge resolves a bot's manifest forge: block for the orchestrator.
-func (s *Server) forgeBotForge(botID string) (*bundle.ForgeRequirements, error) {
-	entry, ok, err := s.findBot(botID)
+// forgeBotForge resolves a bot's manifest forge: block for the orchestrator,
+// on the tier the provisioned webhook's launches will resolve.
+func (s *Server) forgeBotForge(ctx context.Context, teamID, botID string) (*bundle.ForgeRequirements, error) {
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}
@@ -65,9 +68,10 @@ func (s *Server) forgeBotForge(botID string) (*bundle.ForgeRequirements, error) 
 
 // forgeBotInvocations resolves a bot's manifest invocations for the
 // orchestrator's command-map build (already the EffectiveInvocations set —
-// explicit block, else synthetic from a legacy forge: block).
-func (s *Server) forgeBotInvocations(botID string) ([]bundle.Invocation, error) {
-	entry, ok, err := s.findBot(botID)
+// explicit block, else synthetic from a legacy forge: block), on the tier the
+// provisioned webhook's launches will resolve.
+func (s *Server) forgeBotInvocations(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error) {
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,24 +120,180 @@ func (s *Server) forgeAdminForToken(provider forge.Provider, baseURL, token stri
 }
 
 // forgeAdminFor builds a connection's admin client (the orchestrator's
-// AdminFor). A GitHub-App connection mints a fresh installation token from
-// the App private key on demand; every other kind opens its sealed token.
+// AdminFor). A GitHub-App connection is served by ONE client per connection
+// (githubAppClientFor), whose minted tokens outlive the call; every other
+// kind opens its sealed token into a stateless bearer client.
 func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-		if !ok {
-			return nil, fmt.Errorf("forge: no github app available for this connection")
-		}
-		return &forgegithub.AppClient{
-			HTTP: s.forgeHTTPClient(), WebBaseURL: conn.BaseURL(),
-			Cfg: cfg, InstallationID: conn.InstallationID,
-		}, nil
+		return s.githubAppClientFor(ctx, conn)
 	}
 	token, err := forge.AdminTokenFor(s.sealer, conn)
 	if err != nil {
 		return nil, err
 	}
 	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
+}
+
+// cachedForgeAppClient is one connection's GitHub-App client with the
+// fingerprint of the state it was built from.
+type cachedForgeAppClient struct {
+	fp     string
+	cfg    forgegithub.AppConfig
+	client *forgegithub.AppClient
+}
+
+// githubAppClientFor returns the connection's App client — ONE per
+// connection per replica, so the tokens it mints (the management token, each
+// scoped profile) and the denials it learns (PreflightFor's set) are shared
+// by every lane and every delivery instead of rebuilt by each forgeAdminFor
+// call, which minted the same tokens again per lane.
+//
+// The entry is keyed by the connection id and held only while the state the
+// client is built from is unchanged: tenant, host, installation, the App's id
+// and private key, status, granted permissions, slug
+// (forgeAppClientFingerprint). Any connection update that moves one of them —
+// a re-provisioned App, a grant the health probe synced, a revocation, a key
+// rotation — builds a fresh client on the next call, so a stale entry can
+// never serve a token for state that no longer holds. Deletion and the
+// refresh route evict explicitly (forgetForgeAppClient). The client stays
+// network-free at construction; a slug it learns lazily is recorded on the
+// connection through OnSlugResolved.
+func (s *Server) githubAppClientFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
+	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
+	if !ok {
+		return nil, fmt.Errorf("forge: no github app available for this connection")
+	}
+	if cfg.AppSlug == "" {
+		cfg.AppSlug = conn.AppSlug
+	}
+	fp := forgeAppClientFingerprint(conn, cfg)
+	s.forgeAppClientsMu.Lock()
+	defer s.forgeAppClientsMu.Unlock()
+	if e, ok := s.forgeAppClients[conn.ID]; ok && e.fp == fp {
+		return e.client, nil
+	}
+	client := &forgegithub.AppClient{
+		HTTP: s.forgeHTTPClient(), WebBaseURL: conn.BaseURL(),
+		Cfg: cfg, InstallationID: conn.InstallationID,
+		// The recorded grant narrows the management mint to what the
+		// installation approved; the fingerprint above rebuilds the client
+		// when the health probe syncs a new one.
+		Granted: conn.GrantedPermissions,
+	}
+	if cfg.AppSlug == "" {
+		client.OnSlugResolved = func(slug string) { s.recordForgeAppSlug(conn, slug) }
+	}
+	if s.forgeAppClients == nil {
+		s.forgeAppClients = map[string]*cachedForgeAppClient{}
+	}
+	s.forgeAppClients[conn.ID] = &cachedForgeAppClient{fp: fp, cfg: cfg, client: client}
+	return client, nil
+}
+
+// forgeAppClientFingerprint renders everything a connection's App client is
+// built from. A change in any of it means a cached client would serve state
+// that no longer holds, so the entry is rebuilt.
+func forgeAppClientFingerprint(conn forge.Connection, cfg forgegithub.AppConfig) string {
+	key := sha256.Sum256([]byte(cfg.PrivateKeyPEM))
+	return strings.Join([]string{
+		conn.TenantID, conn.BaseURL(), strconv.FormatInt(conn.InstallationID, 10), conn.OAuthAppID,
+		string(conn.Status), cfg.AppSlug, strconv.FormatInt(cfg.AppID, 10), hex.EncodeToString(key[:8]),
+		forgegithub.PermissionSetKey(conn.GrantedPermissions),
+	}, "|")
+}
+
+// forgetForgeAppClient drops a connection's cached client: the next
+// forgeAdminFor builds, and mints, afresh. The delete route calls it so a
+// removed connection holds no live token in memory; the refresh route calls
+// it because it re-mints on purpose, to show an owner the grant they just
+// approved.
+func (s *Server) forgetForgeAppClient(connID string) {
+	s.forgeAppClientsMu.Lock()
+	defer s.forgeAppClientsMu.Unlock()
+	delete(s.forgeAppClients, connID)
+}
+
+// recordForgeAppSlug persists the slug a connection's client resolved from
+// GET /app onto the connection record — the field iterionBotLogins builds the
+// App's "<slug>[bot]" identity from — and repairs the account login the
+// connect flow derived from an empty slug. Best-effort: the client already
+// answers with the slug; the record is what the OTHER guards read. The cache
+// entry's fingerprint follows the record, so the record as it now reads
+// still maps to the same client.
+func (s *Server) recordForgeAppSlug(conn forge.Connection, slug string) {
+	if s.forgeConnections == nil || slug == "" {
+		return
+	}
+	ctx := store.WithTenant(context.Background(), conn.TenantID)
+	fresh, err := s.forgeConnections.Get(ctx, conn.ID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("forge: record app slug %q for connection %s: %v", slug, conn.ID, err)
+		}
+		return
+	}
+	if fresh.AppSlug != slug {
+		fresh.AppSlug = slug
+		if fresh.AccountLogin == "" || fresh.AccountLogin == "[bot]" {
+			fresh.AccountLogin = slug + "[bot]"
+		}
+		fresh.UpdatedAt = time.Now().UTC()
+		if err := s.forgeConnections.Update(ctx, fresh); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("forge: persist app slug %q for connection %s: %v", slug, conn.ID, err)
+			}
+			return
+		}
+	}
+	s.forgeAppClientsMu.Lock()
+	defer s.forgeAppClientsMu.Unlock()
+	if e, ok := s.forgeAppClients[conn.ID]; ok {
+		e.cfg.AppSlug = slug
+		e.fp = forgeAppClientFingerprint(fresh, e.cfg)
+	}
+}
+
+// forgeCapabilityErr explains a failed capability assertion on a client
+// forgeAdminFor built. The client a connection resolves to depends on its
+// KIND — a github_app connection yields an installation-token client, a
+// pat/oauth one a bearer client — and the capabilities differ between them,
+// so naming only the provider ("provider github has no issue client") names
+// neither the thing that lacks the capability nor anything the operator can
+// act on. The kind and the concrete type are what turn the message into a
+// starting point.
+//
+// Kept for the providers that genuinely cannot serve a capability: the point
+// is to say so precisely, not to make the assertion optional.
+func forgeCapabilityErr(conn forge.Connection, client any, capability string) error {
+	return fmt.Errorf("provider %s: the %s connection's client (%T) does not implement forge.%s",
+		conn.Provider, conn.Kind, client, capability)
+}
+
+// forgePreflighter is the optional capability of a forge client whose
+// construction is lazy: a GitHub App client mints its installation token on
+// its first call, so a client forgeAdminFor built without error can still be
+// unable to serve — and a token it did mint can still lack a permission the
+// installation withholds. A lane that holds another credential asks before
+// acting, naming the permissions its calls need beyond the baseline.
+type forgePreflighter interface {
+	PreflightFor(ctx context.Context, need ...string) error
+}
+
+// forgeNeedStatuses is the permission a lane that WRITES a merge-gate
+// commit status asks the preflight for: the one the App client re-mints
+// without when an installation withholds it, so a client whose mint
+// succeeded can still be unable to write the status.
+const forgeNeedStatuses = forgegithub.PermissionStatuses
+
+// preflightForgeClient reports whether a freshly built forge client can
+// serve the calls that need the named permissions. A client without the
+// capability is taken at its construction's word — its credential was
+// opened and validated when it was built.
+func preflightForgeClient(ctx context.Context, c any, need ...string) error {
+	if p, ok := c.(forgePreflighter); ok {
+		return p.PreflightFor(ctx, need...)
+	}
+	return nil
 }
 
 // githubAppConfigForTenant returns the GitHub-App identity (app id + private key

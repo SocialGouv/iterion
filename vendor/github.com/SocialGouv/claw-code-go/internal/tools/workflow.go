@@ -11,7 +11,9 @@ func WorkflowTool() api.Tool {
 			"deterministically — use it when the STRUCTURE of the fan-out matters (parallel coverage, " +
 			"verify-then-synthesize, migrations over a work list), not for a single delegation (use agent). " +
 			"It can spawn many sub-agents; reach for it deliberately.\n\n" +
-			"Script API: agent(prompt, {label?, subagent_type?, model?}) → Promise of the sub-agent's transcript " +
+			"Script API: agent(prompt, {label?, subagent_type?, model?, schema?}) → Promise of the sub-agent's transcript, " +
+			"or — when schema (a JSON Schema object) is given — of the object it returned through structured_output, " +
+			"validated for required fields and property types (no structured result, or a mismatch, rejects the promise) " +
 			"(sub-agents are stateless; the prompt must carry all context). " +
 			"parallel(thunks) awaits an array of () => Promise, mapping a thrown thunk to null. " +
 			"pipeline(items, ...stages) runs each item through the stages independently with NO barrier between " +

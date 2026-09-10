@@ -461,7 +461,7 @@ pull request (PR; merge request on GitLab).
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
-- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
 
 ### `arbitrate` — Themis
@@ -546,7 +546,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `delivery_reserve_floor_minutes` (int), `delivery_reserve_ratio` (float), `forge_pr_state_url` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_budget_ratio` (float), `plan_large_diff_lines` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `campaign` — Campy
@@ -773,7 +773,7 @@ workflow — so adding a language or harness style needs no DSL edit.
   tests). Endy's axis is the FEATURE-level e2e completeness of the
   whole application, made checkable by the matrix.
 - **Triggers**: e2e, e2e-coverage, end-to-end, coverage-matrix, e2e-tests, regression-net, feature-coverage
-- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
 - **Path**: `bots/e2e-coverage/main.bot`
 
 ### `evolve` — Evoly
@@ -841,7 +841,7 @@ pull request (PR; merge request on GitLab).
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
@@ -861,7 +861,7 @@ without re-architecting what already works.
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
-- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### `feed-watch` — Vigie
@@ -1036,7 +1036,7 @@ redefine what judges it, because a golden master dies by re-baselining. The
   there. Do NOT use it to decide WHAT to modernise: the programme is a human
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
-- **Vars**: `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/modernize/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
@@ -1111,7 +1111,10 @@ its editorial line; the bot brings a default, not a house style.
 Opt-in delivery: open_mr=true pushes the page series and opens ONE
 pull request at the end of the run — as a DRAFT by default, because
 functional documentation is validated by the product owners on the
-forge and marking it ready is their act, not the bot's.
+forge and marking it ready is their act, not the bot's. publish=true
+additionally builds the pages into a static site, packages it as a
+container image and puts it live through the operator-attached
+`deploy-target` skill, then verifies the URL from outside.
 
 - **Use when**:
   Use to generate or maintain the FUNCTIONAL, non-technical
@@ -1130,7 +1133,7 @@ forge and marking it ready is their act, not the bot's.
   developers — and the topology second: docs repo here, N source
   repos there.
 - **Triggers**: product-docs, functional-docs, doc-produit
-- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_s3_bucket` (string), `publish_s3_prefix` (string), `publish_site` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_image` (string), `publish_registry_user` (string), `publish_slug` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
@@ -1203,15 +1206,22 @@ source:revi) and writes a markdown report. Given a pull-request URL
 forge review — inline comments anchored to file:line with one-click
 ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
 or commits code — that is the improve-loops' job (Billy / Willy).
+Optional TICKET CONFORMANCE: with a tracker API base + a bound
+read-only tracker token, it also fetches the ticket(s) the PR
+references (Jira, GitHub/GitLab issues) and verifies the diff answers
+the demand — per-ticket verdicts in the review, gaps as
+"requirements" findings.
 
 - **Use when**:
   Use when you want a PR/branch REVIEWED and its issues surfaced — to
   the board for triage and/or posted directly onto the PR (pass
   --var pr_url) as inline comments + ```suggestion fixes — but NOT
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
-  reviews AND fixes AND commits.
+  reviews AND fixes AND commits. Set tracker_api_base (+ bind a
+  tracker_token secret) to also have it check the PR against the
+  tracker ticket(s) it references.
 - **Triggers**: review-pr, pr-review, review
-- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (bool), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `report_path` (string), `review_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `gate_severity` (string), `max_findings` (int), `mono_family` (string), `post_to_board` (string), `pr_review_mode` (string), `pr_url` (string), `prior_pushback` (string), `report_path` (string), `review_mode` (string), `review_tier` (string), `scope_notes` (string), `severity_threshold` (string), `source_branch` (string), `ticket_context` (string), `ticket_refs` (string), `tracker_api_base` (string), `tracker_user` (string), `workspace_dir` (string)
 - **Path**: `bots/review-pr/main.bot`
 
 ### `rgaa-audit` — Acci
@@ -1436,7 +1446,7 @@ not in the workflow — so adding a language needs no DSL edit.
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
-- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
 
 ### `ultra11y` — Ally
@@ -1583,7 +1593,7 @@ docs/references/productive-session-patterns.md.
   always leave landed, reviewable commits. For an open-ended "find whatever is
   wrong" production-readiness audit (no single axis), point a review-loop bot
   at the tree instead — this bot needs an axis to sweep.
-- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_phase` (string), `plan_review` (string), `plan_review_policy` (string), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 ### `wiki-gen` — Wikky

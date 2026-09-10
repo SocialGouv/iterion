@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -129,7 +128,7 @@ func runProductDocs(t *testing.T, exec *scenarioExecutor, runID string, inputs m
 	t.Helper()
 	wf := compileFixtureStubSafe(t, "product-docs/main.bot")
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, inputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -147,6 +146,7 @@ func runProductDocs(t *testing.T, exec *scenarioExecutor, runID string, inputs m
 // pass 1 → one pass, and with open_mr defaulting false the run finishes
 // without touching the forge.
 func TestProductDocs_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 1}
 	stubProductDocs(exec, st)
@@ -170,6 +170,7 @@ func TestProductDocs_ConvergesFirstPass(t *testing.T) {
 // repositories (they cannot change mid-run, and re-cloning N repos per pass
 // would dominate the run).
 func TestProductDocs_ClonesOnceAcrossPasses(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 2, hintCount: 1}
 	stubProductDocs(exec, st)
@@ -193,6 +194,7 @@ func TestProductDocs_ClonesOnceAcrossPasses(t *testing.T) {
 // converge, and the next pass must receive the lint complaint so the agent
 // removes exactly those lines.
 func TestProductDocs_LintViolationBlocksConvergence(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0} // claims aligned every pass
 	stubProductDocs(exec, st)
@@ -232,6 +234,7 @@ func TestProductDocs_LintViolationBlocksConvergence(t *testing.T) {
 // editorial skills. The writeable-set gate fails the pass and the violation
 // reaches the next one.
 func TestProductDocs_ScopeViolationRoutesBack(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0}
 	stubProductDocs(exec, st)
@@ -264,6 +267,7 @@ func TestProductDocs_ScopeViolationRoutesBack(t *testing.T) {
 // not cover this pass — must not block convergence. If a scanner count ever
 // re-enters the gate expression, this test fails.
 func TestProductDocs_HintsAreAdvisoryNeverGate(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 97}
 	stubProductDocs(exec, st)
@@ -281,6 +285,7 @@ func TestProductDocs_HintsAreAdvisoryNeverGate(t *testing.T) {
 // of inferring the missing product surface. A silent skip would read, from
 // inside the agent, exactly like a product with fewer features.
 func TestProductDocs_DegradedSourceReachesTheCampaign(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0, inventory: []any{
 		map[string]any{"id": "demo-src", "status": "ok", "sha": "deadbeef"},
@@ -305,6 +310,7 @@ func TestProductDocs_DegradedSourceReachesTheCampaign(t *testing.T) {
 // read `{{outputs.*}}`, so it rides the edge mapping — a mapping that silently
 // drops it would scope the gates to an empty path and approve anything).
 func TestProductDocs_CatalogResolutionReachesEveryConsumer(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0}
 	stubProductDocs(exec, st)
@@ -333,6 +339,7 @@ func TestProductDocs_CatalogResolutionReachesEveryConsumer(t *testing.T) {
 // headline result link. Functional documentation is validated by the product
 // owners on the forge — marking the PR ready is their act, not the bot's.
 func TestProductDocs_MRPathOpensADraft(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0}
 	stubProductDocs(exec, st)
@@ -354,6 +361,7 @@ func TestProductDocs_MRPathOpensADraft(t *testing.T) {
 // deterministic probe short-circuits to done. finalize_mr is an LLM agent;
 // entering it with nothing to push burns a turn to rediscover that in shell.
 func TestProductDocs_MRPathSkippedWithoutForgeAuth(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &productDocsState{alignedBy: 1, hintCount: 0}
 	stubProductDocs(exec, st)
@@ -377,6 +385,7 @@ func TestProductDocs_MRPathSkippedWithoutForgeAuth(t *testing.T) {
 // campaign reads whatever stack the sources use; a `parse_openapi` node would
 // be the closed enum this bot must not have).
 func TestProductDocs_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "product-docs/main.bot")
 
 	if wf.Entry != "catalog_ingest" {

@@ -216,8 +216,11 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain("The dispatcher gave up after 3 attempts");
     expect(html).toContain("kaboom"); // the underlying reason stays
     // Retry must not be sold as "starts it over": a live dispatcher resumes
-    // the same dead run unless the last-run pointer is cleared first.
-    expect(html).toContain("--clear-last-run");
+    // the same dead run unless the last-run pointer is dropped first. The
+    // banner names the board affordance that does it (#496) — an operator
+    // looking at a board must not be sent to a terminal.
+    expect(html).toContain("Retry from zero");
+    expect(html).not.toContain("--clear-last-run");
     expect(html).not.toContain("Retry starts it over");
   });
 

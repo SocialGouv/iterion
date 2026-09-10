@@ -288,7 +288,101 @@ type Org struct {
 	// across the whole org (a soft cap: in-flight runs finish; new
 	// launches are denied once crossed).
 	MonthlyCostCapUSD float64 `bson:"monthly_cost_cap_usd,omitempty" json:"monthly_cost_cap_usd,omitempty"`
+
+	// RequireProvisionApproval (org-admin managed) parks any repo-bot
+	// provisioning requested by a TEAM admin as a pending approval an ORG
+	// admin must approve before anything is created forge-side. Org
+	// admins (and super-admins) provisioning themselves are not gated.
+	// Off by default — existing orgs keep the direct-provision behaviour.
+	RequireProvisionApproval bool `bson:"require_provision_approval,omitempty" json:"require_provision_approval,omitempty"`
+
+	// CredentialAudience decides which of the org's teams may spend the
+	// org's OWN shared LLM credentials (the org tier). Its zero value
+	// admits NOBODY: lending a key is an explicit act, so a team that was
+	// never named funds its runs itself or does not run.
+	CredentialAudience CredentialAudience `bson:"credential_audience,omitempty" json:"credential_audience,omitempty"`
+
+	// ProvisionApprovalScope narrows WHICH requests RequireProvisionApproval
+	// parks. Empty reads as ProvisionApprovalAll — existing orgs keep the
+	// behaviour they have.
+	ProvisionApprovalScope ProvisionApprovalScope `bson:"provision_approval_scope,omitempty" json:"provision_approval_scope,omitempty"`
 }
+
+// ProvisionApprovalScope says what an org's provisioning approval is FOR.
+//
+// The gate started as "review every repo a team connects", which is the
+// right default for an org that has not decided otherwise. But the question
+// an operator usually wants reviewed is narrower and about money: a team
+// spending its OWN credentials answers to nobody for what it runs, while a
+// team drawing on the org's or the deployment's shared keys is spending
+// someone else's budget. `shared_credentials` is that reading.
+type ProvisionApprovalScope string
+
+const (
+	// ProvisionApprovalAll parks every team-admin provisioning request.
+	ProvisionApprovalAll ProvisionApprovalScope = "all"
+	// ProvisionApprovalSharedCredentials parks only the requests of teams
+	// that bring no credential of their own — the ones whose runs would be
+	// funded by the org tier, the pool, or the platform.
+	ProvisionApprovalSharedCredentials ProvisionApprovalScope = "shared_credentials"
+)
+
+// ValidProvisionApprovalScope reports whether s is assignable.
+func ValidProvisionApprovalScope(s ProvisionApprovalScope) bool {
+	switch s {
+	case ProvisionApprovalAll, ProvisionApprovalSharedCredentials:
+		return true
+	}
+	return false
+}
+
+// EffectiveProvisionApprovalScope treats an empty scope (every row written
+// before the field existed) as "all".
+func (o Org) EffectiveProvisionApprovalScope() ProvisionApprovalScope {
+	if o.ProvisionApprovalScope == "" {
+		return ProvisionApprovalAll
+	}
+	return o.ProvisionApprovalScope
+}
+
+// CredentialAudience answers one question — may THIS team of the org draw
+// on the org's shared LLM credentials? It is the org-tier counterpart of
+// credpool.Audience, deliberately narrower: the pool lends across tenants
+// (hence its orgs/contributors dials), an org lends only inside itself, so
+// naming teams and "all of them" is the whole vocabulary.
+//
+// The zero value admits nobody. That asymmetry with the pool is the point:
+// a pool's zero value serves its owning org because a donor pledged it to
+// their own people, while an org key exists precisely so that SOME teams
+// spend it and others do not.
+type CredentialAudience struct {
+	// Teams is an explicit allow-list of team ids within the org.
+	Teams []string `bson:"teams,omitempty" json:"teams,omitempty"`
+	// AllTeams admits every team of the org, including ones created later.
+	// The setting a single-tenant org wants; the one a governed org grants
+	// team by team instead.
+	AllTeams bool `bson:"all_teams,omitempty" json:"all_teams,omitempty"`
+}
+
+// Allows reports whether teamID may spend the org's shared credentials.
+func (a CredentialAudience) Allows(teamID string) bool {
+	if teamID == "" {
+		return false
+	}
+	if a.AllTeams {
+		return true
+	}
+	for _, id := range a.Teams {
+		if id == teamID {
+			return true
+		}
+	}
+	return false
+}
+
+// Empty reports whether the audience admits nobody — the zero value, and
+// the state in which reading the org's credentials at all is pointless.
+func (a CredentialAudience) Empty() bool { return !a.AllTeams && len(a.Teams) == 0 }
 
 // EffectiveStatus treats an empty status (legacy rows) as active.
 func (o Org) EffectiveStatus() TeamStatus {
@@ -423,4 +517,46 @@ func SlugifyTeamName(name string) string {
 		out = out[:len(out)-1]
 	}
 	return string(out)
+}
+
+// TeamPatch is a PARTIAL team update: only the non-nil fields are written.
+//
+// It exists because UpdateTeam replaces the whole document, which makes
+// every "read, change one field, write back" handler a lost-update race
+// against every other one. The dangerous direction was measured: a rename
+// carries the Status it read, so renaming a team that another admin
+// suspended in between silently RESUMES it — a governance action undone by
+// an unrelated edit. Same class as the run store's missing CAS.
+//
+// Status carries the suspension trio with it deliberately: they are one
+// fact, and letting a caller write them apart is how a resumed team keeps
+// a SuspendedAt nobody notices.
+type TeamPatch struct {
+	Name *string
+	Slug *string
+	// Status, when non-nil, sets the lifecycle status AND derives the
+	// suspension trio from it: stamped when suspending, cleared otherwise.
+	Status        *TeamStatus
+	SuspendedBy   string
+	SuspendReason string
+}
+
+// Empty reports whether the patch would write nothing.
+func (p TeamPatch) Empty() bool { return p.Name == nil && p.Slug == nil && p.Status == nil }
+
+// OrgPatch is TeamPatch's org-level twin, for the same reason: the org
+// settings, the credential audience and the super-admin plan fields are
+// three independent editors of one document.
+type OrgPatch struct {
+	Name                     *string
+	Slug                     *string
+	RequireProvisionApproval *bool
+	ProvisionApprovalScope   *ProvisionApprovalScope
+	CredentialAudience       *CredentialAudience
+}
+
+// Empty reports whether the patch would write nothing.
+func (p OrgPatch) Empty() bool {
+	return p.Name == nil && p.Slug == nil && p.RequireProvisionApproval == nil &&
+		p.ProvisionApprovalScope == nil && p.CredentialAudience == nil
 }

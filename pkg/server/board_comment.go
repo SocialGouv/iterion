@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -39,7 +40,10 @@ func (s *Server) resolveBoardComment(iss native.Issue, body string) (bot string,
 	if cmd == "" {
 		return "", nil, "", false
 	}
-	route, found := s.cmdDiscovery().LookupCommand(cmd)
+	// The native board is a single local store with no tenancy — the launch
+	// it triggers resolves platform-over-baked too, so the discovery matches
+	// it by passing no team rather than inventing one.
+	route, found := s.cmdDiscoveryFor(context.Background(), "").LookupCommand(cmd)
 	if !found || !route.AllowsScope("issue") {
 		return "", nil, "", false
 	}

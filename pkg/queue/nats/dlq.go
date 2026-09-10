@@ -31,6 +31,17 @@ func (d *Delivery) NumDelivered() int {
 	return int(md.NumDelivered)
 }
 
+// StreamSeq reports the message's JetStream stream sequence — the stable
+// identity of one published message across its redeliveries, read from the
+// same metadata NumDelivered parses. Zero when unavailable.
+func (d *Delivery) StreamSeq() uint64 {
+	md, err := d.raw.Metadata()
+	if err != nil {
+		return 0
+	}
+	return md.Sequence.Stream
+}
+
 // MaxDeliver exposes the configured redelivery budget so consumers
 // (the runner) can implement the "exhausted → DLQ" bridge without
 // duplicating the default.
@@ -147,6 +158,12 @@ func (c *Conn) PeekDLQ(ctx context.Context, seq uint64) (DLQMessage, json.RawMes
 // with the DLQ sequence so JetStream's dedup window can't silently
 // swallow the replay (the original publish used the bare run id).
 func (c *Conn) RepublishDLQ(ctx context.Context, seq uint64) (string, error) {
+	if err := c.requireRunnerEpochClaim(); err != nil {
+		return "", err
+	}
+	if c.js == nil {
+		return "", fmt.Errorf("queue/nats: connection not initialised")
+	}
 	view, payload, err := c.PeekDLQ(ctx, seq)
 	if err != nil {
 		return "", err

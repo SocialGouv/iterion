@@ -26,9 +26,90 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# A job that is NOT a required status check cannot block a merge, so running
+# it inside the merge queue buys a verdict nobody can act on — while holding a
+# runner slot the queue needs. The org shares 20 concurrent jobs across every
+# repository, and a queue entry is a full CI cycle, so those slots are what
+# decides how long a merge takes. The four advisory jobs below therefore run
+# on the pull request and on main, and skip in `merge_group`.
+#
+# The line to hold: the jobs carrying that skip are exactly the complement of
+# the ruleset's required checks (test, race, vendor-check, mongo-conformance,
+# golangci, revi/review). Promoting one of them to required means deleting its
+# skip in the same change — and the reason is worse than a stalled queue. A
+# job skipped by a job-level `if:` reports SUCCESS, so a required check that
+# never ran satisfies the gate: every queue entry would merge green on a check
+# that did not execute. (A workflow-level filter is the opposite — the check
+# never reports and the queue hangs. Same word, opposite failure.)
+# The list lives in a ruleset, outside this repo, so nothing here can assert
+# it — docs/merge-policy.md carries the same warning beside the required list.
+
+# WHERE these jobs run. The organisation shares 20 concurrent GitHub-hosted
+# jobs across every repository, which is what makes a cycle here take 40
+# minutes of wall clock for 30 minutes of compute. The self-hosted scale set
+# `arc-runners` (org-scoped, ovh-dev) has no such cap.
+#
+# Two kinds of pull request stay on GitHub-hosted runners, and this is the
+# security argument rather than a detail — the repository is PUBLIC and the
+# self-hosted runners sit inside the cluster:
+#
+#   - a FORK PR: arbitrary code from anyone.
+#   - a DEPENDENCY-UPDATE PR: its author has write access, but its CONTENT is
+#     arbitrary upstream code. `pnpm install` and `go test` execute it, on the
+#     very pull request proposing it, before a human has read the diff. Write
+#     access is what the author holds; it says nothing about what npm shipped.
+#
+# The second is matched on the bot's IDENTITY, not on its branch prefix: a
+# prefix is configuration, and a guard that reads configuration stops guarding
+# the day someone changes it, silently. `endsWith` rather than an equality,
+# because renovate runs here under a self-hosted App and its author is
+# `socialgouv-renovate[bot]` (renovate.yml says so) — an equality on
+# `renovate[bot]` matches nothing at all, and a guard that matches nothing
+# looks exactly like a guard that works. `dependabot[bot]` is listed although
+# Dependabot is retired here (no .github/dependabot.yml): a carve-out that
+# covers a lane before it opens costs one literal, and the alternative is
+# remembering this file the day someone turns it back on.
+#
+# The lever when the scale set stops serving is documented in
+# docs/merge-policy.md, not only here — an operator hitting a fleet-wide merge
+# stall reads the policy, not a workflow comment.
+#
+# A same-repo branch from a human or from one of this repository's own agents
+# is a different thing: pushing it already requires write access, and its
+# content is first-party.
+#
+# THE ESCAPE HATCH: setting the repository variable CI_SELF_HOSTED to `off`
+# sends every job back to GitHub-hosted runners. It exists because three
+# REQUIRED checks route here on merge_group, so a scale set that stops serving
+# makes every queue entry wait check_response_timeout_minutes (60) for a check
+# that never reports, and then fail — all pull requests at once. A variable is
+# deliberately the mechanism rather than an edit to this file: repairing by
+# merging does not work when merging is what is broken. Unset means on.
+#
+# Three jobs stay GitHub-hosted whatever the ref. One of them for a settled
+# reason — the upstream image ships no C compiler, which -race needs — and two
+# because of a startup race and an unexplained kind failure. Each says what is
+# measured at its own definition, and what is not; #981 carries the remedy.
+# Measured 2026-09-08: the other six pass on self-hosted, nine runner pods
+# starting at once with no queueing at all.
+#
+# So the expression below reads, in three clauses:
+#
+#   CI_SELF_HOSTED == 'off'        -> GitHub-hosted   (the operator's lever)
+#   fork pull request              -> GitHub-hosted   (arbitrary code, anyone)
+#   dependency-bot pull request    -> GitHub-hosted   (arbitrary upstream code)
+#   everything else                -> arc-runners
+#
+# It is repeated per job because `runs-on` cannot read workflow-level `env`,
+# and routing it through a `needs:` job would put every job behind one
+# GitHub-hosted slot — reintroducing the queue this exists to escape. That
+# repetition is a drift risk on a SECURITY decision, so the six copies are
+# pinned against each other by TestSelfHostedRoutingExpressionsAgree in
+# internal/ciguard: one copy edited alone turns it red.
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -39,6 +120,19 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+
+      # The modernize bot-level tests execute the bot's real plan_read /
+      # lot_verify / mark_done scripts, which read the programme contract
+      # through yq. Without it on PATH they SKIP — and a skipped guard test is
+      # a green no-op, the very class those guards refuse. Pinned by version
+      # and digest (mikefarah/yq, the same implementation the bundles pin).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -117,16 +211,31 @@ jobs:
         run: go vet -mod=vendor ./...
 
       - name: Unit tests
-        run: go test -mod=vendor ./...
+        # `./...` includes the e2e package, which has its own step below with
+        # its own budget; running it here too doubled the job's wall-clock
+        # AND ran the suite under Go's implicit per-package 10m first — the
+        # timeout that actually ejected PRs from the merge queue. Unit tests
+        # are everything but e2e; the e2e step is the only e2e run.
+        run: go test -mod=vendor $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: E2E tests
-        # Same budget as the Taskfile's test:e2e. The number bounds a HANG, not
-        # a slow machine: the suite legitimately runs ~170s on a dev box, so the
-        # old 240s left barely 1.4x headroom and a loaded shared runner crossed
-        # it — a 4m panic dump naming whichever test happened to be in flight,
-        # which reads as "that test is broken" and is not. A true hang still
-        # trips this; only the coin flip is gone.
-        run: go test -mod=vendor -v -timeout 600s ./e2e/...
+        # The ONLY run of the e2e package in this job (the unit step excludes
+        # it). The number bounds a HANG, not a slow machine: a timeout that a
+        # healthy run can reach is a coin flip that ejects PRs from the merge
+        # queue with a panic dump naming whichever test happened to be in
+        # flight.
+        #
+        # The suite runs its tests in parallel (t.Parallel() on every row that
+        # owns its state; e2e/main_test.go caps how many run at once, because
+        # these tests wait on background loops and oversubscription starves
+        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
+        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
+        # cut, so the wall clock no longer tracks the suite's size the way the
+        # 568-572 s merge-group builds of 2026-09-06 did. Slowest parallel run
+        # observed across six measurements: 259 s, on a box shared with other
+        # builds. 900 s is past 2x that, so it stays as the hang bound rather
+        # than being re-tightened onto the new figure.
+        run: go test -mod=vendor -v -timeout 900s ./e2e/...
 
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
@@ -140,8 +249,10 @@ jobs:
     # (ubuntu-latest ships gcc). Runs in parallel with `test`; a compile error
     # surfaces here too, so no `needs:` ordering. ~2-3x slower than the plain
     # test job, hence the wider -timeout and job budget.
+    # GitHub-hosted: -race needs cgo, and the self-hosted image has no C
+    # compiler (`cgo: C compiler "gcc" not found`, every package build-failed).
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       CGO_ENABLED: "1"
     steps:
@@ -153,14 +264,28 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The modernize bot-level tests execute the bot's real plan_read /
+      # lot_verify / mark_done scripts, which read the programme contract
+      # through yq. Without it on PATH they SKIP — and a skipped guard test is
+      # a green no-op, the very class those guards refuse. Pinned by version
+      # and digest (mikefarah/yq, the same implementation the bundles pin).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
+          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
       - name: Race tests (unit + e2e)
-        # 900s, not the plain job's 600s: -race runs the e2e package 2-3x
-        # slower (~170-200s plain → 400-600s under -race), so 600s left ZERO
-        # headroom and a loaded runner crossed it — a 10m panic dump naming
-        # whichever test happened to be in flight (seen on main 2026-08-25
-        # and on the pr-523 merge-group). The number bounds a HANG, not a
-        # slow machine; the 20-minute job budget still caps the whole run.
-        run: go test -race -mod=vendor -timeout 900s ./...
+        # 1800s bounds a HANG, not a slow machine. -race runs the e2e package
+        # 2-3x slower than the plain job; before the suite went parallel that
+        # measured 862 s on a green merge-group build and crossed 900 s
+        # (panic) on 2026-09-06. With t.Parallel() the same package measures
+        # 153.8 s under -race (2026-09-07, 32-core box, race detector clean),
+        # so the budget now carries an order of magnitude of headroom and
+        # stays as the hang bound. The 45-minute job budget caps the run.
+        run: go test -race -mod=vendor -timeout 1800s ./...
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
@@ -174,6 +299,12 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
+    # GitHub-hosted: the runner agent's container-init phase races the dind
+    # sidecar. Measured — runner up 14:34:57, `dial unix
+    # /run/docker/docker.sock` at 14:35:05, eight seconds in — while a sibling
+    # job's `docker run` succeeds 76 s after ITS start. So the daemon does come
+    # up; the agent just asks too early. A dind-readiness gate would move this
+    # job; see #981.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -224,7 +355,11 @@ jobs:
               rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] });
             }
           '
-          # Wait for primary election before letting tests connect.
+          # Wait for primary election before letting tests connect. No
+          # PRIMARY within the window fails the STEP: falling through would
+          # let the harness connect to a set with no primary and report the
+          # failure as a store bug on whatever PR happens to be in the queue.
+          STATE=""
           for i in $(seq 1 30); do
             STATE=$(docker exec mongo-rs mongosh --quiet --eval 'rs.status().members[0].stateStr' 2>/dev/null || true)
             if [ "$STATE" = "PRIMARY" ]; then
@@ -233,6 +368,12 @@ jobs:
             fi
             sleep 2
           done
+          if [ "$STATE" != "PRIMARY" ]; then
+            echo "rs0: no PRIMARY after 60s (last state: ${STATE:-unknown})" >&2
+            docker exec mongo-rs mongosh --quiet --eval 'printjson(rs.status())' || true
+            docker logs --tail 100 mongo-rs || true
+            exit 1
+          fi
 
       - name: Mongo conformance harness
         # Alongside the pkg/store/mongo harness, run EVERY suite gated on
@@ -249,17 +390,41 @@ jobs:
           go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/... \
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
-            ./pkg/secrets/... ./pkg/orgusage/... ./pkg/botsource/... \
+            ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... \
+            ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
-            ./pkg/usagecap/...
+            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/pluginsource/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
+            ./pkg/forge/... ./pkg/trigger/...
+
+      - name: Mongo diagnostics on failure
+        # A harness failure that reads "ReplicaSetNoPrimary" AFTER the
+        # election step printed "primary elected" is a broker-side event
+        # (a step-down, a restart, a late handshake under load), not a
+        # store regression. Capture what the set and the container saw
+        # so the failure can be attributed without re-running the job.
+        if: failure()
+        run: |
+          echo "::group::rs.status()"
+          docker exec mongo-rs mongosh --quiet --eval 'printjson(rs.status())' || true
+          echo "::endgroup::"
+          echo "::group::container state"
+          docker inspect mongo-rs --format 'status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} oom={{.State.OOMKilled}}' || true
+          echo "::endgroup::"
+          echo "::group::docker logs mongo-rs (tail 300)"
+          docker logs --tail 300 mongo-rs || true
+          echo "::endgroup::"
 
   nats-conformance:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Runs the JetStream integration tests (mixed-version schema rollout,
     # issue #481) against a real broker. Gated on ITERION_TEST_NATS_URI
     # in-tree so a developer's plain `go test ./...` skips them; CI
     # provides the URI explicitly so the contract stays enforced.
     # Mirror of the mongo-conformance job above.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -305,6 +470,9 @@ jobs:
           go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
 
   cloud-e2e:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with bundled Mongo + NATS + MinIO (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →
@@ -316,6 +484,9 @@ jobs:
     # image and a Go compile error surfaces here too. The previous
     # `needs: test` was purely defensive and cost 3-4 min of
     # wall-clock per push.
+    # GitHub-hosted: kind comes up, kubectl cannot authenticate to it. The
+    # cause is NOT established — it is not the image's docker access, which a
+    # sibling job uses successfully. See #981.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -505,7 +676,7 @@ jobs:
     # CI runner compiles vs what a fresh clone compiles — the kind of
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -524,11 +695,14 @@ jobs:
           git diff --exit-code go.mod go.sum vendor/
 
   helm-lint:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
     # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -538,6 +712,36 @@ jobs:
         run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
       - name: helm lint --strict (values-prod.yaml)
         run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
+      # installs via image.tag — so without these two the digest branch of
+      # `iterion.image` is exercised by no CI job at all, and a refactor could
+      # drop it (or its shape guard) silently. A malformed digest is the case
+      # that matters: it renders a string helm accepts and only kubelet
+      # rejects, so the rollout stalls instead of failing.
+      - name: image.digest renders and rejects a malformed value
+        run: |
+          set -euo pipefail
+          digest="sha256:$(printf 'a%.0s' $(seq 64))"
+          # `--set image.tag=edge` also pins the documented precedence
+          # (digest wins), the property a refactor of the `if` is likeliest to
+          # invert. Render to a FILE: `grep -q` exits on its first match, which
+          # SIGPIPEs helm mid-write and, under `pipefail`, reddens the step on
+          # an assertion that actually passed.
+          helm template t charts/iterion --set image.tag=edge \
+            --set "image.digest=$digest" > /tmp/render-digest.yaml
+          grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
+          # ...and that NOTHING still resolves through the tag. The render has
+          # two iterion.image containers (server + runner fallback) and grep -q
+          # stops at the first, so a refactor routing only one of them through
+          # the digest would otherwise still pass.
+          if grep -q "image: ghcr.io/socialgouv/iterion:edge" /tmp/render-digest.yaml; then
+            echo "::error::a container still resolved through image.tag despite image.digest being set"
+            exit 1
+          fi
+          if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
+            echo "::error::a malformed image.digest rendered instead of failing"
+            exit 1
+          fi
 
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,
@@ -545,7 +749,7 @@ jobs:
     # OFF — it flags French comments as misspelled English (1097 false
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     env:
       CGO_ENABLED: "0"
     steps:
@@ -559,13 +763,16 @@ jobs:
         run: golangci-lint run --timeout 5m
 
   govulncheck:
+    # Advisory: not a required check, so it cannot block a merge — see the
+    # merge-queue note at the top of this file.
+    if: github.event_name != 'merge_group'
     # govulncheck is call-graph aware (only reports CVEs whose vulnerable
     # functions are actually reachable from this codebase). Trivy's
     # filesystem scan catches the broader set including unused-import
     # noise — we keep both. Advisory-only for now: a zero-day disclosure
     # mid-release shouldn't gate a hotfix; results surface in the GitHub
     # Security tab via SARIF so an operator can still triage.
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     permissions:
       security-events: write
       contents: read

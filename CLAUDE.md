@@ -135,6 +135,30 @@ tool" — the audience is anyone who operates agent work. But don't make git
 optional in the core, and don't ship a view that needs the engine to know a
 specific bot (see 2).
 
+**Backend parity doctrine — claw ↔ claude_code (pre-arbitrated).** `claw`
+(claw-code-go, the sibling repo) is meant to be feature-paritary with
+`claude_code`, and the two backends are meant to be **interchangeable** on
+the same node: `claude_code` is the more stable and mature harness today;
+`claw` reaches every provider the registry knows. This doctrine is an
+**addendum** to the numbered five above, not a sixth principle — equally
+settled, equally not to re-litigate. Consequences, settled:
+
+- A claw error, gap or limitation met in real use is a **claw-code-go
+  backlog item, not a disqualification** — fix the harness, then re-judge
+  the model. (Known gap to burn down: session resume parity — `claw`
+  never reads `SessionID`, replaying from the run's own store. MCP
+  servers and mid-tool-loop `ask_user` under the sandboxed
+  `__claw-runner` shipped in V2-2/V2-3 — see
+  [docs/sandbox.md](docs/sandbox.md).)
+- Every engine-side capability wired for one of the two (credentials,
+  fingerprinting/meters, permission gate, session resume, events) must be
+  wired — or explicitly refused with a typed diagnostic — for the other.
+  A feature that silently works on one backend only is a defect (see 1).
+- Backend fallback/switching (run-level `fallback`, per-node overrides) is
+  the interchangeability mechanism: every production switch is also a
+  parity measurement. Keep switches observable (events name the backend
+  and the served model).
+
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
 When a work session burns real time **discovering how to configure or operate
@@ -161,12 +185,31 @@ the hours this one spent.
   a cloud run's LLM credential (BYOK vs Anthropic OAuth-forfait vs OpenAI
   ChatGPT-forfait, the CGU guard, `ITERION_OPENAI_USE_OAUTH`, the
   `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs) — including
-  the **platform tier**: the deployment's own DB-backed fallback keys/forfait
-  (`iterion remote admin llm …`, studio Admin → LLM credentials), rotated
-  with one call instead of a k8s-secret edit + redeploy — and the
+  the **org tier** (an organization's own keys/forfaits lent to the teams its
+  `credential-audience` names — the answer to "share one key across our
+  product teams" that used to mean copying it into each of them, N writes per
+  rotation) and the **platform tier**: the deployment's own DB-backed
+  fallback keys/forfait (`iterion remote admin llm …`, studio Admin → LLM
+  credentials), rotated with one call instead of a k8s-secret edit +
+  redeploy, and now **gated by an opt-in audience**
+  (`iterion remote admin platform-credentials`) so a tenant with nothing of
+  its own no longer draws on it in silence — and the
   one-credential activation of the campaign bots' **cross-model plan
   review** (provision the codex OAuth forfait → `plan_review` resolves
-  `on` at the next launch, nothing else to configure).
+  `on` at the next launch, nothing else to configure) — and
+  `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, which refuses at publish (HTTP
+  `422`, a board give-back) a run no tier can fund instead of queueing one
+  that dies at its first call. Read it also when **connecting** a Claude
+  forfait (a bare `claude setup-token` is accepted directly — the server wraps
+  it as `credentials.json`, assuming a one-year validity the token does not
+  carry, and fingerprints the TOKEN so a re-upload keeps one meter and its
+  name), when asking **which key
+  paid for a run** (the `cloudpublisher: … used/SKIPPED … fp=` lines, the only
+  place the credential, the window and the reopening are named — a run's own
+  error names none of the three), and before trusting a **fallback**: a Claude
+  blob carries no account id, so one subscription connected twice is two
+  fingerprints and two meters, and a fleet can look redundant while sharing a
+  single provider window.
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising
@@ -186,12 +229,29 @@ the hours this one spent.
   --five-hour 80 --week 70`, super-admin; DB record over the env
   defaults, ≤30s propagation to both deployments, `/healthz` echoes the
   effective values — ADR-090). Read it when bots are eating the forfait
-  an operator also works on.
+  an operator also works on — and when every claude_code run is refused
+  at admission on a window the provider's own dashboard shows near 0%: a
+  stored reading is trusted for `ITERION_USAGE_CAP_TRUST_WINDOW` (3h)
+  after it was observed, not until its reset instant, and `iterion
+  remote admin usage-readings clear <fingerprint>` forgets one
+  credential's readings on the spot (a run refused pre-flight never
+  refreshes them by itself).
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/merge-policy.md](docs/merge-policy.md) — how a change reaches `main`:
+  the merge queue, the required checks, and the admin bypass. Read it when
+  **nobody can merge** — three required checks (`test`, `vendor-check`,
+  `golangci`) run on the organisation's self-hosted `arc-runners` scale set,
+  which sits outside this repository and was dead unnoticed for over a year,
+  so the first thing to try is the `CI_SELF_HOSTED=off` repository variable
+  (a variable, not a commit: repairing by merging does not work when merging
+  is what is broken). Also carries why a queue entry is a full CI cycle
+  against a 20-job organisation cap, and the trap that promoting an advisory
+  job to required without deleting its `merge_group` skip produces a silent
+  FALSE GREEN rather than a stalled queue.
 - [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
   on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
   what the command seeds (prior-review hand-off, push-back, ledger, gate),
@@ -240,7 +300,69 @@ the hours this one spent.
   role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
-  reverted, or when a run fails on "version drift".
+  reverted, or when a run fails on "version drift". Covers the **engine
+  contract** a bundle may declare (`requires: { iterion: ">= X.Y.Z" }` in
+  its manifest — [docs/bundles.md](docs/bundles.md#requires--the-engine-contract)):
+  `push` refuses `409` when the deployment's floor (min of the server's
+  build and the runner builds observed on recent runs) is below it,
+  `--force` overrides loudly, the launch refuses with a terminal
+  `BOT_REQUIRES_NEWER_ENGINE`, and `iterion validate` says the same
+  locally (C250/C251). Read it when a push is refused, or when a bot that
+  compiles dies at its first expression.
+- [docs/dispatcher.md](docs/dispatcher.md#claim-lease--watchdog-native-board-adr-096) —
+  the board **claim lease + watchdog** (ADR-096,
+  `ITERION_BOARD_CLAIM_REAPER`, default off): the fenced leased claim
+  (`claim_epoch`/`claim_lease_until`, heartbeat, owner-scoped CAS
+  writes), the periodic cross-host reaper that reclaims expired leases
+  by TRANSFER and routes the card by `DecideStuckCard`, the
+  terminal-state sink + operator `Reopen`, and the two-release
+  expand/contract rollout. Read it when a native-board card is stuck
+  `in_progress` with a dead owner, or before enabling the reaper.
+- [docs/github-board-sync.md](docs/github-board-sync.md) — making a GitHub
+  **Projects v2** board and the native board the same tickets (ADR-097): the
+  permissions (App `organization_projects`, PAT `project`), `iterion issue
+  import --project` locally vs `iterion remote board bind` on cloud, the
+  operator-replaceable `--status-map`, the reconciliation interval + its one
+  log line per pass, and the conflict rule. Read it when a card moved on one
+  board and not the other — the three answers are almost always an unmapped
+  state (inert by design), a terminal card (automation never reopens), or a
+  card the project pass could not create because that repo's **issue sync**
+  had not run (it names the repos). On cloud that sync is the server's own —
+  `iterion remote forge integrations sync <id>` / `sync_issues_enabled` — not
+  `iterion issue import`, which writes to a local store the instance never
+  reads.
+- [docs/ticket-context.md](docs/ticket-context.md) — **also the tenancy and
+  governance runbook**: one org = the client, one team = one product team,
+  team admins self-serve while org admins govern. Read its *Org governance
+  controls* section for the provisioning approval queue and what it is FOR
+  (`all` vs `shared_credentials` — a team spending its own BYOK answers to
+  nobody, so only teams funded by a shared tier are parked), the per-team
+  caps, the shared-credential audience, and the **team lifecycle**
+  (`iterion remote teams update|status|delete|add-member` — rename, suspend,
+  delete an empty team, and place an account that already exists instead of
+  emailing it an invitation). Plus its original subject: plugging tracker
+  tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
+  verifies the PR delivers what the ticket asks: the team wiring (team
+  secret → `tracker_token` binding with `allowed_hosts` → per-repo
+  `tracker_api_base` launch_var), the one-credential-per-team limit, and
+  the org governance layer (provisioning approval queue +
+  org-admin-delegated per-team caps). Read it when a team asks "can the
+  reviewer check the code against our tickets?" or when a provisioning
+  request seems stuck "awaiting org approval".
+- [docs/outcome-router.md](docs/outcome-router.md) — the
+  `ITERION_OUTCOME_ROUTER` switch: how a policy-carrying terminal run is
+  decided by its launch-frozen contract (merge/relaunch/escalate), the
+  activation watermark that keeps a flip from retro-routing 24h of
+  history, the decision registry (lease, attempt cap,
+  `GET /api/runs/{id}/route-decisions`), the `route_escalated` /
+  `route_action_failed` ops alerts, and the rollout + emergency-stop
+  procedure. Read it before flipping the switch on a deployment.
+- [docs/sentry-feedback-loop.md](docs/sentry-feedback-loop.md) — reading
+  production errors BACK from the platform Sentry (org `incubateur`, project
+  `iterion`/62 on sentry2): the user-auth-token setup, the repo's `.mcp.json`
+  (iterion + Sentry MCP servers, `SENTRY_ACCESS_TOKEN` env), raw-API recipes,
+  and the error-watch sentinel design (detect→card→fix→resolve). Read it to
+  triage a prod crash or wire an agent session to live errors.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -261,6 +383,39 @@ the hours this one spent.
   model/backend/effort overrides, and how to change the studio assistant's
   model (persisted per user; fixes "which model is this running on" and
   "the assistant feels dumber").
+- [docs/brand.md](docs/brand.md) — the iterion-bot mascot as iterion's face:
+  the asset pipeline (`assets/brand/` masters → `task brand:gen|check|og`
+  regenerate favicons, the desktop icon, the docs logo, `pkg/brand`), and
+  which forge identity gets the avatar how — automatic on a GitLab account
+  flagged `bot` (`PUT /user/avatar` at connect time), on request for a
+  dedicated Forgejo/GitLab account (`iterion remote forge connections
+  avatar <id> [--force]`), never on an OAuth connection, by hand on a GitHub
+  App (no logo API; the studio hands over the file + the settings page).
+  Read it when a bot posts with a default avatar, or before touching a logo.
+- [docs/bot-bundle-snapshots.md](docs/bot-bundle-snapshots.md) — cloud launches
+  freeze workflow, resources and sibling subbots through the server authority;
+  queue v13, bounded immutable snapshot transport, strict runner resolution and
+  resume semantics. Read before changing cloud bundle or subbot resolution.
+- [docs/cloud-deployment.md](docs/cloud-deployment.md#verifying-that-an-infra-apps-push-landed-argocd-sync-liveness) —
+  how a build reaches a deployment: the server follows the moving `:edge`
+  tag (a `rollout restart` picks it up), the runner is pinned BY DIGEST in
+  the deployment's values (an explicit bump per engine build), the
+  generation-aware rollout epoch, and how to verify an infra-apps push
+  actually landed (Deployment generation, never pods — the ArgoCD stall of
+  2026-09-05 sat 2h30 until the next push). Read it on "I pushed the config
+  and nothing happened", or before shipping an engine fix to the runners.
+
+## Work tracking & session methodology — read AGENTS.md
+
+The cross-agent working contract — the [GitHub project
+board](https://github.com/orgs/SocialGouv/projects/203) as the truth for
+ongoing work, the session phases (plan & align → dev in `dogfood` or
+`direct` mode → close with evidence), and the multi-session claim rule —
+lives in **[AGENTS.md](AGENTS.md)**, deliberately as the single source: it
+is the file every agent harness reads natively (Codex, pi, …), and pi
+injects both AGENTS.md and CLAUDE.md on every call, so duplicating the
+contract here would pay its token cost twice. Read AGENTS.md at the start
+of every session, before picking work.
 
 ## Development setup
 
@@ -279,10 +434,14 @@ this file uses below). All Go and node tooling come from `devbox.json`;
 A `.devcontainer/devcontainer.json` provides the same environment for VS
 Code / GitHub Codespaces.
 
-**Cross-shell note:** `.bot` tool nodes invoke commands via `sh -c`,
-which on Linux Mint/Ubuntu hosts is **dash**, but inside devbox is
-**bash 5.x**. Author tool commands as POSIX-compatible (no brace
-expansion, no `[[ ]]`, no `<<<`). See
+**Cross-shell note:** a `.bot` tool node's `command:` runs through
+**`bash -c`**, on the host and inside a sandbox alike
+([`executor_tool.go`](pkg/backend/model/executor_tool.go), `toolNodeCommand`
+— bash is pinned precisely because `/bin/sh` is **dash** on Debian-derived
+images). A `script:` node runs the interpreter its `language:` names, and
+`language: sh` is whatever `sh` is on PATH (dash on Linux Mint/Ubuntu, bash
+5.x inside devbox), so author scripts POSIX-compatible (no brace expansion,
+no `[[ ]]`, no `<<<`). See
 [docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes).
 
 **pnpm via corepack:** the `studio/` workspace is locked to a specific
@@ -353,7 +512,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 4 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
+- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; it gates ONLY the peer review of the 7 campaign bots' plan phase — the phase itself runs by default, `plan_phase: off` being its own switch, and the campaign receives the plan stamped with its `plan_provenance`), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -365,11 +524,12 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/benchmark/` — Metrics collection and reporting
 - `pkg/botreplay/` — Record/replay golden-test framework for bots: freezes one representative LLM node interaction (the input + output maps) as a committed fixture and re-validates it against the current schema + invariants with no API calls (`task test:goldens`). See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md)
 - `pkg/log/` — Leveled logger (error, warn, info, debug, trace) — public so e2e tests can construct it
-- `pkg/identity/` — Two-level tenancy domain (**ADR-048**): `Org` (top level — members via `OrgMembership`, SSO, monthly run/cost/memory budget, billing) → `Team` (the **resource tenant**: every store keys on `Team.ID`; carries `OrgID` + team-level concurrency/launch-rate caps). A user is an org member granted 0..N teams. Active context = `(org_id, team_id)`, both on the JWT. Personal org+team auto-created on signup; `iterion migrate orgs` backfills legacy teams. Store (mongo + memory) is the source of truth for both.
+- `pkg/identity/` — Two-level tenancy domain (**ADR-048**): `Org` (top level — members via `OrgMembership`, SSO, monthly run/cost/memory budget, billing) → `Team` (the **resource tenant**: every store keys on `Team.ID`; carries `OrgID` + team-level concurrency/launch-rate caps). A user is an org member granted 0..N teams. Active context = `(org_id, team_id)`, both on the JWT. Personal org+team auto-created on signup; `iterion migrate orgs` backfills legacy teams. Store (mongo + memory) is the source of truth for both. An Org also carries the governance it runs itself: `RequireProvisionApproval` + `ProvisionApprovalScope` (park every repo request, or only the teams funded by a shared credential tier) and `CredentialAudience` (which of its teams may spend the org's own LLM keys — zero value admits NOBODY, since lending is an explicit act). A Team is renamable, suspendable (`Team.Status`, read by the launch gate) and deletable when EMPTY, and an existing account is placed in one directly rather than emailed an invitation — see [docs/ticket-context.md](docs/ticket-context.md)'s team-lifecycle table.
 - `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints. Mints the JWT carrying `(OrgID, OrgRole, TeamID, Role)`; `SwitchOrg`/`SwitchTeam` re-issue it (org-then-team validation).
 - `pkg/audit/` — Tenant + platform audit log (control-plane mutations; Mongo TTL store, `/api/teams/{id}/audit` + `/api/admin/audit`)
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](docs/quotas-and-limits.md))
-- `pkg/credpool/` — **Mutualised credential pool**: LLM capacity individual contributors *lend* to a deployment — a subscription (`source: oauth`) or a personal metered API key of any provider (`source: api_key`). `CredentialSource.Metered()` is the predicate every surface reads: a subscription's dollar figures are ESTIMATES against a plan already paid for, a key's are ACTUAL charges on the lender's invoice — so a metered pledge must carry a spend ceiling, only a *personal* key may be lent (never a team-scoped one), and metered keys are asked for LAST, after every subscription. A `Pledge` is one donor's standing offer of a credential they already connected (`pkg/secrets` OAuth), bounded by ceilings THEY set (spend/day + /week, runs/day, concurrency, sharing window, bot allow-list) and revocable instantly. The `Broker` is the **fourth** credential tier in `cloudpublisher.resolveAndSealCredentials` — consulted only when a run resolved NO key of its own, and before the DB-backed **platform tier** (the deployment's own fallback keys/forfait, super-admin-managed — see [docs/cloud-llm-credentials.md](docs/cloud-llm-credentials.md)) — and picks the least-consumed eligible pledge by *fraction of what each offered*, records a `Lease` (the concurrency unit AND the donor's audit trail), and hands back the blob for the ordinary sealing path. `Audience` decides who may draw: a union of independent predicates (`teams` / `orgs` / `contributors` reciprocity / `all_teams`) whose zero value is "the owning org only". Enforcement is the run's own `max_cost_usd`, clamped to the donor's remaining allowance — the post-hoc ledger charge is the final truth but arrives too late to protect anyone. Dollar figures are ESTIMATES (a subscription bills nothing per call); the hard guard is the provider's usage window, which puts a donor to rest until its reset. **Depends on the delegate cost signal reaching `metricsEmitter.RunTotals` — without it every donor reads $0 forever.** See [docs/credential-pool.md](docs/credential-pool.md)
+- `pkg/credusage/` — Per-**credential** monthly counters, the question the org bucket structurally cannot answer ("what did this key cost"): keyed `{fingerprint, provider, tier, tenant} × month`, Mongo CAS + memory twins + conformance, fed by `recordCredentialSpend` beside `recordOrgSpend`. Two load-bearing properties: the spend is taken per `(backend, model)` **route** — one run can consume two credentials, so a run total belongs to neither, and a route iterion cannot attribute is charged to NOBODY — and every amount is typed `metered` (real money on an invoice) or `estimate` (a subscription's would-have-cost figure), the line `credpool.CredentialSource.Metered()` draws, with `metered_usd`/`estimated_usd` kept apart in the responses. `GET /api/teams/{id}/credentials/usage` + `GET /api/admin/credentials/usage` (`?tier=`/`?fingerprint=`) + `iterion remote usage --by-credential`. See [docs/quotas-and-limits.md](docs/quotas-and-limits.md#per-credential-usage--what-did-this-key-cost)
+- `pkg/credpool/` — **Mutualised credential pool**: LLM capacity individual contributors *lend* to a deployment — a subscription (`source: oauth`) or a personal metered API key of any provider (`source: api_key`). `CredentialSource.Metered()` is the predicate every surface reads: a subscription's dollar figures are ESTIMATES against a plan already paid for, a key's are ACTUAL charges on the lender's invoice — so a metered pledge must carry a spend ceiling, only a *personal* key may be lent (never a team-scoped one), and metered keys are asked for LAST, after every subscription. A `Pledge` is one donor's standing offer of a credential they already connected (`pkg/secrets` OAuth), bounded by ceilings THEY set (spend/day + /week, runs/day, concurrency, sharing window, bot allow-list) and revocable instantly. The `Broker` is the **fifth** credential tier in `cloudpublisher.resolveAndSealCredentials` (the org tier having taken fourth place) — consulted only when a run resolved NO key of its own, neither its team's nor its org's, and before the DB-backed **platform tier** (the deployment's own fallback keys/forfait, super-admin-managed — see [docs/cloud-llm-credentials.md](docs/cloud-llm-credentials.md)) — and picks the least-consumed eligible pledge by *fraction of what each offered*, records a `Lease` (the concurrency unit AND the donor's audit trail), and hands back the blob for the ordinary sealing path. `Audience` decides who may draw: a union of independent predicates (`teams` / `orgs` / `contributors` reciprocity / `all_teams`) whose zero value is "the owning org only". Enforcement is the run's own `max_cost_usd`, clamped to the donor's remaining allowance — the post-hoc ledger charge is the final truth but arrives too late to protect anyone. Dollar figures are ESTIMATES (a subscription bills nothing per call); the hard guard is the provider's usage window, which puts a donor to rest until its reset. **Depends on the delegate cost signal reaching `metricsEmitter.RunTotals` — without it every donor reads $0 forever.** See [docs/credential-pool.md](docs/credential-pool.md)
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
 - `pkg/usernotify/` — User-addressed notifications for run lifecycle moments (run paused on a human form, finished/failed/cancelled): `Dispatcher` consumes run-outcome `trigger.Event`s from the eventbus spine (queue group `usernotify` on NATS ⇒ one replica per event), resolves recipients (run owner + per-user team-wide opt-in prefs), dedups per episode via the `sent_notifications` first-writer-wins claim, and fans out to `Sink`s — `webpush/` (VAPID Web Push to per-browser subscriptions, cloud) ships; desktop (Wails OS notification) and email are future sinks on the same interface. A 2-min reconciliation sweep replays episodes the lossy bus dropped. Shared event authority: `trigger.BuildRunOutcome` (used by both `runview.emitRunOutcome` and the runner's `fireOutcomeEvent`). Enabled iff `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY` are set (`iterion server webpush-keys` mints a pair). See [docs/notifications.md](docs/notifications.md)
@@ -408,9 +568,9 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/botscaffold/` — Generates a new bot bundle (`main.bot` + `manifest.yaml` + layout) from a builder Spec; engine behind `iterion bots create` and the studio guided builder
 - `pkg/botregistry/` — Discovers bots on disk (single `.bot` files + `.botz` bundle dirs); the shared layer behind `iterion bots list`, the studio `GET /api/v1/bots`, and the dispatcher's per-ticket bot-override resolution. Also generates Nexie's bot-catalog skill from manifests (`iterion bots regen-catalog`, [pkg/botregistry/catalog.go](pkg/botregistry/catalog.go))
 - `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
-- `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
+- `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined. A source is **verified at registration** (`Materialize`: clone + parse + read, refused with 422 otherwise) and **quarantined, never launch-fatal, when it breaks later** — skipped for that launch, flagged `degraded` with the reason on its record (both store twins) and in the server log, cleared by the next resolution that succeeds
 - `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md)) — and, under the reserved `platform:` sentinel tenant, the deployment-wide **platform bot overrides** (super-admin `/api/admin/bots` + `iterion remote admin bots push`): the DB-backed form of the baked catalog, resolved team → platform → baked at every launch surface via [pkg/server/bot_resolver.go](pkg/server/bot_resolver.go) and rebuilt runner-side from the queue message's versioned `bot_bundle` ref (see [docs/platform-bots.md](docs/platform-bots.md))
-- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
+- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `platform_credentials` (an OPT-IN audience over the deployment's own LLM keys — absent or unenforced admits everyone, so naming a team never cuts the fleet off in one write), `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
 - `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
 - `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
 - `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
@@ -699,6 +859,8 @@ command). Sandboxed runs bind-mount each rewriter's host binary at its declared
 Per-run container isolation is **on by default**: at product entry points (`iterion run`/`resume`, studio, dispatcher) a workflow with no `sandbox:` block runs as `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to a published `iterion-sandbox-slim:<version>` image), with graceful degradation when the host can't sandbox (outside a git repo, or no container runtime → visible `sandbox_skipped` event). Workflows can still pin block-form inline configuration (`sandbox:` with `image:` or `build:`) or explicitly opt out via `sandbox: none` — discouraged and flagged by the C128 warning. `ITERION_SANDBOX_DEFAULT=none` restores the historical opt-in behaviour machine-wide; the cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none` (the runner pod being the isolation boundary), but the production deployment measured on 2026-08-05 does NOT: its config carries `ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs DO get the k8s sandbox. Anything that needs a bind-mounted workspace there — auto-memory, for one — must declare `sandbox: none`. When active, claw, claude_code, pi, Kimi, Grok, and tool nodes execute against a long-lived container that bind-mounts the worktree — by default at the host workspace's absolute path so Claude Code project keys match in/out container. Codex is the exception: its pinned SDK refuses Iterion's outer sandbox because it cannot route through the command builder. Network egress is **unrestricted by default** (`network: open`, since 2026-05-22 — no proxy is started). Opting into `network: allowlist` (or `denylist`) starts an HTTP CONNECT proxy on the host that enforces the policy; the built-in `iterion-default` preset covers LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket + Nix cache. Sandboxed `claw` calls are routed through the hidden `iterion __claw-runner` subprocess inside the container, so the `iterion` binary must be present on the container PATH (or bind-mounted by the host when available).
 
 By default the sandbox also auto-mounts `~/.iterion/` (run store) and `~/.claude/` (Claude Code OAuth + per-project sessions) at the same absolute path inside the container so persistent memory survives across runs. On Linux, when the spec doesn't pin a `User`, the docker driver runs the container as the host UID:GID so writes back to those mounted trees stay host-owned. Disable via `sandbox.host_state: none` in the DSL, `--sandbox-host-state=none`, or `ITERION_SANDBOX_HOST_STATE=none` — recommended for multi-tenant cloud runners that must not leak host OAuth credentials. The kubernetes driver hard-errors on `host_state: auto` (cloud pods have no host filesystem to bind). See [docs/sandbox.md](docs/sandbox.md) for the full reference (incl. the published `iterion-sandbox-slim`/`iterion-sandbox-full` variants, the `--sandbox-default-image` override, and the host-state mount details) and `iterion sandbox doctor` for host diagnostics.
+
+Each **setup phase** between "container up" and "first node" carries its own bound, because an unbounded one does not fail — it waits, holding the run's queue lease with no `sandbox_started` event until `max_duration` fires hours later: pod-Ready (`ITERION_SANDBOX_K8S_POD_READY_TIMEOUT`, 10m), workspace copy + git fixup (`ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT`, 15m), `post_create` (`ITERION_SANDBOX_POST_CREATE_TIMEOUT`, 30m — an install outlasts a copy). An expiry parks the run `failed_resumable` + `SANDBOX_SETUP_TIMEOUT`, checkpoint intact, on a launch AND on a resume (a resume rebuilds the sandbox from scratch), and the cloud runner re-offers it to a fresh pod after 2 min. See [docs/sandbox.md](docs/sandbox.md#setup-phases-and-their-timeouts) + [docs/resume.md](docs/resume.md#what-a-resume-rebuilds).
 
 V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver — BuildKit lives inside the Docker daemon, so no extra service. The kubernetes driver rejects `sandbox.build:` by design; cloud workflows reference pre-built images via `sandbox.image:` with a CI-built digest (production path). See [docs/sandbox.md](docs/sandbox.md#buildkit-local-docker-only--v2-6).
 
@@ -1012,8 +1174,10 @@ the run-level override travels onto the cloud queue
 operator's `off`. The supervisor hub rides BOTH event seams (engine
 observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
 (`assistant_text`, `tool_*`) never fire the engine seam, and text
-monitors are blind without the second wire. feature-dev's Persy
-(perseverance coach) is the shipped reference use. Reference:
+monitors are blind without the second wire. Persy (perseverance coach)
+is the shipped use — carried by all seven campaign bots on their
+`campaign` node, feature-dev's being the reference and
+`bots/campaign_supervisor_test.go` the fleet guard. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 
@@ -1397,9 +1561,7 @@ ids are no longer read as constants — they resolve through
 roles set --reviewer …`), the constants remaining only as the DEFAULTS
 (enforced by the symbol-sweep test in
 [bot_resolver_sweep_test.go](pkg/server/bot_resolver_sweep_test.go)). What
-remains hardcoded: the `cmd == "revi"` special-casing
-([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)), the
-Billy merge-queue auto-heal mission prompt
+remains hardcoded: the Billy merge-queue auto-heal mission prompt
 ([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
 `botRosterOrder` display list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
 and the dispatcher's `ImplementBotOrDefault → "feature-dev"`
@@ -1454,7 +1616,7 @@ it **on** — they build what they change. See
 Two things to know when writing one:
 
 - **Non-interactive PATH is the trap.** `tool` nodes run through a
-  non-interactive `sh -c` that never sources a shell profile, so a tool that
+  non-interactive `bash -c` that never sources a shell profile, so a tool that
   is installed but not on `PATH` is a tool that does not exist. The engine
   prepends the devbox profile's bin dir for this reason — don't hand-roll it
   per bot.
@@ -1568,6 +1730,7 @@ iterion rewind --run-id <id> [--auto | --node <id>] [--file] [--restore-scope no
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
 iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in /pipelines Todo.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
+iterion reliability report [--run-id] [--store-dir] | rollback  # Read-only operator surface for the workflow-reliability rollout: the RESOLVED mode/context policy (ITERION_RELIABILITY_MODE, falling back to ITERION_EXECUTION_CONTEXT_POLICY), a fleet baseline or one run's compatibility report, and the rollback plan (see docs/workflow-reliability-1006.md)
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker (import mirrors a forge repo's issues, one-way + idempotent)
@@ -1633,8 +1796,30 @@ log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
 - `tmpStore()` — creates temp directory-backed RunStore for test isolation
 - `compileFixture()` — loads and compiles .bot files from `examples/` directory
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
+- **Every git subprocess a test spawns goes through [`internal/gittest`](internal/gittest/gittest.go)**
+  (`Run` / `Try` / `Cmd`, `SourceRepo`, `RemoveWorktree`) — not a style
+  preference, two defects: (1) since git 2.48 a writing command detaches
+  `git maintenance run --auto`, which keeps writing under `.git/objects`
+  after `CombinedOutput` returned and races `t.TempDir()`'s removal (that
+  ejected PRs from the merge queue, #821/#828), and (2) the operator's
+  `~/.gitconfig` otherwise decides whether a test passes (a global
+  `commit.gpgsign` hangs every fixture commit on a pinentry with no TTY).
+  The helper bakes both in; `pkg/git.TestEveryTestGitCallerDisablesAutoMaintenance`
+  sweeps `_test.go` and fails a new site that assembles its own argv.
+- **A run's workspace must be a repository the TEST owns.** An engine built
+  without `WithWorkDir` defaults to `os.Getwd()` — the package directory,
+  inside the developer's checkout — so `worktree: auto` (the IR default)
+  registers the run's worktree in the REAL repository and the registration
+  outlives the `t.TempDir()` that held the checkout (#870: 1 773 dead
+  entries / 2.5 GB measured). Pass `gittest.SourceRepo(t)` (e2e goes through
+  `newEngine`), or `t.Chdir` into one where the CLI takes its workspace from
+  the cwd. `gittest.NoWorktreeLeaks(m)` in `TestMain` (e2e, `pkg/runview`,
+  `pkg/cli`) fails the suite naming the test behind any entry left behind,
+  and reclaims it **by recorded path** — never `git worktree prune`, which
+  would also drop an operator's checkout on an unmounted volume.
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
+- **Mongo conformance locally** — the `mongo-conformance` CI job is reproducible with one `mongo:8.0` replica-set container on port 27018 (`--ulimit nofile=131072:131072`, member advertised as `localhost:27018`); recipe + the two traps in [docs/development.md](docs/development.md#running-the-mongo-conformance-harness-locally). A store-twin or conformance-row change is unverified until it ran there
 - **Studio UI e2e** (`studio/e2e/`, `task test:e2e:ui`) — Playwright against the
   REAL server: the built binary serving the embedded SPA over a throwaway
   workspace `studio/e2e/serve.mjs` rebuilds per run and seeds with genuine
@@ -1792,7 +1977,17 @@ committed, PR-reviewable record. Index + template:
 
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
-- **version.yml** — conventional changelog via release-it, version from `package.json`
+- **version.yml** — conventional changelog via release-it, version from `package.json`.
+  release-it writes the new section into [CHANGELOG.md](CHANGELOG.md) as part of the
+  release commit itself (`infile` + `git add . --update`), so the file cannot drift
+  from the tags — never hand-edit it. It holds the **current major only**; earlier
+  ones are archived under [docs/changelog/](docs/changelog/) because GitHub stops
+  rendering markdown past 512 KB. Each entry carries a collapsed `why` excerpt taken
+  from the commit body — the rendering lives in
+  [scripts/changelog-writer.mjs](scripts/changelog-writer.mjs), shared by release-it
+  ([.release-it.mjs](.release-it.mjs)) and the regenerator (`task changelog:gen`), so
+  a rebuilt section is byte-identical to a released one. Re-run `task changelog:gen`
+  after a major bump, or when it warns the file is nearing the ceiling.
 
 **`main` is protected by a merge queue** (ruleset "main protected — merge
 queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
@@ -1828,8 +2023,12 @@ the findings in a session. The command seeds Billy with Revi's review
 (kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
 gate count, and the push re-triggers Revi. Every such run is a dogfood run:
 monitor it, fix the frictions it surfaces, write the bilan. Full habit +
-gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). (The zero-touch
-`auto_fix_on_gate_failure` lane is deliberately not enabled here yet.)
+gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). The zero-touch
+`auto_fix_on_gate_failure` lane is **enabled here** since 2026-08-28: a red
+`revi/review` launches Billy by itself, with no comment. So **check no fixer
+run is already in flight** (`iterion remote runs list`, or the gate's `pending`
+link) before hand-fixing a red PR — a manual push while he works recreates the
+mid-run collision.
 
 ## Conventions
 

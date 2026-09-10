@@ -874,7 +874,7 @@ func TestGiveUpStampsThroughTheNativeAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := ns.Claim(iss.ID, "test-host-1"); err != nil {
+	if _, err := ns.Claim(iss.ID, "test-host-1"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 

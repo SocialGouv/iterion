@@ -48,6 +48,13 @@ type ConversationLoop struct {
 	LifecycleHooks  *lifehooks.Runner      // In-process programmatic hooks (may be nil; default no-op)
 	CommandRegistry interface{}            // Slash command registry (may be nil; *commands.Registry)
 
+	// Typed results: the last structured_output payload this loop recorded
+	// (read by a parent for its subagents), and the payloads its subagents
+	// returned, keyed by task id (read by the workflow tool's agent()).
+	structuredMu       sync.Mutex
+	structuredOutput   map[string]any
+	subagentStructured map[string]map[string]any
+
 	// --- Batch 2: registries for CRUD tools ---
 	TaskRegistry   *task.Registry         // Task registry (may be nil)
 	TeamRegistry   *team.TeamRegistry     // Team registry (may be nil)
@@ -91,6 +98,9 @@ type ConversationLoop struct {
 	// pending_tool_use_count is tracked per-turn; we track cumulative for the
 	// session to feed ToolCallCount() on the LoopAdapter).
 	toolCallCount atomic.Int64
+	// workToolCompleted records whether this session has completed at least one
+	// successful work-capable tool call.
+	workToolCompleted atomic.Bool
 
 	// Build-time info passed through to LoopAdapter. Set by the caller.
 	BuildVersion string
@@ -780,6 +790,14 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 		case api.EventMessageDelta:
 			stopReason = event.StopReason
 			outputTokens = event.Usage.OutputTokens
+			// Providers that only learn the prompt count once the turn is
+			// over report it here instead of on message_start (the OpenAI
+			// endpoints). Taken only when non-zero, so a provider that
+			// already answered on message_start is not zeroed by a delta
+			// that carries nothing.
+			if event.Usage.InputTokens > 0 {
+				inputTokens = event.Usage.InputTokens
+			}
 
 		case api.EventMessageStop:
 			// stream complete
@@ -1014,7 +1032,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 	case "notebook_edit":
 		result, err = tools.ExecuteNotebookEdit(input)
 	case "structured_output":
-		result, err = tools.ExecuteStructuredOutput(input)
+		result, err = loop.executeStructuredOutput(input)
 	case "enter_plan_mode":
 		result, err = tools.ExecuteEnterPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
 		loop.queuePlanModeReminder(true, err)
@@ -1118,6 +1136,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 					}
 				}
 				text := mcpResultText(mcpResult)
+				loop.recordWorkToolCompletion(name, mcpResult.IsError)
 				return api.ContentBlock{
 					Type:    "tool_result",
 					Content: []api.ContentBlock{{Type: "text", Text: text}},
@@ -1129,6 +1148,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 	}
 
 	isError := err != nil
+	loop.recordWorkToolCompletion(name, isError)
 	text := result
 	if err != nil {
 		text = fmt.Sprintf("Error: %v", err)
@@ -1407,7 +1427,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 	case "notebook_edit":
 		result, err = tools.ExecuteNotebookEdit(input)
 	case "structured_output":
-		result, err = tools.ExecuteStructuredOutput(input)
+		result, err = loop.executeStructuredOutput(input)
 	case "enter_plan_mode":
 		result, err = tools.ExecuteEnterPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
 		loop.queuePlanModeReminder(true, err)
@@ -1528,6 +1548,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 								"is_error":  ptIsError,
 							})
 						}
+						loop.recordWorkToolCompletion(name, ptIsError)
 						return api.ContentBlock{
 							Type:    "tool_result",
 							Content: []api.ContentBlock{{Type: "text", Text: ptText}},
@@ -1564,6 +1585,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 				}
 				mcpText = hooks.MergeHookFeedback(postResult.Messages, mcpText,
 					postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled())
+				loop.recordWorkToolCompletion(name, mcpIsError)
 				return api.ContentBlock{
 					Type:    "tool_result",
 					Content: []api.ContentBlock{{Type: "text", Text: mcpText}},
@@ -1611,6 +1633,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		}
 	}
 	loop.fireLifecyclePostToolUse(ctx, name, input, text, postErr)
+	loop.recordWorkToolCompletion(name, isError)
 
 	return api.ContentBlock{
 		Type: "tool_result",

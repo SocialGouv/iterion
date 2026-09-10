@@ -3,6 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
+import { ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE } from "@/api/runs/lifecycle";
 import type { HumanQuestionMessage } from "@/lib/runChat/types";
 
 const apiMocks = vi.hoisted(() => ({
@@ -126,5 +128,74 @@ describe("ReviewMergeCard — pipeline board handoff", () => {
       }),
     );
     expect(secondResolved).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers an explicit force retry for an incompatible artifact contract", async () => {
+    apiMocks.resumeRun
+      .mockRejectedValueOnce(
+        new ApiError(
+          400,
+          "API error 400: resume rejected",
+          ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+        ),
+      )
+      .mockResolvedValueOnce({ run_id: "run-guided", status: "running" });
+    render(
+      <ReviewMergeCard
+        runId="run-guided"
+        message={guidedMessage()}
+        sourceOverride={null}
+        onResumed={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve & merge" }));
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(screen.getByLabelText("Merge strategy"), {
+      target: { value: "merge" },
+    });
+    fireEvent.click(force);
+
+    await waitFor(() => expect(apiMocks.resumeRun).toHaveBeenCalledTimes(2));
+    expect(apiMocks.resumeRun).toHaveBeenNthCalledWith(2, "run-guided", {
+      answers: {
+        __review_action: "approve_merge",
+        __review_merge_strategy: "merge",
+      },
+      source: undefined,
+      force: true,
+    });
+  });
+
+  it("does not force an emptied review reply", async () => {
+    apiMocks.resumeRun.mockRejectedValueOnce(
+      new ApiError(
+        400,
+        "API error 400: resume rejected",
+        ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+      ),
+    );
+    render(
+      <ReviewMergeCard
+        runId="run-guided"
+        message={guidedMessage()}
+        sourceOverride={null}
+        onResumed={vi.fn()}
+      />,
+    );
+
+    const reply = screen.getByPlaceholderText(/Reply to the reviewer/i);
+    fireEvent.change(reply, { target: { value: "Initial review feedback" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(reply, { target: { value: "" } });
+
+    expect(force.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(force);
+    expect(apiMocks.resumeRun).toHaveBeenCalledTimes(1);
   });
 });

@@ -37,6 +37,9 @@ export default function CreateGitHubAppCard({
   // Off by default: alert data names every vulnerable dependency of every
   // repo, so the team opts in deliberately.
   const [allowSecurityRead, setAllowSecurityRead] = useState(false);
+  // Off by default: an org-level grant spanning every project the org owns is
+  // wider than the repositories the App is installed on.
+  const [allowProjectBoard, setAllowProjectBoard] = useState(false);
   // Watch-only builds an App that can ONLY read alerts. It is the shape to
   // install on every repository of an org: the org-wide alerts endpoint
   // returns just what the installation can see, and widening a write-capable
@@ -71,6 +74,7 @@ export default function CreateGitHubAppCard({
         allow_repo_creation: watchOnly ? false : allowRepoCreation,
         allow_app_delivery: watchOnly ? false : allowAppDelivery,
         allow_security_read: watchOnly ? false : allowSecurityRead,
+        allow_project_board: watchOnly ? false : allowProjectBoard,
         security_read_only: watchOnly,
         next: RETURN_PATH,
       });
@@ -205,6 +209,27 @@ export default function CreateGitHubAppCard({
               Adds Workflows: write + Packages: write, so a bot can ship an app
               it built. Without them GitHub refuses any push that touches
               .github/workflows/, which blocks the build-and-deploy chain.
+            </span>
+          </span>
+        }
+      />
+
+      <Checkbox
+        id="wizard-allow-project-board"
+        checked={allowProjectBoard}
+        onChange={(e) => setAllowProjectBoard(e.target.checked)}
+        label={
+          <span className="text-fg-default text-xs">
+            <span className="font-medium">
+              Allow iterion to sync this org&apos;s project boards
+            </span>
+            <span className="block text-caption text-fg-muted mt-0.5">
+              Adds Projects: read and write, so a team can bind a GitHub
+              Projects v2 board to its iterion board and have the two follow
+              each other. It is an organization-level grant — it spans every
+              project the org owns, not just the repositories this App is
+              installed on — so it is off by default, and it is only ever
+              minted into a token for a board call.
             </span>
           </span>
         }

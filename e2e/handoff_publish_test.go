@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -22,6 +21,7 @@ import (
 // pull request to notice: every unit test wrote the artifact by hand, so the
 // one thing that had to be true in production was the one thing never asserted.
 func TestOnlyAPublishedNodeLeavesAnArtifact(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "handoff_publish_mini.bot")
 	exec := newScenarioExecutor()
 	out := map[string]any{
@@ -39,7 +39,7 @@ func TestOnlyAPublishedNodeLeavesAnArtifact(t *testing.T) {
 
 	s := tmpStore(t)
 	const runID = "e2e-handoff-publish"
-	if err := runtime.New(wf, s, exec).Run(context.Background(), runID, nil); err != nil {
+	if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	ctx := context.Background()

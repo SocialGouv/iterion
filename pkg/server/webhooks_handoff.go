@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -74,7 +75,7 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 	if vars == nil || strings.TrimSpace(q.PRURL) == "" {
 		return
 	}
-	for _, want := range s.handoffConsumersFor(botID) {
+	for _, want := range s.handoffConsumersFor(ctx, cfg.TenantID, botID) {
 		if _, pinned := vars[want.Var]; pinned {
 			continue
 		}
@@ -86,12 +87,15 @@ func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID s
 	}
 }
 
-// handoffConsumersFor returns the bot's declared PR-scoped consumption entries.
-func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
+// handoffConsumersFor returns the bot's declared PR-scoped consumption
+// entries, read from the tier that will SERVE the launch — teamID's own row
+// when it has one, else platform over baked. Reading a different tier than
+// the launch stamps the seed under a var the running bundle never declared.
+func (s *Server) handoffConsumersFor(ctx context.Context, teamID, botID string) []bundle.ConsumedArtifact {
 	if strings.TrimSpace(botID) == "" {
 		return nil
 	}
-	entry, ok, err := s.effectiveFindByName(botID)
+	entry, ok, err := s.effectiveFindByNameForTeam(ctx, teamID, botID)
 	if err != nil {
 		s.logWarn("handoff: cannot read the bot catalog, %s will be launched without its declared seeds: %v", botID, err)
 		return nil
@@ -116,8 +120,9 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 	if s.runs == nil || strings.TrimSpace(q.PRURL) == "" {
 		return ""
 	}
-	producers := s.handoffProducers(kind)
-	if len(producers) == 0 {
+	base := s.handoffProducers(kind)
+	team := s.teamHandoffProducers(ctx, cfg.TenantID, kind)
+	if len(base) == 0 && len(team) == 0 {
 		return ""
 	}
 	rs := s.runs.RunStore()
@@ -144,6 +149,14 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		if lerr != nil {
 			continue
 		}
+		// Each run is described by the tier it was SERVED from, which it
+		// records: a team-tier run of a forked slug declares its produces:
+		// in the fork's manifest, and the origin's node name would render
+		// nothing — indistinguishable from "nothing reviewed this PR".
+		producers := base
+		if cfg.TenantID != "" && run.BotSourceTenant == cfg.TenantID {
+			producers = team
+		}
 		spec, produces := producers[run.BotID]
 		if !produces {
 			continue
@@ -158,14 +171,9 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 	return ""
 }
 
-// handoffProducers maps each discovered bot that declares it produces this kind
-// to the node layout to read it from.
-//
-// Resolved against the BAKED CATALOG only, not the tenant-merged set: a webhook
-// delivery carries no active-team context to read team-authored bundles with.
-// A team that forks a reviewer in the cloud editor therefore does not
-// participate in the hand-off — a real boundary, stated here because a miss is
-// silent and would otherwise read as "nothing reviewed this PR".
+// handoffProducers maps each bot of the platform + baked tiers that declares
+// it produces this kind to the node layout to read it from — the deployment
+// floor, describing every run those two tiers served.
 func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
 	entries, err := s.effectiveEntries()
 	if err != nil {
@@ -177,11 +185,47 @@ func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.Pro
 	}
 	out := make(map[string]bundle.ProducedArtifact, 2)
 	for _, e := range entries {
-		for _, p := range e.Produces {
-			if p.Kind == kind {
-				out[e.Name] = p
-				break
-			}
+		out = addProducer(out, e.Name, e.Produces, kind)
+	}
+	return out
+}
+
+// teamHandoffProducers is handoffProducers over teamID's OWN rows — the set
+// that describes the runs the team tier served. Kept separate rather than
+// overlaid, because the scan picks per run: the question is "which manifest
+// did THIS run execute", and a team's run may still have been served by the
+// platform or baked tier.
+//
+// It reads the rows' manifests directly instead of materialising entries: the
+// scan runs on every hand-off resolution, and `produces:` needs no compiled
+// vars schema. Nil (and a warning) when the store cannot answer — never a
+// silent empty set, which would read as "this team's reviewer produced
+// nothing".
+func (s *Server) teamHandoffProducers(ctx context.Context, teamID string, kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
+	teamID = strings.TrimSpace(teamID)
+	if s.botSources == nil || teamID == "" || teamID == botsource.PlatformTenantID {
+		return nil
+	}
+	list, err := s.botSources.ListByTenant(store.WithTenant(ctx, teamID), teamID)
+	if err != nil {
+		s.logWarn("handoff: cannot read team %s's bots, a %s produced by one of its own bots will be missed: %v", teamID, kind, err)
+		return nil
+	}
+	out := make(map[string]bundle.ProducedArtifact, 2)
+	for i := range list {
+		if m := list[i].Manifest(); m != nil {
+			out = addProducer(out, list[i].Slug, m.Produces, kind)
+		}
+	}
+	return out
+}
+
+// addProducer records the bot's declaration for this kind, if it makes one.
+func addProducer(out map[string]bundle.ProducedArtifact, name string, produces []bundle.ProducedArtifact, kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
+	for _, p := range produces {
+		if p.Kind == kind {
+			out[name] = p
+			return out
 		}
 	}
 	return out

@@ -70,6 +70,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return err
 	}
 
+	// Admission is deliberately before attachment promotion, workspace
+	// setup, sandbox startup and the first model call. A denied context is
+	// therefore a durable, actionable failure without external side effects.
+	if err := e.admitRun(ctx, runID, run); err != nil {
+		e.markFailedBestEffort(ctx, runID, "execution context admission", err)
+		return e.setupErr(ctx, err)
+	}
+
 	run, err = e.runPromoteAttachments(ctx, runID, run)
 	if err != nil {
 		return err
@@ -99,6 +107,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
+	// Engine contract: the attached bundle may declare the build it needs.
+	// Beside the enum gate for the same reason — every launch surface reaches
+	// here, and a doomed run must be refused before a worktree or a sandbox
+	// is spun up for it. The RuntimeError's code rides through
+	// setupFailureCode, so the run is terminal and typed.
+	if err := e.refuseBundleRequiringNewerEngine(); err != nil {
+		e.markFailedBestEffort(ctx, runID, "engine requirement", err)
+		return e.setupErr(ctx, err)
+	}
+
 	// Worktree setup stays inline: the finalizeOnExit defer must
 	// capture the named return `err`, and the defer installation
 	// is the meaningful side effect — extracting it would require
@@ -107,7 +125,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	var worktreeCleanup func()
 	var wtCtx worktreeContext
 	worktreeActive := false
-	if e.workflow.Worktree == "auto" {
+	if e.workflow.Worktree == "auto" && e.sharedSandbox != nil && e.sharedSandbox.Run != nil {
+		// A subbot child in its parent's sandbox works in the PARENT's tree:
+		// a worktree of its own would be a tree the parent's sandbox never
+		// mounts — its skills mirrored there, its commits landing there.
+		if e.logger != nil {
+			e.logger.Info("runtime: executing in the parent run's sandbox — running in place in %s (no worktree of its own)", e.workDir)
+		}
+	} else if e.workflow.Worktree == "auto" {
 		// Workspace isolation is the IR default (ir.defaultWorktreeMode),
 		// so any `iterion run` against a non-git workspace would otherwise
 		// hard-fail with "not a git repository". Degrade gracefully to
@@ -195,7 +220,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// (e.g. review_loop 48/50) — the current counter comes from each
 	// node_started's iteration_path, the bound (max) from here. Literal
 	// caps only; expression / unbounded caps emit 0 (max unknown).
-	if err := e.emit(ctx, runID, store.EventRunStarted, "", loopBoundsPayload(e.workflow)); err != nil {
+	if err := e.emit(ctx, runID, store.EventRunStarted, "", runStartedPayload(e.workflow, run)); err != nil {
 		e.markFailedBestEffort(ctx, runID, "emit run_started", err)
 		return e.setupErr(ctx, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
@@ -228,10 +253,11 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// are terminal or resume-only and must not be silently restarted.
 		switch existing.Status {
 		case store.RunStatusQueued:
-			if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			var err error
+			existing, err = e.runStartQueued(ctx, runID)
+			if err != nil {
 				return nil, fmt.Errorf("runtime: pickup transition: %w", err)
 			}
-			existing.Status = store.RunStatusRunning
 		case store.RunStatusRunning:
 			// Already running — assume legitimate claim.
 		default:
@@ -265,9 +291,23 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if err != nil {
 			return nil, fmt.Errorf("runtime: create run: %w", err)
 		}
+		// A store may insert a fresh row as `queued` (the cloud store does —
+		// CreateChildRun mirrors the publisher's shape). This engine is about
+		// to execute it, so the row must read `running` now, as the pickup
+		// path above makes it: otherwise a subbot child on a pod stays
+		// `queued` for its whole life — judged by the queued-row cutoff,
+		// shown queued in the studio, never given a started_at — and ends
+		// `finished` without ever having been running.
+		if created.Status == store.RunStatusQueued {
+			created, err = e.runStartQueued(ctx, runID)
+			if err != nil {
+				return nil, fmt.Errorf("runtime: created-run transition: %w", err)
+			}
+		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil || e.executionContext != nil ||
+		e.routingPolicy != nil || e.budgetAsk != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -316,14 +356,25 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if len(e.modelOverrides) > 0 {
 			run.ModelOverrides = e.modelOverrides
 		}
+		// Same resume-preserving guard: the contract is immutable after
+		// launch, a resume never re-supplies it.
+		if e.routingPolicy != nil {
+			run.RoutingPolicy = e.routingPolicy
+		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
 		// before the engine runs) so the studio Overview draws budget meters
-		// with a denominator. A resume that raises a cap re-parses the
-		// budget, so overwriting is correct; the non-nil guard preserves a
-		// prior snapshot if a --force resume dropped the budget: block.
-		if b := snapshotBudgetForPersist(e.workflow.Budget); b != nil {
+		// with a denominator. A resume re-stamps the same value through
+		// stampEffectiveBudget; the non-nil guard preserves a prior snapshot
+		// if a --force resume dropped the budget: block.
+		if b := e.effectiveBudgetSnapshot(); b != nil {
 			run.Budget = b
+		}
+		// The raw ask next to the effective caps: what a resume replays
+		// (Run.Budget is what it displays). Only ever set here, at launch;
+		// a raise on resume is persisted by the resume surface itself.
+		if e.budgetAsk != nil {
+			run.BudgetOverrides = RunBudgetOverridesOf(e.budgetAsk)
 		}
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash
@@ -354,9 +405,82 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.CallbackToken = e.callbackToken
 			run.CallbackAnswerNode = e.callbackAnswerNode
 		}
+		if e.executionContext != nil {
+			ctxContract := e.executionContext.Clone()
+			if err := ctxContract.Normalize(); err != nil {
+				return nil, fmt.Errorf("runtime: invalid execution context: %w", err)
+			}
+			// A queued/resumed run already has an authority-owned context
+			// stamped by its launcher. Preserve it; the admission gate compares
+			// the runner's wire declaration against that persisted value instead
+			// of allowing a stale message to overwrite the contract.
+			if run.ExecutionContext == nil {
+				run.ExecutionContext = ctxContract
+			}
+		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
+	}
+	return run, nil
+}
+
+// effectiveBudgetSnapshot projects the caps THIS engine enforces onto the
+// doc's display-only shape. e.workflow.Budget is the settled figure by the
+// time an execution begins: the launching surface merged the asks into it
+// (CLI flags, recipe, the resume replay) and, on a cloud pod,
+// applyCloudBudgetCeiling clamped it to the platform ceiling afterwards.
+// One projection for both stamps — the launch one in runResolveDoc and the
+// resume one in stampEffectiveBudget — so the two readings cannot drift.
+//
+// Nil for a budget-less workflow: callers PRESERVE the prior snapshot
+// rather than erase it (a --force resume of a .bot whose budget block was
+// dropped must not blank the meter).
+func (e *Engine) effectiveBudgetSnapshot() *store.RunBudget {
+	if e.workflow == nil {
+		return nil
+	}
+	return SnapshotBudgetForPersist(e.workflow.Budget)
+}
+
+// stampEffectiveBudget refreshes the doc's effective-caps snapshot for an
+// attempt that is NOT a launch. Every resume re-resolves the budget from
+// scratch, and the platform ceiling is applied on the pod — where no
+// publisher can see it — so a doc stamped upstream advertises caps this
+// attempt will not honour (issue #718: a run resumed with
+// --max-cost-usd 120 under a $50 ceiling dies at $50 reading 120).
+//
+// Granular (SetRunBudgetSnapshot, not SaveRun): the write lands beside the
+// claim CAS without reverting any other field. Best-effort — a display
+// figure must never cost the resume — but a failure is logged: a silent
+// one puts the lie back.
+func (e *Engine) stampEffectiveBudget(ctx context.Context, runID string) {
+	b := e.effectiveBudgetSnapshot()
+	if b == nil {
+		return
+	}
+	if err := e.store.SetRunBudgetSnapshot(ctx, runID, b); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: resume: refresh effective budget snapshot on %s: %v (the doc keeps the caps of the previous attempt)", runID, err)
+	}
+}
+
+// runStartQueued reloads the document after the transition advances its
+// version. Later metadata saves use that fresh version and cannot overwrite
+// a concurrent cancel or resume.
+func (e *Engine) runStartQueued(ctx context.Context, runID string) (*store.Run, error) {
+	changed, err := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued})
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, store.ErrRunConflict
+	}
+	run, err := e.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != store.RunStatusRunning {
+		return nil, store.ErrRunConflict
 	}
 	return run, nil
 }
@@ -438,6 +562,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 				}
 			}
 		}
+		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
+			e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
+			return e.setupErr(ctx, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
+		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			e.markFailedBestEffort(ctx, runID, "save work dir", err)
 			return e.setupErr(ctx, fmt.Errorf("runtime: save work dir: %w", err))
@@ -512,6 +640,34 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			e.logger.Warn("runtime: skills_injected event: %v", err)
 		}
 	}
+	return nil
+}
+
+// reconcileExecutionWorkspace stamps the effective workspace identity only
+// after worktree setup/adoption has made the isolation decision authoritative.
+// A workflow's `worktree: auto` declaration cannot decide this at launch: it
+// may degrade to in-place, and a delegated linked worktree can be adopted even
+// when the workflow did not request one.
+func (e *Engine) reconcileExecutionWorkspace(runID string, run *store.Run) error {
+	if run == nil || run.ExecutionContext == nil {
+		return nil
+	}
+	contract := run.ExecutionContext.Clone()
+	if run.Worktree {
+		contract.Workspace.Mode = store.WorkspaceIsolated
+		contract.Workspace.WorkspaceID = runID
+	} else {
+		contract.Workspace.Mode = store.WorkspaceInherited
+		root := filepath.Clean(e.workDir)
+		if abs, err := filepath.Abs(root); err == nil {
+			root = abs
+		}
+		contract.Workspace.WorkspaceID = store.StableContextID("workspace", root)
+	}
+	if err := contract.Normalize(); err != nil {
+		return err
+	}
+	run.ExecutionContext = contract
 	return nil
 }
 

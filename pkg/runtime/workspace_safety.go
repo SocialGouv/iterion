@@ -70,6 +70,21 @@ type effectiveBackendResolver interface {
 	EffectiveBackendName(ir.Node) string
 }
 
+// backendResolver is the ONE place the engine asks its executor for the
+// dispatch-time backend resolution. Every pre-run analysis that keys on a
+// node's backend — workspace-safety admission, the sandbox's claw
+// bind-mount — reads it here rather than re-deriving from the IR, which
+// would silently miss the launch-time `--backend` / `--model` overrides.
+// Returns nil for an executor that does not resolve backends (a stub),
+// which every caller reads as "the IR is all there is".
+func (e *Engine) backendResolver() effectiveBackendResolver {
+	if e == nil {
+		return nil
+	}
+	r, _ := e.executor.(effectiveBackendResolver)
+	return r
+}
+
 func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver) bool {
 	return isMutatingNodeCtx(node, defaultBackend, resolver, false)
 }
@@ -243,8 +258,7 @@ func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string, f
 		if isTerminalNode(node) {
 			continue
 		}
-		resolver, _ := e.executor.(effectiveBackendResolver)
-		if isMutatingNodeCtx(node, e.workflow.DefaultBackend, resolver, fanOutEachTemplate) {
+		if isMutatingNodeCtx(node, e.workflow.DefaultBackend, e.backendResolver(), fanOutEachTemplate) {
 			return true
 		}
 		for _, edge := range e.workflow.Edges {

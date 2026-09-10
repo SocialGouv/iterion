@@ -1,4 +1,4 @@
-# Forge conversations — replying to the bot (GitLab notes → run → in-thread reply)
+# Forge conversations — replying to the bot (forge threads → run → in-thread reply)
 
 How an authorized forge user "talks back" to a bot (reply to its review,
 ask a question, or `/revi` for a re-review) and gets a response **in the
@@ -10,9 +10,69 @@ DSL stays small.
 
 Status: A1 (note parsing), A2 (handler + authz + loop-guard +
 reply-in-thread trigger), A3 (conversation vars incl. the fetched thread
-transcript as `thread_context`) and A5 (`revi-converse`) are shipped.
+transcript as `thread_context`) and A5 (`revi-converse`) are shipped —
+on **GitLab** (notes) and on **GitHub** (review threads, below).
 A4 (`forge.reply` capability) is the remaining deferred step — the reply
 POST is skill-based (`curl`) until then.
+
+## GitHub — replying inside a review thread
+
+GitHub splits PR comments across two wire events, so the lane has two
+entries there:
+
+- **Reply to an inline suggestion** (`pull_request_review_comment`,
+  action created): `handlePRForgeReviewThreadReply`
+  ([pkg/server/webhooks_prforge.go](../pkg/server/webhooks_prforge.go))
+  filters (open PR, event/project allowlists), drops thread-OPENING
+  comments from the payload alone (`in_reply_to` empty ⇒ nobody is in
+  that thread yet — every inline comment of a bot review echoes back
+  as one, so this spares the whole fetch), drops fork PRs the same
+  payload-only way (`SameRepoAsBase` — the base clone URL and the head
+  ref would not name one repository), runs the loop-guard next,
+  still without forge I/O (`isIterionForgeBotAuthor` — the bot's
+  own answer echoes back as this very event), requires the converse
+  bot in the webhook scope (`roleBots().ReviConverse` +
+  `cfg.AllowsBot`), then gates: the forge client is resolved the way
+  every GitHub/Forgejo lane resolves it (`prforgeReplierAPIFor`) — the
+  team connection covering the PR first, its App client reading under a
+  `pull_requests:read` token, the webhook's `forge_token` binding as the
+  fallback — so a connection-only integration serves the lane; the
+  thread is fetched
+  (`ListPRReviewComments` — newest-first capped pagination, handed
+  back chronological, so a long-lived PR's cap never blinds the gate
+  on the thread just replied to) and must contain a
+  comment by the bot identity — a human↔human thread never triggers —
+  and the replier must clear `authorized_repliers` or
+  `min_replier_role`. The launch carries `converse_question` (the
+  reply body), `thread_context` (the thread transcript, bot entries
+  labelled, capped by the same 16k anchor+newest budget as the GitLab
+  lane — `webhooks.CapTranscript`) and
+  `discussion_id` = the **thread root** comment id — exactly what
+  GitHub's `/pulls/{n}/comments/{id}/replies` endpoint wants (the
+  bot's `forge-reply.md` §4). Idempotency: one launch per reply
+  comment (`rc|…` key space).
+- **`/revi <question>` as a plain PR comment** (`issue_comment`): no
+  special-casing — the generic command registry routes it. The
+  manifests declare complementary disambiguators
+  (`review-pr` `when_args_empty`, `revi-converse` `when_args_present`
+  + `args_var: converse_question`), the provision derives the
+  two-route `command_map`, and `ResolveCommandRoute` picks by args
+  presence. Bare `/revi` stays a re-review.
+
+Enablement is provisioning, not code: the review-thread firehose is
+its OWN normalized manifest event, `pull_request_review_comment`
+([pkg/forge/event_map.go](../pkg/forge/event_map.go)), declared by
+`revi-converse` — deliberately NOT folded into `pull_request_comment`,
+which nine catalog bots declare: one submitted review fires one wire
+delivery per inline comment, each charged against the webhook rate
+bucket and the org monthly quota before any handler filters it, so
+only a repo whose `bot_ids` actually include the conversational bot
+subscribes that volume. A (re-)provision with the converse bot
+subscribes the hook and regenerates the config's `event_allowlist`
+together; webhooks provisioned without it stay inert on review-thread
+replies. Forgejo is deliberately not wired yet (its dispatch never
+routes the event, and the normalized event maps to no Forgejo native
+event).
 
 ## Model — stateless, the thread is the state
 
@@ -35,7 +95,7 @@ MRs.
 
 `pkg/webhooks/gitlab/note.go` (done) parses the `Note Hook`: `discussion_id`
 (the thread to reply in), `note.body`, the author (`User`), and the MR
-context. `ParsedNote.Command()` extracts a leading `/revi …` command;
+context. `ParsedNote.Command()` extracts a leading slash command;
 `IsMergeRequestNote()` filters out issue/commit notes; `SubjectID()` is
 `note:<id>` for idempotency.
 
@@ -47,11 +107,27 @@ The handler (`pkg/server/webhooks_gitlab.go`, dispatch on
    (else the bot's reply re-triggers a run → infinite loop). Resolve the
    bot's forge user once from the forge_token (`GET /user`) and compare
    `author_id`; cache it per webhook.
-3. **Trigger gate:** a note triggers when it is a `/revi` command, a
-   mention of the bot, or a reply inside a bot-authored discussion thread
-   (configurable; `/revi` is the explicit path, reply-in-thread the
-   natural one).
-4. Idempotency on `note:<id>`; `MatchProject` as for MR events.
+3. **Trigger gate:** a note triggers when it carries a slash command or
+   is a reply inside a bot-authored discussion thread. A command — `/revi`
+   included — is routed generically through `webhooks.ResolveCommandRoute`
+   over the webhook's `CommandMap`: the manifests' `when_args_empty` /
+   `when_args_present` + `args_var` pair resolves a bare `/revi` to the
+   reviewer and `/revi <question>` to the conversational bot, exactly as
+   the GitHub `issue_comment` lane does. Only a plain reply-in-thread with
+   no command stays bespoke, routed to the `revi_converse` role bot — and
+   a provisioned but unresolvable converse bot is a visible
+   `launch_error`, not a silent fallback to the reviewer. `/revi approve`
+   uses the same helpers as GitHub: a maintainer floor (`approveFloor`,
+   raise-only), self-approval refused, a forge error on the authorization
+   read answered `200` + `launch_error`, an unauthorized replier silently
+   `filtered`.
+4. **Fork guard:** the note payload names no project ids, so the handler
+   resolves the MR through the forge API and refuses a cross-project or
+   unnamed head (`filtered`, 200); a resolution failure is a visible 502.
+5. Idempotency on `note:<id>`; `MatchProject` as for MR events. The gates
+   are thin wrappers over token-free cores (`gitlabCommandGateWithAPI`,
+   `gitlabNoteGateWithAPI`), so their real logic is unit-tested rather
+   than stubbed away.
 
 ## A2 — Authorization (the heart): two separate things
 

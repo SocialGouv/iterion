@@ -246,17 +246,24 @@ func TestDelegateModelDriftDeduped(t *testing.T) {
 
 func TestDelegateInfoFromResult_carriesEffectiveModel(t *testing.T) {
 	got := delegateInfoFromResult("claude_code", delegate.Result{
-		EffectiveModel:  "glm-4.6",
-		ContextWindow:   200_000,
-		MaxOutputTokens: 8192,
-		PeakInputTokens: 99,
-		Tokens:          10,
+		EffectiveModel:     "glm-4.6",
+		ContextWindow:      200_000,
+		MaxOutputTokens:    8192,
+		PeakInputTokens:    99,
+		Tokens:             10,
+		SessionFingerprint: "facade:https://api.z.ai/api/anthropic",
 	})
 	if got.EffectiveModel != "glm-4.6" {
 		t.Errorf("EffectiveModel = %q", got.EffectiveModel)
 	}
 	if got.ContextWindow != 200_000 || got.MaxOutputTokens != 8192 || got.PeakInputTokens != 99 {
 		t.Errorf("window fields dropped: %+v", got)
+	}
+	// The seam every facade surface hangs off: without this copy the
+	// event and NodesServed.Fingerprint are permanently empty in
+	// production, and a hand-built DelegateInfo in a test hides it.
+	if got.Fingerprint != "facade:https://api.z.ai/api/anthropic" {
+		t.Errorf("Fingerprint = %q — result.SessionFingerprint not carried", got.Fingerprint)
 	}
 }
 
@@ -293,4 +300,119 @@ func findEvent(t *testing.T, evts []*store.Event, typ store.EventType) *store.Ev
 	}
 	t.Fatalf("no %s event in %d events", typ, len(evts))
 	return nil
+}
+
+// A claude_code node whose tenant holds a z.ai key is routed through the
+// Anthropic-shaped facade by default; the facade answers the requested
+// claude id with the model it aliases it to, so declared and effective ids
+// agree and no drift fires. The session fingerprint is the only evidence:
+// it must reach the run record and raise one event per node and facade.
+func TestDelegateFacadeRoutingReachesStore(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const runID = "run-facade"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	var logBuf bytes.Buffer
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+
+	facade := DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "claude-opus-5",
+		EffectiveModel: "claude-opus-5",
+		Fingerprint:    "facade:https://api.z.ai/api/anthropic",
+	}
+	hooks.OnDelegateFinished("triage", facade)
+	hooks.OnDelegateFinished("triage", facade) // a retry on the same route: no second event
+	hooks.OnDelegateFinished("report", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "claude-opus-5",
+		EffectiveModel: "claude-opus-5",
+		Fingerprint:    "anthropic-oauth",
+	})
+
+	evts, err := st.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	var facadeEvents []*store.Event
+	for _, e := range evts {
+		if e.Type == store.EventModelServedViaFacade {
+			facadeEvents = append(facadeEvents, e)
+		}
+		if e.Type == store.EventModelDrift {
+			t.Errorf("model_drift must stay silent when the ids agree: %v", e.Data)
+		}
+	}
+	if len(facadeEvents) != 1 {
+		t.Fatalf("got %d model_served_via_facade events, want exactly 1 (per node and facade): %+v", len(facadeEvents), facadeEvents)
+	}
+	ev := facadeEvents[0]
+	if ev.NodeID != "triage" || ev.Data["fingerprint"] != "facade:https://api.z.ai/api/anthropic" || ev.Data["declared_model"] != "claude-opus-5" || ev.Data["backend"] != "claude_code" {
+		t.Errorf("model_served_via_facade = node %q data %v", ev.NodeID, ev.Data)
+	}
+
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := run.NodesServed["triage"].Fingerprint; got != "facade:https://api.z.ai/api/anthropic" {
+		t.Errorf("NodesServed[triage].Fingerprint = %q — the facade route was captured then dropped", got)
+	}
+	if got := run.NodesServed["report"].Fingerprint; got != "anthropic-oauth" {
+		t.Errorf("NodesServed[report].Fingerprint = %q", got)
+	}
+}
+
+// A delegation that FAILED must not claim it was served. claude_code
+// returns a fully populated Result — session fingerprint and effective
+// model both stamped — alongside the error on a rendered failure and on
+// every hard CLI error subtype (auth, quota, max_budget), so the error
+// path sees exactly the shape the success path does. Only the outcome
+// differs, and the event's name is a claim about the outcome. The
+// attempted route must still reach the run record.
+func TestDelegateFacadeRoutingSilentOnFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const runID = "run-facade-failed"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	var logBuf bytes.Buffer
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelInfo, &logBuf), nil)
+
+	hooks.OnDelegateError("triage", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "claude-opus-5",
+		EffectiveModel: "claude-opus-5",
+		Fingerprint:    "facade:https://api.z.ai/api/anthropic",
+		Error:          errors.New("delegate: claude-code error: subtype=error_during_execution"),
+	})
+
+	evts, err := st.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, e := range evts {
+		if e.Type == store.EventModelServedViaFacade {
+			t.Fatalf("a failed delegation emitted model_served_via_facade — the event asserts the node WAS served: %v", e.Data)
+		}
+	}
+
+	// …but the attempted route is not lost: it stays on the run record,
+	// beside the effective model a failed attempt already keeps (#474).
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got := run.NodesServed["triage"].Fingerprint; got != "facade:https://api.z.ai/api/anthropic" {
+		t.Errorf("NodesServed[triage].Fingerprint = %q — the attempted facade route must survive the failure", got)
+	}
 }

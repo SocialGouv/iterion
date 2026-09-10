@@ -227,3 +227,74 @@ type Store[T any] interface {
 // mutating replica invalidates immediately; the others converge within the
 // TTL (the ADR-090 read-cache posture — Mongo stays the authority).
 const DefaultTTL = 30 * time.Second
+
+// PlatformCredentials is the audience record for the PLATFORM credential
+// tier: the deployment's own DB-backed keys and forfaits, which until now
+// every tenant without a credential of its own drew on silently.
+//
+// Enforcement is deliberately OPT-IN, and that shape is the whole design.
+// A record whose Enforce is nil (or absent entirely) admits EVERY team —
+// byte-identical to the behaviour before this family existed. Naming a team
+// does not by itself lock the others out: an operator adding one team to
+// the list would otherwise cut the fleet off from its only credential in a
+// single write, discovering it as a fleet of 401s. Enforcement starts when
+// they say so, once, explicitly.
+//
+// This is the platform-level sibling of identity.CredentialAudience, and
+// the asymmetry between them is intentional: an ORG key is lent by someone
+// who chose to lend it, so its zero value admits nobody; the PLATFORM key
+// is what a deployment already runs on, so its zero value keeps running.
+type PlatformCredentials struct {
+	// Enforce turns the audience on. nil or false = every team may draw on
+	// the platform tier (the historical behaviour). true = only Teams/Orgs.
+	Enforce *bool `bson:"enforce,omitempty" json:"enforce"`
+	// Teams is an explicit allow-list of team ids.
+	Teams []string `bson:"teams,omitempty" json:"teams"`
+	// Orgs admits every team of these orgs — the grain an operator actually
+	// governs at, since a team is created inside an org without asking the
+	// platform.
+	Orgs []string `bson:"orgs,omitempty" json:"orgs"`
+
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
+}
+
+// Enforced reports whether the audience gates anything at all.
+func (p *PlatformCredentials) Enforced() bool {
+	return p != nil && p.Enforce != nil && *p.Enforce
+}
+
+// Allows reports whether (orgID, teamID) may draw on the platform tier.
+// A nil record, or an unenforced one, admits everyone.
+func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
+	if !p.Enforced() {
+		return true
+	}
+	for _, id := range p.Orgs {
+		if id != "" && id == orgID {
+			return true
+		}
+	}
+	for _, id := range p.Teams {
+		if id != "" && id == teamID {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate refuses a record that would enforce an audience admitting
+// nobody. That state is reachable by accident (enable enforcement, forget
+// the lists) and its symptom is every tenant-less run failing at its first
+// LLM call — a fleet-wide outage expressed as a config typo.
+func (p PlatformCredentials) Validate() error {
+	if p.Enforce == nil || !*p.Enforce {
+		return nil
+	}
+	for _, id := range append(append([]string{}, p.Teams...), p.Orgs...) {
+		if strings.TrimSpace(id) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("platformcfg: enforcing the platform credential audience with no team and no org would refuse every run that has no credential of its own — name at least one, or leave enforce off")
+}

@@ -15,6 +15,7 @@ vi.mock("@/api/forgeConnections", async () => {
     deleteForgeOAuthApp: vi.fn(async () => {}),
     listForgeRepos: vi.fn(async () => []),
     previewForgeEnable: vi.fn(async () => ({})),
+    applyForgeConnectionAvatar: vi.fn(async () => ({})),
   };
 });
 
@@ -23,6 +24,7 @@ vi.mock("@/api/bots", async () => {
   return { ...actual, listBots: vi.fn(async () => []) };
 });
 
+import { apiErrorFrom } from "@/api/client";
 import * as forgeApi from "@/api/forgeConnections";
 import IntegrationsTab from "../IntegrationsTab";
 
@@ -92,5 +94,173 @@ describe("IntegrationsTab — OAuth apps", () => {
         expect.objectContaining({ mode: "manual", client_id: "cid", client_secret: "sec" }),
       ),
     );
+  });
+});
+
+// The iterion-bot avatar row on a connection card: the apply action exists
+// exactly where iterion can act — a PAT on GitLab/Forgejo — and a GitHub App
+// gets the manual-upload link instead. An OAuth connection (a person's
+// account) shows neither.
+describe("ConnectionCard — iterion-bot avatar", () => {
+  const baseConn = {
+    id: "c1",
+    tenant_id: "t1",
+    provider: "gitlab",
+    kind: "pat",
+    status: "active",
+    account_login: "group_1_bot_x",
+    forge_base_url: "https://gitlab.example.com",
+    created_by: "u1",
+    created_at: "2026-09-05T10:00:00Z",
+    updated_at: "2026-09-05T10:00:00Z",
+  };
+  const conn = (over: Record<string, unknown>) =>
+    ({ ...baseConn, ...over }) as unknown as forgeApi.ForgeConnection;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("applies directly on a bot account", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: "bot" })]);
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenCalledWith("t1", "c1", { force: false }),
+    );
+  });
+
+  it("refetches AND keeps the reason when the apply fails", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: "bot" })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      apiErrorFrom(502, { message: "gitlab: avatar rejected (HTTP 400): boom" }),
+    );
+    renderTab();
+    const before = vi.mocked(forgeApi.listForgeConnections).mock.calls.length;
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    await screen.findByText(/^gitlab: avatar rejected \(HTTP 400\): boom$/);
+    expect(screen.queryByText(/API error/)).toBeNull();
+    await waitFor(() =>
+      expect(vi.mocked(forgeApi.listForgeConnections).mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it("tries an account of unknown kind as-is, and vouches only on a 409", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      apiErrorFrom(409, {
+        message:
+          "gitlab.example.com does not flag @group_1_bot_x as a bot account; if it is a dedicated account for iterion (not a person's), apply with force",
+      }),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(1, "t1", "c1", { force: false }),
+    );
+    // The 409 asks for the operator's word; confirming vouches with force.
+    fireEvent.click(await screen.findByRole("button", { name: "Apply the avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(2, "t1", "c1", { force: true }),
+    );
+  });
+
+  it("offers the vouch when the forge would not describe the account, naming the reason", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([conn({ account_kind: undefined })]);
+    vi.mocked(forgeApi.applyForgeConnectionAvatar).mockRejectedValueOnce(
+      apiErrorFrom(409, {
+        message:
+          "gitlab.example.com would not say whether @group_1_bot_x is a bot account (forge: insufficient scope); if it is a dedicated account for iterion (not a person's), apply with force",
+      }),
+    );
+    renderTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply iterion-bot avatar" }));
+    // The dialog carries the forge's own answer — without the transport's
+    // "API error 409:" prefix or the CLI wording — and is the forced retry.
+    await screen.findByText(
+      /^gitlab.example.com would not say whether @group_1_bot_x is a bot account \(forge: insufficient scope\)\./,
+    );
+    expect(screen.queryByText(/API error/)).toBeNull();
+    expect(screen.queryByText(/apply with force/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Apply the avatar" }));
+    await waitFor(() =>
+      expect(forgeApi.applyForgeConnectionAvatar).toHaveBeenNthCalledWith(2, "t1", "c1", { force: true }),
+    );
+  });
+
+  it("shows the applied state and offers a re-apply", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({ account_kind: "bot", avatar_applied_at: "2026-09-05T10:00:00Z" }),
+    ]);
+    renderTab();
+    await screen.findByText(/iterion-bot avatar ·/);
+    await screen.findByRole("button", { name: "Re-apply the avatar" });
+  });
+
+  it("keeps an earlier success visible when a later re-apply failed", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({
+        account_kind: "bot",
+        avatar_applied_at: "2026-09-05T10:00:00Z",
+        avatar_error: "gitlab: avatar rejected (HTTP 400)",
+      }),
+    ]);
+    renderTab();
+    await screen.findByText(/Last avatar upload failed: gitlab: avatar rejected/);
+    await screen.findByText(/iterion-bot avatar ·/);
+    expect(screen.queryByText(/avatar not applied/)).toBeNull();
+  });
+
+  it("names a forge refusal on the card", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({ account_kind: "bot", avatar_error: "gitlab: avatar rejected (HTTP 400)" }),
+    ]);
+    renderTab();
+    await screen.findByText(/avatar not applied: gitlab: avatar rejected/);
+  });
+
+  it("shows nothing on an OAuth connection — a person's account", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({ kind: "oauth_app", account_login: "alice", account_kind: "user" }),
+    ]);
+    renderTab();
+    await screen.findByText(/@alice/);
+    expect(screen.queryByRole("button", { name: /avatar/i })).toBeNull();
+    expect(screen.queryByText(/iterion-bot avatar/)).toBeNull();
+  });
+
+  it("links a GitHub App connection to the manual logo upload", async () => {
+    vi.mocked(forgeApi.listForgeConnections).mockResolvedValue([
+      conn({
+        provider: "github",
+        kind: "github_app",
+        account_login: "iterion-forge-1234[bot]",
+        account_kind: "installation",
+        oauth_app_id: "app1",
+        forge_base_url: "https://github.com",
+      }),
+    ]);
+    vi.mocked(forgeApi.listForgeOAuthApps).mockResolvedValue([
+      {
+        id: "app1",
+        tenant_id: "t1",
+        provider: "github",
+        client_id: "x",
+        auto_created: true,
+        logo_upload_url: "https://github.com/organizations/acme/settings/apps/iterion-forge-1234",
+        created_by: "u1",
+        created_at: "2026-09-05T10:00:00Z",
+        updated_at: "2026-09-05T10:00:00Z",
+      } as unknown as forgeApi.ForgeOAuthApp,
+    ]);
+    renderTab();
+    const link = await screen.findByRole("link", { name: /Upload the iterion-bot logo/ });
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/organizations/acme/settings/apps/iterion-forge-1234",
+    );
+    expect(screen.queryByRole("button", { name: /avatar/i })).toBeNull();
   });
 });

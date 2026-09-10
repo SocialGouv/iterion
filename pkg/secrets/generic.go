@@ -226,29 +226,58 @@ func NewMemoryGenericSecretStore() *MemoryGenericSecretStore {
 	return &MemoryGenericSecretStore{secrets: make(map[string]GenericSecret)}
 }
 
-func (m *MemoryGenericSecretStore) Create(_ context.Context, s GenericSecret) error {
+// stampTenant mirrors the Mongo store's write behaviour: the row's
+// TenantID comes from the CONTEXT, not from the caller's struct. Without
+// this the memory store cannot express the failure the Mongo one produces
+// — a row written under one tenant and read under another — so a whole
+// class of tenant-scoping bugs stays invisible to tests that use it
+// (measured: the credential-wiring defect of #997 survived every unit
+// test precisely here). A ctx with no tenant leaves the caller's value
+// untouched, which keeps the many tenant-less fixtures working.
+func stampTenant(ctx context.Context, current string) string {
+	if t, ok := store.TenantFromContext(ctx); ok {
+		return t
+	}
+	return current
+}
+
+// visibleToTenant mirrors the Mongo store's READ filter. A row that was
+// never stamped (TenantID empty — a tenant-less fixture) stays visible to
+// everyone; a stamped row is visible only under its own tenant.
+func visibleToTenant(ctx context.Context, rowTenant string) bool {
+	t, ok := store.TenantFromContext(ctx)
+	if !ok || rowTenant == "" {
+		return true
+	}
+	return rowTenant == t
+}
+
+func (m *MemoryGenericSecretStore) Create(ctx context.Context, s GenericSecret) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	s.TenantID = stampTenant(ctx, s.TenantID)
 	m.secrets[s.ID] = s
 	return nil
 }
 
-func (m *MemoryGenericSecretStore) Get(_ context.Context, id string) (GenericSecret, error) {
+func (m *MemoryGenericSecretStore) Get(ctx context.Context, id string) (GenericSecret, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.secrets[id]
-	if !ok {
+	if !ok || !visibleToTenant(ctx, s.TenantID) {
 		return GenericSecret{}, ErrGenericSecretNotFound
 	}
 	return s, nil
 }
 
-func (m *MemoryGenericSecretStore) Update(_ context.Context, s GenericSecret) error {
+func (m *MemoryGenericSecretStore) Update(ctx context.Context, s GenericSecret) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.secrets[s.ID]; !ok {
+	cur, ok := m.secrets[s.ID]
+	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrGenericSecretNotFound
 	}
+	s.TenantID = stampTenant(ctx, cur.TenantID)
 	m.secrets[s.ID] = s
 	return nil
 }
@@ -287,10 +316,11 @@ func (m *MemoryGenericSecretStore) UpdateIfFingerprint(_ context.Context, s Gene
 	return nil
 }
 
-func (m *MemoryGenericSecretStore) Delete(_ context.Context, id string) error {
+func (m *MemoryGenericSecretStore) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.secrets[id]; !ok {
+	s, ok := m.secrets[id]
+	if !ok || !visibleToTenant(ctx, s.TenantID) {
 		return ErrGenericSecretNotFound
 	}
 	delete(m.secrets, id)

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -21,6 +20,7 @@ import (
 // `plan` execute a second time, the operator paid twice and the rewind
 // bought nothing over a plain re-run.
 func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
 
 	storeDir := t.TempDir()
@@ -31,7 +31,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 
 	// Pass 1: verify fails execution (a transient-style error, NOT the
 	// `fail` terminal node — reaching that is intentional termination and
-	// produces a non-resumable `failed` with the checkpoint cleared), so
+	// produces a non-resumable `failed` (the checkpoint is preserved — ADR-095)), so
 	// the run lands failed_resumable anchored on `verify`.
 	exec := newScenarioExecutor()
 	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
@@ -39,7 +39,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 	})
 
 	const runID = "e2e-rewind-mini"
-	eng := runtime.New(wf, st, exec)
+	eng := newEngine(t, wf, st, exec)
 	if err := eng.Run(context.Background(), runID, nil); err == nil {
 		t.Fatal("expected the run to fail (verify -> fail), got success")
 	}
@@ -80,7 +80,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"value": "approved", "ok": true}, nil
 	})
-	eng2 := runtime.New(wf, st, exec)
+	eng2 := newEngine(t, wf, st, exec)
 	if err := eng2.Resume(context.Background(), runID, nil); err != nil {
 		t.Fatalf("resume after rewind: %v", err)
 	}
@@ -127,6 +127,7 @@ func TestRewindThenResume_SkipsUpstreamNodes(t *testing.T) {
 // TestRewind_RefusesRunningRun_E2E guards the concurrency precondition
 // against the real store rather than a hand-built run doc.
 func TestRewind_RefusesRunningRun_E2E(t *testing.T) {
+	t.Parallel()
 	storeDir := t.TempDir()
 	st, err := store.New(storeDir)
 	if err != nil {

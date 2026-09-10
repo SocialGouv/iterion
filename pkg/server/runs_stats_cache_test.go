@@ -121,10 +121,7 @@ func TestAggregateRunStatsCachesTerminalRunScan(t *testing.T) {
 
 	var scans int32
 	cs := countingStore{RunStore: rs, scans: &scans}
-	svc, err := runview.NewService("", runview.WithStore(cs))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(cs))
 	// Discard any scans NewService/reconcileOrphans performed at startup.
 	atomic.StoreInt32(&scans, 0)
 
@@ -163,10 +160,7 @@ func TestAggregateRunStatsCacheVersionBust(t *testing.T) {
 
 	var scans int32
 	cs := countingStore{RunStore: rs, scans: &scans}
-	svc, err := runview.NewService("", runview.WithStore(cs))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(cs))
 	atomic.StoreInt32(&scans, 0)
 
 	cache := newRunStatsCache()
@@ -214,10 +208,7 @@ func TestAggregateRunStatsDoesNotCacheFailedScan(t *testing.T) {
 	term := seedCostRun(t, rs, "term", "wf", store.RunStatusFinished, created, 1.0)
 
 	var scans int32
-	svc, err := runview.NewService("", runview.WithStore(erroringScanStore{RunStore: rs, scans: &scans}))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(erroringScanStore{RunStore: rs, scans: &scans}))
 	atomic.StoreInt32(&scans, 0)
 
 	cache := newRunStatsCache()

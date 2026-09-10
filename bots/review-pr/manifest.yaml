@@ -1,7 +1,93 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.8
+version: 0.9.0
+## 0.9.0 — ticket conformance now works with NO configuration on the
+## forge's own issues. Since 0.6.0 the check only ran when an operator
+## pinned `tracker_api_base` per repo, which meant that on 16 connected
+## GitHub repos it never ran at all: a PR saying "Fixes #123" was
+## reviewed without anyone reading #123. Yet everything needed was
+## already in the run — the PR URL, and a forge token bound
+## automatically when the repo was provisioned. That configuration
+## requirement was an artificial limit, so it is gone: `ticket_context`
+## (auto|off, default auto) picks the EXTERNAL tracker when
+## `tracker_api_base` is set, else FORGE-NATIVE from the PR URL. In
+## forge-native mode the reviewers ask the FORGE which issues the PR
+## closes (GitLab `closes_issues`, GitHub `closingIssuesReferences`)
+## rather than trusting a regex over prose, and fall back to the text
+## scan. A PR with no ticket stays a normal PR — the absence of a
+## reference is never a finding.
+## 0.8.1 — budget max_cost_usd 12 → 48: the guard tier died at $36 and $30
+## on a 7-file PR, twice on one revision (the automatic relaunch included),
+## and the merge gate posted no verdict. A review that reproduces its
+## findings and answers the fixer's rounds is the workload now; a required
+## check that dies is worse than one that costs. The effective ceiling is
+## 0.9 × cap (the engine refuses new nodes at 90%, no grace on that band),
+## so 48 leaves ~$43 usable with the measured $36 — a lower bound, the run
+## died there — at 75%. The pacer monitor follows (cost_gt 8 → 32, ~2/3 of
+## the cap, on 12 evals / 6m instead of 4 / 5m so it is still awake near
+## the wall). max_duration 90m → 120m: the same 90% wall applies to the
+## duration axis, and a review funded to ~$43 runs 45-60 min.
+## --max-cost-usd / --max-duration still re-budget one run.
+## 0.8.0 — REVIEW TIERS (SocialGouv/iterion#685): a repo's criticality or
+## budget policy picks ONE preset (`review_tier`: glance | guard | audit)
+## instead of five separate vars. guard is the DEFAULT and is
+## byte-identical to 0.7.0's behaviour. glance is frugal — a cheaper
+## same-family reviewer model (claude-sonnet-5 / gpt-5.4-mini via two new
+## `reviewer_*_glance` nodes, since neither `model:` nor `reasoning_effort:`
+## can read a runtime var — only `${ENV_VAR}` — on ANY backend, claw
+## included; the `topology` router picks the node), a high drafting floor,
+## a small finding cap, no board writes, and a prompt instruction to skip
+## exploratory reads beyond the diff (the measured cost floor is what a
+## reviewer ingests BEFORE it reads a single diff line — native issue
+## #685's cost-model comment). audit is premium — forces the cross-family
+## dual fan-out regardless of `review_mode`, a low drafting floor, and a
+## raised cap (40, the pre-0.7.0 "everything" value). The tier is a
+## PRESET, not a cage: severity_threshold / max_findings / post_to_board /
+## review_mode all stay individually overridable via their own --var (a
+## sentinel default — "auto" or 0 — on each marks "let the tier decide";
+## any concrete value is an explicit operator override and wins). A new
+## deterministic `tier_expand` compute node (no LLM) resolves them right
+## after `diff_precheck`. Budget (max_cost_usd/max_duration) is
+## deliberately NOT tier-varied — the workflow budget block is a
+## compile-time DSL literal, disjoint from the vars a tier can reach; see
+## docs/merge-gate.md's "Review tiers" section. Pin per repo through the
+## integration's `launch_vars.review_tier` (already a generic pass-through
+## — no engine change needed) or the studio integration settings' 3-way
+## selector.
+## 0.7.0 — COST REDUCTION pass (judging quality untouched — the
+## reviewer stays on opus/high). Four levers: (1) the severity floor
+## moves to the SOURCE — `severity_threshold` now defaults to "medium"
+## and the reviewers are told not to DRAFT below-floor findings (they
+## used to write detail+replacement the merge step then discarded);
+## below-floor observations get a summary line at most. (2) A TOKEN
+## FRUGALITY contract in the review prompt: --stat-first hunk
+## prioritisation, no re-reads, no out-of-blast-radius sweeps, emit as
+## soon as the axes are covered. (3) A cheap "pacer" supervisor
+## (haiku, ≤4 evals, 5m cooldown) that posts one "wrap up now"
+## steering message when the review drags — never judges code. (4) The
+## converge/merge step drops to sonnet via the new dedicated
+## ITERION_VIBE_MODEL_EMIT env (in mono the merge is near-mechanical);
+## budget max_cost_usd 20 → 12 (median $3.6, p95 $10.5 measured in
+## prod; the ×1.1 exit grace still delivers big-diff reviews) and
+## max_findings 40 → 15. Restore the old surface per run with
+## --var severity_threshold=low --max-cost-usd 20.
+## 0.6.0 — TICKET CONFORMANCE (opt-in, tracker-agnostic): given a
+## tracker API base (`tracker_api_base`, typically pinned per repo via
+## the integration's launch_vars) and a bound read-only `tracker_token`
+## secret (file-mounted; bind it with AllowedHosts = the tracker host so
+## the egress guard pins it to that instance), the reviewers fetch the
+## ticket(s) the PR references — explicit `ticket_refs`, or extracted
+## from the PR title/body + source branch (PROJ-123 keys, #N refs,
+## ticket URLs) — and verify the diff answers the demand. Gaps are
+## findings of the new "requirements" category (they gate like any
+## finding); a per-ticket verdict (covered / partial / not covered /
+## unverifiable) lands in the markdown report and the PR review summary.
+## Tracker specifics (Jira Cloud/DC, GitHub, GitLab, auth modes) live in
+## skills/ticket-context.md, never in the DSL. Fetch failure degrades to
+## an explicit "unverifiable" — never a silent skip, never a failed
+## review. Dormant by default: no tracker_api_base = byte-identical
+## behaviour to 0.5.x.
 ## 0.5.7 — the review comment stops reporting a comparison that never happened.
 ## Mono is the default topology (one family reviews), yet every comment ended
 ## with "0 finding(s) cross-confirmed by both model families" — which reads as
@@ -89,12 +175,19 @@ description: |
   forge review — inline comments anchored to file:line with one-click
   ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
   or commits code — that is the improve-loops' job (Billy / Willy).
+  Optional TICKET CONFORMANCE: with a tracker API base + a bound
+  read-only tracker token, it also fetches the ticket(s) the PR
+  references (Jira, GitHub/GitLab issues) and verifies the diff answers
+  the demand — per-ticket verdicts in the review, gaps as
+  "requirements" findings.
 when_to_use: |
   Use when you want a PR/branch REVIEWED and its issues surfaced — to
   the board for triage and/or posted directly onto the PR (pass
   --var pr_url) as inline comments + ```suggestion fixes — but NOT
   auto-fixed. Read-only: Revi reports; Billy (branch-improve-loop)
-  reviews AND fixes AND commits.
+  reviews AND fixes AND commits. Set tracker_api_base (+ bind a
+  tracker_token secret) to also have it check the PR against the
+  tracker ticket(s) it references.
 author: SocialGouv (devthejo) — review-pr/main.bot
 schema_version: 1
 triggers: [review-pr, pr-review, review]
@@ -117,6 +210,12 @@ forge:
                              # write"; without it SetCommitStatus 403s
                              # "insufficient scope" and the gate silently
                              # advises instead of blocking)
+    issues: read             # read the issues a PR links, for the 0.9.0
+                             # forge-native ticket conformance. Without this
+                             # scope the no-config path is INERT: every fetch
+                             # 403s and every verdict degrades to
+                             # "unverifiable", which reads like "no ticket"
+                             # rather than "the token may not look".
   secret: forge_token        # cross-ref with main.bot `secrets: { forge_token }`
   webhook:
     launch_vars:
@@ -162,4 +261,4 @@ invocations:
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
 ## out of the form (still settable via --var / bot_args).
 launch:
-  primary: [pr_url, base_ref]
+  primary: [pr_url, base_ref, review_tier]

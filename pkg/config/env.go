@@ -21,6 +21,9 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_NATS_STREAM", &cfg.NATS.Stream)
 	lookupString("ITERION_NATS_KV_BUCKET", &cfg.NATS.KVBucket)
 	lookupString("ITERION_NATS_DLQ_STREAM", &cfg.NATS.DLQStream)
+	if err := lookupInt("ITERION_NATS_STREAM_REPLICAS", &cfg.NATS.StreamReplicas); err != nil {
+		return err
+	}
 	if err := lookupInt("ITERION_NATS_MAX_ACK_PENDING", &cfg.NATS.MaxAckPending); err != nil {
 		return err
 	}
@@ -79,6 +82,12 @@ func loadEnv(cfg *Config) error {
 		return err
 	}
 	if err := lookupDuration("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", &cfg.Runner.SchemaMismatchDelay); err != nil {
+		return err
+	}
+	if err := lookupUint64("ITERION_RUNNER_EPOCH", &cfg.Rollout.RunnerEpoch); err != nil {
+		return err
+	}
+	if err := lookupDuration("ITERION_RUNNER_EPOCH_MISMATCH_DELAY", &cfg.Rollout.EpochMismatchDelay); err != nil {
 		return err
 	}
 
@@ -192,6 +201,22 @@ func lookupInt(key string, dst *int) error {
 		return nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	*dst = n
+	return nil
+}
+
+// lookupUint64 overlays a non-negative base-10 integer. The rollout epoch is
+// deliberately unsigned so a regressive value cannot survive parsing and be
+// reinterpreted later.
+func lookupUint64(key string, dst *uint64) error {
+	v, ok := lookup(key)
+	if !ok {
+		return nil
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
 		return fmt.Errorf("%s: %w", key, err)
 	}

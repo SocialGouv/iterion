@@ -12,6 +12,7 @@ import {
 import type {
   AgentDecl,
   ComputeDecl,
+  FailDecl,
   HumanDecl,
   JudgeDecl,
   NodeKind,
@@ -52,7 +53,8 @@ type NodeMatch =
   | { kind: "human"; decl: HumanDecl }
   | { kind: "tool"; decl: ToolNodeDecl }
   | { kind: "compute"; decl: ComputeDecl }
-  | { kind: "subbot"; decl: SubbotDecl };
+  | { kind: "subbot"; decl: SubbotDecl }
+  | { kind: "fail"; decl: FailDecl };
 
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
   const document = useDocumentStore((s) => s.document);
@@ -71,6 +73,10 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
     for (const t of document.tools) if (t.name === nodeId) return { kind: "tool", decl: t };
     for (const c of document.computes ?? []) if (c.name === nodeId) return { kind: "compute", decl: c };
     for (const sb of document.subbots ?? []) if (sb.name === nodeId) return { kind: "subbot", decl: sb };
+    // A named `fail <name>:` is drawn on the canvas, so it must resolve
+    // here too — otherwise selecting the node the canvas just rendered
+    // reports it "not found in the current document".
+    for (const f of document.fails ?? []) if (f.name === nodeId) return { kind: "fail", decl: f };
     return null;
   }, [document, nodeId]);
 
@@ -247,7 +253,43 @@ function NodeForm({ match }: { match: NodeMatch }) {
       return <ComputeForm decl={match.decl} />;
     case "subbot":
       return <SubbotForm decl={match.decl} />;
+    case "fail":
+      return <FailPanel decl={match.decl} />;
   }
+}
+
+/** Read-only view of a declared terminal failure. The studio editor has no
+ *  form for it yet: `code:` is compile-validated (C247/C248) and `message:`
+ *  is a template whose refs are checked against the graph, so an
+ *  unvalidated free-text field here would let the editor produce a .bot the
+ *  compiler then rejects. Showing what the node declares is what the
+ *  inspector owes the canvas that already draws it. */
+function FailPanel({ decl }: { decl: FailDecl }) {
+  const rows: Array<[string, string]> = [
+    ["Code", decl.code ?? "— (untyped: the run reports FAIL_NODE)"],
+    ["Message", decl.message ?? "— (the run reports the generic wording)"],
+    ["Resumable", decl.resumable ? "yes — parks failed_resumable on the guard that routed in" : "no — terminal failed"],
+  ];
+  return (
+    <div className="space-y-1">
+      <NodeFormHeader color={NODE_COLORS.fail} icon={NODE_ICONS.fail} label="Fail" />
+      {decl.description ? (
+        <p className="px-1 pb-2 text-xs text-fg-subtle">{decl.description}</p>
+      ) : null}
+      <dl className="space-y-2 px-1">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-caption font-medium uppercase tracking-wide text-fg-subtle">{label}</dt>
+            <dd className="mt-0.5 break-words text-xs text-fg-default">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="px-1 pt-2 text-caption text-fg-subtle">
+        Edit these in the .bot source — the code and the message template are
+        validated at compile time.
+      </p>
+    </div>
+  );
 }
 
 /** Opens a subbot's child .bot file in its own editor tab (same flow as

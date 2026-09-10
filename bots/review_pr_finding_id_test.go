@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/gittest"
 )
 
 // TestFindingIDMatchesTheEngineDerivation pins the one thing that makes a
@@ -55,13 +57,7 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 	ws := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = ws
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		gittest.Run(t, ws, args...)
 	}
 	git("init", "--quiet", "-b", "main")
 	if err := os.WriteFile(ws+"/a.txt", []byte("one\n"), 0o644); err != nil {
@@ -89,20 +85,20 @@ func TestFindingIDMatchesTheEngineDerivation(t *testing.T) {
 	}
 	body := toolCommand(t, "review-pr/main.bot", "publish_review")
 	for ref, val := range map[string]string{
-		"{{vars.workspace_dir}}":       ws,
-		"{{input.reviewed_sha}}":       "",
-		"{{vars.forge_publish_url}}":   srv.URL + "/api/v1/forge/publish-review",
-		"{{vars.forge_publish_token}}": "run-token",
-		"{{vars.pr_review_mode}}":      "inline",
-		"{{vars.review_mode}}":         "mono",
-		"{{input.pr_url}}":             "https://github.com/acme/widgets/pull/7",
-		"{{input.findings}}":           string(encoded),
-		"{{input.questions}}":          "",
-		"{{input.claude_findings}}":    "[]",
-		"{{input.gpt_findings}}":       "[]",
-		"{{vars.gate_enabled}}":        "true",
-		"{{vars.gate_severity}}":       "high",
-		"{{vars.gate_context}}":        "revi/review",
+		"{{vars.workspace_dir}}":          ws,
+		"{{input.reviewed_sha}}":          "",
+		"{{vars.forge_publish_url}}":      srv.URL + "/api/v1/forge/publish-review",
+		"{{vars.forge_publish_token}}":    "run-token",
+		"{{vars.pr_review_mode}}":         "inline",
+		"{{input.effective_review_mode}}": "mono",
+		"{{input.pr_url}}":                "https://github.com/acme/widgets/pull/7",
+		"{{input.findings}}":              string(encoded),
+		"{{input.questions}}":             "",
+		"{{input.claude_findings}}":       "[]",
+		"{{input.gpt_findings}}":          "[]",
+		"{{vars.gate_enabled}}":           "true",
+		"{{vars.gate_severity}}":          "high",
+		"{{vars.gate_context}}":           "revi/review",
 	} {
 		if !strings.Contains(body, ref) {
 			t.Fatalf("%s is no longer referenced by publish_review — the test wires nothing", ref)

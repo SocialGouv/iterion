@@ -53,7 +53,7 @@ Declare secrets in the DSL; the agent only ever sees an opaque
 placeholder `__ITERION_SECRET_<name>__`; iterion swaps in the real value
 at the moment of execution.
 
-```iter
+```iter fragment
 secrets:
   github_token: "${GITHUB_TOKEN}"          # short form
   deploy_key:
@@ -88,7 +88,7 @@ materialization above.
 Some credentials are safer and more ergonomic as files (`kubeconfig`,
 cloud SDK config, deploy certs). Declare them with `as: file`:
 
-```iter
+```iter fragment
 secrets:
   kubeconfig:
     as: file
@@ -132,7 +132,7 @@ records the failure as `StatusLaunchError` on its delivery trail.
 Mark a secret `optional: true` to skip it silently instead — for a bot
 that only needs the credential on *some* runs:
 
-```iter
+```iter fragment
 secrets:
   forge_token:
     as: file
@@ -286,10 +286,10 @@ A declared secret with **no inline `value:`** resolves *by name* from this
 store — so a bot declares what it needs, and the operator supplies it out of
 band:
 
-```iter
+```iter fragment
 secrets:
   GITHUB_TOKEN:            # no value: → resolved by name from the local store
-    hosts: [github.com]    # egress lock still applies (Layer 2)
+    hosts: ["github.com"]    # egress lock still applies (Layer 2)
 ```
 
 ### Storage, master key, scope
@@ -314,14 +314,43 @@ never from `argv`, and never printed back):
 iterion secret set GITHUB_TOKEN                 # masked prompt
 iterion secret set STRIPE_KEY --from-env SK     # import from an env var
 iterion secret set DB_URL --project --hosts db.internal
+iterion secret set DB_PASSPHRASE --kind raw     # not a token / JSON / PEM
 iterion secret list                             # names + last4 + scope only
 iterion secret rm GITHUB_TOKEN
 ```
 
+#### Ingestion shape gate (`--kind`)
+
+`secret set` refuses, at the paste, a value that could not possibly
+authenticate — the same rule the cloud API runs on BYOK keys and OAuth blobs
+([`pkg/secrets/credential_shape.go`](../pkg/secrets/credential_shape.go)), so
+a terminal transcript pasted into the prompt fails here instead of surfacing
+as a provider `401` in the middle of a run.
+
+The local store is name-keyed and carries no kind of its own, so the shape is
+either **read off the value** — a `-----BEGIN ` header → `pem`, a leading `{`
+or `[` → `json`, anything else → `token` — or **named with `--kind`**:
+
+| `--kind` | Rule |
+| --- | --- |
+| `token` | One run of visible characters: no white-space (ASCII or not), no control/format/non-printing rune, valid UTF-8. |
+| `json` | Parses as a top-level JSON object or array, and carries at least one member. |
+| `pem` | At least one complete `-----BEGIN`/`-----END` block decodes. |
+| `raw` | No check — the explicit opt-out for a passphrase, a connection string, a blob. |
+
+The refusal names the secret, the reason and the kind it was read as, and
+never the value; `--kind raw` is in the message, so the remedy travels with
+it. An unknown `--kind` is an error, not a silent pass-through to no checking.
+
 Studio: the **Secrets** view (gated on `server_info.secrets_enabled`) offers
 the same CRUD over `/api/local/secrets` (unauthenticated single-operator
-routes — the local studio is trusted to its loopback TTY user). Neither the
-CLI nor the REST responses ever return a stored value.
+routes — the local studio is trusted to its loopback TTY user), **including
+the same gate**: the create/rotate request carries an optional `kind` (the
+view's *Kind* picker, defaulting to "detect from the value"), the shape is
+resolved by the same `secrets.ResolveSecretShape` the CLI calls, and a refusal
+answers `400` naming the kind and the `raw` opt-out. Two doors into one store
+must not disagree on what a value is. Neither the CLI nor the REST responses
+ever return a stored value.
 
 The desktop app's provider-API-key keychain (`ANTHROPIC_API_KEY`, … under
 `io.iterion.desktop`) is a **separate** concern — those are how iterion talks

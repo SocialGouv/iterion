@@ -93,6 +93,9 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   // Subbots render as compact nodes here; expandSubbots (lib/subbotGraph.ts)
   // replaces them with a container frame once the child document is loaded.
   for (const sb of doc.subbots ?? []) nodeMap.set(sb.name, { kind: "subbot", decl: sb });
+  // A named `fail <name>:` is a declared terminal: it renders like the bare
+  // `fail` target but carries its declaration (code / message / resumable).
+  for (const f of doc.fails ?? []) nodeMap.set(f.name, { kind: "fail", decl: f });
 
   // Resolve target workflows early so we can check edge references
   const targetWorkflows = activeWorkflowName

@@ -30,6 +30,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/children", s.handleListRunChildren)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
+	s.mux.HandleFunc("GET /api/runs/{id}/diagnostic", s.handleGetRunDiagnostic)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts", s.handleListAllArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)
@@ -48,6 +49,7 @@ func (s *Server) registerRunRoutes() {
 	// Per-node file changes — "an iterion node is like a commit".
 	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/changes", s.handleGetRunNodeChanges)
 	s.mux.HandleFunc("GET /api/runs/{id}/nodes/{node}/diff", s.handleGetRunNodeFileDiff)
+	s.mux.HandleFunc("GET /api/runs/{id}/route-decisions", s.handleListRouteDecisions)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/scope", s.handleGetRunReviewScope)
 	s.mux.HandleFunc("GET /api/runs/{id}/review/diff", s.handleGetRunReviewDiff)
 	// Workspace-relative file stream for the review panel's media players

@@ -75,6 +75,12 @@ export interface PipelineBoardGiveUp {
   state?: string;
   /** How many attempts were burned before giving up. */
   attempts?: number;
+  /**
+   * Why the dispatcher gave up when it was not a retry budget — the claim
+   * watchdog filing a card whose recorded run is gone. Empty for a
+   * retry-budget give-up, which reads by `attempts`.
+   */
+  reason?: string;
   /** When the give-up happened (RFC 3339). */
   at?: string;
 }
@@ -276,6 +282,8 @@ function normalizeGiveUp(value: unknown): PipelineBoardGiveUp | undefined {
   if (state) out.state = state;
   const attempts = numberValue(source.attempts);
   if (attempts !== undefined) out.attempts = attempts;
+  const reason = text(source.reason);
+  if (reason) out.reason = reason;
   const at = text(source.at);
   if (at) out.at = at;
   return out;
@@ -630,10 +638,20 @@ export async function deletePipelineTask(taskId: string): Promise<void> {
 // cancels every still-active run in the ticket's tree, then restages the
 // ticket to Ready so the admission loop relaunches it fresh. Refused (409)
 // when a run is held by another process.
-export async function resetPipelineTask(taskId: string): Promise<void> {
+//
+// `fresh` additionally drops the ticket's last-run pointer, which is what
+// makes the restart deterministic — without it a live `iterion dispatch`
+// resolves that pointer and RESUMES the discarded run from its checkpoint
+// while the studio's own loop would have started a new one. The server
+// refuses `fresh` (409) while anything in the ticket's tree is still
+// non-terminal, and touches nothing when it does.
+export async function resetPipelineTask(
+  taskId: string,
+  opts: { fresh?: boolean } = {},
+): Promise<void> {
   await apiRequest<unknown>(
     `${BASE}/tasks/${encodeURIComponent(taskId)}/reset`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: "POST", body: JSON.stringify({ fresh: opts.fresh === true }) },
   );
 }
 

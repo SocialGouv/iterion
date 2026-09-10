@@ -133,7 +133,10 @@ func TestLinearPath(t *testing.T) {
 		Name:  "linear_test",
 		Entry: "analyze",
 		Nodes: map[string]ir.Node{
-			"analyze": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis"},
+			"analyze": &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis",
+				SchemaFields: ir.SchemaFields{OutputSchema: "analysis_out"},
+			},
 			"run_cmd": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "run_cmd"}, Command: "echo ok"},
 			"verify":  &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
 			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
@@ -147,7 +150,11 @@ func TestLinearPath(t *testing.T) {
 			{From: "verify", To: "done", Condition: "pass", Negated: false},
 			{From: "verify", To: "fail", Condition: "pass", Negated: true},
 		},
-		Schemas: map[string]*ir.Schema{},
+		Schemas: map[string]*ir.Schema{
+			"analysis_out": {Name: "analysis_out", Fields: []*ir.SchemaField{
+				{Name: "summary", Type: ir.FieldTypeString},
+			}},
+		},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
@@ -220,6 +227,22 @@ func TestLinearPath(t *testing.T) {
 	}
 	if art.Data["summary"] != "all good" {
 		t.Errorf("artifact data mismatch: %v", art.Data)
+	}
+	if art.Contract == nil {
+		t.Fatal("published artifact has no restart contract")
+	}
+	if art.Contract.LogicalRef != "analysis" || art.Contract.ProducerNode != "analyze" || art.Contract.ProducerRevision != r.WorkflowHash || art.Contract.Version != art.Version {
+		t.Fatalf("artifact contract = %+v, workflow hash = %q", art.Contract, r.WorkflowHash)
+	}
+	// The stamp is where the shape binding is won or lost: a contract written
+	// with no fingerprint silently degrades every later check to comparing
+	// schema NAMES, and no validator test would notice because those stamp
+	// their own contracts.
+	if art.Contract.Schema == "" {
+		t.Error("artifact contract records no output schema")
+	}
+	if art.Contract.SchemaHash == "" {
+		t.Error("artifact contract records no schema fingerprint — the compatibility check would degrade to comparing names")
 	}
 }
 
@@ -1019,9 +1042,12 @@ func TestHumanPauseAndResume(t *testing.T) {
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected status finished, got %s", r.Status)
 	}
-	// Checkpoint should be cleared after resume.
-	if r.Checkpoint != nil {
-		t.Error("checkpoint should be nil after run finishes")
+	// The checkpoint SURVIVES the finish (a status transition never
+	// destroys it — `iterion fork` reads a terminal parent's
+	// checkpoint, and a routing contract evaluates its outputs);
+	// resumability is gated on Status alone.
+	if r.Checkpoint == nil {
+		t.Error("finished run lost its checkpoint — fork of a finished run would start empty")
 	}
 
 	// Verify human answers were passed to the integrate node.

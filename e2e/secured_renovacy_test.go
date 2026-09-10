@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -86,6 +85,7 @@ func onceTrueThenFalse() func() bool {
 // Asserts: emit_sbom ran once, no per-package nodes touched, no
 // reviewer ran (phase2_decider short-circuits to done).
 func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
@@ -185,7 +185,7 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-patch", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -234,6 +234,7 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 //	p2_campaign(review_clean) → p2_verify_build → p2_verify_run →
 //	p2_gate(converged) → emit_sbom → done
 func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
@@ -394,7 +395,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-minor", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -423,6 +424,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 // returns stable=true on the second invocation. The run then proceeds
 // through commit and exits via the Phase-2 review campaign.
 func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
@@ -570,7 +572,7 @@ func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), "run-sr-fix", securedRenovacyStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

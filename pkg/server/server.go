@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -24,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -56,6 +58,16 @@ type Server struct {
 	// acceptable: the SPA reset on `project_switched` invalidates any
 	// inflight request data before it's surfaced.
 	stateMu sync.RWMutex
+	// boardClockWarned dedups the launch guard's clock-degradation warn on
+	// its edge (empty = healthy). Guarded by stateMu.
+	boardClockWarned string
+	// boardDispDone closes when the cloud board dispatcher run loop (and
+	// its drain writes) has fully returned; Shutdown waits on it, bounded.
+	// nil until ListenAndServe wires the dispatcher — both the write and
+	// the read go through stateMu (unsynchronized, a SIGTERM during boot
+	// raced the write, read nil, and skipped the very wait the drain
+	// depends on — caught by -race).
+	boardDispDone chan struct{}
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
@@ -78,6 +90,13 @@ type Server struct {
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
 	userNotifyCancel func()
+	// opsAlerts is the operator-alert dispatcher when alerts are
+	// configured (nil otherwise) — the outcome router's escalation
+	// channel rides its NotifyOperator.
+	opsAlerts *alert.OpsDispatcher
+	// opsAlertsCancel detaches the operator-alert dispatcher's bus
+	// subscription on Close.
+	opsAlertsCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
@@ -129,50 +148,82 @@ type Server struct {
 	// /api/local/secrets handlers need its scope-aware ops (ForScope, Project,
 	// Global, ListScoped), so keeping the concrete type here avoids a
 	// type-assertion in every handler. Nil in cloud mode.
-	localSecrets      *secrets.LayeredGenericSecretStore
-	runSecrets        secrets.RunSecretsStore
-	sealer            secrets.Sealer
-	oauthStore        secrets.OAuthStore
-	oauthPending      secrets.OAuthPendingStore
-	webhookConfigs    webhooks.ConfigStore
+	localSecrets    *secrets.LayeredGenericSecretStore
+	runSecrets      secrets.RunSecretsStore
+	sealer          secrets.Sealer
+	oauthStore      secrets.OAuthStore
+	oauthPending    secrets.OAuthPendingStore
+	webhookConfigs  webhooks.ConfigStore
+	webhookDeferred webhooks.DeferredLaunchStore
+	// syncDebounce is the quiet window a synchronize-lane review launch
+	// waits for (ITERION_WEBHOOK_SYNC_DEBOUNCE; 0 = launch immediately).
+	syncDebounce      time.Duration
 	webhookDeliveries webhooks.DeliveryStore
 	webhookCounter    webhooks.Counter
 	orgUsage          orgusage.Counter
-	orgDefaults       OrgLimitDefaults
-	credPool          *credpool.Broker
-	credPoolPools     credpool.PoolStore
-	credPoolPledges   credpool.PledgeStore
-	credPoolLeases    credpool.LeaseStore
-	credPoolLedger    credpool.Ledger
-	auditStore        audit.Store
+	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
+	// leaves the /credentials/usage views unregistered.
+	credUsage       credusage.Counter
+	orgDefaults     OrgLimitDefaults
+	credPool        *credpool.Broker
+	credPoolPools   credpool.PoolStore
+	credPoolPledges credpool.PledgeStore
+	credPoolLeases  credpool.LeaseStore
+	credPoolLedger  credpool.Ledger
+	auditStore      audit.Store
+	// avatarApplyTimeout overrides defaultAvatarApplyTimeout when > 0 (tests).
+	avatarApplyTimeout time.Duration
 	// usageCapSettings + usageCapSource are the platform runtime-settings
 	// store and its TTL-cached resolver (nil in env-only deployments):
 	// the admin settings routes mutate the former, /healthz and the
 	// launch preflight read the latter.
 	usageCapSettings usagecap.SettingsStore
 	usageCapSource   *usagecap.Resolver
-	pats             pat.Store
-	queue            QueueBackend
-	botBindings      secrets.BotSecretBindingStore
+	// usageCaps is the readings ledger the admin escape hatch clears (nil
+	// outside cloud mode). usageCapTrust bounds how long its readings are
+	// believed — the machine-wide value, so the credential state a key
+	// view reports is the one the launch walk acts on.
+	usageCaps     usagecap.Store
+	usageCapTrust usagecap.Trust
+	pats          pat.Store
+	queue         QueueBackend
+	botBindings   secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
 	pluginSources pluginsource.Store
+	// pluginSourceFetcher verifies a source at registration (see
+	// Config.PluginSourceFetcher).
+	pluginSourceFetcher *pluginsource.Fetcher
 	// botSources holds team-authored bot bundles (pkg/botsource) — the writable,
 	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
 	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
 	botSources botsource.Store
+	// runnerBuilds answers "what engine actually executes runs here", read off
+	// the build each runner stamps on the runs it takes. Nil in local mode
+	// (server and engine are one process) and on any store without the
+	// capability — the engine floor then reports this build alone
+	// (engine_floor.go).
+	runnerBuilds runnerBuildObserver
 	// botRoles / sandboxCfg are TTL resolvers over the platform settings
 	// families; the *Store fields are the write surfaces of the admin routes.
 	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
 	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
 	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
-	botVars         *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore    platformcfg.Store[platformcfg.BotVars]
+	// platformCreds gates who may draw on the deployment's own LLM
+	// credentials; nil (or an unenforced record) admits every tenant.
+	platformCreds      *platformcfg.Resolver[platformcfg.PlatformCredentials]
+	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
+	botVars            *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore       platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
-	platformBots   *platformcfg.Resolver[platformBotSet]
+	platformBots *platformcfg.Resolver[platformBotSet]
+	// bakedCatalog caches slug → version for the on-disk catalog, so the
+	// override-staleness comparison can be recomputed on every launch without
+	// re-walking every bot root each time (bot_override_staleness.go).
+	bakedCatalog   *platformcfg.Resolver[bakedCatalog]
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -180,6 +231,28 @@ type Server struct {
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
+	// forgeAppClients is the per-connection GitHub-App client cache
+	// (githubAppClientFor): one client — hence one set of minted tokens — per
+	// connection per replica, validated against the connection state it was
+	// built from and evicted by forgetForgeAppClient.
+	forgeAppClients   map[string]*cachedForgeAppClient
+	forgeAppClientsMu sync.Mutex
+	// boardBindings ties a team to one forge PROJECT board (ADR-097). Nil in
+	// local mode, which is what self-disables the endpoints and the sync
+	// worker.
+	boardBindings forge.BoardBindingStore
+	// boardClientForConnection / boardClientForBinding override the
+	// connection → board-client resolution in tests. Nil in prod → the
+	// forgeAdminFor path.
+	boardClientForConnection func(context.Context, string) (forge.BoardClient, forge.Provider, error)
+	boardClientForBinding    func(context.Context, forge.BoardBinding) (forge.BoardClient, error)
+	// forgeInstallationGrants reads what a GitHub App installation's owner
+	// actually approved. Nil in prod → the live InstallationInfo probe; a test
+	// injects the grant set without a signing key or an HTTP round trip.
+	forgeInstallationGrants func(context.Context, forge.Connection) (map[string]string, error)
+	// provisionApprovals parks team-admin provisioning requests when the
+	// org opted into ex-ante approval (Org.RequireProvisionApproval).
+	provisionApprovals forge.ProvisionApprovalStore
 	// authorTrustG is the lazily-built TTL cache behind the issue
 	// author-trust gate (webhooks + forge→board sync); use authorTrustGate().
 	authorTrustG      *authorTrust
@@ -209,6 +282,23 @@ type Server struct {
 	// deterministic instant to assert NextFire jumps to the expected slot).
 	// nil → time.Now().UTC().
 	scheduleClock func() time.Time
+	// gateClock overrides the wall clock the merge-gate sweeper measures its
+	// lookback window by (test seam — a test cannot wait an hour to reach the
+	// last pass over a run). nil → time.Now().UTC().
+	gateClock func() time.Time
+	// sweepDegraded brackets the orphan sweeper's degradation episode
+	// (edge-triggered Warn on entry, Info on recovery). The two failing
+	// stages are tracked as INDEPENDENT flags because they recover on
+	// different evidence — a clean scan vs a cleanly probed candidate —
+	// and a probe episode additionally closes after a bounded run of
+	// clean passes (a healthy fleet may never re-produce a stale
+	// candidate: a latched flag lies more than an optimistic close,
+	// which simply re-warns on the next failure). Owned by the single
+	// sweeper goroutine; no lock.
+	sweepDegraded        bool
+	sweepDegradedByScan  bool
+	sweepDegradedByProbe bool
+	sweepCleanPasses     int
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
@@ -222,21 +312,56 @@ type Server struct {
 	// per-command MinReplierRole — test seam). nil → realWebhookCommandGate.
 	// Distinct from webhookNoteGate: no reply-in-thread/thread-context logic
 	// (that is the Revi-converse specialisation); a generic command authorises
-	// the replier and launches.
-	webhookCommandGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
+	// the replier and launches. The outcome is the SAME three-state
+	// prforgeGateOutcome as the GitHub/Forgejo twin (webhookPRForgeCommandGate)
+	// — /revi approve needs to tell a configuration gap (gateUnevaluable, told
+	// to the commenter) apart from an evaluated refusal (gateRefused, silent).
+	webhookCommandGate func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, route webhooks.CommandRoute) (outcome prforgeGateOutcome, reason string, err error)
+	// webhookGitLabPRResolver overrides the merge-request resolution the
+	// GitLab command lane's fork guard needs (the note payload carries
+	// neither source_project_id nor target_project_id, so
+	// forge.PullRef.HeadRepoFullName can only be proven via the API — test
+	// seam). nil → realWebhookGitLabPRResolver.
+	webhookGitLabPRResolver func(ctx context.Context, cfg webhooks.Config, p gitlab.ParsedNote, botID string) (forge.PullRef, error)
 	// webhookPRForgeCommandGate overrides the GitHub/Forgejo issue_comment
 	// command replier gate (forge token + loop-guard + allowlist/role authz —
 	// test seam). nil → realWebhookPRForgeCommandGate.
-	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
+	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (outcome prforgeGateOutcome, reason string, err error)
 	// webhookPRForgePRResolver overrides the PR head/base resolution for a
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.
 	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
+	// webhookPRForgeReviewReplyGate overrides the review-thread reply gate
+	// (forge token + thread fetch + bot-in-thread + replier authz — test
+	// seam). Returns (authorized, threadContext, reason, err). nil →
+	// realWebhookPRForgeReviewReplyGate.
+	webhookPRForgeReviewReplyGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedReviewComment, botID string) (bool, string, string, error)
 	// webhookIterionBotAuthor overrides the "is this PR/MR authored by iterion's
 	// own forge bot" check that keeps the PR-open auto-review lane from launching
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
+	// webhookIterionBotReviewRequest overrides the "does this event ask
+	// iterion's own forge identity for a review" check behind the
+	// forge-native re-request-review trigger (test seam — the real impl
+	// resolves the provisioned forge Connection and probes the parser
+	// predicate with its logins). nil → realIterionBotReviewRequest.
+	webhookIterionBotReviewRequest func(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool
+	// webhookReviewRequestGate overrides the replier authorization of the
+	// re-request-review lane (test seam — the real impl resolves the bot's
+	// forge token and applies the same AuthorizedRepliers/MinReplierRole
+	// controls as every other manual trigger). nil →
+	// realWebhookReviewRequestGate.
+	webhookReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p gitlab.Parsed, botID string) (authorized bool, reason string, err error)
+	// webhookPRForgeReviewRequestGate is the GitHub/Forgejo twin of
+	// webhookReviewRequestGate (test seam). nil →
+	// realWebhookPRForgeReviewRequestGate.
+	webhookPRForgeReviewRequestGate func(ctx context.Context, cfg webhooks.Config, p prforge.Parsed, botID string) (authorized bool, reason string, err error)
+	// webhookRunIsLive overrides the "is this run still in flight" probe
+	// behind the re-request lane's collapse of a CODEOWNERS auto-request
+	// onto the open review of the same head (test seam). nil → the real
+	// impl reads the run's status through the runview service.
+	webhookRunIsLive func(ctx context.Context, runID string) bool
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
@@ -323,8 +448,16 @@ type Server struct {
 
 	// gateReconcileCancel unsubscribes the merge-gate reconciler at shutdown.
 	gateReconcileCancel func()
+	// forgePublishExpiryCancel unsubscribes the publish-grant reaper — the
+	// consumer that shortens a grant once its run can no longer publish.
+	forgePublishExpiryCancel func()
+	// boardSyncCancel stops the project-board reconciliation worker at
+	// shutdown, so a drain does not leave a pass writing to a forge.
+	boardSyncCancel func()
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
 	gateAutofixCancel func()
+	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
+	outcomeRouterCancel func()
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin
@@ -335,6 +468,25 @@ type Server struct {
 	// handler resolves a connection's merge-gate client (head-SHA lookup +
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
+
+	// forgeIssueCommenterFor is a test seam overriding how a connection's
+	// PR-comment client is resolved (the parked-review pause notice).
+	// Nil → real admin client via forgeAdminFor.
+	forgeIssueCommenterFor func(ctx context.Context, conn forge.Connection) (forgeIssueCommenter, error)
+
+	// forgeGitlabPullCommenterFor is a test seam overriding how a
+	// connection's GitLab MR-comment client is resolved (the /revi approve
+	// reply, which must land ON THE MERGE REQUEST — GitLab addresses it as a
+	// resource separate from issues, unlike GitHub/Forgejo's shared
+	// endpoint, so forgeIssueCommenterFor/CommentIssue would land on the
+	// wrong resource). Nil → real admin client via forgeAdminFor.
+	forgeGitlabPullCommenterFor func(ctx context.Context, conn forge.Connection) (gitlabPullCommenter, error)
+
+	// forgeReviewerAssignerFor is a test seam overriding how the
+	// publish-review handler resolves a connection's reviewer self-assign
+	// capability (nil result = capability absent). Nil field → real admin
+	// client via forgeAdminFor.
+	forgeReviewerAssignerFor func(ctx context.Context, conn forge.Connection) forge.ReviewerAssigner
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
@@ -421,57 +573,66 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		cfg.WSTickets = wsticket.NewMemoryStore(wsTicketTTL)
 	}
 	s := &Server{
-		cfg:               cfg,
-		logger:            logger,
-		mux:               newRecordingMux(),
-		addrReady:         make(chan struct{}),
-		shutdown:          make(chan struct{}),
-		authSvc:           cfg.AuthService,
-		signer:            cfg.AuthSigner,
-		oidcRegistry:      cfg.OIDCRegistry,
-		oidcStates:        cfg.OIDCStates,
-		desktopTickets:    cfg.DesktopTickets,
-		wsTickets:         cfg.WSTickets,
-		apiKeys:           cfg.ApiKeys,
-		genericSecrets:    cfg.GenericSecrets,
-		runSecrets:        cfg.RunSecrets,
-		sealer:            cfg.Sealer,
-		orgSSO:            cfg.OrgSSO,
-		orgDomains:        cfg.OrgDomains,
-		orgDomainTXT:      orgsso.DefaultTXTLookup(),
-		oauthStore:        cfg.OAuthForfait,
-		oauthPending:      cfg.OAuthPending,
-		webhookConfigs:    cfg.WebhookConfigs,
-		webhookDeliveries: cfg.WebhookDeliveries,
-		webhookCounter:    cfg.WebhookCounter,
-		orgUsage:          cfg.OrgUsage,
-		orgDefaults:       cfg.OrgDefaults,
-		credPool:          cfg.CredPoolBroker,
-		credPoolPools:     cfg.CredPoolPools,
-		credPoolPledges:   cfg.CredPoolPledges,
-		credPoolLeases:    cfg.CredPoolLeases,
-		credPoolLedger:    cfg.CredPoolLedger,
-		auditStore:        cfg.Audit,
-		usageCapSettings:  cfg.UsageCapSettings,
-		pats:              cfg.PATs,
-		queue:             cfg.Queue,
-		botBindings:       cfg.BotBindings,
-		forgeConnections:  cfg.ForgeConnections,
-		pluginSources:     cfg.PluginSources,
-		botSources:        cfg.BotSources,
-		botRolesStore:     cfg.BotRolesSettings,
-		sandboxCfgStore:   cfg.SandboxSettings,
-		botVarsStore:      cfg.BotVarsSettings,
-		forgeIntegrations: cfg.ForgeIntegrations,
-		forgeOAuthApps:    cfg.ForgeOAuthApps,
-		forgeGitHubApp:    cfg.ForgeGitHubApp,
-		memStore:          cfg.MemoryStore,
-		httpClient:        &http.Client{Timeout: 15 * time.Second},
-		browserSessions:   cfg.BrowserRegistry,
-		statsCache:        newRunStatsCache(),
-		locCache:          newRunLOCCache(),
-		marketplace:       cfg.Marketplace,
-		redis:             cfg.Redis,
+		cfg:                 cfg,
+		logger:              logger,
+		mux:                 newRecordingMux(),
+		addrReady:           make(chan struct{}),
+		shutdown:            make(chan struct{}),
+		authSvc:             cfg.AuthService,
+		signer:              cfg.AuthSigner,
+		oidcRegistry:        cfg.OIDCRegistry,
+		oidcStates:          cfg.OIDCStates,
+		desktopTickets:      cfg.DesktopTickets,
+		wsTickets:           cfg.WSTickets,
+		apiKeys:             cfg.ApiKeys,
+		genericSecrets:      cfg.GenericSecrets,
+		runSecrets:          cfg.RunSecrets,
+		sealer:              cfg.Sealer,
+		orgSSO:              cfg.OrgSSO,
+		orgDomains:          cfg.OrgDomains,
+		orgDomainTXT:        orgsso.DefaultTXTLookup(),
+		oauthStore:          cfg.OAuthForfait,
+		oauthPending:        cfg.OAuthPending,
+		webhookConfigs:      cfg.WebhookConfigs,
+		webhookDeliveries:   cfg.WebhookDeliveries,
+		webhookCounter:      cfg.WebhookCounter,
+		webhookDeferred:     cfg.WebhookDeferred,
+		syncDebounce:        webhookSyncDebounceFromEnv(),
+		orgUsage:            cfg.OrgUsage,
+		orgDefaults:         cfg.OrgDefaults,
+		credPool:            cfg.CredPoolBroker,
+		credPoolPools:       cfg.CredPoolPools,
+		credPoolPledges:     cfg.CredPoolPledges,
+		credPoolLeases:      cfg.CredPoolLeases,
+		credPoolLedger:      cfg.CredPoolLedger,
+		auditStore:          cfg.Audit,
+		usageCapSettings:    cfg.UsageCapSettings,
+		pats:                cfg.PATs,
+		queue:               cfg.Queue,
+		botBindings:         cfg.BotBindings,
+		forgeConnections:    cfg.ForgeConnections,
+		pluginSources:       cfg.PluginSources,
+		pluginSourceFetcher: cfg.PluginSourceFetcher,
+		botSources:          cfg.BotSources,
+		botRolesStore:       cfg.BotRolesSettings,
+		sandboxCfgStore:     cfg.SandboxSettings,
+		platformCredsStore:  cfg.PlatformCredentialsSettings,
+		botVarsStore:        cfg.BotVarsSettings,
+		forgeIntegrations:   cfg.ForgeIntegrations,
+		boardBindings:       cfg.BoardBindings,
+		provisionApprovals:  cfg.ProvisionApprovals,
+		forgeOAuthApps:      cfg.ForgeOAuthApps,
+		forgeGitHubApp:      cfg.ForgeGitHubApp,
+		memStore:            cfg.MemoryStore,
+		httpClient:          &http.Client{Timeout: 15 * time.Second},
+		browserSessions:     cfg.BrowserRegistry,
+		statsCache:          newRunStatsCache(),
+		locCache:            newRunLOCCache(),
+		marketplace:         cfg.Marketplace,
+		redis:               cfg.Redis,
+		usageCaps:           cfg.UsageCaps,
+		usageCapTrust:       usagecap.DefaultTrust(),
+		credUsage:           cfg.CredUsage,
 	}
 	// Platform settings families (bot_roles + sandbox): TTL resolvers over
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
@@ -494,10 +655,24 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	} else {
 		s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
 	}
+	// Shared with the publisher for the same reason, and more sharply: the
+	// publisher is this family's only consumer, so a private resolver here
+	// would leave Invalidate with nothing to invalidate.
+	if cfg.PlatformCredentialsResolver != nil {
+		s.platformCreds = cfg.PlatformCredentialsResolver
+	} else if cfg.PlatformCredentialsSettings != nil {
+		s.platformCreds = platformcfg.NewResolver(cfg.PlatformCredentialsSettings, logger.Warn)
+	}
 	// Built unconditionally (the fetch no-ops without a bot-source store):
 	// tests wire s.botSources after New, and the resolver must already
 	// exist for them — same reason the roles/sandbox resolvers are.
 	s.platformBots = s.newPlatformBotsResolver()
+	s.bakedCatalog = s.newBakedCatalogResolver()
+	// The fleet's own build report, when the store can serve it (Mongo).
+	// Absent in local mode, where appinfo already answers for both halves.
+	if obs, ok := cfg.Store.(runnerBuildObserver); ok {
+		s.runnerBuilds = obs
+	}
 	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
 	// A malformed env policy leaves it nil — the health echo reports the
 	// invalid value (existing behaviour) instead of a resolver quietly
@@ -509,6 +684,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		} else {
 			logger.Warn("server: usage-cap runtime settings disabled — env policy invalid: %v", err)
 		}
+	}
+	// The reading-trust bound the key views read a credential's refusal
+	// state through. A malformed value keeps the package defaults — the
+	// enforcement paths already refuse to start on it, and a view is not
+	// worth a second refusal.
+	if trust, err := usagecap.TrustFromEnv(); err == nil {
+		s.usageCapTrust = trust
+	} else {
+		logger.Warn("server: usage-reading trust bound falls back to defaults — %v", err)
 	}
 	// Local mode wires a *LayeredGenericSecretStore; keep the concrete type so
 	// the /api/local/secrets handlers use its scope-aware ops directly. Cloud

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 )
 
 // TestProxyDispatcher_RoundTripsToolCall is the V2-2 acceptance-level
@@ -212,6 +213,80 @@ func TestProxyDispatcher_PreservesErrAskUserAcrossWire(t *testing.T) {
 	}
 	if !strings.Contains(string(askErr.Conversation), "messages") {
 		t.Errorf("Conversation should round-trip; got %s", askErr.Conversation)
+	}
+}
+
+// TestClawRunner_RelayHooksCrossTheWireAsEventEnvelopes: the hooks the
+// runner installs on its claw backend write llm_request / llm_step_finished
+// on the dispatcher's stdout as `event` envelopes — the same channel and
+// the same serialised writer the tool proxies use, so a step's usage
+// leaves the container on the wire the launcher already reads.
+func TestClawRunner_RelayHooksCrossTheWireAsEventEnvelopes(t *testing.T) {
+	runnerStdinR, _ := io.Pipe()
+	runnerStdoutR, runnerStdoutW := io.Pipe()
+	defer runnerStdinR.Close()
+
+	var stderr strings.Builder
+	dispatcher := newProxyDispatcher(runnerStdinR, runnerStdoutW)
+	hooks := relayEventHooks(dispatcher, &stderr)
+	if hooks.OnLLMRequest == nil || hooks.OnLLMStepFinish == nil {
+		t.Fatal("the runner's claw backend has no step hooks: its per-step usage stays inside the container")
+	}
+
+	go func() {
+		hooks.OnLLMRequest("plan_review", model.LLMRequestInfo{Model: "gpt-5.6-sol", MessageCount: 2})
+		hooks.OnLLMStepFinish("plan_review", model.LLMStepInfo{Number: 1, InputTokens: 1234, OutputTokens: 56, CacheReadTokens: 7})
+		_ = runnerStdoutW.Close()
+	}()
+
+	reader := delegate.NewEnvelopeReader(runnerStdoutR)
+	var got []delegate.EventData
+	for {
+		env, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read envelope: %v", err)
+		}
+		if env.Type != delegate.EnvelopeEvent {
+			t.Fatalf("envelope type = %q, want %q", env.Type, delegate.EnvelopeEvent)
+		}
+		var ed delegate.EventData
+		if err := json.Unmarshal(env.Data, &ed); err != nil {
+			t.Fatalf("decode event data: %v", err)
+		}
+		got = append(got, ed)
+	}
+	if len(got) != 2 || got[0].Type != "llm_request" || got[1].Type != "llm_step_finished" {
+		t.Fatalf("relayed events = %+v, want [llm_request llm_step_finished]", got)
+	}
+	if got[0].Payload["model"] != "gpt-5.6-sol" || got[0].Payload["message_count"] != float64(2) {
+		t.Errorf("llm_request payload = %v", got[0].Payload)
+	}
+	step := got[1].Payload
+	if step["input_tokens"] != float64(1234) || step["output_tokens"] != float64(56) || step["cache_read_tokens"] != float64(7) || step["step"] != float64(1) {
+		t.Errorf("llm_step_finished payload = %v, want the token counts intact", step)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want nothing on a healthy channel", stderr.String())
+	}
+}
+
+// TestClawRunner_RelayReportsADeadChannelOnStderr: a hook cannot return an
+// error, so a relay write that fails is written to stderr — which the
+// launcher captures into the node's error — instead of vanishing.
+func TestClawRunner_RelayReportsADeadChannelOnStderr(t *testing.T) {
+	runnerStdinR, _ := io.Pipe()
+	runnerStdoutR, runnerStdoutW := io.Pipe()
+	defer runnerStdinR.Close()
+	_ = runnerStdoutR.Close() // the launcher is gone
+
+	var stderr strings.Builder
+	hooks := relayEventHooks(newProxyDispatcher(runnerStdinR, runnerStdoutW), &stderr)
+	hooks.OnLLMStepFinish("n", model.LLMStepInfo{InputTokens: 1})
+	if !strings.Contains(stderr.String(), "relay llm_step_finished") {
+		t.Fatalf("stderr = %q, want the failed relay named", stderr.String())
 	}
 }
 

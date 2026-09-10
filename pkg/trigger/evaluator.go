@@ -2,9 +2,12 @@ package trigger
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -17,7 +20,19 @@ type Evaluator struct {
 	subs     SubscriptionStore
 	launcher Launcher    // direct mode; nil = direct subs skipped (warn)
 	board    BoardEffect // board mode; nil = board subs skipped (warn)
-	logger   *iterlog.Logger
+	// projection executes EffectKindProjection rows. It has no bus-path
+	// counterpart: a projection is materialized by the outbox writer, never
+	// matched from a subscription.
+	projection ProjectionEffect
+	logger     *iterlog.Logger
+}
+
+// ProjectionEffect pushes a native card's CURRENT state onto the external
+// board its tenant is bound to. Implemented by the server (the reflect lives
+// with the board client and the binding store); nil here means a projection
+// row cannot execute, which is a wiring bug and says so.
+type ProjectionEffect interface {
+	ReflectCard(ctx context.Context, ev Event) error
 }
 
 // EvaluatorOption configures an Evaluator.
@@ -28,6 +43,11 @@ func WithLauncher(l Launcher) EvaluatorOption { return func(e *Evaluator) { e.la
 
 // WithBoardEffect sets the board-mode promote effect.
 func WithBoardEffect(b BoardEffect) EvaluatorOption { return func(e *Evaluator) { e.board = b } }
+
+// WithProjectionEffect sets the reflect executed by EffectKindProjection rows.
+func WithProjectionEffect(p ProjectionEffect) EvaluatorOption {
+	return func(e *Evaluator) { e.projection = p }
+}
 
 // WithLogger sets the leveled logger (nil-safe).
 func WithLogger(l *iterlog.Logger) EvaluatorOption { return func(e *Evaluator) { e.logger = l } }
@@ -47,58 +67,173 @@ func NewEvaluator(subs SubscriptionStore, opts ...EvaluatorOption) *Evaluator {
 // trigger must not silence the others). The signature matches
 // eventbus.Handler.
 func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
-	// An event already launched by an authoritative path (today: the inline
-	// forge webhook, which keeps its own admission/idempotency/quota gates)
-	// is OBSERVATIONAL only — never re-launch or re-promote it, so emitting it
-	// onto the bus cannot double-launch. The forge cutover (spine becomes the
-	// launcher) is the step that stops setting this marker.
-	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
-		return nil
-	}
-	cands, err := e.subs.ListCandidates(ctx, ev)
+	matched, err := matchingSubscriptions(ctx, e.subs, ev)
 	if err != nil {
 		return err
 	}
-	for _, sub := range cands {
-		if !sub.Enabled || !sub.Match.Match(ev) {
-			continue
-		}
-		plan := e.buildPlan(sub, ev)
-		switch sub.EffectiveMode() {
-		case bundle.ExecutionBoard:
-			if e.board == nil {
-				e.warn("trigger: subscription %s is board-mode but no board effect is wired; skipping", sub.ID)
-				continue
-			}
-			if _, err := e.board.Promote(ctx, plan); err != nil {
-				e.warn("trigger: promote for subscription %s failed: %v", sub.ID, err)
-			}
-		default:
-			if e.launcher == nil {
-				e.warn("trigger: subscription %s is direct-mode but no launcher is wired; skipping", sub.ID)
-				continue
-			}
-			if sub.ConsumeLabels && ev.Source == SourceBoard {
-				lc, ok := e.board.(LabelConsumer)
-				if !ok {
-					e.warn("trigger: subscription %s requires consume_labels but the board effect cannot consume; skipping", sub.ID)
-					continue
-				}
-				consumed, err := lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
-				if err != nil {
-					e.warn("trigger: consume labels for subscription %s failed: %v", sub.ID, err)
-					continue
-				}
-				if !consumed {
-					continue // already consumed by an earlier event — one-shot spent
-				}
-			}
-			if _, err := e.launcher.Launch(ctx, plan); err != nil {
-				e.warn("trigger: launch for subscription %s failed: %v", sub.ID, err)
-			}
+	for _, sub := range matched {
+		if err := e.applyEffect(ctx, sub, ev, effectOpts{}); err != nil &&
+			!errors.Is(err, errEffectOneShotSpent) && !errors.Is(err, errEffectMachineCaused) {
+			e.warn("trigger: effect for subscription %s failed: %v", sub.ID, err)
 		}
 	}
 	return nil
+}
+
+// matchingSubscriptions returns the enabled, matching, non-observational
+// subscriptions an event owes an effect to — the ONE matching prelude shared
+// by the bus path (Handle) and the outbox materialization
+// (MaterializeEffects), so an admission rule added for one path cannot be
+// missed by the other.
+func matchingSubscriptions(ctx context.Context, subs SubscriptionStore, ev Event) ([]Subscription, error) {
+	// A machine-caused event owes no effect to anyone — decline at the
+	// SHARED admission prelude, before the outbox materializes durable
+	// rows only MarkDone can retire: a schema migration emits one event
+	// per card, and cards x subscriptions rows of guaranteed no-ops
+	// queued FIFO ahead of the next genuine operator trigger is a
+	// head-of-line delay measured in tens of minutes. applyEffect keeps
+	// its own check as defense in depth.
+	if machineCaused(ev) {
+		return nil, nil
+	}
+
+	// An event already launched by an authoritative path (today: the inline
+	// forge webhook, which keeps its own admission/idempotency/quota gates)
+	// is OBSERVATIONAL only — never re-launch or re-promote it.
+	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
+		return nil, nil
+	}
+	cands, err := subs.ListCandidates(ctx, ev)
+	if err != nil {
+		return nil, err
+	}
+	var out []Subscription
+	for _, sub := range cands {
+		if sub.Enabled && sub.Match.Match(ev) {
+			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
+// effectOpts tunes applyEffect for its two callers: the bus path runs with
+// the zero value; the outbox worker threads its persisted consume state
+// through so a retry never re-spends a one-shot.
+type effectOpts struct {
+	// kind selects the arm. The zero value is EffectKindLaunch, matching the
+	// row discriminator's own zero value, so the bus path (which only ever
+	// carries launches) needs no change.
+	kind string
+	// alreadyConsumed skips the one-shot label consume — an outbox retry
+	// whose earlier attempt consumed and persisted the marker.
+	alreadyConsumed bool
+	// onConsumed, when non-nil, runs between the atomic label consume and
+	// the launch (the outbox persists its ConsumeMarked row marker there).
+	onConsumed func()
+}
+
+// errEffectMachineCaused = the event came from iterion acting on the
+// board by itself (a watchdog repair, a schema migration), so NO effect
+// fires on it: not a launch, not a promote, and no one-shot gate is
+// spent. Benign like errEffectOneShotSpent (the one-shot consumed by
+// another event): the subscription simply does not fire, on the bus path
+// AND the outbox path.
+var errEffectMachineCaused = errors.New("trigger: no effect fires on a machine-caused event")
+
+// machineCaused reports that an event was produced by the machine rather
+// than by an operator or a bot acting on the board. The set is the
+// ENUMERATED tracker.IsMachineReason — matching only the watchdog value
+// let a column rename (one event per card) spend every consume_labels
+// one-shot in the column at once, and matching ANY reason killed the
+// one-shot of an unblocked card (the cascade of an operator closing its
+// blocker — intent, not machinery).
+func machineCaused(ev Event) bool {
+	reason, _ := ev.Payload["reason"].(string)
+	return tracker.IsMachineReason(reason)
+}
+
+// applyEffect executes ONE (subscription, event) effect — the single
+// effect body both delivery paths share. Error semantics: nil =
+// executed; errEffectMachineCaused / errEffectOneShotSpent = benign, the
+// subscription does not fire; anything else = the effect did not happen
+// (the bus path warns and moves on, the outbox path retries).
+
+func (e *Evaluator) applyEffect(ctx context.Context, sub Subscription, ev Event, opts effectOpts) error {
+	// The PROJECTION arm, ahead of the machine-caused decline below: the
+	// decline here reads the EVENT, and a projection row is judged on the
+	// CARD — the reflect refuses a column iterion wrote on its own authority
+	// from the card's persisted provenance, the one authority the fast path
+	// and the periodic pass share. A row that is in the outbox (materialized
+	// before the event was known to be machine-caused, or by an older
+	// binary) therefore reaches the reflect and retires through its answer,
+	// never as a dead-letter. projectionOwed already declines the row at
+	// materialization for a machine-caused event.
+	//
+	// `sub` is the zero value here: a projection is owed to the tenant's board
+	// binding, never to a subscription.
+	if opts.kind == EffectKindProjection {
+		return e.applyProjection(ctx, ev)
+	}
+	// BEFORE the mode switch: a machine-caused event fires NOTHING. A
+	// subscription is written for an operator's (or a bot's) gesture, and
+	// a schema migration emits one event per card in the touched column —
+	// so gating only the one-shot left the ordinary launch and the board
+	// promote wide open: renaming a column mass-launched a run per card,
+	// on cards nobody moved (the exact fan-out the one-shot guard was
+	// written against, minus the label).
+	if machineCaused(ev) {
+		return errEffectMachineCaused
+	}
+	switch sub.EffectiveMode() {
+	case bundle.ExecutionBoard:
+		if e.board == nil {
+			return fmt.Errorf("board-mode subscription %s but no board effect wired", sub.ID)
+		}
+		_, err := e.board.Promote(ctx, e.buildPlan(sub, ev))
+		return err
+	default:
+		if e.launcher == nil {
+			return fmt.Errorf("direct-mode subscription %s but no launcher wired", sub.ID)
+		}
+		if sub.ConsumeLabels && ev.Source == SourceBoard && !opts.alreadyConsumed {
+			lc, ok := e.board.(LabelConsumer)
+			if !ok {
+				return fmt.Errorf("subscription %s requires consume_labels but the board effect cannot consume", sub.ID)
+			}
+			consumed, err := lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
+			if err != nil {
+				return fmt.Errorf("consume labels: %w", err)
+			}
+			if !consumed {
+				return errEffectOneShotSpent
+			}
+			if opts.onConsumed != nil {
+				opts.onConsumed()
+			}
+		}
+		_, err := e.launcher.Launch(ctx, e.buildPlan(sub, ev))
+		recordLaunchVerdict(ctx, e.subs, e.logger, sub, err)
+		return err
+	}
+}
+
+// applyProjection reflects one card's current state onto the tenant's bound
+// external board, through the SAME reflect the periodic reconciliation pass
+// uses — one implementation, two callers, so the fast path and the net cannot
+// disagree about what "already there" means.
+//
+// Both refusals are errors, not silent successes: a projection row only exists
+// where a binding did at materialization time, so an unwired effect or a
+// card-less event is a defect in the wiring above, and retiring the row would
+// leave the external board diverged with nothing said.
+func (e *Evaluator) applyProjection(ctx context.Context, ev Event) error {
+	if e.projection == nil {
+		return fmt.Errorf("trigger: projection effect for card %q (tenant %q) but no projection effect wired", ev.Subject.ID, ev.TenantID)
+	}
+	if ev.Subject.ID == "" {
+		return fmt.Errorf("trigger: projection effect for event %s carries no card id", ev.ID)
+	}
+	return e.projection.ReflectCard(ctx, ev)
 }
 
 // buildPlan resolves a (subscription, event) pair into a LaunchPlan: the

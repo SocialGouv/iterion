@@ -2,11 +2,10 @@ package runtime
 
 import (
 	"context"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -37,8 +36,8 @@ func setupReviewRun(t *testing.T, withCommit bool) (*Engine, store.RunStore, *ru
 	t.Helper()
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := originalTip
 	if withCommit {
@@ -82,12 +81,12 @@ func TestReviewGate_PerformGateMerge_Squash(t *testing.T) {
 	// (the change landed). We don't assert the squash SHA differs from finalSHA:
 	// for a single commit with identical metadata + same-second timestamp the
 	// squash commit can hash-equal the original — the merge still happened.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip == originalTip {
 		t.Fatalf("main did not advance from base %s", originalTip)
 	}
-	mainTree := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main^{tree}")))
-	wtTree := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", finalSHA+"^{tree}")))
+	mainTree := gittest.Run(t, repo, "rev-parse", "main^{tree}")
+	wtTree := gittest.Run(t, repo, "rev-parse", finalSHA+"^{tree}")
 	if mainTree != wtTree {
 		t.Errorf("main tree %s != worktree tree %s (change did not land)", mainTree, wtTree)
 	}
@@ -108,11 +107,11 @@ func TestReviewGate_PerformGateMerge_Squash(t *testing.T) {
 
 	// Idempotency: run-end finalize must skip (final_branch set) — no second
 	// (suffixed) storage branch and no re-merge.
-	before := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", "iterion/run/*")))
-	mainBefore := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	before := gittest.Run(t, repo, "branch", "--list", "iterion/run/*")
+	mainBefore := gittest.Run(t, repo, "rev-parse", "main")
 	eng.finalizeOnExit(ctx, "run-rg", eng.reconstructWorktreeContext(r2), nil, nil)
-	after := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", "iterion/run/*")))
-	mainAfter := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	after := gittest.Run(t, repo, "branch", "--list", "iterion/run/*")
+	mainAfter := gittest.Run(t, repo, "rev-parse", "main")
 	if before != after {
 		t.Errorf("finalizeOnExit created a duplicate branch: before=%q after=%q", before, after)
 	}
@@ -135,7 +134,7 @@ func TestReviewGate_PerformGateMerge_NoCommits(t *testing.T) {
 	if r2.MergeStatus != store.MergeStatusSkipped {
 		t.Errorf("MergeStatus = %q, want skipped", r2.MergeStatus)
 	}
-	out := strings.TrimSpace(string(mustOutput(t, repo, "git", "branch", "--list", "iterion/run/*")))
+	out := gittest.Run(t, repo, "branch", "--list", "iterion/run/*")
 	if out != "" {
 		t.Errorf("no branch should be created for a no-commit gate, got %q", out)
 	}
@@ -151,8 +150,8 @@ func TestReviewGate_PerformGateMerge_IntoNone(t *testing.T) {
 	if err := eng.performGateMerge(ctx, rs, hn, "gate", nil); err != nil {
 		t.Fatalf("performGateMerge: %v", err)
 	}
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
-	base := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "HEAD")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
+	base := gittest.Run(t, repo, "rev-parse", "HEAD")
 	if mainTip != base {
 		t.Errorf("main should not move for merge_into: none")
 	}
@@ -194,8 +193,8 @@ workflow wf:
 
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 	addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
 	s := tmpStore(t)
@@ -235,7 +234,7 @@ workflow wf:
 	if r2.MergeStatus != store.MergeStatusMerged {
 		t.Errorf("MergeStatus = %q, want merged", r2.MergeStatus)
 	}
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip == originalTip {
 		t.Errorf("main did not advance — merge did not land")
 	}
@@ -273,8 +272,8 @@ workflow wf:
 
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	s := tmpStore(t)
 	r, _ := s.CreateRun(ctx, "run-rc", "wf", nil)
@@ -299,7 +298,7 @@ workflow wf:
 	if r2.MergeStatus == store.MergeStatusMerged {
 		t.Errorf("request_changes must not merge, got merge_status=merged")
 	}
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Errorf("main moved on request_changes — should not merge")
 	}
@@ -387,7 +386,7 @@ func TestReviewGate_PerformGateMerge_MessageOverride(t *testing.T) {
 	if err := eng.performGateMerge(ctx, rs, hn, "gate", answers); err != nil {
 		t.Fatalf("performGateMerge: %v", err)
 	}
-	subject := strings.TrimSpace(string(mustOutput(t, repo, "git", "log", "-1", "--format=%s", "main")))
+	subject := gittest.Run(t, repo, "log", "-1", "--format=%s", "main")
 	if subject != "custom squash subject" {
 		t.Errorf("squash subject = %q, want custom override", subject)
 	}

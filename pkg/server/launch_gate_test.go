@@ -31,7 +31,7 @@ type erroringCounter struct{}
 func (erroringCounter) AllowRun(context.Context, string, time.Time, int, int64) (orgusage.DenyReason, error) {
 	return orgusage.DenyNone, context.DeadlineExceeded
 }
-func (erroringCounter) AddSpend(context.Context, string, time.Time, float64, int64, int64) error {
+func (erroringCounter) AddSpend(context.Context, string, time.Time, float64, int64, int64, int64) error {
 	return context.DeadlineExceeded
 }
 func (erroringCounter) ReleaseRun(context.Context, string, time.Time) error {
@@ -156,7 +156,7 @@ func TestGateLaunch_CostCap(t *testing.T) {
 	if _, d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
-	if err := counter.AddSpend(context.Background(), "t1", time.Now().UTC(), 6.0, 0, 0); err != nil {
+	if err := counter.AddSpend(context.Background(), "t1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, d := s.gateLaunch(ctx)
@@ -236,10 +236,15 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 	// A teamless non-admin is now DENIED (no workspace) — see
 	// TestGateLaunch_TeamlessDenied. Local mode (no auth store) still bypasses
 	// via the st == nil branch.
-	// Missing team fails open.
+	// A team the store answers is GONE is denied for the same reason: it is
+	// an answer, not a blip, and no later check can bound a run whose tenant
+	// does not exist. A DEGRADED read still fails open — the two are told
+	// apart in TestGateLaunch_VanishedTeamIsDeniedNotFailedOpen and
+	// TestGateLaunch_DegradedTeamReadFailsOpenLoudly.
 	ghost := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "ghost"})
-	if _, d := s.gateLaunch(ghost); d != nil {
-		t.Fatalf("ghost team denied: %+v", d)
+	_, d := s.gateLaunch(ghost)
+	if d == nil || d.status != 403 || d.reason != denyNoWorkspace {
+		t.Fatalf("ghost team denial = %+v, want 403 %s", d, denyNoWorkspace)
 	}
 }
 
@@ -355,7 +360,7 @@ func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
 	// Runner-side spend lands on the ORG key (RunMessage.OrgID).
-	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0); err != nil {
+	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	_, d := s.gateLaunch(ctxA)

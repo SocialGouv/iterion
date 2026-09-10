@@ -223,6 +223,7 @@ func TestSecretProjectScopeOverridesGlobal(t *testing.T) {
 }
 
 // TestSecretSetRejectsBadInput: the guards an operator hits on a typo.
+// Serial: its fixture calls t.Setenv (a temp ITERION_HOME and a pinned master key), which Go refuses in a parallel test.
 func TestSecretSetRejectsBadInput(t *testing.T) {
 	projectDir := isolateSecretStore(t)
 

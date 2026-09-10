@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	fgithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	fgitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
@@ -155,4 +156,56 @@ func TestLiveGitHub(t *testing.T) {
 		return
 	}
 	hookLifecycle(t, ctx, c, repo, []string{"pull_request", "issue_comment"})
+}
+
+// TestLiveGitLabAvatar proves PUT /user/avatar on a REAL GitLab for the account
+// a token authenticates as — the case that matters is a project/group access
+// token, whose bot user is documented without restriction but had never been
+// observed taking an avatar. Gated on a token FILE (never the token itself on
+// a command line):
+//
+//	FORGE_GITLAB_AVATAR_TOKEN_FILE=/tmp/probe-token FORGE_GITLAB_BASE=https://pic.sg.social.gouv.fr \
+//	  devbox run -- go test -tags forgelive -run TestLiveGitLabAvatar -v ./pkg/forge/
+//
+// It changes that account's avatar for real: point it at a throwaway token.
+func TestLiveGitLabAvatar(t *testing.T) {
+	tokenFile := strings.TrimSpace(os.Getenv("FORGE_GITLAB_AVATAR_TOKEN_FILE"))
+	if tokenFile == "" {
+		t.Skip("FORGE_GITLAB_AVATAR_TOKEN_FILE not set")
+	}
+	raw, err := os.ReadFile(tokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := envOr("FORGE_GITLAB_BASE", "https://gitlab.fabrique.social.gouv.fr")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	admin := fgitlab.New(nil, base, strings.TrimSpace(string(raw)))
+	ident, err := admin.WhoAmI(ctx)
+	if err != nil {
+		t.Fatalf("WhoAmI: %v", err)
+	}
+	t.Logf("token authenticates as @%s (id %s, kind %s)", ident.Login, ident.ID, ident.Kind)
+	// The product never rebrands a person's account; neither does this test.
+	// The one legitimate exception is a throwaway USER account, named out
+	// loud: a personal PAT lying around in the environment must not do.
+	if ident.Kind != forge.AccountKindBot && os.Getenv("FORGE_AVATAR_ALLOW_USER") != "1" {
+		t.Skipf("@%s is kind %q, not a bot account — refusing to rebrand a person (FORGE_AVATAR_ALLOW_USER=1 for a throwaway user account)", ident.Login, ident.Kind)
+	}
+
+	png := brand.BotAvatar(brand.VariantPlain)
+	url, err := admin.SetAvatar(ctx, png)
+	if err != nil {
+		t.Fatalf("SetAvatar as @%s (%s): %v", ident.Login, ident.Kind, err)
+	}
+	if url == "" {
+		t.Fatal("GitLab reported no avatar_url")
+	}
+	t.Logf("avatar set: %s", url)
+	// An uploaded (not gravatar/identicon) avatar lives under the instance's
+	// own uploads path.
+	if !strings.Contains(url, "/uploads/") {
+		t.Errorf("avatar url %q does not look like an uploaded avatar", url)
+	}
 }

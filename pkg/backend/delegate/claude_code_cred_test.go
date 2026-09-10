@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // resetClaudeCredEnv scrubs every process-env var that participates in
@@ -149,7 +151,7 @@ func assertForfaitEnv(t *testing.T, got map[string]string, wantDir string) {
 // without a readable file degrades to the file path (no token key).
 func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
 	dir := t.TempDir()
-	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,10 +161,12 @@ func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want the file's accessToken", got["CLAUDE_CODE_OAUTH_TOKEN"])
 	}
 
-	// No file → no token key, file path preserved.
+	// No readable file → the key is still written, empty, for the same
+	// suppression reason: we have pointed the CLI at a per-run config dir, so
+	// an inherited platform token must not quietly serve in its place.
 	bare := claudeForfaitEnv(t.TempDir(), false)
-	if _, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; present {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent when no credentials file is present: %v", bare)
+	if v, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; !present || v != "" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be present-and-empty with no credentials file: present=%v val=%q", present, v)
 	}
 }
 
@@ -221,6 +225,59 @@ func TestProviderFingerprint_FacadeBaseURL(t *testing.T) {
 	want := "facade:https://api.z.ai/api/anthropic"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A base URL is operator input, so it can embed the credential it
+// authenticates with. The fingerprint is persisted on run.json, the
+// node output map and events.jsonl and read by any run-reader, and the
+// secret guard cannot mask a token that never entered the secret
+// plumbing — so the credential-bearing URL components must not survive
+// into the label. It stays an equality key for session reuse all the
+// same: stable per URL, and distinct across URLs.
+func TestProviderFingerprint_FacadeBaseURLCarriesNoCredential(t *testing.T) {
+	const secret = "sk-live-abcdef123456"
+	cases := []struct {
+		name, base string
+	}{
+		{"userinfo", "https://" + secret + "@api.z.ai/api/anthropic"},
+		{"userinfo with password", "https://user:" + secret + "@api.z.ai/api/anthropic"},
+		{"query", "https://api.z.ai/api/anthropic?api_key=" + secret},
+		{"fragment", "https://api.z.ai/api/anthropic#" + secret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": tc.base})
+			if strings.Contains(got, secret) {
+				t.Fatalf("fingerprint leaks the credential: %q", got)
+			}
+			if !strings.HasPrefix(got, "facade:") {
+				t.Errorf("got %q — the facade: prefix is what usage_cap.forSource keys on", got)
+			}
+			if !strings.Contains(got, "api.z.ai/api/anthropic") {
+				t.Errorf("got %q — scheme+host+path is the readable half, it must survive", got)
+			}
+			// Stable: a second call on the same URL must render the
+			// same label, or shouldDropSessionFork discards the parent
+			// session on every single call.
+			if again := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": tc.base}); again != got {
+				t.Errorf("unstable: %q then %q", got, again)
+			}
+			// Non-colliding: the sanitized form must not collapse onto
+			// the bare URL, or a session built on one is resumed on the
+			// other and its signed thinking blocks 400.
+			bare := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"})
+			if got == bare {
+				t.Errorf("collided with the credential-free URL: %q", got)
+			}
+		})
+	}
+
+	// Two URLs differing ONLY in the stripped part stay distinct.
+	a := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic?api_key=one"})
+	b := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic?api_key=two"})
+	if a == b {
+		t.Errorf("two distinct facades collapsed to one label: %q", a)
 	}
 }
 
@@ -336,7 +393,7 @@ func TestShouldDropSessionFork_UnknownCurrentKeepsForkWithParentSet(t *testing.T
 // refresher keeps fresh.
 func TestClaudeForfaitEnv_SandboxedRemapsConfigDir(t *testing.T) {
 	dir := t.TempDir()
-	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -371,3 +428,55 @@ func (noopLikeRun) Driver() string { return "noop" }
 type k8sLikeRun struct{ sandbox.Run }
 
 func (k8sLikeRun) Driver() string { return "kubernetes" }
+
+// The usage-source stamp: every reading leaving a session names the
+// provider routing it ran on, so the runner's meter charges the refusal
+// to the credential that was actually spent.
+func TestStampUsageSource(t *testing.T) {
+	var got usagecap.Reading
+	hook := stampUsageSource(func(r usagecap.Reading) error { got = r; return nil }, "anthropic-direct")
+	if err := hook(usagecap.Reading{Window: usagecap.WindowFrequency}); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if got.Source != "anthropic-direct" {
+		t.Fatalf("Source = %q, want the session fingerprint", got.Source)
+	}
+	// A reading that already names its source keeps it.
+	if err := hook(usagecap.Reading{Source: "facade:x"}); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if got.Source != "facade:x" {
+		t.Fatalf("Source = %q, want the reading's own label preserved", got.Source)
+	}
+	if stampUsageSource(nil, "x") != nil {
+		t.Fatal("no observer must stay no observer")
+	}
+}
+
+// An EXPIRED credentials file must not export CLAUDE_CODE_OAUTH_TOKEN. That
+// variable is the first-precedence headless auth path — the CLI reads it BEFORE
+// the credentials file — so exporting a dead token would shadow the very file
+// the CLI (or the runner's refresh worker) can still renew from. Dropping the
+// key degrades to the file path, which is this resolver's documented fallback.
+func TestClaudeForfaitEnv_SkipsExpiredOAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-STALE","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeForfaitEnv(dir, false)
+	// PRESENT AND EMPTY, not absent. This variable is the CLI's
+	// first-precedence auth path, so an absent key lets the pod's own ambient
+	// CLAUDE_CODE_OAUTH_TOKEN — the PLATFORM forfait on a prod runner —
+	// outrank the per-run CLAUDE_CONFIG_DIR we just pointed at, and a tenant
+	// whose blob went stale would silently bill the platform's account. The
+	// three ANTHROPIC_* siblings are cleared for exactly this reason.
+	v, present := got["CLAUDE_CODE_OAUTH_TOKEN"]
+	if !present || v != "" {
+		t.Errorf("expired token must CLEAR the inherited one: present=%v val=%q", present, v)
+	}
+	// The file path itself still travels: the CLI reads and refreshes it.
+	if got["CLAUDE_CONFIG_DIR"] != dir {
+		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want %q", got["CLAUDE_CONFIG_DIR"], dir)
+	}
+}

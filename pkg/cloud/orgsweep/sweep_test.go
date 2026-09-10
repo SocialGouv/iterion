@@ -14,6 +14,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 func TestNextRun(t *testing.T) {
@@ -76,7 +78,7 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo orgsweep suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -86,7 +88,7 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_orgsweep_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dropCancel := mongotest.TeardownCtx()
 		defer dropCancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -132,6 +134,20 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	ins("forge_connections", bson.M{"_id": "fc-b", "tenant_id": teamB})
 	ins("api_keys", bson.M{"_id": "k-a", "tenant_id": teamA})
 	ins("api_keys", bson.M{"_id": "k-b", "tenant_id": teamB})
+	// Sealed credentials owned by a RESERVED scope, which neither the team
+	// loop nor the org loop can match: an org-tier row is keyed
+	// "orgtier:<org>" and an OAuth record by an owner in its own namespace.
+	// Left behind, these are a tenant's LLM credentials surviving the purge
+	// of the tenant.
+	ins("api_keys", bson.M{"_id": "k-tier-a", "tenant_id": secrets.OrgTierTenantID(orgA), "scope_team": secrets.OrgTierTenantID(orgA)})
+	ins("api_keys", bson.M{"_id": "k-tier-b", "tenant_id": secrets.OrgTierTenantID(orgB), "scope_team": secrets.OrgTierTenantID(orgB)})
+	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-team-a", "user_id": secrets.OrgOwnerKey(teamA)})
+	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-team-b", "user_id": secrets.OrgOwnerKey(teamB)})
+	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-tier-a", "user_id": secrets.OrgTierOwnerKey(orgA)})
+	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-tier-b", "user_id": secrets.OrgTierOwnerKey(orgB)})
+	// A PERSONAL forfait belongs to a user, who outlives the org — it must
+	// survive even when its owner was a member of the purged org.
+	ins(secrets.OAuthCollectionName, bson.M{"_id": "oa-user", "user_id": "user-in-org-a"})
 	// Org-scoped.
 	ins("audit_events", bson.M{"_id": "au-a", "tenant_id": orgA})
 	ins("audit_events", bson.M{"_id": "au-b", "tenant_id": orgB})
@@ -177,6 +193,15 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	if n := count("api_keys", teamFilter(teamA)); n != 0 {
 		t.Errorf("api_keys for team A: got %d, want 0", n)
 	}
+	if n := count("api_keys", bson.M{"tenant_id": secrets.OrgTierTenantID(orgA)}); n != 0 {
+		t.Errorf("org-tier api_keys for org A: got %d, want 0 — the org's own sealed key survived its purge", n)
+	}
+	if n := count(secrets.OAuthCollectionName, bson.M{"user_id": secrets.OrgOwnerKey(teamA)}); n != 0 {
+		t.Errorf("team forfait for team A: got %d, want 0 — a sealed subscription survived the purge", n)
+	}
+	if n := count(secrets.OAuthCollectionName, bson.M{"user_id": secrets.OrgTierOwnerKey(orgA)}); n != 0 {
+		t.Errorf("org-tier forfait for org A: got %d, want 0", n)
+	}
 	if n := count("audit_events", bson.M{"tenant_id": orgA}); n != 0 {
 		t.Errorf("audit for org A: got %d, want 0", n)
 	}
@@ -196,6 +221,18 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	}
 	if n := count("forge_connections", teamFilter(teamB)); n != 1 {
 		t.Errorf("forge_connections for team B: got %d, want 1", n)
+	}
+	if n := count("api_keys", bson.M{"tenant_id": secrets.OrgTierTenantID(orgB)}); n != 1 {
+		t.Errorf("org-tier api_keys for org B: got %d, want 1 — purging A reached into B's reserved scope", n)
+	}
+	for _, id := range []string{secrets.OrgOwnerKey(teamB), secrets.OrgTierOwnerKey(orgB)} {
+		if n := count(secrets.OAuthCollectionName, bson.M{"user_id": id}); n != 1 {
+			t.Errorf("forfait %s: got %d, want 1", id, n)
+		}
+	}
+	// The personal forfait outlives the org, by design.
+	if n := count(secrets.OAuthCollectionName, bson.M{"user_id": "user-in-org-a"}); n != 1 {
+		t.Errorf("personal forfait: got %d, want 1 — a user's own credential was purged with an org they belonged to", n)
 	}
 	if n := count("api_keys", teamFilter(teamB)); n != 1 {
 		t.Errorf("api_keys for team B: got %d, want 1", n)

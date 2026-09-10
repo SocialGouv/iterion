@@ -5,7 +5,7 @@
 ## orchestrate multi-agent workflows (the `agent` subagent tool). It is a mode,
 ## not a wire value — the runtime sends `xhigh` to the provider and appends a
 ## "## Workflow Orchestration" system-prompt section. Reliable only on
-## claude-opus-4-8 (else compiles with a C089 warning and runs as plain xhigh).
+## claude-opus-4-8 or a Claude 5 model (else compiles with a C089 warning and runs as plain xhigh).
 ## Restricting tools below shows the runtime auto-adding the `agent` subagent
 ## tool so the orchestration prerogative has something to act on.
 ## See docs/ultracode.md.

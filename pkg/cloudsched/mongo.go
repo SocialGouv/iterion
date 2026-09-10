@@ -84,6 +84,25 @@ func (s *MongoStore) ClaimTick(ctx context.Context, id string, expectedNext, new
 	return res.MatchedCount > 0, nil
 }
 
+// MarkLaunchError sets (or clears) the schedule's launch health with a
+// targeted field write — never the full-replace Update below uses, because the
+// ticker's copy is the one ListDue returned and an operator may have retuned
+// the row since.
+func (s *MongoStore) MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error {
+	update := bson.M{"$set": bson.M{"last_error": lastError, "last_error_at": at.UTC()}}
+	if lastError == "" {
+		update = bson.M{"$unset": bson.M{"last_error": "", "last_error_at": ""}}
+	}
+	res, err := s.kit.Coll().UpdateOne(ctx, bson.M{"_id": id}, update)
+	if err != nil {
+		return fmt.Errorf("cloudsched: mark launch error: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Update applies a partial mutation. Reads the current row, mutates it via
 // applySchedulePatch, and writes back via ReplaceOne — the atomicity that
 // matters here is exactly-once fire (ClaimTick's CAS), not multi-writer

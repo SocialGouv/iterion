@@ -937,7 +937,7 @@ func TestResolveCommandTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseRefs: %v", err)
 			}
-			got := resolveCommandTemplate(tt.command, refs, tt.input, nil)
+			got := resolveCommandTemplate(tt.command, refs, tt.input, nil, nil, "")
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -1059,7 +1059,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	t.Run("string JSON-quoted", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{input.name}}"}}
 		input := map[string]any{"name": "@types/express"}
-		got := resolveScriptTemplate("const n = {{input.name}};", refs, input, nil)
+		got := resolveScriptTemplate("const n = {{input.name}};", refs, input, nil, nil, "")
 		want := `const n = "@types/express";`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -1068,7 +1068,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	t.Run("string with apostrophe survives", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"msg"}, Raw: "{{input.msg}}"}}
 		input := map[string]any{"msg": "Bob's note"}
-		got := resolveScriptTemplate("const m = {{input.msg}};", refs, input, nil)
+		got := resolveScriptTemplate("const m = {{input.msg}};", refs, input, nil, nil, "")
 		want := `const m = "Bob's note";`
 		if got != want {
 			t.Errorf("got %q, want %q (shell-escape would have produced 'Bob'\\''s note' breaking JS)", got, want)
@@ -1077,7 +1077,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	t.Run("map as object literal", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"obj"}, Raw: "{{input.obj}}"}}
 		input := map[string]any{"obj": map[string]any{"k": "v"}}
-		got := resolveScriptTemplate("const o = {{input.obj}};", refs, input, nil)
+		got := resolveScriptTemplate("const o = {{input.obj}};", refs, input, nil, nil, "")
 		want := `const o = {"k":"v"};`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -1090,16 +1090,35 @@ func TestResolveScriptTemplate(t *testing.T) {
 				map[string]any{"name": "@types/express", "target": "5.0.6"},
 			},
 		}
-		got := resolveScriptTemplate("const a = {{input.arr}};", refs, input, nil)
+		got := resolveScriptTemplate("const a = {{input.arr}};", refs, input, nil, nil, "")
 		want := `const a = [{"name":"@types/express","target":"5.0.6"}];`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+	// The other half of the contract a tool script depends on: an input the
+	// edge did not provide (a node that never ran) renders as the language's
+	// null literal, so the script PARSES and can read the absence itself. A
+	// bare `{{input.x}}` left as text, or rendered as the empty token, is a
+	// SyntaxError before any user logic runs — and a bot that hands a
+	// subbot's provenance to a deterministic gate would die at the gate
+	// instead of judging with "none reported".
+	t.Run("absent input renders the null literal", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"acted_commits"}, Raw: "{{input.acted_commits}}"}}
+		got := resolveScriptTemplate("x = ({{input.acted_commits}} or \"\")", refs, map[string]any{}, nil, nil, "")
+		want := `x = (null or "")`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		gotNil := resolveScriptTemplate("x = {{input.acted_commits}}", refs, map[string]any{"acted_commits": nil}, nil, nil, "")
+		if gotNil != "x = null" {
+			t.Errorf("explicit nil rendered %q, want %q", gotNil, "x = null")
+		}
+	})
 	t.Run("bang form still raw", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{!input.name}}", Unquoted: true}}
 		input := map[string]any{"name": "foo"}
-		got := resolveScriptTemplate("var x = {{!input.name}};", refs, input, nil)
+		got := resolveScriptTemplate("var x = {{!input.name}};", refs, input, nil, nil, "")
 		// Bang form returns the string verbatim — author is
 		// responsible for any wrapping. Mirrors the shell-context
 		// bang behaviour.
@@ -1116,7 +1135,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 		// JS / Python / Ruby — so the script always parses.
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{input.attempted}}"}}
 		input := map[string]any{} // attempted missing
-		got := resolveScriptTemplate("const x = {{input.attempted}};", refs, input, nil)
+		got := resolveScriptTemplate("const x = {{input.attempted}};", refs, input, nil, nil, "")
 		want := `const x = null;`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -1129,7 +1148,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 		// an empty expression.
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{!input.attempted}}", Unquoted: true}}
 		input := map[string]any{} // attempted missing
-		got := resolveScriptTemplate("const x = {{!input.attempted}};", refs, input, nil)
+		got := resolveScriptTemplate("const x = {{!input.attempted}};", refs, input, nil, nil, "")
 		want := `const x = null;`
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)

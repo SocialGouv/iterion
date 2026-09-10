@@ -5,12 +5,12 @@ package e2e
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -132,11 +132,9 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	}
 
 	// Probe whether ANY upgrade landed: count commits beyond the seed.
-	cmd := exec.Command("git", "-C", workspaceDir, "rev-list", "--count", "HEAD")
-	out, err := cmd.CombinedOutput()
-	commitCount := strings.TrimSpace(string(out))
+	commitCount, err := gittest.Try(workspaceDir, "rev-list", "--count", "HEAD")
 	if err != nil {
-		t.Errorf("git rev-list failed: %v\n%s", err, out)
+		t.Errorf("git rev-list failed: %v\n%s", err, commitCount)
 	} else {
 		t.Logf("Commits in workspace: %s (≥3 expected: seed + npm-fixture + ≥1 upgrade)", commitCount)
 	}
@@ -247,9 +245,8 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 	requireWorkspaceCommitGrowth(t, workspaceDir, commitsBefore)
-	cmd := exec.Command("git", "-C", workspaceDir, "log", "--oneline", "-30")
-	out, _ := cmd.CombinedOutput()
-	t.Logf("Commits in workspace:\n%s", string(out))
+	out, _ := gittest.Try(workspaceDir, "log", "--oneline", "-30")
+	t.Logf("Commits in workspace:\n%s", out)
 
 	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
 	assessQualityRaw(t, "secured-renovacy", "Renovacy", "Upgrade polyglot CVE-flagged dependencies incl. node-ipc malware screen", runID, workspaceDir, storeDir, s, events, time.Since(start), reason, gitArtifactEvidence(t, workspaceDir))

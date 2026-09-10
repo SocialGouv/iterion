@@ -89,6 +89,7 @@ func presetMiniRecipe(vars recipe.PresetVars) recipe.RecipeSpec {
 }
 
 func TestRunRecipeAppliesPresetVarsAndVarStillWins(t *testing.T) {
+	t.Parallel()
 	botFile := filepath.Join("testdata", "preset_mini.bot")
 
 	t.Run("the recipe's preset vars reach the run", func(t *testing.T) {
@@ -145,6 +146,7 @@ func TestRunRecipeAppliesPresetVarsAndVarStillWins(t *testing.T) {
 // own budget cannot finish the run, so the outcome is a direct readout of
 // whether the recipe budget was applied.
 func TestRunRecipeBudgetOverridesTheWorkflowBudget(t *testing.T) {
+	t.Parallel()
 	botFile := filepath.Join("testdata", "budget_override_mini.bot")
 
 	base := recipe.RecipeSpec{
@@ -183,6 +185,7 @@ func TestRunRecipeBudgetOverridesTheWorkflowBudget(t *testing.T) {
 // A recipe pointing at a different workflow than the one being run would
 // silently apply the wrong presets. The command must refuse.
 func TestRunRecipeRefusesAMismatchedWorkflow(t *testing.T) {
+	t.Parallel()
 	path := writeRecipe(t, recipe.RecipeSpec{
 		Name:        "wrong-target",
 		WorkflowRef: recipe.WorkflowRef{Name: "some_other_workflow"},
@@ -199,6 +202,7 @@ func TestRunRecipeRefusesAMismatchedWorkflow(t *testing.T) {
 // A malformed or missing recipe must fail loudly at launch, not degrade
 // into an un-overlaid run that looks like it worked.
 func TestRunRecipeRefusesAnUnloadableFile(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.json")
 	if _, err := runWithRecipe(t, "recipe-missing", missing, filepath.Join("testdata", "preset_mini.bot"), nil); err == nil {
 		t.Fatal("a missing --recipe file was accepted")

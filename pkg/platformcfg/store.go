@@ -23,6 +23,9 @@ const (
 	FamilyBotRoles = "bot_roles"
 	FamilySandbox  = "sandbox"
 	FamilyBotVars  = "bot_vars"
+	// FamilyPlatformCredentials gates who may draw on the deployment's own
+	// LLM credentials.
+	FamilyPlatformCredentials = "platform_credentials"
 )
 
 // MongoStore is the cloud Store for one family: the single document every
@@ -45,6 +48,12 @@ func NewMongoSandbox(db *mongo.Database) *MongoStore[Sandbox] {
 // NewMongoBotVars binds the bot_vars family to a database.
 func NewMongoBotVars(db *mongo.Database) *MongoStore[BotVars] {
 	return &MongoStore[BotVars]{col: db.Collection(colPlatformSettings), docID: FamilyBotVars}
+}
+
+// NewMongoPlatformCredentials binds the platform-credential audience to a
+// database.
+func NewMongoPlatformCredentials(db *mongo.Database) *MongoStore[PlatformCredentials] {
+	return &MongoStore[PlatformCredentials]{col: db.Collection(colPlatformSettings), docID: FamilyPlatformCredentials}
 }
 
 func (s *MongoStore[T]) Get(ctx context.Context) (*T, error) {

@@ -1,7 +1,5 @@
 {{- if .Values.runner.enabled -}}
 # The runner Deployment is rendered only when runner.enabled=true.
-# The runner subcommand (T-29) and NATS consumer (T-25, T-27) must
-# ship before this can be turned on in production.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +8,8 @@ metadata:
     {{- include "iterion.labels" . | nindent 4 }}
     app.kubernetes.io/component: runner
 spec:
+  strategy:
+    {{- toYaml .Values.runner.strategy | nindent 4 }}
   {{- if not .Values.runner.keda.enabled }}
   replicas: {{ .Values.runner.replicas }}
   {{- end }}
@@ -37,6 +37,9 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "iterion.serviceAccountName" . }}
+      {{- with .Values.runner.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         {{- toYaml (default .Values.securityContext .Values.runner.podSecurityContext) | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
@@ -85,8 +88,14 @@ spec:
           {{- end }}
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
-          {{- if or .Values.runner.sandbox.enabled .Values.runner.cache.enabled }}
           env:
+            # Literal PodTemplate values are load-bearing: KEDA/proportional
+            # scaling may create a new pod from an old ReplicaSet after the
+            # shared ConfigMap changed. That pod must retain epoch N.
+            - name: ITERION_RUNNER_EPOCH
+              value: {{ .Values.config.rollout.runnerEpoch | int64 | quote }}
+            - name: ITERION_RUNNER_EPOCH_MISMATCH_DELAY
+              value: {{ .Values.config.rollout.epochMismatchDelay | quote }}
             {{- if .Values.runner.sandbox.enabled }}
             # Downward API: ITERION_POD_IP is required for the kubernetes
             # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so
@@ -111,6 +120,41 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            {{- with .Values.runner.sandbox.scheduling }}
+            # Scheduling policy stamped on every per-run sandbox pod — literal
+            # PodTemplate values for the same reason as the epoch above: a pod
+            # created from an old ReplicaSet must keep the policy it was rolled
+            # out with. Unset values are not rendered. See docs/sandbox.md
+            # § "Scheduling: requests and node spread".
+            {{- with .requests }}
+            {{- if .cpu }}
+            - name: ITERION_SANDBOX_K8S_REQUESTS_CPU
+              value: {{ .cpu | quote }}
+            {{- end }}
+            {{- if .memory }}
+            - name: ITERION_SANDBOX_K8S_REQUESTS_MEMORY
+              value: {{ .memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .limits }}
+            {{- if .cpu }}
+            - name: ITERION_SANDBOX_K8S_LIMITS_CPU
+              value: {{ .cpu | quote }}
+            {{- end }}
+            {{- if .memory }}
+            - name: ITERION_SANDBOX_K8S_LIMITS_MEMORY
+              value: {{ .memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .spread }}
+            - name: ITERION_SANDBOX_K8S_SPREAD
+              value: {{ .spread | quote }}
+            {{- end }}
+            {{- if .podReadyTimeout }}
+            - name: ITERION_SANDBOX_K8S_POD_READY_TIMEOUT
+              value: {{ .podReadyTimeout | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.runner.cache.enabled }}
             # Point Go's module + build caches at the shared RWX volume so a
@@ -123,7 +167,6 @@ spec:
             - name: GOCACHE
               value: {{ printf "%s/go/build" .Values.runner.cache.mountPath | quote }}
             {{- end }}
-          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "iterion.fullname" . }}-config

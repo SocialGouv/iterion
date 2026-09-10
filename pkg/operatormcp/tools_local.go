@@ -404,7 +404,7 @@ func handleLocalRunGet(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if r.MergeStatus != "" {
 		view["merge_status"] = string(r.MergeStatus)
 	}
-	view["resumable"] = r.Status == store.RunStatusFailedResumable || r.Status == store.RunStatusCancelled || r.Status.IsPaused()
+	view["resumable"] = r.Status.CanOperatorResume()
 
 	// Liveness of a "running" doc: the run flock is the oracle (held ⇔
 	// some live process is executing the run; the OS drops it on any
@@ -679,7 +679,7 @@ func handleLocalRun(ctx context.Context, s *Server, raw json.RawMessage) (string
 		// "running" run forever — mark it failed, visibly. Only real
 		// start failures land here: a degraded .pid write is a warning
 		// on a HEALTHY run, never a failure (the runner is executing).
-		if uerr := st.UpdateRunStatus(ctx, runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
+		if uerr := store.FailRunAtLaunch(ctx, st, runID, "runner failed to start: "+err.Error()); uerr != nil {
 			return "", false, fmt.Errorf("start runner: %w (and marking the run failed also failed: %v)", err, uerr)
 		}
 		return "", false, fmt.Errorf("start runner: %w", err)
@@ -725,7 +725,7 @@ func handleLocalResume(ctx context.Context, s *Server, raw json.RawMessage) (str
 	if err != nil {
 		return "", false, err
 	}
-	if !r.Status.IsPaused() && r.Status != store.RunStatusFailedResumable && r.Status != store.RunStatusCancelled {
+	if !r.Status.CanOperatorResume() {
 		return "", false, fmt.Errorf("run %s has status %s — only paused, failed_resumable or cancelled runs can be resumed", r.ID, r.Status)
 	}
 	filePath := s.resolvePath(args.FilePath)

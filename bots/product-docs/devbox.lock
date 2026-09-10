@@ -1,6 +1,71 @@
 {
   "lockfile_version": "1",
   "packages": {
+    "crane@0.21.9": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#crane",
+      "source": "devbox-search",
+      "version": "0.21.9",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "crane",
+              "path": "/nix/store/s062v264ldzwg9x0diwcxrzvvbvjdmb5-go-containerregistry-0.21.9-crane",
+              "default": true
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/3cisn99ibw2nphlf8dl5v0bgd2c2kss3-go-containerregistry-0.21.9",
+              "default": true
+            },
+            {
+              "name": "gcrane",
+              "path": "/nix/store/43kvp346zryn98zmr1x3wn5fmsaz31gg-go-containerregistry-0.21.9-gcrane"
+            }
+          ],
+          "store_path": "/nix/store/s062v264ldzwg9x0diwcxrzvvbvjdmb5-go-containerregistry-0.21.9-crane"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "crane",
+              "path": "/nix/store/hl4p2lxacywfsyrlc4n1ij3lk4nnbcxk-go-containerregistry-0.21.9-crane",
+              "default": true
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/ja4illyyl0m9d1h6pcv8fm3lkqkk9vd5-go-containerregistry-0.21.9",
+              "default": true
+            },
+            {
+              "name": "gcrane",
+              "path": "/nix/store/i4xbwc59pql16z9lp8s2nknr1iyy8w4s-go-containerregistry-0.21.9-gcrane"
+            }
+          ],
+          "store_path": "/nix/store/hl4p2lxacywfsyrlc4n1ij3lk4nnbcxk-go-containerregistry-0.21.9-crane"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "crane",
+              "path": "/nix/store/q56y6bvkcyrvg5m9ki5q5w8x8lgwx8ll-go-containerregistry-0.21.9-crane",
+              "default": true
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/7318ps47zwckkqbi10yvwwdwn19zcvjb-go-containerregistry-0.21.9",
+              "default": true
+            },
+            {
+              "name": "gcrane",
+              "path": "/nix/store/wx1ihzs1jys180d1r22axp3gvbihz068-go-containerregistry-0.21.9-gcrane"
+            }
+          ],
+          "store_path": "/nix/store/q56y6bvkcyrvg5m9ki5q5w8x8lgwx8ll-go-containerregistry-0.21.9-crane"
+        }
+      }
+    },
     "gh@2.96.0": {
       "last_modified": "2026-07-29T04:59:45Z",
       "resolved": "github:NixOS/nixpkgs/9bc02893134c733dd85de46ee4fb2fac696b5529#gh",
@@ -88,6 +153,71 @@
             }
           ],
           "store_path": "/nix/store/rxfjy7iw808sa8gi6l36p8932y73h7q5-glab-1.108.0"
+        }
+      }
+    },
+    "kubectl@1.36.3": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#kubectl",
+      "source": "devbox-search",
+      "version": "1.36.3",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/4ly3f60sf2y8lx4ad4nlv4d4xzm49cai-kubectl-1.36.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/j4lcjil024kv6xli1y03whn4rv1x1ifv-kubectl-1.36.3-man",
+              "default": true
+            },
+            {
+              "name": "convert",
+              "path": "/nix/store/rq7cbnikbk7khmqczsglknfhfgykwkbf-kubectl-1.36.3-convert"
+            }
+          ],
+          "store_path": "/nix/store/4ly3f60sf2y8lx4ad4nlv4d4xzm49cai-kubectl-1.36.3"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/pxr2n9hcw5r5c9pbyqhangbwvc3yv8yw-kubectl-1.36.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/n9ya3i139xw7jcb3x44b1lmwswilfwxk-kubectl-1.36.3-man",
+              "default": true
+            },
+            {
+              "name": "convert",
+              "path": "/nix/store/6xj3wx8zkh4nj0dfg14v6cmbpaxqrzz7-kubectl-1.36.3-convert"
+            }
+          ],
+          "store_path": "/nix/store/pxr2n9hcw5r5c9pbyqhangbwvc3yv8yw-kubectl-1.36.3"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/s28gqkd497rb4bvm56w72jyarqgmhlzz-kubectl-1.36.3",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/kxhnlzm663cpz4pbd7wkq4n73578ak4z-kubectl-1.36.3-man",
+              "default": true
+            },
+            {
+              "name": "convert",
+              "path": "/nix/store/szx0vjljdh6rp8nxwdnpkz7g4fvvnk9h-kubectl-1.36.3-convert"
+            }
+          ],
+          "store_path": "/nix/store/s28gqkd497rb4bvm56w72jyarqgmhlzz-kubectl-1.36.3"
         }
       }
     },

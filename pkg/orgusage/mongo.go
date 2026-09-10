@@ -40,11 +40,15 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 type usageDoc struct {
-	Runs          int       `bson:"runs"`
-	CostUSDMillis int64     `bson:"cost_usd_millis"`
-	InputTokens   int64     `bson:"input_tokens"`
-	OutputTokens  int64     `bson:"output_tokens"`
-	MonthStart    time.Time `bson:"month_start"`
+	Runs          int   `bson:"runs"`
+	CostUSDMillis int64 `bson:"cost_usd_millis"`
+	InputTokens   int64 `bson:"input_tokens"`
+	OutputTokens  int64 `bson:"output_tokens"`
+	// Absent on documents written before the aggregate got its own
+	// counter: those months' aggregates sit inside InputTokens and
+	// cannot be separated after the fact.
+	AggregateTokens int64     `bson:"aggregate_tokens"`
+	MonthStart      time.Time `bson:"month_start"`
 }
 
 func (c *MongoCounter) AllowRun(ctx context.Context, tenantID string, when time.Time, maxRuns int, maxCostMillis int64) (DenyReason, error) {
@@ -96,7 +100,7 @@ func (c *MongoCounter) ReleaseRun(ctx context.Context, tenantID string, when tim
 	return nil
 }
 
-func (c *MongoCounter) AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error {
+func (c *MongoCounter) AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens, aggregateTokens int64) error {
 	inc := bson.M{}
 	if m := CostToMillis(costUSD); m > 0 {
 		inc["cost_usd_millis"] = m
@@ -106,6 +110,9 @@ func (c *MongoCounter) AddSpend(ctx context.Context, tenantID string, when time.
 	}
 	if outputTokens > 0 {
 		inc["output_tokens"] = outputTokens
+	}
+	if aggregateTokens > 0 {
+		inc["aggregate_tokens"] = aggregateTokens
 	}
 	if len(inc) == 0 {
 		return nil
@@ -137,6 +144,7 @@ func (c *MongoCounter) Usage(ctx context.Context, tenantID string, when time.Tim
 	out.Runs = doc.Runs
 	out.CostUSD = millisToCost(doc.CostUSDMillis)
 	out.InputTokens = doc.InputTokens
+	out.AggregateTokens = doc.AggregateTokens
 	out.OutputTokens = doc.OutputTokens
 	return out, nil
 }

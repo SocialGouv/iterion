@@ -261,6 +261,49 @@ func TestGetEvents_FromTo(t *testing.T) {
 	})
 }
 
+func TestGetDiagnostic_ProjectsTypedFailure(t *testing.T) {
+	srv, hs := newTestServer(t)
+	ctx := context.Background()
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	const runID = "run-diagnostic"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := st.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable,
+		"schema rejected", store.FailureSchemaValidation); err != nil {
+		t.Fatalf("UpdateRunStatusCoded: %v", err)
+	}
+	if _, err := st.AppendEvent(ctx, runID, store.Event{
+		Type: store.EventRunFailed, RunID: runID, NodeID: "writer", Data: map[string]any{
+			"error": "schema rejected", "code": string(store.FailureSchemaValidation), "resumable": true,
+		},
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	resp, err := http.Get(hs.URL + "/api/runs/" + runID + "/diagnostic")
+	if err != nil {
+		t.Fatalf("GET diagnostic: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var diagnostic runview.DiagnosticProjection
+	decodeJSONResp(t, resp, &diagnostic)
+	if diagnostic.Version != runview.DiagnosticVersion {
+		t.Errorf("version = %d, want %d", diagnostic.Version, runview.DiagnosticVersion)
+	}
+	if diagnostic.Outcome != runview.DiagnosticBlocked || diagnostic.NextAction != runview.DiagnosticActionResume {
+		t.Errorf("outcome/action = %q/%q, want blocked/resume", diagnostic.Outcome, diagnostic.NextAction)
+	}
+	if diagnostic.NodeID != "writer" || diagnostic.FailureCode != store.FailureSchemaValidation {
+		t.Errorf("diagnostic node/code = %q/%q", diagnostic.NodeID, diagnostic.FailureCode)
+	}
+}
+
 func TestCancelInactive_ReportsCurrentStatus(t *testing.T) {
 	srv, hs := newTestServer(t)
 	seedRun(t, srv, "run-1", "wf", store.RunStatusFinished)

@@ -5,18 +5,75 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// lastStatePayload returns the newest EvtIssueState payload for id — the
+// provenance rows read the event the way pkg/trigger does.
+func lastStatePayload(t *testing.T, s native.BoardStore, id string) map[string]any {
+	t.Helper()
+	var last map[string]any
+	if err := s.ScanEvents(func(e *native.Event) bool {
+		if e.Type == native.EvtIssueState && e.IssueID == id {
+			last = e.Payload
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if last == nil {
+		t.Fatalf("no state event for %s", id)
+	}
+	return last
+}
+
+// mustBoard / mustLabels are Board / AggregateLabels or Fatal. Both report a
+// read failure rather than substituting a default board or an empty
+// vocabulary, so a row that ignored the error would assert against the
+// fallback instead of the store.
+func mustBoard(t *testing.T, s native.BoardStore) *native.Board {
+	t.Helper()
+	b, err := s.Board()
+	if err != nil {
+		t.Fatalf("Board: %v", err)
+	}
+	return b
+}
+
+func mustLabels(t *testing.T, s native.BoardStore) []native.LabelUsage {
+	t.Helper()
+	got, err := s.AggregateLabels()
+	if err != nil {
+		t.Fatalf("AggregateLabels: %v", err)
+	}
+	return got
+}
+
+// mustGetIssue is Get or Fatal, for the provenance rows that read a method
+// off the record.
+func mustGetIssue(t *testing.T, s native.BoardStore, id string) *native.Issue {
+	t.Helper()
+	got, err := s.Get(id)
+	if err != nil {
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return got
+}
 
 // runBoardStoreSuite exercises the native.BoardStore contract. It runs against
 // both the filesystem native.Store (always — proving the suite) and the Mongo
@@ -83,14 +140,244 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("SetState no-op: %v", err)
 	}
 
+	// Issue.StateAt is the card's TRANSITION time, and both twins owe the
+	// same contract: stamped by the store at every state write, never
+	// advanced by an ordinary edit. Without the second half, anything asking
+	// "which side moved more recently?" reads a retitle as a move — which is
+	// exactly the question the project-board conflict rule asks (ADR-097).
+	//
+	// Timestamps compare against a client-clock reading (both twins stamp
+	// with time.Now, like UpdatedAt) truncated to the millisecond BSON keeps.
+	stateAtOf := func(what string) time.Time {
+		got, err := store.Get(created.ID)
+		if err != nil {
+			t.Fatalf("StateAt/%s: Get: %v", what, err)
+		}
+		if got.StateAt.IsZero() {
+			t.Fatalf("StateAt/%s: not stamped — the transition time is unrecoverable", what)
+		}
+		return got.StateAt
+	}
+	atReady := stateAtOf("after SetState")
+	pr2 := 9
+	if _, err := store.Update(created.ID, native.Patch{Priority: &pr2}); err != nil {
+		t.Fatalf("StateAt: Update: %v", err)
+	}
+	if got := stateAtOf("after a non-state Update"); !got.Equal(atReady) {
+		t.Errorf("StateAt advanced on a priority edit: %v → %v — an edit is not a transition", atReady, got)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateAt: SetState no-op: %v", err)
+	}
+	if got := stateAtOf("after a same-state SetState"); !got.Equal(atReady) {
+		t.Errorf("StateAt advanced on a no-op transition: %v → %v", atReady, got)
+	}
+	beforeMove := time.Now().UTC().Truncate(time.Millisecond)
+	if _, moved, err := store.SetStateFrom(created.ID, native.StateReady, native.StateInProgress); err != nil || !moved {
+		t.Fatalf("StateAt: SetStateFrom: moved=%v err=%v", moved, err)
+	}
+	if got := stateAtOf("after SetStateFrom"); got.Before(beforeMove) {
+		t.Errorf("StateAt = %v, want the moment of the transition (>= %v)", got, beforeMove)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateAt: restore state: %v", err)
+	}
+
+	// Issue.StateReason is the provenance of the card's last TRANSITION —
+	// the `reason` its state event carried — persisted so a reader of the
+	// card alone (the project-board reflect, which sees no event) can tell a
+	// column iterion wrote on its own authority from one a person, or a
+	// run's verdict, put it in (#798). Both twins owe: stamped from the SAME
+	// inputs as the event's reason, overwritten or cleared by the next
+	// transition, untouched by an edit or a same-state no-op.
+	reasonOf := func(what string) string {
+		got, err := store.Get(created.ID)
+		if err != nil {
+			t.Fatalf("StateReason/%s: Get: %v", what, err)
+		}
+		return got.StateReason
+	}
+	if got := reasonOf("after an operator SetState"); got != "" {
+		t.Errorf("StateReason after a tokenless SetState = %q, want empty (an unattributed gesture)", got)
+	}
+	watchdogTok, err := store.Claim(created.ID, tracker.ReaperMarkerPrefix+"host-1")
+	if err != nil {
+		t.Fatalf("StateReason: reaper claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateBlocked, watchdogTok); err != nil {
+		t.Fatalf("StateReason: watchdog park: %v", err)
+	}
+	if got := reasonOf("after a watchdog park"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason after a reaper-marker write = %q, want %q (marker-derived, like the event)", got, tracker.ReasonWatchdog)
+	}
+	if got, _ := lastStatePayload(t, store, created.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Fatalf("event reason after a watchdog park = %q, want %q — the card and the event must agree", got, tracker.ReasonWatchdog)
+	}
+	if !mustGetIssue(t, store, created.ID).StateByMachine() {
+		t.Error("StateByMachine after a watchdog park = false, want true")
+	}
+	pr3 := 3
+	if _, err := store.Update(created.ID, native.Patch{Priority: &pr3}); err != nil {
+		t.Fatalf("StateReason: Update: %v", err)
+	}
+	if got := reasonOf("after a non-state Update"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason cleared by a priority edit: %q — an edit is not a transition", got)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateBlocked, watchdogTok); err != nil {
+		t.Fatalf("StateReason: same-state no-op: %v", err)
+	}
+	if got := reasonOf("after a same-state write"); got != tracker.ReasonWatchdog {
+		t.Errorf("StateReason changed by a same-state no-op: %q", got)
+	}
+	if err := store.ReleaseOwned(created.ID, watchdogTok); err != nil {
+		t.Fatalf("StateReason: release reaper claim: %v", err)
+	}
+	// Reopen is an operator gesture: it clears the machine provenance.
+	if _, err := store.Reopen(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateReason: Reopen: %v", err)
+	}
+	if got := reasonOf("after Reopen"); got != "" {
+		t.Errorf("StateReason after an operator Reopen = %q, want empty — the machine's park no longer describes the card", got)
+	}
+	// An explicit reason travels verbatim; an owner's ordinary fenced move
+	// carries none (a run's own lifecycle is not machine provenance).
+	ownerTok, err := store.Claim(created.ID, "runner-X")
+	if err != nil {
+		t.Fatalf("StateReason: owner claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(created.ID, native.StateInProgress, ownerTok); err != nil {
+		t.Fatalf("StateReason: owner start: %v", err)
+	}
+	if got := reasonOf("after an owner's fenced move"); got != "" {
+		t.Errorf("StateReason after an ordinary owner write = %q, want empty", got)
+	}
+	if _, err := store.SetStateOwnedReason(created.ID, native.StateReady, ownerTok, tracker.ReasonUnlaunchable); err != nil {
+		t.Fatalf("StateReason: give back: %v", err)
+	}
+	if got := reasonOf("after a give-back"); got != tracker.ReasonUnlaunchable {
+		t.Errorf("StateReason after SetStateOwnedReason(unlaunchable) = %q, want %q", got, tracker.ReasonUnlaunchable)
+	}
+	if !mustGetIssue(t, store, created.ID).StateByMachine() {
+		t.Error("StateByMachine after a give-back = false, want true")
+	}
+	if err := store.ReleaseOwned(created.ID, ownerTok); err != nil {
+		t.Fatalf("StateReason: release owner claim: %v", err)
+	}
+	if _, moved, err := store.SetStateFrom(created.ID, native.StateReady, native.StateInProgress); err != nil || !moved {
+		t.Fatalf("StateReason: SetStateFrom: moved=%v err=%v", moved, err)
+	}
+	if got := reasonOf("after a tokenless CAS move"); got != "" {
+		t.Errorf("StateReason after SetStateFrom = %q, want empty — the previous machine provenance must not survive a transition", got)
+	}
+	if _, err := store.SetState(created.ID, native.StateReady); err != nil {
+		t.Fatalf("StateReason: restore state: %v", err)
+	}
+
+	// Issue.LaunchRefusal is the dispatcher's retry ledger for a launch the
+	// run service refused before any run started (#814). Both twins owe:
+	// a fenced write (a foreign token is refused), a faithful round trip,
+	// survival across the give-back transition, and the two clears — a run
+	// stamped on the card (a launch happened) and an operator Reopen.
+	// On its OWN card: the scenario stamps runs, and the run-history rows
+	// further down read `created`'s history from empty.
+	lrCard, err := store.Create(native.Issue{Title: "launch-refusal ledger", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("LaunchRefusal: create: %v", err)
+	}
+	ledgerOf := func(what string) *native.LaunchRefusal {
+		got, err := store.Get(lrCard.ID)
+		if err != nil {
+			t.Fatalf("LaunchRefusal/%s: Get: %v", what, err)
+		}
+		return got.LaunchRefusal
+	}
+	dispTok, err := store.Claim(lrCard.ID, "board-dispatcher:pod-1")
+	if err != nil {
+		t.Fatalf("LaunchRefusal: claim: %v", err)
+	}
+	notBefore := time.Now().UTC().Add(4 * time.Minute).Truncate(time.Millisecond)
+	ledger := &native.LaunchRefusal{Attempts: 2, LastAt: notBefore.Add(-2 * time.Minute), NotBefore: notBefore, LastReason: "queue unavailable"}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, tracker.ClaimToken{Marker: "somebody-else", Epoch: dispTok.Epoch}); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Errorf("LaunchRefusal: a foreign token wrote the ledger: err=%v, want ErrClaimConflict", err)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: owned write: %v", err)
+	}
+	if got := ledgerOf("after the owned write"); got == nil || got.Attempts != 2 || !got.NotBefore.Equal(notBefore) || got.LastReason != "queue unavailable" {
+		t.Fatalf("LaunchRefusal round trip = %+v, want %+v", got, ledger)
+	}
+	// The give-back transition keeps the ledger — it is what bounds the
+	// NEXT attempt.
+	if _, err := store.SetStateOwned(lrCard.ID, native.StateInProgress, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: start: %v", err)
+	}
+	if _, err := store.SetStateOwnedReason(lrCard.ID, native.StateReady, dispTok, tracker.ReasonLaunchRefused); err != nil {
+		t.Fatalf("LaunchRefusal: give back: %v", err)
+	}
+	if got := ledgerOf("after a give-back"); got == nil || got.Attempts != 2 {
+		t.Errorf("LaunchRefusal after the give-back transition = %+v, want it kept", got)
+	}
+	if !mustGetIssue(t, store, lrCard.ID).StateByMachine() {
+		t.Error("StateByMachine after a launch_refused give-back = false, want true")
+	}
+	// A run stamped on the card means a launch happened: the ledger is over.
+	if err := store.SetLastRunOwned(lrCard.ID, "run-after-refusals", "/wt/x", dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: SetLastRunOwned: %v", err)
+	}
+	if got := ledgerOf("after SetLastRunOwned"); got != nil {
+		t.Errorf("LaunchRefusal survived a stamped run: %+v — a launch happened, the retry ledger no longer describes the card", got)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if err := store.SetLastRun(lrCard.ID, "run-after-refusals-2", "/wt/y"); err != nil {
+		t.Fatalf("LaunchRefusal: SetLastRun: %v", err)
+	}
+	if got := ledgerOf("after SetLastRun"); got != nil {
+		t.Errorf("LaunchRefusal survived an unfenced run stamp: %+v", got)
+	}
+	// nil clears explicitly too.
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, nil, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: clear: %v", err)
+	}
+	if got := ledgerOf("after an explicit clear"); got != nil {
+		t.Errorf("LaunchRefusal after nil = %+v, want cleared", got)
+	}
+	// An operator Reopen clears it: the card filed blocked after the cap
+	// starts its retries afresh when a human reopens it.
+	if err := store.SetLaunchRefusalOwned(lrCard.ID, ledger, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: re-write: %v", err)
+	}
+	if _, err := store.SetStateOwnedReason(lrCard.ID, native.StateBlocked, dispTok, tracker.ReasonLaunchGivenUp); err != nil {
+		t.Fatalf("LaunchRefusal: file blocked: %v", err)
+	}
+	if mustGetIssue(t, store, lrCard.ID).StateByMachine() {
+		t.Error("StateByMachine after launch_given_up = true, want false — the roadmap must show the filing")
+	}
+	if err := store.ReleaseOwned(lrCard.ID, dispTok); err != nil {
+		t.Fatalf("LaunchRefusal: release: %v", err)
+	}
+	if _, err := store.Reopen(lrCard.ID, native.StateReady); err != nil {
+		t.Fatalf("LaunchRefusal: Reopen: %v", err)
+	}
+	if got := ledgerOf("after Reopen"); got != nil {
+		t.Errorf("LaunchRefusal survived an operator Reopen: %+v", got)
+	}
+	if err := store.Delete(lrCard.ID); err != nil {
+		t.Fatalf("LaunchRefusal: delete: %v", err)
+	}
+
 	// Claim: idempotent same marker; conflict on a different marker; release.
-	if err := store.Claim(created.ID, "runner-A"); err != nil {
+	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := store.Claim(created.ID, "runner-A"); err != nil {
+	if _, err := store.Claim(created.ID, "runner-A"); err != nil {
 		t.Errorf("Claim idempotent: %v", err)
 	}
-	if err := store.Claim(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
+	if _, err := store.Claim(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
 		t.Errorf("Claim conflict: want ErrClaimConflict, got %v", err)
 	}
 	if err := store.Release(created.ID, "runner-B"); !errors.Is(err, tracker.ErrClaimConflict) {
@@ -101,6 +388,439 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if err := store.Release(created.ID, "runner-A"); err != nil {
 		t.Errorf("Release unclaimed no-op: %v", err)
+	}
+
+	// --- Claim lease + fencing epoch (the watchdog substrate). Both
+	// twins must hold the same bar: a fresh acquisition bumps the epoch
+	// and stamps a lease; a same-marker re-claim refreshes the lease
+	// WITHOUT bumping; release clears the lease but never the epoch; and
+	// every Owned write under a superseded token is refused with the
+	// issue left untouched — the fence that makes a stolen claim's late
+	// writes no-ops.
+	fenced, err := store.Create(native.Issue{Title: "fence probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create fence probe: %v", err)
+	}
+	tokA, err := store.Claim(fenced.ID, "owner-A")
+	if err != nil {
+		t.Fatalf("Claim A: %v", err)
+	}
+	if tokA.Marker != "owner-A" || tokA.Epoch < 1 {
+		t.Fatalf("claim token = %+v, want marker owner-A and epoch >= 1", tokA)
+	}
+	afterClaim, _ := store.Get(fenced.ID)
+	if afterClaim.ClaimedAt.IsZero() || afterClaim.ClaimLeaseUntil.IsZero() {
+		t.Fatalf("claim must stamp ClaimedAt + ClaimLeaseUntil: %+v", afterClaim)
+	}
+	if !afterClaim.ClaimLeaseUntil.After(afterClaim.ClaimedAt) {
+		t.Fatalf("lease must expire after acquisition: %+v", afterClaim)
+	}
+	tokA2, err := store.Claim(fenced.ID, "owner-A")
+	if err != nil || tokA2.Epoch != tokA.Epoch {
+		t.Fatalf("same-marker re-claim = (%+v, %v), want same epoch %d", tokA2, err, tokA.Epoch)
+	}
+	if err := store.RenewClaim(fenced.ID, tokA); err != nil {
+		t.Fatalf("RenewClaim: %v", err)
+	}
+	renewed, _ := store.Get(fenced.ID)
+	if renewed.ClaimLeaseUntil.Before(afterClaim.ClaimLeaseUntil) {
+		t.Fatalf("renew must not move the lease backwards: %v -> %v", afterClaim.ClaimLeaseUntil, renewed.ClaimLeaseUntil)
+	}
+	// Owned writes under the live token land.
+	if _, err := store.SetStateOwned(fenced.ID, native.StateInProgress, tokA); err != nil {
+		t.Fatalf("SetStateOwned (live token): %v", err)
+	}
+	if err := store.SetLastRunOwned(fenced.ID, "run-f1", "/tmp/f1", tokA); err != nil {
+		t.Fatalf("SetLastRunOwned (live token): %v", err)
+	}
+	// The claim moves on: A releases, B acquires — the epoch must advance.
+	if err := store.ReleaseOwned(fenced.ID, tokA); err != nil {
+		t.Fatalf("ReleaseOwned: %v", err)
+	}
+	released, _ := store.Get(fenced.ID)
+	if released.Claim != "" || !released.ClaimLeaseUntil.IsZero() || !released.ClaimedAt.IsZero() {
+		t.Fatalf("release must clear the claim AND its lease bookkeeping: %+v", released)
+	}
+	if released.ClaimEpoch != tokA.Epoch {
+		t.Fatalf("release must PRESERVE the epoch (the fence only moves forward): %+v vs token %d", released.ClaimEpoch, tokA.Epoch)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokA); err != nil {
+		t.Fatalf("ReleaseOwned on unclaimed must be a no-op: %v", err)
+	}
+	tokB, err := store.Claim(fenced.ID, "owner-B")
+	if err != nil {
+		t.Fatalf("Claim B: %v", err)
+	}
+	if tokB.Epoch <= tokA.Epoch {
+		t.Fatalf("fresh acquisition must advance the epoch: A=%d B=%d", tokA.Epoch, tokB.Epoch)
+	}
+	// Every late write under A's superseded token is refused, and the
+	// issue is untouched.
+	if _, err := store.SetStateOwned(fenced.ID, native.StateBlocked, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetStateOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetLastRunOwned(fenced.ID, "run-late", "/tmp/late", tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetLastRunOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetAwaitingInputOwned(fenced.ID, true, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetAwaitingInputOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetGaveUpOwned(fenced.ID, &native.GiveUp{RunID: "run-late"}, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("SetGaveUpOwned (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.RenewClaim(fenced.ID, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("RenewClaim (stale token): want ErrClaimConflict, got %v", err)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokA); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("ReleaseOwned (stale token on live foreign claim): want ErrClaimConflict, got %v", err)
+	}
+	after, _ := store.Get(fenced.ID)
+	if after.State != native.StateInProgress || after.LastRunID != "run-f1" || after.AwaitingInput || after.GaveUp != nil || after.Claim != "owner-B" {
+		t.Fatalf("stale-token writes must leave the issue untouched: %+v", after)
+	}
+	if err := store.ReleaseOwned(fenced.ID, tokB); err != nil {
+		t.Fatalf("ReleaseOwned B: %v", err)
+	}
+
+	// --- Twin parity on the give-up buffer and on "unclaimed". The FS
+	// store expires the give-up stamp on every write; the Mongo store's
+	// targeted $set writers must do the same, or a card reads "the
+	// dispatcher gave up" after something moved it on. And a claim field
+	// that is ABSENT must read as free everywhere an empty one does —
+	// nothing re-creates it, so a document that lost it would be
+	// unclaimable, unlistable and invisible to the watchdog at once.
+	gu, err := store.Create(native.Issue{Title: "give-up probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create give-up probe: %v", err)
+	}
+	guTok, err := store.Claim(gu.ID, "owner-gu")
+	if err != nil {
+		t.Fatalf("Claim give-up probe: %v", err)
+	}
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "recorded run gone"}, guTok); err != nil {
+		t.Fatalf("SetGaveUpOwned: %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "recorded run gone" {
+		t.Fatalf("the give-up stamp must land with its reason: %+v", cur.GaveUp)
+	}
+	// A re-stamp that only changes the REASON is a real change, not a
+	// no-op: the reason is what the operator reads.
+	if err := store.SetGaveUpOwned(gu.ID, &native.GiveUp{RunID: "run-gu", Attempts: 3, Reason: "still gone"}, guTok); err != nil {
+		t.Fatalf("SetGaveUpOwned (reason change): %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp == nil || cur.GaveUp.Reason != "still gone" {
+		t.Fatalf("a changed reason must be written: %+v", cur.GaveUp)
+	}
+	if _, err := store.SetStateOwned(gu.ID, native.StateInProgress, guTok); err != nil {
+		t.Fatalf("SetStateOwned after give-up: %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.GaveUp != nil {
+		t.Fatalf("a state move must expire the give-up buffer (it describes the state it was taken in): %+v", cur.GaveUp)
+	}
+	if _, _, err := store.SetStateFrom(gu.ID, native.StateInProgress, native.StateReady); err != nil {
+		t.Fatalf("SetStateFrom: %v", err)
+	}
+	// The EMPTY marker owns nothing: refused on a held card, and a silent
+	// no-op on a free one. A conditional write filtered on `claim: marker`
+	// would otherwise match an UNCLAIMED card and announce a release that
+	// never happened — the twins must give the same two answers.
+	if err := store.Release(gu.ID, ""); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("Release with an empty marker on a held card: want ErrClaimConflict, got %v", err)
+	}
+	if cur, _ := store.Get(gu.ID); cur.Claim != "owner-gu" {
+		t.Fatalf("an empty-marker release must not touch the claim: %+v", cur.Claim)
+	}
+	if err := store.ReleaseOwned(gu.ID, guTok); err != nil {
+		t.Fatalf("ReleaseOwned give-up probe: %v", err)
+	}
+	if err := store.Release(gu.ID, ""); err != nil {
+		t.Fatalf("Release with an empty marker on a FREE card must be a silent no-op: %v", err)
+	}
+	if _, err := store.SetState(gu.ID, native.StateDone); err != nil {
+		t.Fatalf("park give-up probe: %v", err)
+	}
+
+	// --- The reaper pair. A fresh lease is never listed nor reclaimable;
+	// an expired one (probed with a future cutoff — the staleBefore
+	// testability precedent) is TRANSFERRED, epoch bumped, old owner
+	// fenced. Cutoff is the caller's: production passes now.
+	reapProbe, err := store.Create(native.Issue{Title: "reap probe", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create reap probe: %v", err)
+	}
+	tokC, err := store.Claim(reapProbe.ID, "dead-owner")
+	if err != nil {
+		t.Fatalf("Claim reap probe: %v", err)
+	}
+	fresh, err := store.ListExpiredClaimCandidates(time.Now(), 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (fresh): %v", err)
+	}
+	for _, cand := range fresh {
+		if cand.IssueID == reapProbe.ID {
+			t.Fatalf("a FRESH lease must never be listed as expired: %+v", cand)
+		}
+	}
+	future := time.Now().Add(2 * native.ClaimLeaseDuration)
+	expired, err := store.ListExpiredClaimCandidates(future, 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (future cutoff): %v", err)
+	}
+	var probeCand *tracker.ExpiredClaim
+	for i := range expired {
+		if expired[i].IssueID == reapProbe.ID {
+			probeCand = &expired[i]
+		}
+	}
+	if probeCand == nil || probeCand.Prev.Marker != "dead-owner" || probeCand.Prev.Epoch != tokC.Epoch {
+		t.Fatalf("expired listing must carry the claim as-is: %+v", probeCand)
+	}
+	// Wrong prev → conflict, nothing moves.
+	if _, _, err := store.ReclaimExpired(reapProbe.ID, tracker.ClaimToken{Marker: "dead-owner", Epoch: tokC.Epoch + 7}, "reaper:x", future); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("reclaim with wrong prev: want ErrClaimConflict, got %v", err)
+	}
+	// Fresh cutoff → the lease is not expired → refused.
+	if _, _, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", time.Now()); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("reclaim of a live lease: want ErrClaimConflict, got %v", err)
+	}
+	// The real transfer: epoch bumps, the dead owner is fenced out.
+	rec, recState, err := store.ReclaimExpired(reapProbe.ID, tokC, "reaper:x", future)
+	if err != nil {
+		t.Fatalf("ReclaimExpired: %v", err)
+	}
+	// The contract is MONOTONICITY, not a unit increment: the Mongo twin
+	// floors the counter at the server clock so a re-mint after the field
+	// was dropped still lands ahead of every token ever issued, while the
+	// FS twin (which never loses the field) simply increments. Both must
+	// only ever move the fence FORWARD.
+	if rec.Marker != "reaper:x" || rec.Epoch <= tokC.Epoch {
+		t.Fatalf("transfer token = %+v, want reaper:x at an epoch strictly above %d", rec, tokC.Epoch)
+	}
+	// The transfer reports the state it OBSERVED: the watchdog decides a
+	// card's disposition on this, never on the listing's older copy.
+	if recState != native.StateInProgress {
+		t.Fatalf("transfer must report the state it observed: %q, want %q", recState, native.StateInProgress)
+	}
+	if _, err := store.SetStateOwned(reapProbe.ID, native.StateBlocked, tokC); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("dead owner's write after the transfer: want ErrClaimConflict, got %v", err)
+	}
+	// The dead owner's TOKENLESS paths must die at the fence too — they
+	// are the ones a stale in-flight worker still reaches. Release is
+	// marker-scoped by contract, and an ORDINARY (unfenced) write must
+	// never carry the claim family along: a read-modify-write that
+	// re-persists a stale claim rewinds the fence and hands the card
+	// back to the owner the reaper just evicted.
+	if err := store.Release(reapProbe.ID, "dead-owner"); !errors.Is(err, tracker.ErrClaimConflict) {
+		t.Fatalf("Release by the evicted owner: want ErrClaimConflict, got %v", err)
+	}
+	if err := store.SetLastRun(reapProbe.ID, "run-stale", "/tmp/stale"); err != nil {
+		t.Fatalf("SetLastRun (ordinary write): %v", err)
+	}
+	touchedTitle := "touched"
+	if _, err := store.Update(reapProbe.ID, native.Patch{Title: &touchedTitle}); err != nil {
+		t.Fatalf("Update (ordinary write): %v", err)
+	}
+	if _, _, err := store.AddComment(reapProbe.ID, "op", "a note"); err != nil {
+		t.Fatalf("AddComment (ordinary write): %v", err)
+	}
+	held, _ := store.Get(reapProbe.ID)
+	if held.Claim != "reaper:x" || held.ClaimEpoch != rec.Epoch || held.ClaimLeaseUntil.IsZero() {
+		t.Fatalf("ordinary writes must not touch the claim family: claim=%q epoch=%d (want reaper:x epoch %d), lease=%s",
+			held.Claim, held.ClaimEpoch, rec.Epoch, held.ClaimLeaseUntil)
+	}
+	if err := store.RenewClaim(reapProbe.ID, rec); err != nil {
+		t.Fatalf("the recovery owner must still hold its card after ordinary writes: %v", err)
+	}
+	if _, err := store.SetStateOwned(reapProbe.ID, native.StateDone, rec); err != nil {
+		t.Fatalf("recovery owner's write: %v", err)
+	}
+	if err := store.ReleaseOwned(reapProbe.ID, rec); err != nil {
+		t.Fatalf("ReleaseOwned recovery: %v", err)
+	}
+
+	// --- Terminal sink + Reopen + SetStateFrom. Both twins: leaving a
+	// Terminal:true state via the ordinary family is refused (typed,
+	// wrapping ErrTransitionRejected so old callers still match); Reopen
+	// is the one exit, working-state targets only, refused while
+	// dependents promoted on this card's DONE are outstanding; the CAS
+	// move reports drift instead of clobbering.
+	sink, err := store.Create(native.Issue{Title: "sink probe", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create sink probe: %v", err)
+	}
+	if _, err := store.SetState(sink.ID, native.StateDone); err != nil {
+		t.Fatalf("SetState(done): %v", err)
+	}
+	if _, err := store.SetState(sink.ID, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) || !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("terminal exit via SetState: want ErrTerminalStateExit (wrapping ErrTransitionRejected), got %v", err)
+	}
+	// The OWNED family is automation too — holding the claim is not a
+	// licence to resurrect a card an operator closed. This is the exact
+	// call the cloud launch path makes (in_progress under the token), so
+	// a twin that skips the guard resurrects closed cards and runs on
+	// them.
+	sinkTok, err := store.Claim(sink.ID, "owner-sink")
+	if err != nil {
+		t.Fatalf("Claim sink probe: %v", err)
+	}
+	if _, err := store.SetStateOwned(sink.ID, native.StateInProgress, sinkTok); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Fatalf("terminal exit via SetStateOwned: want ErrTerminalStateExit, got %v", err)
+	}
+	if cur, _ := store.Get(sink.ID); cur.State != native.StateDone {
+		t.Fatalf("a refused owned exit must leave the card terminal, got %q", cur.State)
+	}
+	if err := store.ReleaseOwned(sink.ID, sinkTok); err != nil {
+		t.Fatalf("ReleaseOwned sink probe: %v", err)
+	}
+	dependent, err := store.Create(native.Issue{Title: "dependent", State: native.StateReady, Blockers: []string{sink.ID}})
+	if err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateReady); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen with a promoted dependent: want refusal, got %v", err)
+	}
+	if _, err := store.Update(dependent.ID, native.Patch{Blockers: &[]string{}}); err != nil {
+		t.Fatalf("clear dependent blockers: %v", err)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateBlocked); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen into another terminal: want refusal, got %v", err)
+	}
+	// A reopen also clears the give-up stamp — so the value it RETURNS
+	// must say so. It is JSON-encoded straight back to the caller
+	// (SetStateOrReopen, via the board HTTP handlers), and the studio's
+	// "Needs attention" reads exactly that field: a pre-write snapshot
+	// told the operator their reopened card was still given up. Stamp one
+	// first so the assertion cannot pass on an already-nil field.
+	if err := store.SetGaveUp(sink.ID, &native.GiveUp{
+		RunID: "run-gaveup", State: native.StateDone, Attempts: 3, At: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SetGaveUp on the sink probe: %v", err)
+	}
+	reopened, err := store.Reopen(sink.ID, native.StateReady)
+	if err != nil || reopened.State != native.StateReady {
+		t.Fatalf("Reopen = (%+v, %v), want ready", reopened, err)
+	}
+	if reopened.GaveUp != nil {
+		t.Fatalf("Reopen returned a card still carrying its give-up stamp (%+v) — the write cleared it, so the "+
+			"returned value describes a card that no longer exists, and the studio renders it as still given up",
+			reopened.GaveUp)
+	}
+	if persisted, gerr := store.Get(sink.ID); gerr != nil || persisted.GaveUp != nil {
+		t.Fatalf("give-up stamp not cleared in the store: %+v err=%v", persisted, gerr)
+	}
+	if _, err := store.Reopen(sink.ID, native.StateInbox); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Fatalf("Reopen of a non-terminal card: want refusal, got %v", err)
+	}
+	// SetStateFrom: lands on the expected source, reports drift otherwise.
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateReady, native.StateInProgress); err != nil || !changed {
+		t.Fatalf("SetStateFrom(ready→in_progress) = (changed=%t, %v)", changed, err)
+	}
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateReady, native.StateInbox); err != nil || changed {
+		t.Fatalf("SetStateFrom on drifted state = (changed=%t, %v), want a clean no-op", changed, err)
+	}
+	if _, _, err := store.SetStateFrom(sink.ID, native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Fatalf("SetStateFrom out of terminal: want ErrTerminalStateExit, got %v", err)
+	}
+	// from == to performs nothing, so changed is FALSE on both twins. The
+	// flag answers "did this call move the card", and a caller reading
+	// false as a refusal — the shape a CAS invites, and what
+	// launchTicketNow now does — must not get a different answer per
+	// backend.
+	if _, changed, err := store.SetStateFrom(sink.ID, native.StateInProgress, native.StateInProgress); err != nil || changed {
+		t.Fatalf("SetStateFrom(x→x) = (changed=%t, %v), want a no-op reported as unchanged", changed, err)
+	}
+	// The project-board sync state, INCLUDING the terminal-sink arbitration
+	// (ADR-097 §7): the reopen a board move performed, and the refusal it met.
+	// Both are durable operator-facing facts — the studio and
+	// `iterion remote issues get` read them — so a twin that drops them tells
+	// half the fleet "I moved it and nothing happened" with nothing to show.
+	syncAt := time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)
+	if _, err := store.Update(sink.ID, native.Patch{External: &native.ExternalRef{
+		Provider: "github", Repo: "SocialGouv/iterion", Number: 613,
+		Project: &native.ExternalProject{
+			Owner: "SocialGouv", Number: 203, ItemID: "PVTI_1",
+			Status: "Done", StatusAt: syncAt, StateAt: syncAt,
+			ReopenedAt: syncAt.Add(time.Minute),
+			SyncConflict: &native.ProjectSyncConflict{
+				From: native.StateDone, To: native.StateInbox, Status: "Inbox",
+				ItemID: "PVTI_1", At: syncAt.Add(2 * time.Minute), Reason: "terminal state is a sink",
+			},
+		},
+	}}); err != nil {
+		t.Fatalf("write the project sync state: %v", err)
+	}
+	synced := mustGetIssue(t, store, sink.ID)
+	if synced.External == nil || synced.External.Project == nil {
+		t.Fatalf("the project sync state did not round-trip: %+v", synced.External)
+	}
+	if got := synced.External.Project.ReopenedAt; !got.Equal(syncAt.Add(time.Minute)) {
+		t.Errorf("ExternalProject.ReopenedAt = %v, want %v", got, syncAt.Add(time.Minute))
+	}
+	sc := synced.External.Project.SyncConflict
+	if sc == nil {
+		t.Fatalf("ExternalProject.SyncConflict did not round-trip: %+v", synced.External.Project)
+	}
+	if sc.From != native.StateDone || sc.To != native.StateInbox || sc.Status != "Inbox" ||
+		sc.ItemID != "PVTI_1" || sc.Reason == "" || !sc.At.Equal(syncAt.Add(2*time.Minute)) {
+		t.Errorf("SyncConflict round-tripped lossily: %+v", sc)
+	}
+	// Clearing it is the remedy landing — a nil must persist as absent, not be
+	// read as "leave what you had".
+	cleared := synced.External.Clone()
+	cleared.Project.SyncConflict = nil
+	if _, err := store.Update(sink.ID, native.Patch{External: cleared}); err != nil {
+		t.Fatalf("clear the sync conflict: %v", err)
+	}
+	if got := mustGetIssue(t, store, sink.ID).External.Project.SyncConflict; got != nil {
+		t.Errorf("SyncConflict survived its clear: %+v", got)
+	}
+	// The sink guard must hold under CONCURRENCY, which is the only place
+	// it can be broken: a read-then-validate-then-unguarded-write is
+	// check-then-act, and the Mongo twin's ordinary SetState was exactly
+	// that (filter {_id, tenant_id}, no source-state predicate) while the
+	// FS twin ran the same guard under its store-wide lock. The section
+	// above is single-threaded, so it certified the guard on the ONE twin
+	// that cannot race and said nothing about the other.
+	//
+	// The assertion is order-INDEPENDENT, so it can only fail on a real
+	// defect. From a working state, one writer closes the card and another
+	// moves it to ready. Whoever wins, the card must END terminal: either
+	// ready landed first and done followed, or done landed first and ready
+	// was refused as a terminal exit. A final "ready" is reachable ONLY
+	// through the TOCTOU — the mover read the working state, the closer
+	// committed done, and the mover's unguarded write dragged it back out.
+	for i := 0; i < 12; i++ {
+		race, err := store.Create(native.Issue{Title: fmt.Sprintf("sink race %d", i), State: native.StateInProgress})
+		if err != nil {
+			t.Fatalf("Create race probe: %v", err)
+		}
+		var wg sync.WaitGroup
+		var moveErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = store.SetState(race.ID, native.StateDone) }()
+		go func() { defer wg.Done(); _, moveErr = store.SetState(race.ID, native.StateReady) }()
+		wg.Wait()
+		got, err := store.Get(race.ID)
+		if err != nil {
+			t.Fatalf("Get race probe: %v", err)
+		}
+		if got.State != native.StateDone {
+			t.Fatalf("a card closed concurrently with a move ended in %q: the terminal sink was left through a "+
+				"check-then-act write (move err = %v) — silent resurrection, the exact class the guard refuses",
+				got.State, moveErr)
+		}
+		if _, err := store.SetState(race.ID, native.StateBlocked); err != nil {
+			t.Fatalf("park race probe: %v", err)
+		}
+	}
+
+	// Park the probes terminally so the list-filter section below keeps
+	// its counts (one shared store per suite run).
+	if _, err := store.SetState(sink.ID, native.StateDone); err != nil {
+		t.Fatalf("park sink probe: %v", err)
+	}
+	if _, err := store.SetState(dependent.ID, native.StateDone); err != nil {
+		t.Fatalf("park dependent probe: %v", err)
 	}
 
 	// SetLastRun stamps the single pointer AND appends dedup'd run history.
@@ -124,6 +844,39 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 	if got, _ := store.Get(created.ID); len(got.Runs) != 2 || got.Runs[0].Workdir != "/tmp/wd-moved" {
 		t.Errorf("run history dedup-update failed: %+v", got.Runs)
+	}
+	// The CLEAR (empty run id) is the operator's way back to a fresh launch —
+	// the pipeline board's "Retry from zero" and `iterion issue update
+	// --clear-last-run` both call exactly this. It must drop the pointer,
+	// KEEP the history (those runs happened), and append no blank RunRef, on
+	// BOTH twins: a board reset from a cloud studio writes through the Mongo
+	// one, so a native-only guarantee would be a cloud hole.
+	if err := store.SetLastRun(created.ID, "", ""); err != nil {
+		t.Errorf("SetLastRun clear: %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.LastRunID != "" || got.LastWorkdir != "" {
+		t.Errorf("SetLastRun clear did not drop the pointer: %+v", got)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 {
+		t.Errorf("SetLastRun clear changed the run history: %+v", got.Runs)
+	} else {
+		for _, ref := range got.Runs {
+			if ref.RunID == "" {
+				t.Errorf("SetLastRun clear appended a blank run ref: %+v", got.Runs)
+			}
+		}
+	}
+	// Clearing an already-clear pointer is a no-op, not a second write.
+	if err := store.SetLastRun(created.ID, "", ""); err != nil {
+		t.Errorf("SetLastRun clear (idempotent): %v", err)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 {
+		t.Errorf("SetLastRun repeat-clear grew the run history: %+v", got.Runs)
+	}
+	// Restore the pointer: the sections below (and the tracker suite) read a
+	// stamped card, and this suite shares one store per run.
+	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd-moved"); err != nil {
+		t.Errorf("SetLastRun re-stamp after clear: %v", err)
 	}
 
 	// SetAwaitingInput denormalizes the pause hint onto the card; set true,
@@ -160,6 +913,17 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	} else if !got.GaveUp.Current(got.State, "run-1") {
 		t.Errorf("stamp does not describe the issue it was written on: state=%q stamp=%+v", got.State, got.GaveUp)
 	}
+	// A LAUNCH give-up (the launch attempt cap) names no run; the marker must
+	// round-trip too, or the stamp reads as run-bound and the needs-attention
+	// lane loses the card on the next read.
+	if err := store.SetGaveUp(created.ID, &native.GiveUp{State: current.State, Attempts: 8, Reason: "refused 8 times", Launch: true}); err != nil {
+		t.Errorf("SetGaveUp(launch): %v", err)
+	}
+	if got, err := store.Get(created.ID); err != nil {
+		t.Errorf("Get after SetGaveUp(launch): %v", err)
+	} else if got.GaveUp == nil || !got.GaveUp.Launch || !got.GaveUp.Current(got.State, "") {
+		t.Errorf("launch give-up not persisted as such: %+v", got.GaveUp)
+	}
 	// Moving the ticket expires the stamp for good — both stores enforce it
 	// on their write path, or a returning ticket would resurrect a give-up.
 	if _, err := store.SetState(created.ID, native.StateBlocked); err != nil {
@@ -168,8 +932,13 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if got, _ := store.Get(created.ID); got.GaveUp != nil {
 		t.Errorf("stamp survived the ticket moving: %+v", got.GaveUp)
 	}
-	if _, err := store.SetState(created.ID, current.State); err != nil {
-		t.Errorf("SetState(back): %v", err)
+	// Coming BACK from blocked is a terminal exit — the ordinary move is
+	// refused by the sink guard, and Reopen is the sanctioned path.
+	if _, err := store.SetState(created.ID, current.State); !errors.Is(err, tracker.ErrTerminalStateExit) {
+		t.Errorf("SetState out of blocked: want ErrTerminalStateExit, got %v", err)
+	}
+	if _, err := store.Reopen(created.ID, current.State); err != nil {
+		t.Errorf("Reopen(back): %v", err)
 	}
 	if got, _ := store.Get(created.ID); got.GaveUp != nil {
 		t.Errorf("stamp came back when the ticket returned to its state: %+v", got.GaveUp)
@@ -193,7 +962,7 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 
 	// AggregateLabels.
-	labels := store.AggregateLabels()
+	labels := mustLabels(t, store)
 	found := false
 	for _, l := range labels {
 		if l.Label == "x" && l.Count >= 1 {
@@ -223,6 +992,123 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	if err := store.Delete(created.ID); !errors.Is(err, tracker.ErrNotFound) {
 		t.Errorf("Delete missing: want ErrNotFound, got %v", err)
 	}
+
+	// Claim provenance is a CROSS-TWIN contract read by pkg/trigger
+	// (machineCaused refuses to spend a one-shot label gate; board_source
+	// blanks the Actor). Two halves, both on both twins — the provenance
+	// describes the WRITER, never whoever holds the card:
+	//
+	//	a watchdog's FENCED write     → reason: watchdog
+	//	an OPERATOR's tokenless write → no reason, whoever holds the card
+	wcard, err := store.Create(native.Issue{Title: "prov watchdog write", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	wtok, err := store.Claim(wcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := store.SetStateOwned(wcard.ID, native.StateBlocked, wtok); err != nil {
+		t.Fatalf("provenance SetStateOwned: %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, wcard.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Errorf("a watchdog's fenced move must be stamped %q, got %q — the spine would spend an operator's one-shot on a machine repair",
+			tracker.ReasonWatchdog, got)
+	}
+	ocard, err := store.Create(native.Issue{Title: "prov operator write", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	if _, err := store.Claim(ocard.ID, tracker.ReaperMarkerPrefix+"prov-host"); err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := store.SetState(ocard.ID, native.StateReady); err != nil {
+		t.Fatalf("provenance operator SetState: %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, ocard.ID)["reason"].(string); got == tracker.ReasonWatchdog {
+		t.Errorf("an OPERATOR move was stamped %q — trigger.machineCaused would refuse to spend the one-shot label gate the operator just pulled", got)
+	}
+
+	// Third provenance row — the auto-promote CASCADE. Both twins must
+	// stamp tracker.ReasonUnblocked on the promoted card's state event:
+	// the FS twin stamped and the Mongo twin did not, and the spine read
+	// two different truths from one close (the reason is DESCRIPTIVE, not
+	// machine — IsMachineReason excludes it, so the one-shot still fires).
+	pblk, err := store.Create(native.Issue{Title: "prov promote blocker", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create blocker: %v", err)
+	}
+	pdep, err := store.Create(native.Issue{Title: "prov promote dependent", State: native.StateWaitingDeps, Blockers: []string{pblk.ID}})
+	if err != nil {
+		t.Fatalf("provenance create dependent: %v", err)
+	}
+	if _, err := store.SetState(pblk.ID, native.StateDone); err != nil {
+		t.Fatalf("provenance close blocker: %v", err)
+	}
+	if dep, err := store.Get(pdep.ID); err != nil || dep.State == native.StateWaitingDeps {
+		t.Fatalf("dependent not promoted (state=%v err=%v)", dep, err)
+	}
+	if got, _ := lastStatePayload(t, store, pdep.ID)["reason"].(string); got != tracker.ReasonUnblocked {
+		t.Errorf("an auto-promoted card's state event must carry %q, got %q — the twins diverge and the spine reads two truths from one close",
+			tracker.ReasonUnblocked, got)
+	}
+
+	// Fourth provenance row — the watchdog's TERMINAL filing (the
+	// REASONED fenced write). Both twins must expose SetStateOwnedReason
+	// and stamp the run's own DESCRIPTIVE verdict (run_finished — outside
+	// IsMachineReason, so the downstream chain fires exactly as it would
+	// for the living owner). The Mongo twin hand-builds this payload
+	// rather than sharing StateChangePayload, so without this row its
+	// next edit diverges silently.
+	rcard, err := store.Create(native.Issue{Title: "prov reasoned filing", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	rtok, err := store.Claim(rcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	reasoned, ok := store.(interface {
+		SetStateOwnedReason(id, newState string, tok tracker.ClaimToken, reason string) (*native.Issue, error)
+	})
+	if !ok {
+		t.Fatalf("store %T has no SetStateOwnedReason — the watchdog's terminal filings would silently degrade to machine provenance on this twin", store)
+	}
+	if _, err := reasoned.SetStateOwnedReason(rcard.ID, native.StateDone, rtok, tracker.ReasonRunFinished); err != nil {
+		t.Fatalf("provenance SetStateOwnedReason: %v", err)
+	}
+	rp := lastStatePayload(t, store, rcard.ID)
+	if got, _ := rp["reason"].(string); got != tracker.ReasonRunFinished {
+		t.Errorf("a reasoned terminal filing must be stamped %q, got %q — the chain a living owner would fire dies on this twin",
+			tracker.ReasonRunFinished, got)
+	}
+	if from, _ := rp["from"].(string); from != native.StateInProgress {
+		t.Errorf("reasoned filing payload from = %q, want %q", from, native.StateInProgress)
+	}
+	if to, _ := rp["to"].(string); to != native.StateDone {
+		t.Errorf("reasoned filing payload to = %q, want %q", to, native.StateDone)
+	}
+	if tracker.IsMachineReason(tracker.ReasonRunFinished) {
+		t.Error("run_finished must stay DESCRIPTIVE (not machine) — a machine reason swallows the chain the filing exists to fire")
+	}
+	// Zero-value half of the same row: reason=="" falls back to the
+	// MARKER-DERIVED provenance on both twins (the seam decides, not a
+	// guard recopied at each call site — the twins diverged here once).
+	zcard, err := store.Create(native.Issue{Title: "prov reasoned zero", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("provenance create: %v", err)
+	}
+	ztok, err := store.Claim(zcard.ID, tracker.ReaperMarkerPrefix+"prov-host")
+	if err != nil {
+		t.Fatalf("provenance claim: %v", err)
+	}
+	if _, err := reasoned.SetStateOwnedReason(zcard.ID, native.StateDone, ztok, ""); err != nil {
+		t.Fatalf("provenance SetStateOwnedReason(\"\"): %v", err)
+	}
+	if got, _ := lastStatePayload(t, store, zcard.ID)["reason"].(string); got != tracker.ReasonWatchdog {
+		t.Errorf("SetStateOwnedReason with an empty reason stamped %q, want the marker-derived %q — the twins must not diverge on the zero value",
+			got, tracker.ReasonWatchdog)
+	}
 }
 
 // runBoardAdminSuite exercises the native.BoardAdmin config-mutation surface
@@ -239,7 +1125,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddState(native.State{Name: "triage", Display: "Triage"}); err != nil {
 		t.Fatalf("AddState: %v", err)
 	}
-	if store.Board().StateByName("triage") == nil {
+	if mustBoard(t, store).StateByName("triage") == nil {
 		t.Fatal("AddState: triage not persisted")
 	}
 	if err := admin.AddState(native.State{Name: "triage"}); err == nil {
@@ -254,7 +1140,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.UpdateState("triage", native.StatePatch{Eligible: &yes, Display: ptr("Triage!")}); err != nil {
 		t.Fatalf("UpdateState: %v", err)
 	}
-	if st := store.Board().StateByName("triage"); st == nil || !st.Eligible || st.Display != "Triage!" {
+	if st := mustBoard(t, store).StateByName("triage"); st == nil || !st.Eligible || st.Display != "Triage!" {
 		t.Errorf("UpdateState not applied: %+v", st)
 	}
 	if err := admin.UpdateState("nope", native.StatePatch{Display: ptr("x")}); err == nil {
@@ -274,7 +1160,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(parked.ID); got.State != "triaging" {
 		t.Errorf("RenameState cascade: parked state=%q want triaging", got.State)
 	}
-	if store.Board().StateByName("triage") != nil {
+	if mustBoard(t, store).StateByName("triage") != nil {
 		t.Error("RenameState: old column still present")
 	}
 	if _, err := admin.RenameState("triaging", native.StateInbox); err == nil {
@@ -296,15 +1182,47 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(parked.ID); got.State != native.StateBacklog {
 		t.Errorf("DeleteState migrate: parked state=%q want backlog", got.State)
 	}
-	if store.Board().StateByName("triaging") != nil {
+	if mustBoard(t, store).StateByName("triaging") != nil {
 		t.Error("DeleteState: column still present")
 	}
 	if _, err := admin.DeleteState("ghost", ""); err == nil {
 		t.Error("DeleteState unknown should fail")
 	}
 
+	// Deleting a TERMINAL column into a working one reopens every card in
+	// it at once. Both twins must hold it to the same bar as the
+	// single-card Reopen — otherwise the column editor is the way around
+	// the sink on whichever twin forgot the guard.
+	closed, err := store.Create(native.Issue{Title: "closed with a dependent", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create closed: %v", err)
+	}
+	if _, err := store.SetState(closed.ID, native.StateDone); err != nil {
+		t.Fatalf("SetState done: %v", err)
+	}
+	dependent, err := store.Create(native.Issue{Title: "promoted dependent", State: native.StateReady, Blockers: []string{closed.ID}})
+	if err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+	if _, err := admin.DeleteState(native.StateDone, native.StateReady); !errors.Is(err, tracker.ErrTransitionRejected) {
+		t.Errorf("deleting a terminal column into a working one is a bulk reopen: want the dependents refusal, got %v", err)
+	}
+	if got, _ := store.Get(closed.ID); got.State != native.StateDone {
+		t.Errorf("a refused bulk reopen must leave its cards terminal, got %q", got.State)
+	}
+	// Cleared, it proceeds — the guard refuses a class, not the gesture.
+	if _, err := store.Update(dependent.ID, native.Patch{Blockers: &[]string{}}); err != nil {
+		t.Fatalf("clear blockers: %v", err)
+	}
+	if _, err := admin.DeleteState(native.StateDone, native.StateReady); err != nil {
+		t.Errorf("with no promoted dependents the migration must proceed: %v", err)
+	}
+	if err := admin.AddState(native.State{Name: native.StateDone, Display: "Done", Terminal: true}); err != nil {
+		t.Fatalf("restore done column: %v", err)
+	}
+
 	// ReorderStates: permutation only.
-	cur := store.Board()
+	cur := mustBoard(t, store)
 	names := make([]string, len(cur.States))
 	for i, st := range cur.States {
 		names[i] = st.Name
@@ -315,8 +1233,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 		if err := admin.ReorderStates(swapped); err != nil {
 			t.Errorf("ReorderStates: %v", err)
 		}
-		if store.Board().States[0].Name != swapped[0] {
-			t.Errorf("ReorderStates not applied: %+v", store.Board().States)
+		if mustBoard(t, store).States[0].Name != swapped[0] {
+			t.Errorf("ReorderStates not applied: %+v", mustBoard(t, store).States)
 		}
 	}
 	if err := admin.ReorderStates([]string{"only-one"}); err == nil {
@@ -328,7 +1246,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err != nil {
 		t.Fatalf("AddField: %v", err)
 	}
-	if store.Board().FieldByName("severity") == nil {
+	if mustBoard(t, store).FieldByName("severity") == nil {
 		t.Fatal("AddField: severity not persisted")
 	}
 	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err == nil {
@@ -342,7 +1260,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.UpdateField("severity", native.FieldPatch{Display: ptr("Severity")}); err != nil {
 		t.Errorf("UpdateField: %v", err)
 	}
-	if f := store.Board().FieldByName("severity"); f == nil || f.Display != "Severity" {
+	if f := mustBoard(t, store).FieldByName("severity"); f == nil || f.Display != "Severity" {
 		t.Errorf("UpdateField not applied: %+v", f)
 	}
 	if err := admin.UpdateField("nope", native.FieldPatch{Display: ptr("x")}); err == nil {
@@ -362,7 +1280,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(withField.ID); got.Fields["sev"] != "high" || got.Fields["severity"] != nil {
 		t.Errorf("RenameField cascade: fields=%+v", got.Fields)
 	}
-	if store.Board().FieldByName("severity") != nil {
+	if mustBoard(t, store).FieldByName("severity") != nil {
 		t.Error("RenameField: old field def still present")
 	}
 	if _, err := admin.RenameField("sev", "bot_args"); err == nil {
@@ -376,7 +1294,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if got, _ := store.Get(withField.ID); got.Fields["sev"] != nil {
 		t.Errorf("DeleteField cascade: key not stripped: %+v", got.Fields)
 	}
-	if store.Board().FieldByName("sev") != nil {
+	if mustBoard(t, store).FieldByName("sev") != nil {
 		t.Error("DeleteField: field def still present")
 	}
 	if _, err := admin.DeleteField("ghost"); err == nil {
@@ -387,7 +1305,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.AddField(native.Field{Name: "owner", Type: native.FieldText}); err != nil {
 		t.Fatalf("AddField owner: %v", err)
 	}
-	fcur := store.Board()
+	fcur := mustBoard(t, store)
 	fnames := make([]string, len(fcur.Fields))
 	for i, f := range fcur.Fields {
 		fnames[i] = f.Name
@@ -400,8 +1318,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 		if err := admin.ReorderFields(rev); err != nil {
 			t.Errorf("ReorderFields: %v", err)
 		}
-		if store.Board().Fields[0].Name != rev[0] {
-			t.Errorf("ReorderFields not applied: %+v", store.Board().Fields)
+		if mustBoard(t, store).Fields[0].Name != rev[0] {
+			t.Errorf("ReorderFields not applied: %+v", mustBoard(t, store).Fields)
 		}
 	}
 	if err := admin.ReorderFields([]string{"x"}); err == nil {
@@ -416,7 +1334,7 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.SaveView(native.View{Name: "mine", Assignee: "you"}); err != nil {
 		t.Fatalf("SaveView upsert: %v", err)
 	}
-	if vs := store.Board().Views; len(vs) != 1 || vs[0].Assignee != "you" {
+	if vs := mustBoard(t, store).Views; len(vs) != 1 || vs[0].Assignee != "you" {
 		t.Errorf("SaveView upsert by name: %+v", vs)
 	}
 	if err := admin.SaveView(native.View{Name: ""}); err == nil {
@@ -425,8 +1343,8 @@ func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.Boar
 	if err := admin.DeleteView("mine"); err != nil {
 		t.Errorf("DeleteView: %v", err)
 	}
-	if len(store.Board().Views) != 0 {
-		t.Errorf("DeleteView: view still present: %+v", store.Board().Views)
+	if len(mustBoard(t, store).Views) != 0 {
+		t.Errorf("DeleteView: view still present: %+v", mustBoard(t, store).Views)
 	}
 	if err := admin.DeleteView("ghost"); err == nil {
 		t.Error("DeleteView unknown should fail")
@@ -512,6 +1430,35 @@ func TestNativeStore_Conformance(t *testing.T) {
 		t.Fatalf("native.NewStore (admin): %v", err)
 	}
 	runBoardAdminSuite(t, admin, admin)
+
+	launch, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (launch): %v", err)
+	}
+	runLaunchClaimSuite(t, launch)
+
+	ownedFrom, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (owned-from): %v", err)
+	}
+	runOwnedFromSuite(t, ownedFrom)
+
+	lateRenew, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (late-renew): %v", err)
+	}
+	runRenewAfterReleaseSuite(t, lateRenew)
+
+	adjust, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (adjust-labels): %v", err)
+	}
+	runAdjustLabelsSuite(t, adjust)
+
+	// The effect outbox's twin is trigger.MemoryEffectOutbox (the native
+	// filesystem board carries no outbox), and the effect KIND has to survive
+	// a round trip on it exactly as it does on Mongo.
+	runEffectOutboxKindSuite(t, trigger.NewMemoryEffectOutbox(), "memory-tenant")
 }
 
 // TestMongoStore_Conformance runs the same suite against the Mongo store.
@@ -520,7 +1467,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -530,7 +1477,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_board_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -554,6 +1501,16 @@ func TestMongoStore_Conformance(t *testing.T) {
 	// the shared native.Adapter (eligible + unclaimed + blocker-free filtering).
 	runTrackerSuite(t, boardmongo.New(db, "tracker-tenant"))
 
+	// The admission loop's atomic launch claim must exist on the cloud
+	// twin too — its own tenant, so the ready/held cards it seeds never
+	// enter the coordinator listing below.
+	runLaunchClaimSuite(t, boardmongo.New(db, "launch-tenant"))
+	runOwnedFromSuite(t, boardmongo.New(db, "owned-from-tenant"))
+	runRenewAfterReleaseSuite(t, boardmongo.New(db, "late-renew-tenant"))
+	runAdjustLabelsSuite(t, boardmongo.New(db, "adjust-labels-tenant"))
+	runEffectOutboxKindSuite(t, boardmongo.New(db, "effect-kind-tenant"), "effect-kind-tenant")
+	runLegacyEffectRowSuite(ctx, t, db)
+
 	// The Coordinator's cross-tenant ListEligible must find ready+unclaimed
 	// cards across tenants (verifies the issue.state / issue.claim BSON paths).
 	coord := boardmongo.NewCoordinator(db)
@@ -567,20 +1524,121 @@ func TestMongoStore_Conformance(t *testing.T) {
 		{"cb", "claimed", native.StateReady, true}, // eligible state but claimed
 	} {
 		st := coord.StoreFor(tc.tenant)
-		iss, cerr := st.Create(native.Issue{Title: tc.title, State: tc.state})
+		iss, cerr := st.Create(native.Issue{Title: tc.title, State: tc.state, Bot: "feature-dev"})
 		if cerr != nil {
 			t.Fatalf("coord create %s: %v", tc.title, cerr)
 		}
 		if tc.claim {
-			if cerr := st.Claim(iss.ID, "someone"); cerr != nil {
+			if _, cerr := st.Claim(iss.ID, "someone"); cerr != nil {
 				t.Fatalf("claim: %v", cerr)
 			}
+		}
+	}
+	// A ready+unclaimed card with NO bot is roadmap content (#798): the
+	// sweeps' ListEligible still sees it, the dispatch tick's
+	// ListDispatchable never does — the bot predicate is in the query.
+	if _, cerr := coord.StoreFor("ca").Create(native.Issue{Title: "roadmap-no-bot", State: native.StateReady}); cerr != nil {
+		t.Fatalf("coord create roadmap-no-bot: %v", cerr)
+	}
+	disp, derr0 := coord.ListDispatchable(ctx, []string{native.StateReady}, 50)
+	if derr0 != nil {
+		t.Fatalf("ListDispatchable: %v", derr0)
+	}
+	dispTitles := map[string]bool{}
+	for _, c := range disp {
+		if c.Issue.Title == "roadmap-no-bot" {
+			t.Error("ListDispatchable listed a ready card with no bot — the tick would claim what it cannot launch")
+		}
+		if c.Issue.Bot == "" {
+			t.Errorf("ListDispatchable listed %q with an empty bot", c.Issue.Title)
+		}
+		dispTitles[c.Issue.Title] = true
+	}
+	if !dispTitles["ready-a"] || !dispTitles["ready-b"] {
+		t.Errorf("ListDispatchable must list the launchable ready cards: %v", dispTitles)
+	}
+	// A card inside its launch-refusal backoff is not dispatchable until
+	// NotBefore has passed (#814) — the predicate is in the query, like the
+	// bot filter, for the same batch-starvation reason.
+	{
+		st := coord.StoreFor("ca")
+		held, cerr := st.Create(native.Issue{Title: "held-back", State: native.StateReady, Bot: "feature-dev"})
+		if cerr != nil {
+			t.Fatalf("coord create held-back: %v", cerr)
+		}
+		tok, cerr := st.Claim(held.ID, "board-dispatcher:pod-1")
+		if cerr != nil {
+			t.Fatalf("claim held-back: %v", cerr)
+		}
+		listed := func(what string) bool {
+			t.Helper()
+			d, derr := coord.ListDispatchable(ctx, []string{native.StateReady}, 50)
+			if derr != nil {
+				t.Fatalf("ListDispatchable (%s): %v", what, derr)
+			}
+			for _, c := range d {
+				if c.Issue.ID == held.ID {
+					return true
+				}
+			}
+			return false
+		}
+		if err := st.SetLaunchRefusalOwned(held.ID, &native.LaunchRefusal{Attempts: 1, LastAt: time.Now().UTC(), NotBefore: time.Now().UTC().Add(time.Hour), LastReason: "x"}, tok); err != nil {
+			t.Fatalf("ledger held-back: %v", err)
+		}
+		if err := st.ReleaseOwned(held.ID, tok); err != nil {
+			t.Fatalf("release held-back: %v", err)
+		}
+		if listed("inside the backoff") {
+			t.Error("ListDispatchable listed a card inside its launch-refusal backoff")
+		}
+		tok, cerr = st.Claim(held.ID, "board-dispatcher:pod-1")
+		if cerr != nil {
+			t.Fatalf("re-claim held-back: %v", cerr)
+		}
+		if err := st.SetLaunchRefusalOwned(held.ID, &native.LaunchRefusal{Attempts: 1, LastAt: time.Now().UTC(), NotBefore: time.Now().UTC().Add(-time.Second), LastReason: "x"}, tok); err != nil {
+			t.Fatalf("ledger held-back (expired): %v", err)
+		}
+		if err := st.ReleaseOwned(held.ID, tok); err != nil {
+			t.Fatalf("release held-back: %v", err)
+		}
+		if !listed("after the backoff") {
+			t.Error("ListDispatchable must list a card once its NotBefore has passed")
+		}
+		if err := st.Delete(held.ID); err != nil {
+			t.Fatalf("delete held-back: %v", err)
 		}
 	}
 	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50, false)
 	if eerr != nil {
 		t.Fatalf("ListEligible: %v", eerr)
 	}
+	sawRoadmap := false
+	kept := elig[:0:0]
+	for _, c := range elig {
+		if c.Issue.Title == "roadmap-no-bot" {
+			sawRoadmap = true
+			continue // keep the ordering assertions below on their two-card population
+		}
+		kept = append(kept, c)
+	}
+	if !sawRoadmap {
+		t.Error("ListEligible (the sweeps' listing) must still see a bot-less card — a sweep judges by the recorded run")
+	}
+	elig = kept
+	// The Coordinator is cross-tenant BY DESIGN, and this suite shares one
+	// database: ready+unclaimed residue from the earlier per-tenant suites
+	// (tenant-1's cards) legitimately shows up here. Scope the assertions
+	// to this section's own tenants — a real attribution bug still fails
+	// on the per-title tenant checks below.
+	coordTenants := map[string]bool{"ca": true, "cb": true}
+	filtered := elig[:0:0]
+	for _, c := range elig {
+		if coordTenants[c.Tenant] {
+			filtered = append(filtered, c)
+		}
+	}
+	elig = filtered
 	gotTitles := map[string]string{}
 	for _, c := range elig {
 		gotTitles[c.Issue.Title] = c.Tenant
@@ -608,12 +1666,18 @@ func TestMongoStore_Conformance(t *testing.T) {
 	if elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b" {
 		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
 	}
-	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)
+	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 50, true)
 	if derr != nil {
 		t.Fatalf("ListEligible newest-first: %v", derr)
 	}
-	if len(desc) != 1 || desc[0].Issue.Title != "ready-b" {
-		t.Errorf("newest-first capped window = %v, want the freshest card ready-b", desc)
+	var descOwn []boardmongo.Candidate
+	for _, c := range desc {
+		if coordTenants[c.Tenant] && c.Issue.Title != "roadmap-no-bot" {
+			descOwn = append(descOwn, c)
+		}
+	}
+	if len(descOwn) == 0 || descOwn[0].Issue.Title != "ready-b" {
+		t.Errorf("newest-first order = %v, want the freshest card ready-b first", descOwn)
 	}
 }
 
@@ -655,5 +1719,120 @@ func runTrackerSuite(t *testing.T, store native.BoardStore) {
 	states, _ := trk.RefreshStates(ctx, []string{ready.ID})
 	if states[ready.ID] != native.StateDone {
 		t.Errorf("RefreshStates: %v", states)
+	}
+}
+
+// TestCoordinatorServerNow: the reaper measures server-stamped leases, so
+// its cutoff must come from the server too. A coordinator that silently
+// returned the zero time (or the client's clock) would put the skew hole
+// back exactly where $$NOW closed it.
+func TestCoordinatorServerNow(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_clock_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := mongotest.TeardownCtx()
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	coord := boardmongo.NewCoordinator(db)
+
+	// Empty collection: no document to project from — the documented
+	// zero return, which the caller reads as "fall back to my clock".
+	if got, err := coord.ServerNow(ctx); err != nil || !got.IsZero() {
+		t.Fatalf("ServerNow on an empty board = (%v, %v), want the zero time and no error", got, err)
+	}
+
+	st := boardmongo.New(db, "tenant-clock")
+	if _, err := st.Create(native.Issue{Title: "clock probe"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := coord.ServerNow(ctx)
+	if err != nil {
+		t.Fatalf("ServerNow: %v", err)
+	}
+	if got.IsZero() {
+		t.Fatal("ServerNow returned the zero time with a document present — the reaper would fall back to the pod clock forever")
+	}
+	if delta := time.Since(got); delta > time.Minute || delta < -time.Minute {
+		t.Fatalf("ServerNow = %s, more than a minute from this host's clock (%s) — not a plausible server instant", got, delta)
+	}
+}
+
+// TestCoordinatorSeesTheUnleasedArm: the CLOUD reaper lists through the
+// Coordinator, not the tenant-scoped Store. When only the Store learned
+// the un-leased recovery arm, the recovery path the strict fence cites as
+// its justification was dead on the twin that has no boot sweep — a card
+// whose lease field an older binary dropped stayed held by a dead pod for
+// ever, and nothing but a database edit could free it.
+func TestCoordinatorSeesTheUnleasedArm(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo board suite")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_board_coordarm_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dc := mongotest.TeardownCtx()
+		defer dc()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	if err := boardmongo.EnsureSchema(ctx, db); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	st := boardmongo.New(db, "tenant-coordarm")
+	coord := boardmongo.NewCoordinator(db)
+
+	ghost, err := st.Create(native.Issue{Title: "lease dropped by an old binary", State: native.StateInProgress})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	issues := db.Collection(boardmongo.IssuesCollection)
+	if _, err := issues.UpdateOne(ctx, bson.M{"_id": ghost.ID}, bson.M{
+		"$set":   bson.M{"issue.claim": "dead-pod", "issue.updatedat": time.Now().Add(-72 * time.Hour)},
+		"$unset": bson.M{"issue.claimleaseuntil": "", "issue.claimepoch": ""},
+	}); err != nil {
+		t.Fatalf("seed the ghost: %v", err)
+	}
+
+	cands, err := coord.ListExpiredClaimCandidates(ctx, time.Now(), 50)
+	if err != nil {
+		t.Fatalf("ListExpiredClaimCandidates (cross-tenant): %v", err)
+	}
+	var found *tracker.ExpiredClaim
+	for i := range cands {
+		if cands[i].Claim.IssueID == ghost.ID {
+			found = &cands[i].Claim
+		}
+	}
+	if found == nil {
+		t.Fatal("the cloud reaper's own listing must reach a claim carrying no lease — otherwise the card is " +
+			"held by a dead pod for ever, and cloud has no boot sweep to free it")
+	}
+	// And what it lists, the transfer must accept.
+	if _, _, err := coord.ReclaimExpired(ctx, "tenant-coordarm", ghost.ID, found.Prev, "reaper:probe", time.Now()); err != nil {
+		t.Fatalf("the transfer must accept a candidate the cross-tenant listing produced, got %v", err)
 	}
 }

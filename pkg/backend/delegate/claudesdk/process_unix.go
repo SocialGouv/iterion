@@ -21,6 +21,27 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
+// terminateGroupOnCancel makes ctx cancellation kill the whole subtree
+// instead of the CLI process alone. Without it the descendants (MCP servers,
+// background bash jobs) survive until close() runs — and close() only runs
+// once the read loop returns, which a descendant holding the CLI's stdout
+// pipe can prevent. The cancellation would then stop iterion's wait without
+// stopping the agent's work.
+//
+// Only effective on a cmd built by exec.CommandContext; setProcessGroup must
+// have run first, or the negative-PID signal would address another group.
+func terminateGroupOnCancel(cmd *exec.Cmd) {
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := killProcessGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
 // killProcessGroup signals every process in the group whose leader has the
 // given pid. `pid` must be the leader of its own group (see setProcessGroup),
 // otherwise Kill(-pid, …) would target an unrelated group.

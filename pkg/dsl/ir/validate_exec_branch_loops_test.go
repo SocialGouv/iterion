@@ -17,10 +17,9 @@ schema s:
   items: json
 `
 
-func TestValidateLoopInFanOutAllBody_Rejected(t *testing.T) {
-	// Loop target is a distinct dummy so findConvergencePoint still elects
-	// join (a1 has a single incoming source). execBranch runs a1 and would
-	// skip the loop — that is the C244 true positive.
+func TestValidateLoopInFanOutAllBody_Allowed(t *testing.T) {
+	// The bounded edge and its target are owned by the a1 branch; join remains
+	// the structural collector shared with a2.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -53,15 +52,13 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
-func TestValidateLoopHeadElectedAsJoin_Rejected(t *testing.T) {
-	// a1 -> a1 as refine gives a1 two incoming sources, so findConvergencePoint
-	// elects a1 as the join and "hoists" the loop onto the trunk. That is not
-	// a legal wrap: the a1 branch starts on the convergence node (runs
-	// nothing), the a2 branch swallows the wait_all join, then the trunk
-	// runs the loop and the join a second time. C244 must refuse it.
+func TestValidateLoopHeadInFanOutBody_Allowed(t *testing.T) {
+	// A bounded self-edge is local control flow, not another structural
+	// predecessor that could elect the branch head as the collector.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -89,13 +86,14 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
-func TestValidateLoopImplReviewRetryInFanOut_Rejected(t *testing.T) {
+func TestValidateLoopImplReviewRetryInFanOut_Allowed(t *testing.T) {
 	// The idiomatic per-item retry: impl → review → impl as fix. review is
 	// the loop source and is not a structural join (one non-iteration
-	// predecessor). Same mis-execution as the self-loop head.
+	// predecessor), so the whole cycle has one branch owner.
 	src := execBranchLoopPrompts + `
 tool impl:
   command: ` + "`echo`" + `
@@ -128,10 +126,11 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
-func TestValidateLoopInFanOutEachBody_Rejected(t *testing.T) {
+func TestValidateLoopInFanOutEachBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -172,10 +171,11 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
-func TestValidateForeachInFanOutBody_Rejected(t *testing.T) {
+func TestValidateForeachInFanOutBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -208,10 +208,10 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopInLLMMultiBody_Rejected(t *testing.T) {
+func TestValidateLoopInLLMMultiBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -246,7 +246,7 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopOnLLMSingle_Allowed(t *testing.T) {
@@ -506,11 +506,9 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopAfterFanOutEachImplicitChain_Allowed(t *testing.T) {
-	// fan_out_each has one template edge, so writer/collect/refine each
-	// have one non-iteration predecessor. The runtime elects refine
-	// (its own back-edge) as the join; every replay stops there and the
-	// loop runs on the trunk. Not the sibling-swallow case.
+func TestValidateLoopInFanOutEachImplicitChain_WarnsMigration(t *testing.T) {
+	// fan_out_each has one template edge, so writer/collect/refine share one
+	// item owner. The refine self-loop runs inside that item scope.
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -545,12 +543,17 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectDiag(t, r, DiagImplicitCollectorMove)
+	for _, diag := range r.Diagnostics {
+		if diag.Code == DiagImplicitCollectorMove && diag.Severity != SeverityWarning {
+			t.Fatalf("C246 severity = %s, want warning", diag.Severity)
+		}
+	}
 }
 
-func TestValidateLoopOnFanOutEachTemplateHead_Rejected(t *testing.T) {
-	// writer is the only fan target. Its self-loop elects it as the join,
-	// so each item branch would run nothing and the loop would fire once
-	// on the trunk. Still C244 — the template head is body.
+func TestValidateLoopOnFanOutEachTemplateHead_Allowed(t *testing.T) {
+	// writer is the only fan target. Its bounded self-loop stays inside each
+	// item scope and does not elect the template head as an implicit collector.
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -574,7 +577,8 @@ workflow test:
   writer -> done else
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateLoopNestedFanOutEachInFanOutAll_Rejected(t *testing.T) {
@@ -630,11 +634,10 @@ workflow test:
 	}
 }
 
-func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
-	// joiner is the elected convergence (first fan edge reaches it). z also
-	// has await: so the structural stop treats it as a join and does not
-	// put w in the body. The skip of w→z inside execBranch is a runtime
-	// hole (execBranch only stops at the elected id), not C244.
+func TestValidateLoopAfterNonElectedAwait_Allowed(t *testing.T) {
+	// joiner is the elected convergence. A second await node on the a2 path
+	// does not stop execBranch, so w -> z remains local to that branch and is
+	// safe to execute with its private counters.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -681,6 +684,63 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopNameSharedByTrunkAndBranchAfterNonElectedAwait_Rejected(t *testing.T) {
+	// joiner is elected from the first branch, so z is only an await-looking
+	// node on the second branch: execBranch runs through it. The compiler must
+	// therefore classify w -> z as branch-local and reject its name colliding
+	// with the trunk loop below joiner.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool x:
+  command: ` + "`echo`" + `
+  output: s
+
+tool z:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+tool w:
+  command: ` + "`echo`" + `
+  output: s
+
+tool joiner:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+tool trunk:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> x
+  x -> joiner
+  a2 -> z
+  z -> w
+  w -> z as refine(3) when ok
+  w -> joiner else
+  joiner -> trunk
+  trunk -> joiner as refine(3) when ok
+  trunk -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
 func TestValidateLoopOnTrunk_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a:
@@ -691,6 +751,212 @@ workflow test:
   entry: a
   a -> a as refine(3) when ok
   a -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopNameSharedByTrunkAndBranch_Rejected(t *testing.T) {
+	// Each edge passes the per-edge ownership test (a1 -> dummy is owned by
+	// the a1 branch, join -> r1 is on the trunk), but both back-edges share
+	// the loop name, so the compiler folds them into one Loop and the branch's
+	// local counter would shadow the enclosing trunk counter at run time.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> dummy as retry(3) when ok
+  a1 -> join else
+  dummy -> join
+  a2 -> join
+  join -> r1 as retry(3) when ok
+  join -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopNameSharedBySiblingBranches_Rejected(t *testing.T) {
+	// Two sibling branches each own a self-loop under the same name: neither
+	// edge crosses a boundary, but the name would map onto one durable Loop
+	// whose counters the siblings cannot share.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> a1 as retry(3) when ok
+  a1 -> join else
+  a2 -> a2 as retry(3) when ok
+  a2 -> join else
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateDistinctLoopNamesAcrossScopes_Allowed(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> a1 as inner(3) when ok
+  a1 -> join else
+  a2 -> join
+  join -> r1 as outer(3) when ok
+  join -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
+
+// An llm-multi router dispatches only the edges the model selected, and the
+// runtime elects its collector from that narrower set. Here the declared set
+// elects `join` (reached first from a1), which would put the mid/head cycle
+// wholly inside the a2 branch — but when the model selects a2 ALONE the
+// runtime elects `mid`, whose await makes it the collector, and the cycle
+// straddles it. C244 must bound each llm-multi branch by the collector its own
+// edge can elect, so this shape is rejected rather than silently accepted for
+// one selection and broken for another.
+func TestValidateLoopStraddlingLLMMultiPerEdgeCollector_Rejected(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool head:
+  command: ` + "`echo`" + `
+  output: s
+
+tool mid:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+router r1:
+  mode: llm
+  model: "test-model"
+  multi: true
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> head
+  head -> mid
+  mid -> head as spin(3) when ok
+  mid -> join else
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+// The same shape under fan_out_all stays legal: that router dispatches EVERY
+// declared edge without evaluating a condition, so the collector the compiler
+// elects is the collector execBranch stops at — there is no narrower run-time
+// edge set to diverge from.
+func TestValidateLoopBeforeNonElectedAwaitInFanOutAll_Allowed(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool head:
+  command: ` + "`echo`" + `
+  output: s
+
+tool mid:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> head
+  head -> mid
+  mid -> head as spin(3) when ok
+  mid -> join else
+  join -> done
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)

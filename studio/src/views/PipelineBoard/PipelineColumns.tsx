@@ -44,6 +44,7 @@ import {
   canPauseRun,
   canResetTicket,
   canResumeRun,
+  canRetryFromZero,
   canStopRun,
   canUnmarkReady,
   isTicketEditable,
@@ -78,6 +79,7 @@ export {
   canPauseRun,
   canResetTicket,
   canResumeRun,
+  canRetryFromZero,
   canStopRun,
   canUnmarkReady,
   isTicketEditable,
@@ -186,6 +188,7 @@ export interface PipelineCardActions {
   onResume: (card: PipelineBoardCardDTO) => void;
   onStop: (card: PipelineBoardCardDTO) => void;
   onReset: (card: PipelineBoardCardDTO) => void;
+  onRetryFromZero: (card: PipelineBoardCardDTO) => void;
   onDelete: (card: PipelineBoardCardDTO) => void;
   onClose: (card: PipelineBoardCardDTO) => void;
 }
@@ -283,6 +286,38 @@ export function PipelineColumns({
       )
         return;
       await runAction(() => resetPipelineTask(card.issue_id as string));
+    },
+    // Retry from zero DISCARDS a run: say so before doing it, and name the
+    // run being dropped. Its checkpoint survives in the run store — only the
+    // ticket's pointer to it goes — so the honest wording is "this ticket
+    // stops resuming it", not "the run is deleted".
+    onRetryFromZero: async (card) => {
+      if (
+        !(await confirm({
+          title: "Retry from zero?",
+          message: (
+            <div className="space-y-2">
+              <p>
+                The ticket stops pointing at{" "}
+                {card.run_id ? <code>{card.run_id}</code> : "its last run"}, so
+                the next launch starts from the beginning instead of resuming
+                that checkpoint — whichever process picks the ticket up.
+              </p>
+              <p>
+                The run itself is kept: its history, artifacts and logs stay
+                readable in the run console. Use{" "}
+                <em>Resume from checkpoint</em> instead to continue it.
+              </p>
+            </div>
+          ),
+          confirmLabel: "Retry from zero",
+          confirmVariant: "danger",
+        }))
+      )
+        return;
+      await runAction(() =>
+        resetPipelineTask(card.issue_id as string, { fresh: true }),
+      );
     },
     onDelete: async (card) => {
       if (
@@ -814,6 +849,9 @@ export function PipelineCard({
       case "reset":
         actions?.onReset(card);
         break;
+      case "retry_fresh":
+        actions?.onRetryFromZero(card);
+        break;
       case "stop":
         actions?.onStop(card);
         break;
@@ -1308,16 +1346,23 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
 // ticket, and whoever picks it up decides: the studio's admission loop mints a
 // fresh run, a live dispatcher resumes this one from its checkpoint. Saying
 // "starts it over" would send the operator to re-burn the budget on the same
-// checkpoint; the details panel names the tool that forces a fresh run.
+// checkpoint — "Retry from zero" in the card menu is the deterministic form.
 function giveUpTitle(
   giveUp: NonNullable<PipelineBoardCardDTO["gave_up"]>,
 ): string {
+  const exit =
+    "Nobody decided this — retry it (from zero, if resuming cannot fix it), or close the card to acknowledge it.";
+  const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
+  // A reasoned give-up is the watchdog's own verdict (a recorded run that
+  // is gone), not a retry budget: say the reason, not an attempt count.
+  if (giveUp.reason) {
+    return `The dispatcher gave up${filed}: ${giveUp.reason} ${exit}`;
+  }
   const attempts =
     giveUp.attempts && giveUp.attempts > 0
       ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
       : "after exhausting its attempts";
-  const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
-  return `The dispatcher gave up ${attempts}${filed}. Nobody decided this — retry it, or close the card to acknowledge it.`;
+  return `The dispatcher gave up ${attempts}${filed}. ${exit}`;
 }
 
 function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {

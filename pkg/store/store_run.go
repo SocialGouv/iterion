@@ -137,12 +137,97 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 // finalize path concurrent with an engine status update, would
 // otherwise read-modify-write through each other and lose fields.
 func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if r.Status != RunStatusRunning {
+		r.AwaitAnswersWaits = nil
+	}
 	if err := s.guardNotDeleted(r.ID); err != nil {
 		return err
 	}
+	// Best-effort guard: a copy whose STATUS is already non-failure
+	// must not resurrect its failure code through this full-document
+	// write. A copy stale on the status itself still rewrites
+	// status+code together only if its loaded version still matches.
+	// A concurrent write is refused at writeRun, before replacing the file.
+	if !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+		r.EndReason = ""
+	}
+	// Same discipline for the pause pointer: a full-document write on a
+	// non-carrying status must not resurrect consumed interaction
+	// evidence.
+	if !r.Status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.writeRun(r)
+	// Outcome bookkeeping does not belong to full-document savers: a
+	// caller replaying a stale in-memory Run must not rewind the
+	// episode counter or resurrect metadata a status transition wrote
+	// meanwhile. Same status ⇒ keep the persisted values; a status
+	// change through SaveRun IS a transition ⇒ stamp it (untyped).
+	if persisted, err := s.loadRunRaw(r.ID); err == nil {
+		// Work on a copy: the caller's struct must not observe the
+		// bookkeeping (the Mongo implementation doesn't mutate either).
+		rr := *r
+		// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A
+		// caller whose copy predates a live claim (rename, rewind
+		// bookkeeping) must not disavow it through this full-document
+		// write: clobbering merge_status+merge_claimed_at lets the
+		// next claimant through while the first is mid-merge — the
+		// double-squash the claim exists to prevent.
+		if persisted.MergeStatus == MergeStatusMerging && rr.MergeStatus != MergeStatusMerging {
+			rr.MergeStatus = persisted.MergeStatus
+			rr.MergeClaimedAt = persisted.MergeClaimedAt
+		}
+		// The launch-frozen contract is immutable: the persisted value
+		// wins over whatever the saver carries, and the first-write
+		// window only stays open while the run has not produced yet —
+		// adding a contract to already-terminal work would decide
+		// retroactively.
+		if persisted.RoutingPolicy != nil {
+			rr.RoutingPolicy = persisted.RoutingPolicy
+		} else if !persisted.Status.CountsAgainstLaunchLimit() {
+			rr.RoutingPolicy = nil
+		}
+		if persisted.Status == rr.Status {
+			rr.OutcomeSeq = persisted.OutcomeSeq
+			rr.ContinuationState = persisted.ContinuationState
+			// The typed cause too: transitions own it, and a stale
+			// same-status copy clearing it would erase what a park
+			// wrote meanwhile.
+			rr.FailureCode = persisted.FailureCode
+		} else {
+			rr.OutcomeSeq = persisted.OutcomeSeq
+			if rr.Status.IsFinalSuccess() || rr.Status.IsFinalFailure() || rr.Status.IsTerminalResumable() {
+				rr.OutcomeSeq++
+			}
+			rr.ContinuationState = ""
+		}
+		if err := s.writeRun(&rr); err != nil {
+			return err
+		}
+		r.CASVersion = rr.CASVersion
+		return nil
+	}
+	// Create branch (no persisted document): mirror the Mongo upsert —
+	// the store owns the outcome bookkeeping even on first write, so a
+	// caller cannot seed a fabricated episode counter or continuation
+	// (adversarial gate F7: the FS branch used to trust the caller's
+	// bookkeeping verbatim). A run BORN terminal has episode 0: a
+	// creation is not a transition, and a reactor must not treat an
+	// imported/fixture document as a fresh outcome.
+	rr := *r
+	rr.OutcomeSeq = 0
+	rr.ContinuationState = ""
+	if err := s.writeRun(&rr); err != nil {
+		return err
+	}
+	r.CASVersion = rr.CASVersion
+	return nil
 }
 
 // loadRunRaw is the pure-read variant of LoadRun: it parses run.json
@@ -194,13 +279,22 @@ func healRun(r *Run) bool {
 		r.FinishedAt = nil
 		changed = true
 	}
+	// A failure code, and the end reason beside it, may only persist on a
+	// status that carries an outcome. The transition machinery clears them
+	// and SaveRun normalizes, so the remaining sources are historical rows
+	// written before those guards and hand-edited run.json — heal on read.
+	if !r.Status.CarriesFailureCode() {
+		if r.FailureCode != "" {
+			r.FailureCode = ""
+			changed = true
+		}
+		if r.EndReason != "" {
+			r.EndReason = ""
+			changed = true
+		}
+	}
 	return changed
 }
-
-// loadRunHealBeforeLockHook is a test hook used to deterministically
-// exercise the stale-read window before LoadRun's heal persistence enters the
-// run-mutation critical section. Nil in production.
-var loadRunHealBeforeLockHook func()
 
 // LoadRun reads run.json for the given run ID.
 //
@@ -209,56 +303,44 @@ var loadRunHealBeforeLockHook func()
 // (CreateRun/WriteArtifact/WriteInteraction) already sanitises its inputs;
 // the read paths must do the same so the defence is symmetric.
 //
-// As a one-shot migration step, a legacy run with empty Name gets a
-// deterministic friendly label generated and persisted on read. After
-// the first call the field is on disk; subsequent LoadRuns skip the
-// fixup. The seed mirrors the CLI/launch path (file_path:run_id) so the
-// backfill produces the exact name a new launch would have produced.
+// A legacy or in-flight shape is healed IN MEMORY only (healRun): a
+// deterministic friendly Name for a run persisted without one, a
+// FinishedAt cleared on a running run, a failure code dropped off a
+// non-failure status. The read never writes the healed copy back. A
+// reader is not the run's owner: the engine executing the run holds the
+// per-run lock and writes run.json from a different store instance —
+// often a different process (studio, `iterion inspect`, the dispatcher's
+// poll) — and no lock covers the read-modify-write a persisting heal
+// would perform against it. Every freshly created run passes through
+// exactly that window (CreateRun writes no Name; the engine's first
+// SaveRun stamps Name, FilePath, WorkflowHash, ParentRunID…), so a
+// concurrent heal write could land on top of the engine's stamp and
+// erase it for good: the engine's later writes are load-patch-write on
+// the disk copy, and the run would read as a nameless top-level run with
+// no source path for the rest of its life. The next legitimate write
+// (any status transition or checkpoint) normalises the on-disk copy.
 //
-// Callers that already hold s.mu and intend to write the run
-// themselves should use loadRunRaw to avoid the embedded writeRun
+// Callers that already hold s.mu should use loadRunRaw
 // from the heal path interleaving with their own write.
 func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error) {
 	r, err := s.loadRunRaw(id)
 	if err != nil {
 		return nil, err
 	}
-	if healRun(r) {
-		if loadRunHealBeforeLockHook != nil {
-			loadRunHealBeforeLockHook()
-		}
-		// Persist heal-on-read under the same mutex as every other run.json
-		// read-modify-write. The first load above may have observed a legacy
-		// stale copy; before writing the heal, re-read the current on-disk run
-		// while holding s.mu so a concurrent SaveCheckpoint/UpdateRunStatus/
-		// SaveRun cannot have its authoritative fields clobbered by this
-		// best-effort migration write.
-		s.mu.Lock()
-		fresh, reloadErr := s.loadRunRaw(id)
-		if reloadErr == nil {
-			if healRun(fresh) {
-				if writeErr := s.writeRun(fresh); writeErr != nil && s.logger != nil {
-					s.logger.Warn("store: heal-on-read for run %s failed: %v", id, writeErr)
-				}
-			}
-			s.mu.Unlock()
-			return fresh, nil
-		}
-		s.mu.Unlock()
-
-		// Best-effort persist; a write/reload failure (read-only fs, racing
-		// process, deleted run) leaves the in-memory heal applied and lets the
-		// next successful write fix it up. Never fail LoadRun on this path.
-		if s.logger != nil {
-			s.logger.Warn("store: reload for heal-on-read for run %s failed: %v", id, reloadErr)
-		}
-	}
+	healRun(r)
 	return r, nil
 }
 
 // UpdateRunStatus updates the status (and optional error) of a run.
 // Protected by mu to prevent concurrent read-modify-write races.
 func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error {
+	return s.UpdateRunStatusCoded(ctx, id, status, runErr, "")
+}
+
+// UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
+// classification; the code lands (or is cleared) in the same write as
+// the status.
+func (s *FilesystemRunStore) UpdateRunStatusCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -266,7 +348,7 @@ func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, sta
 	if err != nil {
 		return err
 	}
-	return s.applyStatusTransition(r, status, runErr)
+	return s.applyStatusTransition(r, status, runErr, code)
 }
 
 // PatchRunSteering persists the live-steering state on run.json.
@@ -337,6 +419,20 @@ func (s *FilesystemRunStore) RecordNodeServed(_ context.Context, id, nodeID stri
 // changed=true on a successful write, false if the status had
 // drifted since the caller's last read.
 func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (bool, error) {
+	return s.UpdateRunStatusIfCoded(ctx, id, status, runErr, "", expectedFrom)
+}
+
+// UpdateRunStatusIfCoded is the CAS variant carrying the typed failure
+// classification — code and status land in one atomic write, never a
+// separate read-modify-write.
+func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (bool, error) {
+	if len(expectedFrom) == 0 {
+		// A CAS with no expected set is a bug at the caller (a derived
+		// slice gone empty) — refuse loudly instead of silently
+		// matching nothing (while the Mongo twin would write
+		// unconditionally).
+		return false, fmt.Errorf("store: update status if %s: empty expectedFrom", id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -354,7 +450,131 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 	if !matched {
 		return false, nil
 	}
-	if err := s.applyStatusTransition(r, status, runErr); err != nil {
+	if err := s.applyStatusTransition(r, status, runErr, code); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// mergeClaimable reports whether a run in status cur (with claim time
+// claimedAt) can be claimed for merging at staleBefore: unset, pending
+// and failed are always claimable; a "merging" claim is claimable only
+// once stale (the previous claimant crashed mid-merge).
+func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
+	switch cur {
+	case "", MergeStatusPending, MergeStatusFailed, MergeStatusSkipped, MergeStatusConflicted:
+		// skipped and conflicted stay claimable: /merge is the only
+		// path that re-materialises a lost server-side merge clone, and
+		// a recovered run (RecoverFinalize lands "skipped") must stay
+		// mergeable. The exit CAS still serialises the outcome.
+		return true
+	case MergeStatusMerging:
+		// A zero claimedAt (a full-document writer dropped the stamp)
+		// counts as infinitely stale — it must not wedge the run.
+		return claimedAt.IsZero() || claimedAt.Before(staleBefore)
+	default:
+		return false
+	}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore). Guarded by the store mutex, so concurrent
+// claimants in one process serialize here.
+func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefore time.Time) (bool, MergeStatus, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, "", time.Time{}, err
+	}
+	prior := r.MergeStatus
+	if !mergeClaimable(prior, r.MergeClaimedAt, staleBefore) {
+		return false, prior, time.Time{}, nil
+	}
+	// Millisecond precision: the token must survive a Mongo round-trip
+	// identically on both backends, and BSON stores times in ms.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	// Strictly monotonic vs the stamp being stolen: a steal landing in
+	// the SAME millisecond as the claim it replaces would mint an equal
+	// token, and the loser's token-scoped exits would pass as the
+	// winner's — the fencing collapses exactly when two claimants are
+	// closest.
+	if !now.After(r.MergeClaimedAt) {
+		now = r.MergeClaimedAt.Add(time.Millisecond)
+	}
+	r.MergeStatus = MergeStatusMerging
+	r.MergeClaimedAt = now
+	r.UpdatedAt = now
+	if err := s.writeRun(r); err != nil {
+		return false, prior, time.Time{}, err
+	}
+	return true, prior, now, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): the write only lands when the current
+// MergeStatus is in expectedFrom.
+func (s *FilesystemRunStore) UpdateRunMergeIf(_ context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	matched := false
+	for _, want := range expectedFrom {
+		if r.MergeStatus == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	if !upd.ExpectClaimedAt.IsZero() && !r.MergeClaimedAt.Equal(upd.ExpectClaimedAt) {
+		// The claim this writer holds was stolen — its exit consumes
+		// nothing.
+		return false, nil
+	}
+	r.MergeStatus = upd.Status
+	r.MergedCommit = upd.MergedCommit
+	r.MergedInto = upd.MergedInto
+	r.MergeStrategy = upd.MergeStrategy
+	r.PendingMergeMessage = upd.PendingMergeMessage
+	r.PendingMergeInto = upd.PendingMergeInto
+	r.MergeClaimedAt = time.Time{}
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UpdateRunOutcome is the typed status transition (see store.RunStore):
+// UpdateRunStatusIf plus the outcome metadata persisted atomically.
+func (s *FilesystemRunStore) UpdateRunOutcome(_ context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	if len(expectedFrom) > 0 {
+		matched := false
+		for _, want := range expectedFrom {
+			if r.Status == want {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	if err := s.applyStatusTransitionOutcome(r, status, runErr, meta); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -364,7 +584,7 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running
 // hand-off window.
-func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time, meta RunOutcomeMeta) (bool, error) {
 	if publishedAt.IsZero() {
 		return false, fmt.Errorf("store: fail queued attempt %s without published_at", id)
 	}
@@ -378,7 +598,7 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
 		return false, nil
 	}
-	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr); err != nil {
+	if err := s.applyStatusTransitionOutcome(r, RunStatusFailedResumable, runErr, meta); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -388,10 +608,78 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 // UpdateRunStatusIf: mutate r in-place (status, timestamps, terminal
 // finished_at / resume FinishedAt clear, checkpoint clear when leaving
 // paused state), then persist via writeRun. Caller must hold s.mu.
-func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string) error {
+// The failure code follows the same discipline as Error: set on a
+// failure status, cleared by every transition to a non-failure one —
+// which is what makes a stale code after a resume impossible.
+func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string, code FailureCode) error {
+	return s.applyStatusTransitionOutcome(r, status, runErr, RunOutcomeMeta{Code: code})
+}
+
+// applyStatusTransitionOutcome adds the outcome bookkeeping to the
+// shared transition tail:
+//   - OutcomeSeq increments on a TRANSITION into a terminal status,
+//     never on a same-status rewrite (a drain's markInterrupted or a
+//     repeated flip must not invent an episode — adversarial gate F1);
+//   - ContinuationState is a RUNNER-side statement: it is written when
+//     the meta states one, cleared when the run genuinely changes
+//     state without a statement (unknown, honest), and PRESERVED on a
+//     same-status rewrite (an untyped rewrite of an already-parked run
+//     must not erase a live retry_armed).
+//
+// The publisher's resume rollback (queued back to the prior resumable
+// status) is the one caller for which a transition is NOT a new
+// episode — it restores OutcomeSeq/ContinuationState by hand, the same
+// way it restores FailureCode.
+func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) error {
+	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
+	transition := r.Status != status
+	if transition || status != RunStatusRunning {
+		r.AwaitAnswersWaits = nil
+	}
+	if terminal && transition {
+		r.OutcomeSeq++
+	}
+	if meta.Continuation != "" {
+		r.ContinuationState = meta.Continuation
+	} else if transition {
+		r.ContinuationState = ""
+	}
+	// A final continuation and an armed retry contradict each other (see
+	// the Mongo twin, statusTransitionSet): disarm at the tail every final
+	// writer goes through, keeping the rest of the retry bookkeeping.
+	if meta.Continuation == ContinuationFinal && r.RetryState != nil {
+		r.RetryState.RetryAfter = nil
+	}
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
-	r.Error = runErr
+	// A transition always states its own message (empty included); a
+	// same-status rewrite that states nothing keeps the transition's —
+	// the runner's continuation promote must not blank the engine's
+	// failure text. Same rule for the typed cause below.
+	if runErr != "" || transition {
+		r.Error = runErr
+	}
+	switch {
+	case status.CarriesFailureCode() && meta.Code != "":
+		r.FailureCode = meta.Code
+	case status.CarriesFailureCode():
+		if transition {
+			r.FailureCode = ""
+		}
+	default:
+		r.FailureCode = ""
+	}
+	// The end reason follows the same discipline, on the same statuses.
+	switch {
+	case status.CarriesFailureCode() && meta.EndReason != "":
+		r.EndReason = meta.EndReason
+	case status.CarriesFailureCode():
+		if transition {
+			r.EndReason = ""
+		}
+	default:
+		r.EndReason = ""
+	}
 	switch status {
 	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:
 		t := r.UpdatedAt
@@ -408,16 +696,38 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 		// FinishedAt — otherwise the studio's duration ticker uses the
 		// stale terminal timestamp and freezes mid-run.
 		r.FinishedAt = nil
+		if status == RunStatusRunning {
+			// Mirror the Mongo twin: a running run carries no failure
+			// message, whatever the caller passed.
+			r.Error = ""
+		}
 	}
-	// Clear checkpoint when leaving paused state (preserved for
-	// failed_resumable, cancelled, and failed). `failed` keeps its
-	// checkpoint on purpose: a run that reached the DSL fail node is
-	// terminal (no auto-resume) but stays rewindable on an explicit
-	// operator action — its on-disk state is coherent, there is no
-	// technical reason to destroy the recovery point.
-	if status == RunStatusRunning || status == RunStatusFinished {
-		r.Checkpoint = nil
+	// The pause pointer is a consumable: a transition into a status
+	// that cannot truthfully carry it (CarriesPausePointer) clears the
+	// interaction evidence — the checkpoint itself survives (below).
+	// Without this, a status-only cancel of a paused run kept the
+	// pointer, and a cloud resume (cancelled → queued, no answers)
+	// routed back into the pause path and crossed the human gate with
+	// an empty answer. Copy-on-write: failRunCheckpointed aliases the
+	// caller's checkpoint into r just before this tail.
+	if !status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
 	}
+	// A status transition NEVER destroys the checkpoint. The running
+	// claim used to clear it here — which, on a cloud pod, destroyed
+	// the resume point the moment a resumed run was claimed: every
+	// park writer that follows (drain, usage-cap, orphan sweeps,
+	// --force-stale) flips running→failed_resumable WITHOUT a
+	// checkpoint of its own, and the next resume restarted from the
+	// workflow entry. A fresh launch has no checkpoint to keep, a
+	// resumed run has everything to lose, and the engine overwrites it
+	// at its first node boundary anyway. Finished likewise keeps it:
+	// `iterion fork` reads a terminal parent's checkpoint for its
+	// outputs. Only DeleteRun and the rewind machinery may remove one.
 	return s.writeRun(r)
 }
 
@@ -430,6 +740,21 @@ func (s *FilesystemRunStore) SaveCheckpoint(ctx context.Context, id string, cp *
 	r, err := s.loadRunRaw(id)
 	if err != nil {
 		return err
+	}
+	// Same pointer discipline as the transition tail: a checkpoint
+	// carrying interaction evidence may only land while the run's
+	// status carries it (CarriesPausePointer) — otherwise a stale
+	// in-memory copy is being replayed (the rewind shape: SaveRun
+	// normalizes its own copy, then SaveCheckpoint re-persists the
+	// caller's original). On a paused run the write-through is
+	// legitimate (bookkeeping updates on a live pause keep the
+	// pointer). Strip on a copy — the caller's object stays whole.
+	if cp != nil && !r.Status.CarriesPausePointer() &&
+		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		c := *cp
+		c.InteractionID = ""
+		c.InteractionQuestions = nil
+		cp = &c
 	}
 	r.Checkpoint = cp
 	r.UpdatedAt = time.Now().UTC()
@@ -449,14 +774,30 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
+	r.AwaitAnswersWaits = nil
+	// A paused run has no platform continuation statement — same
+	// discipline as FailureCode below.
+	r.ContinuationState = ""
+	// A paused run carries no failure classification — same discipline
+	// as the transition choke point, which this checkpoint-coupled
+	// write bypasses. FinishedAt likewise: a paused run is not over,
+	// and a stale terminal timestamp freezes the studio duration
+	// ticker (mirrors the Mongo twin's $unset).
+	r.FailureCode = ""
+	r.FinishedAt = nil
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }
 
-// FailRunResumable atomically sets the checkpoint, error message, and status
-// to failed_resumable in a single write, enabling resume from the last
-// successfully completed node.
-func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
+// failRunCheckpointed is the shared body of FailRunResumable and
+// FailRunTerminal: the atomic cancelled-wins guard, the checkpoint, and
+// the ordinary transition tail (which owns the failure-code and
+// outcome-bookkeeping discipline). An operator cancel is terminal and
+// outranks a failure racing in behind it — the two race whenever an
+// interruption and a cancel arrive together, and the failure would win
+// simply by writing last, auto-resuming a run somebody deliberately
+// stopped.
+func (s *FilesystemRunStore) failRunCheckpointed(id string, status RunStatus, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -464,20 +805,18 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	if err != nil {
 		return err
 	}
-	// An operator cancel is terminal and outranks a resumable failure. The
-	// two race whenever an interruption and a cancel arrive together, and
-	// resumable would win simply by writing last — auto-resuming a run
-	// somebody deliberately stopped. Cancelled stands.
 	if r.Status == RunStatusCancelled {
 		return nil
 	}
 	r.Checkpoint = cp
-	r.Status = RunStatusFailedResumable
-	r.Error = runErr
-	t := time.Now().UTC()
-	r.UpdatedAt = t
-	r.FinishedAt = &t
-	return s.writeRun(r)
+	return s.applyStatusTransition(r, status, runErr, code)
+}
+
+// FailRunResumable atomically sets the checkpoint, error message, and status
+// to failed_resumable in a single write, enabling resume from the last
+// successfully completed node.
+func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
+	return s.failRunCheckpointed(id, RunStatusFailedResumable, cp, runErr, code)
 }
 
 // FailRunTerminal atomically sets the checkpoint, error message, and status
@@ -485,26 +824,8 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 // no auto-resume — but the checkpoint is preserved so the operator can still
 // rewind it explicitly (a run that reached the DSL fail node has a coherent
 // on-disk state worth recovering from).
-func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	r, err := s.loadRunRaw(id)
-	if err != nil {
-		return err
-	}
-	// Same guard as FailRunResumable: an operator cancel is terminal and
-	// outranks a failure racing in behind it. Cancelled stands.
-	if r.Status == RunStatusCancelled {
-		return nil
-	}
-	r.Checkpoint = cp
-	r.Status = RunStatusFailed
-	r.Error = runErr
-	t := time.Now().UTC()
-	r.UpdatedAt = t
-	r.FinishedAt = &t
-	return s.writeRun(r)
+func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
+	return s.failRunCheckpointed(id, RunStatusFailed, cp, runErr, code)
 }
 
 // AddWatchedIssues merges issueIDs into the run's WatchedIssueIDs set
@@ -678,6 +999,150 @@ func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID stri
 	})
 }
 
+// SetRunCredStamp writes a credential resolution's stamp on the run
+// document (see RunStore). Load-modify-save, like the other fs-side
+// patches: the filesystem store has no partial update.
+func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error {
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	r.CredFingerprints = stamp.Fingerprints
+	r.SkippedCredReopensAt = stamp.SkippedReopensAt
+	r.LLMIdleSince = nil
+	return s.SaveRun(ctx, r)
+}
+
+// SetRunLLMIdle toggles the model-idle marker (see RunStore). Load-modify-
+// save under the store mutex, like the budget patches, so a status
+// transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunLLMIdle(_ context.Context, runID string, idleSince *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.LLMIdleSince = idleSince
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetWatcherCursor updates one durable supervisor cursor under the store
+// mutex, without replacing status/checkpoint fields owned by the engine.
+func (s *FilesystemRunStore) SetWatcherCursor(_ context.Context, runID, watcherID string, cursor WatcherCursor) error {
+	if watcherID == "" {
+		return fmt.Errorf("store: watcher cursor id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.WatcherCursors == nil {
+		r.WatcherCursors = make(map[string]WatcherCursor)
+	}
+	r.WatcherCursors[watcherID] = cursor
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunOutputCorrection updates one node's correction episode under the
+// filesystem store mutex. It is intentionally granular: a correction call
+// must not replace a run document that an operator or runner concurrently
+// transitioned.
+func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, ledgerKey string, episode OutputCorrectionEpisode) error {
+	if ledgerKey == "" {
+		return fmt.Errorf("store: output correction ledger key is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.OutputCorrections == nil {
+		r.OutputCorrections = make(map[string]OutputCorrectionEpisode)
+	}
+	r.OutputCorrections[ledgerKey] = episode
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunBudgetOverrides persists the operator's launch-time budget ask
+// (see RunStore). Load-modify-save under the store mutex, like
+// SetRunBudgetSnapshot below, so a status transition racing this write
+// is never reverted: SaveRun replaces the whole document from a copy
+// loaded before the lock, which would undo a cancel — and would apply
+// its own failure-code and pause-pointer normalisation to a field-scoped
+// write that has no business touching either.
+func (s *FilesystemRunStore) SetRunBudgetOverrides(_ context.Context, runID string, o *RunBudgetOverrides) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.BudgetOverrides = o
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunnerVersion records the build that executed the run (see RunStore).
+// Load-modify-save under the store mutex, like the other fs-side patches,
+// so a status transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunnerVersion(_ context.Context, runID, version string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.RunnerVersion = version
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunBudgetSnapshot persists the effective caps (see RunStore).
+// Load-modify-save under the store mutex, like the other fs-side
+// patches, so a status transition racing this write is never reverted.
+func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID string, b *RunBudget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	r.Budget = b
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
+// stamped with fingerprint (see RunStore). Scan-and-filter like the other
+// fs-side reverse queries — local scale, no secondary index.
+func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
+	if fingerprint == "" {
+		return 0, nil
+	}
+	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
+		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() || r.LLMIdleSince != nil {
+			return false
+		}
+		for _, fp := range r.CredFingerprints {
+			if fp == fingerprint {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 // filterRunsSorted scans every run, keeps those matching pred, and
 // returns their ids sorted by CreatedAt ascending. Shared by the
 // fs-side reverse-tree queries.
@@ -729,7 +1194,18 @@ func (s *FilesystemRunStore) writeRunNew(r *Run) error {
 	if err := os.Chmod(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: chmod run: %w", err)
 	}
-	data, err := json.MarshalIndent(r, "", "  ")
+	writeLock, err := acquireFileLockRetry(filepath.Join(dir, ".write.lock"), "run document write", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = writeLock.Unlock() }()
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
+	next := *r
+	next.CASVersion = 1
+
+	data, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
@@ -739,6 +1215,7 @@ func (s *FilesystemRunStore) writeRunNew(r *Run) error {
 		}
 		return err
 	}
+	r.CASVersion = next.CASVersion
 	return nil
 }
 
@@ -758,7 +1235,25 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	if err := os.Chmod(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: chmod run: %w", err)
 	}
-	data, err := json.MarshalIndent(r, "", "  ")
+	writeLock, err := acquireFileLockRetry(filepath.Join(dir, ".write.lock"), "run document write", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = writeLock.Unlock() }()
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
+	current, loadErr := s.loadRunRaw(r.ID)
+	if loadErr != nil && !errors.Is(loadErr, ErrRunNotFound) {
+		return loadErr
+	}
+	if current != nil && current.CASVersion != r.CASVersion || current == nil && r.CASVersion != 0 {
+		return fmt.Errorf("store: run %s: %w", r.ID, ErrRunConflict)
+	}
+	next := *r
+	next.CASVersion++
+
+	data, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
@@ -776,5 +1271,9 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	}
 	// Atomic write: run.json is the authoritative resume checkpoint
 	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
-	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
+	if err := writeFileAtomic(s.runJSONPath(r.ID), data, filePerm); err != nil {
+		return err
+	}
+	r.CASVersion = next.CASVersion
+	return nil
 }

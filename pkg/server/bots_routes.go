@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -163,6 +164,9 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: missing name")
 		return
 	}
+	if s.refuseStoredBotEdit(w, r, name) {
+		return
+	}
 	entry, ok, err := s.findBot(name)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: %v", err)
@@ -177,12 +181,14 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 			"bots: %q is a loose .bot file; convert it to a bundle (manifest.yaml + main.bot) to edit metadata", name)
 		return
 	}
-	// A stored (platform-override) entry carries an EMPTY path — joining it
-	// would write manifest.yaml relative to the server's CWD and silently
-	// lose the edit (the next read re-serves the untouched override).
+	// Fail closed on a path that must never be joined. refuseStoredBotEdit
+	// above is what names the tier and the surface that owns the edit; this
+	// guards the WRITE itself, because an empty path joins to a relative
+	// manifest.yaml under the server's CWD — a silently lost edit, and a file
+	// written where no bundle lives.
 	if entry.Path == "" {
 		s.httpErrorFor(w, r, http.StatusConflict,
-			"bots: %q is managed as a platform override; edit it via /api/admin/bots (or `iterion remote admin bots push`)", name)
+			"bots: %q resolves to a bundle with no filesystem path; edit it through the bot-source API, not the filesystem catalog", name)
 		return
 	}
 	var req botUpdateRequest
@@ -239,11 +245,11 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
-	// The workspace overlay is never consulted for a platform-override
-	// entry, so a hide/show toggle there would 200 and change nothing.
-	if s.entryOrigin(name) == "platform" {
-		s.httpErrorFor(w, r, http.StatusConflict,
-			"bots: %q is managed as a platform override; the workspace overlay does not apply (remove the override via /api/admin/bots to fall back to the catalog)", name)
+	// The workspace overlay is never consulted for a STORED entry (team or
+	// platform): botregistry reads it off the filesystem catalog, and a
+	// stored bundle is materialised without it. A toggle there would 200
+	// and change nothing.
+	if s.refuseStoredBotEdit(w, r, name) {
 		return
 	}
 	if err := botregistry.SetOverlayEnabled(s.cfg.WorkDir, name, req.Enabled); err != nil {
@@ -261,6 +267,30 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 // every tenant sees.
 func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error) {
 	return s.effectiveFindByName(name)
+}
+
+// refuseStoredBotEdit answers 409 when name resolves to a STORED bundle for
+// this caller — the active team's own row, or a platform override — and
+// reports whether it did.
+//
+// Both callers (the manifest PUT, the workspace overlay) act on the FILESYSTEM
+// catalog. A stored bot is not there: the PUT would write into the baked bundle
+// every tenant of this deployment shares, and the overlay would 200 while
+// changing nothing the stored bundle is read through. The refusal names the
+// surface that does own the edit.
+func (s *Server) refuseStoredBotEdit(w http.ResponseWriter, r *http.Request, name string) bool {
+	id, _ := auth.FromContext(r.Context())
+	switch s.entryOriginFor(r.Context(), id.TeamID, name) {
+	case "tenant":
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is your team's own bot; edit it via /api/teams/%s/bot-sources — this route writes the filesystem catalog every tenant shares", name, id.TeamID)
+		return true
+	case "platform":
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is managed as a platform override; edit it via /api/admin/bots (or `iterion remote admin bots push`)", name)
+		return true
+	}
+	return false
 }
 
 // respondBot re-resolves name (post-mutation) and writes it as JSON. It carries

@@ -3,35 +3,17 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
-
-func mustRun(t *testing.T, dir string, name string, args ...string) {
-	t.Helper()
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%s %v failed in %s: %v\noutput: %s", name, args, dir, err, string(out))
-	}
-}
-
-func mustOutput(t *testing.T, dir string, name string, args ...string) []byte {
-	t.Helper()
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("%s %v failed in %s: %v", name, args, dir, err)
-	}
-	return out
-}
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -46,15 +28,7 @@ func writeFile(t *testing.T, path, content string) {
 func initBareishRepo(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	mustRun(t, dir, "git", "init", "-b", "main")
-	mustRun(t, dir, "git", "config", "user.email", "test@example.com")
-	mustRun(t, dir, "git", "config", "user.name", "Test")
-	mustRun(t, dir, "git", "config", "commit.gpgsign", "false")
-	writeFile(t, filepath.Join(dir, "README.md"), "init\n")
-	mustRun(t, dir, "git", "add", "README.md")
-	mustRun(t, dir, "git", "commit", "-m", "init")
-	sha := strings.TrimSpace(string(mustOutput(t, dir, "git", "rev-parse", "HEAD")))
-	return dir, sha
+	return dir, gittest.InitRepo(t, dir)
 }
 
 // addCommit makes a single commit in the worktree at wtPath. Returns the
@@ -62,9 +36,9 @@ func initBareishRepo(t *testing.T) (string, string) {
 func addCommit(t *testing.T, wtPath, file, content, msg string) string {
 	t.Helper()
 	writeFile(t, filepath.Join(wtPath, file), content)
-	mustRun(t, wtPath, "git", "add", file)
-	mustRun(t, wtPath, "git", "commit", "-m", msg)
-	return strings.TrimSpace(string(mustOutput(t, wtPath, "git", "rev-parse", "HEAD")))
+	gittest.Run(t, wtPath, "add", file)
+	gittest.Run(t, wtPath, "commit", "-m", msg)
+	return gittest.Run(t, wtPath, "rev-parse", "HEAD")
 }
 
 // TestFinalizeWorktree_NoCommits — a run that produced no commits in
@@ -72,8 +46,8 @@ func addCommit(t *testing.T, wtPath, file, content, msg string) string {
 func TestFinalizeWorktree_NoCommits(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	res := finalizeWorktree(worktreeContext{
 		repoRoot:       repo,
@@ -86,9 +60,8 @@ func TestFinalizeWorktree_NoCommits(t *testing.T) {
 		t.Fatalf("expected zero finalization for unchanged HEAD, got %+v", res)
 	}
 	// And no branch was created.
-	out, _ := exec.Command("git", "-C", repo, "branch", "--list", "iterion/run/*").Output()
-	if strings.TrimSpace(string(out)) != "" {
-		t.Fatalf("no branch should be created when no commits, got: %q", string(out))
+	if out, _ := gittest.Try(repo, "branch", "--list", "iterion/run/*"); out != "" {
+		t.Fatalf("no branch should be created when no commits, got: %q", out)
 	}
 }
 
@@ -119,16 +92,16 @@ func TestFinalizeWorktree_RefusesRepoRootAsWorktree(t *testing.T) {
 		t.Errorf("PreserveWorktree = false, want true (must not clean the live checkout)")
 	}
 	// The operator's branch must be UNTOUCHED — no wip commit created.
-	if headNow := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "HEAD"))); headNow != originalTip {
+	if headNow := gittest.Run(t, repo, "rev-parse", "HEAD"); headNow != originalTip {
 		t.Errorf("repo HEAD moved to %s (want %s) — finalize committed on the operator's branch", headNow, originalTip)
 	}
 	// The uncommitted change must still be uncommitted (not banked away).
-	if st := strings.TrimSpace(string(mustOutput(t, repo, "git", "status", "--porcelain"))); st == "" {
+	if st := gittest.Run(t, repo, "status", "--porcelain"); st == "" {
 		t.Errorf("working tree is clean — finalize banked the uncommitted change instead of leaving it")
 	}
 	// No storage branch either.
-	if br, _ := exec.Command("git", "-C", repo, "branch", "--list", "iterion/run/*").Output(); strings.TrimSpace(string(br)) != "" {
-		t.Errorf("storage branch created: %q — expected none", string(br))
+	if br, _ := gittest.Try(repo, "branch", "--list", "iterion/run/*"); br != "" {
+		t.Errorf("storage branch created: %q — expected none", br)
 	}
 }
 
@@ -154,7 +127,7 @@ func TestRecoverFinalize_SkipsPhantomWorktree(t *testing.T) {
 	if r.FinalCommit != "" || r.FinalBranch != "" {
 		t.Errorf("RecoverFinalize stamped finalization (%q/%q) — expected skip", r.FinalCommit, r.FinalBranch)
 	}
-	if headNow := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "HEAD"))); headNow != originalTip {
+	if headNow := gittest.Run(t, repo, "rev-parse", "HEAD"); headNow != originalTip {
 		t.Errorf("repo HEAD moved to %s (want %s) — recovery committed on the operator's branch", headNow, originalTip)
 	}
 }
@@ -164,8 +137,8 @@ func TestRecoverFinalize_SkipsPhantomWorktree(t *testing.T) {
 func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -189,7 +162,7 @@ func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 		t.Errorf("MergeStatus = %q, want merged", res.MergeStatus)
 	}
 	// And main really moved.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != finalSHA {
 		t.Errorf("main tip = %s, want %s", mainTip, finalSHA)
 	}
@@ -201,8 +174,8 @@ func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 func TestFinalizeWorktree_DirtyMain_SkipsFF(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	// Dirty the main worktree before finalize.
 	writeFile(t, filepath.Join(repo, "wip.txt"), "uncommitted\n")
@@ -229,7 +202,7 @@ func TestFinalizeWorktree_DirtyMain_SkipsFF(t *testing.T) {
 		t.Errorf("MergeStatus = %q, want failed", res.MergeStatus)
 	}
 	// Main should still point at the original tip.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Errorf("main tip moved to %s, want still at %s", mainTip, originalTip)
 	}
@@ -240,14 +213,14 @@ func TestFinalizeWorktree_DirtyMain_SkipsFF(t *testing.T) {
 func TestFinalizeWorktree_NonFF_SkipsFF(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	// Main advances independently (e.g. user committed in another tab).
 	writeFile(t, filepath.Join(repo, "side.txt"), "side\n")
-	mustRun(t, repo, "git", "add", "side.txt")
-	mustRun(t, repo, "git", "commit", "-m", "side commit")
-	mainTipAfter := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	gittest.Run(t, repo, "add", "side.txt")
+	gittest.Run(t, repo, "commit", "-m", "side commit")
+	mainTipAfter := gittest.Run(t, repo, "rev-parse", "main")
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -271,7 +244,7 @@ func TestFinalizeWorktree_NonFF_SkipsFF(t *testing.T) {
 		t.Errorf("MergeStatus = %q, want failed", res.MergeStatus)
 	}
 	// Main should still point at the side commit, not at the run's commit.
-	cur := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	cur := gittest.Run(t, repo, "rev-parse", "main")
 	if cur != mainTipAfter {
 		t.Errorf("main tip = %s, want %s (unchanged)", cur, mainTipAfter)
 	}
@@ -282,8 +255,8 @@ func TestFinalizeWorktree_NonFF_SkipsFF(t *testing.T) {
 func TestFinalizeWorktree_OptOutNone(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -304,7 +277,7 @@ func TestFinalizeWorktree_OptOutNone(t *testing.T) {
 		t.Errorf("MergeStatus = %q, want skipped", res.MergeStatus)
 	}
 	// Main untouched.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Errorf("main tip moved despite none, %s != %s", mainTip, originalTip)
 	}
@@ -315,8 +288,8 @@ func TestFinalizeWorktree_OptOutNone(t *testing.T) {
 func TestFinalizeWorktree_BranchNameOverride(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -330,9 +303,9 @@ func TestFinalizeWorktree_BranchNameOverride(t *testing.T) {
 	if res.FinalBranch != "feat/auto-fixes" {
 		t.Errorf("FinalBranch = %q, want feat/auto-fixes", res.FinalBranch)
 	}
-	out, _ := exec.Command("git", "-C", repo, "branch", "--list", "feat/auto-fixes").Output()
-	if !strings.Contains(string(out), "feat/auto-fixes") {
-		t.Errorf("override branch not created: %q", string(out))
+	out, _ := gittest.Try(repo, "branch", "--list", "feat/auto-fixes")
+	if !strings.Contains(out, "feat/auto-fixes") {
+		t.Errorf("override branch not created: %q", out)
 	}
 }
 
@@ -342,11 +315,11 @@ func TestFinalizeWorktree_BranchNameOverride(t *testing.T) {
 func TestFinalizeWorktree_BranchNameCollision(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	// Pre-create the would-be default branch on some earlier commit.
-	mustRun(t, repo, "git", "branch", "iterion/run/swift-cedar-a3f2", originalTip)
+	gittest.Run(t, repo, "branch", "iterion/run/swift-cedar-a3f2", originalTip)
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -364,7 +337,7 @@ func TestFinalizeWorktree_BranchNameCollision(t *testing.T) {
 		t.Errorf("expected suffixed fallback, got %q", res.FinalBranch)
 	}
 	// And the fallback branch points at the run's commit.
-	tip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", res.FinalBranch)))
+	tip := gittest.Run(t, repo, "rev-parse", res.FinalBranch)
 	if tip != finalSHA {
 		t.Errorf("fallback branch tip = %s, want %s", tip, finalSHA)
 	}
@@ -375,11 +348,11 @@ func TestFinalizeWorktree_BranchNameCollision(t *testing.T) {
 // skipped — there's no branch to advance.
 func TestFinalizeWorktree_DetachedAtStart(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
-	mustRun(t, repo, "git", "checkout", "--detach", "HEAD")
+	gittest.Run(t, repo, "checkout", "--detach", "HEAD")
 
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -405,8 +378,8 @@ func TestFinalizeWorktree_DetachedAtStart(t *testing.T) {
 func TestFinalizeWorktree_DeferredMerge_AutoMergeOff(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -430,7 +403,7 @@ func TestFinalizeWorktree_DeferredMerge_AutoMergeOff(t *testing.T) {
 		t.Errorf("MergeStatus = %q, want pending", res.MergeStatus)
 	}
 	// Main untouched.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Errorf("main tip moved despite deferred merge, %s != %s", mainTip, originalTip)
 	}
@@ -441,8 +414,8 @@ func TestFinalizeWorktree_DeferredMerge_AutoMergeOff(t *testing.T) {
 func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "a.go", "package main\n// a\n", "feat: add a")
 	addCommit(t, wt, "b.go", "package main\n// b\n", "feat: add b")
@@ -468,7 +441,7 @@ func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
 		t.Errorf("MergedCommit should be a fresh squash SHA distinct from FinalCommit; got %q (final %q)", res.MergedCommit, finalSHA)
 	}
 	// Main should be one commit ahead of originalTip — not three.
-	count := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-list", "--count", originalTip+"..main")))
+	count := gittest.Run(t, repo, "rev-list", "--count", originalTip+"..main")
 	if count != "1" {
 		t.Errorf("main has %s commits past base, want 1 squash commit", count)
 	}
@@ -482,14 +455,14 @@ func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
 func TestBuildSquashMessage_SingleCommit(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	fullMessage := "feat(privacy): add pure-Go privacy_filter tools\n\nDetect and redact 5 PII categories.\nNo Python, no ONNX."
 	writeFile(t, filepath.Join(wt, "a.go"), "package main\n// a\n")
-	mustRun(t, wt, "git", "add", "a.go")
-	mustRun(t, wt, "git", "commit", "-m", fullMessage)
-	finalSHA := strings.TrimSpace(string(mustOutput(t, wt, "git", "rev-parse", "HEAD")))
+	gittest.Run(t, wt, "add", "a.go")
+	gittest.Run(t, wt, "commit", "-m", fullMessage)
+	finalSHA := gittest.Run(t, wt, "rev-parse", "HEAD")
 
 	got := buildSquashMessage(repo, originalTip, finalSHA, "plain-basalt-0d49")
 	want := fullMessage + "\n"
@@ -505,8 +478,8 @@ func TestBuildSquashMessage_SingleCommit(t *testing.T) {
 func TestBuildSquashMessage_MultipleCommitsListsAll(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	addCommit(t, wt, "a.go", "package main\n// a\n", "feat(api): add v2 endpoint")
 	addCommit(t, wt, "b.go", "package main\n// b\n", "test(api): cover v2 happy path")
@@ -590,8 +563,8 @@ func TestResolveMergeTarget(t *testing.T) {
 func TestRecoverFinalize_HappyPath(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
 
@@ -633,8 +606,7 @@ func TestRecoverFinalize_HappyPath(t *testing.T) {
 		t.Errorf("persisted final_* mismatch: %+v", r2)
 	}
 	// And the branch actually exists in the repo.
-	out, _ := exec.Command("git", "-C", repo, "rev-parse", "iterion/run/swift-cedar-a3f2").Output()
-	if got := strings.TrimSpace(string(out)); got != finalSHA {
+	if got, _ := gittest.Try(repo, "rev-parse", "iterion/run/swift-cedar-a3f2"); got != finalSHA {
 		t.Errorf("branch tip = %q, want %q", got, finalSHA)
 	}
 }
@@ -746,8 +718,8 @@ func TestRecoverFinalize_SkipsNonFinished(t *testing.T) {
 func TestRecoverFinalize_CancelledRun(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	finalSHA := addCommit(t, wt, "partial.go", "package main\n", "feat: partial work")
 
@@ -788,8 +760,8 @@ func TestRecoverFinalize_CancelledRun(t *testing.T) {
 func TestFinalizeWorktree_WipBanksDirtyWorktree(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	// Uncommitted work: one new file + one modified tracked file.
 	writeFile(t, filepath.Join(wt, "new_feature.go"), "package main\n")
@@ -818,12 +790,12 @@ func TestFinalizeWorktree_WipBanksDirtyWorktree(t *testing.T) {
 		t.Fatalf("a wip-banked HEAD must never merge (want skipped), got %+v", res)
 	}
 	// The operator's branch must NOT have moved.
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Fatalf("main moved to %s — a wip bank must never touch the operator's branch", mainTip)
 	}
 	// The banked commit really contains the uncommitted work.
-	show := string(mustOutput(t, repo, "git", "show", "--stat", "--format=%s", res.FinalCommit))
+	show := gittest.Run(t, repo, "show", "--stat", "--format=%s", res.FinalCommit)
 	if !strings.Contains(show, "wip(iterion)") || !strings.Contains(show, "new_feature.go") || !strings.Contains(show, "README.md") {
 		t.Fatalf("banked commit missing expected content:\n%s", show)
 	}
@@ -837,8 +809,8 @@ func TestFinalizeWorktree_WipBanksDirtyWorktree(t *testing.T) {
 func TestFinalizeWorktree_WipBankResidueOnTopOfCommits(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
-	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
 
 	agentSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: real work")
 	writeFile(t, filepath.Join(wt, "residue.go"), "package main\n")
@@ -857,14 +829,14 @@ func TestFinalizeWorktree_WipBankResidueOnTopOfCommits(t *testing.T) {
 		t.Fatalf("expected banked tip above the agent commit, got %+v", res)
 	}
 	// The banked tip's parent is the agent's real commit.
-	parent := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", res.FinalCommit+"^")))
+	parent := gittest.Run(t, repo, "rev-parse", res.FinalCommit+"^")
 	if parent != agentSHA {
 		t.Fatalf("banked commit parent = %s, want agent commit %s", parent, agentSHA)
 	}
 	if res.MergeStatus != "skipped" || res.MergedInto != "" {
 		t.Fatalf("wip-banked tip must skip the merge, got %+v", res)
 	}
-	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	mainTip := gittest.Run(t, repo, "rev-parse", "main")
 	if mainTip != originalTip {
 		t.Fatalf("main moved to %s — must stay at %s", mainTip, originalTip)
 	}
@@ -884,7 +856,7 @@ func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
 
 	// A linked worktree pinned to the FIRST commit, on its own branch.
 	linked := filepath.Join(t.TempDir(), "linked")
-	mustRun(t, main, "git", "worktree", "add", "-b", "side", linked, firstSHA)
+	gittest.Run(t, main, "worktree", "add", "-b", "side", linked, firstSHA)
 
 	// main moves on. The two checkouts now disagree, which is the whole point.
 	secondSHA := addCommit(t, main, "moved.txt", "on main only\n", "second")
@@ -898,7 +870,7 @@ func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
 	}
 	defer cleanup()
 
-	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	got := gittest.Run(t, wc.wtPath, "rev-parse", "HEAD")
 	if got != firstSHA {
 		t.Errorf("run worktree anchored at %s, want the launch checkout's %s (main is at %s)",
 			shortSHA(got), shortSHA(firstSHA), shortSHA(secondSHA))
@@ -934,7 +906,7 @@ func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
 	if !samePath(wc.anchor(), wc.repoRoot) {
 		t.Errorf("anchor() = %q, repoRoot = %q — they must coincide for a single checkout", wc.anchor(), wc.repoRoot)
 	}
-	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	got := gittest.Run(t, wc.wtPath, "rev-parse", "HEAD")
 	if got != firstSHA {
 		t.Errorf("run worktree at %s, want %s", shortSHA(got), shortSHA(firstSHA))
 	}
@@ -994,5 +966,82 @@ func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A converged run's squash message can aggregate more than a single argv
+// element may carry (Linux caps one argument at 128 KiB): `git commit -m
+// <msg>` then fails with "argument list too long" — on the merge of a run
+// the operator has nothing left to do but merge. The message travels over
+// stdin, so its size is bounded by nothing the kernel enforces on argv.
+func TestTrySquashMerge_LargeMessageCommits(t *testing.T) {
+	repo, _ := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gittest.Run(t, repo, "worktree", "add", "-b", "iterion/run/big", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
+	addCommit(t, wt, "a.go", "package main\n// a\n", "feat: add a")
+
+	message := "feat: a converged campaign\n\n" + strings.Repeat("- report line that a campaign wrote into its message\n", 6000)
+	if len(message) < 300<<10 {
+		t.Fatalf("fixture message is %d bytes, want >= 300 KiB", len(message))
+	}
+	sha, err := trySquashMerge(repo, "main", "iterion/run/big", "main", message, nil)
+	if err != nil {
+		t.Fatalf("squash with a %d-byte message: %v", len(message), err)
+	}
+	got := gittest.Run(t, repo, "log", "-1", "--pretty=format:%B", sha)
+	if strings.TrimRight(got, "\n") != strings.TrimRight(message, "\n") {
+		t.Fatalf("committed message differs from the one supplied (%d vs %d bytes)", len(got), len(message))
+	}
+}
+
+// A multi-commit squash lists the commits so the audit trail survives in
+// collapsed form — but a campaign that committed in stride for hours would
+// otherwise list thousands of lines. Past the cap the list is elided into a
+// count that says where the rest lives, rather than dropped without a word.
+func TestAssembleSquashMessage_ElidesALongCommitList(t *testing.T) {
+	commits := make([]gitlib.CommitInfo, 0, maxSquashMessageCommits+37)
+	for i := 0; i < cap(commits); i++ {
+		commits = append(commits, gitlib.CommitInfo{Short: fmt.Sprintf("%07x", i), Subject: fmt.Sprintf("step %d", i)})
+	}
+	got := assembleSquashMessage(commits, "run")
+	if n := strings.Count(got, "\n- "); n != maxSquashMessageCommits+1 {
+		t.Fatalf("listed %d lines, want %d commits + 1 elision line:\n%s", n, maxSquashMessageCommits, got[len(got)-300:])
+	}
+	if !strings.Contains(got, "and 37 more commits") {
+		t.Fatalf("the elision must count what it dropped:\n%s", got[len(got)-300:])
+	}
+	if strings.Contains(got, "step "+fmt.Sprint(maxSquashMessageCommits)+"\n") {
+		t.Fatal("a commit past the cap leaked into the list")
+	}
+}
+
+// A single-commit run reuses that commit's message verbatim. When the body IS
+// the report (hundreds of KiB), the squash keeps the title and says what it
+// cut — the storage branch has the full text; the target branch needs a
+// summary that git can carry.
+func TestBuildSquashMessage_BoundsASingleOversizedBody(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gittest.Run(t, repo, "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _, _ = gittest.Try(repo, "worktree", "remove", "--force", wt) })
+
+	body := strings.Repeat("a line of the campaign's report that nobody needs on main\n", 6000)
+	msgFile := filepath.Join(t.TempDir(), "msg")
+	writeFile(t, msgFile, "feat(report): converge\n\n"+body)
+	writeFile(t, filepath.Join(wt, "a.go"), "package main\n")
+	gittest.Run(t, wt, "add", "a.go")
+	gittest.Run(t, wt, "commit", "-F", msgFile)
+	finalSHA := gittest.Run(t, wt, "rev-parse", "HEAD")
+
+	got := buildSquashMessage(repo, originalTip, finalSHA, "run")
+	if len(got) > maxSquashMessageBytes+256 {
+		t.Fatalf("squash message is %d bytes, want it bounded near %d", len(got), maxSquashMessageBytes)
+	}
+	if !strings.HasPrefix(got, "feat(report): converge\n") {
+		t.Fatalf("the title must survive the cut:\n%.120s", got)
+	}
+	if !strings.Contains(got, "message truncated by iterion") || !strings.Contains(got, "bytes elided") {
+		t.Fatalf("a cut that does not announce itself reads as a complete report:\n%.200s", got[len(got)-200:])
 	}
 }

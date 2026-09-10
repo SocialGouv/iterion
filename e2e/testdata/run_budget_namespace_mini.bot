@@ -1,0 +1,62 @@
+## run_budget_namespace_mini.bot — fixture for the `run.*` budget
+## namespace (#738).
+##
+## One LLM node burns $0.001 / 10 tokens under the scenario stub, then a
+## deterministic compute reads the run's consumption and its EFFECTIVE
+## caps straight from the expr namespace — no mirror var, no self-measured
+## wall clock — and a conditional edge routes on the ratio. Which of the
+## two tails ran is the readout: resolve `run.cost_usd` or `run.max_cost_usd`
+## to nil and the guard silently falls to the `else` arm.
+
+schema note:
+  value: string
+
+schema gauge:
+  elapsed: float
+  spent: float
+  cap: float
+  tokens: int
+  token_cap: int
+  duration_cap: float
+  over_budget: bool
+
+agent burn:
+  model: "claude-opus-4-7"
+  output: note
+
+compute budget_gate:
+  output: gauge
+  expr:
+    elapsed: "run.elapsed_seconds"
+    spent: "run.cost_usd"
+    cap: "run.max_cost_usd"
+    tokens: "run.tokens"
+    token_cap: "run.max_tokens"
+    duration_cap: "run.max_duration_seconds"
+    over_budget: "run.cost_usd > run.max_cost_usd * 0.5"
+
+compute tight:
+  output: note
+  expr:
+    value: "'over half the cap'"
+
+compute roomy:
+  output: note
+  expr:
+    value: "'plenty left'"
+
+workflow run_budget_namespace_mini:
+  worktree: none
+  sandbox: none
+  entry: burn
+
+  budget:
+    max_cost_usd: 0.0015
+    max_tokens: 500
+    max_duration: "30m"
+
+  burn -> budget_gate
+  budget_gate -> tight when over_budget
+  budget_gate -> roomy else
+  tight -> done
+  roomy -> done

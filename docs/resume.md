@@ -21,6 +21,114 @@ Reaching the reserved `fail` node intentionally produces `failed`. Compile or
 bootstrap errors can happen before a resumable run exists, and a store failure
 that prevents checkpoint persistence may also fall back to `failed`.
 
+A **named** fail node (`fail <name>:`, see [the DSL reference](dsl.md#typed-terminal-failure--fail-name))
+may opt out of that with `resumable: true`, which parks the run
+`failed_resumable` — the ordinary resumable status above, resumable by the
+CLI and by HTTP. Declare it only when continuing is genuinely the cure. The
+reference case is a phase-budget guard whose remedy is "raise the cap and
+carry on": leaving that terminal makes the operator re-pay a phase the run
+already completed, which is the very cost the guard exists to avoid. A
+refusal that a resume could only repeat — "this lot is not actionable" —
+stays terminal, the default.
+
+Either way the node's `code:` lands on the run's `failure_code` and its
+rendered `message:` on `error`, so what the resume is recovering FROM is
+legible without opening the run's artifacts.
+
+**The checkpoint anchors on the GUARD, not on the fail node.** A resume
+starts execution at the checkpoint's node, so anchoring on the fail node
+would re-dispatch the fail node and reproduce the identical outcome — the
+guard that refused would never be re-evaluated and the raised cap would
+change nothing. The engine therefore anchors a resumable fail on the
+PREDECESSOR whose outgoing edge routed into it: the resume re-executes that
+guard against the new caps and takes the other edge. Concretely:
+
+```bash
+iterion resume --run-id RUN_ID --max-cost-usd 10
+```
+
+**Fallback, stated out loud.** When no single predecessor can be named —
+the fail node IS the workflow `entry:`, or several branches converged on
+it, so no one guard owns the refusal — the promise cannot be kept. The run
+then ends **terminal `failed`** and the engine logs a WARN naming the node
+and the reason, rather than offering a resume that would silently do
+nothing. The `code:` and `message:` still land on the run; only the
+resumability degrades. (A fail node reached inside a `fan_out_all` /
+`fan_out_each` branch never takes this path at all: the branch reports the
+node's diagnosis as its error and the collector decides the run's fate.)
+
+**A typed failure is NOT auto-resumed.** `--auto-resume` and the cloud
+runner's retry both gate on a closed allow-list of engine codes
+(`EXECUTION_FAILED`, `TIMEOUT`, `RATE_LIMITED`, `USAGE_LIMIT_BLOCKED`,
+`NETWORK_TRANSIENT`, `TOOL_FAILED_TRANSIENT`, and `BUDGET_EXCEEDED` with a
+raised cap — one table, see *An ENGINE code can be un-retryable too*
+below). A bot-defined code is outside it, and deliberately so: the run
+refused on purpose, and nothing an unattended retry can do changes the
+verdict — only an operator can (a raised cap, a different `--var`). The run
+stays parked at `failed_resumable` for a human, and the log says "not
+auto-recoverable (code &lt;YOURS&gt;)".
+
+That is **enforced, not assumed**: `code:` is refused at compile time when
+it collides with one of the engine's own `store.FailureCode` values
+([C248](references/diagnostics.md)), so a `fail` node cannot mint
+`USAGE_LIMIT_BLOCKED` and be auto-retried as a transient provider block.
+The reserved set is derived from `store.ReservedFailureCodes` — one list,
+guarded against drift by a test that parses the constant block.
+
+**On a cloud runner the same rule holds, and by two independent barriers.**
+The CLI gate above is one process's decision; a queued run is redelivered
+by JetStream, which knows nothing about it. So:
+
+- The engine's refusal carries `runtime.ErrDeliberateFailure` as the cause
+  of its error. The runner **ACKs** it (`ack-deliberate-failure`) instead
+  of NAKing — the shape the `BUDGET_EXCEEDED` carve-out beside it already
+  uses. It is matched by SENTINEL, not by code: the code is bot-defined,
+  so no allow-list could recognise it.
+- A redelivery that arrives anyway (an older engine, a re-publish) is
+  refused a second time: the runner will not synthesise a resume for a run
+  whose `failure_code` is **not** `Reserved()`. Only an engine code is
+  auto-resumable.
+
+Without them, a `resumable: true` refusal looped: NAK → redeliver → the
+runner synthesises a resume → the guard refuses identically → repeat to
+`MaxDeliver`, where the DLQ park overwrites the bot's typed code with
+`DLQ_PARKED` — a pod and a sandbox per turn, and the diagnosis destroyed at
+the end of it. The run now stays `failed_resumable` with its own code,
+waiting for a human who changed something.
+
+### An ENGINE code can be un-retryable too
+
+Being one of the engine's own codes does not make a verdict re-decidable.
+`EXPRESSION_FAILED` (a `compute` node: no LLM, no shell, inputs from a
+checkpoint that does not move), `CONTEXT_LENGTH_EXCEEDED` (the in-node
+recipe already compacted twice and gave up; a resume rehydrates the same
+conversation), `IR_UNLOADABLE`, `BOT_REQUIRES_NEWER_ENGINE` (a comparison
+between two constants — the bundle's `requires.iterion` and the build's own
+version), `WORKSPACE_SAFETY`,
+`TOOL_FAILED_PERMANENT` and their peers reach the same verdict on every
+attempt. Which codes those are is **one table**,
+[`pkg/retrypolicy`'s classification](../pkg/retrypolicy/classify.go), read
+by every surface that decides "resume this failure automatically": the
+cloud runner's `classifyExecResult` and its redelivery disposition, the
+CLI's `--auto-resume` gate, and the dispatcher's retry ladder. Every code
+the engine declares has a row, guarded against drift by a conformance test.
+
+The bar for *deterministic* is deliberately high: a resume **re-executes
+the failing node** on freshly resolved inputs, so anything an LLM decided
+— a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen
+from it — can differ on the next attempt and keeps its retries. So can
+`AUTH_FAILED`: every claim re-materialises the sealed OAuth-forfait blob
+into a fresh file and refreshes it when it is at or past its expiry lead,
+so the *effective* token can differ even though the sealed blob does not.
+
+When a surface declines to bring a run back, it says so on the timeline:
+**`run_retry_skipped {reason: deterministic, code, error}`** — the
+counterpart of `run_retry_scheduled`. Without it a `failed_resumable` row
+whose redelivery was dropped on purpose reads exactly like one still
+waiting for a pod. Measured on run `01a07804` before the classification
+existed: seven resumes of one compute-expression failure in ten minutes,
+each a fresh pod, clone and sandbox.
+
 ## CLI
 
 The source path is optional when it was persisted at launch:
@@ -101,6 +209,20 @@ keyed on the checkpoint's existence rather than on the delivery being shaped
 as a resume, since a redelivery of a run still marked `running` re-clones the
 same way.
 
+What the fresh clone does NOT lose is committed work. A re-execution restores
+what the run's earlier attempt left on the forge — the storage branch its
+death bank recorded (`final_branch` / `final_commit`), else the newest attempt
+ref a pause or an interrupted delivery parked — and emits
+`run_workspace_bank_restored` naming the branch, the head and the base it was
+put back on. The restore is two-step (the chain's own base, then a
+fast-forward to its head) so the clone's reflog still reads "started from the
+run's base": a bot that derives what the run changed from the newest reflog
+entry that is not its own commit (docs-refresh's scope gate) does not mistake
+the commits the target branch gained meanwhile for the run's work. A bank
+branch that moved past the recorded head, or a chain with no common ancestor,
+is refused loudly (`restored: false` + `reason`) and the run continues on the
+fresh clone.
+
 The consequence for authoring: **do not separate a node that mutates the
 workspace from the node that persists the mutation by a resumable boundary
 unless something checks the two still agree.** Either commit inside the
@@ -108,6 +230,33 @@ mutating node, or have the persisting step verify against the tree rather than
 against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
 worked example — it compares `align.applied` with the branch head and blocks on
 a contradiction). Git is the durable state; an uncommitted working tree is not.
+
+### Recovering a workspace checkpoint after a pod dies
+
+A copy-based sandbox can push a workspace checkpoint before teardown even if
+the run later dies without `final_branch` or `final_commit`. Inspect
+`iterion remote runs get <id>`: its `workspace_checkpoint` recovery hint names
+the latest successfully pushed checkpoint recorded in the run's timeline,
+with its ref, commit, event sequence and timestamp. The same hint is returned
+by `iterion remote runs commits <id>` when the commit list is unavailable.
+`available=false` and `reason=no_baseline` still mean that the API cannot
+produce the run's commit range; they do not imply that no saved work exists.
+
+The JSON paths are `run.workspace_checkpoint` on `GET /api/runs/{id}` and
+`workspace_checkpoint` on an unavailable `GET /api/runs/{id}/commits` response.
+`source=run_workspace_checkpoint` identifies the persisted event provenance.
+A later failed push does not erase the last successful record. If there is no
+successful record, the field is omitted; no ref is invented from the run ID.
+An event-store read failure remains an error, rather than an absent hint.
+
+Run the provided `fetch_command` from a clone of the run's repository with that
+repository configured as `origin`, then check `git rev-parse FETCH_HEAD`
+against the recorded `commit`. The record proves a push succeeded at that
+time, not that the ref still exists or still points to that SHA. A checkpoint
+may include unfinished or automatically committed work and is **not a delivery
+bank or proof of a passed delivery gate**: inspect and validate it before
+merging. Merely displaying this hint does not restore files, resume the run,
+or change merge eligibility.
 
 ## Source integrity and bundles
 
@@ -150,6 +299,41 @@ The resume command accepts the same recovery-relevant controls as launch:
 
 When raising a budget, choose a cap above the amount already consumed. Merely
 repeating the old cap causes the re-executed node to hit the same guard.
+
+**Cloud runs.** `POST /api/runs/{id}/resume` (and `iterion remote runs
+resume`) accepts the same budget-override flags as the local CLI —
+`--max-cost-usd`, `--max-tokens`, `--max-duration`, `--max-iterations`,
+`--max-parallel-branches`. The wire body carries them as
+`{"budget": {"max_duration": "4h", ...}}`; the override MERGES per
+field over the launch ask persisted on the run doc — a non-zero field
+in the spec beats the doc, a zero field inherits it. Passing only
+`--max-duration 4h` therefore raises the duration without erasing the
+launch's cost/tokens caps. Without any override the resume replays
+from the doc as before.
+
+Two mechanics matter when raising a cap here:
+
+- **The consumed accounting travels across resume.** The checkpoint
+  restores `budget_elapsed_ns`, `budget_cost_usd`, `budget_tokens_used`
+  and `budget_iterations_used` on every axis, so a resume with no
+  override restarts against the same clock that killed it. Measure: a
+  run parked on a 2h30m duration cap (elapsed = 9902 s) resumed bare
+  walks another 5 min and dies at 9901.6 s + 10% = the exit-grace
+  ceiling. The escape hatch is exactly what `--max-*` on resume raises.
+- **The merged ask is persisted onto the run doc.** So a subsequent
+  unattended auto-retry (usage-window sweeper) keeps the raised cap
+  instead of reverting to the launch ask that already killed the run.
+  A run resumed with `--max-cost-usd 120` retries at $120, not at the
+  launch's $10.
+
+The `--max-*` flags are the recommended path. The historical
+"source-swap" recovery (POST `{"source": "<the .bot with a larger
+cap>", "force": true}`) is NOT equivalent: it edits `wf.Budget` before
+compile, and `resolveResumeBudgetAsk` then still merges the persisted
+launch ask over top — on a run whose launch ask carried an explicit
+cap the swap is overridden and the run dies at the persisted cap.
+Prefer the flags; the swap is retained as a last-resort escape for the
+case where no launch ask was ever recorded.
 
 ## Rewind: resume from an *earlier* node
 
@@ -302,6 +486,12 @@ time. Rewinding into one resumes at the **current** iteration, because loop
 counters are preserved; restarting the loop from zero would also refund the
 `max_iterations` budget.
 
+A concurrent run edit can make a rewind or rename return HTTP 409. Reload the
+run before retrying: full-document saves compare the version that was read,
+so they cannot undo a cancellation, resume, or checkpoint written meanwhile.
+A failed final rewind save can leave workspace restoration already applied;
+inspect the workspace before retrying when file restoration was requested.
+
 Two further limits worth planning around:
 
 - **Only engine state is rolled back.** Board cards, forge comments, pushed
@@ -424,6 +614,29 @@ re-invoked after the answer:
 This keeps multi-turn interaction attached to the same node rather than
 mistaking the pause for a completed human node.
 
+### Recovery pauses re-execute the node
+
+A **recovery pause** is written by the recovery dispatcher for a node whose
+execution *failed* (`RecoveryPauseForHuman`: the provider rejected the
+credential, the budget is exhausted, a policy asked for a human). Its
+synthetic question (`acknowledge_recovery`, plus `recovery_code` and
+`last_error`) promises a retry, and the resume delivers one: the answer is
+recorded on the interaction (`kind: "recovery"`) as the audit trail of what
+was fixed, and the node **re-executes from its own dispatch** — exactly as a
+`failed_resumable` resume restarts it — before any successor runs. The
+acknowledgement never becomes the node's output. The checkpoint carries the
+marker (`recovery_pause` / `recovery_code`), and the `run_resumed` event
+names the retry: `{resumed_from: "recovery_pause", restart_node, recovery_code}`.
+The per-(node, code) attempt counters survive the pause, so a second identical
+failure is judged as the second attempt. A budget pause resumed without a
+raised cap is refused up front with the real cause, the same pre-flight the
+failure path applies — raise it with the `--max-*` flags.
+
+Distinguish it from a delegate pause: an agent that *asks* (`ask_user`,
+`_needs_interaction`) has not failed; it re-invokes mid-conversation with the
+answer merged into its input (above), and its checkpoint carries the backend
+session, not the recovery marker.
+
 ## Dispatcher and last_run
 
 A run is durable across a studio or dispatcher restart. If the board card
@@ -453,6 +666,69 @@ Most runtime errors use the checkpoint-aware failure path: LLM/delegate errors,
 schema validation, edge/routing failures, budget and timeout errors, fan-out
 failures, and resumable sandbox startup failures. A recovery policy may retry,
 repair, or ask a human before the final status is written.
+
+### What a resume rebuilds
+
+A resume does not inherit the previous attempt's environment — the
+sandbox went away with the process that owned it. Before the checkpoint
+node re-executes, the engine re-runs the whole setup: it re-mirrors the
+bundle's skills and plugin contributions into `.claude/` (so a bundle
+upgraded between the two attempts takes effect), re-resolves the run's
+vars from its persisted inputs, and **starts a fresh sandbox** — a new
+container or pod, going through the same phases as a launch (image pull
+/ pod Ready, workspace copy, git fixup, `post_create`). On the
+kubernetes driver a resume force-deletes and re-creates the pod, under
+the scheduling policy of the runner that claims it.
+
+Which means the setup timeouts apply identically to a resumed run — the
+point where iterion used to differ, and where the operator noticed it:
+the same stall that parked a launched run with a typed cause left a
+resumed one parked with none. The caps and the environment override are
+in [sandbox](sandbox.md#setup-phases-and-their-timeouts).
+
+What the resume does NOT redo: the nodes already recorded in the
+checkpoint. See [what the checkpoint
+preserves](#what-the-checkpoint-preserves).
+
+### Sandbox startup — which failures are resumable
+
+A failure at `sandbox start` happens before the first node runs, so it is
+classified from the DRIVER's typed error rather than assumed either way.
+Both resumable codes are persisted on `failed_resumable`, so
+`iterion resume`, `--auto-resume` and the cloud runner's redelivery all
+pick them up; anything else stays terminal `failed`, because a redelivery
+would re-hit it identically and only spend a pod per attempt.
+
+| Failure | Code | Status |
+|---|---|---|
+| A bounded setup phase that RAN and stalled (workspace copy, git fixup, `post_create`) | `SANDBOX_SETUP_TIMEOUT` | `failed_resumable` — a fresh pod routinely clears the stall |
+| The pod is still `Pending` past the deadline, unscheduled (`Unschedulable`, `Insufficient cpu`: the fleet is at its request ceiling) | `SANDBOX_CAPACITY` | `failed_resumable` — the run executed nothing; a later attempt re-places it |
+| The pod is still `Pending`, scheduled, its node not having started the container (`ContainerCreating`, `PodInitializing`, or no container status reported yet) | `SANDBOX_CAPACITY` | `failed_resumable` — same: `Pending` IS the API's guarantee that no container was created |
+| A broken image reference (`ErrImagePull`, `ImagePullBackOff`, `InvalidImageName`) | — | `failed` — every pod re-hits it; the operator fixes the reference. Overrides the phase: such a pod is `Pending` too |
+| An invalid spec (`CreateContainerConfigError`, `CreateContainerError`) or a crash-looping container | — | `failed` |
+| The pod reached `Running` (or `Unknown`) but never Ready | — | `failed` — a container came up; nothing says the run did nothing |
+| The pod could not be inspected at all (RBAC, apiserver blip) | — | `failed` — no evidence, nothing claimed |
+
+Both resumable codes are re-offered by the cloud runner on a DELAY
+rather than at once: 2 minutes for `SANDBOX_SETUP_TIMEOUT` (the stall is
+usually infrastructure catching its breath, and a bare re-offer would
+burn the whole delivery budget as back-to-back pods — 8 × a 15-minute
+phase ≈ 2 hours — with nothing on the run's timeline in between), and
+longer for `SANDBOX_CAPACITY` (the cure is a cluster autoscaler adding a
+node, not the pod retrying). Each redelivery is recorded on the run's
+timeline. A condition that persists through every permitted delivery
+ends parked on the DLQ like any other repeated failure — announced,
+rather than re-offered forever. A one-off stall needs no operator action
+at all; `iterion resume` on the parked run is the same recovery, taken
+by hand, when you would rather not wait for the redelivery.
+
+The deadlines are per phase: the pod-Ready wait is
+`ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` (see
+[sandbox](sandbox.md#scheduling-requests-and-node-spread)), the copy and
+the `post_create` snippet have their own — see [setup phases and their
+timeouts](sandbox.md#setup-phases-and-their-timeouts). Raise the one the
+error names: the message says which phase timed out, how long it ran and
+what its budget was.
 
 Cancellation saves state with a detached, bounded store context so Ctrl-C can
 still persist after the execution context is cancelled. If checkpoint writing

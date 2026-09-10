@@ -16,6 +16,10 @@ export interface DoneStepProps {
   /** In-app path the caller asked to come back to (sanitized). */
   returnTo?: string | null;
   onReturn?: () => void;
+  /** True when the enable came back 202: the org requires an admin's
+   *  approval, so nothing is provisioned yet and this step must not
+   *  claim success. */
+  pendingApproval?: boolean;
 }
 
 export default function DoneStep({
@@ -27,32 +31,56 @@ export default function DoneStep({
   onConnectAnother,
   returnTo,
   onReturn,
+  pendingApproval,
 }: DoneStepProps) {
   return (
     <div className="space-y-4">
       <header className="space-y-1">
-        <h2 className="text-headline font-semibold">
-          <span className="inline-flex items-center gap-2">
-            <span
-              aria-hidden
-              className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-success-soft text-success-fg"
-            >
-              <CheckIcon className="h-4 w-4" />
-            </span>
-            Repository connected
-          </span>
-        </h2>
-        <p className="text-xs text-fg-muted">
-          {repo ? (
-            <>
-              <span className="font-mono">{repo}</span> is now wired to this
-              team. Selected bots have been provisioned with the required
-              webhooks and tokens.
-            </>
-          ) : (
-            "Your bots have been provisioned. You can enable more repositories on this connection any time from the Integrations page."
-          )}
-        </p>
+        {pendingApproval ? (
+          <>
+            <h2 className="text-headline font-semibold">Awaiting org approval</h2>
+            <p className="text-xs text-fg-muted">
+              Your organization requires an org admin to approve repo
+              provisioning.{" "}
+              {repo ? (
+                <>
+                  The request for <span className="font-mono">{repo}</span> is
+                  queued — nothing is created on the forge until it is
+                  approved.
+                </>
+              ) : (
+                "The request is queued — nothing is created on the forge until it is approved."
+              )}{" "}
+              It appears under the team&apos;s Integrations tab and the org
+              admins&apos; approval queue.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-headline font-semibold">
+              <span className="inline-flex items-center gap-2">
+                <span
+                  aria-hidden
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-success-soft text-success-fg"
+                >
+                  <CheckIcon className="h-4 w-4" />
+                </span>
+                Repository connected
+              </span>
+            </h2>
+            <p className="text-xs text-fg-muted">
+              {repo ? (
+                <>
+                  <span className="font-mono">{repo}</span> is now wired to this
+                  team. Selected bots have been provisioned with the required
+                  webhooks and tokens.
+                </>
+              ) : (
+                "Your bots have been provisioned. You can enable more repositories on this connection any time from the Integrations page."
+              )}
+            </p>
+          </>
+        )}
       </header>
 
       {connectionID && (

@@ -49,11 +49,14 @@ type Manager struct {
 	sinks  []Sink
 	logger *iterlog.Logger
 
-	stallTimeout  time.Duration
-	notifyTimeout time.Duration
-	baseURL       string
-	runLookup     func(runID string) (name string, ok bool)
-	now           func() time.Time
+	stallTimeout    time.Duration
+	notifyTimeout   time.Duration
+	baseURL         string
+	runLookup       func(runID string) (name string, ok bool)
+	humanWaitLookup func(context.Context, string, time.Time) bool
+	humanWaitCtx    context.Context
+	humanWaitCancel context.CancelFunc
+	now             func() time.Time
 	// storeSink, when set, receives every fired alert so the host can
 	// persist a store-event twin (EventRunHealth) — the ephemeral
 	// broker sink is deliberately never persisted (feedback-loop
@@ -91,6 +94,12 @@ func WithRunLookup(fn func(runID string) (string, bool)) Option {
 	return func(m *Manager) { m.runLookup = fn }
 }
 
+// WithHumanWaitLookup supplies persisted proof that a silent run is waiting
+// for human input. Missing or unreadable proof must return false.
+func WithHumanWaitLookup(fn func(context.Context, string, time.Time) bool) Option {
+	return func(m *Manager) { m.humanWaitLookup = fn }
+}
+
 // WithSinks appends delivery sinks.
 func WithSinks(sinks ...Sink) Option {
 	return func(m *Manager) { m.sinks = append(m.sinks, sinks...) }
@@ -106,8 +115,10 @@ func WithStoreSink(fn func(Alert)) Option {
 
 // NewManager builds a Manager. Call Start to begin stall polling.
 func NewManager(opts ...Option) *Manager {
+	waitCtx, waitCancel := context.WithCancel(context.Background())
 	m := &Manager{
-		runs:          make(map[string]*runState),
+		runs:         make(map[string]*runState),
+		humanWaitCtx: waitCtx, humanWaitCancel: waitCancel,
 		stallTimeout:  DefaultStallTimeout,
 		notifyTimeout: defaultNotifyTimeout,
 		now:           time.Now,
@@ -130,12 +141,20 @@ func (m *Manager) Observe(evt store.Event) {
 	if evt.RunID == "" {
 		return
 	}
-	// The persisted twin of our own alerts (run_health) must not count
-	// as run progress nor re-arm stall detection: replayed through the
-	// file tail it would reset the once-per-episode dedup and turn a
-	// single stall into an alert every poll window. Structural
-	// loop-freedom lives here.
-	if evt.Type == store.EventRunHealth {
+	// Events that are not the RUN working must not count as progress nor
+	// re-arm stall detection.
+	//
+	//   run_health — the persisted twin of our own alerts: replayed
+	//     through the file tail it would reset the once-per-episode dedup
+	//     and turn a single stall into an alert every poll window.
+	//     Structural loop-freedom lives here.
+	//   run_workspace_checkpoint — the runner's own timer, laid to
+	//     preserve a pod's work. A run stuck on a frozen key or a hung
+	//     tool still ticks, and a safety net that keeps its run reading
+	//     as alive would blind the alarm it was laid beside — including
+	//     when the tick is a FAILING push, which repeats forever.
+	if evt.Type == store.EventRunHealth ||
+		evt.Type == store.EventRunWorkspaceCheckpoint {
 		return
 	}
 
@@ -200,7 +219,12 @@ func (m *Manager) Observe(evt store.Event) {
 			if reason == "" {
 				reason = "see run logs"
 			}
-			fired = append(fired, m.alertLocked(KindRunFailed, rs, evt.NodeID, reason, "", 0, ts))
+			a := m.alertLocked(KindRunFailed, rs, evt.NodeID, reason, "", 0, ts)
+			// The run_failed event has carried the typed code all
+			// along — the in-process path must not drop what the cloud
+			// path (OpsDispatcher.classify) surfaces.
+			a.FailureCode = strData(evt.Data, "code")
+			fired = append(fired, a)
 		}
 	case store.EventRunFinished, store.EventRunCancelled:
 		rs.terminal = true
@@ -250,15 +274,20 @@ func (m *Manager) Start(ctx context.Context) {
 
 // Stop terminates the stall-polling goroutine.
 func (m *Manager) Stop() {
-	m.stopOnce.Do(func() { close(m.stop) })
+	m.stopOnce.Do(func() { m.humanWaitCancel(); close(m.stop) })
 }
 
 // checkStalls fires a stall alert for every non-terminal run whose last
 // progress is older than the stall timeout (once per episode), reaps
 // long-terminal runs, and returns the alerts fired (for testing).
 func (m *Manager) checkStalls(now time.Time) []Alert {
+	type candidate struct {
+		id       string
+		state    *runState
+		progress time.Time
+	}
 	m.mu.Lock()
-	var fired []Alert
+	var candidates []candidate
 	for id, rs := range m.runs {
 		if rs.terminal {
 			if !rs.terminalAt.IsZero() && now.Sub(rs.terminalAt) > terminalRetention {
@@ -266,31 +295,42 @@ func (m *Manager) checkStalls(now time.Time) []Alert {
 			}
 			continue
 		}
-		if m.stallTimeout <= 0 {
+		if m.stallTimeout <= 0 || rs.paused || rs.lastProgressAt.IsZero() || rs.stallAlerted || now.Sub(rs.lastProgressAt) <= m.stallTimeout {
 			continue
 		}
-		// A run waiting on a human form (or an operator pause) is not
-		// stalled — it's intentionally idle. Don't fire a false alarm.
-		if rs.paused {
-			continue
+		candidates = append(candidates, candidate{id, rs, rs.lastProgressAt})
+	}
+	m.mu.Unlock()
+
+	var fired []Alert
+	for _, c := range candidates {
+		waiting := false
+		if m.humanWaitLookup != nil {
+			// Store I/O must not hold the event observer's mutex. Stop cancels a
+			// blocked lookup; failure/no proof leaves stall detection armed.
+			ctx, cancel := context.WithTimeout(m.humanWaitCtx, 5*time.Second)
+			waiting = m.humanWaitLookup(ctx, c.id, now)
+			cancel()
 		}
-		if rs.lastProgressAt.IsZero() || rs.stallAlerted {
-			continue
-		}
-		idle := now.Sub(rs.lastProgressAt)
-		if idle <= m.stallTimeout {
+		m.mu.Lock()
+		rs := m.runs[c.id]
+		// An event or another polling pass may have changed the candidate
+		// while the lookup was in flight. Never notify from that stale view.
+		if m.humanWaitCtx.Err() != nil || rs != c.state || rs.terminal || rs.paused || rs.stallAlerted || !rs.lastProgressAt.Equal(c.progress) || waiting {
+			m.mu.Unlock()
 			continue
 		}
 		rs.stallAlerted = true
-		reason := fmt.Sprintf("no activity for %s", idle.Round(time.Second))
+		reason := fmt.Sprintf("no activity for %s", now.Sub(rs.lastProgressAt).Round(time.Second))
 		fired = append(fired, m.alertLocked(KindStall, rs, rs.currentNode, reason, "", 0, now))
+		m.mu.Unlock()
 	}
+	m.mu.Lock()
 	var sinks []Sink
 	if len(fired) > 0 {
 		sinks = m.snapshotSinksLocked()
 	}
 	m.mu.Unlock()
-
 	m.dispatch(sinks, fired)
 	return fired
 }

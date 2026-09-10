@@ -32,6 +32,26 @@ func TestEffortCapabilities_ClawOpus48(t *testing.T) {
 	)
 }
 
+// Opus 5 carries ultracode's orchestration half too: the endpoint offers the
+// mode there, through the same predicate the compiler's C089 gate uses.
+func TestEffortCapabilities_ClawOpus5(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getEffortCaps(t, hs.URL, "claw", "claude-opus-5")
+	if got.Source != "claw-registry" {
+		t.Errorf("Source=%q, want %q", got.Source, "claw-registry")
+	}
+	// Only the mode is asserted here: the level table (low … max, default)
+	// for the Claude 5 family is the claw registry's to ship
+	// (apikit.EffortCapabilities returns no levels for claude-opus-5 at the
+	// pinned claw-code-go revision) — a gap of that registry, not of this
+	// endpoint, tracked on claw-code-go.
+	assertEffortLevels(t, got.Supported,
+		[]string{"ultracode"}, // required
+		nil,                   // forbidden
+	)
+}
+
 // TestEffortCapabilities_ClaudeCodeMirrorsClaw proves the claude_code
 // backend routes through the same claw-registry data as claw itself
 // (they share apikit.EffortCapabilities). If a regression tied
@@ -59,7 +79,7 @@ func TestEffortCapabilities_ClaudeCodeMirrorsClaw(t *testing.T) {
 // entry. Opus 4.7 has the same floor levels but must NOT carry
 // ultracode — the mid-conversation system-message plumbing that backs
 // it only ships on 4.8.
-func TestEffortCapabilities_UltracodeOnlyOnOpus48(t *testing.T) {
+func TestEffortCapabilities_UltracodeNotOnOpus47(t *testing.T) {
 	_, hs := newTestServer(t)
 
 	got := getEffortCaps(t, hs.URL, "claw", "claude-opus-4-7")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
@@ -106,23 +108,27 @@ type AttachmentWriter interface {
 	WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error
 }
 
-// ToolBlobWriter is the optional capability filesystem stores satisfy
-// for the per-tool-call sidecar I/O persistence path. When present, tool
-// inputs/outputs exceeding `toolInlineThreshold` are written through it
-// and the event carries a small head preview + a ref instead of the
-// full body. Mongo (cloud) stores don't satisfy it today; the hook
-// layer falls back to inline truncation in that case.
+// ToolBlobWriter is the optional capability for the per-tool-call
+// sidecar I/O persistence path. When present, tool inputs/outputs
+// exceeding `toolInlineThreshold` are written through it and the event
+// carries a small head preview + a ref instead of the full body. Both
+// store families satisfy it — the filesystem store writes a sidecar
+// file, the Mongo store PUTs the body to object storage — and in cloud
+// mode the runner's metricsEmitter forwards it to the wrapped store.
+// Emitters without it (test fakes) fall back to inline truncation.
 type ToolBlobWriter interface {
 	WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error)
 }
 
-// TurnWriter is the optional capability filesystem stores satisfy for
-// the per-LLM-turn snapshot persistence path. Each tool-loop iteration
-// completing inside the claw backend (or a delegate-call boundary for
-// claude_code) is persisted as a store.TurnCheckpoint so the studio's
-// timeline + the Fork API have a stable anchor. Mongo (cloud) stores
-// don't satisfy it today; the hook layer skips the write when the
-// capability is missing rather than failing the LLM call.
+// TurnWriter is the optional capability for the per-LLM-turn snapshot
+// persistence path. Each tool-loop iteration completing inside the claw
+// backend (or a delegate-call boundary for claude_code) is persisted as
+// a store.TurnCheckpoint so the studio's timeline + the Fork API have a
+// stable anchor. Both store families satisfy it — the filesystem store
+// writes runs/<id>/turns/…, the Mongo store upserts one document per
+// (run, node, iter, turn) — and in cloud mode the runner's
+// metricsEmitter forwards it to the wrapped store. Emitters without it
+// (test fakes) skip the write rather than failing the LLM call.
 type TurnWriter interface {
 	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
@@ -162,9 +168,9 @@ type NodeServedRecorder interface {
 //     (total bytes), and `data[key+"_ref"]` (= toolUseID — the path is
 //     deterministic from run_id + tool_use_id + kind).
 //
-// When blobSink is nil or toolUseID is empty (legacy paths, cloud
-// stores), falls back to capped inline persistence so the studio still
-// shows *something*.
+// When blobSink is nil or toolUseID is empty (an emitter without the
+// capability, a call with no tool_use id), falls back to capped inline
+// persistence so the studio still shows *something*.
 func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink ToolBlobWriter, runID, toolUseID, key string, content []byte, data map[string]any) {
 	if len(content) == 0 {
 		return
@@ -226,6 +232,12 @@ type storeHooks struct {
 	// parameter tags inside a JSON string value.
 	inputsMu     sync.Mutex
 	recentInputs map[string]string
+
+	// usage_progress debounce state, keyed by node id. Guarded by upMu:
+	// the claude_code feed runs on the stream goroutine while the claw
+	// feed runs on the generation loop's.
+	upMu    sync.Mutex
+	upState map[string]*usageProgressState
 
 	// driftSeen dedupes model_drift events per (node, declared, effective)
 	// so a 92-pass loop does not emit 92 identical warnings.
@@ -319,6 +331,10 @@ func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage
 
 // onLLMRequest implements the OnLLMRequest hook.
 func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
+	// Remember the model serving this node: the claw per-step usage feed
+	// carries no model, and an unpriced usage_progress sample cannot arm
+	// a cost_gt monitor.
+	h.noteNodeModel(nodeID, info.Model)
 	data := map[string]any{
 		"model":         info.Model,
 		"message_count": info.MessageCount,
@@ -408,6 +424,11 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 
 	h.emit(nodeID, store.EventLLMStepFinished, data)
 
+	// claw's mid-node usage feed: fold this step's usage into the node's
+	// debounced usage_progress sampling (claude_code has its own feed via
+	// the OnUsageProgress delegate hook).
+	h.usageProgressFromStep(nodeID, step)
+
 	// Mid-loop narration for the conversation views. Only tool-bearing
 	// steps qualify: in claw's agent loop the final (no-tools) step is
 	// the node's answer — often raw structured JSON — which the output
@@ -496,6 +517,152 @@ func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
 
 // onUsageCap implements the OnUsageCap hook: it records that the
 // operator's own ceiling — not the provider's — is what governed this run.
+// ---------------------------------------------------------------------------
+// usage_progress — debounced mid-node usage sampling (observational).
+// The authoritative spend is still recorded ONCE at node end
+// (runtime.recordBranchUsage); these samples exist so a supervisor's
+// cost_gt monitor can fire while the node is still steerable.
+// ---------------------------------------------------------------------------
+
+// usageProgressState tracks one node's cumulative in-flight usage and the
+// last sample emitted, so a sample lands on significant growth, not per turn.
+type usageProgressState struct {
+	// iteration scopes the claw DELTA feed: a new loop iteration starts a
+	// fresh accumulation (the claude_code feed overwrites with call-
+	// cumulative absolutes, so it never consults this).
+	iteration                      int
+	model                          string
+	in, out, cacheRead, cacheWrite int
+	lastTokens                     int
+	lastUsed                       float64
+}
+
+// Emission thresholds: a sample must be worth waking a supervisor for
+// (floor), and each subsequent one must show real growth (ratio) — a
+// 60-turn review emits a handful of samples, not sixty.
+const (
+	usageProgressMinUSD    = 0.05
+	usageProgressGrowthPct = 1.20
+	usageProgressMinTokens = 5000
+	usageProgressTokGrowth = 1.25
+)
+
+func (h *storeHooks) upStateFor(nodeID string) *usageProgressState {
+	if h.upState == nil {
+		h.upState = make(map[string]*usageProgressState)
+	}
+	st := h.upState[nodeID]
+	if st == nil {
+		st = &usageProgressState{}
+		h.upState[nodeID] = st
+	}
+	return st
+}
+
+// noteNodeModel records the model serving a node so the claw step feed
+// (whose per-step payload carries no model) can price its samples.
+func (h *storeHooks) noteNodeModel(nodeID, model string) {
+	if model == "" {
+		return
+	}
+	h.upMu.Lock()
+	h.upStateFor(nodeID).model = model
+	h.upMu.Unlock()
+}
+
+// onUsageProgress implements the OnUsageProgress hook: the delegate
+// (claude_code) reports CALL-CUMULATIVE usage — overwrite and maybe emit.
+func (h *storeHooks) onUsageProgress(nodeID string, info UsageProgressInfo) {
+	h.upMu.Lock()
+	st := h.upStateFor(nodeID)
+	if info.Model != "" {
+		st.model = info.Model
+	}
+	// A DROP in the call-cumulative counters means a NEW delegate call
+	// started on this node (a loop iteration, a retry, a fallback
+	// route). Without clearing the debounce watermarks the PREVIOUS
+	// call's peak would suppress every sample of the new one until it
+	// out-spent it — blinding cost_gt on exactly the later passes a
+	// pacer exists for.
+	if info.InputTokens+info.OutputTokens+info.CacheReadTokens+info.CacheWriteTokens <
+		st.in+st.out+st.cacheRead+st.cacheWrite {
+		st.lastUsed, st.lastTokens = 0, 0
+	}
+	st.in, st.out = info.InputTokens, info.OutputTokens
+	st.cacheRead, st.cacheWrite = info.CacheReadTokens, info.CacheWriteTokens
+	data := h.usageSampleLocked(st)
+	h.upMu.Unlock()
+	if data != nil {
+		h.emit(nodeID, store.EventUsageProgress, data)
+	}
+}
+
+// usageProgressFromStep is the claw feed: per-step usage DELTAS,
+// accumulated per (node, loop iteration).
+func (h *storeHooks) usageProgressFromStep(nodeID string, step LLMStepInfo) {
+	if step.InputTokens == 0 && step.OutputTokens == 0 &&
+		step.CacheReadTokens == 0 && step.CacheWriteTokens == 0 {
+		return
+	}
+	h.upMu.Lock()
+	st := h.upStateFor(nodeID)
+	if step.Iteration != st.iteration {
+		model := st.model // survives: the model serving the node has not changed
+		*st = usageProgressState{iteration: step.Iteration, model: model}
+	}
+	st.in += step.InputTokens
+	st.out += step.OutputTokens
+	st.cacheRead += step.CacheReadTokens
+	st.cacheWrite += step.CacheWriteTokens
+	data := h.usageSampleLocked(st)
+	h.upMu.Unlock()
+	if data != nil {
+		h.emit(nodeID, store.EventUsageProgress, data)
+	}
+}
+
+// usageSampleLocked decides whether the state warrants a sample and, when
+// it does, advances the debounce watermark and returns the event payload.
+// Caller holds upMu. The USD figure is an ESTIMATE for pacing (cache
+// writes at 1.25× the input rate, cache reads at 0.1× — the standard
+// Anthropic multipliers), never an invoice; when the model is unpriced
+// the sample carries tokens only — zero means unknown, never free.
+func (h *storeHooks) usageSampleLocked(st *usageProgressState) map[string]any {
+	totalTokens := st.in + st.out + st.cacheRead + st.cacheWrite
+	equivIn := st.in + st.cacheWrite + st.cacheWrite/4 + st.cacheRead/10
+	var used float64
+	if st.model != "" {
+		used = cost.EstimateUSD(st.model, equivIn, st.out)
+	}
+	if used > 0 {
+		if used < usageProgressMinUSD {
+			return nil
+		}
+		if st.lastUsed > 0 && used < st.lastUsed*usageProgressGrowthPct {
+			return nil
+		}
+		st.lastUsed = used
+		st.lastTokens = totalTokens
+		return map[string]any{
+			"tokens": totalTokens,
+			"used":   math.Round(used*10000) / 10000,
+			"model":  st.model,
+		}
+	}
+	if totalTokens < usageProgressMinTokens {
+		return nil
+	}
+	if st.lastTokens > 0 && float64(totalTokens) < float64(st.lastTokens)*usageProgressTokGrowth {
+		return nil
+	}
+	st.lastTokens = totalTokens
+	data := map[string]any{"tokens": totalTokens}
+	if st.model != "" {
+		data["model"] = st.model
+	}
+	return data
+}
+
 func (h *storeHooks) onUsageCap(nodeID string, info UsageCapInfo) {
 	data := map[string]any{
 		"window":  info.Window,
@@ -509,6 +676,29 @@ func (h *storeHooks) onUsageCap(nodeID string, info UsageCapInfo) {
 		data["resets_at"] = info.ResetsAt.UTC().Format(time.RFC3339)
 	}
 	h.emit(nodeID, store.EventUsageCap, data)
+}
+
+// onOrchestrationStall persists a classified orchestration deadlock and
+// how it ended, so the failure class is countable per backend and model
+// instead of living only in a process log line.
+func (h *storeHooks) onOrchestrationStall(nodeID string, info OrchestrationStallInfo) {
+	outcome := "aborted"
+	if info.Recovered {
+		outcome = "recovered"
+	}
+	data := map[string]any{
+		"backend":   info.Backend,
+		"tool":      info.Tool,
+		"idle_ms":   info.IdleFor.Milliseconds(),
+		"outcome":   outcome,
+		"recovered": info.Recovered,
+	}
+	if info.Model != "" {
+		data["model"] = info.Model
+	}
+	h.emit(nodeID, store.EventDelegateStall, data)
+	h.logger.Warn("Delegation stall [%s]: %s blocked on %s with no background work to wait on for %s — %s",
+		nodeID, info.Backend, info.Tool, info.IdleFor.Round(time.Second), outcome)
 }
 
 // isLikelyStructuredPayload reports whether text is a bare JSON object
@@ -527,9 +717,9 @@ func isLikelyStructuredPayload(text string) bool {
 // onLLMTurnCapture implements the OnLLMTurnCapture hook.
 func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 	if h.turnSink == nil {
-		// Cloud stores don't satisfy TurnWriter yet; skip silently
-		// so the timeline + fork features simply don't light up
-		// for those runs (the rest of the LLM loop is unaffected).
+		// An emitter without a TurnWriter (test fakes) skips silently
+		// so the timeline + fork features simply don't light up for
+		// those runs (the rest of the LLM loop is unaffected).
 		return
 	}
 	// info.Iteration is threaded through applyHooks /
@@ -563,8 +753,9 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 		ToolCalls:    toolCalls,
 		TextDigest:   sha256Hex(info.Text),
 		Usage: store.TurnUsage{
-			InputTokens:  info.InputTokens,
-			OutputTokens: info.OutputTokens,
+			InputTokens:     info.InputTokens,
+			OutputTokens:    info.OutputTokens,
+			AggregateTokens: info.AggregateTokens,
 		},
 		SessionID: info.SessionID,
 	}
@@ -577,6 +768,13 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 		// user + every tool result) and feeds the Fork API — scrub
 		// secrets before it lands on disk.
 		turn.Messages = h.guard.RedactBytes(conv)
+	} else if info.ConversationOmittedBytes > 0 {
+		// A sandboxed node whose snapshot was too large for one IPC
+		// line: the turn anchors the timeline, a fork from it starts
+		// the node fresh. Said here, where the size is known, rather
+		// than discovered as an empty conversation at fork time.
+		h.logger.Warn("turn capture [%s] step %d: the sandbox runner could not relay the %d-byte conversation — this turn anchors the timeline, but forking from it replays no conversation",
+			nodeID, info.Step, info.ConversationOmittedBytes)
 	}
 	if err := h.turnSink.WriteTurn(h.ctx, turn); err != nil {
 		h.logger.Warn("turn capture [%s] step %d: %v", nodeID, info.Step, err)
@@ -812,6 +1010,46 @@ func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
 	})
 }
 
+// facadeFingerprintPrefix marks a session the delegate routed through an
+// Anthropic-shaped facade (claude_code_creds.go providerFingerprint).
+const facadeFingerprintPrefix = "facade:"
+
+// emitFacadeRouting surfaces a node served through a facade. The facade
+// answers whatever model id it is asked for with the model it aliases it
+// to, so declared and effective ids agree and emitModelDrift stays silent;
+// the fingerprint is the only evidence. Once per node and facade.
+//
+// Called from the FINISHED path only — the event's name is a claim that
+// the node was served, so a delegation that ended in an error must not
+// raise it. The fingerprint is the routing decision taken before the
+// call, not proof of an answer: claude_code stamps it on the results it
+// returns WITH an error too (a rendered failure, an auth/quota subtype),
+// so emitting on that path would report a node that failed as served.
+// The attempted route is not lost — recordServed still persists it on
+// NodesServed, the same way a failed attempt's Model is kept (#474).
+func (h *storeHooks) emitFacadeRouting(nodeID string, info DelegateInfo) {
+	if !strings.HasPrefix(info.Fingerprint, facadeFingerprintPrefix) {
+		return
+	}
+	key := nodeID + "\x00facade\x00" + info.Fingerprint
+	h.driftMu.Lock()
+	if h.driftSeen == nil {
+		h.driftSeen = make(map[string]struct{})
+	}
+	if _, seen := h.driftSeen[key]; seen {
+		h.driftMu.Unlock()
+		return
+	}
+	h.driftSeen[key] = struct{}{}
+	h.driftMu.Unlock()
+	h.emit(nodeID, store.EventModelServedViaFacade, map[string]any{
+		"backend":         info.BackendName,
+		"declared_model":  info.DeclaredModel,
+		"effective_model": info.EffectiveModel,
+		"fingerprint":     info.Fingerprint,
+	})
+}
+
 func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
 	if h.servedSink == nil || nodeID == "" || info.BackendName == "" {
 		return
@@ -822,6 +1060,7 @@ func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
 		DeclaredModel:   info.DeclaredModel,
 		ContextWindow:   info.ContextWindow,
 		MaxOutputTokens: info.MaxOutputTokens,
+		Fingerprint:     info.Fingerprint,
 	}
 	if err := h.servedSink.RecordNodeServed(h.ctx, h.runID, nodeID, served); err != nil {
 		h.logger.Warn("Could not persist served model [%s]: %v", nodeID, err)
@@ -882,6 +1121,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		return
 	}
 	h.emitModelDrift(nodeID, info)
+	h.emitFacadeRouting(nodeID, info)
 	h.recordServed(nodeID, info)
 
 	h.logger.Logf(iterlog.LevelInfo, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
@@ -914,6 +1154,9 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
 	h.emitModelDrift(nodeID, info)
+	// No emitFacadeRouting here: that event asserts the node WAS served,
+	// and this delegation failed. See its doc comment — the attempted
+	// facade route still reaches the run record through recordServed.
 	// A failed attempt typically has no EffectiveModel. Last-write-wins
 	// would blank a model recorded by an earlier success — the fact a
 	// failed run.json must still keep (#474). Only persist when the
@@ -976,6 +1219,23 @@ func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) 
 		nodeID, info.BackendName, info.SessionID, info.Reason, errMsg)
 }
 
+// onMCPServerDegraded implements the OnMCPServerDegraded hook: it turns a
+// dropped ambient MCP server into a first-class store event.
+//
+// Warn-level: the node is about to run, but without the tools of a
+// server the environment (repo .mcp.json / plugin catalog) put in its
+// reach — the only other trace is a process log line.
+func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedInfo) {
+	data := map[string]any{
+		"server": info.Server,
+		"source": info.Source,
+	}
+	if info.Err != nil {
+		data["error"] = info.Err.Error()
+	}
+	h.emit(nodeID, store.EventMCPServerDegraded, data)
+}
+
 // onProviderFallback implements the OnProviderFallback hook: it turns a
 // chain fall-through into a first-class store event.
 //
@@ -992,6 +1252,9 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 		"to_provider":   info.To,
 		"reason":        info.Reason,
 		"attempts":      info.Attempts,
+	}
+	if info.FallbackIndex != nil {
+		data["fallback_index"] = *info.FallbackIndex
 	}
 	if info.Cooldown {
 		data["cooldown"] = true
@@ -1154,20 +1417,23 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnLLMRequest: h.onLLMRequest,
 		// OnLLMResponse is intentionally nil: response data surfaces through
 		// llm_step_finished events with richer per-step detail.
-		OnLLMRetry:         h.onLLMRetry,
-		OnLLMStepFinish:    h.onLLMStepFinish,
-		OnAssistantText:    h.onAssistantText,
-		OnUsageCap:         h.onUsageCap,
-		OnLLMTurnCapture:   h.onLLMTurnCapture,
-		OnLLMCompacted:     h.onLLMCompacted,
-		OnToolStarted:      h.onToolStarted,
-		OnToolCall:         h.onToolCall,
-		OnDelegateStarted:  h.onDelegateStarted,
-		OnDelegateFinished: h.onDelegateFinished,
-		OnDelegateError:    h.onDelegateError,
-		OnDelegateRetry:    h.onDelegateRetry,
-		OnProviderFallback: h.onProviderFallback,
-		OnSessionDegraded:  h.onSessionDegraded,
+		OnLLMRetry:           h.onLLMRetry,
+		OnLLMStepFinish:      h.onLLMStepFinish,
+		OnAssistantText:      h.onAssistantText,
+		OnUsageCap:           h.onUsageCap,
+		OnUsageProgress:      h.onUsageProgress,
+		OnOrchestrationStall: h.onOrchestrationStall,
+		OnLLMTurnCapture:     h.onLLMTurnCapture,
+		OnLLMCompacted:       h.onLLMCompacted,
+		OnToolStarted:        h.onToolStarted,
+		OnToolCall:           h.onToolCall,
+		OnDelegateStarted:    h.onDelegateStarted,
+		OnDelegateFinished:   h.onDelegateFinished,
+		OnDelegateError:      h.onDelegateError,
+		OnDelegateRetry:      h.onDelegateRetry,
+		OnProviderFallback:   h.onProviderFallback,
+		OnSessionDegraded:    h.onSessionDegraded,
+		OnMCPServerDegraded:  h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 	}

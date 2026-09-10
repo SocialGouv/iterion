@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -377,6 +378,11 @@ func (e *rejectExecutor) Execute(_ context.Context, node ir.Node, input map[stri
 }
 
 func TestRun_HumanPause(t *testing.T) {
+	// `iterion run` executes in the operator's cwd, and `worktree: auto` (the
+	// IR default) takes its source repository from there — so without this the
+	// run registers its worktree in the DEVELOPER's checkout and the
+	// registration outlives the t.TempDir() store that held it (#870).
+	t.Chdir(gittest.SourceRepo(t))
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "test.bot", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -1428,6 +1434,11 @@ func TestInspect_LegacyPathUnchanged(t *testing.T) {
 
 func TestResume_Success(t *testing.T) {
 	hermeticSandbox(t)
+	// `iterion run` executes in the operator's cwd, and `worktree: auto` (the
+	// IR default) takes its source repository from there — so without this the
+	// run registers its worktree in the DEVELOPER's checkout and the
+	// registration outlives the t.TempDir() store that held it (#870).
+	t.Chdir(gittest.SourceRepo(t))
 	dir := t.TempDir()
 	botPath := writeFixture(t, dir, "test.bot", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")

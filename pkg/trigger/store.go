@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ErrSubscriptionNotFound is returned by Get/Update/Delete for an unknown id.
@@ -18,6 +19,14 @@ type SubscriptionStore interface {
 	Get(ctx context.Context, id string) (Subscription, error)
 	Update(ctx context.Context, s Subscription) error
 	Delete(ctx context.Context, id string) error
+
+	// MarkLaunchError records the verdict of the subscription's last direct
+	// launch: a non-empty message raises last_error with its instant, "" clears
+	// both. A TARGETED field write rather than a read-modify-replace — the
+	// recorder holds a copy the evaluator matched, which on an outbox retry is
+	// minutes old, and an operator editing the row in between must not lose the
+	// edit to a health write.
+	MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error
 
 	// ListByTenant returns every subscription owned by a tenant
 	// ("" tenant = the local single-host scope).

@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -50,7 +51,7 @@ func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, to
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, fmt.Errorf("forge: provider %q has no issue client", provider)
+		return 0, 0, fmt.Errorf("forge: provider %q client (%T) does not implement forge.IssueClient", provider, admin)
 	}
 	// connID is empty for a self-hosted import: there is no persisted forge
 	// connection, and the deterministic card ID keys on provider+repo+number.
@@ -197,7 +198,10 @@ func syncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider 
 	if err != nil {
 		return 0, 0, fmt.Errorf("list issues: %w", err)
 	}
-	b := board.Board()
+	b, err := board.Board()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read board: %w", err)
+	}
 	openCol := defaultOpenColumn(b)
 	doneCol := terminalColumn(b)
 	trustMemo := map[string]bool{}
@@ -245,7 +249,7 @@ func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		return 0, 0, fmt.Errorf("provider %s has no issue client", conn.Provider)
+		return 0, 0, forgeCapabilityErr(conn, admin, "IssueClient")
 	}
 	board := s.cfg.CloudBoardFor(teamID)
 	if board == nil {
@@ -284,7 +288,13 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		Author:       is.Author,
 	}
 	existing, gerr := board.Get(cardID)
-	if gerr != nil {
+	if gerr != nil && !errors.Is(gerr, tracker.ErrNotFound) {
+		// Only the not-found sentinel means "no card yet" — both twins answer
+		// a missing card with it and wrap everything else. Creating on any
+		// error would have this import write blind through a store outage.
+		return 0, 0, fmt.Errorf("board sync: read card %s: %w", cardID, gerr)
+	}
+	if gerr != nil || existing == nil {
 		col := openCol
 		labels := is.Labels
 		if is.State == "closed" && doneCol != "" {
@@ -310,6 +320,15 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 1, 0, nil
 	}
 	labels := mergeForgeLabels(is.Labels, existing.Labels)
+	// Patch.External REPLACES the whole ref, so the project sync state — which
+	// this import knows nothing about and never sets — has to be carried
+	// across. Dropping it would silently reset every card on any plain issue
+	// import: the next project pass would read "first sight" and overwrite a
+	// native move it should have pushed to the board instead.
+	if existing.External != nil && existing.External.Project != nil {
+		p := *existing.External.Project
+		ext.Project = &p
+	}
 	if _, err := board.Update(cardID, native.Patch{
 		Title:    &is.Title,
 		Body:     &is.Body,
@@ -319,7 +338,10 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 0, 0, err
 	}
 	if is.State == "closed" && doneCol != "" && !isTerminalState(b, existing.State) {
-		if _, err := board.SetState(cardID, doneCol); err != nil {
+		// CAS on the snapshot: an operator who moved the card between our
+		// read and this write wins — the sync must not clobber a fresh
+		// human decision with a stale forge fact.
+		if _, _, err := board.SetStateFrom(cardID, existing.State, doneCol); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -328,9 +350,31 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 
 // boardLocalLabelPrefixes are the label namespaces owned by the BOARD, not
 // the forge: the ingest trust labels (triage:, needs:), command idempotency
-// markers (cmd:) and provenance (source:). The forge sync's label refresh
-// preserves them; everything else mirrors the forge verbatim.
-var boardLocalLabelPrefixes = []string{"triage:", "needs:", "cmd:", "source:"}
+// markers (cmd:), provenance (source:) and the project-board field labels
+// (area:, mode:, prio: — written by the PROJECT import, present on no forge
+// repo). The forge sync's label refresh preserves them; everything else
+// mirrors the forge verbatim.
+var boardLocalLabelPrefixes = append(
+	[]string{"triage:", "needs:", "cmd:", "source:"},
+	projectFieldLabelPrefixes()...,
+)
+
+// projectFieldLabelPrefixes lists the namespaces the project import owns, read
+// from the same declaration the import writes through — so adding a bound
+// field cannot leave its labels unprotected against the next issue import.
+//
+// It reads the DEFAULTS, which is exactly what every stored binding carries:
+// forge.BindRequest.LabelFields is reachable from no surface (see its own
+// doc). Wiring one means feeding the binding's prefixes here too, or the next
+// issue import strips the labels the project import just wrote.
+func projectFieldLabelPrefixes() []string {
+	fields := forge.DefaultLabelFields()
+	out := make([]string, 0, len(fields))
+	for _, lf := range fields {
+		out = append(out, lf.Prefix)
+	}
+	return out
+}
 
 func isBoardLocalLabel(l string) bool {
 	ll := strings.ToLower(l)
@@ -524,7 +568,7 @@ func (s *Server) handleListIssuePulls(w http.ResponseWriter, r *http.Request) {
 	}
 	all, err := pc.ListPullRequests(r.Context(), repo, forge.PullListOptions{State: "all", PerPage: 100})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "list pull requests: %v", err)
+		writeForgePullError(w, "list pull requests", err)
 		return
 	}
 	// Keep only PRs that reference this card's forge issue number.
@@ -597,7 +641,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		Draft:        req.Draft,
 	})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "create pull request: %v", err)
+		writeForgePullError(w, "create pull request", err)
 		return
 	}
 	writeJSON(w, ref)
@@ -645,7 +689,7 @@ func (s *Server) handleMergeIssuePull(w http.ResponseWriter, r *http.Request) {
 		DeleteBranch:  req.DeleteBranch,
 	})
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "merge pull request: %v", err)
+		writeForgePullError(w, "merge pull request", err)
 		return
 	}
 	writeJSON(w, ref)
@@ -715,7 +759,7 @@ func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 	}
 	pr, err := pc.GetPullRequest(r.Context(), repo, number)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "get pull request: %v", err)
+		writeForgePullError(w, "get pull request", err)
 		return
 	}
 	ref := pr.HeadSHA
@@ -724,14 +768,29 @@ func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := pc.GetCIStatus(r.Context(), repo, ref)
 	if err != nil {
-		httpError(w, http.StatusBadGateway, "get ci status: %v", err)
+		writeForgePullError(w, "get ci status", err)
 		return
 	}
-	history, _ := pc.ListCIHistory(r.Context(), repo, ref, 20)
+	// The two halves are read independently and only the STATUS one is the
+	// verdict: it answered, so the panel answers. A failed history read is
+	// named rather than dropped — an empty timeline is indistinguishable
+	// from "nothing ever ran", which is the wrong thing to tell an operator
+	// looking at a merge decision.
+	history, histErr := pc.ListCIHistory(r.Context(), repo, ref, 20)
+	historyError := ""
+	if histErr != nil {
+		history, historyError = nil, histErr.Error()
+		if s.logger != nil {
+			s.logger.Warn("board forge: ci history for %s@%s: %v", repo, ref, histErr)
+		}
+	}
 	writeJSON(w, struct {
 		Status  forge.CIStatus `json:"status"`
 		History []forge.CIRun  `json:"history"`
-	}{Status: status, History: history})
+		// HistoryError names why the history half is missing; absent when
+		// the read succeeded.
+		HistoryError string `json:"history_error,omitempty"`
+	}{Status: status, History: history, HistoryError: historyError})
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +851,7 @@ func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, 
 	}
 	ic, ok := admin.(forge.IssueClient)
 	if !ok {
-		httpError(w, http.StatusNotImplemented, "provider %s has no issue client", conn.Provider)
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, admin, "IssueClient"))
 		return nil, forge.Connection{}, false
 	}
 	return ic, conn, true
@@ -805,10 +864,34 @@ func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, t
 	}
 	pc, ok := admin.(forge.PullClient)
 	if !ok {
-		httpError(w, http.StatusNotImplemented, "provider %s has no pull/CI client", conn.Provider)
+		httpError(w, http.StatusNotImplemented, "%v", forgeCapabilityErr(conn, admin, "PullClient"))
 		return nil, forge.Connection{}, false
 	}
 	return pc, conn, true
+}
+
+// writeForgePullError answers a failed PullClient call on the card's PR/CI
+// panel. A *forge.PermissionError is a configuration gap on the connection —
+// its credential lacks a named grant (an App installation approved before
+// `checks: read` was requested, a fine-grained PAT short of a permission) —
+// so it is answered 422 with the permission and the operator step, the same
+// mapping the create-repo and security-read routes give a withheld
+// installation grant.
+//
+// A *forge.NotFoundError is the forge saying it has no such object under this
+// credential — a PR that was deleted, a ref that moved, or (GitHub answers
+// 404 rather than 403 for what a credential may not see) a grant that was
+// never approved. It is answered 404 with the operation and the grants it is
+// gated on, not the 502 a bare sentinel used to produce. Anything else is the
+// upstream failure it always was.
+// Both cases, and the rate limit and upstream 5xx behind them, come from the
+// one shared table (forgeUpstreamStatus); the 502 stays the answer for what
+// that table does not recognise as an answer from the forge.
+func writeForgePullError(w http.ResponseWriter, op string, err error) {
+	if writeForgeUpstreamError(w, err, "%s: %v", op, err) {
+		return
+	}
+	httpError(w, http.StatusBadGateway, "%s: %v", op, err)
 }
 
 // forgeLinkOf extracts a card's forge linkage from its typed External ref.

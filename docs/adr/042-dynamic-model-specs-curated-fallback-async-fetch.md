@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-23
 - **Authors**: Featurly
-- **Code**: [pkg/backend/model/modelspecs.go](../../pkg/backend/model/modelspecs.go), [pkg/backend/model/capabilities.go](../../pkg/backend/model/capabilities.go)
+- **Code**: [pkg/backend/modelspecs/modelspecs.go](../../pkg/backend/modelspecs/modelspecs.go), [pkg/backend/model/capabilities.go](../../pkg/backend/model/capabilities.go)
 
 ## Context
 

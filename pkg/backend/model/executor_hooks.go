@@ -69,6 +69,15 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
+	// Fingerprint is the provider fingerprint of the session behind this
+	// delegation ("anthropic-oauth", "facade:<base url>", …), as the
+	// backend reported it. It is the ROUTING DECISION, taken before the
+	// call — not proof the call was answered: claude_code stamps it on
+	// the results it returns WITH an error too. Persisted on NodesServed
+	// either way (served on a success, attempted on a failure); the
+	// source of the model_served_via_facade event on the FINISHED path
+	// only, which is what keeps that event's name true.
+	Fingerprint string
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —
@@ -91,6 +100,7 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		ContextWindow:      result.ContextWindow,
 		MaxOutputTokens:    result.MaxOutputTokens,
 		PeakInputTokens:    result.PeakInputTokens,
+		Fingerprint:        result.SessionFingerprint,
 	}
 }
 
@@ -118,6 +128,9 @@ type ProviderFallbackInfo struct {
 	Reason   string
 	Attempts int   // retry attempts spent on the failed provider; 0 for a cooldown skip
 	Err      error // the hard failure that triggered the fall-through
+	// FallbackIndex is the zero-based destination stage for a launch-time
+	// run fallback. Nil for authored and legacy provider chains.
+	FallbackIndex *int
 	// Cooldown is true when dispatch skipped an attempt using a refusal a
 	// previous node already observed. CooldownUntil is that refusal's reset.
 	Cooldown      bool
@@ -140,6 +153,15 @@ type SessionDegradedInfo struct {
 	// cause the session had no part in).
 	Reason string
 	Err    error // the failure the dropped session is being blamed for
+}
+
+// MCPServerDegradedInfo describes an ambient MCP server dropped from a
+// node's tool set because it failed to boot, passed to the
+// OnMCPServerDegraded hook.
+type MCPServerDegradedInfo struct {
+	Server string // MCP server name that failed to boot
+	Source string // where the server came from — "ambient" (repo .mcp.json / plugin catalog)
+	Err    error  // the boot failure the dropped tools are blamed for
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.
@@ -169,10 +191,25 @@ type EventHooks struct {
 	// observational — the executor has already decided whether to stop the
 	// run by the time it fires — but it is the only place the timeline
 	// learns that iterion stopped itself rather than being refused.
-	OnUsageCap     func(nodeID string, info UsageCapInfo)
-	OnLLMCompacted func(nodeID string, info LLMCompactInfo)
-	OnToolStarted  func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall     func(nodeID string, info LLMToolCallInfo)
+	OnUsageCap func(nodeID string, info UsageCapInfo)
+	// OnUsageProgress fires with a node's CUMULATIVE mid-call token
+	// usage (claude_code: per streamed assistant API message, deduped by
+	// message id; claw's equivalent is derived from per-step usage in
+	// the store hooks layer). Observational only — budget accounting
+	// still records the spend once, at node end. The store hook
+	// debounces it into usage_progress events so a supervisor's cost_gt
+	// monitor can fire while the node is still steerable.
+	OnUsageProgress func(nodeID string, info UsageProgressInfo)
+	// OnOrchestrationStall fires when a delegate classifies its session as
+	// deadlocked on an orchestration tool and reports whether it recovered
+	// in place or was aborted for retry. The store hook persists it as a
+	// delegate_stall event, which the runner meters per backend/model/
+	// outcome — the number an admission decision about a provider can
+	// rest on.
+	OnOrchestrationStall func(nodeID string, info OrchestrationStallInfo)
+	OnLLMCompacted       func(nodeID string, info LLMCompactInfo)
+	OnToolStarted        func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall           func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
@@ -200,6 +237,14 @@ type EventHooks struct {
 	// "this node ran without the conversation it asked for" in the run
 	// record; the process log alone leaves a downstream gate blind.
 	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
+
+	// OnMCPServerDegraded fires when an AMBIENT MCP server (repo
+	// .mcp.json / plugin catalog — never named by the node) fails to
+	// boot and is dropped from the node's tool set. Purely observational
+	// — the node runs on without that server's tools — but it is the
+	// only thing that puts "this node ran without an inherited server"
+	// in the run record.
+	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
 	// OnNodeFinished fires after a node's executor returns successfully.
 	// The output map carries iterion's conventional usage keys (`_tokens`,
@@ -250,24 +295,36 @@ func chainCb6[A, B, C, D, E, F any](a, b func(A, B, C, D, E, F)) func(A, B, C, D
 // side run in order (a then b) for every event. Either side may leave
 // any callback nil; the result keeps the non-nil one without an extra
 // closure.
+//
+// EVERY field of EventHooks must appear below, in declaration order: a
+// field left out here is not a degraded composition, it is a silent drop
+// — the caller registered a callback that then never fires, on a path
+// (runview's ExtraHooks merge) that has no other way to notice.
+// TestChainHooksForwardsEveryField walks the struct by reflection and
+// fails on the first field this list forgets.
 func ChainHooks(a, b EventHooks) EventHooks {
 	return EventHooks{
-		OnLLMRequest:       chainCb2(a.OnLLMRequest, b.OnLLMRequest),
-		OnLLMPrompt:        chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
-		OnLLMResponse:      chainCb2(a.OnLLMResponse, b.OnLLMResponse),
-		OnLLMRetry:         chainCb2(a.OnLLMRetry, b.OnLLMRetry),
-		OnLLMStepFinish:    chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
-		OnLLMTurnCapture:   chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
-		OnLLMCompacted:     chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
-		OnToolStarted:      chainCb2(a.OnToolStarted, b.OnToolStarted),
-		OnToolCall:         chainCb2(a.OnToolCall, b.OnToolCall),
-		OnToolNodeResult:   chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
-		OnDelegateStarted:  chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished: chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:    chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:    chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback: chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:  chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnNodeFinished:     chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnLLMRequest:         chainCb2(a.OnLLMRequest, b.OnLLMRequest),
+		OnLLMPrompt:          chainCb3(a.OnLLMPrompt, b.OnLLMPrompt),
+		OnLLMResponse:        chainCb2(a.OnLLMResponse, b.OnLLMResponse),
+		OnLLMRetry:           chainCb2(a.OnLLMRetry, b.OnLLMRetry),
+		OnLLMStepFinish:      chainCb2(a.OnLLMStepFinish, b.OnLLMStepFinish),
+		OnAssistantText:      chainCb2(a.OnAssistantText, b.OnAssistantText),
+		OnLLMTurnCapture:     chainCb2(a.OnLLMTurnCapture, b.OnLLMTurnCapture),
+		OnUsageCap:           chainCb2(a.OnUsageCap, b.OnUsageCap),
+		OnUsageProgress:      chainCb2(a.OnUsageProgress, b.OnUsageProgress),
+		OnOrchestrationStall: chainCb2(a.OnOrchestrationStall, b.OnOrchestrationStall),
+		OnLLMCompacted:       chainCb2(a.OnLLMCompacted, b.OnLLMCompacted),
+		OnToolStarted:        chainCb2(a.OnToolStarted, b.OnToolStarted),
+		OnToolCall:           chainCb2(a.OnToolCall, b.OnToolCall),
+		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
+		OnDelegateStarted:    chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:   chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:      chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:      chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:   chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnSessionDegraded:    chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded:  chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:       chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

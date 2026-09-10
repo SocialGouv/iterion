@@ -292,7 +292,11 @@ func (s *Server) handlePipelineBoardBulkReady(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bulk ready: %v", err)
 		return
 	}
-	board := boardStore.Board()
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "bulk ready: read board: %v", err)
+		return
+	}
 	out := pipelineBulkReadyResponse{SkippedWhy: map[string]string{}}
 	for _, iss := range candidates {
 		if iss == nil || strings.TrimSpace(iss.Bot) == "" {
@@ -319,7 +323,7 @@ func (s *Server) handlePipelineBoardBulkReady(w http.ResponseWriter, r *http.Req
 				continue
 			}
 		}
-		if _, err := boardStore.SetState(iss.ID, target); err != nil {
+		if _, err := native.SetStateOrReopen(boardStore, iss.ID, target); err != nil {
 			out.Skipped = append(out.Skipped, iss.ID)
 			out.SkippedWhy[iss.ID] = err.Error()
 			continue
@@ -439,7 +443,11 @@ func (s *Server) handlePipelineBoardRecomputeDeps(w http.ResponseWriter, r *http
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "recompute deps: list: %v", err)
 			return
 		}
-		board := boardStore.Board()
+		board, berr := boardStore.Board()
+		if berr != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "recompute deps: read board: %v", berr)
+			return
+		}
 		for _, iss := range waiting {
 			if iss == nil {
 				continue

@@ -3,6 +3,7 @@ package native
 import (
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"time"
 )
 
@@ -134,7 +135,7 @@ func (s *Store) RenameField(from, to string) (touched int, err error) {
 		}
 		out[to] = v
 		return out, true
-	}, "field_rename")
+	}, tracker.ReasonFieldRename)
 	if err != nil {
 		return touched, err
 	}
@@ -165,7 +166,7 @@ func (s *Store) DeleteField(name string) (touched int, err error) {
 			}
 		}
 		return out, true
-	}, "field_delete")
+	}, tracker.ReasonFieldDelete)
 	if err != nil {
 		return touched, err
 	}

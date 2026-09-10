@@ -16,6 +16,9 @@ export const EVENT_BADGE: Record<string, string> = {
   artifact_written: "bg-accent-soft text-fg-default",
   human_input_requested: "bg-warning-soft text-warning-fg",
   budget_warning: "bg-warning-soft text-warning-fg",
+  // Debounced mid-node usage sample (observational — budget accounting
+  // is untouched); the live signal a pacer supervisor's cost_gt rides.
+  usage_progress: "bg-surface-2 text-fg-muted",
   // The operator's own subscription ceiling, hit below the provider's
   // wall. Warning-coloured: the run either stops or is the last one to
   // start, and either way it is a decision iterion took.
@@ -28,6 +31,11 @@ export const EVENT_BADGE: Record<string, string> = {
   // override, fallback route). Same colour as fallback: the record
   // is honest, the run is degraded.
   model_drift: "bg-warning-soft text-warning-fg",
+  // The node was served through an Anthropic-shaped facade, which
+  // answers a claude id with whatever it aliases it to — so the model
+  // ids agree and model_drift stays silent. Same colour: the record is
+  // honest, what ran is not what the id names.
+  model_served_via_facade: "bg-warning-soft text-warning-fg",
   // A best-effort session that could not be resumed: the node ran, but
   // without the conversation it asked for. Same colour as fallback —
   // the run continues on a degraded input.

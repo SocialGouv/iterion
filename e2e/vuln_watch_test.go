@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -600,6 +601,7 @@ func vwDepAlert(ghsa, cve, severity, repo, pkg, created, fix string) map[string]
 // with the inventory projects joined; and the day KEV picks up the observed
 // CVE, it RE-FIRES exactly once (the Metabase scenario) — then never again.
 func TestVulnWatch_PolicyAndRefire(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -705,6 +707,7 @@ func TestVulnWatch_PolicyAndRefire(t *testing.T) {
 // keyword only matches as a whole word/phrase — "go"-style aliases cannot
 // fire on Django/MongoDB, and multi-word phrases match case-insensitively.
 func TestVulnWatch_WordBoundaryMatching(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -736,6 +739,7 @@ func TestVulnWatch_WordBoundaryMatching(t *testing.T) {
 // configured org with no usable Dependabot token fails the poll outright —
 // never a silent zero-alert facade.
 func TestVulnWatch_MissingTokenFailsHard(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -761,6 +765,7 @@ func TestVulnWatch_MissingTokenFailsHard(t *testing.T) {
 // TestVulnWatch_FetchRejectsSSRF pins the strict posture on advisory
 // sources: with allow_private=false a loopback feed URL is refused.
 func TestVulnWatch_FetchRejectsSSRF(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -783,6 +788,7 @@ func TestVulnWatch_FetchRejectsSSRF(t *testing.T) {
 // contract: neither a dry-run nor an alert with no sink may advance the
 // state — the same alerts must recompute on the next real run.
 func TestVulnWatch_DryRunAndNoSinksDoNotConsume(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -831,6 +837,7 @@ func TestVulnWatch_DryRunAndNoSinksDoNotConsume(t *testing.T) {
 // sells: the compiled workflow contains NO agent or judge node, so a watch
 // tick can neither spend a token nor show a project name to a model.
 func TestVulnWatch_ZeroLLMInvariant(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "vuln-watch/main.bot")
 	for id, node := range wf.Nodes {
 		switch node.(type) {
@@ -849,6 +856,7 @@ func TestVulnWatch_ZeroLLMInvariant(t *testing.T) {
 // advisory alerts for one techno, and a KEV entry on a DIFFERENT techno
 // sharing one of its CVEs must still fire.
 func TestVulnWatch_AlertedCVEDoesNotSterilizeOtherProjects(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -894,6 +902,7 @@ func TestVulnWatch_AlertedCVEDoesNotSterilizeOtherProjects(t *testing.T) {
 // dateAdded has DAY granularity while the bot ticks hourly, so a date
 // cursor silently swallowed the rest of the day's batch.
 func TestVulnWatch_KEVSecondBatchSameDayStillFires(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -937,6 +946,7 @@ func TestVulnWatch_KEVSecondBatchSameDayStillFires(t *testing.T) {
 // A title carrying newlines must not be able to forge a second,
 // indistinguishable alert block pointing at a hostile URL.
 func TestVulnWatch_UntrustedTitleCannotForgeAnAlert(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -985,6 +995,7 @@ func TestVulnWatch_UntrustedTitleCannotForgeAnAlert(t *testing.T) {
 // Collapsing them would leave the second project permanently untold — the
 // KEV id cursor advances past the entry, so it never comes back.
 func TestVulnWatch_IntraRunDedupIsScopeAware(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1036,6 +1047,7 @@ func TestVulnWatch_IntraRunDedupIsScopeAware(t *testing.T) {
 // cursor without posting its whole open backlog — the day-one flood that
 // teaches everyone to mute the channel.
 func TestVulnWatch_NewOrgBacklogDoesNotFlood(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1123,6 +1135,7 @@ func TestVulnWatch_NewOrgBacklogDoesNotFlood(t *testing.T) {
 // catalog (measured: 83 alerts from 1675 entries on the real one), which is
 // the single failure that teaches a team to mute the channel.
 func TestVulnWatch_KEVAgeBeltBoundsAStateLoss(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1171,6 +1184,7 @@ func TestVulnWatch_KEVAgeBeltBoundsAStateLoss(t *testing.T) {
 // already_alerted and the intra-run dedup): a STORED observed unit must not
 // be sterilised because one of its CVEs was alerted for a different project.
 func TestVulnWatch_RefireScanIsScopeAware(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1227,6 +1241,7 @@ func TestVulnWatch_RefireScanIsScopeAware(t *testing.T) {
 // failed rebase may drop ONLY the bot's own commit — never their
 // uncommitted work or unpushed commits.
 func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1239,13 +1254,7 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	bare := filepath.Join(dir, "origin.git")
 	run := func(wd string, args ...string) {
 		t.Helper()
-		c := exec.Command("git", args...)
-		c.Dir = wd
-		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
-		if out, err := c.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, wd, args...)
 	}
 	run(dir, "init", "--bare", "-b", "main", bare)
 	run(dir, "clone", bare, ws)
@@ -1311,10 +1320,8 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	if b, rerr := os.ReadFile(precious); rerr != nil || string(b) != "hours of work\n" {
 		t.Fatalf("the operator's uncommitted file was destroyed (err %v, content %q)", rerr, string(b))
 	}
-	log := exec.Command("git", "log", "--oneline")
-	log.Dir = ws
-	out, _ := log.CombinedOutput()
-	if !strings.Contains(string(out), "operator's own commit") {
+	out, _ := gittest.Try(ws, "log", "--oneline")
+	if !strings.Contains(out, "operator's own commit") {
 		t.Fatalf("the operator's unpushed commit was destroyed:\n%s", out)
 	}
 }
@@ -1324,6 +1331,7 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 // inventory, whose project key is nil. Zipping a filtered name list against
 // the unfiltered key list shifted the labels and named the WRONG team.
 func TestVulnWatch_ProjectLabelsAreNotShifted(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1370,6 +1378,7 @@ func TestVulnWatch_ProjectLabelsAreNotShifted(t *testing.T) {
 // (or the enrichment URL the feed itself names) can serve a small gzip body
 // that expands to gigabytes, killing the run or the pod.
 func TestVulnWatch_RefusesADecompressionBomb(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1422,6 +1431,7 @@ func TestVulnWatch_RefusesADecompressionBomb(t *testing.T) {
 // few CVE ids, so "told about the advisory" is not "told that THIS one is
 // now exploited".
 func TestVulnWatch_EscalationOutranksCoverage(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1472,6 +1482,7 @@ func TestVulnWatch_EscalationOutranksCoverage(t *testing.T) {
 // cursor back, so exiting 0 would let an hourly schedule report success while
 // replaying the same work forever.
 func TestVulnWatch_PartialDeliveryFailsLoudly(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1517,6 +1528,7 @@ func TestVulnWatch_PartialDeliveryFailsLoudly(t *testing.T) {
 // TestVulnWatch_RefusesAPlaintextAPIBase pins the credential guard: the org
 // Dependabot token is sent to github_api_base as a bearer credential.
 func TestVulnWatch_RefusesAPlaintextAPIBase(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1544,6 +1556,7 @@ func TestVulnWatch_RefusesAPlaintextAPIBase(t *testing.T) {
 // was judged "already covered" on first sight and dropped forever — while
 // the cursors advanced past it.
 func TestVulnWatch_TechnologyWithNoProjectStillAlerts(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1590,6 +1603,7 @@ func TestVulnWatch_TechnologyWithNoProjectStillAlerts(t *testing.T) {
 // RECORDED, or a deployment installed the day after a CVE entered KEV never
 // hears about it.
 func TestVulnWatch_BootstrapObservesWhatItConsumes(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1633,6 +1647,7 @@ func TestVulnWatch_BootstrapObservesWhatItConsumes(t *testing.T) {
 // record an ALREADY-LIVE exploitation signal as its baseline, or the unit is
 // silent forever — the exact case the bot exists for.
 func TestVulnWatch_BootstrapDeliversWhatIsAlreadyExploited(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1673,6 +1688,7 @@ func TestVulnWatch_BootstrapDeliversWhatIsAlreadyExploited(t *testing.T) {
 // (its structured document was unreachable) must gain them when the retry
 // succeeds, or it can never be scored and ages out silently.
 func TestVulnWatch_RetriedEnrichmentUpgradesTheObservation(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1725,6 +1741,7 @@ func TestVulnWatch_RetriedEnrichmentUpgradesTheObservation(t *testing.T) {
 // decompression guard: a bounded inflate is undone by expat's own entity
 // expansion, so a small feed body still reaches multi-gigabyte allocations.
 func TestVulnWatch_RefusesAnXMLEntityBomb(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1763,6 +1780,7 @@ func TestVulnWatch_RefusesAnXMLEntityBomb(t *testing.T) {
 // shape advisories actually use: product names hyphenate constantly, and a
 // boundary that excluded a following hyphen made every one unmatchable.
 func TestVulnWatch_MatchesHyphenatedProductNames(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1795,6 +1813,7 @@ func TestVulnWatch_MatchesHyphenatedProductNames(t *testing.T) {
 // every other fixture disables: the EPSS threshold (its own exploitation
 // signal) and dependabot_alert_floor's positive branch.
 func TestVulnWatch_EPSSLaneAndSeverityFloor(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1873,6 +1892,7 @@ func (h *vulnWatchHarness) queries() []string {
 // exists to prevent. So a confirmed repo must be named FIRST, with its fix,
 // and the keyword list demoted to explicitly-unverified context.
 func TestVulnWatch_ConfirmedVersionsOutrankTheKeywordList(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1915,6 +1935,7 @@ func TestVulnWatch_ConfirmedVersionsOutrankTheKeywordList(t *testing.T) {
 // and permanently empty — and every message would fall back to the keyword
 // list while claiming to have checked.
 func TestVulnWatch_VersionCheckNeverAsksForStateAll(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -1957,6 +1978,7 @@ func TestVulnWatch_VersionCheckNeverAsksForStateAll(t *testing.T) {
 // "no vulnerable dependency found" there would read as "you are safe", which
 // is the opposite of the truth. The two facts must not collapse into one.
 func TestVulnWatch_UnverifiableTechnologySaysSoInsteadOfLookingClean(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2037,6 +2059,7 @@ func vwConfirm(t *testing.T, wf *ir.Workflow, h *vulnWatchHarness, apiBase strin
 // exactly as much of a leak, and the "same host" spelling of the guard would
 // wave both through.
 func TestVulnWatch_VersionCheckNeverCarriesTheTokenOffOrigin(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2084,6 +2107,7 @@ func TestVulnWatch_VersionCheckNeverCarriesTheTokenOffOrigin(t *testing.T) {
 // thing IS out of what the database happens not to hold — and the operator
 // reads that as "checked, nothing to check".
 func TestVulnWatch_UnindexedCVEIsNotADeployedProductClaim(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2109,6 +2133,7 @@ func TestVulnWatch_UnindexedCVEIsNotADeployedProductClaim(t *testing.T) {
 // answer used to be CACHED, so one blip mis-stamped every later unit sharing
 // that CVE for the rest of the run.
 func TestVulnWatch_FailedAdvisoryReadIsNotADeployedProductClaim(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2154,6 +2179,7 @@ func TestVulnWatch_FailedAdvisoryReadIsNotADeployedProductClaim(t *testing.T) {
 // covers one, when the lookup budget is spent, and when the API errors — and
 // every one of those used to render as the all-clear.
 func TestVulnWatch_UncheckedIsNeverRenderedAsAnAllClear(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2216,6 +2242,7 @@ func TestVulnWatch_UncheckedIsNeverRenderedAsAnAllClear(t *testing.T) {
 // verbatim 422s, budgeted() swallows it, and the unit renders as an all-clear.
 // GitHub Actions advisories are not exotic.
 func TestVulnWatch_EcosystemOutsideTheAlertsVocabularyStillConfirms(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2259,6 +2286,7 @@ func TestVulnWatch_EcosystemOutsideTheAlertsVocabularyStillConfirms(t *testing.T
 // vulnerable", but a skimmed security message is read by its HEADINGS, and the
 // heading above it asserted current exposure.
 func TestVulnWatch_ConfirmedMeansOpen_DismissedAndFixedDoNot(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2336,6 +2364,7 @@ func TestVulnWatch_ConfirmedMeansOpen_DismissedAndFixedDoNot(t *testing.T) {
 // The operator-facing count must nevertheless stay REPOSITORIES: keying by
 // (repo, package) without regrouping would inflate one finding into two.
 func TestVulnWatch_EveryAffectedPackageSurvivesAndTheCountStaysRepos(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2414,6 +2443,7 @@ func TestVulnWatch_EveryAffectedPackageSurvivesAndTheCountStaysRepos(t *testing.
 // an hourly tick hangs"). Delivery is at-least-once, so nothing is lost
 // permanently — but prolonged silence on a security watch IS the failure.
 func TestVulnWatch_ASlowAPICostsPrecisionNotDelivery(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2485,6 +2515,7 @@ func TestVulnWatch_ASlowAPICostsPrecisionNotDelivery(t *testing.T) {
 // seriously (MAX_PAGES with a truncated flag, "truncation is REPORTED, never
 // silent"); this lane had neither.
 func TestVulnWatch_ConfirmationWalksPastTheFirstPage(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2531,6 +2562,7 @@ func TestVulnWatch_ConfirmationWalksPastTheFirstPage(t *testing.T) {
 // renders the explicit all-clear "no vulnerable dependency found in the
 // watched orgs" over 50 genuinely vulnerable repositories.
 func TestVulnWatch_TruncatedWalkIsReportedNotPresentedAsComplete(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2583,6 +2615,7 @@ func TestVulnWatch_TruncatedWalkIsReportedNotPresentedAsComplete(t *testing.T) {
 // units this node exists for. The first live tick had that lane alone
 // reporting ~200 new alerts against max_alerts_per_run=20.
 func TestVulnWatch_DependabotLaneUnitsSpendNoConfirmationBudget(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2631,6 +2664,7 @@ func TestVulnWatch_DependabotLaneUnitsSpendNoConfirmationBudget(t *testing.T) {
 // from: it has to be marked at the source, or an incomplete look renders as a
 // complete answer.
 func TestVulnWatch_ACutCVEListIsNeverAConfidentAnswer(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2707,6 +2741,7 @@ func TestVulnWatch_ACutCVEListIsNeverAConfidentAnswer(t *testing.T) {
 // fails, every unit renders "not verified", and the whole confirmation stops
 // working silently — the exact capability degradation this bot must not have.
 func TestVulnWatch_AdvisoryLookupSurvivesATokenTheEndpointRefuses(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2744,6 +2779,7 @@ func TestVulnWatch_AdvisoryLookupSurvivesATokenTheEndpointRefuses(t *testing.T) 
 // This is that check. It is deliberately scoped to this one bot's fixture, so
 // it can only ever fail on the bot the suite is about.
 func TestVulnWatch_HarnessDrivesEveryNodeInTheGraph(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "vuln-watch/main.bot")
 
 	// Every tool node the harness is known to drive (see runWatchOpts and the
@@ -2777,6 +2813,7 @@ func TestVulnWatch_HarnessDrivesEveryNodeInTheGraph(t *testing.T) {
 // Claiming "deployed product" there states a confident fact about the
 // technology on the strength of the CVE GitHub was never asked to explain.
 func TestVulnWatch_MixedIndexedCVEsAreNotADeployedProductClaim(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
@@ -2809,6 +2846,7 @@ func TestVulnWatch_MixedIndexedCVEsAreNotADeployedProductClaim(t *testing.T) {
 // Printing the explicit all-clear there is a false all-clear on a security
 // message.
 func TestVulnWatch_MixedIndexedCVEsCannotProduceAnAllClear(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}

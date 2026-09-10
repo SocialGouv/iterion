@@ -46,6 +46,110 @@ func TestParseMergeRequest(t *testing.T) {
 	}
 }
 
+// The "Re-request review" button arrives as an `update` whose
+// changes.reviewers.current stamps re_requested on the targeted reviewer
+// (gitlab-org/gitlab!205274); adding a reviewer shows as current − previous.
+// Both are the request-a-review gesture ReviewRequestedFrom answers for.
+func TestParseMergeRequest_ReviewerChanges(t *testing.T) {
+	payload := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "updated_at": "2026-09-01 10:00:00 UTC",
+	    "url": "https://gitlab.com/acme/widgets/-/merge_requests/7", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {
+	    "previous": [{"id": 12, "username": "carol"}],
+	    "current": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": true}]
+	  }}
+	}`
+	p, err := ParseMergeRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.ReRequestedReviewers) != 1 || p.ReRequestedReviewers[0] != "iterion-bot" {
+		t.Fatalf("re-requested: %v", p.ReRequestedReviewers)
+	}
+	if len(p.AddedReviewers) != 1 || p.AddedReviewers[0] != "iterion-bot" {
+		t.Fatalf("added (current − previous): %v", p.AddedReviewers)
+	}
+	if p.UpdatedAt != "2026-09-01 10:00:00 UTC" {
+		t.Fatalf("updated_at: %q", p.UpdatedAt)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") || !p.ReviewRequestedFrom("ITERION-BOT") {
+		t.Fatal("ReviewRequestedFrom must match the targeted reviewer (case-insensitively)")
+	}
+	if p.ReviewRequestedFrom("carol") {
+		t.Fatal("an untouched pre-existing reviewer is not being asked for a review")
+	}
+
+	// Older GitLab without the re_requested attribute: adding the reviewer
+	// is the only expressible form of the gesture — it must still match.
+	older := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot"}]}}
+	}`
+	p2, err := ParseMergeRequest([]byte(older))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2.ReRequestedReviewers) != 0 {
+		t.Fatalf("no re_requested attr → none: %v", p2.ReRequestedReviewers)
+	}
+	if !p2.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("adding the bot as reviewer is the same gesture on older GitLab")
+	}
+	// And an update with no reviewer change at all never matches.
+	p3, err := ParseMergeRequest([]byte(mrOpenPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p3.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("no changes.reviewers → no review request")
+	}
+}
+
+// TestParseMergeRequest_PureReRequestClick isolates the case
+// TestParseMergeRequest_ReviewerChanges's own fixture conflates: a REAL
+// "Re-request review" click on a reviewer already assigned to the MR. The
+// bot is present in BOTH previous and current (same id — membership never
+// changes), and only `re_requested` flips false→true. AddedReviewers (a
+// current−previous diff) is empty for this id, so ReviewRequestedFrom must
+// be answered by the re_requested flag alone — the class of bug this pins:
+// a future refactor that only checked re_requested on newly-added entries
+// would still pass TestParseMergeRequest_ReviewerChanges (whose bot id is
+// ALSO newly added) while silently breaking the real button on an
+// already-assigned reviewer (SocialGouv/iterion#621).
+func TestParseMergeRequest_PureReRequestClick(t *testing.T) {
+	payload := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "updated_at": "2026-09-05 10:00:00 UTC",
+	    "url": "https://gitlab.com/acme/widgets/-/merge_requests/7", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {
+	    "previous": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": false}],
+	    "current": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": true}]
+	  }}
+	}`
+	p, err := ParseMergeRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.AddedReviewers) != 0 {
+		t.Fatalf("a pure re-request click adds nobody to the reviewer set: got %v", p.AddedReviewers)
+	}
+	if len(p.ReRequestedReviewers) != 1 || p.ReRequestedReviewers[0] != "iterion-bot" {
+		t.Fatalf("re-requested: %v (want [iterion-bot] from re_requested alone)", p.ReRequestedReviewers)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("a pure re_requested flip on an already-assigned reviewer must still be a review request")
+	}
+	if p.ReviewRequestedFrom("carol") {
+		t.Fatal("carol's own entry never flipped re_requested — not a request")
+	}
+}
+
 func TestParseMergeRequest_RejectsNonMR(t *testing.T) {
 	if _, err := ParseMergeRequest([]byte(`{"object_kind":"push"}`)); err == nil {
 		t.Fatal("non-merge_request should error")
@@ -168,10 +272,12 @@ const noteRevi = `{
 }`
 
 // Parser-level note tests (TestParseNote, TestParseNote_NonMR,
-// TestNoteCommand) live in note_test.go next to the parser. Here we
-// cover the /revi specialization the re-review trigger consumes: MR
-// state + command grammar through IsReviewCommand, against the same
-// payload shape the handler sees.
+// TestNoteCommand) live in note_test.go next to the parser. Here we pin the
+// end-to-end shape the handler consumes: an MR note's `/revi` parses to the
+// generic command grammar (cmd="revi", no args) against the same payload
+// shape the handler sees — routing on it (bare → review-pr, with a
+// question → revi-converse) is now the GENERIC webhooks.ResolveCommandRoute
+// registry (pkg/server), not a GitLab-specific predicate here.
 func TestParseNote_ReviewCommandEndToEnd(t *testing.T) {
 	p, err := ParseNote([]byte(noteRevi))
 	if err != nil {
@@ -180,44 +286,8 @@ func TestParseNote_ReviewCommandEndToEnd(t *testing.T) {
 	if p.MRState != "opened" || p.AuthorUsername != "alice" {
 		t.Fatalf("note: %+v", p)
 	}
-	if !p.IsReviewCommand() {
-		t.Fatal("bare /revi on an open MR should be a review command")
-	}
-}
-
-func TestIsReviewCommand(t *testing.T) {
-	base := ParsedNote{MRIID: 7, MRState: "opened"}
-	cases := []struct {
-		note string
-		want bool
-	}{
-		{"/revi", true},
-		{"/revi focus=security", true},
-		{"   /revi   ", true}, // surrounding whitespace tolerated
-		{"please run /revi", false},
-		{"/revia", false},               // longer token; must NOT match
-		{"/REVI", true},                 // Command() is case-insensitive by design
-		{"> /revi quoted\n/revi", true}, // quote-reply prefix skipped (Command grammar)
-		{"> some quoted context\nhi", false},
-		{"", false},
-		{"hi", false},
-	}
-	for _, c := range cases {
-		p := base
-		p.NoteBody = c.note
-		if got := p.IsReviewCommand(); got != c.want {
-			t.Errorf("note=%q => %v want %v", c.note, got, c.want)
-		}
-	}
-	// closed MR is filtered even with the exact command
-	closed := ParsedNote{MRIID: 7, MRState: "closed", NoteBody: "/revi"}
-	if closed.IsReviewCommand() {
-		t.Fatal("closed MR must filter /revi")
-	}
-	// non-MR note (no MR attached — commit/issue/snippet) is filtered
-	issue := ParsedNote{MRState: "opened", NoteBody: "/revi"}
-	if issue.IsReviewCommand() {
-		t.Fatal("non-MR note must filter")
+	if cmd, args := p.Command(); cmd != "revi" || args != "" {
+		t.Fatalf("bare /revi on an open MR should parse to the revi command with no args, got cmd=%q args=%q", cmd, args)
 	}
 }
 

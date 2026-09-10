@@ -22,10 +22,7 @@ func TestWatchCoordinator_FansStateChangeToSubscribedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatalf("runview.NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(rs))
 
 	ns, err := native.NewStore(t.TempDir())
 	if err != nil {
@@ -92,10 +89,7 @@ func TestWatchCoordinator_SkipsTerminalRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	svc, err := runview.NewService("", runview.WithStore(rs))
-	if err != nil {
-		t.Fatalf("runview.NewService: %v", err)
-	}
+	svc := newTestRunviewService(t, "", runview.WithStore(rs))
 	ns, err := native.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("native.NewStore: %v", err)

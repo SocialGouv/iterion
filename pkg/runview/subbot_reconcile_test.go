@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -60,7 +59,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	defer svc.Stop(context.Background())
+	defer stopService(t, svc)
 
 	// Project hot-swaps can briefly leave an older Service watching the same
 	// store. It has no Manager handle for svc's runs, so the persisted child
@@ -70,7 +69,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService(observer): %v", err)
 	}
-	defer observer.Stop(context.Background())
+	defer stopService(t, observer)
 
 	res, err := svc.Launch(context.Background(), LaunchSpec{FilePath: parentPath})
 	if err != nil {
@@ -84,62 +83,15 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	}
 	defer func() { _ = releaseChild() }()
 
-	var childID string
-	parentStatus := store.RunStatus("")
-	parentErr := ""
-	// This wait was intermittently unsatisfiable until the child's parent link
-	// became part of its FIRST write (engine_run.go). The row existed and was
-	// running, but with an empty ParentRunID, so the match below never fired —
-	// which is why widening the window never helped. The bound is generous
-	// enough for a real process start and short enough to fail with a
-	// diagnostic rather than hang.
-	deadline := time.Now().Add(120 * time.Second)
-	for childID == "" && time.Now().Before(deadline) {
-		runs, listErr := svc.ListRunRecordsCtx(context.Background(), ListFilter{})
-		if listErr != nil {
-			t.Fatalf("ListRunRecordsCtx: %v", listErr)
-		}
-		for _, run := range runs {
-			switch {
-			case run.ParentRunID == res.RunID:
-				childID = run.ID
-				if run.Status != store.RunStatusRunning {
-					t.Fatalf("child was reconciled during execution: status=%q error=%q", run.Status, run.Error)
-				}
-			case run.ID == res.RunID:
-				parentStatus, parentErr = run.Status, run.Error
-			}
-		}
-		// A parent that already left `running` will never spawn the child, so
-		// keep waiting only while it can still get there. Without this the
-		// timeout reports "never persisted" for every upstream launch failure
-		// alike, 30s after the cause is already on the parent record.
-		if childID == "" && parentStatus != "" && parentStatus != store.RunStatusRunning {
-			t.Fatalf(
-				"parent reached %q (error %q) without ever persisting its subbot child",
-				parentStatus,
-				parentErr,
-			)
-		}
-		if childID == "" {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	if childID == "" {
-		t.Fatalf(
-			"subbot child run was never persisted within 120s (parent status %q, error %q)",
-			parentStatus,
-			parentErr,
-		)
-	}
+	childID := waitForSubbotStatus(t, svc, res.RunID, store.RunStatusRunning)
 
 	// Drive repeated reconciliation passes explicitly while the gated child
 	// tool is live. The 10ms background tick still runs concurrently, but
 	// correctness coverage no longer depends on how many timer goroutines a
 	// loaded -race worker happens to schedule inside a fixed sleep.
 	for pass := 1; pass <= 10; pass++ {
-		svc.reconcileOrphans()
-		observer.reconcileOrphans()
+		svc.reconcileOrphans(context.Background())
+		observer.reconcileOrphans(context.Background())
 		child, loadErr := svc.store.LoadRun(context.Background(), childID)
 		if loadErr != nil {
 			t.Fatalf("LoadRun(child) after reconcile pass %d: %v", pass, loadErr)
@@ -157,11 +109,7 @@ func TestServicePeriodicReconcileDoesNotFailExecutingSubbot(t *testing.T) {
 	if err := releaseChild(); err != nil {
 		t.Fatalf("release child: %v", err)
 	}
-	select {
-	case <-res.Done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("parent did not finish")
-	}
+	awaitRunCompletion(t, res.Done, "parent did not finish after its child was released")
 	for _, id := range []string{res.RunID, childID} {
 		r, loadErr := svc.store.LoadRun(context.Background(), id)
 		if loadErr != nil {

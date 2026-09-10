@@ -135,9 +135,27 @@ explicit, auditable bump instead of a skill that changes under a running bot. A
 moving branch is allowed but warns, and `pinned_ref` is exposed on the API so
 the UI can flag it.
 
-Unlike an installed plugin (best-effort, skipped on error), a source the
-operator **enabled** that fails to fetch **fails the launch** — a run missing
-its platform skill would otherwise succeed while doing the wrong thing.
+**Registration verifies the source.** `POST`/`PATCH` clone the repository,
+parse the manifest and read every contribution — exactly what a launch will do
+— and refuse a source that cannot be materialised with `422` and the underlying
+error verbatim (the YAML parser's line, git's refusal). The operator is right
+there to fix it; a launch is where this used to surface, one delivery at a
+time. A PATCH that changes `git_url`/`ref`/`secret_id`, that enables the
+source, or that touches a source currently flagged degraded, re-verifies it.
+
+**A source that breaks later is quarantined, not launch-fatal.** If a launch
+cannot materialise an enabled source (the remote refuses the fetch, the
+manifest stopped parsing on a moving ref, a contribution file cannot be read),
+the launch **proceeds without that source** and the failure is recorded on the
+record: `degraded: true` with `degraded_reason` / `degraded_at` on the API
+(`GET /api/teams/{id}/plugin-sources`, `iterion remote api`), plus a `WARN`
+naming the run and the source in the server log. One team's broken
+`plugin.yaml` once failed every launch of the team for 2h22 (2026-08-26) —
+a launch path down for everyone hides more than one run missing one skill.
+The flag clears on the next launch that resolves the source, or on a PATCH
+that re-verifies it. Only a **listing** failure (the store itself unreadable)
+still fails the launch: nothing can then tell a healthy team from one whose
+sources are all lost.
 
 ## Manifest reference (`plugin.yaml`)
 

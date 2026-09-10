@@ -10,50 +10,55 @@ import (
 // parseSDKOutput converts SDK result fields into a delegate Result.Output map.
 // It prioritizes structuredOutput over resultText, falling back to JSON extraction
 // from markdown and finally plain text wrapping.
-func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]any, rawLen int, fallback bool) {
-	// Priority 1: structured output from SDK — only when non-empty.
-	// claude-code's stream-json emits `structured_output: {}` for
-	// tool-using sessions where no second-pass formatter ran (i.e.
-	// the sandboxed two-pass case where formatOutput can't resume the
-	// in-container session). Treating an empty map as a valid result
-	// wedged the runtime into "raw_output_len=0, parse_fallback=false"
-	// with all required fields missing — fall through to the
-	// resultText path so the assistant's final markdown JSON block
-	// can be extracted instead.
+// structuredObject is THE definition of a structured answer, shared by
+// parseSDKOutput (which ships it) and the render guards (which exempt it):
+// the SDK's structured object when non-empty — claude-code's stream-json
+// emits `structured_output: {}` for tool-using sessions where no second-pass
+// formatter ran, and treating that as a result once wedged the runtime into
+// "raw_output_len=0, parse_fallback=false" with every required field
+// missing — a non-map structured value that round-trips to a non-empty
+// object, or a JSON object in the result text, direct or in a fenced block.
+// found is false when there is none; rawLen is the text's length when the
+// object came from the text, and fromText says so — the render guards trust
+// an object the text itself is more than one the SDK carried beside a text.
+func structuredObject(resultText *string, structuredOutput any) (obj map[string]any, rawLen int, found, fromText bool) {
 	if structuredOutput != nil {
-		if obj, ok := structuredOutput.(map[string]any); ok {
-			if len(obj) > 0 {
-				return obj, 0, false
+		if m, ok := structuredOutput.(map[string]any); ok {
+			if len(m) > 0 {
+				return m, 0, true, false
 			}
-		} else {
-			// Non-map types: round-trip via JSON.
-			b, err := json.Marshal(structuredOutput)
-			if err == nil {
-				var obj map[string]any
-				if json.Unmarshal(b, &obj) == nil && len(obj) > 0 {
-					return obj, len(b), false
-				}
+		} else if b, err := json.Marshal(structuredOutput); err == nil {
+			var m map[string]any
+			if json.Unmarshal(b, &m) == nil && len(m) > 0 {
+				return m, len(b), true, false
 			}
 		}
 	}
+	if resultText != nil && *resultText != "" {
+		text := *resultText
+		var m map[string]any
+		if json.Unmarshal([]byte(text), &m) == nil {
+			return m, len(text), true, true
+		}
+		if extracted := extractJSONFromMarkdown(text); extracted != "" {
+			if json.Unmarshal([]byte(extracted), &m) == nil {
+				return m, len(text), true, true
+			}
+		}
+	}
+	return nil, 0, false, false
+}
 
-	// Priority 2: parse result text.
+func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]any, rawLen int, fallback bool) {
+	// Priority 1 and 2: a structured answer, from the SDK object or the text.
+	if obj, n, found, _ := structuredObject(resultText, structuredOutput); found {
+		return obj, n, false
+	}
+
+	// Priority 3: the result text as text.
 	if resultText != nil && *resultText != "" {
 		text := *resultText
 		rawLen = len(text)
-
-		// Try direct JSON object parse.
-		var obj map[string]any
-		if json.Unmarshal([]byte(text), &obj) == nil {
-			return obj, rawLen, false
-		}
-
-		// Try extracting JSON from markdown code blocks.
-		if extracted := extractJSONFromMarkdown(text); extracted != "" {
-			if json.Unmarshal([]byte(extracted), &obj) == nil {
-				return obj, rawLen, false
-			}
-		}
 
 		// Fallback: wrap raw text. If the output schema expects exactly one
 		// required field of type "string" (e.g. shell_result {result}), a

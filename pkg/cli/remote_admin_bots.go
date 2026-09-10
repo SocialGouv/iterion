@@ -27,7 +27,14 @@ import (
 // binary file cannot ride it — the bundle keeps its baked form instead of
 // being silently corrupted. Server-side compile errors and push warnings
 // surface verbatim.
-func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, slug string) error {
+//
+// force overrides the engine-requirement guard: the server refuses a bundle
+// whose manifest declares a `requires.iterion` above the deployment's own
+// build, because the launch would compile and then die on the pod. Forcing is
+// legitimate (pushing ahead of a rollout, a fork whose version does not
+// order) and is never silent — the response carries the overridden
+// requirement as a warning.
+func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, slug string, force bool) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("bundle dir: %w", err)
@@ -57,7 +64,11 @@ func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, 
 	if err != nil {
 		return err
 	}
-	raw, err := c.Call(ctx, "PUT", "/api/admin/bots/"+slug, json.RawMessage(body), nil)
+	path := "/api/admin/bots/" + slug
+	if force {
+		path += "?force=1"
+	}
+	raw, err := c.Call(ctx, "PUT", path, json.RawMessage(body), nil)
 	if err != nil {
 		return err
 	}

@@ -313,12 +313,39 @@ means "wake no later than 36 hours from now and check again";
 
 **What you see.** The run stays `failed_resumable` while it waits, with a
 `run_retry_scheduled` event naming the instant, the attempt number and how
-the instant was derived. When the window reopens the run emits
-`run_auto_resumed` and continues from its checkpoint — the same pair the
-CLI's in-process `--auto-resume` loop writes, so the timeline reads
+the instant was derived (`reset_source`). When the window reopens the run
+emits `run_auto_resumed` and continues from its checkpoint — the same pair
+the CLI's in-process `--auto-resume` loop writes, so the timeline reads
 identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
+
+**Which reset the wait is armed on (cloud).** The credential a run fails on
+is the one the launch's credential walk fell *through* to — and the one it
+passed over often reopens first: a team key refused on its five-hour window
+reopens the same afternoon, while the platform forfait the run landed on is
+walled until Monday. The publisher therefore stamps the run with the
+earliest reopening among the credentials it skipped
+(`skipped_cred_reopens_at`, re-stamped on every resume), and the retry arms
+on the **earlier** of that and the failed credential's own reset — the
+event then reads `reset_source: skipped_credential` and carries
+`skipped_cred_reopens_at`. The resume re-resolves the whole chain, so coming
+back at that instant lands on the reopened key. A skipped credential that
+has already reopened by the time the run parks means "re-resolve now": the
+retry lands at the five-minute floor.
+
+That earlier wake is a **guess** — the skipped credential may be refused
+too — and it spends an attempt of the same `max_attempts` budget as a wake
+on the real reset. So the **last** attempt the budget allows is reserved
+for the failed credential's own reset whenever that reset is still ahead
+and inside `max_wait`: the event then reads `reset_source:
+typed_error+last_attempt_pinned` (or `runtime_code+…`, whichever evidence
+named the instant). Without it, five wakes on a five-hour cycle cover 25
+hours of a seven-day window and the run is abandoned days before the wall
+it waits on falls. Earlier attempts still take the early wake, so the
+recovery above is unchanged; and when the reset lies past `max_wait`, or
+the provider named no instant at all, nothing is reserved — there is no
+reachable wall to reserve for.
 
 Not covered by this: a budget cap (`max_cost_usd` and friends) still needs
 a human to raise the cap and resume — retrying the same cap would re-fail
@@ -365,17 +392,29 @@ you have accepted their loss.
   that pauses for human input will pause and persist a resumable
   checkpoint (resume it later with [`iterion resume`](resume.md)),
   not block the cron job.
-- **A cloud repo-bound schedule resolves NO forge connection.** A
-  studio/API launch pins a `connection_id` and mints a fresh managed
-  token for the clone; a `cloudsched` tick carries only `repo_url`, so
-  the runner's clone token comes from the bot's `forge_token` secret
-  resolution — per-bot binding first
+- **A repo-bound schedule mints its clone token at the tick.** A schedule
+  whose `repo_url` matched a team repo integration at creation carries
+  `repo_integration_id`; each tick resolves that integration's connection
+  and mints/refreshes the MANAGED secret (`EnsureManagedSecret` — the
+  same path a studio/API launch uses), pinning it as the run's
+  `forge_token`. A pinned integration that cannot resolve **fails the
+  tick loudly** rather than limping to a doomed clone. Only a schedule
+  with NO pinned integration falls back to the bot's `forge_token`
+  secret resolution — per-bot binding first
   (`POST /api/teams/{id}/bots/{bot}/bindings`), else any team secret
-  *named* `forge_token`. Bind the bot to the connection's MANAGED
-  secret (`forge_github_<conn>`, auto-refreshed): a hand-set
-  `forge_token` team secret expires eventually and every tick then dies
-  on `Invalid username or token` at clone — while manual launches keep
-  working, which masks the gap.
+  *named* `forge_token` — where a hand-set token that expires kills every
+  tick at clone (`Invalid username or token`) while manual launches keep
+  working. If a schedule is stuck in that state, recreate it with the
+  repo attached (or bind the bot to the connection's managed secret).
+- **A repo-bound schedule survives a re-provision.** Re-provisioning the
+  repo integration (enabling another bot, `POST …/forge/repo-bots`)
+  rebuilds its schedule rows from the manifests, but each surviving bot's
+  row keeps its id (runs and audit entries point at it), the vars the
+  operator set — merged over the manifest's `schedule.default_vars`,
+  operator keys winning — its last fire, pause state, overlap/guard policy
+  and customised cron. A bot whose scheduled behaviour hinges on a var
+  should still declare it in `default_vars`, so a row created from scratch
+  delivers too.
 
 ## Implementation
 

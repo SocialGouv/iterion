@@ -71,6 +71,24 @@ type RunBundle struct {
 	// the shared platform key, not fragmented per tenant as if the tenant
 	// had brought its own.
 	PlatformSourced map[string]bool `json:"platform_sourced,omitempty"`
+	// PoolSourced marks the credential slots the mutualised credential POOL
+	// filled with a contributor's lent credential (same slot namespaces as
+	// PlatformSourced). The runner's metering bump needs it: a lent key's
+	// row lives in the donor's tenant, so its last_used_at must be bumped
+	// without the run's tenant filter — while a tenant's own key is bumped
+	// only under its tenant, so another tenant holding the byte-identical
+	// secret never sees its own key read as "in use".
+	PoolSourced map[string]bool `json:"pool_sourced,omitempty"`
+	// OrgSourced marks the credential slots the ORG tier filled — the
+	// org's own shared key, lent to the teams its CredentialAudience
+	// admits (same slot namespaces as PlatformSourced). Like the two
+	// above it rides the bundle as an ordinary credential and is not the
+	// team's: one subscription serves several teams, so metering it per
+	// team would open one ledger per team of the SAME account and no
+	// reading would ever accumulate. Its row also lives under a reserved
+	// scope, not the run's tenant, so a last_used_at bump must escape the
+	// run's tenant filter exactly as a lent key's does.
+	OrgSourced map[string]bool `json:"org_sourced,omitempty"`
 }
 
 // RunSecretsRecord is the persisted form of a sealed bundle. _id is

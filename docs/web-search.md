@@ -85,9 +85,9 @@ iterion plugin config firecrawl api_url=http://localhost:3002
 The plugin contributes an `mcp.firecrawl.*` server to the workflow MCP
 catalog. A claw node uses it like any MCP tool:
 
-```iter
+```iter fragment
 agent researcher:
-  backend: claw
+  backend: "claw"
   tools: [mcp.firecrawl.search, mcp.firecrawl.scrape, web_fetch]
   mcp:
     servers: [firecrawl]

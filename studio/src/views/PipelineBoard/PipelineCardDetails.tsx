@@ -387,13 +387,18 @@ function SpawnTreeSection({ card }: { card: PipelineBoardCard }) {
 function giveUpSentence(
   giveUp: NonNullable<PipelineBoardCard["gave_up"]>,
 ): string {
+  const filed = giveUp.state
+    ? ` and filed this ticket as "${giveUp.state}"`
+    : "";
+  // A reasoned give-up is the watchdog's own verdict (a recorded run that
+  // is gone), not a retry budget: the reason replaces the attempt count.
+  if (giveUp.reason) {
+    return `The dispatcher gave up${filed}: ${giveUp.reason}`;
+  }
   const attempts =
     giveUp.attempts && giveUp.attempts > 0
       ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
       : "after exhausting its attempts";
-  const filed = giveUp.state
-    ? ` and filed this ticket as "${giveUp.state}"`
-    : "";
   return `The dispatcher gave up ${attempts}${filed}.`;
 }
 
@@ -576,9 +581,9 @@ export function PipelineCardDetailsBody({
             // does not read a terminal ticket as somebody's decision.
             <InlineBanner tone="warning" layout="inline">
               {giveUpSentence(card.gave_up)} Retry restages the ticket — a
-              running dispatcher resumes this run from its checkpoint, so use{" "}
-              <code>iterion issue update {card.issue_id} --clear-last-run</code>{" "}
-              first to force a fresh one. Close acknowledges the give-up.
+              running dispatcher resumes this run from its checkpoint, so pick{" "}
+              <strong>Retry from zero</strong> in the card menu to discard it
+              and start over instead. Close acknowledges the give-up.
             </InlineBanner>
           )}
           {card.error && (

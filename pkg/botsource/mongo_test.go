@@ -1,17 +1,16 @@
 package botsource
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"os"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,7 +23,7 @@ func TestMongoStore(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo botsource suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -34,7 +33,7 @@ func TestMongoStore(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_botsource_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dropCancel := mongotest.TeardownCtx()
 		defer dropCancel()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)

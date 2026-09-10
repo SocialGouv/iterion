@@ -75,23 +75,6 @@ func iterionBinary(t *testing.T) string {
 	return iterionBinaryPath
 }
 
-// freeLoopbackPort reserves and immediately releases a loopback port so the
-// subprocess can bind it. Between release and re-bind is a TOCTOU race in
-// principle; on loopback with no other binder it is deterministic in
-// practice.
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-	return port
-}
-
 // cleanEnvForSubprocess strips ITERION_* and HOME from the host environment
 // so operator settings (an ITERION_MODE=cloud in the operator's shell, a
 // stray ~/.iterion) never leak into the subprocess. Callers append their
@@ -227,6 +210,7 @@ func assertLameDuck(t *testing.T, base string, exitCh <-chan error, stderr *byte
 //     pkg/server/server_routes.go → the /healthz poll returns 404 and
 //     times out.
 func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -239,7 +223,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	iterionHome := t.TempDir()
 	workDir := t.TempDir()
 	storeDir := filepath.Join(workDir, ".iterion")
-	port := freeLoopbackPort(t)
+	port := reserveLoopbackPort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -254,6 +238,33 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	// Detach into its own process group so a SIGINT to the parent test
 	// process (Ctrl-C) doesn't cascade and eat our own SIGTERM assertion.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Cancellation kills the whole GROUP, mirroring proc.TerminateGroupOnCancel
+	// (which e2e, outside pkg/, cannot import). cmd.Stdout/cmd.Stderr are not
+	// *os.File, so os/exec wires pipes plus copy goroutines that cmd.Wait
+	// joins: a descendant of the server holding an inherited write end would
+	// block Wait — and therefore the cleanup's join below — forever, hanging
+	// the whole e2e binary until the go-test timeout. Setpgid with no Pgid
+	// makes the child its own group leader; cancellation uses that group ID,
+	// matching the shared process primitive. It is not a pidfd-backed group
+	// signal, and WaitDelay below covers descendants that leave the group.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone // already gone: nothing to interrupt
+			}
+			return err
+		}
+		return nil
+	}
+	// Residual bound for a descendant that escapes the group with its own
+	// setsid, where no signal can reach it: the join then fails loudly with
+	// exec.ErrWaitDelay instead of hanging. The clock starts at process exit
+	// or cancel, so the lame-duck and 75s SIGTERM assertions are untouched,
+	// and the clean path still returns nil (its pipes close at once).
+	cmd.WaitDelay = 10 * time.Second
 	cmd.Dir = workDir // avoid the repo-root .env walk-up
 	cmd.Env = append(cleanEnvForSubprocess(),
 		"HOME="+homeDir,
@@ -272,14 +283,18 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 		t.Fatalf("start iterion server: %v", err)
 	}
 	exitCh := make(chan error, 1)
-	go func() { exitCh <- cmd.Wait() }()
+	waitDone := make(chan struct{})
+	go func() {
+		exitCh <- cmd.Wait()
+		close(waitDone)
+	}()
 	// Failsafe: if the test panics or times out mid-way, kill the
 	// subprocess so it doesn't leak an open port and a running server.
+	// cancel() runs the group kill wired above; joining Wait afterwards is
+	// what makes the process actually reaped before the suite guard looks.
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGKILL)
-		}
 		cancel()
+		<-waitDone
 	})
 
 	waitServerHealthy(t, base, exitCh, &stderr)
@@ -377,6 +392,7 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 // Mutation coverage: swallow ListenAndServe's error in RunStudio (or in
 // runServer) so the process exits 0 → this assertion fires.
 func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -440,6 +456,7 @@ func TestServerCommandFailsLoudlyOnBusyPort(t *testing.T) {
 // error is refactored, this test flags that the operator-facing message
 // changed.
 func TestRunnerCommandRefusesLocalMode(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}
@@ -491,6 +508,7 @@ func TestRunnerCommandRefusesLocalMode(t *testing.T) {
 // `ITERION_MODE "" invalid` OR the runner charges into NATS. Either
 // downstream error lacks the "load config" substring below.
 func TestRunnerCommandRefusesBrokenConfig(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping binary-spawning e2e in short mode")
 	}

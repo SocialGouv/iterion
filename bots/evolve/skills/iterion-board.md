@@ -2,7 +2,7 @@
 name: iterion-board
 description: |
   How to write to the iterion native kanban board from inside a `.bot`
-  workflow. Covers the seven board capabilities and ten MCP tools, the kanban
+  workflow. Covers the seven board capabilities and twelve MCP tools, the kanban
   state machine, the "move to eligible → dispatcher dispatch" pattern,
   and common error cases. Load this skill whenever a node has any
   `board.*` capability granted in the DSL.
@@ -26,6 +26,8 @@ The server exposes these tools, each gated by a single capability:
 | `mcp__iterion_board__set_bot` | `board.assign` | Choose which bot runs the issue — the canonical dispatcher selector. |
 | `mcp__iterion_board__assign_issue` | `board.assign` | Set the human/team owner. NOT for bot selection (use set_bot). |
 | `mcp__iterion_board__set_labels` | `board.label` | Replace the issue's label list. |
+| `mcp__iterion_board__add_labels` | `board.label` | Add labels, keeping the ones already on the issue (relative, atomic). |
+| `mcp__iterion_board__remove_labels` | `board.label` | Remove labels, keeping the others (relative, atomic). |
 | `mcp__iterion_board__close_issue` | `board.close` | Move the issue to a terminal state. |
 | `mcp__iterion_board__comment_issue` | `board.comment` | Append a markdown comment. |
 | `mcp__iterion_board__list_issues` | `board.read` | List issues (optionally filtered). |
@@ -98,7 +100,33 @@ typo'd bot fails loudly. Names are matched tolerantly (`feature_dev` ≡
 {"id": "native:abcd...", "labels": ["source:evolve", "kind:evolution", "horizon:next"]}
 ```
 
-Replaces — does not merge. Pass an empty array to clear.
+Replaces — does not merge. Pass an empty array to clear. **Absolute by
+design**: the list you pass is written as-is, so a list you composed from
+an earlier `get_issue` re-adds any label removed in between — including a
+one-shot trigger label (`triage:auto`) the trigger spine consumed to
+launch you, which re-launches the bot. Use it only for a deliberate full
+rewrite from a fresh read; for anything incremental use the two relative
+operations below.
+
+### `add_labels` (board.label)
+
+```json
+{"id": "native:abcd...", "labels": ["source:issue-triage", "axis:api"]}
+```
+
+Adds the given labels and keeps every label already on the issue.
+Idempotent (a label already present is left alone), applied atomically
+to the card as it is on both board backends — never to the snapshot you
+read. This is the call for stamping your own labels on a card.
+
+### `remove_labels` (board.label)
+
+```json
+{"id": "native:abcd...", "labels": ["needs:approval"]}
+```
+
+Removes the given labels and keeps the others; a label not present is
+ignored. Same atomic, relative semantics as `add_labels`.
 
 ### `list_issues` / `get_issue` / `list_labels` (board.read)
 

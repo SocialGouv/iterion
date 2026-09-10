@@ -57,6 +57,14 @@ usernotify.Sink — the channel abstraction:
   • email (pkg/mail)                        — future sink
 ```
 
+A sibling consumer rides the same spine for the OPERATOR (deployment-wide,
+not per-user): `alert.OpsDispatcher` (queue group `operator-alerts`) turns
+run.failed outcomes into parked/failed alerts on the deployment webhook
+(`ITERION_ALERTS_WEBHOOK_URL`), with the same episode-claim dedup (shared
+`sent_notifications` collection, `ops|`-prefixed keys) and its own 2-minute
+sweep. See the operator-webhook note in
+[docs/usage-caps.md](usage-caps.md).
+
 **Reliability.** The bus is deliberately lossy (at-most-once): if no
 server replica is subscribed at publish time, the event is gone. The
 **reconciliation sweep** (`usernotify.Sweeper`, every 2 min on each

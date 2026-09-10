@@ -57,11 +57,45 @@ var gateReasonWrappers = []*regexp.Regexp{
 	regexp.MustCompile(`^git: `),
 }
 
+// gateDLQDescription is what a run parked on the dead-letter queue leaves on
+// the head. The generic trailer below would be false advice here: a push, or
+// the bot's command, launches a FRESH run and leaves the parked message
+// parked, so the check would contradict the DLQ comment on the same pull
+// request and hide the one remedy that reaches the message. Reason-free on
+// purpose — the DLQ comment carries the cause and the status links to the run,
+// so the 140 characters a forge allows go to the remedy.
+const gateDLQDescription = "review parked on the DLQ — operator replay needed (iterion remote admin dlq)"
+
+// gateDeclineDescription is what a run that DECLINED its task leaves on the
+// head when nothing else answered the check. The generic trailer would be
+// false twice over here: the review did not die, and a push does not change
+// the refusal — the next dispatch reads the same premise and refuses again.
+// It is a `failure` like every other synthetic status, because a bot that
+// deliberately changed nothing has approved nothing either.
+const gateDeclineDescription = "a bot was dispatched here and declined the task — nothing was pushed, a human decides from here"
+
+// gateBudgetRemedy replaces the generic remedy when the run died on its own
+// budget. "Push again or comment the bot's command" is the one instruction
+// that cannot work: the next run reviews the same diff against the same cap
+// and dies at the same place. Measured on iterion#780 (#788) — three deaths
+// at 30–36 $ against a 12 $ cap, the lane's recovery exhausted, and a
+// developer told each time to reproduce it.
+const gateBudgetRemedy = ") — needs a human reviewer, or a higher budget"
+
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
 // commit-status descriptions at 140 characters, so the reason is bounded and
 // the remedy — the part the operator cannot reconstruct — keeps priority.
+//
+// The remedy is selected by the persisted FailureCode, the same typed WHY the
+// DLQ notice keys on, never by parsing run.Error.
 func gateInterruptedDescriptionFor(run *store.Run) string {
+	if run != nil && run.FailureCode == store.FailureDLQParked {
+		return gateDLQDescription
+	}
+	if run != nil && run.FailureCode == declinedFailureCode {
+		return gateDeclineDescription
+	}
 	reason := ""
 	if run != nil {
 		reason = strings.TrimSpace(run.Error)
@@ -92,6 +126,9 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 		}
 		reason = reason[:cut] + "…"
 	}
+	if run != nil && run.FailureCode == store.FailureBudgetExceeded {
+		return gateDiedDescriptionPrefix + reason + gateBudgetRemedy
+	}
 	return gateDiedDescriptionPrefix + reason + ") — push again or comment the bot's command to re-run"
 }
 
@@ -104,7 +141,9 @@ const gateDiedDescriptionPrefix = "review died ("
 // there are no findings behind a synthetic failure for a fixer to address.
 func isSyntheticGateInterruption(description string) bool {
 	d := strings.TrimSpace(description)
-	return d == gateInterruptedDescription || strings.HasPrefix(d, gateDiedDescriptionPrefix)
+	return d == gateInterruptedDescription || d == gateDLQDescription ||
+		d == gateDeclineDescription ||
+		strings.HasPrefix(d, gateDiedDescriptionPrefix)
 }
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the
@@ -177,17 +216,39 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
 		return nil
 	}
-	// A resumable failure is only "not dead" when something will actually
-	// resume it. The runner arms a durable retry for usage-window failures
-	// (persisted BEFORE the outcome event fires — pkg/runner/loop.go parks
-	// first, then fires), and that armed retry is the whole promise. Every
-	// other failed_resumable — budget exceeded, retries exhausted, a plain
-	// execution failure — sits until a human notices, which with an absent
-	// required check is never. Observed in production 2026-08-03: a Vetty run
-	// died on its own duration budget mid-audit and the PR it gated stayed
-	// silently unmergeable. Those runs ARE dead; reconcile them.
-	if run.Status == store.RunStatusFailedResumable &&
+	// A DLQ park is FINAL for automation whatever RetryState still says:
+	// the queue exhausted its deliveries and only an operator's replay
+	// puts the message back. A retry_after can survive on such a doc (the
+	// usage-window park that preceded an operator resume, when the clear
+	// on resume did not land), and standing down on it would leave the
+	// required check on its in-flight claim for a run nothing will wake.
+	// So: say so on the PR once (the event path — the sweep re-offers the
+	// same run every minute for an hour), then fall through to the
+	// dead-review repair below, which is what actually happens next — the
+	// synthetic failure on the head and one relaunch per head.
+	if run.Status == store.RunStatusFailedResumable && run.FailureCode == store.FailureDLQParked {
+		if via == gateTriggerEvent {
+			s.noticeGateDLQParked(ctx, run)
+		}
+	} else if run.Status == store.RunStatusFailedResumable &&
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		// A resumable failure is only "not dead" when something will
+		// actually resume it. The runner arms a durable retry for
+		// usage-window failures (persisted BEFORE the outcome event fires
+		// — pkg/runner/loop.go parks first, then fires), and that armed
+		// retry is the whole promise. Every other failed_resumable —
+		// budget exceeded, retries exhausted, a plain execution failure —
+		// sits until a human notices, which with an absent required check
+		// is never. Observed in production 2026-08-03: a Vetty run died on
+		// its own duration budget mid-audit and the PR it gated stayed
+		// silently unmergeable. Those runs ARE dead; reconcile them.
+		// Not dead, but not silent either: the check stays on its in-flight
+		// claim, which reads identically to a review that died. Say on the
+		// PR that it parked and when it resumes — on the EVENT only, since
+		// the sweep re-offers this same run every minute for an hour.
+		if via == gateTriggerEvent {
+			s.noticeGatePausedForRetry(ctx, run)
+		}
 		return nil
 	}
 
@@ -206,21 +267,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// that never gated anything. Naming the reason is what makes the next
 	// occurrence a grep instead of an investigation.
 	//
-	// Warn on the EVENT path only. The sweep re-offers the same run every
-	// minute for the whole lookback, so a run sitting in a permanent abstain
-	// branch — a lost grant, an unreachable forge — would log the identical
-	// line ~60 times an hour per replica and bury the branches that carry new
-	// information, defeating the point of naming the reason at all. The event
-	// fires once per run, which is exactly one line per occurrence.
+	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
+	// The sweep re-offers the same run every minute for the whole lookback, so
+	// a run sitting in a permanent abstain branch — a lost grant, an
+	// unreachable forge — would log the identical line ~60 times an hour per
+	// replica and bury the branches that carry new information. But Debug is
+	// suppressed at the info level deployments run at, so those passes said
+	// NOTHING at all: the one Warn the event path emits dies with the pod, and
+	// a check stuck for a day leaves nothing to diagnose it with. The last
+	// pass is the one that matters anyway — past the lookback nothing revisits
+	// the run and the miss becomes permanent — so it speaks, once.
 	abstain := func(format string, args ...any) error {
-		if s.logger != nil {
-			msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
-			args = append([]any{runID, via, prURL}, args...)
-			if via == gateTriggerSweep {
-				s.logger.Debug(msg, args...)
-			} else {
-				s.logger.Warn(msg, args...)
-			}
+		if s.logger == nil {
+			return nil
+		}
+		msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
+		args = append([]any{runID, via, prURL}, args...)
+		switch {
+		case via != gateTriggerSweep:
+			s.logger.Warn(msg, args...)
+		case s.gateSweepIsLastPass(run):
+			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
+				gateSweepLookback.String()+" window: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
+		default:
+			s.logger.Debug(msg, args...)
 		}
 		return nil
 	}
@@ -231,6 +301,15 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// (forgePublishDefaultTTL), so reaching here means the run sat dead
 		// longer than that, or the token store lost it.
 		return abstain("its publish grant is expired or revoked")
+	}
+	// The grant must be the RUN's own before any of its scope is trusted: the
+	// checks below prove it self-consistent, and one minted for another tenant
+	// passes every one of them while aiming this repair — a REQUIRED commit
+	// status — at that tenant's pull request under that tenant's identity.
+	// Not routed through abstain(): a tenant crossing is a security refusal,
+	// always loud, never quieted to Debug on a sweep pass.
+	if !s.runOwnsGrant(run, grant, "gate reconcile") {
+		return nil
 	}
 
 	// Holding a grant is NOT owing a verdict. The server mints one for any bot
@@ -248,6 +327,12 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// succeeds, and a rollout that restarts every replica.
 	gateCtx := runInputString(run, "gate_context")
 	if gateCtx == "" {
+		return nil
+	}
+	// A run whose launch pinned the gate off owes no verdict — painting a
+	// synthetic failure over its silence would manufacture the very deadlock
+	// the pin exists to avoid (see runGateDisabled).
+	if runGateDisabled(run) {
 		return nil
 	}
 
@@ -289,6 +374,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	}
 	if strings.TrimSpace(pr.HeadSHA) == "" {
 		return abstain("the forge returned no head sha")
+	}
+	// A pull request that is closed or merged owes nobody a verdict: painting
+	// "review died — push again" there tells a developer to re-run a review of
+	// work that already shipped, and the relaunch below stands down on the
+	// same state anyway. Reachable from every terminal outcome such a run can
+	// have — the retry sweeper's abandon republishes one deliberately, the
+	// stop-on-close cancel IS one, and the sweep re-offers the run for its
+	// whole lookback.
+	//
+	// Same predicate the relaunch and auto-fix lanes use: an EMPTY state is a
+	// provider that does not report one, not a closure, so a verdict is never
+	// suppressed on a guess. Debug rather than abstain(): a pull request
+	// closed while its review ran is ordinary, not an anomaly.
+	//
+	// What this leaves behind is an in-flight claim nothing repairs. It blocks
+	// nothing — the pull request is already merged or closed — and a reopen
+	// heals it, because the fresh review's own claim may overwrite an
+	// in-flight marker (markGateInFlight).
+	if pr.State != "" && pr.State != "open" {
+		if s.logger != nil {
+			s.logger.Debug("forge gate: run %s owed %s on %s, but the pull request is %s — a closed pull request needs no verdict",
+				runID, gateCtx, prURL, pr.State)
+		}
+		return nil
 	}
 	// Only the revision this run was reviewing. Between its start and its
 	// death the head routinely moves — the author pushes a fix, a brancher
@@ -362,8 +471,21 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	default: // a synthetic interruption
 		// The same run offered twice — the event and the sweep racing, or the
 		// sweep re-reading its window every minute for an hour — is already
-		// answered.
+		// answered as a STATUS. The recovery its first offer started may
+		// still owe a retry, though: a relaunch that failed to START is
+		// retried on a backoff under the head's claim key and escalated once
+		// its budget is spent (relaunchDeadGateRun). One store read decides,
+		// and only a launch_error row re-enters the tail, so a settled claim
+		// or a relaunch that was refused keeps this the cheap exit it has to
+		// be at one offer per minute per dead run.
 		if gateStatusSpeaksFor(gate, runURL) {
+			d := deadGateRun{
+				run: run, grant: grant, conn: conn, gc: gc,
+				repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
+			}
+			if s.gateRelaunchRetryPending(ctx, d) {
+				s.relaunchDeadGateRun(ctx, d)
+			}
 			return nil
 		}
 		// Unattributable: with no PublicURL configured every status is written
@@ -448,6 +570,33 @@ func gateRunURL(base, runID string) string {
 }
 
 // runInputString reads one launch input as a trimmed string.
+// runGateDisabled reports whether the run was launched with an EXPLICIT
+// gate_enabled pin that leaves the gating bot advisory-only (the value
+// classification is forge.GateValueDisables — one table shared with the
+// provisioning derivation). Every gate arm (the launch claim, this
+// reconciler, the auto-fix lane) must consult it: a repo that pinned the
+// gate off while still carrying a gate_context would otherwise get a
+// pending claim nothing ever resolves, then a synthetic "review died"
+// failure and a relaunch — a misconfiguration turned into a deadlock.
+// Absent key, or a non-string non-bool input shape → the gate stays armed
+// (the pre-pin behavior).
+func runGateDisabled(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	v, ok := run.Inputs["gate_enabled"]
+	if !ok {
+		return false
+	}
+	switch t := v.(type) {
+	case string:
+		return forge.GateValueDisables(t)
+	case bool:
+		return !t
+	}
+	return false
+}
+
 func runInputString(run *store.Run, key string) string {
 	if run == nil || run.Inputs == nil {
 		return ""

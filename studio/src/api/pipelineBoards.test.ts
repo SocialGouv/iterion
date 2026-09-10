@@ -5,6 +5,7 @@ import {
   getPipelineBoard,
   markPipelineTaskReady,
   normalizePipelineBoard,
+  resetPipelineTask,
   updatePipelineTask,
 } from "./pipelineBoards";
 
@@ -246,6 +247,19 @@ describe("normalizePipelineBoard", () => {
           title: "Unattributable",
           gave_up: { state: "blocked", attempts: 2 },
         },
+        {
+          // The watchdog's own verdict carries a reason instead of an
+          // attempt count — it must survive normalisation, it is what the
+          // operator reads.
+          id: "run:c",
+          column_id: "needs_attention",
+          title: "Pruned pointer",
+          gave_up: {
+            run_id: "run-pruned",
+            state: "blocked",
+            reason: "recorded run run-pruned is gone (pruned or deleted)",
+          },
+        },
       ],
     });
     expect(board.cards[0]?.gave_up).toEqual({
@@ -255,6 +269,11 @@ describe("normalizePipelineBoard", () => {
       at: "2026-08-23T09:00:00Z",
     });
     expect(board.cards[1]?.gave_up).toBeUndefined();
+    expect(board.cards[2]?.gave_up).toEqual({
+      run_id: "run-pruned",
+      state: "blocked",
+      reason: "recorded run run-pruned is gone (pruned or deleted)",
+    });
   });
 
   it("omits planner provenance when the server sends none", () => {
@@ -356,6 +375,36 @@ describe("markPipelineTaskReady", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ ready: false });
+  });
+});
+
+describe("resetPipelineTask", () => {
+  it("sends fresh:false by default — a plain reset keeps the last-run pointer", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resetPipelineTask("iss 1/a");
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/pipeline-board/tasks/iss%201%2Fa/reset");
+    expect(init.method).toBe("POST");
+    // Explicit false, never an omitted key: the server reads a missing body
+    // as a plain reset, and being explicit keeps the wire self-describing.
+    expect(JSON.parse(String(init.body))).toEqual({ fresh: false });
+  });
+
+  it("sends fresh:true when the caller asks for a from-zero retry", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await resetPipelineTask("iss-9", { fresh: true });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ fresh: true });
   });
 });
 

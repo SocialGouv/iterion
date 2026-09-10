@@ -140,6 +140,19 @@ Pinned semantics:
   ([pkg/runner/loop.go](../pkg/runner/loop.go), look for "parking on
   DLQ"). The original NATS message is Term'd; the DLQ copy is the
   recoverable artifact.
+- **Delayed re-offers.** Two outcomes hand the message back with a
+  delay instead of at once, so the redelivery budget is not burnt inside
+  a condition that needs wall-clock time to clear: a run whose sandbox
+  setup phase timed out (`SANDBOX_SETUP_TIMEOUT`, a stuck workspace copy)
+  is re-offered to a fresh pod after 2 minutes, and the run's timeline
+  carries a `run_redelivery_deferred` event naming the reason, the delay
+  and the attempt's rank — the DLQ park still applies on the last
+  delivery; a `running` doc written more recently than the runner's
+  adoption floor (a lapsed-but-alive pod may still be unwinding) is
+  re-offered after the floor's remainder. On the LAST permitted delivery
+  that young doc is Term'd instead and the log says so — JetStream would
+  not re-offer it anyway — and the orphan sweeper below owns it from
+  there; nothing is written over a possibly-live writer.
 - **DLQ retention**: 7 days
   ([pkg/queue/nats/nats.go:DefaultDLQMaxAge](../pkg/queue/nats/nats.go)).
   An operator triages via the admin endpoints
@@ -158,6 +171,38 @@ Bumps `iterion_runs_orphan_recovered_total`.
 The same sweeper also polls `DLQDepth()` so
 `iterion_dlq_depth` is kept fresh — that's what the
 `IterionDLQNotEmpty` alert in the starter pack fires on.
+
+A delivery that cannot take the run lock is retried after one lease interval
+— the configured `ITERION_LOCK_TTL` / `runner.lock_ttl`, 60 seconds by
+default — which is how long a lease nobody refreshes takes to evaporate, so
+the retry either finds the run free or meets a live owner. Raising it above
+`AckWait` stretches the queue's worst-case redelivery window to
+`MaxDeliver × lock_ttl`, which the orphan sweeper's queued-staleness cutoff
+tracks. On its last allowed attempt the original message is archived on
+the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
+the run itself is untouched — without the lock no writer may change its
+outcome or its continuation — so this records a *delivery* failure, never an
+execution one.
+
+Two different failures reach that path, and the DLQ reason names which:
+
+- **`run lock held by another runner`** — confirmed contention
+  (`jetstream.ErrKeyExists` on the lease). A sibling owns the run; inspect
+  that owner's outcome, and discarding the duplicate is safe once it
+  completed.
+- **`run lock acquisition failed`** — every other lock error (KV bucket
+  missing, a broker blip on the create). Ownership **could not be
+  confirmed**, which is not the same as no owner: a sibling may hold the
+  lease and its collision simply never got reported. Replay only after
+  checking the run itself *and* a healthy lock service — a blind replay
+  duplicates a live run. A run left `queued`/`running` with no lease is the
+  orphan sweeper's, above.
+
+`parked: false` on the event means the archive was **not acknowledged**, not
+that no copy exists: the publish waits for a JetStream ack, so a lost ack can
+hide a copy that landed. Read the DLQ before either replaying (which may
+duplicate the run) or discarding (which may destroy its last copy) — neither
+is safe blind.
 
 ## Multitenancy enforcement layers
 
@@ -197,7 +242,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_ws_connections` | server | WS open / close |
 | `iterion_mongo_change_stream_lag_seconds` | server | Per event delivered |
 | `iterion_nats_pending_messages` | runner | Polled every 15s |
-| `iterion_workspace_clone_duration_seconds` | runner | Per workspace clone — **registered but not yet observed** (no runtime `.Observe()` call), so it currently emits no samples |
+| `iterion_workspace_clone_duration_seconds` | runner | Time spent in `prepareRepoWorkspace` (clone + checkout) before engine start, observed once per repo-bound run |
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | Per LLM call |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Per claw-priced call (delegate calls don't carry a price table) |
 | `iterion_runner_heartbeat_errors_total` | runner | Per KV refresh failure |

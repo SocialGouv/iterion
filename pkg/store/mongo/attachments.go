@@ -74,12 +74,12 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	// the document-level race.
 	_, err = s.runs.UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
-		bson.M{
+		versionRunUpdate(bson.M{
 			"$set": bson.M{
 				"attachments." + rec.Name: rec,
 				"updated_at":              time.Now().UTC(),
 			},
-		},
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("store/mongo: index attachment in run: %w", err)
@@ -129,10 +129,10 @@ func (s *Store) RemoveAttachment(ctx context.Context, runID, name string) error 
 	}
 	_, err = s.runs.UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
-		bson.M{
+		versionRunUpdate(bson.M{
 			"$unset": bson.M{"attachments." + name: ""},
 			"$set":   bson.M{"updated_at": time.Now().UTC()},
-		},
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("store/mongo: clear attachment %s/%s: %w", runID, name, err)
@@ -146,7 +146,7 @@ func (s *Store) DeleteRunAttachments(ctx context.Context, runID string) error {
 	}
 	_, err := s.runs.UpdateOne(ctx,
 		withTenantFilter(ctx, bson.M{"_id": runID}),
-		bson.M{"$unset": bson.M{"attachments": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}},
+		versionRunUpdate(bson.M{"$unset": bson.M{"attachments": ""}, "$set": bson.M{"updated_at": time.Now().UTC()}}),
 	)
 	if err != nil {
 		return fmt.Errorf("store/mongo: clear attachments index: %w", err)

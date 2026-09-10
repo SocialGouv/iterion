@@ -76,19 +76,63 @@ func resolveStreamHotTimeout() time.Duration {
 
 // defaultOrchStallTimeout bounds how long the session may sit idle while the
 // model is BLOCKED on an orchestration tool (TaskOutput / Monitor) that it
-// reached WITHOUT having spawned a subagent (Task) first. That is the exact
-// shape of the observed deadlock: a reviewer called TaskOutput(block:true) on
-// a background task that never existed and hung until the 15-min hot timeout,
-// producing zero events meanwhile. Waiting on a task it never spawned can
-// never make progress, so we abort fast — on this short budget instead of the
-// hot budget — and, because the error still carries "session idle for", the
-// executor's retry loop auto-re-executes the node on a fresh subprocess (no
-// manual resume). A LEGITIMATE TaskOutput that follows a real Task spawn keeps
-// the full hot budget: a working subagent can legitimately take minutes.
+// reached WITHOUT any background work to wait on — no subagent spawned
+// (`Agent`, or `Task` on CLIs that predate the rename), no command started
+// with run_in_background. That is the exact shape of the observed deadlock:
+// a session called TaskOutput(block:true) on a task id it never created and
+// hung until the 15-min hot timeout, producing zero events meanwhile. Such a
+// wait can never make progress, so it is classified on this short budget
+// instead of the hot one. What follows is the in-place recovery below
+// (defaultOrchRecoveryTimeout); only when that fails is the session aborted
+// — the error then still carries "session idle for", so the executor's retry
+// loop re-executes the node on a fresh subprocess. A LEGITIMATE blocking
+// call that follows real background work keeps the full hot budget: a
+// working subagent or a background build can legitimately take minutes.
 const defaultOrchStallTimeout = 4 * time.Minute
 
 func resolveOrchStallTimeout() time.Duration {
 	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT", defaultOrchStallTimeout)
+}
+
+// defaultOrchRecoveryTimeout bounds the in-place recovery of that deadlock.
+// Once the stall is classified the session is INTERRUPTED — the CLI's
+// control-protocol interrupt aborts the tool call it is blocked on and
+// closes the turn — and when the turn closes within this budget the model
+// gets a user message naming the wait that could not return, then continues
+// on the same session. Killing the session instead costs a node restart:
+// the resume re-clones, re-provisions and replays the node, and a run close
+// to its wall dies. Only when the turn does not close within this budget, or
+// the model blocks the same way again, is the session aborted for the
+// executor's retry. 0 disables the recovery: the stall aborts immediately.
+const defaultOrchRecoveryTimeout = 30 * time.Second
+
+func resolveOrchRecoveryTimeout() time.Duration {
+	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT", defaultOrchRecoveryTimeout)
+}
+
+// spawnsBackgroundWork reports whether a tool call creates work that a later
+// TaskOutput / Monitor can legitimately wait on: a subagent (`Agent`, or
+// `Task` on CLIs that predate the rename) or any tool started with
+// run_in_background (a Bash build, a background agent).
+func spawnsBackgroundWork(tu *claudesdk.ToolUseBlock) bool {
+	switch tu.Name {
+	case "Agent", "Task":
+		return true
+	}
+	bg, ok := tu.Input["run_in_background"].(bool)
+	return ok && bg
+}
+
+// orchStallNudge is the user message that follows a successful interrupt:
+// it names the wait that could not return so the model does not re-issue it.
+func orchStallNudge(tool string) string {
+	return fmt.Sprintf("[iterion] Your %s call was interrupted by the runtime: it waited on a background task this session never started (no Agent/Task call and no run_in_background command preceded it), so it could never return. Do not wait on task ids you did not create in this session. Continue the work directly and finish it.", tool)
+}
+
+// orchStallError keeps the "session idle for" prefix that isDelegateRetryable
+// classifies as retryable, so an aborted session still re-executes the node.
+func orchStallError(idle time.Duration, tool, outcome string) error {
+	return fmt.Errorf("claude session idle for %s — blocked on an orchestration tool (%s) with no background work to wait on (likely deadlock); %s (tune ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT / ITERION_CLAUDE_CODE_ORCH_RECOVERY_TIMEOUT, 0 to disable)", idle, tool, outcome)
 }
 
 // defaultNoProgressTimeout bounds how long the session may keep producing
@@ -126,10 +170,64 @@ func isBlockingOrchestrationTool(name string) bool {
 // any single assistant turn. Combined with ResultMessage.ModelUsage it
 // drives the run-view's per-node model name and context-usage gauge.
 type sessionMeta struct {
+	// sessionID is the CLI's own session identifier, taken from the
+	// `system/init` event — the FIRST thing the CLI emits, long before
+	// any result message. Kept here for the two Results built when NO
+	// ResultMessage ever arrives, which until this capture published an
+	// anonymous session:
+	//
+	//   - the ask_user / permission PAUSE, where it is load-bearing: the
+	//     id reaches ErrNeedsInteraction → the checkpoint → the resume's
+	//     `_session_id`, and gates packLiveSession, so without it the one
+	//     path written to persist a session across a human gate persisted
+	//     nothing;
+	//   - a stream that DIED, where it is reporting only. The id now
+	//     travels up on the failure output (`_session_id`, stamped beside
+	//     the spend), but nothing on the failure path reads it:
+	//     commitPersistSlot — the one writer of a node's session slot — is
+	//     called only after a node SUCCEEDS, so the failure checkpoint
+	//     still records no backend session and nothing above the delegate
+	//     resumes a dead node's. Naming it is what makes wiring that
+	//     possible, not the wiring.
+	sessionID string
+	// sessionIDFromInit records that sessionID came from `system/init`,
+	// the CLI's own announcement of this session. A value taken from any
+	// other subtype is provisional and yields to the first init.
+	sessionIDFromInit bool
+
 	effectiveModel  string
 	peakContextLoad int
 	thinkingTokens  int // approximate extended-thinking tokens (re-encoded text)
 	thinkingMs      int // best-effort wall-clock spent thinking, milliseconds
+
+	// Mid-call usage accumulation for the OnUsageProgress hook. The CLI
+	// may stream SEVERAL assistant events for one API message (one per
+	// content block), each carrying that message's usage — summing
+	// naively would multiply the spend. And ids can INTERLEAVE (a
+	// sub-agent's messages ride the same stream as the parent's), so a
+	// single last-id slot would re-fold a message it already folded.
+	// Usage is therefore kept per message id, last value wins per id,
+	// and the cumulative is the running sum maintained incrementally
+	// (usageByMsg only stores what each id last contributed).
+	usageByMsg map[string]claudesdk.Usage
+	usageTotal claudesdk.Usage
+}
+
+// accumulateAssistantUsage records one streamed assistant message's
+// usage (last value wins per message id — later events of the same
+// message carry the completed output count) and reports the running
+// totals across all message ids seen this call.
+func (sm *sessionMeta) accumulateAssistantUsage(msgID string, u claudesdk.Usage) claudesdk.Usage {
+	if sm.usageByMsg == nil {
+		sm.usageByMsg = make(map[string]claudesdk.Usage)
+	}
+	prev := sm.usageByMsg[msgID]
+	sm.usageTotal.InputTokens += u.InputTokens - prev.InputTokens
+	sm.usageTotal.OutputTokens += u.OutputTokens - prev.OutputTokens
+	sm.usageTotal.CacheCreationInputTokens += u.CacheCreationInputTokens - prev.CacheCreationInputTokens
+	sm.usageTotal.CacheReadInputTokens += u.CacheReadInputTokens - prev.CacheReadInputTokens
+	sm.usageByMsg[msgID] = u
+	return sm.usageTotal
 }
 
 // applyClaudeCodeSessionMeta merges the streamed session metadata and
@@ -147,8 +245,20 @@ func applyClaudeCodeSessionMeta(out *Result, rm *claudesdk.ResultMessage, sm ses
 	out.PeakInputTokens = sm.peakContextLoad
 	out.ThinkingTokens = sm.thinkingTokens
 	out.ThinkingMs = sm.thinkingMs
+	// One rule for the id, so every caller can hand it a zero-valued
+	// Result and get the same answer: the result message's when there is
+	// one — the same id, read from the authoritative end of the session —
+	// and the streamed one otherwise. The rm-less callers are the pause
+	// (where the id then travels the checkpoint) and a stream that died
+	// (where it is reporting only; see sessionMeta.sessionID).
+	if out.SessionID == "" {
+		out.SessionID = sm.sessionID
+	}
 	if rm == nil {
 		return
+	}
+	if rm.SessionID != "" {
+		out.SessionID = rm.SessionID
 	}
 	if mu, ok := rm.ModelUsage[sm.effectiveModel]; ok {
 		out.ContextWindow = mu.ContextWindow
@@ -250,13 +360,33 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	defer idle.Stop()
 
 	// Deadlock guard (see defaultOrchStallTimeout): spawnedTask records whether
-	// the model ever spawned a subagent; awaitingBlockingTool records whether
-	// its most recent turn left it blocked on TaskOutput/Monitor. Blocked on a
-	// blocking orchestration tool with no prior Task spawn == a hung wait that
-	// can never return → short-circuit the idle budget.
+	// the model ever started background work (a subagent, a run_in_background
+	// command); awaitingBlockingTool records whether its most recent turn left
+	// it blocked on TaskOutput/Monitor, stallTool which one. Blocked on a
+	// blocking orchestration tool with nothing to wait on == a hung wait that
+	// can never return → short-circuit the idle budget, then recover in place
+	// (see defaultOrchRecoveryTimeout): recovering is set between the
+	// interrupt and the turn closing, recovered once a recovery was spent —
+	// a second stall on the same session is aborted.
 	spawnedTask := false
 	awaitingBlockingTool := false
+	stallTool := ""
+	stallIdle := time.Duration(0)
+	recovering := false
+	recovered := false
 	orchStall := resolveOrchStallTimeout()
+	orchRecovery := resolveOrchRecoveryTimeout()
+	reportStall := func(ok bool) {
+		if task.Hooks.OnOrchestrationStall != nil {
+			task.Hooks.OnOrchestrationStall(OrchestrationStall{
+				Backend:   BackendClaudeCode,
+				Tool:      stallTool,
+				Model:     meta.effectiveModel,
+				IdleFor:   stallIdle,
+				Recovered: ok,
+			})
+		}
+	}
 
 	// Forward-progress watchdog (see defaultNoProgressTimeout): a SECOND timer,
 	// distinct from the silence-only idle timer, that resets ONLY on a message
@@ -296,9 +426,36 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			currentTimeout = orchStall
 			idle.Reset(orchStall)
 		}
+		// The interrupt is out: the only thing waited on now is the turn
+		// closing, on the recovery budget.
+		if recovering {
+			currentTimeout = orchRecovery
+			idle.Reset(orchRecovery)
+		}
 
 		select {
 		case it, ok := <-items:
+			if !ok && recovering {
+				// The interrupted turn closed (its ResultMessage ended the
+				// stream); the session is intact. Name the wait that could
+				// not return and let the model continue on a fresh turn.
+				if result == nil {
+					reportStall(false)
+					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the session ended while the interrupt was pending (cli_exit_code=%d); aborting for auto-retry", sess.ExitCode()))
+				}
+				if err := sess.Send(ctx, orchStallNudge(stallTool)); err != nil {
+					reportStall(false)
+					return nil, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: could not send the follow-up (%v); aborting for auto-retry", err))
+				}
+				items = forwardSessionStream(streamCtx, sess)
+				recovering, recovered = false, true
+				awaitingBlockingTool = false
+				result = nil
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 interrupted the pending %s call; the session continues in place with a note that it was waiting on nothing",
+					task.NodeID, task.Iteration, stallTool)
+				reportStall(true)
+				continue
+			}
 			if !ok {
 				// Stream closed without surfacing an error.
 				if result == nil {
@@ -352,14 +509,25 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				// result. Reset awaiting on each assistant turn so only the LATEST
 				// blocking call counts.
 				awaitingBlockingTool = false
+				if recovering {
+					// The model took the interrupted tool result and went on
+					// by itself: the session is moving again, and this turn's
+					// result is a real one — no follow-up needed.
+					recovering, recovered = false, true
+					b.Logger.Warn("[%s#%d/claude-code] 🪤 the session resumed on its own after the %s interrupt",
+						task.NodeID, task.Iteration, stallTool)
+					reportStall(true)
+				}
 				if m.Message != nil {
 					for _, blk := range m.Message.Content {
 						if tu, ok := blk.(*claudesdk.ToolUseBlock); ok {
 							progressed = true // the agent invoked a tool
-							if tu.Name == "Task" {
+							if spawnsBackgroundWork(tu) {
 								spawnedTask = true
-							} else if isBlockingOrchestrationTool(tu.Name) {
+							}
+							if isBlockingOrchestrationTool(tu.Name) {
 								awaitingBlockingTool = true
+								stallTool = tu.Name
 							}
 						}
 					}
@@ -398,15 +566,46 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			if currentTimeout <= 0 {
 				continue
 			}
-			cancelStream()
-			// Deadlock case: blocked on TaskOutput/Monitor with no Task spawned.
-			// Keep "session idle for" in the message so isDelegateRetryable still
-			// classifies it retryable → the executor auto-re-executes the node.
-			if awaitingBlockingTool && !spawnedTask {
-				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned for %s — likely a deadlock, aborting for auto-retry",
-					task.NodeID, task.Iteration, currentTimeout)
-				return result, meta, fmt.Errorf("claude session idle for %s — blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned (likely deadlock); aborting for auto-retry (tune ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT, 0 to disable)", currentTimeout)
+			if recovering {
+				// The interrupt did not close the turn: the CLI is wedged
+				// past what the control protocol can reach. Abort for retry.
+				cancelStream()
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 the %s interrupt did not close the turn within %s — aborting for auto-retry",
+					task.NodeID, task.Iteration, stallTool, currentTimeout)
+				reportStall(false)
+				return result, meta, orchStallError(stallIdle, stallTool, fmt.Sprintf("in-place recovery failed: the interrupt did not close the turn within %s; aborting for auto-retry", currentTimeout))
 			}
+			// Deadlock case: blocked on TaskOutput/Monitor with nothing to
+			// wait on. Recover in place once (interrupt + follow-up); abort
+			// when recovery is disabled, already spent, or the interrupt
+			// cannot be written. The abort keeps "session idle for" in the
+			// message so isDelegateRetryable still classifies it retryable
+			// → the executor auto-re-executes the node.
+			if awaitingBlockingTool && !spawnedTask {
+				stallIdle = currentTimeout
+				if !recovered && orchRecovery > 0 {
+					if err := sess.Interrupt(); err == nil {
+						recovering = true
+						b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on %s with no background work to wait on for %s — likely a deadlock; interrupting the call (the turn gets %s to close)",
+							task.NodeID, task.Iteration, stallTool, currentTimeout, orchRecovery)
+						continue
+					} else {
+						b.Logger.Warn("[%s#%d/claude-code] 🪤 could not interrupt the pending %s call: %v", task.NodeID, task.Iteration, stallTool, err)
+					}
+				}
+				cancelStream()
+				outcome := "aborting for auto-retry (in-place recovery disabled)"
+				if recovered {
+					outcome = "blocked the same way again after an in-place recovery; aborting for auto-retry"
+				} else if orchRecovery > 0 {
+					outcome = "in-place recovery failed: the interrupt could not be sent; aborting for auto-retry"
+				}
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on %s with no background work to wait on for %s — %s",
+					task.NodeID, task.Iteration, stallTool, currentTimeout, outcome)
+				reportStall(false)
+				return result, meta, orchStallError(currentTimeout, stallTool, outcome)
+			}
+			cancelStream()
 			phase := "cold"
 			envHint := "ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT"
 			if receivedAny {
@@ -510,6 +709,20 @@ func backfillEmptyResult(result *claudesdk.ResultMessage, lastAssistantText stri
 // model when a proxy or alias is in play). Hook-lifecycle subtypes are
 // noisy and routed to debug.
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudesdk.SystemMessage, task Task, meta *sessionMeta) {
+	// Captured on EVERY subtype, not only init, because a stream that
+	// failed before init still names the session on whatever it did emit.
+	// But `init` is the AUTHORITY — it is the CLI announcing this session
+	// — so a non-init id is only ever provisional: kept while nothing
+	// authoritative has spoken, replaced the moment init does. Without
+	// that precedence, one hook or sub-agent event reaching the stream
+	// first would pin its own id onto the checkpoint, and the resume would
+	// reopen the wrong conversation. Among inits the first wins: two would
+	// be two sessions in one stream, and the one this call opened is the
+	// conservative reading.
+	if m.SessionID != "" && (meta.sessionID == "" || (m.Subtype == "init" && !meta.sessionIDFromInit)) {
+		meta.sessionID = m.SessionID
+		meta.sessionIDFromInit = m.Subtype == "init"
+	}
 	if m.Subtype == "init" {
 		b.Logger.Info("[%s#%d/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",
 			task.NodeID, task.Iteration, m.SessionID, m.Model, m.ToolCount(), m.MCPServerCount())
@@ -578,6 +791,19 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 	if load > meta.peakContextLoad {
 		meta.peakContextLoad = load
 	}
+	// Mid-call usage progress: report the running cumulative so a
+	// supervisor's cost monitor can fire while the call is still
+	// steerable (the authoritative spend is recorded once, at node end).
+	if task.Hooks.OnUsageProgress != nil {
+		cum := meta.accumulateAssistantUsage(m.Message.ID, u)
+		task.Hooks.OnUsageProgress(UsageProgress{
+			Model:            meta.effectiveModel,
+			InputTokens:      cum.InputTokens,
+			OutputTokens:     cum.OutputTokens,
+			CacheReadTokens:  cum.CacheReadInputTokens,
+			CacheWriteTokens: cum.CacheCreationInputTokens,
+		})
+	}
 	// Extended-thinking metrics: the provider bills thinking inside
 	// output_tokens with no breakdown, so re-encode the thinking text for an
 	// approximate count; time is the gap since the previous stream item.
@@ -626,7 +852,19 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(tb.Text, 200))
 				cancelStream()
 				detail := strings.TrimSpace(tb.Text)
-				kind, resetAt := classifyRateLimit(detail, time.Now())
+				kind, window, resetAt := classifyRateLimit(detail, time.Now())
+				// A refusal relayed as text never reaches the meter the way
+				// a rate_limit_event does, so the credential-tier skip would
+				// stay blind to it at the next resolution. Record it when
+				// the shape names a window the evidence consumers know.
+				if window != "" && task.Hooks.OnUsageWindow != nil {
+					_ = task.Hooks.OnUsageWindow(usagecap.Reading{
+						Window:     window,
+						Status:     usagecap.StatusRejected,
+						ObservedAt: time.Now().UTC(),
+						ResetsAt:   resetAt,
+					})
+				}
 				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 			}
 			// Narration hook: surface the agent's mid-turn prose to the
@@ -816,10 +1054,15 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // normal result and fails structured-output validation with a misleading
 // "missing required field", crashing the run instead of producing a clean
 // resumable rate-limit (observed for "session" on a claude-sonnet-5 fixer,
-// see docs/bot-runs/whole-improve-loop.md; and for "weekly" on the
-// feed-watch veille runner, 2026-07-20). One tolerant pattern subsumes
-// every noun so a new window shape never re-opens this masking bug.
-var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9-]+ )?limit`)
+// see docs/bot-runs/whole-improve-loop.md; for "weekly" on the feed-watch
+// veille runner, 2026-07-20; and for the multi-word "org's monthly spend"
+// on three branch-improve-loop runs, 2026-09-03). The qualifier is
+// therefore up to THREE words and may carry an apostrophe — one tolerant
+// pattern subsumes every noun so a new window shape never re-opens this
+// masking bug. Bounded rather than open (`.*`) so an agent's prose about
+// limits cannot bridge two unrelated sentences into a false positive; the
+// 200-char cap in isRateLimitMessage is the second guard.
+var hitYourLimitRe = regexp.MustCompile(`hit your (?:[a-z0-9'’-]+ ){0,3}limit`)
 
 // rateLimitSignals are case-insensitive substrings of assistant text
 // that indicate the upstream provider has cut us off. The forfait
@@ -838,18 +1081,45 @@ var rateLimitSignals = []string{
 	"quota exceeded",
 	"usage limit reached",
 	"request rejected (429)",
+	// "spend limit" is deliberately NOT here. The account ceiling reaches
+	// this gate through hitYourLimitRe, whose "hit your … limit" opener is
+	// provider-shaped; the bare noun phrase is ordinary English an agent
+	// writes about its own work ("adding a spend limit check to the
+	// config"), and a false positive here does not merely mislabel — it
+	// ABORTS the node and records a StatusRejected reading that routes
+	// every later run around that credential for an hour. Same reasoning
+	// that dropped "rate_limit_error" above.
 }
+
+// relayedAPIErrorPrefix opens the CLI's verbatim relay of an upstream
+// HTTP refusal. A block that STARTS with it is the provider talking, not
+// the agent: an agent quoting the message embeds it mid-paragraph.
+const relayedAPIErrorPrefix = "api error: request rejected (429)"
+
+// relayedAPIErrorMaxLen bounds the prefix-anchored acceptance. The
+// fair-usage refusal (~330 chars with its policy prose and request id)
+// is the longest relayed shape observed; anything past this is an agent
+// essay that happens to open with a quote.
+const relayedAPIErrorMaxLen = 600
 
 // isRateLimitMessage reports whether an assistant text block carries
 // a quota / rate-limit signal from the upstream provider. The text
 // length cap is load-bearing: real rate-limit notices are short
 // one-liners, whereas agents that reason aloud about rate limiting
 // produce much longer paragraphs that would false-positive otherwise.
+// One measured exception: the fair-usage refusal is a relayed API error
+// three times that long (four modernize/rite lanes burned their budgets
+// on it before it was recognised at all), so a block that BEGINS with
+// the relay prefix is accepted up to relayedAPIErrorMaxLen.
 func isRateLimitMessage(text string) bool {
-	if len(text) == 0 || len(text) > 200 {
+	if len(text) == 0 {
 		return false
 	}
 	lower := strings.ToLower(text)
+	if len(text) > 200 {
+		return len(text) <= relayedAPIErrorMaxLen &&
+			strings.HasPrefix(lower, relayedAPIErrorPrefix)
+	}
 	if hitYourLimitRe.MatchString(lower) {
 		return true
 	}
@@ -871,15 +1141,92 @@ var usageWindowSignals = []string{
 	"usage limit reached",
 }
 
+// accountRefusalSignals mean the ACCOUNT's request rate is refused (a
+// fair-usage policy restriction), not that a metered window filled up.
+// The cure is the same as a shut window — this credential serves nothing
+// until the provider relents, so the run must park and the resolver must
+// route around it — but there is never a reset instant to parse, and the
+// meter evidence is recorded under WindowFrequency so the staleness
+// bound comes from the observation itself.
+var accountRefusalSignals = []string{
+	"fair usage policy",
+	"request frequency has been limited",
+}
+
+// spendLimitSignals mean the ACCOUNT's money ceiling is reached — its own
+// admin's budget, not a subscription window: "You've hit your org's
+// monthly spend limit · ask your admin to raise it at
+// claude.ai/settings/usage". Held apart from accountRefusalSignals
+// because the operator-facing cause differs (raise the ceiling vs wait
+// for the provider to relent), and the evidence is recorded under
+// WindowSpend so a skip explains itself honestly. The behaviour is the
+// same on both: no reset instant, park the run, route around the
+// credential — waiting inside the month buys nothing.
+//
+// Reached ONLY from classifyRateLimit, i.e. after isRateLimitMessage has
+// already accepted the text as a provider refusal on a provider-shaped
+// opener. That ordering is what lets the signal stay a bare noun phrase:
+// it names which refusal this is, it never decides that one happened.
+var spendLimitSignals = []string{
+	"spend limit",
+}
+
 // classifyRateLimit refines a matched rate-limit message into
-// (Kind, ResetAt). All parsing is best-effort: an unrecognized shape
-// keeps Kind = transient and a zero ResetAt — never a hard failure.
-func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
+// (Kind, Window, ResetAt). Window names the meter window the refusal is
+// evidence against, "" when the shape maps to none — the caller records
+// a reading only when it does. All parsing is best-effort: an
+// unrecognized shape keeps Kind = transient and a zero ResetAt — never a
+// hard failure.
+func classifyRateLimit(text string, now time.Time) (kind string, window usagecap.Window, resetAt time.Time) {
 	lower := strings.ToLower(text)
-	if !isUsageWindowText(lower) {
-		return RateLimitKindTransient, time.Time{}
+	if isAccountRefusalText(lower) {
+		return RateLimitKindUsageWindow, usagecap.WindowFrequency, time.Time{}
 	}
-	return RateLimitKindUsageWindow, parseResetHint(lower, now)
+	// Before the generic window path: the spend notice also matches
+	// hitYourLimitRe, and falling through would file a money ceiling as a
+	// nameless window with a blind reset — a retry an hour later against a
+	// budget that only a human (or the next month) reopens.
+	if isSpendLimitText(lower) {
+		return RateLimitKindUsageWindow, usagecap.WindowSpend, time.Time{}
+	}
+	if !isUsageWindowText(lower) {
+		return RateLimitKindTransient, "", time.Time{}
+	}
+	// The refusal names its window between "your" and "limit" ("weekly",
+	// "session"…). Naming it matters beyond retry timing: a nameless
+	// window records NO reading (both recording sites are gated on the
+	// name), so a real weekly wall stays invisible to the resolution
+	// walk, which re-grants the same walled credential on every retry.
+	// Only the weekly noun maps today; "session"/bare-5h shapes keep ""
+	// until they get a window constant of their own.
+	if strings.Contains(lower, "weekly") {
+		return RateLimitKindUsageWindow, usagecap.WindowSevenDay, parseResetHint(lower, now)
+	}
+	return RateLimitKindUsageWindow, "", parseResetHint(lower, now)
+}
+
+// isAccountRefusalText reports whether already-lowercased text carries an
+// account-rate refusal shape. Shared with isUsageWindowText's callers via
+// classifyRateLimit and the flattened-error fallback: one definition.
+func isAccountRefusalText(lower string) bool {
+	for _, sig := range accountRefusalSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSpendLimitText reports whether already-lowercased text carries the
+// account spend-ceiling shape. One definition, shared by the classifier
+// and the flattened-error fallback for the same reason as its siblings.
+func isSpendLimitText(lower string) bool {
+	for _, sig := range spendLimitSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // isUsageWindowText reports whether already-lowercased text carries one of the
@@ -895,7 +1242,10 @@ func isUsageWindowText(lower string) bool {
 			return true
 		}
 	}
-	return false
+	// An account-rate refusal and a spent budget both park the same way a
+	// shut window does, so the flattened-error fallback must recognise
+	// them through the same single definitions.
+	return isAccountRefusalText(lower) || isSpendLimitText(lower)
 }
 
 // UsageWindowInFlattenedError recovers the window signal from an error whose

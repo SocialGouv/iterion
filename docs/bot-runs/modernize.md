@@ -4,6 +4,61 @@ Carries a repository through a programme of modernisation lots — steps whose
 entry and exit are both deterministic gates — against a behavioural oracle it
 is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 
+## 2026-09-05 — only_lot on a blocked lot exits green as nothing_to_do: a confirmed-success no-op, fixed (native:670, run 01a06d77-4d06 + a relaunch)
+
+- Status: **ENGINE DEFECT, fixed.** Production: an operator relaunched two
+  lots from bank branches whose ledger carried them as `status: blocked`
+  (parked awaiting an oracle re-seal), naming each explicitly with
+  `--var only_lot=<id>`. `plan_read` returned
+  `{nothing_to_do: true, lot_id: "", exit_gate: ""}` for BOTH, `work_gate`
+  routed straight to `done`, and both runs FINISHED green in ~5 minutes —
+  no gate replayed, no work attempted, no warning. One of the two is run
+  `01a06d77-4d06`.
+- Root cause: `plan_read`'s lot-selection loop filters `done`/`blocked`
+  lots out BEFORE checking whether they match `only_lot` — so a
+  `only_lot`-named lot that is already `done`/`blocked` was skipped by the
+  status filter without ever being compared against `only`, no OTHER lot
+  could be chosen either (every other lot fails the `only` match), and the
+  reader fell through to its "every lot in the contract is done" message —
+  true of the PROGRAMME, false of what the operator actually asked for. A
+  green `finished` on an explicitly requested lot that was never verified
+  is the no-op-confirmed-as-success class: the operator reads convergence
+  where nothing was measured.
+- Fix: `plan_read` now resolves `only_lot`'s ACTUAL status FIRST, before
+  the unfiltered selection loop runs at all. When the named lot is
+  `done`, `blocked`, or absent from the contract entirely, it calls a new
+  `not_actionable(status, notice)` terminal (distinct from the existing
+  `emit()`/`refuse()` pair: `nothing_to_do=False`, `lot_not_actionable=
+  True`, `lot_status=<done|blocked|absent>`, exit 0 so `work_gate` can
+  route on the field) instead of falling into the unfiltered scan's
+  `nothing_to_do` path. `work_gate` gained a `lot_not_actionable ->
+  fail` edge, checked BEFORE the pre-existing `nothing_to_do -> done` /
+  `not nothing_to_do -> upgrade_campaign` pair — the two states are
+  mutually exclusive by construction (`not_actionable()` always sets
+  `nothing_to_do=False`), so there is no reliance on edge declaration
+  order beyond `fail` being checked first. The unfiltered "pick next"
+  mode (`only_lot` empty) is byte-for-byte unchanged: an already-finished
+  programme still exits `done` silently, which is the correct outcome
+  there (nobody named a specific lot).
+- Value: closes a class of false-confidence run, not just this one
+  report — any future `only_lot` targeting a done/blocked/absent lot now
+  fails loud with the lot's real status, instead of a green that means
+  "the whole programme is finished" leaking onto a request that asked
+  about ONE lot.
+- Engine hardening: same DSL gap as native:695 (see
+  [branch-improve-loop.md](branch-improve-loop.md)'s 2026-09-05 entry) —
+  the `-> fail` terminal cannot carry a custom `RuntimeError` code, so
+  `LOT_NOT_ACTIONABLE` and the lot's status/notice live on `work_gate`'s
+  own persisted output (`iterion report` / the checkpoint's per-node
+  outputs), not on the run's top-level failure message.
+- Lessons for next run: `plan_read`'s python is not exercised for real by
+  the e2e suite (no python3/git dependency in the hermetic Go tests, same
+  convention as every other python-based tool node in this repo) — the
+  new e2e coverage (`e2e/modernize_test.go`) proves the GRAPH routing from
+  a stubbed `plan_read` verdict, not the python's own done/blocked/absent
+  classification logic. A live dogfood against a real `.modernize/plan.yaml`
+  with a genuinely blocked lot would be the next validation step.
+
 ## 2026-08-25 — the reader manufactures a red: a scalar exit_gate runs one letter at a time (run 01a033f9)
 
 - Status: **ENGINE DEFECT, fixed.** First lot of a cloud campaign whose

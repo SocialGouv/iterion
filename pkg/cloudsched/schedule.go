@@ -66,6 +66,16 @@ type ScheduledBot struct {
 	NextFireAt time.Time  `bson:"next_fire_at" json:"next_fire_at"`
 	LastFireAt *time.Time `bson:"last_fire_at,omitempty" json:"last_fire_at,omitempty"`
 
+	// LastError is the verdict of the last tick that consumed a slot: empty
+	// means the launch went through, a message says why it did not (an org
+	// launch-gate denial, a run service that refused the run). LastErrorAt is
+	// when that verdict was recorded. Both are rendered by
+	// GET /api/teams/{id}/schedules and `iterion remote schedules list`, so a
+	// schedule that stopped producing runs is visible to its operator instead
+	// of living only in a replica's log.
+	LastError   string     `bson:"last_error,omitempty" json:"last_error,omitempty"`
+	LastErrorAt *time.Time `bson:"last_error_at,omitempty" json:"last_error_at,omitempty"`
+
 	CreatedBy string    `bson:"created_by,omitempty" json:"created_by,omitempty"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -89,6 +99,12 @@ type Store interface {
 	// THIS caller won the CAS. A losing replica gets (false, nil). This is the
 	// exactly-once primitive — no leader election.
 	ClaimTick(ctx context.Context, id string, expectedNext, newNext, firedAt time.Time) (bool, error)
+	// MarkLaunchError records the verdict of the tick that just consumed a
+	// slot: a non-empty message raises last_error with its instant, "" clears
+	// both. A TARGETED field write, never a read-modify-replace: the ticker
+	// holds the copy ListDue returned, and an operator retuning the schedule
+	// in between must not lose the edit to a health write.
+	MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error
 	// Update applies a partial mutation to an existing schedule. Only the
 	// non-nil fields of patch are written; NextFireAt is recomputed from the
 	// new Cron when Cron is set.

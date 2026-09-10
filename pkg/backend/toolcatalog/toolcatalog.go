@@ -137,6 +137,7 @@ func ResolvesViaShorthand(name string) bool {
 // registrar by the same conformance test that guards clawBuiltins.
 var internalMCPShorthands = map[string]bool{
 	// mcp.iterion_board.* — boardops.AllTools()
+	"add_labels":       true,
 	"assign_issue":     true,
 	"close_issue":      true,
 	"comment_issue":    true,
@@ -144,6 +145,7 @@ var internalMCPShorthands = map[string]bool{
 	"get_issue":        true,
 	"list_issues":      true,
 	"list_labels":      true,
+	"remove_labels":    true,
 	"set_bot":          true,
 	"set_labels":       true,
 	"transition_issue": true,

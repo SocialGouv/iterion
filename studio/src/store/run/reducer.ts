@@ -139,7 +139,10 @@ export function rehydratePendingHumanInput(
   const q = cp.interaction_questions;
   return {
     interaction_id: cp.interaction_id,
-    node_id: cp.node_id,
+    // Parallel checkpoints stay anchored on the router so the runtime can
+    // rebuild the fan-out. The actual operator-facing human gate mirrors
+    // store.Checkpoint.PausedNodeID() in parallel.pending_node_id.
+    node_id: cp.parallel?.pending_node_id ?? cp.node_id,
     questions: isRecord(q) ? q : {},
   };
 }

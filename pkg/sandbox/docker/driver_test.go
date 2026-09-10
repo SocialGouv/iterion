@@ -379,8 +379,8 @@ func TestRunCommandRoutesOversizedScriptViaStdin(t *testing.T) {
 	})
 
 	t.Run("oversized script streamed through stdin", func(t *testing.T) {
-		// > maxInlineArgBytes (100_000) — the E2BIG trigger zone.
-		big := strings.Repeat("x", maxInlineArgBytes+1)
+		// > sandbox.MaxInlineArgBytes (100_000) — the E2BIG trigger zone.
+		big := strings.Repeat("x", sandbox.MaxInlineArgBytes+1)
 		script := "cat <<'EOF'\n" + big + "\nEOF\n"
 		cmd := r.Command(context.Background(), []string{"sh", "-c", script}, sandbox.ExecOpts{})
 
@@ -418,7 +418,7 @@ func TestRunCommandRoutesOversizedScriptViaStdin(t *testing.T) {
 		// we MUST NOT clobber it — fall back to the argv path even if
 		// the script is large. (The caller knows what they're doing;
 		// e.g. they may have set KeepStdinOpen + StdinPipe.)
-		big := strings.Repeat("y", maxInlineArgBytes+1)
+		big := strings.Repeat("y", sandbox.MaxInlineArgBytes+1)
 		callerStdin := strings.NewReader("caller payload")
 		cmd := r.Command(context.Background(), []string{"sh", "-c", big}, sandbox.ExecOpts{Stdin: callerStdin})
 
@@ -434,7 +434,7 @@ func TestRunCommandRoutesOversizedScriptViaStdin(t *testing.T) {
 		// Any other cmd shape — `bash -lc`, a direct binary call, or a
 		// custom shell — must keep the argv path so we don't silently
 		// reinterpret a tool's chosen invocation.
-		big := strings.Repeat("z", maxInlineArgBytes+1)
+		big := strings.Repeat("z", sandbox.MaxInlineArgBytes+1)
 		cmd := r.Command(context.Background(), []string{"my-tool", big}, sandbox.ExecOpts{})
 
 		if cmd.Stdin != nil {
@@ -446,13 +446,13 @@ func TestRunCommandRoutesOversizedScriptViaStdin(t *testing.T) {
 	})
 }
 
-// shouldStreamScriptViaStdin is the single source of truth for the
+// sandbox.ShouldStreamScriptViaStdin is the single source of truth for the
 // argv-vs-stdin decision; assert the predicate directly so a future
 // refactor that changes the trigger threshold (or its shape gate)
 // fails this test loudly rather than masquerading as a Run.Command
 // behavioural shift.
 func TestShouldStreamScriptViaStdinPredicate(t *testing.T) {
-	big := strings.Repeat("a", maxInlineArgBytes+1)
+	big := strings.Repeat("a", sandbox.MaxInlineArgBytes+1)
 	cases := []struct {
 		name string
 		cmd  []string
@@ -471,9 +471,9 @@ func TestShouldStreamScriptViaStdinPredicate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldStreamScriptViaStdin(tc.cmd, tc.opts)
+			got := sandbox.ShouldStreamScriptViaStdin(tc.cmd, tc.opts)
 			if got != tc.want {
-				t.Errorf("shouldStreamScriptViaStdin = %d bytes, want %d", len(got), len(tc.want))
+				t.Errorf("sandbox.ShouldStreamScriptViaStdin = %d bytes, want %d", len(got), len(tc.want))
 			}
 		})
 	}

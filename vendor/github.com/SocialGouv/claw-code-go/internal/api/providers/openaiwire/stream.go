@@ -77,6 +77,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		toolCalls    = make(map[int]*sseutil.ToolCallAccumulator)
 		finishReason string
 		outputTokens int
+		inputTokens  int
 		sawDone      bool
 	)
 
@@ -105,11 +106,12 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		}
 
 		// Capture usage from the final usage chunk (choices will be empty
-		// there). Only output tokens are surfaced via UsageDelta; input
-		// tokens travel via the provider's own request bookkeeping and are
-		// intentionally discarded here.
+		// there). Both directions ride UsageDelta: this endpoint has no
+		// message_start-shaped frame to carry the prompt count on, so the
+		// terminal chunk is the only place it is ever reported.
 		if chunk.Usage != nil {
 			outputTokens = chunk.Usage.CompletionTokens
+			inputTokens = chunk.Usage.PromptTokens
 		}
 
 		for _, choice := range chunk.Choices {
@@ -222,7 +224,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 	send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens},
+		Usage:      api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens},
 	})
 	send(api.StreamEvent{Type: api.EventMessageStop})
 }

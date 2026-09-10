@@ -18,8 +18,9 @@ schema step_out:
 
 tool work:
   command: `EP={{vars.step}}
-mkdir -p "$ITERION_ARTIFACT_FILES_DIR"
-printf 'work unit %s\n' "$EP" > "$ITERION_ARTIFACT_FILES_DIR/work-$EP.txt"
+D="$ITERION_ARTIFACT_FILES_DIR"; [ -n "$D" ] || D=/tmp/iterion-artifacts
+mkdir -p "$D"
+printf 'work unit %s\n' "$EP" > "$D/work-$EP.txt"
 printf '{"step":"%s","done_work":true}' "$EP"`
   output: work_out
 

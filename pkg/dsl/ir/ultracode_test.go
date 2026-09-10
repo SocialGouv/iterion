@@ -70,3 +70,21 @@ func TestUltracodeNoWarnOnOpusAlias(t *testing.T) {
 		t.Errorf("C089 must NOT fire on the opus alias, got %+v", cr.Diagnostics)
 	}
 }
+
+// TestUltracodeNoWarnOnClaude5: the Claude 5 family carries ultracode's
+// orchestration half — C089 must stay silent on Opus 5 and Fable 5.1.
+func TestUltracodeNoWarnOnClaude5(t *testing.T) {
+	for _, model := range []string{"anthropic/claude-opus-5", "anthropic/claude-fable-5-1", "fable"} {
+		pr := parser.Parse("t.bot", ultracodeWorkflow(model))
+		if len(pr.Diagnostics) > 0 {
+			t.Fatalf("%s: parse errors: %+v", model, pr.Diagnostics)
+		}
+		cr := Compile(pr.File)
+		if cr.HasErrors() {
+			t.Fatalf("%s: ultracode must compile without errors, got %+v", model, cr.Diagnostics)
+		}
+		if hasDiag(cr.Diagnostics, DiagUltracodeModelGate) {
+			t.Errorf("C089 must NOT fire on %s, got %+v", model, cr.Diagnostics)
+		}
+	}
+}

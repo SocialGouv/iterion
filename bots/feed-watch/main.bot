@@ -895,10 +895,15 @@ tool load_pending:
             ln = ln.strip()
             if ln:
                 items.append(json.loads(ln))
-    snapshot_ids = [e.get('id') or '' for e in items]
     items.sort(key=lambda d: d.get('ts') or 0, reverse=True)
     overflow = max(0, len(items) - max_items)
     items = items[:max_items]
+    # Snapshot only what is actually handed to the LLM: commit_state
+    # clears every snapshot id from pending.jsonl after delivery, so an
+    # id captured before the max_items cut would purge an overflow item
+    # that was never synthesized nor published. Overflow items stay in
+    # the queue for the next digest instead.
+    snapshot_ids = [e.get('id') or '' for e in items]
     # ── Canonicalize item URLs through their redirects ──────────────
     # Many feeds serve tracking/redirect URLs (FeedBlitz, FeedBurner,
     # feedproxy) whose host is the aggregator's, not the article's. The
@@ -1117,10 +1122,22 @@ tool load_pending:
 ## forfait as a third-party-SDK CGU violation, which is what a
 ## forfait-backed cloud runner hits when the backend auto-detects to
 ## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
-## on a metered OpenAI key instead. No board capabilities: the digest's
+## on the OpenAI family instead (a metered key, or the ChatGPT-forfait
+## via claw's codex OAuth path). No board capabilities: the digest's
 ## sink is the chat webhook, and declaring board.* would require the
 ## iterion_board MCP server active on every run (it is not on a cloud
 ## runner), failing the node at setup even when unused.
+##
+## The gpt_forfait fallback keeps the digest deliverable when the
+## Anthropic subscription window (or iterion's own usage cap on it) is
+## exhausted: usage_window routes the SAME prompt to the OpenAI family
+## through claw, billed on the codex OAuth forfait when no metered key
+## is present. The deny gate survives the route — a sandboxed claw run
+## receives the policy over the IPC and enforces it in-container. The
+## crossing is loud (`model_fallback` event, `_fallback_used` /
+## `_served_by: gpt_forfait` on the output), and the deterministic
+## verify_message firewall downstream judges the digest the same way
+## whoever served it.
 agent synthesize:
   backend: "${FEED_WATCH_BACKEND:-claude_code}"
   model: "${FEED_WATCH_MODEL:-}"
@@ -1132,6 +1149,11 @@ agent synthesize:
   tools: [web_fetch]
   tool_max_steps: 30
   session: fresh
+  fallbacks:
+    gpt_forfait:
+      backend: "claw"
+      model: "${FEED_WATCH_FALLBACK_MODEL:-openai/gpt-5.5}"
+      on: [usage_window]
 
 ## Deterministic link firewall between the LLM and delivery. Extracts
 ## every URL from the digest and HARD-FAILS the run if any host is not the

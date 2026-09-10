@@ -5,6 +5,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
+  type ForgeConnectionHealth,
   type ForgeRepo,
   enableForgeRepoBots,
   getForgeConnectionHealth,
@@ -42,7 +43,7 @@ export function EnableRepoPanel({
    *  argument surfaces the repo that was just enabled so callers (e.g.
    *  the connect wizard) can jump straight to it — legacy callers may
    *  ignore it (backward-compatible with the old no-arg signature). */
-  onDone: (enabled?: { repo: string; connectionID: string }) => void;
+  onDone: (enabled?: { repo: string; connectionID: string; pending?: boolean }) => void;
   onCancel: () => void;
   onError: (m: string) => void;
 }) {
@@ -119,8 +120,8 @@ export function EnableRepoPanel({
           if (cron) crons[b.name] = cron;
         }
       }
-      await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
-      onDone({ repo, connectionID: conn.id });
+      const res = await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
+      onDone({ repo, connectionID: conn.id, pending: !!res.pending_approval });
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -184,6 +185,8 @@ export function EnableRepoPanel({
           )}
         </div>
       )}
+
+      {conn.kind === "github_app" && health && <MissingGrantLines health={health} />}
 
       <div>
         <label htmlFor="forge-repo-pick" className="sr-only">
@@ -314,6 +317,59 @@ export function EnableRepoPanel({
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
+      </div>
+    </div>
+  );
+}
+
+// MissingGrantLines names each permission gap the health probe found, with
+// what it costs and where it is approved — the same lines
+// `iterion remote forge connections refresh` prints. Without them the API and
+// the CLI were the only surfaces of a gap an operator meets as a dead panel
+// or a run that fails hours in, at push time.
+function MissingGrantLines({ health }: { health: ForgeConnectionHealth }) {
+  const install = health.manage_install_url;
+  const gaps: { key: string; text: string }[] = [];
+  if (health.missing_permissions?.length) {
+    gaps.push({
+      key: "delivery",
+      text: `Missing for app delivery (publishing the CI workflow and the image it builds): ${health.missing_permissions.join(", ")}.`,
+    });
+  }
+  if (health.missing_ci_permissions?.length) {
+    // Name every surface the gap darkens: `statuses` is also what the
+    // revi/review merge-gate verdict is posted and read with, so an operator
+    // told only about a card panel would not know the gate is dark too.
+    const surfaces = health.missing_ci_permissions.includes("statuses")
+      ? "the board card CI panel and the merge-gate verdict"
+      : "the board card CI panel";
+    gaps.push({
+      key: "ci",
+      text: `Missing for ${surfaces}: ${health.missing_ci_permissions.join(", ")}.`,
+    });
+  }
+  if (health.missing_security_permissions?.length) {
+    gaps.push({
+      key: "security",
+      text: `Missing for the org-wide Dependabot alerts read: ${health.missing_security_permissions.join(", ")}.`,
+    });
+  }
+  if (gaps.length === 0) return null;
+  return (
+    <div className="rounded border border-warning/40 bg-warning-soft text-warning-fg px-2.5 py-2 text-xs space-y-1">
+      {gaps.map((g) => (
+        <div key={g.key}>{g.text}</div>
+      ))}
+      <div>
+        An org owner approves the pending request{" "}
+        {install ? (
+          <a href={install} target="_blank" rel="noreferrer" className="text-accent-text underline">
+            on the App&rsquo;s installation page ↗
+          </a>
+        ) : (
+          "on the App’s installation page"
+        )}
+        .
       </div>
     </div>
   );

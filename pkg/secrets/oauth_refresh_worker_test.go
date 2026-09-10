@@ -249,3 +249,87 @@ func TestRefreshRecord_ASuccessfulRefreshKeepsTheSubscriptionIdentity(t *testing
 		t.Errorf("fingerprint = %q after a successful refresh, want the connect-time identity: the meter would rotate with every token", rec.Fingerprint)
 	}
 }
+
+// seedCodexRecord seals a ~/.codex/auth.json whose access token is a real-
+// shaped JWT naming its own client, and stores it expiring at exp.
+func seedCodexRecord(t *testing.T, st OAuthStore, sealer Sealer, ownerKey string, exp time.Time) {
+	t.Helper()
+	blob := codexBlob(t, fakeJWT(t, map[string]any{
+		"exp": exp.Unix(), "client_id": "app_derived",
+	}), "")
+	sealed, err := SealOAuthPayload(sealer, ownerKey, OAuthKindCodex, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	e := exp
+	if err := st.Upsert(context.Background(), OAuthRecord{
+		UserID: ownerKey, Kind: OAuthKindCodex, SealedPayload: sealed, AccessTokenExpiresAt: &e,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+}
+
+// The worker is the SINGLE refresher of a codex forfait (the runner
+// deliberately refuses the kind), so this sweep is the whole mechanism —
+// and it used to skip codex whenever no client id was configured, which is
+// the default. The measured cost was a platform forfait unrefreshed for
+// ten days, seen only as a run failing its first LLM call.
+//
+// The oracle is the STORE: the record must come back re-sealed around the
+// new token and re-stamped with the new deadline, since a refresh that
+// does not persist both leaves the next sweep exactly where this one
+// started.
+func TestOAuthRefreshWorker_RefreshesCodexWithNoConfiguredClientID(t *testing.T) {
+	freshRetrySchedule(t)
+	sealer, err := NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	st := NewMemoryOAuthStore()
+	seedCodexRecord(t, st, sealer, "alice", time.Now().Add(5*time.Minute))
+	// Far from expiry: must not be touched, so a sweep that refreshes
+	// everything indiscriminately cannot pass either.
+	seedCodexRecord(t, st, sealer, "bob", time.Now().Add(48*time.Hour))
+
+	newExp := time.Now().Add(6 * time.Hour).UTC().Truncate(time.Second)
+	srv := newFakeOAuthServer(`{"access_token":"`+
+		fakeJWT(t, map[string]any{"exp": newExp.Unix(), "client_id": "app_derived"})+
+		`","refresh_token":"rt.rotated"}`, http.StatusOK)
+	defer srv.Close()
+
+	// CodexClientID deliberately empty — the credential must supply it.
+	w := &OAuthRefreshWorker{
+		Store: st, Sealer: sealer, HTTP: redirectingClient(srv.URL), Lead: 30 * time.Minute,
+	}
+	n, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("refreshed count: got %d want 1 (alice only)", n)
+	}
+
+	rec, err := st.Get(context.Background(), "alice", OAuthKindCodex)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	plain, err := OpenOAuthPayload(sealer, "alice", OAuthKindCodex, rec.SealedPayload)
+	if err != nil {
+		t.Fatalf("unseal: %v", err)
+	}
+	view, err := ParseCodexView(plain)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if view.Tokens.RefreshToken != "rt.rotated" {
+		t.Errorf("stored refresh token = %q, want the rotated %q — the rotation was not persisted, "+
+			"so the next refresh replays a token the provider already retired",
+			view.Tokens.RefreshToken, "rt.rotated")
+	}
+	if rec.AccessTokenExpiresAt == nil {
+		t.Fatal("no stored expiry after the refresh — ExpiringBefore cannot return this record again")
+	}
+	if got := rec.AccessTokenExpiresAt.UTC(); !got.Equal(newExp) {
+		t.Errorf("stored expiry = %s, want the refreshed token's own exp %s", got, newExp)
+	}
+}

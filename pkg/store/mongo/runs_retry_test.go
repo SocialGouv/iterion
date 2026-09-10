@@ -9,6 +9,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -40,7 +41,7 @@ func retryTestStore(t *testing.T) *Store {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo retry tests")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	s, err := New(ctx, Config{
 		URI:      uri,
@@ -69,7 +70,7 @@ func seedFailedResumable(t *testing.T, s *Store, runID string) {
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 }
@@ -102,6 +103,9 @@ func TestRunRetry_ArmsFirstAttemptWithNoPriorState(t *testing.T) {
 	}
 	if !r.RetryState.RetryAfter.Equal(at) {
 		t.Errorf("retry_after = %v, want %v", r.RetryState.RetryAfter, at)
+	}
+	if r.RetryState.ScheduledAt == nil || r.RetryState.ScheduledAt.After(time.Now().UTC()) {
+		t.Errorf("scheduled_at = %v, want the persisted arm time", r.RetryState.ScheduledAt)
 	}
 	if r.RetryState.Code != "USAGE_LIMIT_BLOCKED" || r.RetryState.Reason != "usage_window" {
 		t.Errorf("reason/code = %q/%q, want usage_window/USAGE_LIMIT_BLOCKED", r.RetryState.Reason, r.RetryState.Code)
@@ -398,5 +402,111 @@ func TestRunRetry_StoreCapabilityIsDetectable(t *testing.T) {
 	s := retryTestStore(t)
 	if store.AsRunRetryStore(s) == nil {
 		t.Error("the Mongo store must satisfy store.RunRetryStore")
+	}
+}
+
+// TestRunRetry_ContinuationFollowsTheRetryLifecycle pins the promote/
+// demote pair: arming a retry IS the promotion to retry_armed (the
+// document must not claim it earlier — three branches of the runner's
+// arming decision arm nothing), and abandoning it demotes to final.
+// Without this canary both writes were mutant-survivable: nothing in
+// the repo asserted the continuation ever reaches a run document
+// through the retry lanes (adversarial gate F5).
+func TestRunRetry_ContinuationFollowsTheRetryLifecycle(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	const runID = "run-retry-continuation"
+	seedFailedResumable(t, s, runID)
+
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		return r
+	}
+	if r := load(); r.ContinuationState != "" {
+		t.Fatalf("pre-arm continuation = %q, want unknown", r.ContinuationState)
+	}
+
+	armed, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 3)
+	if err != nil || !armed {
+		t.Fatalf("ScheduleRunRetry = (%t, %v), want (true, nil)", armed, err)
+	}
+	if r := load(); r.ContinuationState != store.ContinuationRetryArmed {
+		t.Fatalf("post-arm continuation = %q, want retry_armed", r.ContinuationState)
+	}
+	// The arm must not have erased the transition's cause or invented an
+	// episode: it is a same-status bookkeeping write.
+	if r := load(); r.OutcomeSeq != 1 {
+		t.Fatalf("post-arm seq = %d, want 1", r.OutcomeSeq)
+	}
+
+	if err := s.AbandonRunRetry(ctx, runID, "attempts exhausted"); err != nil {
+		t.Fatalf("AbandonRunRetry: %v", err)
+	}
+	r := load()
+	if r.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("post-abandon continuation = %q, want final — a consumer must know nobody owns this run's future", r.ContinuationState)
+	}
+	if r.OutcomeSeq != 1 {
+		t.Fatalf("post-abandon seq = %d, want 1", r.OutcomeSeq)
+	}
+}
+
+// TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument pins the wire the
+// runner's last-attempt reservation rides (#922): the arming charges an
+// attempt with a CAS $inc, and the NEXT arming decides whether the budget
+// still has room by reading store.Run.RetryState.Attempts off LoadRun. If
+// that number were projected away, reset by the re-failure that precedes
+// each arming, or simply never persisted, the reservation would read zero
+// forever and silently degrade to the defect it exists to close — with
+// every unit test still green, because they feed the count by hand.
+//
+// The re-failure in the loop is the production sequence: a run wakes, fails
+// on the window again (FailRunResumable), and only then arms the next
+// attempt.
+func TestRunRetry_SpentAttemptsAreReadableFromTheRunDocument(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	const runID = "run-attempts-visible"
+	seedFailedResumable(t, s, runID)
+
+	const budget = 5
+	for want := 1; want <= budget; want++ {
+		if want > 1 {
+			// The wake failed again on the same window before re-arming.
+			if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "synthesize"}, "usage window exhausted", ""); err != nil {
+				t.Fatalf("re-fail before arm %d: %v", want, err)
+			}
+		}
+		scheduled, attempt, err := s.ScheduleRunRetry(ctx, runID,
+			time.Now().UTC().Add(time.Duration(want)*time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget)
+		if err != nil {
+			t.Fatalf("arm %d: %v", want, err)
+		}
+		if !scheduled || attempt != want {
+			t.Fatalf("arm %d: scheduled=%v attempt=%d, want true/%d", want, scheduled, attempt, want)
+		}
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun after arm %d: %v", want, err)
+		}
+		if r.RetryState == nil {
+			t.Fatalf("after arm %d: LoadRun returned no retry state — the reservation would read zero attempts spent", want)
+		}
+		if r.RetryState.Attempts != want {
+			t.Fatalf("after arm %d: LoadRun reports %d attempts spent, want %d — the number the arming is charged against must be the number the next decision reads",
+				want, r.RetryState.Attempts, want)
+		}
+	}
+
+	// And the count the run doc carries is exactly the one that closes the
+	// budget: the arming past it refuses.
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().UTC().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", budget); err != nil {
+		t.Fatalf("arm past budget: %v", err)
+	} else if scheduled {
+		t.Errorf("scheduled = true with %d attempts already spent against a budget of %d", budget, budget)
 	}
 }

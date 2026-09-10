@@ -22,15 +22,22 @@ import (
 // BotForgeLookup returns a bot's declared forge requirements (its manifest
 // forge: block). A nil result with a nil error means the bot exists but
 // declares no forge: block — it cannot be auto-provisioned. A non-nil error
-// means the bot could not be resolved. The server wires this to
-// botregistry; tests pass a closure.
-type BotForgeLookup func(botID string) (*bundle.ForgeRequirements, error)
+// means the bot could not be resolved. The server wires this to its bot
+// resolver; tests pass a closure.
+//
+// teamID is the tenant being provisioned FOR: the deliveries this webhook
+// triggers launch on that team's tier, so the requirements are read there
+// too. A team's own bot resolves on no other tier, and a fork's events and
+// scopes are the ones its runs actually need.
+type BotForgeLookup func(ctx context.Context, teamID, botID string) (*bundle.ForgeRequirements, error)
 
 // BotInvocationsLookup returns a bot's manifest invocations (the typed
 // routing contract — bundle.EffectiveInvocations). Used by Provision to build
 // the webhook CommandMap. An empty slice (or a nil lookup) leaves the command
-// index empty. The server wires this to botregistry; tests pass a closure.
-type BotInvocationsLookup func(botID string) ([]bundle.Invocation, error)
+// index empty. Same tenant contract as BotForgeLookup: the provisioned
+// CommandMap must name the commands the launched bundle declares, or a
+// `/command` routes to a bot that does not answer to it.
+type BotInvocationsLookup func(ctx context.Context, teamID, botID string) ([]bundle.Invocation, error)
 
 // Orchestrator turns "enable bot(s) X on repo Y of connection C" into the
 // concrete trio — an iterion webhooks.Config, a forge-side hook, and a
@@ -307,13 +314,13 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	frByBot := make(map[string]*bundle.ForgeRequirements, len(desiredBots))
 	invByBot := make(map[string][]bundle.Invocation, len(desiredBots))
 	for _, b := range desiredBots {
-		fr, err := o.Bots(b)
+		fr, err := o.Bots(ctx, req.TenantID, b)
 		if err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: resolve bot %q: %w", b, err)
 		}
 		var invs []bundle.Invocation
 		if o.Invocations != nil {
-			if invs, err = o.Invocations(b); err != nil {
+			if invs, err = o.Invocations(ctx, req.TenantID, b); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: resolve invocations for %q: %w", b, err)
 			}
 		}
@@ -329,12 +336,25 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, fmt.Errorf("forge: bots %v declare no forge events to subscribe to", desiredBots)
 	}
 
-	// Idempotent no-op: same bots + same events already provisioned. Still
-	// reconcile the per-bot token bindings before returning — an integration
-	// provisioned before the binding fix landed has none, so the board-launch
-	// path can't authenticate until a re-provision backfills them. Cheap and
-	// idempotent (ensureBotBinding no-ops when the binding already matches).
-	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) {
+	// The address the forge SHOULD be calling, which is not a property of the
+	// request: it moves when the deployment's public URL moves, or when a
+	// connection starts (or stops) pinning its own base. Comparing it here is
+	// what makes the no-op below an actual reconcile — a hook left on the old
+	// host is a repo whose deliveries stop, and re-running provisioning is the
+	// gesture an operator reaches for to repair exactly that.
+	desiredHookURL := ""
+	if hasExisting {
+		desiredHookURL = o.inboundURL(conn, existing.WebhookID)
+	}
+
+	// Idempotent no-op: same bots, same events AND the hook already points
+	// where it should. Still reconcile the per-bot token bindings before
+	// returning — an integration provisioned before the binding fix landed
+	// has none, so the board-launch path can't authenticate until a
+	// re-provision backfills them. Cheap and idempotent (ensureBotBinding
+	// no-ops when the binding already matches).
+	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) &&
+		existing.HookURL == desiredHookURL {
 		for _, b := range desiredBots {
 			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
@@ -482,14 +502,27 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	// Build the command→bot route index from the co-enabled bots' command
 	// invocations. Rejects an un-disambiguated cross-bot command collision.
-	commandMap, err := o.buildCommandMap(desiredBots)
+	commandMap, err := o.buildCommandMap(ctx, req.TenantID, desiredBots)
 	if err != nil {
 		return ProvisionResult{}, err
 	}
 
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
-	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot)
+	// The derivation only owns UNPINNED syncs: an operator's explicit
+	// review_on_sync set (ReviewOnSyncPinned, stamped by the webhook API) is
+	// never silently replaced — in either direction (Rf2f99f).
+	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot) && !operatorGateDisabled(operatorVars)
+	reviewOnSyncPinned := hasPrevCfg && prevCfg.ReviewOnSyncPinned
+	if reviewOnSyncPinned {
+		reviewOnSync = prevCfg.ReviewOnSync
+	}
+	// Same release-visibility rule as the backfill: a full provision that
+	// rebuilds the config without the sync a previous one carried is the
+	// definitive moment of a repo-wide posture change.
+	if hasPrevCfg && prevCfg.ReviewOnSync && !reviewOnSync && o.LogWarn != nil {
+		o.LogWarn("forge: webhook %s (%s): rebuilt without review_on_sync — pushes no longer auto-review; re-review is on-demand", prevCfg.ID, req.RepoFullName)
+	}
 
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
@@ -524,8 +557,14 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		AuthorAllowlist:    authorAllowlist,
 		LabelAllowlist:     operatorLabels,
 		ReviewOnSync:       reviewOnSync,
+		ReviewOnSyncPinned: reviewOnSyncPinned,
 		ForgeBaseURL:       conn.BaseURL(),
-		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
+		// The burst must absorb a full review fan-out: one submitted review
+		// fires one pull_request_review_comment delivery PER inline comment,
+		// near-simultaneously, and the bucket is charged BEFORE the handler
+		// can filter the echoes — overflow answers 429, which GitHub never
+		// redelivers and counts toward auto-disabling the hook.
+		RateLimit:          webhooks.Rate{Rate: 2, Burst: 60},
 		LaunchVars:         nilIfEmpty(launchVars),
 		OperatorLaunchVars: nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:            operatorOverlap,
@@ -551,6 +590,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		if hasPrevCfg {
 			cfg.CreatedAt = prevCfg.CreatedAt
 			cfg.CreatedBy = prevCfg.CreatedBy
+			carryOperatorWebhookSettings(&cfg, prevCfg)
 		}
 		cfg.RotatedAt = &now
 		if err := o.Webhooks.Update(ctx, cfg); err != nil {
@@ -571,7 +611,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		o.rollbackConfig(ctx, createdConfig, webhookID)
 		return ProvisionResult{}, fmt.Errorf("forge: build admin client: %w", err)
 	}
-	hookURL := o.inboundURL(conn.Provider, webhookID)
+	hookURL := o.inboundURL(conn, webhookID)
 	spec := HookSpec{URL: hookURL, Secret: plaintext, Events: nativeEvents, Active: true}
 
 	// existing is the zero RepoIntegration when !hasExisting, so its HookID
@@ -606,6 +646,20 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ri.ID = existing.ID
 		ri.CreatedAt = existing.CreatedAt
 		ri.CreatedBy = existing.CreatedBy
+		// The literal above is built from the REQUEST, so every field the
+		// provisioner does not own is absent from it and the Update — which
+		// replaces the whole document — erases it. These three are set only
+		// through PATCH /forge/integrations/{iid}; provisioning has no
+		// opinion about them and must carry them through. (The webhook
+		// config half of this problem is carryOperatorWebhookSettings.)
+		//
+		// MinAuthorRole is the one that matters most: it is the trust
+		// threshold deciding whether a synced issue is stamped triage:auto
+		// or parked needs:approval, so dropping it does not fail — it
+		// silently RELAXES an operator's tightened gate back to the default.
+		ri.SyncIssuesEnabled = existing.SyncIssuesEnabled
+		ri.LastSyncedAt = existing.LastSyncedAt
+		ri.MinAuthorRole = existing.MinAuthorRole
 		if err := o.Integrations.Update(ctx, ri); err != nil {
 			return ProvisionResult{}, fmt.Errorf("forge: update integration: %w", err)
 		}
@@ -836,9 +890,13 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // syncSchedules replaces the integration's ScheduledBot rows with one per
 // schedule invocation (with a suggested cron) of the enabled bots, so the
 // cloud scheduler fires them. Clean-slate (delete-then-create) keeps it
-// idempotent across re-provisions; operator tuning on surviving bots'
-// rows (pause state, overlap/guard policy, a customised cron) is carried
-// over by bot id so re-provisioning one bot doesn't reset the others.
+// idempotent across re-provisions; what a surviving bot's row accumulated
+// is carried over by bot id, so re-provisioning one bot resets nothing on
+// the others: its id (runs record `source.schedule_id` and the audit trail
+// targets it), the operator's vars merged OVER the manifest's default_vars
+// (a bot whose scheduled behaviour hinges on a var — `open_mr`, `mode` —
+// must not silently revert to its defaults), the last fire, the pause
+// state, the overlap/guard policy and a customised cron.
 // No-op when no schedule store is wired.
 func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
 	if o.Schedules == nil {
@@ -887,6 +945,9 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				if strings.TrimSpace(crons[bot]) == "" && strings.TrimSpace(prev.Cron) != "" {
 					sb.Cron = prev.Cron
 				}
+				sb.ID = prev.ID
+				sb.Vars = mergeScheduleVars(inv.Schedule.DefaultVars, prev.Vars)
+				sb.LastFireAt = prev.LastFireAt
 				sb.Disabled = prev.Disabled
 				sb.Overlap = prev.Overlap
 				sb.MaxConcurrent = prev.MaxConcurrent
@@ -910,6 +971,23 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 		}
 	}
 	return nil
+}
+
+// mergeScheduleVars lays the operator's vars over the manifest's
+// default_vars: a default only fills a key the operator never set. nil when
+// neither side has anything, so an untouched row stays `vars: null`.
+func mergeScheduleVars(defaults, operator map[string]string) map[string]string {
+	if len(defaults) == 0 && len(operator) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(defaults)+len(operator))
+	for k, v := range defaults {
+		out[k] = v
+	}
+	for k, v := range operator {
+		out[k] = v
+	}
+	return out
 }
 
 func keysOfInvByBot(m map[string][]bundle.Invocation) []string {
@@ -970,8 +1048,17 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	return o.Connections.Delete(ctx, connID)
 }
 
-func (o *Orchestrator) inboundURL(p Provider, webhookID string) string {
-	return strings.TrimRight(o.PublicURL, "/") + "/api/webhooks/" + string(p) + "/" + webhookID
+// inboundURL builds the hook URL the forge will call back on. The single
+// place a hook address is decided, so the per-connection override needs to
+// exist in exactly one spot: a connection that pins WebhookBaseURL keeps
+// its own base, everyone else follows the deployment's public URL and moves
+// with it.
+func (o *Orchestrator) inboundURL(conn Connection, webhookID string) string {
+	base := conn.WebhookBaseURL
+	if base == "" {
+		base = o.PublicURL
+	}
+	return strings.TrimRight(base, "/") + "/api/webhooks/" + string(conn.Provider) + "/" + webhookID
 }
 
 // ---- small helpers ----
@@ -995,6 +1082,129 @@ func managedSecretName(conn *Connection) string {
 		short = short[:8]
 	}
 	return "forge_" + string(conn.Provider) + "_" + short
+}
+
+// carryOperatorWebhookSettings preserves the operator-settable webhook fields
+// this provision does NOT stamp. Re-provisioning rebuilds the whole Config
+// literal, so a field that is neither stamped from the integration nor carried
+// here is silently reset the next time any bot is enabled or disabled on the
+// repo — and the webhook PATCH endpoint that sets these has no ProvisionedBy
+// guard, so they are settable precisely on the managed configs this rebuilds.
+//
+// It is the complement of the operator-settings resolution above (LaunchVars /
+// Overlap / HoldLabels / LabelAllowlist), which threads through the
+// RepoIntegration because the provisioning API can also set those. These have
+// no integration half: preserving the previous config IS their storage.
+//
+// Deliberately NOT carried: the bot scope (BotIDs / WildcardBots /
+// DefaultBotID / BotRules / CommandMap), the allowlists and the routing table —
+// those are what a provision exists to recompute from the enabled bots.
+// Name is provision-owned (provisionedWebhookName) and LaunchVars threads
+// through the RepoIntegration (the operator-settings resolution above), so
+// neither belongs here.
+//
+// INVARIANT: a field listed here must have NO ProvisionRequest input. The
+// carry is an unconditional overwrite placed after the literal, so the day one
+// of these becomes settable through the provisioning API, it has to move to
+// the operator-settings resolution above (the LaunchVars / HoldLabels shape) or
+// the carry would silently override the caller. Two fields are CONDITIONAL
+// exceptions, each commented in place: RateLimit (zero means never set) and
+// MinReplierRole (a provision-derived floor merged stricter-of).
+// provisionRateDefaults are every RateLimit value the provisioner itself has
+// ever stamped on a config (current default last). The carry uses it to tell
+// a provisioner-owned value (migrates to the current default) from an
+// operator's pre-RateLimitPinned PATCH (adopted as pinned): nothing but the
+// provisioner and the PATCH route ever writes the field, so an unpinned
+// value outside this set can only be an operator's explicit choice.
+var provisionRateDefaults = []webhooks.Rate{
+	{Rate: 1, Burst: 10},
+	{Rate: 2, Burst: 60},
+}
+
+func isProvisionRateDefault(r webhooks.Rate) bool {
+	for _, d := range provisionRateDefaults {
+		if r == d {
+			return true
+		}
+	}
+	return false
+}
+
+func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
+	// Enabled is the operator's per-repo kill switch (PATCH {"enabled":false}
+	// → every inbound delivery answers 410) — a re-provision must not
+	// silently re-arm the lanes it paused. Safe to carry unconditionally:
+	// this function only runs when a previous config exists, so the
+	// provision literal's Enabled:true still governs first creation, and
+	// re-enabling goes through the same PATCH that paused it.
+	cfg.Enabled = prev.Enabled
+	cfg.ReviewRequestLogins = prev.ReviewRequestLogins
+	cfg.AuthorizedRepliers = prev.AuthorizedRepliers
+	cfg.KeyOverrides = prev.KeyOverrides
+	cfg.MonthlyCallLimit = prev.MonthlyCallLimit
+	cfg.AutoImplementOnOpen = prev.AutoImplementOnOpen
+	cfg.BranchImproveAsPR = prev.BranchImproveAsPR
+	cfg.RetryUsageWindow = prev.RetryUsageWindow
+	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
+	cfg.RetryMaxWait = prev.RetryMaxWait
+	cfg.RetryJitter = prev.RetryJitter
+	// The liveness stamp is written by MarkUsed with a $set; the rebuild
+	// REPLACES the whole document, so without this every re-provision erases
+	// "when did this webhook last receive anything" — the one field an
+	// operator reads to tell a silent hook from an idle repo.
+	cfg.LastUsedAt = prev.LastUsedAt
+
+	// Rate limit: enforced by the inbound middleware, so losing an operator's
+	// raise means deliveries silently 429 and reviews never launch — but an
+	// UNPINNED provisioner default, if carried, would freeze every existing
+	// webhook on the burst it was born with, making a default bump
+	// unreachable by re-provision (the review-comment fan-out needs the
+	// raised burst precisely on already-provisioned repos). So: an API-set
+	// value (RateLimitPinned, same rule as ReviewOnSyncPinned) survives the
+	// rebuild; a stored value the provisioner NEVER stamped can only be an
+	// operator's PATCH from before the pin existed — adopted as pinned
+	// rather than silently replaced (an explicit choice, raise or
+	// deliberate throttle alike); only recognized provisioner defaults
+	// migrate to the current one.
+	switch {
+	case prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}):
+		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	case !prev.RateLimitPinned && prev.RateLimit != (webhooks.Rate{}) && !isProvisionRateDefault(prev.RateLimit):
+		cfg.RateLimit = prev.RateLimit
+		cfg.RateLimitPinned = true
+	default:
+		cfg.RateLimitPinned = prev.RateLimitPinned
+	}
+
+	// MinReplierRole: a conditional merge, never an overwrite — the provision
+	// stamps a manifest-derived FLOOR (the max requirement over the enabled
+	// bots), which a blind carry would override. But the field is also
+	// PATCH-settable with no ProvisionedBy guard, and an operator's RAISE is
+	// a security control every replier gate reads (`/command`, `/revi`, the
+	// re-request button); resetting it to the derived value on the next bot
+	// toggle silently lowers the floor. Keep the stricter of the two — with
+	// an unset prev deferring to the derivation: the gates read "" as
+	// developer, but the DERIVATION ranks "" as zero (webhookRoleRank) so a
+	// manifest may legitimately land a sub-developer floor, and a never-set
+	// prev must not discard it (R948c68).
+	if prev.MinReplierRole != "" &&
+		webhooks.ReplierRoleRank(prev.MinReplierRole) > webhooks.ReplierRoleRank(cfg.MinReplierRole) {
+		cfg.MinReplierRole = prev.MinReplierRole
+	}
+
+	// Secret overrides MERGE rather than replace: the provision owns the keys
+	// it derives from the enabled bots (rewriting them is how a rotation
+	// lands), while an operator's own pin — a bot posting under a different
+	// forge identity — has nowhere else to live.
+	for k, v := range prev.SecretOverrides {
+		if _, stamped := cfg.SecretOverrides[k]; !stamped {
+			if cfg.SecretOverrides == nil {
+				cfg.SecretOverrides = map[string]string{}
+			}
+			cfg.SecretOverrides[k] = v
+		}
+	}
 }
 
 func singleBotDefault(bots []string) string {
@@ -1121,27 +1331,80 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 		return nil
 	}
 	want := resolveBotRules(bots, frByBot, invByBot)
-	wantSync := anyBotGatesMerges(bots, frByBot)
 	cfg, err := o.Webhooks.Get(ctx, webhookID)
 	if err != nil {
 		// A missing config is reported by the surrounding provision paths; a
 		// backfill is best-effort reconciliation, not the authority on it.
 		return nil //nolint:nilerr
 	}
-	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) {
+	// An operator pin of gate_enabled=false is an explicit per-repo decision
+	// to run without a merge gate — the "gate needs re-review-on-sync to
+	// survive" derivation no longer applies, in EITHER direction: don't force
+	// sync on, and release a sync the derivation itself had forced. A sync
+	// the operator set EXPLICITLY through the webhook API
+	// (cfg.ReviewOnSyncPinned) is not the derivation's to touch at all — an
+	// explicit choice is never silently replaced (Rf2f99f); an unpinned
+	// value is presumed derivation-owned.
+	gateOff := operatorGateDisabled(cfg.OperatorLaunchVars)
+	wantSync := anyBotGatesMerges(bots, frByBot) && !gateOff && !cfg.ReviewOnSyncPinned
+	dropSync := gateOff && cfg.ReviewOnSync && !cfg.ReviewOnSyncPinned
+	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) && !dropSync {
 		return nil
 	}
 	cfg.BotRules = want
-	// Only ever turned ON: an operator who deliberately disabled re-review on
-	// a repo whose bots gate must not have it silently re-enabled under them.
+	// With no gate pin this only ever turns ON: an operator who deliberately
+	// disabled re-review on a repo whose bots gate must not have it silently
+	// re-enabled under them.
 	if wantSync {
 		cfg.ReviewOnSync = true
+	}
+	if dropSync {
+		cfg.ReviewOnSync = false
+		// The moment the release becomes definitive is the moment to say so:
+		// this is a repo-wide posture change (every co-enabled gating bot
+		// stops re-reviewing pushes), and it is reachable from an ordinary
+		// launch-vars update.
+		if o.LogWarn != nil {
+			o.LogWarn("forge: webhook %s: operator pinned gate_enabled off — releasing forced review_on_sync (pushes no longer auto-review; re-review is on-demand)", webhookID)
+		}
 	}
 	cfg.UpdatedAt = o.clock()
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
 		return fmt.Errorf("forge: backfill bot rules on webhook %s: %w", webhookID, err)
 	}
 	return nil
+}
+
+// GateValueDisables classifies one EXPLICIT `gate_enabled` pin: true when
+// the value leaves the gating bot silent. It deliberately mirrors the
+// gating bots' own truthy test (`'1','true','yes','on'` — bots/review-pr
+// publish step): the classification must track "will the bot post a
+// status?" EXACTLY. Any value that does not affirmatively enable the gate
+// counts as disabling — including the empty string (the runtime coerces ""
+// to false) and unparsable values (passed through raw, failing the bot's
+// truthy test). Shared with pkg/server's gate arms (claim, reconciler,
+// auto-fix), so "the bot won't answer" and "the machinery must not arm"
+// can never diverge.
+func GateValueDisables(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return false
+	}
+	return true
+}
+
+// operatorGateDisabled reports whether the repo's operator launch vars pin
+// the merge gate off. The pin is what turns the review bot advisory-only —
+// the publish step skips the commit status and the server-side gate
+// machinery never arms — so the anyBotGatesMerges derivation must not force
+// re-review-on-sync for such a repo: the forced sync exists solely to keep
+// a REQUIRED check alive across pushes, and a silent bot with a
+// still-forced re-review is the deadlock-at-full-cost shape (every push
+// reviewed, the required check never answered). An ABSENT key keeps the
+// gate derivation untouched.
+func operatorGateDisabled(vars map[string]string) bool {
+	v, ok := vars["gate_enabled"]
+	return ok && GateValueDisables(v)
 }
 
 // anyBotGatesMerges reports whether any of these bots declares the `statuses`
@@ -1232,13 +1495,13 @@ func sortedKeys(set map[string]bool) []string {
 // states (the review-pr vs revi-converse pattern); any other collision is a
 // provision error. Returns nil when no bot declares a command invocation (or
 // the Invocations lookup isn't wired), leaving Config.CommandMap unset.
-func (o *Orchestrator) buildCommandMap(bots []string) (map[string][]webhooks.CommandRoute, error) {
+func (o *Orchestrator) buildCommandMap(ctx context.Context, teamID string, bots []string) (map[string][]webhooks.CommandRoute, error) {
 	if o.Invocations == nil {
 		return nil, nil
 	}
 	out := map[string][]webhooks.CommandRoute{}
 	for _, b := range bots {
-		invs, err := o.Invocations(b)
+		invs, err := o.Invocations(ctx, teamID, b)
 		if err != nil {
 			return nil, fmt.Errorf("forge: resolve invocations for %q: %w", b, err)
 		}

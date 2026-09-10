@@ -134,9 +134,30 @@ func TestApplyDecisionDedupsMonitors(t *testing.T) {
 	c := newBareCoordinator(t, Spec{Monitors: []Monitor{{TextContains: "impossible"}}}, &stubEval{}, nil)
 	m := Monitor{EventType: "tool_error", ToolName: "Bash"}
 	for i := 0; i < 5; i++ {
-		c.applyDecision(&Decision{Watch: []Monitor{m, {TextContains: "impossible"}}})
+		c.applyDecision(&Decision{Watch: []Monitor{m, {TextContains: "impossible"}}}, "test-trigger")
 	}
 	if got := len(c.monitors); got != 2 {
 		t.Fatalf("monitors grew to %d; want 2 (1 seed + 1 registered, deduped)", got)
+	}
+}
+
+// cost_gt must also fire on a mid-node usage_progress sample — the
+// signal that exists precisely because a budget_warning only lands once
+// the node's spend is recorded, after the node completes. An unpriced
+// sample (no "used" field: unknown model — zero means unknown, never
+// free) cannot assert a dollar threshold and must not match.
+func TestCostGtMatchesUsageProgress(t *testing.T) {
+	m := Monitor{CostGt: 5}
+	if !m.matches(ev(1, store.EventUsageProgress, "review", map[string]any{"tokens": 40000, "used": 6.2, "model": "claude-opus-5"})) {
+		t.Error("cost_gt must match a usage_progress sample whose used exceeds the threshold")
+	}
+	if m.matches(ev(2, store.EventUsageProgress, "review", map[string]any{"tokens": 40000, "used": 4.9, "model": "claude-opus-5"})) {
+		t.Error("cost_gt matched a usage_progress sample under the threshold")
+	}
+	if m.matches(ev(3, store.EventUsageProgress, "review", map[string]any{"tokens": 900000})) {
+		t.Error("cost_gt matched an UNPRICED usage_progress sample — tokens are not dollars")
+	}
+	if !m.matches(ev(4, store.EventBudgetWarning, "review", map[string]any{"used": 7.0})) {
+		t.Error("budget_warning matching must be unchanged")
 	}
 }

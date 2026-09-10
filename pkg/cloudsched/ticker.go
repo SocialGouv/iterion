@@ -102,8 +102,9 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 		if lerr != nil {
 			t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
 		}
+		t.recordLaunchVerdict(ctx, sb, lerr, now)
 		if t.Audit != nil {
-			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.TickFired)
+			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.LaunchDecision(lerr))
 			rec.ScheduleName = sb.BotID
 			rec.BotID = sb.BotID
 			rec.TenantID = sb.TenantID
@@ -115,6 +116,25 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 		}
 	}
 	return fired, nil
+}
+
+// recordLaunchVerdict persists on the schedule itself what became of the tick
+// that just consumed its slot: a refusal — an org launch-gate denial above all
+// — raises last_error, and the next tick that launches clears it. Written only
+// when the verdict CHANGES, so a schedule that has been refused for a week
+// costs one write, not one per minute. A failed write is logged, never fatal:
+// the slot is already consumed and the audit row still carries the error.
+func (t *Ticker) recordLaunchVerdict(ctx context.Context, sb ScheduledBot, launchErr error, now time.Time) {
+	msg := ""
+	if launchErr != nil {
+		msg = launchErr.Error()
+	}
+	if msg == sb.LastError {
+		return
+	}
+	if err := t.Store.MarkLaunchError(ctx, sb.ID, msg, now); err != nil {
+		t.warn("recording the launch verdict of %s: %v", sb.ID, err)
+	}
 }
 
 // Run loops Tick every Interval until ctx is cancelled. Start one per replica.

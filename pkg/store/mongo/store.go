@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -38,17 +37,19 @@ const SchemaVersion = 1
 // Collection names. Plan §D pins these so monitoring dashboards and
 // migration tooling can rely on them.
 const (
-	colRuns         = "runs"
-	colEvents       = "events"
-	colRunSeq       = "run_seq"
-	colRunLogs      = "run_logs"
-	colInteractions = "interactions"
-	colUserMessages = "user_messages"
-	colRunGitMeta   = "run_gitmeta"
-	colRunPlans     = "run_plans"
-	colRunNotes     = "run_notes"
-	colRunTurns     = "run_turns"
-	colRunTags      = "run_tags"
+	colRuns           = "runs"
+	colRouteDecisions = "run_route_decisions"
+	colEvents         = "events"
+	colRunSeq         = "run_seq"
+	colRunLogs        = "run_logs"
+	colInteractions   = "interactions"
+	colUserMessages   = "user_messages"
+	colRunGitMeta     = "run_gitmeta"
+	colRunPlans       = "run_plans"
+	colRunNotes       = "run_notes"
+	colRunTurns       = "run_turns"
+	colRunTags        = "run_tags"
+	colRetryCircuits  = "retry_circuits"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -102,6 +103,7 @@ type Store struct {
 	client             *mongo.Client
 	db                 *mongo.Database
 	runs               *mongo.Collection
+	routeDecisions     *mongo.Collection
 	events             *mongo.Collection
 	runSeq             *mongo.Collection
 	runLogs            *mongo.Collection
@@ -112,6 +114,7 @@ type Store struct {
 	runNotes           *mongo.Collection
 	runTurns           *mongo.Collection
 	runTags            *mongo.Collection
+	retryCircuits      *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -191,11 +194,9 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: connect: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := cli.Ping(pingCtx, readpref.Primary()); err != nil {
+	if err := pingPrimary(ctx, cli, defaultPingPolicy); err != nil {
 		_ = cli.Disconnect(context.Background())
-		return nil, fmt.Errorf("store/mongo: ping: %w", err)
+		return nil, err
 	}
 
 	maxAttach := cfg.MaxAttachmentBytes
@@ -211,6 +212,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		client:             cli,
 		db:                 db,
 		runs:               db.Collection(colRuns),
+		routeDecisions:     db.Collection(colRouteDecisions),
 		events:             db.Collection(colEvents),
 		runSeq:             db.Collection(colRunSeq),
 		runLogs:            db.Collection(colRunLogs),
@@ -221,6 +223,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runNotes:           db.Collection(colRunNotes),
 		runTurns:           db.Collection(colRunTurns),
 		runTags:            db.Collection(colRunTags),
+		retryCircuits:      db.Collection(colRetryCircuits),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -331,6 +334,15 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// events collection: unique (run_id, seq) is the race safety net.
 	// (tenant_id, run_id, seq) accelerates change-stream filters
 	// without breaking the existing seq-only sort.
+	// One decision per (run, episode): the unique key IS the router's
+	// idempotence — a re-offered episode trips the duplicate and stops.
+	if _, err := s.routeDecisions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "outcome_seq", Value: 1}}, Options: options.Index().SetName("run_episode_unique").SetUnique(true)},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "claimed_at", Value: -1}}, Options: options.Index().SetName("tenant_claimed_desc")},
+	}); err != nil {
+		return fmt.Errorf("store/mongo: route decision indexes: %w", err)
+	}
+
 	eventIdx := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "type", Value: 1}}, Options: options.Index().SetName("run_type")},
@@ -453,6 +465,26 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_tags index: %w", err)
+	}
+
+	// retry_circuits: one tenant-scoped document per workflow/revision key.
+	// The unique key makes concurrent runner pods converge on one durable
+	// breaker rather than keeping independent in-memory counters.
+	retryCircuitIdx := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
+		},
+		{
+			// A circuit is ephemeral coordination state keyed by workflow hash.
+			// Reclaim inactive revisions well after the maximum normal cooldown.
+			Keys:    bson.D{{Key: "updated_at", Value: 1}},
+			Options: options.Index().SetName("retry_circuit_updated_at_ttl").SetExpireAfterSeconds(30 * 24 * 60 * 60),
+		},
+	}
+	_, err = s.retryCircuits.Indexes().CreateMany(ctx, retryCircuitIdx)
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure retry_circuits index: %w", err)
 	}
 
 	return nil

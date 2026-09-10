@@ -1,0 +1,38 @@
+## typed_fail_mini.bot — fixture for the typed `fail` node (#739).
+##
+## A deterministic gate routes to one of two named failure nodes. The run's
+## own `failure_code` / `error` are the readout: without the typed node they
+## would both read FAIL_NODE / "workflow reached fail node", which is exactly
+## the silence the ticket is about.
+##
+## `plan_exhausted` declares `resumable: true` — its cure is "raise the cap
+## and continue", so making the operator re-pay the phase already completed
+## would defeat the guard.
+
+schema gauge:
+  pct: int
+  exhausted: bool
+
+compute plan_budget_gate:
+  output: gauge
+  expr:
+    pct: "77"
+    exhausted: "true"
+
+fail plan_exhausted:
+  description: "the plan phase outgrew its share of the budget"
+  code: PLAN_BUDGET_EXHAUSTED
+  message: "planning used {{outputs.plan_budget_gate.pct}}% of max_duration"
+  resumable: true
+
+fail not_actionable:
+  code: LOT_NOT_ACTIONABLE
+  message: "nothing in this lot is actionable"
+
+workflow typed_fail_mini:
+  worktree: none
+  sandbox: none
+  entry: plan_budget_gate
+
+  plan_budget_gate -> plan_exhausted when exhausted
+  plan_budget_gate -> not_actionable else

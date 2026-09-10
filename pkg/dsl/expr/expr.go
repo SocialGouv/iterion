@@ -21,11 +21,15 @@
 //
 // The path namespaces recognized by the evaluator depend on the Context:
 // `vars`, `input`, `outputs`, `artifacts`, `loop.<name>.{iteration,max,previous_output[.field]}`,
-// and `run.{id}` are the standard ones.
+// and `run.<member>` (the run's identity, consumption and effective budget
+// caps — the vocabulary is pkg/runtime's RunNamespaceMembers) are the
+// standard ones.
 //
 // Builtin functions: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
 // `if(cond, then, else)`, plus the total array/map helpers `sort`, `keys`,
-// `values`, `slice`, `sum`, `min`, `max`, `flatten`. The bounded higher-order
+// `values`, `slice`, `sum`, `min`, `max`, `flatten`, and the numeric
+// `floor`, `round` (a number to the int64 an `int` field expects: floor
+// towards negative infinity, round half away from zero). The bounded higher-order
 // combinators `map`, `filter`, `reduce` take a `=>` lambda whose parameter is a
 // local binding; the lambda is not a first-class value (it can only appear at a
 // combinator call site, applies once per element of a finite slice, and cannot
@@ -823,6 +827,12 @@ func (p *parser) parseFuncCallArgs(name string) (node, error) {
 		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, p.cur.value)
 	}
 	p.advance() // consume ')'
+	// Arity is an authoring error like an unknown name, and belongs at the
+	// same boundary: a call the evaluator cannot satisfy must never reach a
+	// compiled workflow, where it costs a sandbox and a clone to discover.
+	if err := checkArity(name, len(args)); err != nil {
+		return nil, err
+	}
 	return &funcCallNode{name: name, args: args}, nil
 }
 
@@ -1343,25 +1353,84 @@ func mulCheckedInt64(a, b int64) (int64, bool) {
 // Builtin functions
 // ---------------------------------------------------------------------------
 
+// builtin is one entry of the function registry: the implementation plus
+// the argument counts it accepts. The arity lives HERE, beside the
+// dispatch, so the parser (which refuses a bad call up front) and the
+// evaluator (which dispatches) read one declaration. A second copy would
+// drift, and the drift reads as "it compiled, then died mid-run".
+type builtin struct {
+	fn func(args []any) (any, error)
+	// min is the smallest accepted argument count; max the largest, or
+	// arityUnbounded when the builtin is variadic.
+	min, max int
+}
+
+// arityUnbounded marks a builtin with no upper bound on its arguments.
+const arityUnbounded = -1
+
 // builtins is the function registry. Kept private — extending the language
 // is a deliberate act, not an accidental side-effect of importing the
 // package. Future additions should live here.
-var builtins = map[string]func(args []any) (any, error){
-	"length":   builtinLength,
-	"concat":   builtinConcat,
-	"unique":   builtinUnique,
-	"contains": builtinContains,
-	"join":     builtinJoin,
-	"tail":     builtinTail,
-	"if":       builtinIf,
-	"sort":     builtinSort,
-	"keys":     builtinKeys,
-	"values":   builtinValues,
-	"slice":    builtinSlice,
-	"sum":      builtinSum,
-	"min":      builtinMin,
-	"max":      builtinMax,
-	"flatten":  builtinFlatten,
+var builtins = map[string]builtin{
+	"length":   {builtinLength, 1, 1},
+	"concat":   {builtinConcat, 1, arityUnbounded},
+	"unique":   {builtinUnique, 1, 1},
+	"contains": {builtinContains, 2, 2},
+	"join":     {builtinJoin, 2, 2},
+	"tail":     {builtinTail, 2, 2},
+	"if":       {builtinIf, 3, 3},
+	"sort":     {builtinSort, 1, 1},
+	"keys":     {builtinKeys, 1, 1},
+	"values":   {builtinValues, 1, 1},
+	"slice":    {builtinSlice, 3, 3},
+	"sum":      {builtinSum, 1, 1},
+	"min":      {builtinMin, 1, arityUnbounded},
+	"max":      {builtinMax, 1, arityUnbounded},
+	"flatten":  {builtinFlatten, 1, 1},
+	"floor":    {builtinFloor, 1, 1},
+	"round":    {builtinRound, 1, 1},
+}
+
+// ArityError reports a builtin call whose argument count the evaluator
+// cannot satisfy. Typed so a compiler raises its own diagnostic instead of
+// pattern-matching a message: the whole point is that an old engine refuses
+// a bot authored against a newer one BEFORE the run starts.
+type ArityError struct {
+	Func string
+	Got  int
+	Min  int
+	Max  int // arityUnbounded when the builtin is variadic
+}
+
+func (e *ArityError) Error() string {
+	switch {
+	case e.Max == arityUnbounded:
+		return fmt.Sprintf("expr: %s() takes at least %s, got %d", e.Func, plural(e.Min), e.Got)
+	case e.Min == e.Max:
+		return fmt.Sprintf("expr: %s() takes %s, got %d", e.Func, plural(e.Min), e.Got)
+	default:
+		return fmt.Sprintf("expr: %s() takes %d to %s, got %d", e.Func, e.Min, plural(e.Max), e.Got)
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "1 argument"
+	}
+	return fmt.Sprintf("%d arguments", n)
+}
+
+// checkArity validates a call against the registry. Reports nil for a name
+// that is not a builtin — the unknown-function check owns that answer.
+func checkArity(name string, got int) error {
+	b, ok := builtins[name]
+	if !ok {
+		return nil
+	}
+	if got < b.min || (b.max != arityUnbounded && got > b.max) {
+		return &ArityError{Func: name, Got: got, Min: b.min, Max: b.max}
+	}
+	return nil
 }
 
 func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
@@ -1383,12 +1452,18 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		return evalNode(n.args[2], st)
 	}
 
-	fn, ok := builtins[n.name]
+	b, ok := builtins[n.name]
 	if !ok {
 		// Belt-and-suspenders: parser already rejects unknown names, but
 		// keep the runtime check in case an AST is constructed by other
 		// means in the future.
 		return nil, fmt.Errorf("expr: unknown function %q", n.name)
+	}
+	// Same belt for the arity: the registry is the one authority the parser
+	// and this dispatch share, so an AST built by other means is refused
+	// here on the same terms.
+	if err := checkArity(n.name, len(n.args)); err != nil {
+		return nil, err
 	}
 	args := make([]any, len(n.args))
 	for i, a := range n.args {
@@ -1398,7 +1473,7 @@ func evalFuncCall(n *funcCallNode, st *evalState) (any, error) {
 		}
 		args[i] = v
 	}
-	return fn(args)
+	return b.fn(args)
 }
 
 func builtinLength(args []any) (any, error) {
@@ -1728,16 +1803,34 @@ func builtinSum(args []any) (any, error) {
 
 // builtinMin / builtinMax return the smallest / largest numeric element, or nil
 // for an empty array.
+//
+// Two call shapes, because an author reaches for whichever fits the value in
+// hand: ONE array argument (`min(input.nums)`), or two or more scalars
+// (`min(a, b)`). The scalar form is what a clamp is written with —
+// `min(max(floor, cap * ratio), cap * 0.5)` — and without it the same two
+// subexpressions have to be spelled out four times inside nested `if`s, which
+// is how a deterministic guard stops being reviewable. Arguments are FLATTENED
+// one level, so `max(list, 7)` reads the list's elements alongside the scalar.
 func builtinMin(args []any) (any, error) { return minMax(args, "min") }
 func builtinMax(args []any) (any, error) { return minMax(args, "max") }
 
 func minMax(args []any, which string) (any, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("expr: %s() takes 1 argument, got %d", which, len(args))
+	if len(args) == 0 {
+		return nil, fmt.Errorf("expr: %s() takes an array or two or more values, got none", which)
 	}
-	arr, err := toElemSlice(args[0])
-	if err != nil {
-		return nil, fmt.Errorf("expr: %s() expects array, %w", which, err)
+	var arr []any
+	for _, a := range args {
+		elems, err := toElemSlice(a)
+		if err != nil {
+			// A scalar argument is itself the element, never an error: only
+			// the single-argument form is required to be an array.
+			if len(args) == 1 {
+				return nil, fmt.Errorf("expr: %s() expects array, %w", which, err)
+			}
+			arr = append(arr, a)
+			continue
+		}
+		arr = append(arr, elems...)
 	}
 	if len(arr) == 0 {
 		return nil, nil
@@ -1754,6 +1847,33 @@ func minMax(args []any, which string) (any, error) {
 		}
 	}
 	return best, nil
+}
+
+// builtinFloor / builtinRound turn a number into the int64 an `int` field
+// expects — floor towards negative infinity, round half away from zero — so
+// a division's rounding is written in the expression rather than guessed by
+// the engine when the compute output meets its schema. An integer passes
+// through; a non-number, or a float with no finite integer (NaN, ±Inf,
+// beyond the int64 range), is an error.
+func builtinFloor(args []any) (any, error) { return numberToInt(args, "floor", math.Floor) }
+func builtinRound(args []any) (any, error) { return numberToInt(args, "round", math.Round) }
+
+func numberToInt(args []any, name string, fn func(float64) float64) (any, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: %s() takes 1 argument, got %d", name, len(args))
+	}
+	if n, ok := toInt(args[0]); ok {
+		return n, nil
+	}
+	f, ok := toFloat(args[0])
+	if !ok {
+		return nil, fmt.Errorf("expr: %s() expects a number, got %T", name, args[0])
+	}
+	r := fn(f)
+	if math.IsNaN(r) || math.IsInf(r, 0) || r < math.MinInt64 || r >= math.MaxInt64 {
+		return nil, fmt.Errorf("expr: %s(%v) is not a finite integer", name, f)
+	}
+	return int64(r), nil
 }
 
 // builtinFlatten concatenates one level of nesting: each array element is
@@ -2005,5 +2125,33 @@ func walkRefsBound(n node, bound map[string]bool, fn func(Ref)) {
 			nb[p] = true
 		}
 		walkRefsBound(v.body, nb, fn)
+	}
+}
+
+// IsBoolAlgebraOverRefs reports whether the AST is a pure boolean
+// combination of path references: refs combined by "!", "&&", "||" and
+// parentheses, nothing else — no literals, comparisons, arithmetic,
+// indexing or combinators. Consumers whose evaluation must be STRICT
+// (a policy contract where an absent field must never coerce into a
+// verdict) restrict their grammar to this shape: every leaf is then a
+// ref they can pre-resolve and type-check individually, which the
+// truthy coercion inside "!"/"&&"/"||" would otherwise defeat.
+func (a *AST) IsBoolAlgebraOverRefs() bool {
+	if a == nil || a.root == nil {
+		return false
+	}
+	return isBoolAlgebraNode(a.root)
+}
+
+func isBoolAlgebraNode(n node) bool {
+	switch t := n.(type) {
+	case pathNode:
+		return true
+	case *unaryNode:
+		return t.op == "!" && isBoolAlgebraNode(t.child)
+	case *binaryNode:
+		return (t.op == "&&" || t.op == "||") && isBoolAlgebraNode(t.left) && isBoolAlgebraNode(t.right)
+	default:
+		return false
 	}
 }

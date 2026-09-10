@@ -1,6 +1,10 @@
 package native
 
-import "time"
+import (
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+)
 
 // Issue is the native tracker's source-of-truth issue record. The
 // dispatcher consumes a normalized view via tracker.Issue (see
@@ -33,6 +37,23 @@ type Issue struct {
 	// pipeline applies — same wire format as the studio's Launch form.
 	BotArgs map[string]string `json:"bot_args,omitempty"`
 	Claim   string            `json:"claim,omitempty"`
+	// ClaimEpoch is the per-issue fencing counter: bumped on every FRESH
+	// claim acquisition (never on an idempotent same-marker re-claim), it
+	// travels in the tracker.ClaimToken and every owner-scoped write is a
+	// CAS on (Claim, ClaimEpoch) — a stolen claim's late writes find
+	// typed refusals, never the new owner's state.
+	ClaimEpoch int64 `json:"claim_epoch,omitempty"`
+	// ClaimedAt is when the CURRENT claim was acquired (audit; zero on a
+	// legacy claim written before the lease existed — such claims are
+	// never expired by time, only by the historical pid-probe sweep).
+	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// ClaimLeaseUntil is the single instant the claim's lease expires —
+	// stamped at claim and pushed forward by each RenewClaim heartbeat
+	// (one field, not a claimed-at/renewed-at max: it is what the reaper
+	// queries and what an index can serve). On Mongo it is written with
+	// the server clock so a pod with a fast clock cannot steal a live
+	// claim. Zero = legacy claim, see ClaimedAt.
+	ClaimLeaseUntil time.Time `json:"claim_lease_until,omitempty"`
 	// LastRunID is the most recent dispatcher-spawned run that
 	// processed this issue. Stamped by the dispatcher's finishRun
 	// regardless of success/failure so the operator can always
@@ -63,6 +84,15 @@ type Issue struct {
 	// construction (see GiveUp.Current). The one case that needs an explicit
 	// clear is an operator filing the ticket into the state it is already in.
 	GaveUp *GiveUp `json:"gave_up,omitempty"`
+	// LaunchRefusal is the cloud dispatcher's record of a claimed card whose
+	// launch the run service REFUSED before any run started (a sealing
+	// failure, a queue outage, a bot that does not compile, …): nothing ran,
+	// so no verdict belongs on the card and it went back to its column. It
+	// is what bounds the retry — the dispatch listing skips the card until
+	// NotBefore, and the attempt cap turns a permanent refusal into a
+	// `blocked` filing the operator can read (LastReason). Cleared when a
+	// launch succeeds (SetLastRun) and when an operator reopens the card.
+	LaunchRefusal *LaunchRefusal `json:"launch_refusal,omitempty"`
 	// LastWorkdir is the absolute filesystem path the last run
 	// executed in — either the per-issue dispatcher workspace or,
 	// when `worktree: auto` was used, the run's git worktree path.
@@ -77,6 +107,34 @@ type Issue struct {
 	Runs      []RunRef  `json:"runs,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// StateAt is when the card's COLUMN last changed — the transition time,
+	// not the record's. UpdatedAt bumps on any edit (a title, a label, a
+	// last-run stamp), so anything asking "which side moved more recently?"
+	// reads a retitle as a move; the two-way project-board sync's conflict
+	// rule is exactly that question (ADR-097).
+	//
+	// Stamped by the store at every state write, on both twins: the FS one
+	// derives it in writeIssueLocked (the state differs from the indexed
+	// record), the Mongo one in stateSetAt + the state-naming replace. A
+	// caller cannot forget it, and cannot forge it either.
+	//
+	// Zero on a card written before the field existed — legacy, exactly like
+	// ClaimedAt. A reader wanting a transition time for such a card has to
+	// say what it falls back to.
+	StateAt time.Time `json:"state_at,omitempty"`
+	// StateReason is the provenance of the card's LAST column change — the
+	// `reason` its state event carried (a tracker.Reason* constant), empty
+	// for an unattributed write (an operator surface, a bot's board tool,
+	// the project import, a create). It is what lets a reader of the CARD
+	// alone — the periodic project-board reflect, which sees no event —
+	// tell a column iterion wrote on its own authority (StateByMachine)
+	// from one a person, or a run's verdict, put the card in.
+	//
+	// Stamped by the store at every state write, on both twins, from the
+	// same inputs that build the event's `reason`: it cannot disagree with
+	// the event, and it is overwritten (or cleared) by the next transition,
+	// so it never describes a column the card has left.
+	StateReason string `json:"state_reason,omitempty"`
 	// External links this card to an issue on an external forge — set when
 	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
 	// TO one (push-to-forge). It is metadata: the card's column stays
@@ -87,6 +145,17 @@ type Issue struct {
 	// IssueModal, and — once the comment-trigger wiring lands — to carry
 	// operator `/command` requests and the resulting MR/PR back-links.
 	Comments []Comment `json:"comments,omitempty"`
+}
+
+// StateByMachine reports whether the card's current column was written by
+// iterion acting on its own authority — a watchdog repair, a schema
+// migration, the dispatcher returning a card it could not launch — rather
+// than by a person or by a run's verdict. The predicate is the enumerated
+// tracker.IsMachineReason over the persisted provenance, the same contract
+// the trigger spine applies to the event: a descriptive reason (unblocked,
+// run_finished) reads as a gesture here too.
+func (i *Issue) StateByMachine() bool {
+	return i != nil && tracker.IsMachineReason(i.StateReason)
 }
 
 // RunRef is one entry in an issue's run history (Issue.Runs). RunID is
@@ -133,8 +202,39 @@ type GiveUp struct {
 	State string `json:"state,omitempty"`
 	// Attempts is how many attempts were made before giving up.
 	Attempts int `json:"attempts,omitempty"`
+	// Reason, when set, says WHY the dispatcher gave up when it was not a
+	// retry budget: the claim watchdog filing a card whose recorded run
+	// is gone. Operator-facing (rendered on the pipeline board); a
+	// retry-budget give-up leaves it empty and reads by Attempts.
+	Reason string `json:"reason,omitempty"`
+	// Launch marks a give-up written before any run existed: the launch
+	// attempt cap (see LaunchRefusal). Such a stamp names no run, so it is
+	// current for the card in its state whatever run — if any — the card
+	// points at; a run give-up stays bound to its RunID.
+	Launch bool `json:"launch,omitempty"`
 	// At is when the give-up was stamped (UTC).
 	At time.Time `json:"at"`
+}
+
+// LaunchRefusal is the retry ledger of a card whose launch keeps being
+// refused before a run exists (see Issue.LaunchRefusal). Attempts counts
+// the consecutive refusals; NotBefore is the earliest instant the dispatch
+// tick may claim the card again; LastAt / LastReason say when and why, for
+// the operator who finds the card filed blocked once the attempts run out.
+type LaunchRefusal struct {
+	Attempts   int       `json:"attempts"`
+	LastAt     time.Time `json:"last_at"`
+	NotBefore  time.Time `json:"not_before,omitempty"`
+	LastReason string    `json:"last_reason,omitempty"`
+}
+
+// Clone returns a copy, nil-safe.
+func (r *LaunchRefusal) Clone() *LaunchRefusal {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	return &c
 }
 
 // Current reports whether the stamp still describes the issue as it stands:
@@ -146,10 +246,15 @@ type GiveUp struct {
 // A stamp with no run id never matches: it cannot be attributed to the card
 // being rendered, and guessing is how the lane got confusing in the first place.
 func (g *GiveUp) Current(issueState, runID string) bool {
-	if g == nil || g.RunID == "" {
+	if g == nil || g.State != issueState {
 		return false
 	}
-	return g.State == issueState && g.RunID == runID
+	// A launch give-up names no run: the card in its state is the whole
+	// subject, whatever run — if any — it points at.
+	if g.Launch {
+		return true
+	}
+	return g.RunID != "" && g.RunID == runID
 }
 
 // ExternalRef links a board card to an issue on an external forge. Set by
@@ -166,6 +271,137 @@ type ExternalRef struct {
 	// the author-trust gate classified at ingest, kept so operators can see
 	// WHO requested a parked card before approving its triage.
 	Author string `json:"author,omitempty"`
+	// Project is the card's sync state with the forge's PROJECT board (GitHub
+	// Projects v2), when the team is bound to one. Nil until a project import
+	// has seen this card on the board.
+	Project *ExternalProject `json:"project,omitempty"`
+}
+
+// Clone returns a deep copy. ExternalRef is passed by value at several store
+// boundaries; since it now carries a pointer, a plain `*ref` copy would alias
+// the project sync state between the caller's value and the stored record.
+func (e *ExternalRef) Clone() *ExternalRef {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	if e.Project != nil {
+		p := *e.Project
+		p.SyncConflict = e.Project.SyncConflict.Clone()
+		out.Project = &p
+	}
+	return &out
+}
+
+// ExternalProject is a card's sync state with ONE forge project board. It is
+// the per-card half of the two-way status sync (ADR-097); the board itself is
+// identified by the team's binding.
+//
+// The two timestamps are what make "both sides moved" decidable. They record
+// STATE CHANGES, not record touches: Issue.UpdatedAt bumps on any edit, so
+// comparing it against the board would let an unrelated title edit win a
+// status conflict.
+type ExternalProject struct {
+	// Owner + Number identify the board (its "owner/number" URL form).
+	Owner  string `json:"owner,omitempty"`
+	Number int    `json:"number,omitempty"`
+	// ItemID is the provider's project-item handle, so a status write skips a
+	// lookup. Re-resolved when the board no longer knows it.
+	ItemID string `json:"item_id,omitempty"`
+	// Status is the board status option NAME last synchronized, in the
+	// board's own vocabulary ("In progress"). Comparing against it is the
+	// ECHO SUPPRESSOR: a status iterion itself wrote reads back as equal and
+	// changes nothing.
+	Status string `json:"status,omitempty"`
+	// StatusAt is the provider's own timestamp for that status value.
+	StatusAt time.Time `json:"status_at,omitempty"`
+	// StateAt is when iterion last WROTE the native state for this board —
+	// the moment of a sync write, not of the card's transition. The conflict
+	// rule reads the card's own Issue.StateAt; this stays as the fallback for
+	// a card whose last transition predates that stamp.
+	StateAt time.Time `json:"state_at,omitempty"`
+	// ReopenedAt is when a move on the bound board last took this card OUT of
+	// a terminal column — the operator's drag standing as the explicit reopen
+	// the sink demands (ADR-097 §7). Zero on every card no board move ever
+	// reopened, which is nearly all of them.
+	ReopenedAt time.Time `json:"reopened_at,omitempty"`
+	// SyncConflict is the last board move the terminal sink REFUSED, or nil.
+	// Cleared by the pass that no longer meets the refusal — the operator
+	// reopened the card natively, or moved the item back.
+	SyncConflict *ProjectSyncConflict `json:"sync_conflict,omitempty"`
+}
+
+// ProjectSyncConflict is one board move iterion could not apply, kept ON THE
+// CARD so the operator reads it where they made the gesture rather than in the
+// server's log.
+//
+// It exists for exactly one shape today: a drag out of the COMPLETION column,
+// which stays a deliberate native reopen (see ReopenableByBoardMove). The
+// symptom it answers — "I moved it and nothing happened" — has no other
+// channel: the pass declines to record the status it could not apply, so every
+// later pass re-derives the same divergence and changes nothing on either side.
+type ProjectSyncConflict struct {
+	// From / To are the native columns: where the card sits, and where the
+	// board's status would have taken it.
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Status is the board column the operator moved the item into, in the
+	// board's own vocabulary, and ItemID the item they moved.
+	Status string `json:"status,omitempty"`
+	ItemID string `json:"item_id,omitempty"`
+	// At is when this refusal was FIRST observed. A refusal that keeps
+	// repeating keeps its original stamp: the pass runs on its interval, and
+	// re-stamping would rewrite the card every tick — which bumps UpdatedAt
+	// and emits card.updated, relaunching every label-matching subscription.
+	At time.Time `json:"at,omitempty"`
+	// Reason is the store's own refusal, verbatim.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Equal reports whether two refusals describe the same fact. Deliberately NOT
+// comparing At: it is the first-observation stamp, so an equal refusal keeps
+// the older one.
+func (c *ProjectSyncConflict) Equal(o *ProjectSyncConflict) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	return c.From == o.From && c.To == o.To && c.Status == o.Status &&
+		c.ItemID == o.ItemID && c.Reason == o.Reason
+}
+
+// Clone returns a deep copy, or nil.
+func (c *ProjectSyncConflict) Clone() *ProjectSyncConflict {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	return &out
+}
+
+// Equal reports whether two sync states carry the same information.
+//
+// It lives here, next to the struct, because it is what a periodic writer
+// checks before deciding to write at all: a card rewritten when nothing
+// changed bumps UpdatedAt and emits an EvtIssueUpdated the trigger spine
+// consumes as `card.updated`, which relaunches label-matching board
+// subscriptions. Keeping the comparison beside the fields is what stops it
+// silently going stale the day a field is added.
+//
+// The timestamps compare with Equal, never ==: a time.Time carries a monotonic
+// reading and a location, so two values denoting the same instant are routinely
+// unequal under ==.
+func (p *ExternalProject) Equal(o ExternalProject) bool {
+	if p == nil {
+		return false
+	}
+	return p.Owner == o.Owner &&
+		p.Number == o.Number &&
+		p.ItemID == o.ItemID &&
+		p.Status == o.Status &&
+		p.StatusAt.Equal(o.StatusAt) &&
+		p.StateAt.Equal(o.StateAt) &&
+		p.ReopenedAt.Equal(o.ReopenedAt) &&
+		p.SyncConflict.Equal(o.SyncConflict)
 }
 
 // Comment is a single append-only note on a native issue. Author is a

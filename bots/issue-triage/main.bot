@@ -4,7 +4,9 @@
 ## ONE cheap agent, no shell, no code edits: read the target card,
 ## classify it against the generated iterion-bot-catalog decision
 ## tree, stamp the handler bot (set_bot) + vocabulary-consistent
-## labels (set_labels), leave a one-paragraph routing comment, and
+## labels (add_labels — never set_labels: the absolute list would
+## re-arm the consumed trigger label), leave a one-paragraph routing
+## comment, and
 ## STOP. The card never changes column here — launching stays the
 ## operator's gesture (drag to Ready; the dispatcher claims the
 ## stamped bot).
@@ -49,20 +51,25 @@ prompt triage_system:
      (`assignee` column — dashes, e.g. `feature-dev`, never an
      invented spelling). A name you cannot see in that table is a
      no-fit.
-  5. MANDATORY: `mcp__iterion_board__set_labels` — keep the card's
-     existing labels, add `source:issue-triage`, add ONE `axis:<area>`
-     label when one area clearly dominates (reuse the board's
-     spelling). No confident bot fit → add `needs-manual-triage`
-     instead and leave the bot unset. Never exceed 5 labels; drop your
-     own optional additions first, never the pre-existing ones.
+  5. MANDATORY: `mcp__iterion_board__add_labels` — add
+     `source:issue-triage`, plus ONE `axis:<area>` label when one area
+     clearly dominates (reuse the board's spelling). No confident bot
+     fit → add `needs-manual-triage` instead and leave the bot unset.
+     If `needs:approval` is still on the card, remove it with
+     `mcp__iterion_board__remove_labels` (the operator's approval
+     superseded it). NEVER `set_labels`: it replaces the whole list
+     from your earlier read and re-adds the `triage:auto` trigger the
+     spine consumed to launch you — which launches you again. Keep the
+     card at 5 labels or fewer: add fewer of your own optional labels
+     rather than removing pre-existing ones.
   6. MANDATORY: `mcp__iterion_board__comment_issue` — ONE short
      paragraph: which bot you routed to (or why none), the decisive
      signal from the card, and what the operator should do next (drag
      to Ready to launch, or triage manually).
   Only return triage_output AFTER comment_issue has succeeded — a run
   that skips steps 3, 5 or 6 is a FAILED triage even if a bot got
-  stamped. The set_labels replacement MUST include `source:issue-triage`
-  alongside the preserved pre-existing labels.
+  stamped. The add_labels call MUST include `source:issue-triage`; the
+  pre-existing labels stay because add_labels never touches them.
 
   Hard rules: no `transition_issue`, no `create_issue`, no
   `close_issue`, no processing of any card other than "{{vars.issue_id}}".
@@ -83,9 +90,10 @@ prompt triage_user:
   3. mcp__iterion_board__list_labels.
   4. mcp__iterion_board__set_bot — verbatim dash-form name from the
      catalog's persona table. Skip ONLY on a no-fit.
-  5. mcp__iterion_board__set_labels — the card's pre-existing labels
-     plus "source:issue-triage" (plus "needs-manual-triage" on a
-     no-fit).
+  5. mcp__iterion_board__add_labels — "source:issue-triage" (plus
+     "needs-manual-triage" on a no-fit, plus at most one axis:<area>);
+     mcp__iterion_board__remove_labels for "needs:approval" if it is
+     still there. Never set_labels.
   6. mcp__iterion_board__comment_issue — your one-paragraph routing
      rationale.
   Return triage_output only after step 6 succeeded.

@@ -81,6 +81,86 @@ func (s *Server) registerAdminSettingsFamilyRoutes() {
 		s.mux.Handle("GET /api/admin/settings/bot-vars", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetBotVars)))
 		s.mux.Handle("PUT /api/admin/settings/bot-vars", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutBotVars)))
 	}
+	if s.platformCredsStore != nil {
+		s.mux.Handle("GET /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetPlatformCredentials)))
+		s.mux.Handle("PUT /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutPlatformCredentials)))
+	}
+}
+
+func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.platformCredsStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	origin := "default"
+	if rec != nil && (rec.Enforce != nil || len(rec.Teams) > 0 || len(rec.Orgs) > 0) {
+		origin = "db"
+	}
+	s.writeJSONFor(w, r, map[string]any{
+		"stored":   rec,
+		"enforced": rec.Enforced(),
+		"origin":   origin,
+	})
+}
+
+// handleAdminPutPlatformCredentials applies MERGE semantics like its
+// siblings: a field absent from the body keeps its stored state, an
+// explicit null clears it.
+//
+// Validate refuses enforcing an audience that names nobody — a state
+// reachable by accident (enable enforcement, forget the lists) whose
+// symptom is every credential-less run failing at its first LLM call.
+func (s *Server) handleAdminPutPlatformCredentials(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	var patch struct {
+		Enforce *bool     `json:"enforce,omitempty"`
+		Teams   *[]string `json:"teams,omitempty"`
+		Orgs    *[]string `json:"orgs,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	if patch.Enforce == nil && patch.Teams == nil && patch.Orgs == nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (enforce|teams|orgs)")
+		return
+	}
+	rec, err := s.platformCredsStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if rec == nil {
+		rec = &platformcfg.PlatformCredentials{}
+	}
+	if patch.Enforce != nil {
+		rec.Enforce = patch.Enforce
+	}
+	if patch.Teams != nil {
+		rec.Teams = *patch.Teams
+	}
+	if patch.Orgs != nil {
+		rec.Orgs = *patch.Orgs
+	}
+	if err := rec.Validate(); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	}
+	rec.UpdatedBy = s.requestUserID(r)
+	if err := s.platformCredsStore.Put(r.Context(), *rec); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if s.platformCreds != nil {
+		s.platformCreds.Invalidate()
+	}
+	s.auditPlatform(r, "", "platform.settings.platform_credentials.updated", "platform_settings", platformcfg.FamilyPlatformCredentials, map[string]any{
+		"enforce": rec.Enforced(), "teams": rec.Teams, "orgs": rec.Orgs,
+	})
+	s.handleAdminGetPlatformCredentials(w, r)
 }
 
 func (s *Server) handleAdminGetBotRoles(w http.ResponseWriter, r *http.Request) {

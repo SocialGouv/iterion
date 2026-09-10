@@ -448,7 +448,10 @@ func TestForgejoIssueErrorMapping(t *testing.T) {
 	}))
 	defer srv404.Close()
 	_, err = New(srv404.Client(), srv404.URL, "x").GetPullRequest(context.Background(), "o/r", 1)
-	if !errors.Is(err, forge.ErrHookNotFound) {
-		t.Errorf("404 → %v, want ErrHookNotFound", err)
+	if !errors.Is(err, forge.ErrNotFound) {
+		t.Errorf("404 → %v, want ErrNotFound", err)
+	}
+	if errors.Is(err, forge.ErrHookNotFound) {
+		t.Errorf("404 on a pull → %v: a missing PR is not a missing webhook", err)
 	}
 }

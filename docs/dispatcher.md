@@ -171,7 +171,8 @@ sibling planner from the workflow entry:
 | `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). Only dispatcher-owned runs move the card — a pipelines-launched paused run keeps its card in place for the admission sweep, and still blocks any fresh mint. |
 | `running` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
 | `queued` | Hold without probing the run lock. Pipeline-queued runs deliberately have no lock owner until a concurrency slot opens; their queue owner advances their state machine. |
-| `failed_resumable` / `cancelled` | Resume the **same** run id. |
+| `failed_resumable` | Resume the **same** run id. Internal stops (stall reap, external state change, daemon shutdown) cancel the run context with `runtime.ErrRunInterrupted` as the cause, so the engine persists this status — which is what keeps stall/shutdown recovery automatic. |
+| `cancelled` | Hold, **never auto-resume**: only an operator produces this status now, and resuming it would undo their decision. The card is held before the claim with a visible reason; the way out is an explicit resume, or dropping the pointer (⋯ → *Retry from zero* on the pipeline board, `iterion issue update --clear-last-run` from a terminal). |
 | `finished` | No hold: a fresh run is allowed — dragging the card back to an eligible column **is** the re-queue gesture. |
 | none, or hard `failed`, and the ticket is explicitly eligible | The only other legitimate fresh run. |
 
@@ -183,8 +184,13 @@ the dispatcher worker already returned when the run first parked, so
 `finishRun` is not in the loop.
 
 To really start over: drag a `finished` or hard-`failed` ticket back to
-`ready`. A `cancelled` `last_run` is **resumed from its checkpoint**, not
-replaced — a reboot is not a from-scratch, and neither is cancel.
+`ready`. A `failed_resumable` one is not enough — the table above resumes it,
+so the board's **Retry** means *resume* on a dispatcher-owned board even
+though the studio's own admission loop would have minted a fresh run. Drop
+the pointer to make the restart deterministic: ⋯ → **Retry from zero** on the
+pipeline board, or `iterion issue update --clear-last-run`. Same for a
+`cancelled` `last_run`, which holds the ticket (no fresh sibling) but is
+never auto-resumed — resume it explicitly, or drop the pointer.
 
 ### In-progress transition (`agent.running_state`)
 
@@ -259,6 +265,87 @@ Each tick (`polling.interval_ms`, default 30s):
    per-state slots have room.
 6. **Broadcast snapshot.** Publish to the WS bridge so the dashboard
    shows the new state.
+
+### Claim selection on the cloud board — what is never claimed
+
+The cloud board dispatcher (one per server replica, over the Mongo
+board) has no configured default bot: a card is launchable only if it
+**names a bot**. Its candidate query therefore lists unclaimed cards in
+the launch column **that carry a bot** — the filter is in the query, not
+a skip after the listing, because the batch is capped and bot-less cards
+(never written, so always the oldest) would otherwise fill every batch
+and starve the launchable ones. A `ready` card with no bot is roadmap
+content, typically one a project-board sync moved there (the default map
+lands every *Planned* ticket in `ready`, see
+[github-board-sync.md](github-board-sync.md#dispatching-from-the-board));
+it is neither claimed nor moved until something stamps a bot on it.
+
+Before claiming a listed card, the tick runs the **launch
+preconditions** — a run service, a bot, a bot the resolver can find,
+reserved bot-args that parse — and skips a card that fails them in its
+column, without claiming it (the local dispatcher's `resolveExplicitBot`
+shape). The same preconditions guard the launch itself, so a card that
+changed between the listing and the launch is caught there too; nothing
+ran, so **no verdict is written on it**: the card is returned to the
+column it was taken from under the machine provenance `unlaunchable`
+(no subscription re-fires on the return, no external board reflects
+it), and the claim is freed. It is never parked `blocked` — that column
+is a verdict on the card's work, and reaching it here parked 36 roadmap
+tickets in one pass and pushed *Blocked* onto the operator's GitHub
+board. A run that started and failed keeps filing `blocked`: that is
+the run's verdict.
+
+**A launch the run service refuses is a third class — transient, and
+retried with a backoff.** Every error out of `runs.Launch` means no run
+was started (a credential-sealing failure, a queue outage, the server
+draining, a bot that does not compile, an invalid spec), so the card is
+returned to its column under the machine provenance `launch_refused`
+and its **launch-refusal ledger** (`launch_refusal` on the card:
+attempts, last reason, last instant, `not_before`) is advanced. The
+dispatch listing skips a card until its `not_before` — 1m after the
+first refusal, then 2m, 4m, … capped at 30m — so a refused card costs
+one attempt per backoff, not one per 5s tick, and queues behind the
+cards not tried yet (its `updated_at` moves). The server draining
+consumes no attempt: another replica claims the card on its next tick.
+
+PR context resolution before launch uses this same ledger when the forge
+cannot be reached or a publish grant is temporarily unavailable. A proven
+fork, withheld head repository, or grant belonging to another team remains
+a terminal refusal and launches nothing. A replica that drains during the
+PR lookup returns the never-launched card without advancing the ledger;
+draining after launch leaves the existing run in place.
+
+The **org launch gate** is one of these refusals. The board launch passes
+the same admission as an HTTP launch — `gateLaunch`: suspend →
+concurrency → launch rate → monthly caps
+([quotas-and-limits.md](quotas-and-limits.md#which-surfaces-are-gated)) —
+under the `board-dispatcher` identity on the card's team, and is metered
+the same way (the monthly slot is handed back when the run service then
+refuses). A denial reads on the ledger as `launch gate: <rule>:
+<detail>` — `concurrency_cap_exceeded` while the org is at its cap,
+`monthly_run_quota_exceeded` once the month's runs are spent — and costs
+one attempt like any other refusal. So does a run the publisher refuses
+for want of an LLM credential (`ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`,
+[cloud-llm-credentials.md](cloud-llm-credentials.md#gotchas-that-cost-real-time)).
+
+After `ITERION_BOARD_LAUNCH_ATTEMPTS` consecutive refusals (default 8,
+about an hour and a half of retries; an unparsable value keeps the
+default and is logged once at startup) the card is filed `blocked` under
+the **descriptive** provenance `launch_given_up`, with the last refusal
+on its ledger and a give-up stamp naming it — reflected onto a bound
+external board on purpose: a human has to decide now. A successful
+launch (any run stamped on the card) clears the ledger, and so does an
+operator's *Reopen*, so a card reopened after the cap starts its retries
+afresh. The pipeline board shows a card filed this way in its **Needs
+attention** lane — the give-up stamp carries `launch: true`, so it needs
+no run to be current, and a card nobody could launch is not filed among
+the done ones.
+
+Each verdict is logged **once per card and reason**, and every watchdog
+pass logs one tally line — `N refused at admission, M returned to their
+column after a claim, K launches refused by the run service, G filed
+blocked after the launch attempt cap` — so the ongoing cost of a broken
+card stays visible after its first line.
 
 ## Retry queue
 
@@ -693,8 +780,14 @@ tracker:
 ```
 
 The dispatcher's `Claim` adds `iterion-claimed`; `Release` removes it.
-`ListCandidates` filters via `gh issue list --search` so pagination
-and rate-limit handling come for free.
+`gh issue edit --add-label` refuses a label the repository does not
+carry, so the first claim **creates the label** when it is missing
+(`gh label list` then `gh label create`, once per dispatcher process,
+neutral grey — an existing label keeps the colour and description you
+gave it). A label deleted later is re-created on the next claim. The
+token therefore needs write access to the repository's labels (it
+already needs it for issues). `ListCandidates` filters via `gh issue
+list --search` so pagination and rate-limit handling come for free.
 
 **Environment hygiene.** When `tracker.github.token` is set, iterion
 exports it as `GH_TOKEN` / `GITHUB_TOKEN` only to the `gh` subprocess,
@@ -709,6 +802,68 @@ only avoidable by writing the token into gh's on-disk credentials
 file via `gh auth login --with-token`. If your threat model includes
 co-located untrusted same-uid processes, prefer pre-authenticating
 `gh` interactively and leaving `tracker.github.token` empty.
+
+#### Board mode — states from a Projects v2 board (ADR-097)
+
+Add a `project:` block and the workflow state stops coming from labels: it is
+read from — and written to — the board's `Status` field, so a card a human
+dragged on the roadmap is a card the dispatcher sees, with no parallel label
+convention to maintain.
+
+```yaml
+tracker:
+  kind: github
+  github:
+    repo: SocialGouv/iterion
+    token: $GITHUB_TOKEN                # REQUIRED in board mode
+    claimed_label: iterion-claimed      # the claim is still a label
+    project:
+      owner: SocialGouv
+      number: 203
+      # owner_kind: org                 # or "user"; default org
+      # candidate_statuses: [Planned]   # the columns eligible for dispatch
+      # status_map:                     # override the shipped vocabulary
+      #   Todo: ready
+      #   Doing: in_progress
+      #   Shipped: done
+```
+
+What changes, and what deliberately does not:
+
+- **`state_mapping` is unused.** The board column *is* the state; a second
+  answer to the same question is how the two drift.
+- **`ListCandidates`** returns the issues whose card sits in a
+  `candidate_statuses` column (default `[Planned]`, which the shipped map
+  sends to `ready`). Content still comes from the issue list — a project item
+  carries no body, labels or assignee — so `include_labels` /
+  `exclude_labels` / `author_allowlist` keep applying.
+- **`UpdateState`** writes the `Status` field. An issue the board does not
+  carry yet is *added* to it: a dispatcher that could not record "In progress"
+  because nobody had dragged the card on would leave the roadmap permanently
+  behind.
+- **`RefreshStates`** reads the board once for the whole running set, instead
+  of one REST call per issue.
+- **The claim stays `claimed_label`.** A Projects v2 item carries no marker
+  and no fencing epoch, so there is nothing to build a lease on — this adapter
+  keeps declining `ClaimLeaser` exactly as it does in label mode, and the boot
+  journal stays its only claim-recovery path.
+- **A board it cannot read fails the poll**, loudly. There is no fallback to
+  label-derived states: dispatching on a state nobody configured is worse than
+  not dispatching.
+- **`token` is required.** Board mode does not ride `gh` — Projects v2 is
+  GraphQL, reached with a real API credential, and `gh` authenticates itself
+  from its own config, which a cloud pod does not have. The token needs the
+  `project` scope (classic PAT) or organization *Projects: Read and write*
+  (fine-grained); a GitHub App needs `organization_projects: write`.
+
+A status a `status_map` does not cover is **inert** — the card is not a
+candidate and `RefreshStates` omits it — and a state with no column makes
+`UpdateState` return `ErrTransitionRejected`. The map must stay injective
+(two columns on one state is refused at construction, naming the collision):
+the reverse direction would otherwise be ambiguous.
+
+See [docs/github-board-sync.md](github-board-sync.md) for the board↔native
+card sync that pairs with this.
 
 ### `tracker.kind: forgejo`
 
@@ -785,6 +940,95 @@ filesystems (e.g. dev laptop + CI), the per-issue claim marker
 (`iterion-claimed` label on GH/Forgejo, `claim:` field on native)
 prevents simultaneous dispatch — each dispatcher writes its own marker
 and refuses to dispatch issues marked by anyone else.
+
+### Claim lease + watchdog (native board, ADR-096)
+
+On the native board (filesystem and Mongo), the claim is a **fenced,
+leased** token, not a bare marker. Each card carries `claim_epoch` (a
+per-issue fencing counter), `claimed_at`, and `claim_lease_until`; the
+owning dispatcher **heartbeats** the lease for the whole hold, and every
+write it makes while it holds the card is a compare-and-set on
+`(claim, claim_epoch)`. A worker whose claim was stolen finds its late
+writes refused rather than clobbering the new owner.
+
+The **claim watchdog** (`ITERION_BOARD_CLAIM_REAPER=on`, default off)
+runs every minute on each dispatcher and each cloud replica. It reclaims
+cards whose lease expired with nobody renewing — **including cross-host
+dead owners**, which the boot-time same-host pid-probe sweep never
+touched — by transferring the claim to a recovery owner (never freeing
+it first, which would let the next tick re-dispatch it), then routing the
+card by its recorded run's terminal state: finished → the completed
+column, terminal failure → the failed column, resumable → returned to the
+dispatch pool, paused → left alone (its retained claim is the parking
+brake, ADR-014). A running/queued run is never reclaimed, and any read
+error conserves. Roll it out in two releases: ship the lease fields +
+heartbeats first (reaper off), then enable the reaper once no pre-lease
+binary is left in the fleet.
+
+The gate takes `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no`
+(case-insensitive) — the spellings the repo's other `ITERION_*` toggles
+accept. Anything else leaves the watchdog OFF and is logged once at
+startup on both surfaces, so a mistyped cutover shows up in the log
+rather than as cards that quietly stay stuck.
+
+**The un-leased horizon (cloud board).** A claim a mixed-fleet write
+stripped of its lease is only reclaimable once nothing has touched the
+card for `ITERION_BOARD_UNLEASED_CLAIM_HORIZON` (default `24h`): an
+expired lease is positive evidence a heartbeat stopped, a missing one is
+an absence — and during a rolling deploy an OLD binary strips leases as
+it writes and does not heartbeat, so a short horizon would release a card
+its old-binary holder is still working. The default is sized for a
+day-long mixed window; a deployment whose rolling window is minutes can
+lower it (a Go duration, at least one claim lease — `15m` — or the server
+refuses to start). Until the horizon elapses a stripped claim is
+unwritable by anybody (ADR-096 §6): that stuck window is the accepted
+cost of the mixed fleet, bounded by this dial.
+
+Three properties of that routing are easy to assume wrongly:
+
+- **The card's state is read by the transfer, not by the listing.** An
+  operator can move a card between the two, and the watchdog honours what
+  it finds — it will not overwrite a deliberate move into a column the
+  card is not dispatched from. It *does* file a card still sitting in a
+  launch column, because the move into the running column is best-effort
+  on both launch paths: leaving it there would have the next tick launch
+  a second run for work already delivered.
+- **A card in the running column with no run recorded is left alone.**
+  The run stamp is best-effort and lands after the launch, so its absence
+  proves nothing — freeing the card could double-launch a live worker.
+- **A card whose recorded run is GONE is filed, never re-dispatched.** A
+  pointer at a run that `iterion runs prune` removed (or that was deleted
+  behind a tombstone) means a run happened and its outcome is unknowable.
+  Freeing the card would mint a fresh run for work that may already be
+  delivered, so the watchdog files it into the failed column with a
+  give-up stamp naming the gone run and why (visible in the pipeline
+  board's *Needs attention* lane, "The dispatcher gave up … recorded run
+  … is gone"). Reopen or re-queue it to run it again; close it to
+  acknowledge. The filing carries machine provenance, so no trigger fires
+  on it.
+- **Returning a card to the pool is bounded in cloud** (`watchdogRunCeiling`,
+  20 lifetime runs): the cloud launcher starts a fresh run rather than
+  resuming the recorded one, so an always-failing card would otherwise be
+  relaunched once per lease forever. The bound is a coarse SPEND backstop
+  on the card's cumulative run count — every run it ever carried,
+  whatever launched them — not a watchdog retry counter, so it must sit
+  far above any healthy card's normal traffic. Past the ceiling a repark
+  is filed as failed instead. The local dispatcher resumes the recorded
+  run and needs no such bound.
+
+Terminal board states (`done`, `blocked`) are **sinks**: the ordinary
+state-move family refuses to leave them (silent resurrection was
+any→any's worst case). The one sanctioned exit for a CARD is an operator
+**reopen** (the `/board` drag, `iterion issue move`, the pipeline Reset
+button); bots with `board.move` get the refusal with no fallback. A
+terminal→terminal move (closing a blocked give-up as done) stays an
+ordinary refiling.
+
+Deleting a terminal **column** into a working one (`DELETE
+/board/states/{name}?migrate_to=…`) reopens every card in it at once. It
+is allowed — it is an explicit operator gesture on the board's own
+schema — but it is held to the same dependents check as a single-card
+reopen, so the column editor cannot become the way around a refusal.
 
 ## Operational tips
 

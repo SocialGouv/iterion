@@ -11,6 +11,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	"github.com/SocialGouv/iterion/pkg/store/storetest"
@@ -36,7 +37,7 @@ func TestConformance_Mongo(t *testing.T) {
 	storetest.RunWithOpts(t, func(t *testing.T) store.RunStore {
 		t.Helper()
 		dbName := "iterion_conformance_" + bsonNonce(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := mongotest.Ctx(t)
 		defer cancel()
 		s, err := New(ctx, Config{
 			URI:      uri,
@@ -47,7 +48,7 @@ func TestConformance_Mongo(t *testing.T) {
 			t.Fatalf("mongo New: %v", err)
 		}
 		t.Cleanup(func() {
-			drop, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			drop, dropCancel := mongotest.TeardownCtx()
 			defer dropCancel()
 			_ = s.db.Drop(drop)
 			_ = s.Close(drop)

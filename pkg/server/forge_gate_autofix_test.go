@@ -2,10 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -212,6 +219,41 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 	})
 
+	// Fork guard — the autofix push pair (base CloneURL + pr.SourceBranch)
+	// does not name one repository on a fork. #642 class fix (B2): the
+	// autofix lane resolves the same forge.PullRef the command lane does,
+	// so it inherits the SameRepoAs check. Empty HeadRepoFullName
+	// (deleted-fork payloads) MUST refuse too.
+	t.Run("a fork PR never gets an unattended fix", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm,
+				headRepo: "mallory/widgets"}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched on a fork PR — the fixer would push LLM commits to the base repo")
+		}
+	})
+	t.Run("an empty head repo fails closed too", func(t *testing.T) {
+		w := build(t, nil)
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return emptyHeadGateClient{stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Fatal("autofix launched with an empty HeadRepoFullName — deleted-fork payloads must fail closed")
+		}
+	})
+
 	// A resumable failure whose retry is ARMED is not a dead run: the sweeper
 	// will resume it and the gate it left is about to change. (One with no
 	// retry armed is final — same distinction the reconciler applies.)
@@ -266,6 +308,92 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 	})
 
+	// The ceiling is a whole-audit count, not a recent-window scan: 300
+	// unrelated deliveries on the same busy webhook must not push the spent
+	// attempts out of a page and silently re-arm the bound.
+	t.Run("the ceiling survives a busy audit", func(t *testing.T) {
+		w := build(t, nil)
+		for i := 0; i < maxAutofixAttemptsPerPR; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "spent-busy-" + string(rune('a'+i)), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: "kb" + string(rune('a'+i)), Status: webhooks.StatusLaunched,
+				EventKind: autofixEventKind, ProjectPath: repo, SubjectID: "pr:7", RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 300; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: fmt.Sprintf("noise-%d", i), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: fmt.Sprintf("noise-%d", i), Status: webhooks.StatusLaunched,
+				EventKind: "merge_request", ProjectPath: repo, RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Error("noise deliveries re-armed the per-PR ceiling — the count must be exact over the whole audit")
+		}
+	})
+
+	// The sweep net offers EVERY run in the notifiable window, cancelled rows
+	// included — the event path never carried them (kind filter), so the
+	// status gate is what keeps an operator's stop from becoming a code push.
+	t.Run("a cancelled run never fixes", func(t *testing.T) {
+		w := build(t, nil)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), id, "reviewer-bot", gatingInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = "reviewer-bot"
+		run.Status = store.RunStatusCancelled
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.autofixOffer(context.Background(), run.ID)
+		if *w.launched != 0 {
+			t.Error("the sweep offer launched a fixer off a cancelled run — an operator's stop is not a verdict")
+		}
+	})
+
+	// A settled head must cost ZERO forge round-trips on re-offer: the sweep
+	// net re-offers every gating run ~once a minute for an hour on every
+	// replica, against the same App quota the merge-gate reconciler lives
+	// on — without the early claim probe the net starves the gate it backs.
+	t.Run("a settled head costs no forge traffic", func(t *testing.T) {
+		w := build(t, nil)
+		counter := &countingGateClient{inner: stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return counter, nil
+		}
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "settled", TenantID: team, WebhookID: "w1",
+			IdempotencyKey: autofixIdemKey(team, repo, 7, head),
+			Status:         webhooks.StatusLaunched, RunID: "r-done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		for i := 0; i < 5; i++ {
+			w.s.autofixOffer(context.Background(), runID)
+		}
+		if *w.launched != 0 {
+			t.Fatal("a settled head launched again")
+		}
+		if counter.calls != 0 {
+			t.Fatalf("%d forge calls for a settled head, want 0 — the sweep amplifies this ~57× per hour per replica", counter.calls)
+		}
+	})
+
 	// The per-head claim is what bounds the loop: the fixer pushes, the head
 	// moves, and only then is another attempt available. Without it a red gate
 	// that nobody fixes relaunches on every re-review, forever, on real money.
@@ -288,6 +416,80 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Error("a second attempt fired on a head that already had one — the loop is unbounded")
+		}
+	})
+
+	// A fixer launch that cannot START (a queue blip, a deploy window, a broken
+	// plugin source) is a different loop from the one the per-PR ceiling
+	// bounds: that ceiling counts LAUNCHED passes, and a launch_error row is
+	// retryable by design, so every sweep offer re-attempted the same failure
+	// (2026-08-26: ~90 minutes of it). The failure budget on the claim row
+	// bounds it — retried on a backoff, escalated to the board once spent,
+	// then left alone.
+	t.Run("a fixer launch that keeps failing is retried on a backoff, escalated once, then left alone", func(t *testing.T) {
+		w := build(t, nil)
+		at := time.Date(2026, 8, 26, 16, 9, 0, 0, time.UTC)
+		w.s.gateClock = func() time.Time { return at }
+		fails := 0
+		w.s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+			fails++
+			return "", errors.New("cloudpublisher: publish: nats: no responders available")
+		}
+		board, err := native.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.s.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
+		rc := &fakeReviewClient{}
+		w.s.forgeReviewClientFor = func(context.Context, forge.Connection) (forge.ReviewClient, error) {
+			return rc, nil
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		offer := func() { w.s.autofixOffer(context.Background(), runID) }
+		cards := func() int {
+			t.Helper()
+			got, err := board.List(native.ListFilter{Labels: []string{gateAutofixLabel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(got)
+		}
+
+		offer()
+		if fails != 1 {
+			t.Fatalf("launch attempts after the first offer = %d, want 1", fails)
+		}
+		offer()
+		offer()
+		if fails != 1 {
+			t.Fatalf("re-attempted inside the backoff: %d launch attempts, want still 1", fails)
+		}
+		at = at.Add(5*time.Minute + time.Second)
+		offer()
+		if fails != 2 {
+			t.Fatalf("launch attempts once the first backoff elapsed = %d, want 2", fails)
+		}
+		if n := cards(); n != 0 {
+			t.Fatalf("escalated before the budget was spent (%d card(s))", n)
+		}
+		at = at.Add(10*time.Minute + time.Second)
+		offer()
+		if fails != 3 {
+			t.Fatalf("launch attempts once the second backoff elapsed = %d, want 3", fails)
+		}
+		if n := cards(); n != 1 || rc.calls != 1 {
+			t.Fatalf("after the third failure: cards=%d comments=%d, want 1/1", n, rc.calls)
+		}
+		got, _ := board.List(native.ListFilter{Labels: []string{gateAutofixLabel}})
+		if !strings.Contains(got[0].Body, "3 times") || !strings.Contains(got[0].Body, "no responders") {
+			t.Fatalf("the card must say how many times and why:\n%s", got[0].Body)
+		}
+		for i := 0; i < 3; i++ {
+			at = at.Add(time.Hour)
+			offer()
+		}
+		if fails != 3 || cards() != 1 || rc.calls != 1 {
+			t.Fatalf("after exhaustion: attempts=%d cards=%d comments=%d, want 3/1/1 — the lane must stop", fails, cards(), rc.calls)
 		}
 	})
 }
@@ -392,22 +594,197 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 	}
 }
 
+// TestAutofixOnGitLabResolvesTheHeadRepo drives the lane through the REAL
+// GitLab client — no gate-client stub. The fail-closed fork guard reads
+// forge.PullRef.HeadRepoFullName, which only the provider adapter can supply,
+// so a stub that fills it in certifies nothing about GitLab. A same-project MR
+// must launch the fixer on the MR's source branch; a fork MR must be refused —
+// the MR payload names no source project path, so its head is unproven, which
+// is the right answer for a lane that pushes to the base repo.
+func TestAutofixOnGitLabResolvesTheHeadRepo(t *testing.T) {
+	const (
+		team   = "t1"
+		repo   = "acme/widgets"
+		head   = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+		gateNm = "iterion/review"
+	)
+	cases := []struct {
+		name          string
+		sourceProject int
+		wantLaunch    bool
+	}{
+		{"a same-project MR launches the fixer", 3, true},
+		{"a fork MR is refused — its head repo cannot be proven", 5, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch p := r.URL.EscapedPath(); {
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/merge_requests/7"):
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"iid": 7, "title": "feat: x", "state": "opened", "sha": head,
+						"source_branch": "feat/x", "target_branch": "main",
+						"source_project_id": c.sourceProject, "target_project_id": 3,
+						"web_url": "https://gl/acme/widgets/-/merge_requests/7",
+						"author":  map[string]any{"username": "alice"},
+					})
+				case strings.HasSuffix(p, "/projects/acme%2Fwidgets/repository/commits/"+head+"/statuses"):
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 1, "status": "failed", "name": gateNm, "description": "2 findings"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(gl.Close)
+			prURL := gl.URL + "/acme/widgets/-/merge_requests/7"
+
+			s := newWebhookTestServer(t)
+			s.cfg.WorkDir = writeConsumerBotFixture(t, "fixer-bot", "prior_review")
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.Store = rs
+			conn := forge.Connection{
+				ID: "c-gl", TenantID: team, Provider: forge.ProviderGitLab, Kind: forge.KindPAT,
+				Status: forge.StatusActive, ForgeBaseURL: gl.URL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
+			}
+			sealed, err := forge.SealPAT(s.sealer, conn.ID, "glpat-connection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.SealedPayload = sealed
+			conns := forge.NewMemoryConnectionStore()
+			if err := conns.Create(context.Background(), conn); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeConnections = conns
+			s.forgePublishTokens = NewForgePublishTokenRegistry()
+			s.forgePublishTokens.Register("run-token", ForgePublishGrant{TeamID: team, ConnectionID: conn.ID, Repo: repo})
+			ints := forge.NewMemoryRepoIntegrationStore()
+			if err := ints.Create(context.Background(), forge.RepoIntegration{
+				ID: "i1", TenantID: team, ConnectionID: conn.ID, RepoFullName: repo,
+				BotIDs: []string{"fixer-bot"}, WebhookID: "w1", AutoFixOnGateFailure: true,
+				LaunchVars: map[string]string{gateContextVar: gateNm},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.forgeIntegrations = ints
+			if err := s.webhookConfigs.Create(context.Background(), webhooks.Config{
+				ID: "w1", TenantID: team, BotIDs: []string{"fixer-bot"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var launches int
+			var gotBot, gotRepoURL, gotRef string
+			s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, repoURL, repoRef, _ string, _, _ map[string]string) (string, error) {
+				launches++
+				gotBot, gotRepoURL, gotRef = botID, repoURL, repoRef
+				return "run-fixer", nil
+			}
+
+			id, err := store.GenerateRunID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := rs.CreateRun(context.Background(), id, "reviewer-bot", map[string]any{
+				"pr_url": prURL, "gate_context": gateNm, "head_sha": head,
+				forgePublishVarToken: "run-token",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.BotID = "reviewer-bot"
+			run.Status = store.RunStatusFinished
+			if err := rs.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.autofixForRun(context.Background(), trigger.Event{
+				Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+				Subject: trigger.Subject{ID: run.ID},
+			}); err != nil {
+				t.Fatalf("handler returned %v", err)
+			}
+			if !c.wantLaunch {
+				if launches != 0 {
+					t.Fatalf("launched %s on a fork MR — the fixer would push to a base-repo ref", gotBot)
+				}
+				return
+			}
+			if launches != 1 {
+				t.Fatalf("a same-project GitLab MR with a red gate must launch the fixer once, got %d launches — the head repo the fork guard reads was not resolved by the adapter", launches)
+			}
+			if gotBot != "fixer-bot" || gotRepoURL != forge.CloneURLFor(gl.URL, repo) || gotRef != "feat/x" {
+				t.Fatalf("launched %s on %s@%s, want fixer-bot on %s@feat/x", gotBot, gotRepoURL, gotRef, forge.CloneURLFor(gl.URL, repo))
+			}
+		})
+	}
+}
+
 // stubGateClient answers with one commit status on one head.
+// countingGateClient counts forge round-trips (the early-claim probe's
+// whole point is that a settled head makes none).
+type countingGateClient struct {
+	inner stubGateClient
+	calls int
+}
+
+func (c *countingGateClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	c.calls++
+	return c.inner.GetPullRequest(ctx, repo, number)
+}
+func (c *countingGateClient) SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error {
+	c.calls++
+	return c.inner.SetCommitStatus(ctx, repo, sha, st)
+}
+func (c *countingGateClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
+	c.calls++
+	return c.inner.ListCommitStatuses(ctx, repo, sha)
+}
+
 type stubGateClient struct {
 	head    string
 	state   forge.CommitState
 	ctxName string
 	desc    string
+	// headRepo overrides the PullRef.HeadRepoFullName the stub returns.
+	// Empty defaults to the base repo the endpoint was called with (i.e. a
+	// same-repo PR), so pre-B2 fixtures stay same-repo without edits.
+	headRepo string
 }
 
-func (c stubGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
-	return forge.PullRef{Number: number, State: "open", HeadSHA: c.head, SourceBranch: "feat/x", TargetBranch: "main"}, nil
+func (c stubGateClient) GetPullRequest(_ context.Context, base string, number int) (forge.PullRef, error) {
+	head := c.headRepo
+	if head == "" {
+		head = base
+	}
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		HeadRepoFullName: head,
+	}, nil
 }
 func (c stubGateClient) SetCommitStatus(context.Context, string, string, forge.CommitStatus) error {
 	return nil
 }
 func (c stubGateClient) ListCommitStatuses(context.Context, string, string) ([]forge.CommitStatus, error) {
 	return []forge.CommitStatus{{Context: c.ctxName, State: c.state, Description: c.desc}}, nil
+}
+
+// emptyHeadGateClient answers GetPullRequest with HeadRepoFullName="" — the
+// deleted-fork payload shape (both GitHub and Forgejo emit `head.repo: null`
+// when the head repo no longer exists, and the parser leaves it empty).
+type emptyHeadGateClient struct{ stubGateClient }
+
+func (c emptyHeadGateClient) GetPullRequest(_ context.Context, _ string, number int) (forge.PullRef, error) {
+	return forge.PullRef{
+		Number: number, State: "open", HeadSHA: c.head,
+		SourceBranch: "feat/x", TargetBranch: "main",
+		// HeadRepoFullName deliberately empty.
+	}, nil
 }
 
 // TestReviewFixerIsDerivedNotNamed: the lane must pick the fixer from what a bot
@@ -417,14 +794,14 @@ func TestReviewFixerIsDerivedNotNamed(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.cfg.WorkDir = writeConsumerBotFixture(t, "some-other-fixer", "prior_review")
 
-	if got := s.reviewFixerFor(forge.RepoIntegration{BotIDs: []string{"some-other-fixer"}}); got != "some-other-fixer" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{BotIDs: []string{"some-other-fixer"}}); got != "some-other-fixer" {
 		t.Errorf("reviewFixerFor = %q, want the bot that declares it consumes a review", got)
 	}
 	// A bot the repo has not enabled is not a candidate, however it is declared.
-	if got := s.reviewFixerFor(forge.RepoIntegration{BotIDs: []string{"unrelated"}}); got != "" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{BotIDs: []string{"unrelated"}}); got != "" {
 		t.Errorf("reviewFixerFor = %q, want none — that bot is not enabled on the repo", got)
 	}
-	if got := s.reviewFixerFor(forge.RepoIntegration{}); got != "" {
+	if got := s.reviewFixerFor(context.Background(), forge.RepoIntegration{}); got != "" {
 		t.Errorf("reviewFixerFor = %q, want none", got)
 	}
 }

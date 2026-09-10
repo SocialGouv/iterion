@@ -52,6 +52,60 @@ func TestApplySessionContinuityMarksOptionalModes(t *testing.T) {
 	}
 }
 
+// A session id recovered from a PAUSE is best-effort whatever the node
+// declared: the CLI transcript behind it lives on the host that ran the
+// node, and a human gate can outlive that host (a cloud resume gets a
+// fresh pod with an empty ~/.claude). `inherit` and `fork` asked for
+// continuity, not for a node that re-issues `--resume <gone>` and fails
+// identically on every attempt for the rest of the run — so the engine's
+// marker makes the session droppable and the executor degrades once,
+// loudly, to a fresh one.
+//
+// A mode that takes no upstream id must stay untouched by the marker:
+// there is nothing to drop, and the stamp would make a plain fresh node
+// look degraded.
+func TestApplySessionContinuityHonoursThePauseOptionalMarker(t *testing.T) {
+	for _, c := range []struct {
+		mode         ir.SessionMode
+		wantOptional bool
+	}{
+		{ir.SessionInherit, true},
+		{ir.SessionFork, true},
+		{ir.SessionInheritIfAvailable, true},
+		{ir.SessionPersist, true},
+		{ir.SessionFresh, false},
+		{ir.SessionArtifactsOnly, false},
+	} {
+		t.Run(c.mode.String(), func(t *testing.T) {
+			e := &ClawExecutor{}
+			task := &delegate.Task{}
+			e.applySessionContinuity(task, backendFields{id: "worker", session: c.mode}, map[string]any{
+				delegate.SessionIDKey:       "sess-from-pause",
+				delegate.SessionOptionalKey: true,
+			})
+			if task.SessionOptional != c.wantOptional {
+				t.Errorf("SessionOptional = %v, want %v", task.SessionOptional, c.wantOptional)
+			}
+		})
+	}
+}
+
+// Without the marker, `inherit` and `fork` keep failing loudly — the
+// degrade is scoped to the pause, not silently widened to every node that
+// declared unconditional continuity.
+func TestApplySessionContinuityKeepsInheritStrictWithoutTheMarker(t *testing.T) {
+	for _, mode := range []ir.SessionMode{ir.SessionInherit, ir.SessionFork} {
+		e := &ClawExecutor{}
+		task := &delegate.Task{}
+		e.applySessionContinuity(task, backendFields{id: "worker", session: mode}, map[string]any{
+			delegate.SessionIDKey: "upstream-session",
+		})
+		if task.SessionOptional {
+			t.Errorf("%s without the pause marker: SessionOptional = true, want false", mode)
+		}
+	}
+}
+
 // A best-effort mode with NO upstream id must not claim a droppable
 // session: there is nothing to drop, and the stamp would make a plain
 // fresh node look degraded.

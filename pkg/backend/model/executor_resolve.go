@@ -97,6 +97,9 @@ type chainElement struct {
 	// `_skipped` instead of executing anything. Always last in the chain
 	// (compile-time C173).
 	Skip bool
+	// FallbackIndex is set only for a launch-time run fallback stage. It
+	// preserves the launch array index even when an earlier stage was refused.
+	FallbackIndex *int
 }
 
 // defaultFallbackTriggers is the `on:` set a `fallbacks:` route gets
@@ -144,6 +147,10 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 			Provider: strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Provider)),
 			Model:    strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Model)),
 			Skip:     fb.Action == ir.FallbackActionSkip,
+		}
+		if fb.RunStageSet {
+			stage := fb.RunStage
+			el.FallbackIndex = &stage
 		}
 		if el.Provider == "auto" {
 			el.Provider = "" // explicit auto → process-env precedence

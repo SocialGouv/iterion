@@ -1,7 +1,23 @@
 name: test-coverage
 display_name: Testy
 icon: 🧪
-version: 2.0.1
+version: 2.3.0
+## 2.3.0 — the entry precondition's refusal is a NAMED fail node
+## (`workspace_not_a_repo`, code WORKSPACE_NOT_A_REPO, terminal), so the
+## code reaches the RUN's own `failure_code` / `error` — read by `iterion
+## runs list`, the studio and the alert sinks — instead of sitting on the
+## probe's output under the generic FAIL_NODE.
+## 2.2.0 — the plan phase runs by default on every deployment: `plan_review`
+## gates ONLY the cross-model peer review (the plan_topology gate no longer
+## skips planning when it resolves off); the new `plan_phase` (on|off) is
+## the phase's own switch, and the campaign receives the authored plan
+## stamped with its provenance (`plan_provenance`). `workspace_probe`, a
+## deterministic entry precondition, refuses a launch whose workspace_dir
+## is absent or not a git repository (typed WORKSPACE_NOT_A_REPO) before
+## any LLM node spends. Persy, the perseverance-coach supervisor on the
+## campaign node + the contract's PERSISTENCE clause (fleet-wide, from
+## feature-dev 2.2.0).
+## 2.1.0 — cross-model plan phase (ADR-091) ahead of the campaign; budget +30m/+$15 to fund it
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; the target repo's toolchain
 ## comes from its own devcontainer/devbox.json.

@@ -60,6 +60,40 @@ func TestMemoryOAuthStoreUpsertGetDelete(t *testing.T) {
 	}
 }
 
+// A rename is a metadata write: the label moves, the sealed credential and
+// its fingerprint do not, and "" genuinely clears it (the Mongo twin is
+// asserted in oauth_mongo_test.go, where $set semantics make that the
+// interesting case).
+func TestMemoryOAuthStoreSetAccountLabel(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryOAuthStore()
+	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "alice perso"); !errors.Is(err, ErrOAuthNotFound) {
+		t.Fatalf("SetAccountLabel on a missing record = %v, want ErrOAuthNotFound", err)
+	}
+	if err := store.Upsert(ctx, OAuthRecord{
+		UserID: "alice", Kind: OAuthKindClaudeCode,
+		SealedPayload: []byte("sealed"), Fingerprint: "fp-1", AccountLabel: "old name",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, "alice perso"); err != nil {
+		t.Fatalf("SetAccountLabel: %v", err)
+	}
+	got, err := store.Get(ctx, "alice", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccountLabel != "alice perso" || string(got.SealedPayload) != "sealed" || got.Fingerprint != "fp-1" {
+		t.Fatalf("after rename: %+v", got)
+	}
+	if err := store.SetAccountLabel(ctx, "alice", OAuthKindClaudeCode, ""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got, _ = store.Get(ctx, "alice", OAuthKindClaudeCode); got.AccountLabel != "" {
+		t.Fatalf("label after clear = %q, want empty", got.AccountLabel)
+	}
+}
+
 func TestMemoryOAuthStoreExpiringBefore(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryOAuthStore()

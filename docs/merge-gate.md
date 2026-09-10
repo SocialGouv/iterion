@@ -40,6 +40,9 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
 
                run dies without publishing ──▶ reconciler posts failure
                                                (event + 1-min sweep)
+       run PARKS on a provider quota ──▶ check stays claimed, pause notice
+                                          comments when it resumes
+              pull request closed/merged ──▶ its runs stop, retries disarmed
 ```
 
 The context is claimed at launch and answered at the end, so the check is never
@@ -92,7 +95,6 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
-| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider. See the caution for what actually guards fork PRs. |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
@@ -102,15 +104,103 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
 > by the org launch gate + webhook rate limit.
 >
-> **Where fork PRs actually stand, per provider.** On **GitHub** and
-> **Forgejo** the guard is unconditional and needs no configuration: an
-> inbound PR event whose head is a fork is filtered before the sync lane
-> is even considered, so the fork re-review exposure above cannot occur
-> there. A repo collaborator can still launch a bot on fork code
-> deliberately with a `/command`, which gates on the commenter's
-> permission. On **GitLab** there is no fork/cross-project guard at all,
-> so a forked-MR auto-review *is* reachable — bound that lane with an
-> `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
+> **Where fork PRs actually stand, per provider.** The guard is
+> unconditional on every provider and needs no configuration. On
+> **GitHub** and **Forgejo** an inbound PR event whose head is a fork is
+> filtered before the sync lane is even considered, so the fork re-review
+> exposure above cannot occur there. On **GitLab** the inbound MR
+> (auto-review) lane filters a **proven** fork the same way — the MR
+> payload names both projects (`source_project_id`/`target_project_id`
+> and the source project's own path), and the refusal names the fork; a
+> payload naming neither project is not refused as a fork (unproven is not
+> proven), and the lanes below fail closed on it. The `/command` lanes
+> refuse a fork (or an unnamed head repo) too — same-repo only, silently:
+> the fork's work needs a branch in the base repo before any bot runs on
+> it. Every lane that resolves the MR through the API — the `/command`
+> note lane, auto-fix, and gate relaunch, all fail-closed on an unproven
+> head repo — guards on GitLab as well: a same-project MR qualifies (the
+> MR's source and target project ids agree, so the head lives in the
+> project the lane queried); a fork MR has its source project resolved by
+> id (`GET /projects/:id`, cached per instance for an hour), so the head
+> compares by its real path and the refusal names it; a source project the
+> token cannot see (a private fork) stays unproven and is refused as
+> before. The note payload itself carries neither id, which is why the
+> `/command` lane resolves the MR via the API purely to prove this, even
+> though the note already carries branch names of its own.
+
+## <a name="review-tiers"></a>Review tiers — glance / guard / audit
+
+A repo's criticality or budget policy can pick ONE preset (`review_tier`)
+instead of tuning five separate vars ([SocialGouv/iterion#685](https://github.com/SocialGouv/iterion/issues/685)):
+
+| Tier | severity_threshold | max_findings | post_to_board | review_mode | Reviewer model |
+|------|---------------------|--------------|----------------|-------------|-----------------|
+| `glance` | `high` | `5` | `false` | mono only | cheaper same-family (`claude-sonnet-5` / `openai/gpt-5.4-mini`) |
+| `guard` (**default**) | `medium` | `15` | `true` | mono (auto-resolved) | full-strength (`claude-opus-5` / `openai/gpt-5.5`), unchanged since 0.7.0 |
+| `audit` | `low` | `40` | `true` | **forced dual**, regardless of `review_mode` | full-strength, both families |
+
+`guard` is byte-identical to the bot's pre-#685 posture — an unpinned repo
+sees no behaviour change. The tier is a **preset, never a cage**: every
+knob above stays individually overridable via its own `--var` — a
+sentinel default (`"auto"` on the string vars, `0` on `max_findings`)
+means "let the tier decide"; any concrete value is an explicit operator
+override and wins, on every tier. `gate_severity` (the merge-blocking
+floor) is deliberately **not** tier-varied — every tier keeps the same
+blocking bar by default, so `audit`'s lower `severity_threshold` surfaces
+more low/medium findings as advisory PR comments without silently making
+them merge-blocking. A deterministic `tier_expand` compute node (no LLM)
+resolves the concrete values right after `diff_precheck`, so a capped or
+frugal review is deterministic, not a judgment call.
+
+**The measured floor argument (why glance attacks ingestion, not just
+output).** A day of production cost data on this repo fit `cost ≈ $2.24 +
+$0.00072 × added lines` — between +39 and +210 lines (a 5× size range),
+cost moved by only $0.60. Below roughly 500 lines **the floor dominates**:
+what a reviewer ingests before it reads a single diff line (a claude_code
+node's context injection — this repo's own `CLAUDE.md`/`AGENTS.md` — the
+plausible reason iterion's own floor ≈ $2.24 against
+code-du-travail-numerique's ≈ $1.84). A tier that only caps the diff, the
+findings, or the max_findings ceiling cannot move a small PR below ~$2 —
+it is trimming the part that already costs the least. So `glance`
+attacks the floor two ways: a cheaper model (see below), and a prompt
+instruction telling the reviewer to skip exploratory reads beyond the
+diff itself (`--stat` + the hunks + at most one targeted grep — never a
+whole surrounding package). Skipping claude_code's own context-file
+injection is a further, larger lever this pass did NOT take — it would
+need a per-node `setting_sources:` DSL field (today `ITERION_CLAUDE_CODE_SETTING_SOURCES`
+is engine-wide only), a genuinely new capability, filed as a follow-up
+rather than bundled into this preset.
+
+**The model-per-tier mechanism.** A node's `model:` (and `reasoning_effort:`)
+field resolves ONLY `${ENV_VAR:-default}` from the process environment,
+never `{{vars.x}}` — true on every backend, including `claw`'s in-process
+path, not just the CLI-delegated ones. So a `--var review_tier=glance`
+cannot retarget `reviewer_claude`'s/`reviewer_gpt`'s model directly; the
+bot instead declares two extra judge nodes, `reviewer_claude_glance` /
+`reviewer_gpt_glance`, pinned to the cheaper defaults, and the EXISTING
+`topology` condition router (ADR-052) picks between the full-strength and
+glance variant per family — the pattern to imitate for any future
+tier/variant knob that needs a different model, never a new engine branch.
+
+**Per-repo pin.** `review_tier` is an ordinary launch var, so it is
+pinned exactly like `gate_context` or `post_to_board` — through the
+integration's `launch_vars` (durable across re-provisioning, generic
+pass-through, no new engine code):
+
+```sh
+iterion remote forge repo-bots create --data '{
+  "connection_id": "<conn-id>",
+  "repo": "owner/repo",
+  "bot_ids": ["review-pr"],
+  "launch_vars": { "review_tier": "glance" }}'
+```
+
+The studio's repo detail page (`/repos/:key`) surfaces a three-position
+"Review tier" selector once `review-pr` is bound to that repo, writing the
+same `launch_vars.review_tier` field. A webhook-triggered launch never
+overrides an operator's pin — `reviewPRVars` / `buildPRForgeCommandVars`
+apply `launchVars` LAST, the same precedence every other operator pin on
+this bot already relies on.
 
 ## Activating the blocking gate on a repo
 
@@ -136,6 +226,131 @@ cases the derivation does not cover.
 Repo admins keep their merge-queue bypass, so a stuck gate is never a hard
 block for an admin.
 
+### A paused review says so on the PR
+
+A review that hits the provider's quota does not die: the runner arms a
+durable retry and the reconciler leaves the check alone, because that armed
+retry is the promise. But the check then sits on its in-flight claim, which
+reads exactly like a review that died — and nothing said how long to wait.
+So the park **comments on the pull request**, once per park (fired from the
+run-outcome event, never the every-minute sweep): what happened, the instant
+the retry fires, the attempt number, and the provider's own sentence. When
+that sentence is an account **spend ceiling** rather than a time window, the
+notice says so explicitly — a ceiling reopens when an admin raises it (or
+the month rolls), so the armed retries can otherwise exhaust themselves
+against a wall.
+
+The notice is posted for **every run that owes the gate a verdict** —
+which includes a fixer that gates the head it pushes — but its wording is
+the review's ("the verdict lands here … a new push restarts it sooner"), so
+a parked fixer reads as a parked review, and the advice is the one thing not
+to do while a fixer works. Known gap, tracked as SocialGouv/iterion#650: the
+notice should name the parked run's role.
+
+Symmetrically, a pull request that **closes or merges** ends every run bound
+to it and **disarms** their retries: an in-flight review would keep spending
+quota on a diff nobody will merge, and a parked one would wake hours later
+to comment on a dead PR. See [webhooks.md](webhooks.md). Known gap
+(SocialGouv/iterion#663): a redelivery already in flight at the close can
+re-claim the run seconds after it was stopped — check `iterion remote runs
+list` after a merge and cancel a reviver by hand.
+
+## Disabling the gate per repo — first review only, re-review on demand
+
+Some repos want the opposite posture: reviews as **advisory comments only**,
+with the automatic review on MR/PR open the only automatic one and every
+re-review a deliberate human gesture (budget-frugal — no run per push). One
+operator pin buys the whole posture. On the integration's launch vars
+(`launch_vars` on the repo-bots API, or the studio integration settings):
+
+```json
+{ "gate_enabled": "false" }
+```
+
+Two properties of the pin worth knowing before setting it:
+
+- it is **repo-wide**: the operator var layer applies to every co-enabled
+  bot, so pinning it to quiet one gating bot also releases head-tracking
+  for the others on that repo;
+- the release is **logged at Warn** at the moment it becomes definitive
+  (a provision that drops a previously-forced `review_on_sync`), and any
+  later launch-vars update that replaces the map WITHOUT the pin silently
+  restores the gating posture (fail-safe direction — the gate follows the
+  head again);
+- the derivation only rewrites **unpinned** syncs: a `review_on_sync` an
+  operator set explicitly through the webhook API is provenance-pinned
+  (`review_on_sync_pinned`) and never silently replaced in either
+  direction — so per-push advisory reviews WITHOUT a gate (sync pinned
+  true + `gate_enabled: "false"`) is expressible and survives
+  re-provisions.
+
+What the pin disarms, end to end:
+
+- the bot's publish step skips the commit status — no verdict context ever
+  lands on a head;
+- the server-side gate machinery never arms: the in-flight `pending` claim
+  at launch, the reconciler, the sweeper and the auto-fix lane all read the
+  SAME pin (`forge.GateValueDisables`) — so even the half-configured shape
+  (gate disabled while a stale `gate_context` pin remains) claims nothing
+  and paints no synthetic failure; dropping the `gate_context` pin as well
+  is still the clean form;
+- provisioning **stops forcing `review_on_sync`** — and releases one it had
+  forced earlier ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go),
+  `operatorGateDisabled`). The forced sync exists solely to keep a REQUIRED
+  check alive across pushes; with the gate off it would only burn a review
+  per push. The pin survives re-provisions, unlike a bare
+  `review_on_sync: false` PATCH on the webhook config (which the next
+  provision's derivation would overwrite).
+
+Re-review stays on demand through two gestures — with different hold-label
+postures:
+
+- a **`/revi` comment** on the MR/PR — exempt from the hold-label pause, like
+  any `/command`: a comment is unambiguously a deliberate human trigger;
+- the forge-native **"Re-request review" button** on iterion's bot reviewer
+  (see [webhooks.md](webhooks.md#re-request-review)) — **vetoed by the hold
+  label**: the forge emits the same event for a CODEOWNERS auto-request,
+  which needs no permission from the requester and carries nothing to tell it
+  from a click, so the lane cannot claim a command's deliberateness (the
+  rationale lives with the lane in webhooks.md). On GitLab the publish step
+  self-assigns the bot as an MR reviewer after each review precisely so this
+  button exists; each click re-reviews the current head, even twice on the
+  same head.
+
+Removing the pin restores the gating posture: the next provision re-derives
+`review_on_sync: true` from the `statuses` scope.
+
+**Reading back whether the pin took.** `GET /api/teams/{id}/webhooks`
+serialises the config. Read `operator_launch_vars`: it carries the pin
+verbatim (mirrored onto the config at provision) and is the authority BOTH
+consumers read — the `review_on_sync` derivation and the gate machinery's
+own `runGateDisabled`. `"gate_enabled": "false"` there is the answer.
+
+Two neighbouring fields say what the pin *did*, with one JSON trap: they
+are `omitempty` bools, so **absence means `false`**, not "unknown".
+
+- `review_on_sync` — `true` = a push still re-reviews; absent = released.
+  It is a *consequence*, not the pin: in the sync-pinned-true +
+  `gate_enabled: "false"` shape described above (advisory reviews on every
+  push, no gate) it reads `true` while the gate is off, so it answers
+  "does a push re-review", never "is the gate armed".
+- `review_on_sync_pinned` — whether an explicitly-PATCHed sync is
+  provenance-protected from the derivation (see above).
+
+Do not read the reviewer's `bot_rules.actions` for this: that list is
+materialised from the bot manifest's invocation
+([`resolveBotRules`](../pkg/forge/orchestrator.go)) and is identical either
+way, while the push decision reads `cfg.ReviewOnSync` directly
+(`gateResync` in the webhook handlers). It would report "released" on an
+armed gate.
+
+Pair it with two run-time observations, which is what actually proves the
+posture end to end: a push's webhook delivery is recorded **`filtered`**,
+and the head of an open MR/PR carries **no** status. Query that last one
+with the **full** SHA — GitLab's statuses endpoint returns `[]` for an
+abbreviated one whether or not a status exists (measured on 19.2: full SHA
+→ `["iterion/review"]`, same commit at 8 chars → `[]`).
+
 ### GitHub merge queues
 
 A merge queue tests a synthetic `merge_group` SHA, not the PR head that Revi
@@ -151,6 +366,67 @@ The workflow currently names `revi/review` explicitly. If a repository pins a
 different shared `gate_context`, its merge-group workflow must mirror that same
 context (or otherwise run the gate on the merge-group SHA), or the required
 check will remain expected forever.
+
+#### Auto-heal, and when it stands down
+
+A PR the queue **ejects** for a healable reason (`MERGE_CONFLICT`,
+`CI_FAILURE`, `INVALID_MERGE_COMMIT`, `MERGE_CONFLICT_ERROR`) dispatches the
+brancher bot to rebase, reconcile the branch with the new base, and push so
+the PR re-enters the queue — the queue *detects* the break, the bot *repairs*
+it, no human. The heal is bounded to one attempt per head sha, and gated on
+same-repo + project/author allowlist + bot-permitted like every other lane.
+
+The heal **stops the moment the queue takes the PR back** (`enqueued`). This
+is not an optimisation: a heal still running past that point force-pushes the
+branch, and that push cancels the queue build in flight — ejecting the PR a
+second time, so the repair becomes the next breakage. The stop is keyed on the
+heal's own idempotency key at the PR's *current head*, which gives it two
+properties worth knowing:
+
+- a fixer a developer asked for with `/billy` rides a different key and is
+  never touched;
+- a heal that has **already pushed** advanced the head, and that push is what
+  re-enqueued the PR — so the enqueue it caused does not match its own key,
+  and the run is left to finish its delivery tail.
+
+Note what auto-heal cannot tell on its own: `CI_FAILURE` covers both "this
+branch genuinely breaks when combined with the base" and "an unrelated flaky
+test failed on the queue branch". In the second case the bot is dispatched
+against a PR with nothing to fix. If a flaky test is ejecting PRs, fix the
+test — the heal lane is not the place to absorb it.
+
+##### `DECLINED` — a bot refusing its task on the merits
+
+That second case is why a dispatched bot may **refuse**, and why the mission
+the heal hands it says so explicitly. Without that permission the refusal is
+un-returnable: measured on #682, a fixer concluded "no code issue in the diff,
+this is a re-queue not a fix", recorded that a queue build was in flight and
+that pushing would cancel it — and its mission still said push. Run to
+completion it would have destroyed the merge it was dispatched to protect.
+
+The contract is one typed code, and it is **bot-agnostic**: a bot opts in by
+ending on a `fail <name>:` node carrying `code: DECLINED`, with its reason in
+the `message:`; nothing on the platform learns which bot did. `DECLINED` is
+deliberately not one of the engine's own `FailureCode`s — that set is the one
+a workflow may *not* mint (C248) — so any bot may adopt it.
+
+What the platform does with it:
+
+- **Nothing is relaunched.** A refusal is an answer, not a failure to repair:
+  the recovery run would re-derive it against the same premise, once per head,
+  for as long as the trigger keeps firing. Refused at the one point every
+  relaunch crosses (`relaunchDeadGateRun`), and in the auto-fix lane.
+- **The reason reaches the pull request** (`<!-- iterion:fixer-declined -->`).
+  A declined run changed nothing, so without the notice the PR carries no
+  trace of the decision at all — a red check and a bot that appears to have
+  done nothing.
+
+The bot's side has to make the refusal **earned**, not asserted, or the
+decline becomes an exit from hard work. Billy's `decline_probe` is the
+reference: a deterministic node comparing the repository to the state the run
+was handed (HEAD unmoved, working tree clean) that refuses a decline from any
+pass which committed or edited anything — that run ships its work through the
+ordinary tail instead. See `bots/branch-improve-loop/main.bot`.
 
 ## One gate, several bots
 
@@ -273,6 +549,16 @@ means "I start from a review and act on it".
   stops pushing; one that keeps pushing without converging frees a fresh claim
   every cycle. After five unattended passes the lane stops and leaves the PR to
   a human — the `/command` road is still open.
+- **Three launch attempts per head.** A fixer that cannot even be *started* (a
+  queue outage, a deploy window, a broken plugin source) spends neither of the
+  two bounds above — the claim binds only once a launch succeeds, and the
+  per-PR ceiling counts launched passes — so it used to be re-attempted on
+  every sweep offer, once a minute, for as long as the run stayed in the sweep
+  window (2026-08-26: ~90 minutes of it). The launch failure is now retried on
+  a backoff (5 min, then 10 min) from the count the claim row itself carries
+  (`attempts` / `failed_at` on the delivery), and after the third failure the
+  lane files a board card labelled `source:gate-autofix` + a PR comment naming
+  the failure and stops — a new head gets a fresh budget.
 
 It also obeys the ordinary launch gate (org quota, cost cap, concurrency) and
 the hold label, which pauses this lane like every other. Note the org cost cap
@@ -289,22 +575,131 @@ unreadable) it does not launch: an unevaluable bound is not a cleared one. Omitt
 `auto_fix_on_gate_failure` on a later call leaves the repo's current choice
 alone — enabling one more bot never switches automation on or off by itself.
 
+## <a name="three-roles"></a>Revi / Billy / Vetty — one gate, three roles
+
+The close collaboration between the reviewer (Revi), the fixer
+(Billy/`branch-improve-loop`) and the dependency guard (Vetty/
+`dep-update-guard`) on a **shared gate** is a design point, not an
+accident — but until it is written down in one place, the next agent
+re-derives it from three scattered sections. This is that place
+([SocialGouv/iterion#650](https://github.com/SocialGouv/iterion/issues/650)).
+
+**What IS wired today:**
+
+- **Disjoint ownership, one context.** Revi and Vetty share `gate_context`
+  by owning disjoint PRs (`author_scope: exclusive` routes the dependency
+  bot's own PRs to Vetty, everyone else's to Revi — [above](#one-gate)), so
+  they never write the same status. A fixer is different: it acts
+  SEQUENTIALLY on a PR a reviewer already reviewed, and [the ordering that
+  keeps them from fighting](#two-bots-on-the-same-pull-request) is what
+  "Two bots on the SAME pull request" describes — the fixer posts its own
+  verdict on the head it pushed, then the reviewer's re-review supersedes
+  minutes later.
+- **The blind window is short, not zero.** A push is followed by nothing on
+  the required check until `review_on_sync`'s re-review launch claims
+  `pending` on the new head — measured on PR #646 (2026-09-03): the claim
+  landed **4 seconds** after the push, twice in the same PR's lifecycle.
+  `review_on_sync` derives ON automatically whenever a bot on the webhook
+  gates merges ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go)),
+  so this is the default posture, not something each repo has to remember
+  to enable for the loop to close.
+- **Hand-off by KIND, never by bot id.** A reviewer's `produces: kind:
+  review` and a fixer's `consumes: kind: review_ledger` are what let Billy
+  start from Revi's findings and answer them back, with neither manifest
+  naming the other bot — the generic mechanism documented in CLAUDE.md's
+  "The ENGINE stays bot-agnostic" section and exercised end to end in
+  [revi-billy-loop.md](revi-billy-loop.md#what-the-command-seeds).
+  Adding a second reviewer or a second fixer is a bundle, never an engine
+  PR.
+
+- **The pause notice names the parked run's role.** A run that parks on a
+  provider quota gets [a comment naming when it resumes](#a-paused-review-says-so-on-the-pr),
+  worded for the role the run's own manifest declares through its
+  `consumes:`/`produces:` kinds — the reviewer's ("the verdict lands here …
+  a new push restarts it sooner"), the fixer's ("don't push to this branch
+  meanwhile — the run re-clones the head when it resumes"), and a neutral
+  one for any other role — never a bot-id branch in the engine
+  ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683); before it, a
+  parked Billy read as a parked Revi, observed live on PR #646).
+
+**What is NOT wired (yet):**
+
+- **No "fixer in flight" signal exists BEFORE its first push.** From the
+  moment `/billy` (or the zero-touch lane) launches to its first commit,
+  `revi/review` stays green on the OLD head and nothing on the PR says a
+  fixer is working — the only signals are the run console itself and,
+  once it parks, the pause notice above. This is the phase the operator
+  rules below are written for; see
+  [revi-billy-loop.md's "What to expect on the PR"](revi-billy-loop.md#what-to-expect-on-the-pr)
+  for the exact wording and (SocialGouv/iterion#664) for the tracking card.
+
+**Operator rules, one line each:**
+
+1. **Don't push to a PR while its fixer runs** — his commits land on that
+   branch; a manual push mid-run recreates the exact collision the "no
+   in-flight signal" gap above cannot warn you about. `git pull` after his
+   push before resuming any local work on the branch.
+2. **`/billy` is the escalation from a review, not a replacement for one.**
+   Comment it once Revi has left findings — never hand-fix them in a
+   session on this repo (the dogfood habit in
+   [revi-billy-loop.md](revi-billy-loop.md)).
+3. **The zero-touch lane (`auto_fix_on_gate_failure`) makes step 2
+   automatic** on repos that opt in — a red `revi/review` launches the
+   fixer with no comment, bounded by [its own brakes](#autofix). Check
+   `iterion remote runs list` (or the gate's `pending` link) before
+   hand-fixing a red PR: a manual fix racing an already-launched fixer is
+   the same collision as rule 1.
+
 ## Overriding a finding
 
 Three ways, in order of preference:
 
 1. **Push a fix** — the status re-reviews on the new head (needs
    `review_on_sync`) and flips green when the finding is gone.
-2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR to
-   force-green the `revi/review` status on the current head, for a finding
-   they dispute. Authorized through the **same PR-comment command gate as
-   every other `/command`**: the commenter must hold a live repo role at or
-   above `MinReplierRole` (or be in `AuthorizedRepliers`), verified via the
-   forge permission API, and the review bot's own comment can't self-approve
-   (WhoAmI loop-guard) — an arbitrary contributor cannot wave a finding
-   through. The status carries "approved by @user: reason" and links to the
-   comment as the audit trail. It does **not** launch a re-review. *(GitHub +
-   Forgejo today; GitLab `/revi approve` on a note is a follow-on.)*
+2. **`/revi approve [reason]`** — a **maintainer** comments this on the PR
+   (or MR note, on GitLab) to force-green the `revi/review` status on the
+   current head, for a finding they dispute. Authorized through the **same
+   command gate as every other `/command`**: the commenter must hold a live
+   repo role of at least **maintainer**, verified via the forge permission
+   API. The webhook's
+   `min_replier_role` pin may RAISE that floor (pin `owner` and only owners
+   may approve) and never lowers it: that pin is the talk-back floor — who
+   may question a bot — and an operator who lowers it so reporters can ask
+   the converse bot must not lower the merge-queue bypass with it. Role
+   only, for the same reason: the webhook's `AuthorizedRepliers` allowlist
+   (who may talk back to the bot) does not apply to a force-green. On
+   Forgejo/Gitea, whose collaborator vocabulary is `owner | admin | write |
+   read` (there is no `maintain`), the `maintainer` floor resolves to **owner
+   or admin** — deliberately narrower than on GitHub, never wider. Two additional guards close self-approve
+   loops: the review bot's own comment is rejected (WhoAmI loop-guard), and
+   the PR author cannot approve their own PR (a maintainer must). The status
+   carries "approved by @user: reason" and links to the comment as the audit
+   trail. It does **not** launch a re-review. Works on GitHub App
+   integrations (posts through the connection's installation token so the
+   `statuses` scope is present), a GitLab/Forgejo team connection's admin
+   client, and hand-owned webhooks with a `forge_token` binding. The token
+   client serves when no connection covers the repo,
+   and when the covering connection cannot serve the write — for exactly
+   two reasons: its installation-token mint fails (a grant that lags the
+   requested permissions, a rotated App key), or the installation
+   withholds `statuses:write` (one created before the merge gate, or one
+   that declined the permission: the App client re-mints without it, so
+   its reads still work and only the status write would 403). In both
+   cases the lane warns and reads, writes and replies through the
+   binding; with no binding, the refusal names the withheld grant to
+   approve on the App. **Who is told what:** the role gate runs before
+   anything the lane says on the PR. A commenter it refuses — below the
+   floor, or the bot's own comment — gets **no reply**; the webhook's
+   delivery audit records the refusal. `/revi approve` is intercepted
+   before any scope or route admission, so that branch is reachable by
+   anyone who can comment, and a bot comment there would be one any
+   drive-by could drive, N times for N comments. Past the gate the
+   commenter is a maintainer, and every configuration refusal or forge
+   failure (bot not enabled, no connection and no binding, withheld
+   grant, no gate context, no head sha, a rejected status write) is told
+   on the PR as **what to fix**; connection ids and the forge's own error
+   text stay in the server log and on the audit row, never in the
+   comment. Shipped on GitHub, Forgejo and GitLab.
 3. **Admin merge-queue bypass** — the last resort, always available to repo
    admins.
 
@@ -371,8 +766,10 @@ context that will never arrive, and no error appears on the run, the PR or the
 check. That is worse than a red check, because nothing points at the cause.
 
 It happened twice in one day in production. A rolling deploy drained a review
-mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
-runs). Separately, a bot bug made the publish step skip on every run, so
+mid-flight (at the time the lame-duck drain was not deployed, so a rollout
+cancelled in-flight runs; the chart has rendered `config.runner.drainMode`
+since 3.78.0 — see docs/probes-and-graceful-shutdown.md). Separately, a bot
+bug made the publish step skip on every run, so
 `revi/review` stopped landing repo-wide and every pull request became
 unmergeable — with every other check green.
 
@@ -417,9 +814,48 @@ that from doing harm of its own:
   reaches is precisely the blast radius the grant exists to bound.
 - **`failure`, not `success`.** A review that did not happen has approved
   nothing.
+- **The remedy has to be one that can work.** The generic wording — *"review
+  died (…) — push again or comment the bot's command to re-run"* — is right for
+  an interruption and wrong for two typed outcomes, each of which gets its own:
+  - a run that ended **`DECLINED`** did not die. It read its task, concluded
+    the premise was wrong and deliberately changed nothing, so a push changes
+    nothing either: the next dispatch reads the same premise and refuses again.
+    The status says a bot was dispatched and declined, and routes to a human.
+    (The relaunch lane already stood down on the code; the reconciler was the
+    last reader still painting *review died* over a deliberate refusal.)
+  - a run that ended **`BUDGET_EXCEEDED`** dies at the same place on the next
+    attempt: the diff and the cap are unchanged. The status carries the spend
+    and the cap and asks for a human reviewer or a higher budget, and the
+    automatic relaunch **stands down after the second budget death in a row**
+    (a first overrun can be a spike and still gets its one retry; a repeat is
+    the cap being structurally short for that diff). Measured on
+    iterion#780: three deaths at 30–36 $ against a 12 $ cap on a seven-file
+    pull request, each one telling the developer to reproduce it.
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
+
+### No verdict on a pull request that already ended
+
+`postGateStatus` resolves the pull request before it writes, and refuses to
+write at all when its state is `merged` or `closed`. That head has left the
+merge decision: nothing consults the check any more, and the branch it
+describes is scheduled for deletion. This is the single point every bot's gate
+status crosses, which is what keeps the rule out of each bot's tail. An EMPTY
+state is a provider that does not report one, never a closure — the same
+predicate the relaunch, auto-fix and reconcile lanes use.
+
+The publish response says so (`gate_error`), so a bot's tail can route on it
+rather than claim a verdict it did not get. A bot that needs the answer
+*before* it acts — a fixer deciding whether to push onto the branch — reads
+the grant's own read half, `GET /api/v1/forge/pull-request?pr_url=…` with the
+same `X-Iterion-Run` token, injected as the `forge_pr_state_url` launch var.
+git in the workspace cannot answer the question: a squash merge leaves the
+source branch present and its head no ancestor of the base, so a merged pull
+request reads locally as an open one. Observed in production (run `01a07840`):
+a fixer kept working for half an hour past the squash of its pull request,
+pushed six commits onto the merged branch and posted `revi/review=success` on
+the pre-merge head.
 
 ### Two triggers, because one event is not a guarantee
 
@@ -481,6 +917,37 @@ completed and then had no way to post the verdict it had computed. The grant's
 TTL is therefore derived from the max retry wait, plus a margin for the resumed
 run itself.
 
+### The grant's other two bounds: the run's own end, and a mint that fails
+
+A TTL sized for a seven-day quota wait is a long life for a credential that a
+normal review needs for minutes. So the run's terminal outcome brings the
+expiry forward: the same run-outcome event the reconciler consumes shortens the
+grant to the reconciler's own window (the sweep lookback plus a margin), after
+which nothing revisits the run and the grant has no reader left. Two shapes
+keep the full TTL, because something *will* come back and post their own
+verdict — a **paused** run, and a `failed_resumable` one with an **armed**
+retry. "Abandoned" is not re-derived here: the retry sweeper enforces the
+policy's `max_wait`, unsets the armed instant when it gives up, and
+**republishes the run outcome**, so the grant is shortened on that event
+instead.
+
+The other bound is the mint itself. A launch whose grant cannot be registered —
+a saturated in-memory registry, an unreachable Valkey — is **refused**, not
+degraded: the run would claim the repo's gate context and then have no way to
+answer it, and the reconciler reads the grant to know where to speak, so it
+would abstain and the claim would never be resolved. Refusing works because the
+claim is posted *after* the launch: nothing is left on the head to release. The
+webhook lane marks the delivery `launch_error` (redelivery re-enters), the
+studio/API launch answers `503`, and a board card is filed blocked with the
+reason.
+
+**Known gap — the registry is single-replica by default.** Without Valkey the
+grants live in one pod's memory, so a restart empties them: an in-flight run's
+publish then answers `401`, and the reconciler abstains on "its publish grant
+is expired or revoked". `pkg/valkey` is the cloud twin and is used when
+configured; making it the only backend (so an unknown token is a real refusal
+rather than a lost one) is not done.
+
 ### The dead review is re-run — once per head
 
 The synthetic `failure` makes the interruption visible; on an automated lane
@@ -492,9 +959,21 @@ veto, `overlap: supersede`). The bound is the idempotency key itself: **one
 relaunch per (PR, head sha), ever.** The fresh run posts the real verdict over
 the synthetic failure when it completes.
 
+A relaunch that **cannot start** — the launch itself fails (a queue outage,
+a deploy window, the 2026-08-26 plugin-source parse error) rather than the
+relaunched run dying — does not spend the claim, and the sweep keeps offering
+the dead run every minute for an hour. Those offers are the retry, and the
+retry is bounded: the launch tail counts the attempts on the claim row
+(`attempts` / `failed_at` on the delivery), the lane retries on a backoff
+(5 min, then 10 min), and the **third** failure escalates exactly like a second
+death and then stops. An admission denial (org quota, cost cap, concurrency)
+still escalates on the first refusal — its horizon is not one the sweep window
+outlasts. Human-driven redeliveries carry no such budget: an operator retrying
+after a fix must be able to.
+
 When the one relaunch is already spent and the gate dies AGAIN on the same
-head — or the relaunch cannot start at all — the problem graduates to the
-team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
+head — or the relaunch cannot start within that budget — the problem graduates
+to the team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
 (the relaunch stamps a `gate_relaunch_of` launch var so its own death can name
 the original), the failure reasons, and the remedy. The same escalation is
 ALSO posted as a **PR comment** through the connection's review client: the
@@ -513,6 +992,21 @@ store's unique-id insert is what serialises them. A required check dying
 repeatedly on one revision is a structural signal (a run budget too short for
 the workload, a recurring provider quota, a bot defect), which is a human's
 call.
+
+A pull request that is **closed or merged** gets no synthetic failure at all:
+it owes nobody a verdict, and "push again to re-run the review" on work that
+already shipped is advice with no object. The check then keeps whatever the
+interrupted run's in-flight claim left on the head — which blocks nothing, and
+which a reopen heals, since the fresh review's claim may overwrite an in-flight
+marker. A provider that reports no state at all is not treated as a closure.
+
+The synthetic failure states the remedy that applies to the run it replaces.
+A review that died reads `review died (<reason>) — push again or comment the
+bot's command to re-run`; a run whose queue message is parked on the
+dead-letter queue reads `review parked on the DLQ — operator replay needed
+(iterion remote admin dlq)` instead, because a push there launches a fresh run
+and leaves the parked message where it is. Both are the reconciler's own
+marker, so both are repairable and both are ignored by the lane below.
 
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is

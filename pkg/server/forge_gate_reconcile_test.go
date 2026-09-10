@@ -152,6 +152,13 @@ func TestGateReconcile_AbstainsWhenItCannotRead(t *testing.T) {
 // Most runs owe nothing. Touching a PR for one of those would be a bug of its
 // own — the reconciler would be posting checks nobody asked for.
 func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
+	// The half-configured shape: gate_context still pinned, gate DISABLED by
+	// an explicit gate_enabled pin. The run never owed a verdict — a
+	// synthetic failure here would manufacture the deadlock the pin avoids.
+	gateOff := gatingInputs()
+	gateOff["gate_enabled"] = "false"
+	gateOffBool := gatingInputs()
+	gateOffBool["gate_enabled"] = false
 	for _, tc := range []struct {
 		name   string
 		inputs map[string]any
@@ -159,6 +166,8 @@ func TestGateReconcile_IgnoresRunsThatOweNothing(t *testing.T) {
 		{"no publish grant", map[string]any{"pr_url": "https://github.com/o/r/pull/42"}},
 		{"no pr", map[string]any{forgePublishVarToken: "tok-gate"}},
 		{"nothing at all", map[string]any{}},
+		{"gate disabled by pin", gateOff},
+		{"gate disabled by bool pin", gateOffBool},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
@@ -324,8 +333,8 @@ func TestGateReconcile_ReasonStripsMechanicalWrappers(t *testing.T) {
 	}
 }
 
-// The synthetic marker must be recognized in both its shapes and must never
-// swallow a real verdict.
+// The synthetic marker must be recognized in every shape the reconciler
+// writes and must never swallow a real verdict.
 func TestGateReconcile_SyntheticMarker(t *testing.T) {
 	for _, tc := range []struct {
 		desc string
@@ -333,6 +342,7 @@ func TestGateReconcile_SyntheticMarker(t *testing.T) {
 	}{
 		{gateInterruptedDescription, true},
 		{"review died (budget exceeded: duration…) — push again or comment the bot's command to re-run", true},
+		{gateDLQDescription, true},
 		{"no blocking findings (≥high); 4 total", false},
 		{"supply-chain audit clean; no alignment needed, build verified", false},
 		{"", false},
@@ -365,5 +375,185 @@ func TestGateReconcile_DoesNotSpeakForAHeadItNeverReviewed(t *testing.T) {
 	}
 	if gc.setCalls != 1 {
 		t.Fatalf("the head it DID review must still get its verdict (%d writes)", gc.setCalls)
+	}
+}
+
+// A pull request that is closed or merged owes nobody a verdict. The
+// reconciler used to paint its synthetic failure there anyway — a red
+// "review died — push again or comment the bot's command to re-run" on a
+// pull request already merged, telling a developer to re-run a review of
+// work that shipped. Reachable from every terminal outcome on such a run:
+// the retry sweeper's abandon republishes the outcome deliberately, the
+// stop-on-close cancel is itself a terminal outcome, and the sweep re-offers
+// the run for its whole lookback.
+//
+// Same predicate the relaunch and auto-fix lanes already use: an EMPTY state
+// (a provider that does not report one) is not a closure, so a verdict is
+// never suppressed on an unknown.
+func TestGateReconcile_ClosedPullRequestGetsNoSyntheticFailure(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  int
+	}{
+		{"open", 1},
+		{"", 1}, // unknown state: never suppress a verdict on a guess
+		{"closed", 0},
+		{"merged", 0},
+	} {
+		t.Run("state="+tc.state, func(t *testing.T) {
+			gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef", state: tc.state}}
+			s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+			run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.Status = store.RunStatusCancelled
+			run.Error = "auto-retry abandoned: monthly_run_quota_exceeded"
+			if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if gc.setCalls != tc.want {
+				t.Fatalf("pull request %q: posted %d statuses, want %d (last: %q %q)",
+					tc.state, gc.setCalls, tc.want, gc.last.State, gc.last.Description)
+			}
+		})
+	}
+}
+
+// declining is an ANSWER, not a death. The relaunch lane already stands down
+// on the typed code; this reader was left behind and painted "review died …
+// push again or comment the bot's command to re-run" on a head where a bot
+// deliberately changed nothing — advice that re-derives the same refusal, and
+// a lie about what happened.
+func TestGateReconcile_DeclinedRunLeavesNoDeadReviewWording(t *testing.T) {
+	t.Run("no verdict on the head means say the decline, not a death", func(t *testing.T) {
+		gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailed
+		run.FailureCode = declinedFailureCode
+		run.Error = "the queue ejected this PR on an unrelated flaky test; the diff has no defect"
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 1 {
+			t.Fatalf("the check still has to be answered — a pull request left on a claim nobody resolves is the bug this repair exists for (writes=%d)", gc.setCalls)
+		}
+		if strings.Contains(gc.last.Description, "review died") || strings.Contains(gc.last.Description, "push again") {
+			t.Fatalf("a decline is not a dead review and a push does not change it: %q", gc.last.Description)
+		}
+		if !strings.Contains(strings.ToLower(gc.last.Description), "declined") {
+			t.Fatalf("the description must name what actually happened: %q", gc.last.Description)
+		}
+		if !isSyntheticGateInterruption(gc.last.Description) {
+			t.Fatalf("the decline status is one of ours: a later pass that cannot recognise it treats it as a real verdict and goes silent — %q", gc.last.Description)
+		}
+	})
+
+	t.Run("a verdict already on the head is left alone", func(t *testing.T) {
+		gc := &listingGateClient{
+			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
+			statuses:       []forge.CommitStatus{{Context: "iterion/review", State: forge.CommitStateFailure, Description: "2 blocking finding(s) ≥high"}},
+		}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = store.RunStatusFailed
+		run.FailureCode = declinedFailureCode
+		run.Error = "nothing to fix in this diff"
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 0 {
+			t.Fatalf("the reviewer's verdict from before the fixer ran is still the truth (%d writes: %q)", gc.setCalls, gc.last.Description)
+		}
+	})
+}
+
+// A review that died at its OWN cost cap does not come back by pushing: the
+// next run reaches the same cap on the same diff. The status has to say so as
+// a verdict and route to a human, instead of offering a remedy that
+// reproduces the death (#788).
+func TestGateReconcile_BudgetExceededVerdictRoutesToAHuman(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	run, err := s.cfg.Store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusFailedResumable
+	run.FailureCode = store.FailureBudgetExceeded
+	run.Error = "budget exceeded: cost_usd (36/12)"
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reconcileGateForRunID(context.Background(), runID, gateTriggerEvent); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("the check must be answered, writes=%d", gc.setCalls)
+	}
+	d := gc.last.Description
+	if strings.Contains(d, "push again") {
+		t.Fatalf("pushing again reproduces the death — the remedy must not be the disease: %q", d)
+	}
+	if !strings.Contains(d, "36") || !strings.Contains(d, "12") {
+		t.Fatalf("the spend and the cap are the two numbers a human decides on: %q", d)
+	}
+	if !strings.Contains(strings.ToLower(d), "human") {
+		t.Fatalf("a gate that cannot afford its review has no exit but a human — say it: %q", d)
+	}
+	if !isSyntheticGateInterruption(d) {
+		t.Fatalf("the budget verdict is one of ours and must stay recognisable: %q", d)
+	}
+}
+
+// Two deaths on the same cap are the automation's whole budget: the relaunch
+// replays the same review of the same diff against the same cap, so a third
+// launch is a third $30 for the same answer.
+func TestGateRelaunch_StandsDownOnASecondBudgetDeath(t *testing.T) {
+	inputs := gatingInputs()
+	inputs[gateRelaunchOfVar] = "run-that-also-died-on-budget"
+	run := &store.Run{
+		ID: "run-relaunched", Status: store.RunStatusFailedResumable,
+		FailureCode: store.FailureBudgetExceeded,
+		Error:       "budget exceeded: cost_usd (30/12)",
+		Inputs:      inputs,
+	}
+	if !gateRelaunchIsSpentOnBudget(run) {
+		t.Fatal("a relaunch that died on the same cap as the run it replaced must stop the automation")
+	}
+	first := &store.Run{
+		ID: "run-first", Status: store.RunStatusFailedResumable,
+		FailureCode: store.FailureBudgetExceeded,
+		Error:       "budget exceeded: cost_usd (36/12)",
+		Inputs:      gatingInputs(),
+	}
+	if gateRelaunchIsSpentOnBudget(first) {
+		t.Fatal("the FIRST budget death still gets its one relaunch — a transient overrun is real")
+	}
+	other := &store.Run{
+		ID: "run-other", Status: store.RunStatusFailedResumable,
+		FailureCode: store.FailureExecutionFailed,
+		Error:       "provider unreachable",
+		Inputs:      inputs,
+	}
+	if gateRelaunchIsSpentOnBudget(other) {
+		t.Fatal("a relaunch that died of something else keeps the ordinary recovery")
 	}
 }

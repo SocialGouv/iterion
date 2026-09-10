@@ -188,8 +188,10 @@ func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 		t.Errorf("FinishedAt should be cleared by LoadRun, got %v", healed.FinishedAt)
 	}
 
-	// And the heal must be persisted to disk so subsequent reloads stay
-	// clean even without going through LoadRun in the same process.
+	// The heal is in-memory only: a read never writes run.json back (see
+	// TestLoadRunDoesNotWriteBack — a reader is not the run's owner), so the
+	// stale field stays on disk until the next legitimate write, and every
+	// LoadRun heals it again.
 	raw, err := os.ReadFile(s.runJSONPath("run-stale"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -198,8 +200,15 @@ func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if onDisk.FinishedAt != nil {
-		t.Errorf("FinishedAt should be persisted as nil on disk, got %v", onDisk.FinishedAt)
+	if onDisk.FinishedAt == nil {
+		t.Error("LoadRun must not write the heal back to disk")
+	}
+	again, err := s.LoadRun(context.Background(), "run-stale")
+	if err != nil {
+		t.Fatalf("LoadRun (heal again): %v", err)
+	}
+	if again.FinishedAt != nil {
+		t.Errorf("FinishedAt should be healed on every read, got %v", again.FinishedAt)
 	}
 }
 
@@ -1461,6 +1470,25 @@ func TestSaveCheckpointRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCheckpointPausedNodeID(t *testing.T) {
+	if got := (*Checkpoint)(nil).PausedNodeID(); got != "" {
+		t.Fatalf("nil checkpoint paused node = %q", got)
+	}
+	sequential := &Checkpoint{NodeID: "review"}
+	if got := sequential.PausedNodeID(); got != "review" {
+		t.Fatalf("sequential paused node = %q, want review", got)
+	}
+	parallel := &Checkpoint{
+		NodeID: "dispatch",
+		Parallel: &ParallelCheckpoint{
+			PendingNodeID: "branch_gate",
+		},
+	}
+	if got := parallel.PausedNodeID(); got != "branch_gate" {
+		t.Fatalf("parallel paused node = %q, want branch_gate", got)
+	}
+}
+
 // failed_resumable must RETAIN the checkpoint (the resume entry point).
 // This is the behaviour that makes a failed run recoverable.
 func TestFailRunResumable(t *testing.T) {
@@ -1469,7 +1497,7 @@ func TestFailRunResumable(t *testing.T) {
 	mustCreateRun(t, s, "run-fr")
 
 	cp := &Checkpoint{NodeID: "node-z"}
-	if err := s.FailRunResumable(ctx, "run-fr", cp, "rate limited"); err != nil {
+	if err := s.FailRunResumable(ctx, "run-fr", cp, "rate limited", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -1501,7 +1529,7 @@ func TestFailRunTerminal(t *testing.T) {
 	mustCreateRun(t, s, "run-ft")
 
 	cp := &Checkpoint{NodeID: "node-f"}
-	if err := s.FailRunTerminal(ctx, "run-ft", cp, "workflow reached fail node"); err != nil {
+	if err := s.FailRunTerminal(ctx, "run-ft", cp, "workflow reached fail node", ""); err != nil {
 		t.Fatalf("FailRunTerminal: %v", err)
 	}
 
@@ -1533,7 +1561,7 @@ func TestFailRunTerminalCancelledWins(t *testing.T) {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
 
-	if err := s.FailRunTerminal(ctx, "run-ft-cancel", &Checkpoint{NodeID: "node-f"}, "late failure"); err != nil {
+	if err := s.FailRunTerminal(ctx, "run-ft-cancel", &Checkpoint{NodeID: "node-f"}, "late failure", ""); err != nil {
 		t.Fatalf("FailRunTerminal: %v", err)
 	}
 	r, err := s.LoadRun(ctx, "run-ft-cancel")
@@ -1545,9 +1573,12 @@ func TestFailRunTerminalCancelledWins(t *testing.T) {
 	}
 }
 
-// UpdateRunStatus(failed) preserves an existing checkpoint, while the
-// running/finished transitions keep clearing it.
-func TestUpdateRunStatusFailedKeepsCheckpoint(t *testing.T) {
+// UpdateRunStatus preserves an existing checkpoint on EVERY transition:
+// a status change never destroys the recovery point (ADR-095) —
+// `iterion fork` reads a terminal parent's checkpoint, and the park
+// writers that follow a running claim rely on the resume point
+// surviving it.
+func TestUpdateRunStatusPreservesCheckpoint(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
 	mustCreateRun(t, s, "run-keep-cp")
@@ -1573,8 +1604,8 @@ func TestUpdateRunStatusFailedKeepsCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	if r.Checkpoint != nil {
-		t.Errorf("Checkpoint = %+v after finished transition, want cleared", r.Checkpoint)
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "node-a" {
+		t.Errorf("Checkpoint = %+v after finished transition, want preserved (fork reads it)", r.Checkpoint)
 	}
 }
 
@@ -1712,7 +1743,7 @@ func TestFailRunResumableNeverOverwritesAnOperatorCancel(t *testing.T) {
 	if err := s.UpdateRunStatus(context.Background(), id, RunStatusCancelled, "operator cancelled"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailRunResumable(context.Background(), id, &Checkpoint{NodeID: "n1"}, "interrupted"); err != nil {
+	if err := s.FailRunResumable(context.Background(), id, &Checkpoint{NodeID: "n1"}, "interrupted", ""); err != nil {
 		t.Fatalf("FailRunResumable on a cancelled run should be a no-op, got %v", err)
 	}
 	run, err := s.LoadRun(context.Background(), id)

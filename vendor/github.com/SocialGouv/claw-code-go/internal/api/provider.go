@@ -13,6 +13,32 @@ const (
 	AuthMethodAzureIdentity AuthMethod = "azure_identity" // Azure Managed Identity (Foundry)
 )
 
+// ChatGPTClientVersion is the codex-cli release claw presents on the
+// ChatGPT-Codex wire (`version:` header + User-Agent) when the caller passes
+// no OpenAIClientVersion. The backend gates model availability on it: a model
+// newer than the release claw claims is refused with
+//
+//	400 {"detail":"The '<model>' model requires a newer version of Codex.
+//	     Please upgrade to the latest app or CLI and try again."}
+//
+// The gate is PER MODEL, and each model line raises it. Measured against the
+// live endpoint on 2026-09-08, one request per cell, body held identical and
+// only the `version:` header varied:
+//
+//	                0.130.0  0.139.0  0.144.6  0.150.0  0.152.0  0.153.0
+//	gpt-5.6-sol     refused  refused  served   served   served   served
+//	gpt-6-astra     refused  refused  refused  refused  refused  served
+//
+// So a value that unlocks one line says nothing about the next: 0.144.6 was
+// enough for gpt-5.6-sol and is refused for gpt-6-astra, whose floor is
+// exactly 0.153.0.
+//
+// Measure before bumping. The body must carry `store: false`, or the endpoint
+// rejects it on that first and never reaches the model gate — a probe without
+// it reports every version as equally "passing", which is how the previous
+// value in this comment came to be wrong.
+const ChatGPTClientVersion = "0.153.4"
+
 // ProviderConfig holds the credentials and settings needed to create a provider client.
 type ProviderConfig struct {
 	APIKey     string // API key (Anthropic direct, Azure Foundry)
@@ -31,9 +57,9 @@ type ProviderConfig struct {
 	// OpenAIClientVersion is the version string sent in both the `version:`
 	// HTTP header and the User-Agent when the OpenAI provider operates in
 	// ChatGPT-OAuth mode. OpenAI's backend gates model availability on this
-	// value (e.g. gpt-5.5 requires codex-cli >= 0.130). Callers should pass
-	// the locally installed Codex CLI version. Empty defaults to a baseline
-	// version embedded in the provider.
+	// value (e.g. gpt-5.5 requires codex-cli >= 0.130). Callers that can
+	// probe a real Codex CLI should pass the newer of its version and
+	// ChatGPTClientVersion. Empty defaults to ChatGPTClientVersion.
 	OpenAIClientVersion string
 
 	// UserAgent overrides the User-Agent header sent on every request.

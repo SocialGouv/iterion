@@ -109,7 +109,7 @@ type pipelineProjectionBuilder struct {
 	// surface) for a (bot id, workflow path) pair — injected by the server,
 	// memoized per key in chatBots for the lifetime of one projection so a
 	// board of N Copi sessions reads the manifest once, not N times.
-	chatBot  func(botID, filePath string) bool
+	chatBot  func(teamID, botID, filePath string) bool
 	chatBots map[string]bool
 
 	cardLimitReached  bool
@@ -137,13 +137,19 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		queuePositions:  map[string]int{},
 		since:           since,
 		finalOutputMemo: &s.finalOutputMemo,
-		chatBot:         s.botIsChat,
-		chatBots:        map[string]bool{},
+		chatBot: func(teamID, botID, filePath string) bool {
+			return s.botIsChat(ctx, teamID, botID, filePath)
+		},
+		chatBots: map[string]bool{},
 	}
 	if runs != nil {
 		builder.rs = runs.RunStore()
 	}
-	if board := boardStore.Board(); board != nil {
+	board, err := boardStore.Board()
+	if err != nil {
+		return PipelineBoardResponse{}, fmt.Errorf("read native board: %w", err)
+	}
+	if board != nil {
 		for _, state := range board.States {
 			if state.Terminal {
 				builder.terminalStates[state.Name] = struct{}{}
@@ -494,27 +500,28 @@ func (b *pipelineProjectionBuilder) isChatSession(run *store.Run) bool {
 		}
 		key = "dir:" + filepath.Dir(filePath)
 	}
+	key = run.TenantID + "\x00" + key
 	if b.chatBots == nil {
 		b.chatBots = map[string]bool{}
 	}
 	if v, ok := b.chatBots[key]; ok {
 		return v
 	}
-	v := b.chatBot(botID, filePath)
+	v := b.chatBot(run.TenantID, botID, filePath)
 	b.chatBots[key] = v
 	return v
 }
 
 // botIsChat resolves whether the bot behind a run declares a chat: surface
 // in its manifest. The bot id goes through the same tiers as every other
-// manifest read (platform override, then the configured catalog —
-// botManifest); a run with no bot id (a legacy launch, or a loose .bot)
+// manifest read (team override, platform override, then configured catalog —
+// botManifestFor); a run with no bot id (a legacy launch, or a loose .bot)
 // falls back to the manifest beside its workflow file, which is where a
 // bundle's manifest lives. Anything unresolvable is an ordinary run — the
 // board must never hide a card on a missing or malformed manifest.
-func (s *Server) botIsChat(botID, filePath string) bool {
+func (s *Server) botIsChat(ctx context.Context, teamID, botID, filePath string) bool {
 	if botID != "" {
-		if m := s.botManifest(botID); m != nil {
+		if m := s.botManifestFor(ctx, teamID, botID); m != nil {
 			return m.Chat != nil
 		}
 	}
@@ -618,8 +625,19 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *stor
 	// no Ready badge (waiting_deps surfaces via open_blocker_count + reason).
 	ready := issue.State == native.StateReady
 	column := pipelineColumnOpened
+	var gaveUp *native.GiveUp
 	if terminal {
 		column = pipelineColumnClosed
+		// A ticket the dispatcher gave up on BEFORE any run existed (the
+		// launch attempt cap) has no run card to carry the flag, and an
+		// exhausted budget is an anomaly, not a filing: the ticket card
+		// takes the needs-attention lane and the stamp. It reserves
+		// nothing, like the run-card give-up (pipelineLaneForRoot) — a
+		// terminal ticket never relaunches on its own.
+		if pipelineTicketGaveUp(issue, prior) {
+			column = pipelineColumnNeedsAttention
+			gaveUp = issue.GaveUp
+		}
 	}
 	entry := stringMapToAny(issue.BotArgs)
 	if len(entry) == 0 && prior != nil {
@@ -648,6 +666,7 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue, prior *stor
 		CreatedAt:    issue.CreatedAt,
 		UpdatedAt:    issue.UpdatedAt,
 		Attempts:     b.attemptsForIssue(issue, prior),
+		GaveUp:       gaveUp,
 	}
 	b.attachDeps(&card, issue)
 	b.cards = append(b.cards, card)
@@ -800,12 +819,12 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 		exec, total := b.runProgress(run)
 		treeExec += exec
 		treeTotal += total
-		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.NodeID != "" {
+		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.PausedNodeID() != "" {
 			reviews = append(reviews, PipelineBoardPendingReview{
 				RunID:         run.ID,
 				WorkflowName:  run.WorkflowName,
 				BotID:         pipelineRunBotID(run),
-				NodeID:        run.Checkpoint.NodeID,
+				NodeID:        run.Checkpoint.PausedNodeID(),
 				InteractionID: run.Checkpoint.InteractionID,
 				Questions:     cloneAnyMap(run.Checkpoint.InteractionQuestions),
 				Instructions:  b.pendingReviewInstructions(run),
@@ -876,7 +895,7 @@ func (b *pipelineProjectionBuilder) pendingReviewInstructions(run *store.Run) st
 	if b == nil || b.rs == nil || run == nil || run.Checkpoint == nil {
 		return ""
 	}
-	node := run.Checkpoint.NodeID
+	node := run.Checkpoint.PausedNodeID()
 	if node == "" {
 		return ""
 	}

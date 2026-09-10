@@ -69,7 +69,7 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 # github.com/SherClockHolmes/webpush-go v1.4.0
 ## explicit; go 1.13
 github.com/SherClockHolmes/webpush-go
-# github.com/SocialGouv/claw-code-go v0.1.1-0.20260804154152-abd6de0284cf
+# github.com/SocialGouv/claw-code-go v0.1.1-0.20260909122925-6caaec37ef7e
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/hooks
 github.com/SocialGouv/claw-code-go/internal/api
@@ -438,11 +438,12 @@ github.com/klauspost/compress/zstd/internal/xxhash
 ## explicit; go 1.11
 github.com/kylelemons/godebug/diff
 github.com/kylelemons/godebug/pretty
-# github.com/labstack/echo/v4 v4.13.3
-## explicit; go 1.20
+# github.com/labstack/echo/v4 v4.15.3
+## explicit; go 1.25.0
 github.com/labstack/echo/v4
-# github.com/labstack/gommon v0.4.2
-## explicit; go 1.18
+github.com/labstack/echo/v4/internal/pathutil
+# github.com/labstack/gommon v0.5.0
+## explicit; go 1.23.0
 github.com/labstack/gommon/color
 github.com/labstack/gommon/log
 # github.com/leaanthony/go-ansi-parser v1.6.1
@@ -458,11 +459,11 @@ github.com/leaanthony/slicer
 # github.com/leaanthony/u v1.1.1
 ## explicit; go 1.21
 github.com/leaanthony/u
-# github.com/mattn/go-colorable v0.1.13
-## explicit; go 1.15
+# github.com/mattn/go-colorable v0.1.14
+## explicit; go 1.18
 github.com/mattn/go-colorable
-# github.com/mattn/go-isatty v0.0.20
-## explicit; go 1.15
+# github.com/mattn/go-isatty v0.0.22
+## explicit; go 1.21
 github.com/mattn/go-isatty
 # github.com/modelcontextprotocol/go-sdk v1.7.0
 ## explicit; go 1.25.0
@@ -917,7 +918,7 @@ google.golang.org/genproto/googleapis/api/httpbody
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/rpc/errdetails
 google.golang.org/genproto/googleapis/rpc/status
-# google.golang.org/grpc v1.83.0
+# google.golang.org/grpc v1.83.2
 ## explicit; go 1.25.0
 google.golang.org/grpc
 google.golang.org/grpc/attributes

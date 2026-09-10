@@ -1,5 +1,1219 @@
 # Billy — branch-improvement validation
 
+## 2026-09-09 — #1028: lazy cloud home, bank recovered after quota stop
+
+- Status: **bank recovered; delivery review interrupted by provider quota**.
+  This was not a completed end-to-end Billy run.
+- Method: `/billy` on PR #1028, scoped to Revi finding `R8a91d4` after
+  review `01a085f9-871b-7aa9-85d6-e8724258c04c`. Run
+  `01a08605-1dd6-7907-9baa-86fae51f3e0b` started at 11:54:37Z from
+  `82f881938`; auto-merge was disabled during the pass. The owner made no
+  concurrent edits to its branch.
+- Result: `f0c723e59` defers CloudHome with React.lazy and the existing
+  BootLoading fallback while keeping PublicTopBar eager; `54a2c24d3` adds
+  a regression test; `8fe07161f` records the initial bilan. The approved
+  page content, appearance, local login fallback and marketplace flag stay
+  intact. **R8a91d4 is fixed.**
+- Evidence: the bot measured entry JS 461.25 → 289.78 kB (gzip 127.43 →
+  88.30) and entry CSS 119.68 → 98.21 kB (gzip 21.62 → 17.03). Neither
+  CloudHome nor its brand-icon payload remained in the eager preload graph.
+  The new test was falsified by temporarily restoring the static import.
+  Studio lint had zero errors, TypeScript and Vite passed, and all 1,352
+  tests in 152 files passed. The generated delivery script also passed,
+  including the OpenAPI/client drift check.
+- Stop and recovery: the final `review` node hit the Claude five-hour limit
+  at 12:41:07Z (`USAGE_LIMIT_BLOCKED`, reset advertised for 13:50Z), before
+  publishing a ledger or pushing the PR. The owner cancelled the parked run
+  and confirmed `cancelled`, with no running execution, before recovering
+  checkpoint `iterion/run-01a08605-1dd6-7907-9baa-86fae51f3e0b-checkpoint`.
+  FETCH_HEAD matched the recorded `8fe07161f6a92587a3dc34c3bb6bf155365ccd06`;
+  its three commits were preserved by fast-forward rather than replaying
+  the completed campaign after the reset.
+- Recovery validation: the owner reran Studio lint (0 errors), TypeScript,
+  all 1,352 tests and the production build successfully. Browser checks on
+  the built SPA confirm that `/login` neither requests nor preloads the
+  CloudHome JS/CSS, while `/` loads both and still navigates to login. Local
+  bundle sizes match the measurements above. GitHub CI and Revi must validate
+  the published head before queue entry.
+- Frictions: planning and peer review took about 25 minutes for one
+  import-boundary correction. A 30-second shell timeout cut off the peer's
+  baseline lint; the owner supplied the already-green baseline and advised
+  a longer timeout. Vitest cannot resolve the real page's lobehub UI import
+  in this environment, so the boundary test mocks its far side; the
+  production bundle check covers the actual dependency graph. Soft usage
+  readings (`stopped=false`, including 0%) did not predict the hard denial.
+- Lesson: validate the eager dependency graph, not just a chunk-size drop,
+  and preserve banked work when the delivery review cannot obtain a model.
+
+## 2026-09-08 — #964: quota stop after useful fixes, bank delivered locally
+
+- Status: **banked commits recovered and locally validated**. The campaign
+  did not reach its ledger or delivery gate, so this is not a successful
+  end-to-end Billy run.
+- Method: `/billy` on our PR #964 at 11:26:52Z, after Revi's medium finding
+  `R565a2f`. Run `01a080c5-585f-7574-8394-bb28803d6f24` completed planning,
+  peer review and revision, then entered campaign at 12:06:51Z. The PR was
+  removed from the merge queue while the fixer worked; the interactive owner
+  made no concurrent edits to its branch.
+- Result: the campaign reached the Claude session limit at 12:43:31Z and
+  stopped as `failed_resumable / USAGE_LIMIT_BLOCKED`, with `retry_armed` for
+  the 15:00Z reset. That reset was after its advertised working window. The
+  owner cancelled the parked run to disarm the retry, verified `cancelled`
+  with no running execution or continuation, then recovered its final bank.
+  No campaign was relaunched.
+- Recovery: `iterion/run-01a080c5-585f-7574-8394-bb28803d6f24` at
+  `e9b7e0576c9e7d1c9ab16ef9d3c51301c9666ed6` held nine commits, preserved by
+  fast-forward. `0f9c8c0df` adds settling; `fd59f26d9` bounds the server join;
+  `c4393c6f3` preserves the suite exit code; `f913b4ea8` groups imports;
+  `0d82611d9` records the audit; `5db295eec` narrows the fixture ownership
+  check; `cd143ff62` fixes final forgiveness accounting; `2a9c459fd` signals
+  late descendants at the reclaim deadline; `e9b7e0576` reflows the audit.
+- Finding ledger: **R565a2f fixed**. A child gets a 500 ms settle window before
+  a leak verdict, keyed by PID and process start time. True survivors still
+  fail the suite and are killed through verified owned process handles. The
+  server fixture cancels its process group and applies a ten-second WaitDelay
+  for inherited output pipes. The final timeout sweep remains best effort:
+  it fails the suite rather than claiming that every descendant was joined.
+- Live steering: checkpoint review identified an interleaving the campaign
+  had missed: a child can be seen alive and reaped in the same scan, then
+  disappear through ECHILD before its forgiveness is counted. A `runs send`
+  message at 12:34:29Z was consumed at 12:35:48Z. The campaign confirmed and
+  fixed it. Independent local falsification used Go overlays to delay the
+  per-PID reap by 1.1 seconds: the real settling-child fixture passed, then
+  failed when only the ECHILD accounting call was removed. No checked-out
+  source was modified by those canaries.
+- Validation after recovery: full Devbox `task check` passed. Complete race
+  suites passed for proctest, dispatcher, runview, runner, runtime, CLI and
+  E2E, with only the previously reproduced unrelated ordering test from #960
+  excluded from that race invocation. The non-race full suite retained it.
+  The proctest subprocess cases still cover a genuine surviving orphan,
+  settling exit, clean success and preservation of an existing failure code.
+- Value: real fixes for a false leak verdict and an unbounded inherited-pipe
+  join, plus a useful interaction between checkpoint review and live steering.
+  The bank saved the work when quota prevented delivery; the owner supplied
+  the missing final validation and ledger. Revi and CI still need to judge
+  the published head before merge-queue entry.
+- Frictions and boundaries: the final quota denial followed soft usage events
+  reporting `stopped=false`, including zero-percent readings just before the
+  denial; those events did not establish remaining capacity. The remaining
+  Git-maintenance gap in fixture repository config is tracked separately in
+  #974 after verification against main. No shared infrastructure, historical
+  orphan, other session's branch, or operator Git configuration was changed.
+- Independent review of the delivered bank found `Race656`: a missing Linux
+  child-scan/subreaper capability could fail or skip a whole package suite.
+  The owner completed this bounded follow-up after the quota stop, checking
+  first that no fixer was active on this PR. Startup now probes the scanner
+  before enabling adoption, logs unavailability, and runs the suite normally;
+  a post-activation scan failure still fails. A red-first capability-boundary
+  regression covers both missing capabilities, exactly-once suite execution,
+  preservation of success/failure results and later hard scan errors. The
+  original process-group comment was also corrected: it is not a pidfd-backed
+  group signal and does not prove PID reuse impossible.
+
+## The delivery tail's contract (bot 1.7.0)
+
+Three properties `push_back_tool` and `publish_verdict` now hold, in the order
+they are decided. They exist because of two measured production defects
+(#863, #773); the tests that pin them execute the real command bodies against
+real git repositories (`bots/push_back_banked_branch_test.go`).
+
+- **A pull request that ended takes no more commits.** Before pushing, the
+  tool asks the iterion server whether the pull request is still open —
+  `forge_pr_state_url`, the read half of the run's publish grant. git in the
+  workspace cannot answer it: a squash merge leaves the source branch present
+  and its head no ancestor of the base, so a merged pull request reads locally
+  as an open one. A merged or closed pull request routes the run to
+  `pr_superseded` (typed `DECLINED`): one comment naming where the commits
+  are, no push onto the dead branch, no verdict on the head it left. No grant
+  (a local run) means the question cannot be asked, which is never read as a
+  closure; an endpoint that errors says so in the report and the push
+  proceeds.
+- **Work that cannot land is banked and NAMED.** Every refusal — a merged
+  pull request, a conflicting advance, a protected branch, a dead token —
+  pushes the run's HEAD to `iterion/banked/<branch>-<head12>` and the verdict
+  carries the branch plus the `git fetch … && git cherry-pick …` that takes
+  it. A run whose work is reachable only by someone who already knows the
+  convention has not delivered it.
+- **"Nothing to push" names what it compared.** The no-op reason carries both
+  revisions (HEAD and `origin/<branch>`), so a claim that contradicts the
+  campaign's own commit count is falsifiable instead of merely surprising.
+
+## 2026-09-08 — #961: orphaned campaign recovered from its workspace checkpoint
+
+- Status: **useful commits recovered and validated locally**; the bot did not
+  reach its delivery ledger or final gate. This is not a successful end-to-end
+  Billy run.
+- Method: `/billy` on our PR #961 at 11:26:44Z, after Revi's medium finding
+  `R3d8dcc`. Run `01a080c5-3bf3-7657-a24f-d9a24d854cc4` completed planning,
+  peer review and revision, then entered campaign at 11:52:48Z. The PR was
+  dequeued while the fixer worked; the interactive session did not edit its
+  branch during that time.
+- Result: the runner lost its connection to the Kubernetes API at 12:05:43Z;
+  delegate retries did not restore the campaign. The last persisted checkpoint
+  event was at 12:08:35Z. Run inspection subsequently reported
+  `failed_resumable / PROCESS_ORPHANED`, continuation `final`, with no active
+  execution or scheduled retry. We did not relaunch the campaign.
+- Recovery: `final_branch` and `final_commit` were null, and the commit endpoint
+  said `available=false`, `reason=no_baseline`. Nevertheless, the checkpoint ref
+  `iterion/run-01a080c5-3bf3-7657-a24f-d9a24d854cc4-checkpoint` existed at
+  `4e16f625d802e5a1353bbd7f4b5c7e86e52c7766`. Fetching it recovered three
+  commits on top of the PR head, which were fast-forwarded locally:
+  `bf9f8cac4` caps one operation rather than consuming the package timeout;
+  `e2a91068d` bounds service teardown; `4e16f625d` records the race-oracle
+  falsification under synctest. Local follow-up tightened the helper's edge
+  cases, reports teardown timeout explicitly, and aligns the audit wording.
+- Finding ledger: **R3d8dcc fixed**. A real-process wait now takes the smaller
+  of a three-minute operation ceiling and the remaining harness time minus
+  30 seconds. Explicit `-timeout=0` remains unlimited. Service cleanup has its
+  own 30-second context. The callerless old `waitBudget` helper was removed.
+- Validation after recovery: full Devbox `task check` passed; full runview and
+  runner suites passed under `-race`. Independent Go-overlay canaries both
+  failed as intended: restoring the old package-wide deadline broke the bound
+  tests, and removing the retired-epoch guard produced `DATA RACE` in
+  `TestFanOutAbandonedBranchDoesNotRaceRunState`. These overlays did not alter
+  the checked-out production sources. The bot's additional unsynchronized
+  probe is recorded in the wait audit; it was not independently rerun locally.
+- Value: the campaign supplied two real lifecycle fixes and measured evidence
+  for the retained race oracle. The persisted checkpoint preserved that value
+  despite a failed delivery. PR #961 receives the preserved commit chain and
+  this local validation report; Revi and CI must judge the new head before it
+  can return to the merge queue.
+- Friction: recovery required discovering the checkpoint ref outside the
+  normal final-bank and commits fields. Tracked separately in #972; this
+  session does not change shared runner infrastructure.
+- Coordination lesson: `gh pr merge --disable-auto` did not remove a queued
+  PR here. We used `dequeuePullRequest` with the verified PR ID. Inspect
+  `mergeQueueEntry`: an empty `autoMergeRequest` does not establish that the
+  PR is absent from the queue.
+
+## 2026-09-08 — the campaign delivered, the tail never ran: a provider cap killed the run at minute 53 and the banked branch was the only receipt (run 01a07f7a)
+
+- Status: **partial** — the review work is complete and correct; the delivery
+  tail was never exercised, so this run says nothing about it.
+- Versions: bot resolved from the baked catalog on runner
+  `iterion-runner-devbox@sha256:001a8431…` (no platform override active) ·
+  server v3.115.1 (`f47ff6e1`) · repo manifest 1.7.0.
+- Method: `/billy` on PR #851 (the override-staleness guard), after three
+  rounds of hand-fixing on the same PR had produced six real Revi findings.
+  The decision to hand it over was the point of the run.
+- Result: **not converged — `failed_resumable` at 06:18Z**, 53 min in, $3.32,
+  on the provider's own 5-hour session limit inside the `campaign` node
+  (`rate_limited (claude_code): You've hit your session limit · resets 10am`).
+  Outputs stop after `delivery_reserve`/`delivery_deadline`; neither
+  `push_back_tool` nor `publish_verdict` ever ran. Six commits were banked on
+  `refs/heads/iterion/run-01a07f7a-…` @ `bf2aa2072` — the campaign commits in
+  stride, so the work survived the death of the run that made it. The pull
+  request itself **merged at 05:57Z, 21 min before he died**: its gate had gone
+  green at 05:34 on a pass that reported zero findings, and the last check
+  cleared while he was still reading. So his final commits were written against
+  a branch already squashed onto main, and none of them shipped with it.
+- Value: **high, and it is the anti-hand-fix argument made concrete.** Four
+  defects, all inside code I had written and twice reviewed:
+  a shadowed TEAM row was handed the PLATFORM remedy (`8ff4d37b3`); an
+  unreadable platform overlay was read as empty instead of unknown
+  (`9282bee42`); a platform row with no `version:` counted as absent rather
+  than present (`5c032a0a5`); the shadow fields were promised on the team
+  listing in prose but typed only on the admin one (`8096529c0`). Plus one
+  finding he chose to **document rather than fix** (`220ecbbf1`: the catalog
+  walk escapes `platformcfg`'s 3 s fetch timeout, and cancelling a blocked
+  filesystem walk would trade bounded blocking for a goroutine leak per TTL) —
+  the right call, argued in the commit body.
+- Findings / misses: the sharpest one is `bf2aa2072` — **two comments that my
+  own commits had inverted**. `41c38d43c` wrote "the dedup check runs BEFORE
+  the catalog walk"; `6f08d55f1` then moved the `LoadOrStore` after the
+  comparison *on purpose* and left the claim standing, so the file documented
+  the opposite of what it did. A reviewer reading one chunk at a time does not
+  catch that; a campaign that re-reads the whole branch does.
+- Engine hardening: none from the bot. The run surfaced a **diagnostics**
+  defect elsewhere — see the cap note below.
+- Lessons for next run:
+  - **The delivery tail is the fragile half, and a long campaign will keep
+    dying before it.** 53 min of campaign against a 5-hour provider window is
+    a coin flip. The banked branch is what saved this run, and it is reachable
+    only by someone who knows the ref convention (#773 again, from the other
+    side: here there was no verdict at all to name it).
+  - When the tail cannot run, the work is still deliverable by hand, but only
+    if it is **verified independently**: `go build ./...`, the full
+    `pkg/server` suite, and `task openapi:gen` producing no diff. That is a
+    better receipt than the bot's own verdict would have been.
+  - **Cancel the parked run before taking its commits.** A `failed_resumable`
+    campaign has a retry armed (1/5, here for ~10:10Z); left alone it resumes
+    onto a branch that has moved.
+  - **Re-read the pull request's state immediately before pushing — taking a
+    campaign's commits by hand means taking its guards too.** #851 merged at
+    05:57Z, while the campaign was still running; the operator had last read
+    `OPEN` at 05:36Z and pushed `bf2aa2072` onto the closed branch an hour
+    later. Nothing was lost (a merged branch still accepts commits, they are
+    simply orphaned) but the work needed a second pull request onto main.
+    This is the exact case `push_back_tool` interrogates the server about, and
+    it is worth restating why git alone cannot answer it: after a squash merge
+    the source branch still exists and its head is no ancestor of the base, so
+    a merged pull request reads locally as an open one. The bot's contract was
+    written from this failure; the hand path has no such contract, so the check
+    has to be deliberate.
+
+### The cap that stopped it — and the message that misdiagnoses it
+
+Worth recording because it cost a wrong recommendation. Eight runs parked the
+same morning with:
+
+```
+usage cap: provider rejected on the seven_day window (week cap 85%, hard),
+resets 2026-09-08T21:00:00Z
+```
+
+That reads as "your 85 % weekly cap fired". It did not. In
+[pkg/usagecap/usagecap.go](../../pkg/usagecap/usagecap.go) a provider refusal
+short-circuits the threshold test (`if !rejected && pct < wp.MaxPercent`), and
+the branch that prints this message is `rejected && pct == 0` — *the provider
+refused and gave no utilization number*. The `85%` is the configured cap
+printed beside a comparison that never happened. Raising it to 95 or 100 would
+change nothing: `Enabled()` is `MaxPercent > 0`, so only `0`/`off` disarms the
+policy, and that would merely move the failure from pre-flight to the API call.
+
+The real shape was two exhausted tiers, which the publisher log states plainly:
+the org forfait (`fp=2b36a854…`) refused on its **five_hour** window until
+10:00Z, falling through to the platform credential (`fp=53d82df9…`), refused on
+its **seven_day** window until 21:00Z. Both empty means no claude_code capacity
+at all. The outage therefore ends at **10:00Z**, not 21:00Z, and the retries
+armed for ~10:00–10:10Z target the right reopening.
+
+Read the `cloudpublisher: … SKIPPED … fp=` lines before the cap record: they
+name the credential, the window and the reopening. The run error names none of
+the three.
+
+## 2026-09-06 — 1.6.0 dogfooded live: three runs, the third validates the reserve and finds a real bug in the code it reviewed (runs 01a07804, 01a0782f, 01a07840)
+
+- Status: **validated** (run 3) — after two runs that validated nothing about
+  the bot and everything about how a bot reaches production.
+- Versions: bot `branch-improve-loop` 1.6.0 · run 1 on runner v3.112.7 (engine
+  WITHOUT the variadic `min`/`max` of #830) via a platform override · run 2 on
+  runner v3.112.14 with the server still at v3.112.6 · run 3 on server
+  v3.112.15 (`98334d181`) + runner v3.112.14 (`ba3db5361`), baked catalog.
+- Method: `/billy` on a real PR each time, cloud, sandboxed, claude_code
+  `claude-opus-5` on the anthropic forfait; `plan_review` peer = claw /
+  `openai/gpt-5.6-sol` (platform codex forfait). Run 1 on #850 (a stacked PR),
+  runs 2–3 on #855 (one commit, Revi green, nothing blocking to fix).
+- Result:
+  - **run 1** (`01a07804`, 18:38Z, override pushed with `iterion remote admin
+    bots push`): plan phase fine, then `compute "delivery_reserve"` →
+    `expr: max() takes …` — the runner's engine predates #830 — and the
+    runner **auto-resumed the same deterministic failure seven times in ten
+    minutes** (a fresh sandbox each time) until cancelled. Also: `git …
+    fix/board-dispatch-launch-refusal-is-transient` failed in the plan step —
+    the per-run clone does not fetch a PR base that is not the default
+    branch.
+  - **run 2** (`01a0782f`, 19:25Z, override removed, runner bumped to an image
+    carrying 1.6.0): `plan_budget_gate → campaign` with no `delivery_reserve`
+    node — the run was 1.5.x. The SERVER resolves team → platform → baked from
+    its own baked catalog; bumping the runner alone changes nothing.
+    Cancelled; server restarted.
+  - **run 3** (`01a07840`, 19:45Z): `delivery_reserve` → `{cap 10800,
+    reserve 1620, window 9180, left 8632}`, `delivery_deadline` →
+    `2026-09-06T22:19:53Z`, campaign prompt carries `STOP WORKING AT (UTC):
+    2026-09-06T22:19:53Z` — the checklist's numbers exactly. `plan_review`
+    hit `429 usage limit` on the codex forfait three times → ADR-091 skip
+    route, `plan_gate` stamped `provenance: … SKIPPED mid-run`. Campaign
+    64 min, $8.47, `commits_this_pass: 6`, `stopped_on_reserve: false`,
+    `declined: false`; `verify_run` exit 0; `gate {converged: true,
+    ship_now: true}`; `publish_verdict` posted `revi/review=success`.
+- Value: **high, and not the value expected.** The expected outcome was a
+  `DECLINED` (nothing to fix on a green PR). Instead the campaign judged
+  Revi's two sub-gate findings real, then found a **residual race in the very
+  fix under review** (#855's early-accept was a READ two syscalls before the
+  retire it exists to prevent, so #854 stayed reachable), **reproduced it**
+  with a scripted three-party interleaving on the pre-fix code, fixed it (the
+  rename becomes the test-and-set), added the first test of an untested arm,
+  and corrected three comments that overstated the code — with a green gate
+  (`task test` 136 packages, `-race -count=30`, a 9,600-publisher stress).
+  Six commits, all real. Re-based as PR #862.
+- Findings / misses:
+  - The campaign **pushed those six commits at 21:04Z onto a branch whose PR
+    had merged at 20:34Z**, and its verdict landed on the pre-merge head: the
+    stop-on-close cancel covers reviewers, not fixers, and the delivery tail
+    never checks that the PR is still open. Real work, invisible (#863).
+  - `reserve_seconds` and the absolute deadline are correct; whether the
+    agent HONOURS the deadline is unproven — this run finished at 39 % of its
+    window. The 40-minute-cap re-launch of the checklist is still owed.
+  - The `DECLINED` path is still unexercised live (the PR had things to fix).
+  - The codex forfait was exhausted from ~18:47Z on (Saturday evening); every
+    `plan_review` of the evening was skipped — the plan review's value is
+    zero on a shut window, by design and visibly (#647).
+- Engine hardening: #857 (P1 — a deterministic node failure is auto-resumed
+  in a loop), #858 (a platform override can outrun the runner's engine, no
+  guard), #859 (a stacked PR's base ref is not fetched), #863 (a fixer keeps
+  working after its PR merged), and `docs/platform-bots.md` § "Shipping a
+  baked-catalog change — two halves" (#861).
+- Lessons for next run: bump the runner image AND restart the server before
+  dogfooding a catalog change; never use a platform override for a bot that
+  needs an engine feature newer than the deployed runner; pick a PR that will
+  still be open for the whole run (or expect #863); run the 40-minute-cap
+  variant next to prove the deadline is obeyed, and a truly-clean PR to prove
+  `DECLINED`.
+
+## 2026-09-06 — the delivery reserve, the no-op terminal, and two gates that lied (no run; bot 1.6.0)
+
+- Status: **partial** — validated by the engine and by shell-level tests of
+  the real command bodies, NOT by a live run. Four issues closed in one
+  branch (#705, #706, #779, #789); every one of them was measured on a
+  production run, and three of the four change what the campaign is *told*,
+  which only a dogfood can confirm actually lands. The live checklist is at
+  the end of this entry.
+- Versions: bot `branch-improve-loop` 1.5.0 → **1.6.0** · iterion at
+  `3d7c46c1c841` (branch `fix/billy-delivery-reserve-decline-and-gates`).
+- Method: no LLM run. Each change is pinned by a test that was RED first:
+  the drift/masking gates by executing the real `verify_run` body against
+  fixture repositories (`bots/verify_run_drift_test.go`), the decline
+  oracle by executing the real `decline_probe` body
+  (`bots/decline_probe_test.go`), the reserve arithmetic and the decline
+  routing through the ENGINE with the scenario stub
+  (`e2e/branch_improve_delivery_reserve_test.go`,
+  `e2e/branch_improve_decline_test.go`), and the engine half of the decline
+  through the real webhook/gate lanes (`pkg/server/…_decline_notice_test.go`).
+
+### #705 — the delivery reserve, and why the cap moved
+
+Three runs died within 2 s of the same cap (9001/9000, 2h30m01s/2h30m,
+9001.86/9000) having pushed **nothing**. Landing in the last two seconds
+three times is not luck: the campaign spent the whole window and the tail
+that ships — verify gate, in-loop review, push, verdict, merge-gate status —
+was never scheduled, so the work existed only in the run's context.
+
+`delivery_reserve` is one deterministic `compute`, the single choke point
+every forward entry into `campaign` crosses (a `TestBranchImproveLoop_…IsTheOnlyWayIn`
+guard fails if a new entry bypasses it):
+
+    reserve = min( max(floor_minutes × 60, cap × ratio), cap / 2 )
+
+read from `run.max_duration_seconds` — the cap IN FORCE after any
+`--max-duration`, the recipe and the platform ceiling — exactly like
+`plan_budget_ratio`, because a literal mirroring the `budget:` block drifts
+from it in silence (the mistake 1.5.0 already paid for). A cap of 0 stays
+UNBOUNDED, and the `/2` clamp guarantees the campaign at least half the run
+whatever the knobs are set to.
+
+**The deadline is a constant of the run**, so the continuation loop needs no
+second copy of the arithmetic on its back-edge: the campaign's prompt pairs
+`{{outputs.delivery_reserve.work_deadline_seconds}}` with
+`{{run.elapsed_seconds}}`, which resolves fresh at every pass.
+
+`max_duration` **2h30m → 3h**, deliberately. Those three runs measure the
+campaign's appetite at *more* than 2h30m of pure campaign, so carving the
+reserve out of 2h30m would have traded "ships nothing" for "does less work" —
+not a fix. At 3h the default reserve is 27 min (against a ~16 min tail
+measured on this repo: verify ~10, in-loop review ~5, push + verdict ~1) and
+the campaign still gets **2h33m**, more working time than the dead runs had.
+`max_cost_usd` is untouched: all three died on duration, cost never binding.
+
+New knobs, both overridable per run: `delivery_reserve_ratio` (0.15),
+`delivery_reserve_floor_minutes` (10).
+
+### #706 — the no-op terminal
+
+The heal lane launched the fixer on a green PR a flaky test had ejected. The
+bot concluded "no code issue in the diff — this is a re-queue, not a fix",
+recorded that a queue build was in flight and that pushing would cancel it,
+and its mission said push anyway. `declined`/`decline_reason` make that an
+outcome; `decline_probe` makes it **earned** (HEAD unmoved since
+`workspace_probe`, tree clean) rather than asserted — a pass that committed
+anything ships through the ordinary tail instead of stranding its commits
+behind a terminal failure. Earned, the run ends `fail campaign_declined:
+code: DECLINED`, non-resumable.
+
+The engine half is generic and keyed on the code alone: `relaunchDeadGateRun`
+(the one point every relaunch crosses) stands down, the auto-fix lane does
+too and posts the reason on the PR, and the auto-heal mission now grants the
+refusal in as many words. Full contract: `docs/merge-gate.md` § `DECLINED`.
+
+### #779 / #789 — two gates that lied, fixed fleet-wide
+
+Both are in the `verify_run` body **shared by ten catalog bots**, so both
+were fixed at every site:
+
+- **#789** — `has_drift_gate` read the script one line at a time and only
+  counted a quiet diff when the failing exit was on the SAME line, so the
+  commonest real shape (`if ! git diff --quiet …; then … exit 1; fi`, which
+  is what this repo's own `openapi:check` writes) was rejected: run 01a072b5
+  delivered eight commits, logged `VERIFY OK`, and still returned exit 3 /
+  `DRIFT GATE MISSING`. Detection is now structural, comments are stripped
+  first (a commented-out gate used to count — that is how prose gamed it),
+  and a commit-if-changed block still counts for nothing.
+- **#779** — `… 2>&1 | tail -10; echo "EXIT=$?"` printed `EXIT=0` for a 127
+  (run 01a07283, a missing `tsc`). `pipefail` is not POSIX and these run
+  under `/bin/sh`, so the fix is not a reminder: `verify_run` now refuses a
+  verify.sh that pipes a top-level command into an output filter with
+  **MASKED EXIT STATUS** (exit 5) *before* running it and moves the script
+  aside so it is regenerated, and every campaign contract carries the
+  CAPTURE THE STATUS, THEN FILTER clause (guarded fleet-wide by
+  `bots/status_capture_clause_test.go`).
+
+### Engine hardening found on the way
+
+- `min`/`max` were array-only, so a clamp had to be four nested `if`s. They
+  are now variadic (one array, or two or more values) — `pkg/dsl/expr`.
+- **The ship path had to become the `else` fallback.** With
+  `campaign -> verify_probe when not declined`, an output that OMITS
+  `declined` matches neither edge and the run dies `NO_OUTGOING_EDGE` —
+  caught by the existing e2e stubs, and it would have hit any resume of an
+  older checkpoint. Silence must mean ship, never decline.
+- `{{outputs.X}}` is **not** substituted in a tool command body (only
+  `input`/`vars`/`secrets`/`run.id`). `decline_probe` had two, which would
+  have made it refuse every decline for want of an entry head — a guard that
+  looks like it works. Caught by `bots/catalog_command_refs_test.go`.
+- `DECLINED` must NOT be a `store.FailureCode` constant: that block is the
+  set a workflow may not mint (C248), so declaring it there would have made
+  the bot's own `code: DECLINED` a compile error. Caught by
+  `pkg/store/lifecycle_reserved_test.go`.
+
+### Review round on PR #830 (Revi, mono topology)
+
+Three findings, all **reproduced before fixing** — each one a real defect the
+tests did not cover:
+
+- **R69a603** [high] — the decline notice was posted from `autofixForRun`,
+  which the reconciliation sweep re-enters once a minute for a 60-minute
+  lookback. A declined run is terminal, so its `updated_at` never moves and it
+  stays in the window the whole hour: ~57 identical comments per replica.
+  Reproduced at 3 comments from 3 offers. Fixed with the subsystem's own
+  discriminator — `autofixForRunID(ctx, runID, via)`, the shape
+  `reconcileGateForRunID` already has, with the notice on `gateTriggerEvent`
+  only. Revi suggested `ev.Kind != ""`; that works but is incidental (the
+  sweep's event just happens to have no kind), so the discriminator is
+  explicit instead. NB the review's premise that the sibling notices dedup by
+  scanning their marker is **wrong**: `noticeGateDLQParked` /
+  `noticeGatePausedForRetry` carry no marker check — they are wrapped in
+  `via == gateTriggerEvent`, and `forgeIssueCommenter` deliberately cannot
+  list comments. One mechanism, and it is that one.
+- **R8f498c** [high] — `bots/app-dev` was the **11th** verify.sh carrier and
+  was in neither the port list nor the fleet guard's hardcoded map, so its
+  skill promised a structural drift gate and MASKED EXIT STATUS its own
+  `verify_run` did not implement. Ported, and the root cause fixed with it:
+  the guard now **discovers** carriers (any bot whose tool command contains
+  `subprocess.run(['sh', script]` — the executor, not `verify_probe`'s
+  `sh -n`), so a 12th cannot be forgotten, and a second guard cross-checks
+  each `skills/verify-build.md` promise against its own bot.
+- **Rce6c53** [medium] — the campaign was handed `work_deadline_seconds` /
+  `elapsed_seconds`, resolved once when the prompt was built. `run.*` has no
+  `started_at` and a tool body substitutes only `run.id`, so the agent had no
+  way to convert `date` into run time: "check it again" had nothing to check.
+  Relying on an agent's unaided sense of elapsed time is the exact failure the
+  reserve exists to remove. New `delivery_deadline` tool node stamps the window
+  as a **UTC instant** (python3, not GNU `date -d`), the contract tells the
+  agent to compare it with `date -u` after every fix, and being absolute it
+  stays correct across continuation passes without re-running.
+
+Both open questions answered, with code:
+
+- **Does anything clamp the 3h cap on the pod?** Yes, potentially:
+  `pkg/runner/loop.go:2415` `applyCloudBudgetCeiling` reads
+  `ITERION_CLOUD_MAX_DURATION` (with `_MAX_ITERATIONS` / `_MAX_TOKENS` /
+  `_MAX_COST_USD` / `_MAX_PARALLEL_BRANCHES`) and calls
+  `ir.Budget.ClampToCeiling`, which sets `CapImposed` — and an imposed cap
+  **refuses the budget exit grace**. The actual values live in the infra repo,
+  not here. Pod `activeDeadlineSeconds` is k8s, also out of tree; the
+  `ITERION_CLOUD_RETRY_*` ceiling only lowers a retry policy, never the
+  duration cap. The reserve is unaffected by construction: the clamp mutates
+  `wf.Budget` at `loop.go:1867`, before `runtime.New` builds the tracker from
+  that same budget (`engine.go:631` `newSharedBudget(e.workflow.Budget, …)`),
+  so `run.max_duration_seconds` is the POST-clamp cap. Pinned by
+  `TestBranchImproveLoop_DeliveryReserveFollowsAPlatformClamp`, which drives
+  the real `ClampToCeiling`: at a clamped 2h30m the reserve is 22.5 min, still
+  over the ~16 min tail. On a clamped pod the reserve is in fact the only
+  protection left, since the grace is refused there.
+- **Does a `stopped_on_reserve` pass leave the loop?** It did not — reproduced
+  at 9 passes. `branch_clean` is honestly false, so the back-edge re-entered
+  and the next pass's verify+review tail came out of the reserve; the loop
+  budget guard is a backstop (it declines a back-edge it cannot FUND, a
+  different question) and is switchable off. `gate` now carries a separate
+  `ship_now` = converged ∨ `stopped_on_reserve`, and the exit edge reads it.
+  `converged` is deliberately NOT widened: `publish_verdict` posts it as the
+  merge gate's build verdict, so a pass that ran out of time must not green it.
+
+Also worth recording from the review's non-blocking questions, answered but
+not changed: `entry_head` is captured at RUN start, so a pass-3 decline after
+passes 1–2 committed is refused — run-level granularity is intended (the run
+as a whole did change the branch, and shipping it is the safe outcome); and
+the decline notice fires regardless of `AutoFixOnGateFailure` on purpose — it
+is not an unattended action, it is telling a developer what a bot they
+themselves triggered decided.
+
+### Lessons for next run
+
+- Write the differential, not just the assertion. The first version of the
+  "a declined run launches nothing" test passed *without the change* — the
+  auto-fix lane already refuses to relaunch a fixer off its own verdict. The
+  fix was to assert, on the same fixture, that a non-declined failure DOES
+  launch.
+- A fleet-shared body is a class: `verify_run` is copy-pasted into ten bots,
+  and the presence guard (`TestVerifyRunDriftTailPresentInAllBots`) is the
+  only thing that keeps them from diverging. Both fixes were scripted across
+  all ten rather than applied to Billy alone.
+
+### How to verify live (next dogfood)
+
+1. **Reserve, on the happy path.** `/billy` on a real PR here. In the run
+   view, check the campaign's task prompt carries three non-zero figures
+   (cap 10800, window closes at 9180, elapsed) and that
+   `outputs.delivery_reserve.reserve_seconds` is 1620. The run must reach
+   `publish_verdict` — the whole point is that the tail happens.
+2. **Reserve, under pressure.** Re-launch with `--max-duration 40m` on a
+   substantial diff: the reserve should read 600 (the floor beats the 360 s
+   proportional slice), the campaign should report
+   `stopped_on_reserve: true` with a populated `issues_remaining`, and it
+   must still push and post its verdict. That is the case the three dead
+   runs failed.
+3. **Decline.** Comment `/billy` on a PR with nothing to fix (or let the
+   heal lane fire on a flaky-test eject). Expect: run `failed` with
+   `failure_code: DECLINED` in `iterion remote runs list`, the reason
+   verbatim in `run.error`, a `<!-- iterion:fixer-declined -->` comment on
+   the PR, and **no** relaunch and **no** push. Confirm `git log` on the PR
+   branch is unchanged.
+4. **Decline refused.** Harder to stage; if a run ever reports `declined`
+   after committing, the run must finish normally and its commits must land.
+   Check the `decline_probe` output says `HEAD moved`.
+5. **The two gates.** On a pass whose `verify.sh` mirrors `task
+   openapi:check`, the gate must go green (before 1.6.0 it returned exit 3).
+   If a pass ever returns exit 5, read `verify.sh.rejected` in the scratch
+   dir — that is the masked pipeline it was refused for.
+6. Then: cost, duration and where the commits landed, as usual.
+
+## 2026-09-05 — PR #769 follow-up: drain recovery and local credential destinations
+
+> Delivery update, 2026-09-07: this is the historical record from the
+> closed, unmerged [PR #769](https://github.com/SocialGouv/iterion/pull/769).
+> [#824](https://github.com/SocialGouv/iterion/pull/824) superseded that PR;
+> these observations describe its branch, not the implementation on main.
+> [#896](https://github.com/SocialGouv/iterion/issues/896) restores this record
+> and follows up the board lookup retry that the replacement still lacks.
+
+- Status: **fixes delivered; independent validation pending**. Run
+  [01a072b5-6010-70b2-8df0-3e78458c92ef](https://iterion.fabrique.social.gouv.fr/runs/01a072b5-6010-70b2-8df0-3e78458c92ef)
+  finished at 19:51:47Z after 1 h 55 m 23 s active. Target:
+  [PR #769](https://github.com/SocialGouv/iterion/pull/769) /
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: a focused `/billy` follow-up named Revi findings `Rbdd8d5` and
+  `R47ce28`, requiring the local/team fork guard to remain intact. The
+  interactive session reviewed the published diff after the run stopped;
+  no interactive push overlapped the fixer.
+- Result: eight commits, `76fcea019` through `78358ec2460c`, pushed and
+  banked on `iterion/run-01a072b5-6010-70b2-8df0-3e78458c92ef`. Both finding
+  IDs are recorded as fixed in the publisher's PR review. A pre-launch
+  retry now outranks replica draining, while a post-launch drain still
+  leaves the live run alone. Unpinned local tokens reach only the exact
+  canonical HTTPS origins of GitHub, GitLab and Codeberg; other origins
+  require the operator's host pin.
+- Additional value: a refused return-to-ready write retains the claim,
+  rather than releasing an unfiled card with no run pointer; the local
+  forge base canonicalises host case; and the shared head-verification
+  function rejects repository path traversal before building a request.
+  Tests include actual authenticated TLS requests, their zero-request
+  negative control, recovery after draining, and failed final-state writes.
+- Verification: the campaign reports `devbox run -- task check` passing
+  (136 packages, zero failures) and focused race tests passing. One earlier
+  concurrent suite reported a failure, followed by three clean reruns;
+  resource contention was the bot's inference, not a reproduced cause.
+  The final `verify_run` **returned 3**: build, vet, server tests and OpenAPI
+  generation succeeded, but the deterministic tail rejected the script's
+  quiet-diff check as a missing drift gate. This is not a green bot gate.
+  The detector only recognises a quiet diff when a failing exit appears
+  on the same line; the repository itself also uses a multiline failing
+  conditional. The friction is tracked in
+  [#789](https://github.com/SocialGouv/iterion/issues/789).
+- Delivery follow-up: merging current `main` conflicted only in this
+  bilan file. Both histories were retained verbatim, and this second-run
+  record was added. The merged tree passed whole-module build and the
+  server PR-guard/dispatcher regressions under `-race`, the full server
+  and dispatcher package suites, and the actual `task openapi:check`
+  with no generated-file drift. Required GitHub
+  checks and independent Revi must validate the updated branch before
+  protected merging; no status override is used.
+- Lessons: test the outbound request count, not only the HTTP refusal;
+  preserve the stronger pre-launch fact during draining; and distinguish
+  a test failure from a verifier that rejects the shape of its own script.
+  Claim-retention recovery still needs the opt-in claim watchdog, as the
+  forge integration documentation explicitly records.
+
+## 2026-09-05 — PR-launch guard: local credentials and bounded board retry (#769 / #702)
+
+> Delivery update, 2026-09-07: this is the historical record from the
+> closed, unmerged [PR #769](https://github.com/SocialGouv/iterion/pull/769).
+> [#824](https://github.com/SocialGouv/iterion/pull/824) superseded that PR;
+> these observations describe its branch, not the implementation on main.
+> [#896](https://github.com/SocialGouv/iterion/issues/896) restores this record
+> and follows up the board lookup retry that the replacement still lacks.
+
+- Status: **completed and delivered**; independent Revi re-review and GitHub
+  CI remain pending at this entry. Auto-merge stays off until those checks
+  validate the final branch.
+- Run: `01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`, 15:41:48–17:23:49Z,
+  1 h 40 m 31 s active. Target: [PR #769](https://github.com/SocialGouv/iterion/pull/769),
+  [issue #702](https://github.com/SocialGouv/iterion/issues/702).
+- Method: the red-gate lane launched Billy against Revi's R57f074 (local
+  studio launches refused) and R48e8f3 (transient forge failures permanently
+  block board cards). The interactive session monitored the run and sent
+  two scope corrections; it did not edit the branch while Billy ran.
+- Result: seven commits pushed, head
+  `6acd74d17da6934730b882db307bbd243880dcdb`, also banked on
+  `iterion/run-01a0723b-acfb-71a9-9ae1-0d9b217e6cbb`. The publisher's PR
+  review records both finding IDs as fixed and reports the seven-commit push.
+  The post-campaign `verify_run` returned exit code 0 (whole-module build,
+  formatting, vet and the touched server package tests), followed by
+  publication and the terminal `finished` state.
+- Value: the local and team launch paths now share `verifyPRHeadInBaseRepo`.
+  Local studio resolves `forge_token` from its layered store, respects its
+  host pin, refuses when verification is unavailable, and explains the
+  missing credential. A fork or unnamed head creates no run. The board
+  returns a failed pre-launch lookup to the eligible state under the claim
+  token, waits 30 seconds, and escalates after five attempts. This retry
+  marker is attached before launch, so a later run failure cannot relaunch
+  the card through this arm.
+- Validation: the campaign reports lint with zero issues, 135 unit-test
+  packages, the e2e suite, coverage-matrix gate, and the new tests under
+  `-race` passing. Both headline regressions were observed red before green.
+  The session inspected the published code and tests: local same-repo
+  success, fork/unnamed-head refusal, absent/off-host credentials, recovery
+  after an outage, retry backoff/budget, and the real board-path marker.
+- Friction: the first fix reinstated a team-only bypass from Revi's proposed
+  replacement. That contradicts #702: a base-repository checkout plus a
+  fork's head branch is unsafe even without a publish grant. Steering
+  corrected it in `e86bccaecea1`; accepting a suggested patch mechanically
+  would have reintroduced the defect. The proposed `errCardContinuable`
+  also would have stranded a never-launched card in `in_progress`; the
+  implemented return-to-ready path addresses that instead.
+- Limits and lessons: retry counters are per replica, and the current forge
+  client does not distinguish a permission-denied 403 from a secondary
+  rate-limit 403. The guard proves the PR's head repository, not the local
+  checkout's remote or HEAD SHA. Keep those limits explicit, verify the
+  original issue against the final diff, and wait for independent Revi
+  rather than treating the fixer's own green gate as the final review.
+
+## 2026-09-05 — the plan-budget guard reads the run, and both refusals are typed (no run; bot 1.5.0)
+
+- Status: **validated** by the engine, not by a live run — this is a bot
+  change made against two engine features that landed the same day
+  (PR #764: the `run.*` expr namespace, #738; the typed `fail <name>:`
+  node, #739), issue #752/#762. The next dogfood should confirm the
+  refusal reads right in the studio and that a real `iterion remote runs
+  resume --max-cost-usd …` walks past the guard.
+- Versions: bot `branch-improve-loop` 1.4.0 → **1.5.0** · iterion at
+  `c2898c08f` (v3.108.1, the first build carrying `run.*` and typed fails).
+- Method: no LLM run. The guard is exercised through the ENGINE with the
+  scenario stub against the bot's own shipped `budget:` block
+  (`e2e/branch_improve_loop_test.go`, five cases): the stubbed plan nodes
+  bill a chosen amount, and the readout is which tail the run took.
+- Result — what changed in the bot:
+  - `plan_budget_gate` is now **one `compute`** reading
+    `run.elapsed_seconds` / `run.cost_usd` against
+    `run.max_duration_seconds` / `run.max_cost_usd`. It replaces the tool
+    node that shelled out to python for `time.time()` arithmetic.
+  - **The two mirror vars are gone** (`budget_max_duration_minutes` /
+    `budget_max_cost_usd`). They existed only because no primitive exposed
+    the run's caps, and they were kept in sync **by hand**: `iterion run
+    --max-cost-usd 200` re-budgeted the run and never reached them, so the
+    guard went on refusing against a literal `75` nobody had updated. The
+    `run.max_*` members are the caps IN FORCE — after the CLI flags, the
+    recipe, the platform ceiling and any live `raise_budget` — so the
+    drift is structurally impossible now, not merely documented.
+    (`TestBranchImproveLoop_PlanBudgetFollowsTheCapInForce` is that
+    property: the same $37.50 spend refuses under the shipped $75 cap and
+    passes under a re-budgeted $200 one.)
+  - `plan_scope_probe`'s `started_epoch` is gone with it; the run's clock
+    is monotonic and survives a resume, which a `time.time()` stamp did
+    not.
+  - `plan_cost_probe` is gone: it existed to hand the tool node a nil-safe
+    per-node cost SUM. Nothing but the plan phase has spent when the guard
+    runs, so `run.cost_usd` IS the phase's spend — and it also counts
+    anything a hand-written sum would have forgotten. Its relay role moved
+    onto the guard, which now receives the hand-off from all three
+    upstream routes directly.
+  - Both refusals are **named fail nodes**, so the code reaches the RUN
+    (`failure_code` / `error`) instead of only the guard's output:
+    `plan_exhausted` (PLAN_BUDGET_EXHAUSTED, **resumable**) and
+    `workspace_not_a_repo` (WORKSPACE_NOT_A_REPO, terminal). The 09-05
+    dogfood below recorded both as debt: two production runs ended
+    `failed` reading `workflow reached fail node`, and the operator had to
+    open the artifacts to learn which refusal fired.
+- **How to resume a `PLAN_BUDGET_EXHAUSTED` run.** The refusal is
+  `failed_resumable` and the checkpoint anchors on `plan_budget_gate`, not
+  on the fail node — so the resume **re-evaluates the guard** against the
+  caps then in force:
+
+  ```sh
+  iterion resume --run-id <id> --file bots/branch-improve-loop/main.bot \
+    --max-duration 5h --max-cost-usd 150
+  # or, same effect from the other side:
+  iterion resume --run-id <id> --file … --var plan_budget_ratio=0.6
+  ```
+
+  The plan phase this run already paid for is NOT re-run (the checkpoint
+  keeps `plan`/`plan_review`/`plan_revise`'s outputs); the campaign starts
+  on the plan already in hand. Nothing picks the refusal up by itself —
+  not `--auto-resume`, not the cloud runner's retry: a deliberate refusal
+  only changes verdict when an operator changes an input. Widening the cap
+  is the only thing that flips it, which is exactly why re-paying the plan
+  phase would be the wrong cure.
+- Value: the two workarounds the 09-05 bilan filed as debt (#738, #739)
+  are both retired, and the guard's arithmetic can no longer disagree with
+  the budget the run is actually under.
+- Findings / misses (engine, filed as observations for #762's PR):
+  - `{{run.*}}` renders EMPTY inside a `fail` node's `message:` — the fail
+    message resolves through `resolveMapping(scope)`, which carries
+    `outputs`/`vars` but not the run snapshot the expr evaluator and the
+    prompt/tool templates read. Measured on a probe bot: `run.elapsed=
+    cap=`. The bot works around it by putting the four figures on the
+    guard's own output and referencing `{{outputs.plan_budget_gate.…}}`,
+    which is arguably better anyway (the numbers are then also in the
+    artifact) — but the authoring instinct is to write `{{run.cost_usd}}`
+    there and get silence.
+  - A **tiny `max_duration` cannot be the lever** for a deterministic test
+    of the duration axis: the engine refuses a new node at 90% of a cap,
+    so with a small enough cap `BUDGET_EXCEEDED` fires before the guard
+    ever runs. The e2e drives the COST axis instead (a figure the stub
+    sets exactly); the duration axis is covered by the `> 0` unbounded
+    case and by the guard's own expression.
+  - A compute's output schema does **not** coerce a float into an `int`
+    field (probed: `used_pct: int` kept `0.0952…`), and float refs render
+    at full precision in a template. The gate therefore reports seconds
+    and USD rather than a rounded percentage.
+- Lessons for next run: launch with `--var plan_budget_ratio` small to
+  force the guard as before, then check `iterion remote runs list` shows
+  PLAN_BUDGET_EXHAUSTED (not FAIL_NODE) and that the resume with a widened
+  cap starts `campaign` without re-running `plan`.
+
+## 2026-09-05 — lock-delivery follow-up on PR #770: an "open question" was a two-part defect, and one comment cited a function that never existed
+
+- Status: **delivered**. Run
+  [01a07283-16f2-7b55-bf66-db10c5453fdf](https://iterion.fabrique.social.gouv.fr/runs/01a07283-16f2-7b55-bf66-db10c5453fdf),
+  a focused follow-up to `01a07243` on the same
+  [PR #770](https://github.com/SocialGouv/iterion/pull/770) /
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: seeded with Revi's single new finding `R1dca02` plus five open
+  questions, and with a plan a cross-model peer had already critiqued. The
+  peer's catch changed the shipped result — see below.
+- Result: nine commits, `38f2d98e2` … `eaa33d0ce`. `R1dca02` fixed (the
+  non-contention lock class logs at Error again, so a broken lock store
+  raises a tracker event instead of a breadcrumb nobody ships); one open
+  question promoted to a defect and closed; one phantom cross-reference
+  corrected; two ratchets landed.
+- Verification — **passed** with the exit code captured before any pipe:
+  `task test` (rc 0), `go test ./e2e/...` (rc 0, 769s), `task lint` (rc 0),
+  `go test -race` on runner/queue-nats/server (rc 0), and the three studio
+  targets `studio:lint` / `studio:typecheck` / `studio:test` (rc 0, 1308
+  tests). **Unavailable locally**, left to the GitHub checks: the
+  `mongo-conformance` and `nats-conformance` jobs (each needs a service
+  container) and the Playwright UI suite (opt-in browser download).
+- Verification gotcha worth keeping: the first attempt at each of these
+  piped through `grep`/`tail` and then read `$?`, which reports the LAST
+  pipeline stage, not the test command. A studio `tsc` invocation that died
+  on `exit 127` (no `node_modules`) printed `EXIT=0` that way. Redirect to a
+  log, save `$?` immediately, then filter — or set `pipefail`.
+- Value — the open question was the bigger finding. Registering LockTTL in
+  `RedeliveryWindow` is the obvious half, and on its own it is **inert**:
+  `cmd/iterion/server.go`'s `natsq.Connect` literal never passed LockTTL, so
+  `applyDefaults` pinned the sweeper's own connection to 60s and the widened
+  formula would have read a value no deployment configured. Passing it also
+  closes a second, pre-existing hazard this branch made load-bearing —
+  `EnsureSchema` writes the KV bucket TTL from `cfg.LockTTL`, so server and
+  runner disagreeing meant the effective lease lifetime flapped by restart
+  order. Neither edit protects an `ITERION_LOCK_TTL=15m` deployment alone.
+- Findings the review missed: `archiveLockFailure`'s audit-deadline comment
+  justified itself as "same hazard, same remedy as parkAdmissionMismatch's
+  status flip" — a function that exists nowhere in the tree, and whose real
+  sibling (`parkOnDLQOnFinalDelivery`) does the OPPOSITE, handing its spent
+  publish context straight to the status flip. A citation asserting a settled
+  pattern for a remedy no other site applies.
+- Ratchets: the log-level regression asserts the hook LEVEL, not the message
+  (verified failing against the unfixed tree first); and a wrapped-`ErrLockHeld`
+  test pins the classification against the shape production actually delivers
+  — every other double returns the sentinel bare, so swapping `errors.Is` for
+  `==` kept the whole suite green while the fleet would page on every sibling
+  collision (verified: that one token turns the new test red and nothing else).
+- Lessons for next run: an "open question" in a review is not automatically
+  out of scope — this one was a real defect whose fix needed a second edit in
+  a file the reviewer never named. And a comment citing a precedent deserves
+  the same grep a code reference gets; a phantom name reads as authority.
+- One open question answered with evidence rather than left open: a foreign
+  `run_delivery_exhausted` does NOT disturb a live run's observers, and the
+  reason is narrow enough to be worth a comment at the emission site.
+  `alert.Manager` treats **any** event as liveness (it clears `stallAlerted`
+  and can fire a spurious `stall_recovered`) — but it is fed only by the
+  local `events.jsonl` tailer and in-process run observers, never by the
+  Mongo store this path writes to; and the cloud twin `alert.OpsDispatcher`
+  filters the bus to `KindRunFailed`, which a store event never becomes.
+  Wiring a cloud event source into the Manager would turn this row into a
+  false liveness signal.
+- Left deliberately: `MaxAckPending` headroom during a lock outage and
+  sweeper-vs-operator DLQ-replay ownership — genuine open questions, not
+  findings. `parkOnDLQOnFinalDelivery`'s inherited publish context is a real
+  smell but pre-existing and outside this branch.
+
+## 2026-09-05 — lock-delivery hardening on PR #770: seven commits delivered; the publisher still says nothing was pushed
+
+- Status: **first pass delivered and verified; review follow-up pending**.
+  Run [01a07243-13f3-7229-8aea-801a2fc3569e](https://iterion.fabrique.social.gouv.fr/runs/01a07243-13f3-7229-8aea-801a2fc3569e)
+  finished on 05/09 at 16:46Z, with 54m42s of recorded active duration.
+  Target: [PR #770](https://github.com/SocialGouv/iterion/pull/770),
+  [issue #703](https://github.com/SocialGouv/iterion/issues/703).
+- Method: a maintainer `/billy` comment named Revi findings `Rd41f5d` and
+  `R1cae68`; auto-merge stayed off. Plan, peer review and revision preceded
+  the campaign. No interactive session edited the branch while Billy ran.
+- Result: seven commits reached the PR, from `b8166f730` to
+  `eb58773074357201f544d11525090a262be732a3`. The run's final commit equals
+  that PR head; its storage branch is
+  `iterion/run-01a07243-13f3-7229-8aea-801a2fc3569e`.
+  `fca63105e` gives the audit an independent deadline after the DLQ publish;
+  `9a2b771af` distinguishes confirmed contention from unconfirmed ownership.
+  Further commits correct the lost-PubAck wording, document both unknowns,
+  add the event to the studio union and update the coverage matrix.
+- Proof: `TestExhaustedPublishDeadlineStillRecordsTheAuditRow` waits until
+  the publication context expires and uses a store that honours cancellation;
+  the old implementation loses the audit row. The reason-classification
+  regression rejects both an asserted owner and asserted absence when the
+  lock service did not answer. Billy's verification gate returned exit 0
+  (format/build/vet, touched Go suites, race checks and lint); the new head's
+  NATS conformance CI also passed. The full PR test check was still running
+  when this record was written.
+- Value of the peer review: a failed lock acquisition does **not** prove
+  absence of an owner, and a missing PubAck does **not** prove the DLQ copy
+  is absent. The final code reports both as unknown instead of inviting an
+  unsafe replay or discard. No lock-failure branch mutates the run outcome
+  or checkpoint.
+- Friction: despite the campaign having pushed all seven commits,
+  `publish_verdict` opened its review with “No commits pushed. nothing to
+  push: HEAD not ahead of origin/codex/fix-703-lock-delivery-dlq” and reported
+  a failure status. The same review then correctly listed the delivered
+  commits and fixed findings. This is additional evidence for
+  [#773](https://github.com/SocialGouv/iterion/issues/773), not missing work
+  in this run: the PR head and final commit were equal. Revi's independent
+  review subsequently replaced that status with success.
+- Remaining work: the independent review found `R1dca02` — infrastructure
+  lock failures had lost their error-level log, suppressing the tracker
+  event. Keep auto-merge off for the follow-up correction. Also check that
+  a configured lock delay larger than AckWait is represented in the
+  redelivery window used by the queued-run sweeper.
+
+## 2026-09-05 — plan-budget guard dogfooded on prod: the gate fires typed, before `campaign`, for $0.67–$1.80 (runs 01a0714a, 01a07156)
+
+- Status: **validated** (the guard itself; the entry below, written before
+  any live run, is superseded on its "unvalidated" point).
+- Versions: bot `branch-improve-loop` 1.3.0, pushed to the prod platform
+  bot-override tier (`iterion remote admin bots push bots/branch-improve-loop
+  --slug branch-improve-loop`) so the runners used it without an image
+  rollout · iterion runners `8727674c` (v3.102.6).
+- Method: `plan_budget_ratio=0.001` forces the guard (2h30 × 0.001 ≈ 9 s of
+  plan phase, so any real plan trips it); target SocialGouv/iterion#749;
+  `post_to_board=false`, auto-merge off. Two launches: `iterion remote runs
+  launch --bot branch-improve-loop --var pr_url=…` — which attaches NO
+  repository, so the plan node authored a plan against an empty
+  `/tmp/iterion` — then `POST /api/runs` with `repo_url` + `repo_ref` +
+  `connection_id`, the only shape that carries a checkout.
+- Result:
+
+  | run | repo | active | cost | LLM nodes served | outcome |
+  |---|---|---|---|---|---|
+  | `01a0714a` | none (empty workspace) | 5 m 21 s | $0.67 | plan, plan_review, plan_revise | `plan_budget_gate` → `fail`; `campaign` never entered; 0 push |
+  | `01a07156` | #749 checkout | 7 m 54 s | $1.80 | plan, plan_review, plan_revise | same |
+
+  Both runs end `failed` with the engine's own `workflow reached fail node`:
+  the typed `PLAN_BUDGET_EXHAUSTED` lives on the gate node's output only,
+  because a `fail` node cannot carry a code yet (#739), and a `fail`
+  terminal is non-resumable by design — the right call for a probe, the
+  wrong one for an operator who would rather widen the plan budget and
+  continue (#739's follow-up comment).
+- Value: the class of death of the three runs below — 2h30 of planning,
+  zero commits, $8.59 — is closed. The guard stops the run at the plan
+  phase's own ceiling, having spent 1–2 % of the budget instead of all of it.
+- Findings / misses (each filed): `plan_review=off` skips the WHOLE plan
+  phase, not only the peer review, so a single-provider deployment never
+  plans (#751); six of the seven campaign bots start an opus-class plan node
+  without checking the workspace is a repository — `01a0714a` paid $0.67 to
+  plan against nothing (#752); the guard has to self-measure wall-clock and
+  mirror the budget through two hand-maintained vars because no expr
+  primitive exposes the run's elapsed budget (#738); a bot-declared refusal
+  reads as "workflow reached fail node" at the top level (#739).
+- Engine hardening: #751/#752 (bot-side) and #738/#739 (engine) in flight.
+- Lessons for next run: attach the repository through `POST /api/runs`
+  (`repo_url`, `repo_ref`, `connection_id`) — a CLI `--bot` launch carries
+  `pr_url` and nothing to check out; force the guard with
+  `plan_budget_ratio` rather than waiting on a real long plan. The 04/09
+  friction this closes: Billy `01a06d80`, launched by the zero-touch lane on
+  #683's red gate, died 4 s over `max_duration` (2h30m01s / 2h30m) with a
+  plan and nothing pushed, and the deployed binary had no re-budget flag on
+  `remote runs resume` (#689, since merged) — exactly the shape the guard
+  now refuses in the first minutes.
+
+## 2026-09-05 — plan-phase budget guard shipped (native:695); three production deaths never reached campaign (runs 01a06d80, 01a06e72, #705)
+
+- Status: **failed** (the three cited production runs, pre-fix) — the fix
+  itself is unvalidated by a live dogfood as of this entry; see "What the
+  session should dogfood" below.
+- Versions: bot `branch-improve-loop` 1.3.0 (this change) · the three cited
+  runs were on 1.2.1.
+- Method (the failures being fixed): `/billy` on SocialGouv/iterion#683
+  (+3870/-273 across 55 files, 30 commits), `review_mode` auto, budget
+  `max_duration 2h30m` / `max_cost_usd 75` (the shipped default).
+- Result (the three cited runs, unchanged bot):
+
+  | run | started | duration | cost | nodes executed | stopped at | commits |
+  |---|---|---|---|---|---|---|
+  | `01a06d80` | 2026-09-04 17:38Z | 9004.7s/9000 (+4.7s) | $3.77 | plan_topology, plan, plan_review, plan_gate, plan_revise | `campaign` (never entered) | 0 |
+  | `01a06e72` | 2026-09-05 22:03Z | 9001.9s/9000 (+1.9s) | $4.82 | *(identical set)* | `campaign` (never entered) | 0 |
+
+  Same target, same node set, same stopping point, same failure, twice.
+  ~5 h of runner pod + $8.59 of LLM spend produced two triage plans and zero
+  code (#695). #705 catalogs a third death on the SAME cap (`01a0517a`,
+  2026-08-30, +1s) and argues the complementary half: a run that dies with
+  nothing banked has no recovery path, whereas the 2026-09-03 entry above
+  survived three deaths only because it had banked 17 commits in stride.
+  Neither ticket's underlying wall existed until the plan phase itself
+  starved `campaign` of the time to make its own first commit.
+- Value: N/A for the three historical runs (zero commits, two duplicated
+  triage plans neither of which reached code).
+- Findings / misses: the failure was invisible in the run's own status —
+  both runs closed `failed_resumable` with an ordinary "budget exceeded:
+  duration" message, indistinguishable from a run that did real work and
+  ran long. Only the executed-node list showed `campaign` was never
+  entered. A resume restarts from a fresh clone (the planning cost is paid
+  again), so retrying was not a fix.
+- Engine hardening (this change, native:695): the planning chain
+  (`plan` → `plan_review` → `plan_gate` → `plan_revise`) had no ceiling of
+  its own — it could (and did) spend the ENTIRE run budget before
+  `campaign`, the node that writes code, ever started. Added:
+  - `plan_scope_probe` (deterministic tool, before `plan`): captures a
+    capped `git diff --stat` footprint, a `large` classification (over
+    `plan_large_diff_lines`, default 1500 added lines), and the chain's
+    wall-clock start (`started_epoch`) — the ONLY way to measure the
+    phase's own elapsed time, since no DSL primitive exposes a run's
+    elapsed duration to a node (see below).
+  - `plan_gate` now also bypasses `plan_revise` on a large diff, not only
+    on a skipped peer (`skip_revise = skipped || large`) — the peer's
+    critique reaches `campaign` unrevised rather than paying a second
+    full-diff read.
+  - `plan_cost_probe` (compute): a NIL-SAFE sum of `plan`/`plan_review`/
+    `plan_revise`'s own `_cost_usd` — a skipped/never-run node's cost key
+    is absent, not zero, and a naive sum errors on that; `if(x, x, 0)` is
+    the nil-safe idiom (`truthy(nil) == false`).
+  - `plan_budget_gate` (deterministic tool, the SOLE choke point before
+    `campaign`): compares the real elapsed minutes and the nil-safe cost
+    sum against `plan_budget_ratio` (default 0.3) of two new mirror vars
+    (`budget_max_duration_minutes` / `budget_max_cost_usd`), and routes to
+    a typed early failure instead of letting `campaign` start on whatever
+    the plan phase left behind — guaranteeing `campaign` at least
+    (1-ratio) of the budget whenever it does start.
+  - `plan`/`plan_review` read the diff-stat footprint and skip the full
+    unified diff above `plan_large_diff_lines`.
+  - **DSL gap found and NOT worked around**: no primitive exposes a run's
+    actual elapsed duration/cost or its resolved budget caps to a
+    compute/tool node (`pkg/dsl/expr`'s `run` namespace resolves only
+    `run.id` — `pkg/runtime/expr_eval.go`); `plan_scope_probe` /
+    `plan_budget_gate` self-measure wall-clock via `time.time()` instead.
+    Also: the DSL's `-> fail` terminal has no way to carry a custom
+    `RuntimeError` code/message (`pkg/runtime/engine_exec.go` hardcodes
+    "workflow reached fail node" + a fixed `FailureFailNode` code) — the
+    typed `PLAN_BUDGET_EXHAUSTED` code + comparison detail live on
+    `plan_budget_gate`'s own persisted output (readable via `iterion
+    report` / the run's events), not on the run's top-level failure
+    message. Both are flagged as follow-up engine work, not hacked around
+    (out of this change's bot-only scope).
+- Lessons for next run: dogfood the fix on a large diff BEFORE trusting it
+  in production — a stub-driven e2e proves the graph routes correctly on a
+  controlled cost sum, not that `plan_budget_ratio`'s default (0.3) is the
+  right split on a real 4000-line diff, nor that `plan_large_diff_lines`
+  (1500) is the right threshold for the diff-stat adaptation to actually
+  keep `plan`/`plan_review` inside their share. If the guard still trips
+  too early/late on iterion#683 itself, tune the ratio/threshold vars
+  before touching the mechanism.
+## 2026-09-04/05 — three zero-touch launches on the wave-1 PRs: two deaths at the duration cap, one correct refusal we had to cancel (runs 01a06d80, 01a06e72, 01a06e45)
+
+- Status: **failed** on the two fixer runs; the third produced a correct
+  diagnosis and had to be cancelled to protect the merge it was about to break.
+- Versions: bot `branch-improve-loop` 1.2.1 · iterion cloud prod (server
+  v3.101.x) · PRs SocialGouv/iterion#682 and #683.
+- Method: the zero-touch `auto_fix_on_gate_failure` lane and the merge-queue
+  auto-heal lane, both firing by themselves. Bot budget `max_duration 2h30m`
+  / `max_cost_usd 75`, `plan_review on`, `post_to_board false`.
+
+### The two deaths, at the same cap, seconds over
+
+| run | launched | died | over by | pushed |
+|---|---|---|---|---|
+| `01a06d80` (#683 red gate) | 04/09 17:38Z | `budget exceeded: duration (2h30m01s / 2h30m)` | **4 s** | nothing |
+| `01a06e72` (#683 red gate again) | 04/09 22:03Z | `budget exceeded: duration (9001.86s / 9000s)` | **1.86 s** | nothing |
+
+Two runs, the same PR, ~5 h of forfait, **zero commits**. Both died inside the
+last two seconds of their window, which is the shape that matters: this is not
+a bot that ran out of room to finish, it is a bot whose delivery tail never got
+scheduled. The work it had done existed only in its own context and died with
+the run — nothing was banked, so nothing survived to be fast-forwarded by hand
+the way the 2026-09-03 run's chain was.
+
+Resuming with a raised cap was impossible at the time: the deployed binary had
+no budget flags on `remote runs resume`. That is exactly the re-budget half of
+#652 — which was sitting unreviewed in PR #689 while the run that would have
+used it died. It merged at 22:32Z, so the next occurrence is recoverable.
+
+### The third run: right diagnosis, wrong mission
+
+`01a06e45` was launched by the **merge-queue auto-heal** lane 3 seconds after a
+flaky test (#692) ejected the green PR #682. Its plan node (opus-5, $4.53)
+concluded, unprompted:
+
+> Verdict: no code issue in the diff. This is a re-queue, not a fix.
+
+and even noted in its own step 0 that a queue build was already in flight and
+that pushing would cancel it. Its mission then told it to rebase and
+`git push --force-with-lease` — step 1. We cancelled it; the queue run finished
+and #682 merged.
+
+The bot was right and its instructions were wrong. Worth keeping as the
+reference case for "let the fixer refuse the task": the reasoning to decline
+was already there, the contract had no way to express it.
+
+### Engine hardening this produced
+
+- **PR #693** (merged) — the auto-heal now stands down when the queue takes the
+  PR back, so a heal can no longer force-push over the build that would have
+  merged it. Keyed on the heal's own idempotency key at the current head, so a
+  human's `/billy` survives and a heal that already pushed is not killed by the
+  enqueue its own push caused.
+- **#692** — the flaky `TestEngineRunner_SubbotChildHoldsRunLock` that caused
+  the ejection: a stall (26.9 s package → 300 s timeout), not slowness, and
+  widening its budget was already tried once in #658.
+- **#690** — corroborated with production evidence: a stale usage-window
+  reading blocked every LLM run for ~50 min, including the merge gate itself,
+  with no path to recover on its own.
+
+### Lessons for next run
+
+1. **The 2h30 default is the finding, not the accident.** Two independent runs
+   landing 4 s and 1.86 s over is not bad luck; it is a cap sized below the work
+   being asked. Either raise the bot's `max_duration`, or give the campaign a
+   delivery reserve it cannot spend on analysis.
+2. **A fixer with nothing banked has nothing to salvage.** The 2026-09-03 run
+   died three times but banked 17 commits, which the operator fast-forwarded by
+   hand. These two banked nothing — commit-in-stride is what makes a death
+   survivable.
+3. **The auto-heal lane cannot tell a flake from a real break** and should not
+   try to; #693 bounds the damage, the flake itself belongs to #692.
+
+## 2026-09-03 — `/billy` on the watchdog PR: three deaths, the banked chain delivered by hand (run 01a06728)
+
+- Status: **partial.** The fixer's work landed (17 commits on
+  SocialGouv/iterion#646, the ADR-096 claim-lease + watchdog PR) but never
+  through his own delivery tail: the run died three times before
+  `push_back`, and the operator fast-forwarded the banked chain onto the PR
+  branch. The PR merged the same evening (`e194aebe0`, v3.99.0, deployed).
+- Versions: iterion cloud prod (runner v3.96.1 digest, server ~v3.97) · bot
+  `branch-improve-loop` 1.2.1 · branch base `fa9c8b1be`.
+- Method: the documented habit — Revi left 1 medium (`Ra74e4c`) + 2 low + 7
+  questions on #646; `/billy` as maintainer; `review_mode=mono`; bot budget
+  `max_duration 2h30m` / `max_cost_usd 75`. An Anthropic incident was in
+  progress during the first attempt.
+- Result:
+
+  | attempt | wall-clock | outcome |
+  |---|---|---|
+  | 1 — 12:05→14:37Z | 2h32 | `BUDGET_EXCEEDED: duration (9004.7s/9000s)` mid-`campaign` (iter 3/8), $34.47; **6 commits banked** on `iterion/run-01a06728…` |
+  | 2 — bare `remote runs resume` | 15 min | re-died at 9901.6 s = the 110 % exit-grace ceiling (the consumed duration axis rides the checkpoint) |
+  | 3 — resume with `source` inline (`max_duration: 6h`) + `force` | 1h47 | restarted the campaign FROM SCRATCH (the resume re-clones the branch head, the banked chain is not re-imported), **17 commits** banked, died `USAGE_LIMIT_BLOCKED` (Claude session limit, usage_window retry armed) |
+  | 4 — auto retry 20:09Z | — | cancelled by the operator: it would have died on iterion's own weekly cap (95 %, hard) |
+
+  Operator delivery 17:43Z: fast-forward of the banked chain (17 commits,
+  verbatim) + one test-only fix + merge of `origin/main` → PR head
+  `196b18966`; the re-review fired by itself 3 s later (`review_on_sync`)
+  and came back green (0 ≥high, 2 low + 7 questions → #660). A merge-queue
+  ejection (#658 merged ahead, same flaky test touched) forced a second
+  merge (`385d8677e`); that head's re-review then died on the **weekly**
+  usage cap (`seven_day window at 95% ≥ 95%`, reset 2026-09-08) and parked
+  the gate for five days — `/revi approve` failed on the GitHub App
+  integration (#662), the override status was posted by hand.
+- Value: **high on substance.** Beyond Revi's findings (all addressed —
+  `launchTicketNow` CAS anchored on the read state, the reaper gate
+  misspelling made loud, the CI mongo-gate guard scoped), the campaign found
+  defects a 20-round adversarial loop had missed: a false "claim lost" when
+  the owner's own release races an in-flight heartbeat (`Releasing()`
+  latch), `cmdClaimLost` cancelling the NEXT run holding the card (run id on
+  the message), a lost fence at launch that still launched (both twins), the
+  mongo terminal sink as check-then-act (now a CAS with re-evaluation),
+  `SetStateFrom(x→x)` disagreeing across twins, the reconciler's tokenless
+  write overwriting an operator's drag (`SetStateFromReason` CAS), "a
+  release is the last act of a disposition", `store.RunAbsent` shared across
+  the four run-pointer authorities, the FS renew blocking `Stop()` on the
+  actor.
+- Findings / misses: his new `TestAdapterRenewClaim_HonoursCancelMidCall`
+  failed deterministically (10/10, plain and `-race`: the detached renewal
+  wrote into `t.TempDir()` during cleanup) — **a banked chain is committed
+  in stride but not gate-verified** (`verify_run` only runs at the end of a
+  pass). He applied `Releasing()` on the local twin and missed the cloud
+  `processCard` (Revi's `Rf238b1`, #660). His delivery tail was never
+  exercised: he never pushed himself, so by design he would have stamped
+  nothing on a head the operator pushed.
+- Engine hardening (GitHub board): #652 — resume re-clones the branch head
+  and restarts the campaign, ignoring the banked chain (proposal: re-anchor
+  on `FinalBranch` when it fast-forwards from the clone base); the cloud
+  `POST /api/runs/{id}/resume` has no budget overrides (workaround: `source`
+  inline + `force`); the consumed duration axis rides the checkpoint; the
+  exit grace does not protect a node cancelled in flight. #650 — the
+  gate-paused notice says "Review paused … a new push restarts it sooner"
+  for a FIXER (`forge_gate_pause_notice.go` filters on `gate_context`,
+  which a gating fixer carries). #662 — `/revi approve` → `set commit
+  status: forge: insufficient scope`, webhook 502. #663 — the parked review
+  revived 2 s after `stopRunsForDeadPR` (redelivery race). Verified working:
+  the death bank (`pushBank`, richer-chain supersede), the usage-window
+  retry (`run_retry_scheduled`, reset parsed from the typed error),
+  `review_on_sync`, stop-on-close for the auto-heal lane run.
+- Lessons for next run: size the fixer's `max_duration` for this repo's
+  verify gate (2h30 with ~1h of plan phases is too tight) or slim the plan
+  phases when `consumes: review` carries few findings; push in stride on
+  the PR branch (the work branch IS the PR branch); never bare-resume a
+  duration death on cloud; a banked chain is deliverable by hand only after
+  the full validation; when the weekly cap parks the gate, the documented
+  override is broken until #662 lands — budget a manual status or the admin
+  bypass.
+
+## 2026-08-30 — three launches, zero delivery: the duration cap and the weekly cap (runs 01a0517a, 01a051dd, 01a05216)
+
+- Status: **failed.** `/billy` on SocialGouv/iterion#579 (the CHANGELOG
+  feature) produced no commit and no push across three launches. Nothing was
+  wrong with the hand-off — `prior_review` seeded, campaign working, tool
+  calls flowing — the run simply ran out of wall-clock, and the retries hit a
+  wall that was not Billy's.
+- Versions: iterion cloud prod (edge ~v3.74/3.77) · bot `branch-improve-loop`
+- Method: documented habit — Revi left 1 medium + 1 low on #579, `/billy`
+  comment as maintainer, no `skip`.
+- Result:
+
+  | run | wall-clock | outcome |
+  |---|---|---|
+  | `01a0517a` 07:02 | **2h31** | `budget exceeded: duration (9001s/9000s)` |
+  | `01a051dd` 08:51 | — | `failed_resumable` |
+  | `01a05216` 09:53 | 3 min | `usage cap: seven_day window at 75% ≥ 70% (week, hard)` |
+
+- Value: none delivered. The findings were fixed by hand instead, after the
+  weekly cap made a fourth attempt impossible before its 2026-09-01 reset.
+
+### Lessons
+
+- **The 2h30 duration cap is not sized for this repo's verify gate.** Each
+  campaign pass re-runs the repo's real build+test, measured at ~10 min a pass
+  (one tool call spanned 07:59:04 → 08:09:05). A handful of passes and the cap
+  is spent before the delivery tail. The loop budget guard declines a further
+  iteration when the budget cannot fund one, but nothing here shortened the
+  *first* pass, and the run died mid-pass with nothing committed — the exact
+  shape "commit in stride" exists to avoid. Either raise `max_duration` for
+  targets whose gate is expensive, or make the gate cheaper (scope the test
+  command to the touched packages).
+- **A run burning its whole cap with zero commits should be cancellable on
+  sight.** Nothing in the run view said "2h in, nothing banked"; the operator
+  reads `running` and waits. `commits_this_pass` exists in the contract —
+  surfacing it (or a zero-commit warning past N minutes) would have turned
+  2h31 of spend into a 20-minute decision.
+- **The habit has a precondition worth stating: Billy must be able to run.**
+  `docs/revi-billy-loop.md` says "don't hand-fix, comment /billy". When the
+  weekly cap is hard-blocking until a reset two days out, that instruction has
+  no path, and waiting is worse than fixing. The runbook should name the
+  fallback rather than leave the operator to infer it.
+
 ## 2026-08-27 — first `/billy` of the Revi→Billy habit on iterion itself (runs 01a0428a, 01a042b9, 01a042d7)
 
 - Status: **partial.** The habit's whole chain worked — `/billy` comment →

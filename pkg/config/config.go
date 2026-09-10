@@ -46,6 +46,7 @@ type Config struct {
 	Redis   RedisConfig   `yaml:"redis"`
 	S3      S3Config      `yaml:"s3"`
 	Runner  RunnerConfig  `yaml:"runner"`
+	Rollout RolloutConfig `yaml:"rollout"`
 	Server  ServerConfig  `yaml:"server"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Log     LogConfig     `yaml:"log"`
@@ -282,16 +283,17 @@ type SandboxConfig struct {
 }
 
 // NATSConfig holds the NATS JetStream connection + stream/bucket names,
-// plus the work-queue tuning knobs. The tuning fields default to zero =
-// inherit the natsq defaults (MaxAckPending 256, AckWait 10m, MaxDeliver 8,
-// MaxAge 24h, DLQMaxAge 7d, MaxPayload server-negotiated). Server and runner
-// deployments must be fed the same values — whichever connects last
-// re-pins the shared stream/consumer.
+// plus the work-queue tuning knobs. StreamReplicas defaults to 1; the
+// remaining tuning fields default to zero = inherit the natsq defaults
+// (MaxAckPending 256, AckWait 10m, MaxDeliver 8, MaxAge 24h, DLQMaxAge 7d,
+// MaxPayload server-negotiated). Server and runner deployments must be fed
+// the same values — whichever connects last re-pins the shared stream/consumer.
 type NATSConfig struct {
-	URL       string `yaml:"url"`
-	Stream    string `yaml:"stream"`
-	KVBucket  string `yaml:"kv_bucket"`
-	DLQStream string `yaml:"dlq_stream"`
+	URL            string `yaml:"url"`
+	Stream         string `yaml:"stream"`
+	KVBucket       string `yaml:"kv_bucket"`
+	DLQStream      string `yaml:"dlq_stream"`
+	StreamReplicas int    `yaml:"stream_replicas"`
 
 	MaxAckPending int           `yaml:"max_ack_pending"` // fleet-wide in-flight (delivered-unacked) cap on the shared consumer
 	AckWait       time.Duration `yaml:"ack_wait"`        // per-delivery ack window before redelivery
@@ -342,6 +344,14 @@ type RunnerConfig struct {
 	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
 }
 
+// RolloutConfig is the shared generation fence used by both the cloud
+// publisher and the runner fleet. RunnerEpoch is monotonic once enabled: an
+// older value is rejected against the persistent JetStream high-water mark.
+type RolloutConfig struct {
+	RunnerEpoch        uint64        `yaml:"runner_epoch"`
+	EpochMismatchDelay time.Duration `yaml:"epoch_mismatch_delay"`
+}
+
 // ServerConfig holds server-specific settings.
 type ServerConfig struct {
 	// ShutdownDelay is the lame-duck window on SIGTERM: /readyz answers
@@ -381,9 +391,10 @@ func Defaults() Config {
 	return Config{
 		Mode: ModeLocal,
 		NATS: NATSConfig{
-			Stream:    "ITERION_RUNS",
-			KVBucket:  "iterion-run-locks",
-			DLQStream: "ITERION_RUNS_DLQ",
+			Stream:         "ITERION_RUNS",
+			KVBucket:       "iterion-run-locks",
+			DLQStream:      "ITERION_RUNS_DLQ",
+			StreamReplicas: 1,
 		},
 		Mongo: MongoConfig{
 			DB:            "iterion",
@@ -404,6 +415,10 @@ func Defaults() Config {
 			// Mirrors natsq.SchemaMismatchNakDelay (kept literal here so
 			// pkg/config stays free of the NATS client dependency).
 			SchemaMismatchDelay: 30 * time.Second,
+		},
+		Rollout: RolloutConfig{
+			RunnerEpoch:        0,
+			EpochMismatchDelay: 2 * time.Minute,
 		},
 		Server: ServerConfig{
 			ShutdownDelay:    5 * time.Second,
@@ -515,6 +530,11 @@ func (c *Config) Validate() error {
 	if c.Alerts.StallTimeout < 0 {
 		return fmt.Errorf("ITERION_ALERTS_STALL_TIMEOUT %s invalid (want >= 0)", c.Alerts.StallTimeout)
 	}
+	// 0 inherits the queue default (documented contract for every numeric
+	// NATS knob, and what NATS itself means by "server default").
+	if c.NATS.StreamReplicas < 0 {
+		return fmt.Errorf("ITERION_NATS_STREAM_REPLICAS %d invalid (want >= 0)", c.NATS.StreamReplicas)
+	}
 
 	if c.Mode == ModeCloud {
 		if c.NATS.URL == "" {
@@ -610,6 +630,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Runner.SchemaMismatchDelay < 0 {
 		return fmt.Errorf("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY %s invalid (want >= 0)", c.Runner.SchemaMismatchDelay)
+	}
+	if c.Rollout.EpochMismatchDelay < 0 {
+		return fmt.Errorf("ITERION_RUNNER_EPOCH_MISMATCH_DELAY %s invalid (want >= 0)", c.Rollout.EpochMismatchDelay)
 	}
 
 	switch c.Sandbox.Default {

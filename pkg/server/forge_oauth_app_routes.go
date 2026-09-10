@@ -70,6 +70,15 @@ type forgeOAuthAppReq struct {
 	// Without it here, an existing App has to be edited on GitHub by hand
 	// and re-approved by an org admin.
 	AllowSecurityRead bool `json:"allow_security_read,omitempty"`
+	// AllowProjectBoard (github-manifest): request organization_projects:write
+	// so iterion can read the org's Projects v2 board and reflect native card
+	// transitions onto its Status field (ADR-097, docs/github-board-sync.md).
+	// Opt-in: it is an ORG-level grant spanning every project the org owns,
+	// not only the installed repositories, and at run time it is minted per
+	// board call only — the cached runtime token never carries it. Without it
+	// here, an existing App has to be edited on GitHub by hand and the new
+	// grant re-approved by an org owner.
+	AllowProjectBoard bool `json:"allow_project_board,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +97,7 @@ func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request
 		// Installable = a manifest-created GitHub App whose private key we hold,
 		// so it can be INSTALLED (least-privilege github_app), not only OAuth-used.
 		apps[i].Installable = len(apps[i].SealedPrivateKey) > 0
+		apps[i].LogoUploadURL = apps[i].DeriveLogoUploadURL()
 		apps[i].SealedSecret = nil     // defensive — also json:"-"
 		apps[i].SealedPrivateKey = nil // defensive — also json:"-"
 	}
@@ -315,7 +325,10 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 }
 
 // writeForgeOAuthAppError maps store / provider errors to HTTP responses,
-// including the auto-create scope errors used in a later step.
+// including the auto-create scope errors used in a later step. The two
+// forge-shaped refusals keep their own wording (they name the remedy); the
+// rest goes through the shared upstream table, so a rate limit reads as one
+// and only an iterion fault reaches 500.
 func (s *Server) writeForgeOAuthAppError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, forge.ErrOAuthAppExists):
@@ -327,6 +340,7 @@ func (s *Server) writeForgeOAuthAppError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, forge.ErrUnauthorized):
 		httpError(w, http.StatusBadRequest, "the token was rejected by the forge")
+	case writeForgeUpstreamError(w, err, "%v", err):
 	default:
 		httpError(w, http.StatusInternalServerError, "%v", err)
 	}

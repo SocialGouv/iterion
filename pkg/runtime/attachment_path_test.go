@@ -216,7 +216,7 @@ func TestResumeRebuildStateLoadsAttachments(t *testing.T) {
 	}, s, newStubExecutor())
 
 	cp := &store.Checkpoint{NodeID: "n"}
-	rs, cleanup, rbErr := e.resumeRebuildState(ctx, r, cp, map[string]map[string]any{}, map[string]int{})
+	rs, cleanup, rbErr := e.resumeRebuildState(ctx, r, cp, map[string]map[string]any{}, map[string]int{}, map[string]store.ArtifactRevisionRef{}, map[string]string{}, map[string]map[string]any{})
 	if rbErr != nil {
 		t.Fatalf("resumeRebuildState: %v", rbErr)
 	}

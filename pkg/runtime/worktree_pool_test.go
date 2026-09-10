@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -36,7 +37,7 @@ func poolWorkflow() *ir.Workflow {
 func parkWorktree(t *testing.T, s store.RunStore, repo, runID string) string {
 	t.Helper()
 	path := filepath.Join(s.Root(), "worktrees", runID)
-	mustRun(t, repo, "git", "worktree", "add", "--detach", path, "HEAD")
+	gittest.Run(t, repo, "worktree", "add", "--detach", path, "HEAD")
 	if _, err := s.CreateRun(context.Background(), runID, "wt-pool", nil); err != nil {
 		t.Fatalf("CreateRun(%s): %v", runID, err)
 	}

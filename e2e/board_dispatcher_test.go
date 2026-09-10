@@ -24,6 +24,7 @@ import (
 // dispatching issues onto the board: every issue created with state=ready
 // must trigger a dispatcher dispatch. The runner then closes the issue.
 func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
+	t.Parallel()
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
@@ -83,7 +84,7 @@ func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
 		func() bool {
 			list, _ := ns.List(native.ListFilter{})
 			for _, iss := range list {
-				st := ns.Board().StateByName(iss.State)
+				st := mustBoard(t, ns).StateByName(iss.State)
 				if st == nil || !st.Terminal || iss.Claim != "" {
 					return false
 				}
@@ -98,6 +99,7 @@ func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
 // default, non-eligible) and the dispatcher must NOT dispatch it. After
 // the bot moves the issue to `ready`, the next poll cycle picks it up.
 func TestBoardDispatcher_E2E_BotMovesIssueToReady(t *testing.T) {
+	t.Parallel()
 	c, ns, runner, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 
@@ -190,6 +192,7 @@ func TestBoardDispatcher_E2E_BotMovesIssueToReady(t *testing.T) {
 // missing board.create gets denied at boardops boundary — the same
 // gate the MCP transports enforce.
 func TestBoardDispatcher_E2E_CapabilityGate(t *testing.T) {
+	t.Parallel()
 	_, ns, _, cleanup := newDispatcherFixture(t, 50*time.Millisecond)
 	defer cleanup()
 

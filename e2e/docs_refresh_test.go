@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -73,7 +72,7 @@ func runDocsRefresh(t *testing.T, exec *scenarioExecutor, runID string) *store.R
 	t.Helper()
 	wf := compileFixtureStubSafe(t, "docs-refresh/main.bot")
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 	if err := eng.Run(context.Background(), runID, nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -87,6 +86,7 @@ func runDocsRefresh(t *testing.T, exec *scenarioExecutor, runID string) *store.R
 // TestDocsRefresh_ConvergesFirstPass: aligned + green scope gate on
 // pass 1 → one campaign pass, straight to the PR tail, done.
 func TestDocsRefresh_ConvergesFirstPass(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 1, hintCount: 1}
 	stubDocsRefresh(exec, st)
@@ -104,6 +104,7 @@ func TestDocsRefresh_ConvergesFirstPass(t *testing.T) {
 // the loop re-hints (fresh advisory report) and runs a second campaign
 // pass before converging.
 func TestDocsRefresh_ContinuesUntilAligned(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 2, hintCount: 1}
 	stubDocsRefresh(exec, st)
@@ -124,6 +125,7 @@ func TestDocsRefresh_ContinuesUntilAligned(t *testing.T) {
 // non-doc file on pass 1 — the deterministic scope gate fails the pass
 // and the campaign's second pass receives the violation in fail_log.
 func TestDocsRefresh_ScopeViolationRoutesBack(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 1, hintCount: 1} // claims aligned every pass
 	stubDocsRefresh(exec, st)
@@ -158,6 +160,7 @@ func TestDocsRefresh_ScopeViolationRoutesBack(t *testing.T) {
 // — nothing else. If someone re-introduces a scanner count
 // into the gate expression, this test fails.
 func TestDocsRefresh_HintsAreAdvisoryNeverGate(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 1, hintCount: 97}
 	stubDocsRefresh(exec, st)
@@ -177,6 +180,7 @@ func TestDocsRefresh_HintsAreAdvisoryNeverGate(t *testing.T) {
 // branch + author_rescan loop; the one adaptive agent covers it, exactly
 // as a native session handed "align the docs" would.
 func TestDocsRefresh_ZeroDocsRoutesToCampaign(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 1, hintCount: 0}
 	stubDocsRefresh(exec, st)
@@ -206,6 +210,7 @@ func TestDocsRefresh_ZeroDocsRoutesToCampaign(t *testing.T) {
 // its pass (full sweep vs delta-since-last-alignment). Guards the
 // incremental-mode wiring.
 func TestDocsRefresh_ModeWiredToCampaign(t *testing.T) {
+	t.Parallel()
 	exec := newScenarioExecutor()
 	st := &docsRefreshState{alignedBy: 1, hintCount: 1}
 	stubDocsRefresh(exec, st)
@@ -238,6 +243,7 @@ func TestDocsRefresh_ModeWiredToCampaign(t *testing.T) {
 // ABSENCE of the retired review/obligation/verify machinery and the
 // v3.4-removed noop cache / author_docs / mark-issue nodes.
 func TestDocsRefresh_Structural(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "docs-refresh/main.bot")
 
 	if wf.Entry != "scan_hints" {

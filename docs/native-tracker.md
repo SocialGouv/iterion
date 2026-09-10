@@ -360,11 +360,30 @@ would leak a slot with no bound.
 
 **Getting back to a fresh run.** A ticket's `last_run_id` pointer is what the
 dispatcher resumes on the next dispatch (`resolveRunID` → `resumableRunID`),
-so a run that died in a way resuming cannot fix keeps being resumed. Drop the
-pointer with `iterion issue update <id> --clear-last-run` — the next dispatch
-mints a new run from the workflow entry instead. The run *history*
-(`Issue.runs`) is kept: those runs happened, and their consoles are the
-evidence.
+so a run that died in a way resuming cannot fix keeps being resumed — and
+plain **Retry** does not change that: it only restages the ticket, and
+whoever claims it decides what "retry" meant (the studio's admission loop
+mints a fresh run; a live `iterion dispatch` resumes the dead one).
+
+Two surfaces drop the pointer, and both keep the run *history*
+(`Issue.runs`) — those runs happened, and their consoles are the evidence:
+
+- **⋯ → Retry from zero** on the card (`POST
+  /api/v1/pipeline-board/tasks/{id}/reset` with `{"fresh": true}`) — the
+  board answer, offered wherever Retry is once the run has settled. It
+  cancels the tree, drops the pointer, then restages, so both launch
+  authorities can only mint a new run.
+- `iterion issue update <id> --clear-last-run` — the CLI equivalent, for a
+  ticket you are already driving from a terminal.
+
+Both **refuse while a run is still going**, and for the same reason: the
+pointer is also the sibling guard, so dropping it beside a live run lets a
+second one start on the same ticket. `fresh` refuses *before* its cancel
+sweep — nothing is cancelled, nothing is restaged, and the 409 names the run
+— which keeps it out of the window Reset's pin exists to close (Reset pins a
+still-dying run as the current attempt precisely so the relaunch waits for
+it). `fresh` reads the whole run **tree**; `--clear-last-run` reads the
+pointer run only.
 
 **Closing a pipeline.** `Close` (⋯ menu, every non-terminal lane) cancels
 everything still alive under the card and files the ticket as **abandoned**
@@ -464,7 +483,7 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 | `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
 | `/api/v1/pipeline-board/tasks/{id}` | DELETE | Delete a ticket (issue only, never a run); 409 while any run in its tree is active |
-| `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready |
+| `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready. Optional body `{"fresh": true}` (⋯ → *Retry from zero*) also drops `last_run_id` before restaging, so no launch authority can resume the discarded run; refused with 409 — before the sweep, nothing touched — while any run in the tree is non-terminal |
 | `/api/v1/pipeline-board/tasks/{id}/close` | POST | Cancel the ticket's tree and file it terminal (`blocked`, never `done`); also clears a dispatcher give-up stamp — Close is the acknowledgement |
 | `/api/v1/pipeline-board/tasks/{id}/dependency-graph` | GET | Limited-depth hard-dep graph (also `GET /api/v1/native/issues/{id}/dependency-graph`) |
 | `/api/v1/pipeline-board/bulk/ready` | POST | `{ids?\|family_id?\|pipeline_kind?}` stage many tickets Ready (skip open blockers by default) |
@@ -560,9 +579,25 @@ if err != nil { return err }
 iss, err := s.Create(native.Issue{Title: "do a thing", State: "ready"})
 list, err := s.List(native.ListFilter{States: []string{"ready"}})
 _, err = s.SetState(iss.ID, "in_progress")
-err = s.Claim(iss.ID, "worker-1")
-err = s.Release(iss.ID, "worker-1")
+tok, err := s.Claim(iss.ID, "worker-1") // returns a fenced ClaimToken + lease
+err = s.RenewClaim(iss.ID, tok)         // heartbeat the lease while working
+err = s.ReleaseOwned(iss.ID, tok)       // fenced release
 ```
+
+`Claim` stamps a **lease** (`claim_lease_until`) and a fencing
+`claim_epoch`, returning the `tracker.ClaimToken` every owner-scoped
+write (`SetStateOwned` / `SetLastRunOwned` / `SetAwaitingInputOwned` /
+`SetGaveUpOwned` / `ReleaseOwned` / `RenewClaim`) must present — a
+compare-and-set on `(claim, claim_epoch)`, so a worker whose claim was
+stolen finds its late writes refused (`tracker.ErrClaimConflict`). The
+tokenless `Release` and `SetState` remain for callers acting on
+**unclaimed** cards. The claim watchdog (ADR-096) reclaims expired leases
+by transfer; see the dispatcher doc's *Claim lease + watchdog* section.
+
+Terminal board states are **sinks**: `SetState` refuses to leave one
+(`tracker.ErrTerminalStateExit`, which wraps `ErrTransitionRejected`).
+`Reopen(id, toState)` is the one sanctioned exit (operator surfaces);
+`SetStateFrom(id, from, to)` is the CAS move for automated writers.
 
 To plug it into the dispatcher's `Tracker` interface:
 

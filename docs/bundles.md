@@ -89,7 +89,7 @@ my-bot/
 | `main.bot`        | The workflow source. Must live at the bundle root. |
 | `manifest.yaml`   | Bundle metadata (name, version, schema_version, optional `attachments:` map). Optional. |
 | `skills/`         | Claude Code skills. Mirrored into `<workDir>/.claude/skills/` at run time. Workspace files always win on collision (warn-logged). |
-| `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. |
+| `prompts/`        | Reusable `.md` prompts. Each file is auto-registered with name equal to the filename stem — `prompts/helper.md` makes `system: helper` resolvable from `main.bot`. Workflow-declared prompts always win on collision. An `{{include "x.md"}}` inside one resolves next to that file, inside `prompts/`. |
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
 | `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 
@@ -122,6 +122,10 @@ description: One-liner.
 author: Your Name <you@example.com>
 schema_version: 1         # required; iterion refuses unknown versions
 
+# Optional: the engine this bundle needs (see below)
+requires:
+  iterion: ">= 3.112.14"
+
 # Optional: map workflow attachment names → files inside attachments/
 attachments:
   logo: branding/logo.png
@@ -136,6 +140,64 @@ compat:
 The current schema version is **1**. Bundles that omit `schema_version`
 are treated as v1. iterion refuses any other value with an explicit
 upgrade hint.
+
+### `requires:` — the engine contract
+
+A bundle and the engine that evaluates it travel separately: a bundle is
+pushed or checked out in a second, an engine is installed or deployed. When
+the bundle uses something the engine does not have, the workflow **compiles**
+— a call to an unknown builtin parses generically — and dies at its first
+evaluation. Measured 2026-09-06: a bot pushed as a platform override used the
+variadic `min`/`max` of a newer release while the runners ran an older image;
+the run failed at `compute "delivery_reserve"` and auto-resumed in a loop.
+
+`requires:` is the declaration that closes it. One key today:
+
+```yaml
+requires:
+  iterion: ">= 3.112.14"    # or a bare "3.112.14" — the operator is optional
+```
+
+The grammar is deliberately total: `>=` (or nothing) followed by a dotted
+numeric version with an optional leading `v`. **Every other shape is a
+manifest parse error** — `< 1.2`, `^1.2`, `~> 1.2`, `== 1.2`, `1.2-rc1` — and
+so is an unknown key under `requires:` (the manifest decoder is strict). A
+requirement iterion cannot read is never a requirement iterion ignores; a
+build too old to know the key refuses the whole manifest rather than dropping
+the contract.
+
+It is a version FLOOR rather than a feature list because the only channel a
+deployment has to its runners is a version string — the build each runner
+stamps on the runs it executes. The cost is named: a fork or a backport
+carrying the feature under a different version reads as too old, and a build
+with no orderable version (`dev`, a fork's scheme) makes the check
+*inconclusive*, which is reported, never passed in silence.
+
+Four surfaces honour it, all through the same predicate
+(`bundle.CheckManifestEngine`):
+
+| Surface | Behaviour |
+|---|---|
+| `iterion validate` | **C250** (error) when unmet, **C251** (warning) when this build carries no orderable version |
+| `iterion remote admin bots push` (and any bot-source write) | **409** naming the floor and where it came from; `--force` pushes anyway and the response carries the overridden requirement as a warning |
+| `iterion run` / `resume`, studio, dispatcher, subbot children | refused before a worktree or sandbox is created; run ends `failed` with `BOT_REQUIRES_NEWER_ENGINE` |
+| cloud runner | refused before the first node; run ends `failed` (never `failed_resumable`) with `BOT_REQUIRES_NEWER_ENGINE`, the delivery is **acked** so no redelivery repeats the same arithmetic |
+
+The push guard's floor is the **minimum** of the server's own build and every
+runner build observed on runs in the last 7 days (`Run.runner_version`) — a
+queued run lands on whichever pod takes it, and the server is the half that
+compiles the bot.
+
+**Where the contract is deliberately NOT enforced.** Installing or packing a
+bundle for an engine you do not have yet is legitimate — you install, then
+upgrade — so `iterion bundle pack`, `iterion marketplace install` and
+`botinstall` (a `.botz` from a URL or a local path) do not check it; the launch
+and `iterion validate` do. The cloud **publisher** does not check it either:
+during a rolling deploy the fleet is mixed, and the publisher's floor (a
+minimum across pods) would refuse a run that the pod actually taking it could
+serve. The runner decides against its OWN build, which is exact. What every
+path shares is the manifest decoder: a `requires:` block iterion cannot read
+refuses the bundle wherever it is opened.
 
 ## Determinism
 

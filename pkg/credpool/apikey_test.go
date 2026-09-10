@@ -25,6 +25,9 @@ func (h *harness) donorKey(t *testing.T, userID, provider string, lim Limits, mu
 	if err := h.apiKeys.Create(ctx, secrets.ApiKey{
 		ID: keyID, TenantID: "team-1", ScopeTeamID: "team-1", ScopeUserID: userID,
 		Provider: secrets.Provider(provider), Name: "lent", SealedSecret: sealed,
+		// Stamped the way the create endpoint stamps it, so a grant's
+		// fingerprint can be compared to what the runner derives.
+		Fingerprint: secrets.FingerprintSHA256("sk-real-" + userID),
 	}); err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
@@ -222,5 +225,29 @@ func TestCredentialSource_metered(t *testing.T) {
 	}
 	if (CredentialSource("nonsense")).Valid() {
 		t.Error("an unknown source was accepted")
+	}
+}
+
+// A lent key must hand back the donor's own audit identity, exactly like a
+// lent subscription does. Without it the grant's fingerprint is empty and
+// every surface that names the credential — the GRANTED line, the run-doc
+// stamp, the donor's ledger — has to re-derive it from the plaintext or
+// name nothing at all (#629 pt 3).
+func TestAcquire_lentAPIKeyCarriesTheDonorsFingerprint(t *testing.T) {
+	h := newHarness(t)
+	_, keyID := h.donorKey(t, "alice", "anthropic", Limits{MaxUSDPerDay: 5})
+	k, err := h.apiKeys.GetOwned(context.Background(), keyID, "alice")
+	if err != nil {
+		t.Fatalf("read back the seeded key: %v", err)
+	}
+	if k.Fingerprint == "" {
+		t.Fatal("the fixture must stamp a fingerprint, or this proves nothing")
+	}
+	grant, err := h.broker.Acquire(context.Background(), h.wantKey("run-1", "anthropic"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if grant.Fingerprint != k.Fingerprint {
+		t.Fatalf("grant fingerprint = %q, want the donor key's %q", grant.Fingerprint, k.Fingerprint)
 	}
 }

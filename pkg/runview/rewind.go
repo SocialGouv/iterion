@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -119,8 +120,14 @@ type RewindSpec struct {
 	// an edited edge or shared prompt has no obvious answer at all.
 	//
 	// Requires the run to carry Run.WorkflowSource (captured at launch).
-	// An explicit NodeID always wins.
+	// An explicit NodeID always wins. Auto implicitly acknowledges
+	// source-derived contract differences for this rewind because detecting a
+	// source edit is its purpose; the subsequent resume still requires Force.
 	Auto bool
+	// Force acknowledges that retained artifacts may have source-derived
+	// contract metadata from the workflow revision being repaired. Persisted
+	// version and dependency integrity are still enforced.
+	Force bool
 	// KeepFiles opts OUT of restoring the workspace.
 	//
 	// Deprecated: it is exactly RestoreScope == RestoreScopeNone, and is
@@ -295,7 +302,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if sourcePath == "" {
 		return nil, fmt.Errorf("runview: rewind: run %s has no workflow source path — pass one explicitly", spec.RunID)
 	}
-	wf, err := CompileWorkflow(sourcePath)
+	wf, currentRevision, err := CompileWorkflowWithHash(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow %s (needed to resolve what is downstream of %q): %w",
 			sourcePath, spec.NodeID, err)
@@ -305,6 +312,20 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	executed := map[string]bool{}
 	for id := range cp.Outputs {
 		executed[id] = true
+	}
+	// Branch outputs have not reached cp.Outputs before convergence. Include
+	// every durable branch cursor so an in-flight body node is a valid explicit
+	// or --auto pivot; fanOutRouterFor below still promotes it to the router and
+	// applyRewind discards the whole Parallel checkpoint before replay.
+	if cp.Parallel != nil {
+		for _, branch := range cp.Parallel.Branches {
+			if branch == nil {
+				continue
+			}
+			for id := range branch.Outputs {
+				executed[id] = true
+			}
+		}
 	}
 	if cp.NodeID != "" {
 		executed[cp.NodeID] = true
@@ -338,7 +359,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// proof enough that its router did.
 	if !executed[pivot] {
 		return nil, fmt.Errorf("%w: %q (reached: %s)",
-			ErrRewindNodeNotReached, pivot, joinSorted(mapKeys(cp.Outputs)))
+			ErrRewindNodeNotReached, pivot, joinSorted(setKeys(executed)))
 	}
 	// A pivot inside a fan-out body is promoted to the router that
 	// orchestrates it. The checkpoint keeps one output per node id, so N
@@ -359,6 +380,30 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	dropped, invalidated := downstreamOf(wf, pivot, cp.Outputs)
 	fromNode := cp.NodeID
 
+	// Validate only the artifacts that survive this rewind. Checking the
+	// pivot/downstream artifacts would make a changed publish name or schema
+	// block the very recovery operation that tombstones them. Retained
+	// artifacts still fail closed under enforce unless the operator supplied
+	// the explicit source-change override.
+	ignoredArtifacts := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		ignoredArtifacts[id] = true
+	}
+	// applyRewind always discards the in-flight parallel invocation. Validate
+	// the checkpoint that will actually survive, otherwise a branch removed by
+	// the edited workflow can block the operation on provenance that is about
+	// to be deleted. Retained trunk revisions remain fail-closed.
+	validationRun := *run
+	validationCheckpoint := *cp
+	validationCheckpoint.Parallel = nil
+	validationRun.Checkpoint = &validationCheckpoint
+	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, &validationRun, ignoredArtifacts); err != nil {
+		return nil, err
+	}
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, &validationRun, wf, currentRevision, spec.Force || autoTargeted, ignoredArtifacts); err != nil {
+		return nil, err
+	}
+
 	// Claim the run BEFORE touching anything, the workspace included. The
 	// CAS exists to make a concurrent resume safe; reverting first defeats
 	// it, because the restore would already have run inside a workspace an
@@ -367,12 +412,17 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// leaves engine state untouched" — holds here too: `cancelled`
 	// preserves the checkpoint, so a revert failure after the claim leaves
 	// a resumable run carrying its pre-rewind state.
-	claimed, err := s.store.UpdateRunStatusIf(ctx, run.ID, store.RunStatusCancelled, "", rewindableStatuses)
-	if err != nil {
+	// Claim the exact document we inspected, not merely a status shared by
+	// several attempts. The successful save advances run.CASVersion for the
+	// final write, so a concurrent cancel/resume or metadata edit is detected.
+	run.Status = store.RunStatusCancelled
+	run.Error = ""
+	run.FailureCode = ""
+	now := time.Now().UTC()
+	run.UpdatedAt = now
+	run.FinishedAt = &now
+	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("claim run for rewind: %w", err)
-	}
-	if !claimed {
-		return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 	}
 
 	scope := spec.RestoreScope
@@ -391,7 +441,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// but write the artifacts AFTER. WriteArtifact updates
 	// Run.ArtifactIndex inside run.json, so writing first and saving the
 	// run second would clobber that index with our stale in-memory copy.
-	tombstones := s.planArtifactTombstones(ctx, run.ID, cp, dropped)
+	tombstones := s.planArtifactTombstones(ctx, run.ID, cp, invalidated)
 
 	// Release the subbot child pointers of the dropped nodes. Without
 	// this the rewind is silently a no-op for subbots: ReattachSubbotChild
@@ -411,7 +461,8 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// without those refs (ADR-089).
 	dropSessionRefs, dropPauseRef := collectDroppedSessionRefs(cp, dropped, invalidated)
 
-	applyRewind(cp, pivot, dropped, invalidated)
+	applyRewind(cp, wf, pivot, dropped, invalidated)
+	runtime.CompactCheckpointArtifactValues(cp)
 	for _, ts := range tombstones {
 		// The engine writes a node's next artifact at
 		// ArtifactVersions[node] and then increments
@@ -421,32 +472,26 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		cp.ArtifactVersions[ts.nodeID] = ts.version + 1
 	}
 
+	retiredCorrections := retireOutputCorrections(run, invalidated, time.Now().UTC())
 	run.Status = store.RunStatusCancelled
-	// Clear the stale failure message: the run is no longer "failed at
-	// verify", it is parked at the pivot awaiting a fresh execution.
+	// Clear the stale failure message AND its typed code: the run is no
+	// longer "failed at verify", it is parked at the pivot awaiting a
+	// fresh execution — a synthetic parking carries no failure
+	// classification (ADR-095), and SaveRun below is a full-document
+	// overwrite that would otherwise resurrect the pre-claim code.
 	run.Error = ""
+	run.FailureCode = ""
 	run.Checkpoint = cp
 	run.UpdatedAt = time.Now().UTC()
-	// Re-apply the stamp the claim performed. `run` was loaded BEFORE the
-	// CAS, and UpdateRunStatusIf mutates its own copy (loadRunRaw →
-	// applyStatusTransition), which sets FinishedAt for the `cancelled`
-	// transition. SaveRun is a full-document overwrite, so saving `run`
-	// verbatim drops it whenever the pre-rewind status was paused_* or
-	// queued — where FinishedAt was nil. The run then persists as
-	// cancelled with finished_at null, nothing heals it (healRun only
-	// nulls it for `running`), and the studio duration ticker runs
-	// forever because runs_stats falls back to now for the end.
-	//
-	// Same read-modify-write-across-a-CAS hazard this branch already fixed
-	// on the resume path (restampWorkflowSource).
-	finishedAt := run.UpdatedAt
-	run.FinishedAt = &finishedAt
+	// The claim stamped FinishedAt and advanced the version. SaveRun refuses
+	// if another writer changed the run while the rewind was being prepared.
+
 	if err := s.store.SaveRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("save rewound run: %w", err)
 	}
-	if err := s.store.SaveCheckpoint(ctx, run.ID, cp); err != nil {
-		return nil, fmt.Errorf("save rewound checkpoint: %w", err)
-	}
+	// SaveRun includes the checkpoint in its version-checked replacement.
+	// A second, unconditional SaveCheckpoint would overwrite an engine
+	// checkpoint written by a resume that starts after this save.
 	if bss := store.AsBackendSessionStore(s.store); bss != nil {
 		for _, ref := range dropSessionRefs {
 			_ = bss.DeleteBackendSession(ctx, run.ID, ref)
@@ -489,17 +534,18 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		RunID:  run.ID,
 		NodeID: pivot,
 		Data: map[string]any{
-			"from_node":            fromNode,
-			"to_node":              pivot,
-			"dropped_nodes":        dropped,
-			"tombstoned_artifacts": tombstoned,
-			"orphaned_child_runs":  orphaned,
-			"promoted_from":        promotedFrom,
-			"files_reverted":       files.Reverted,
-			"files_ref":            files.Ref,
-			"files_revert_commit":  files.RevertCommit,
-			"files_backup_ref":     files.BackupRef,
-			"files_skip_reason":    files.SkipReason,
+			"from_node":                  fromNode,
+			"to_node":                    pivot,
+			"dropped_nodes":              dropped,
+			"tombstoned_artifacts":       tombstoned,
+			"orphaned_child_runs":        orphaned,
+			"retired_output_corrections": retiredCorrections,
+			"promoted_from":              promotedFrom,
+			"files_reverted":             files.Reverted,
+			"files_ref":                  files.Ref,
+			"files_revert_commit":        files.RevertCommit,
+			"files_backup_ref":           files.BackupRef,
+			"files_skip_reason":          files.SkipReason,
 			// The audit trail has to answer "what did that rewind take
 			// from me". A remote or agent-driven rewind never sees the
 			// CLI's stderr, so counts that live only in the printer are
@@ -542,6 +588,35 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}, nil
 }
 
+// retireOutputCorrections removes correction episodes owned by nodes whose
+// execution is explicitly discarded. Keeping those terminal ledgers live
+// would make the replay inherit an exhausted/unchanged verdict from the old
+// execution. The archived copy preserves paid-call accounting and diagnostics.
+func retireOutputCorrections(run *store.Run, invalidated []string, retiredAt time.Time) int {
+	if run == nil || len(run.OutputCorrections) == 0 || len(invalidated) == 0 {
+		return 0
+	}
+	nodes := make(map[string]bool, len(invalidated))
+	for _, nodeID := range invalidated {
+		nodes[nodeID] = true
+	}
+	keys := make([]string, 0, len(run.OutputCorrections))
+	for key, episode := range run.OutputCorrections {
+		if nodes[episode.NodeID] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		episode := run.OutputCorrections[key]
+		episode.RetiredAt = &retiredAt
+		episode.RetiredReason = "rewind"
+		run.OutputCorrectionHistory = append(run.OutputCorrectionHistory, episode)
+		delete(run.OutputCorrections, key)
+	}
+	return len(keys)
+}
+
 // applyRewind mutates cp in place: re-anchor on nodeID and invalidate
 // the dropped nodes' state.
 //
@@ -558,15 +633,186 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 //     what the re-execution should rebuild from. Downstream keys are
 //     cleared with the dropped nodes. A graph edit that invalidates the
 //     pivot's identities is handled at resolve time (untracked fallback).
-func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []string) {
+func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
+	// From this point the checkpoint's (possibly empty) revision map is an
+	// explicit post-rewind snapshot. Do not let a later resume resurrect
+	// invalidated producers through the run-level ArtifactIndex fallback.
 	if cp.ArtifactVersions == nil {
 		cp.ArtifactVersions = map[string]int{}
 	}
 	for _, id := range dropped {
-		delete(cp.Outputs, id)
 		delete(cp.SelectedIncoming, id)
 	}
+	if !cp.ArtifactsKnown {
+		cp.Artifacts = make(map[string]map[string]any)
+		cp.ArtifactOwners = make(map[string]string)
+		nodeIDs := make([]string, 0, len(cp.Outputs))
+		for id := range cp.Outputs {
+			nodeIDs = append(nodeIDs, id)
+		}
+		sort.Strings(nodeIDs)
+		for _, id := range nodeIDs {
+			if node, present := wf.Nodes[id]; present {
+				if logicalRef := ir.NodePublish(node); logicalRef != "" {
+					cp.Artifacts[logicalRef] = cp.Outputs[id]
+					cp.ArtifactOwners[logicalRef] = id
+				}
+			}
+		}
+		newestRevision := make(map[string]int)
+		for _, revision := range cp.ArtifactRevisions {
+			if version, present := newestRevision[revision.NodeID]; !present || revision.Version > version {
+				newestRevision[revision.NodeID] = revision.Version
+			}
+		}
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			// Outputs contains only the producer's newest value. Older logical
+			// aliases require their immutable body and cannot safely be rebuilt
+			// from that value during a legacy rewind.
+			if revision.Version != newestRevision[revision.NodeID] {
+				continue
+			}
+			if output, present := cp.Outputs[revision.NodeID]; present {
+				cp.Artifacts[logicalRef] = output
+				cp.ArtifactOwners[logicalRef] = revision.NodeID
+				revision.Unverified = true
+				cp.ArtifactRevisions[logicalRef] = revision
+			}
+		}
+	} else {
+		if cp.Artifacts == nil {
+			cp.Artifacts = make(map[string]map[string]any)
+		}
+		if cp.ArtifactOwners == nil {
+			cp.ArtifactOwners = make(map[string]string)
+		}
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			if _, present := cp.Artifacts[logicalRef]; present && cp.ArtifactOwners[logicalRef] == "" {
+				cp.ArtifactOwners[logicalRef] = revision.NodeID
+			}
+		}
+		nodeIDs := make([]string, 0, len(cp.Outputs))
+		for id := range cp.Outputs {
+			nodeIDs = append(nodeIDs, id)
+		}
+		sort.Strings(nodeIDs)
+		publisherOwners := make(map[string]string)
+		ambiguousPublishers := make(map[string]bool)
+		for _, id := range nodeIDs {
+			if node, present := wf.Nodes[id]; present {
+				logicalRef := ir.NodePublish(node)
+				if logicalRef == "" {
+					continue
+				}
+				if publisherOwners[logicalRef] != "" {
+					ambiguousPublishers[logicalRef] = true
+					continue
+				}
+				publisherOwners[logicalRef] = id
+			}
+		}
+		for logicalRef, owner := range publisherOwners {
+			if _, exposed := cp.Artifacts[logicalRef]; exposed && cp.ArtifactOwners[logicalRef] == "" && !ambiguousPublishers[logicalRef] {
+				cp.ArtifactOwners[logicalRef] = owner
+			}
+		}
+		// A short-lived checkpoint format persisted artifact values before it
+		// persisted ownership. Recover only unique value matches while all node
+		// outputs are still present, so invalidation cannot retain a stale value.
+		for logicalRef, artifact := range cp.Artifacts {
+			if cp.ArtifactOwners[logicalRef] != "" {
+				continue
+			}
+			owner := ""
+			matches := 0
+			for id, output := range cp.Outputs {
+				if !runtime.ArtifactValuesEqual(artifact, output) {
+					continue
+				}
+				matches++
+				if matches > 1 {
+					break
+				}
+				owner = id
+			}
+			if matches == 1 {
+				cp.ArtifactOwners[logicalRef] = owner
+			}
+		}
+	}
+	invalidatedNodes := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		invalidatedNodes[id] = true
+	}
+	removedLogicalRefs := make(map[string]bool)
+	// If a compatibility checkpoint has neither ownership nor exact revision
+	// metadata, duplicate output values make ownership inference ambiguous. A
+	// value that could have come from an invalidated node must be discarded:
+	// keeping it would let resume re-attribute stale work to a retained node.
+	for logicalRef, artifact := range cp.Artifacts {
+		if cp.ArtifactOwners[logicalRef] != "" {
+			continue
+		}
+		if _, exact := cp.ArtifactRevisions[logicalRef]; exact {
+			continue
+		}
+		for _, id := range invalidated {
+			output, present := cp.Outputs[id]
+			if !present || !runtime.ArtifactValuesEqual(artifact, output) {
+				continue
+			}
+			delete(cp.Artifacts, logicalRef)
+			delete(cp.ArtifactOwners, logicalRef)
+			delete(cp.ArtifactRevisions, logicalRef)
+			removedLogicalRefs[logicalRef] = true
+			break
+		}
+	}
+	for logicalRef, owner := range cp.ArtifactOwners {
+		if invalidatedNodes[owner] {
+			delete(cp.Artifacts, logicalRef)
+			delete(cp.ArtifactOwners, logicalRef)
+			removedLogicalRefs[logicalRef] = true
+		}
+	}
+	for _, id := range invalidated {
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			if revision.NodeID == id {
+				delete(cp.Artifacts, logicalRef)
+				delete(cp.ArtifactOwners, logicalRef)
+				delete(cp.ArtifactRevisions, logicalRef)
+				removedLogicalRefs[logicalRef] = true
+			}
+		}
+	}
+	for _, id := range dropped {
+		delete(cp.Outputs, id)
+	}
+	// If the invalidated node shadowed another retained publisher of the same
+	// logical artifact, expose the surviving upstream value for the replay.
+	// Its physical revision is unknown because the checkpoint stores only the
+	// selected binding, so ownership is restored without inventing provenance.
+	retainedNodeIDs := make([]string, 0, len(cp.Outputs))
+	for id := range cp.Outputs {
+		retainedNodeIDs = append(retainedNodeIDs, id)
+	}
+	sort.Strings(retainedNodeIDs)
+	for _, id := range retainedNodeIDs {
+		node, present := wf.Nodes[id]
+		if !present {
+			continue
+		}
+		logicalRef := ir.NodePublish(node)
+		if logicalRef == "" || !removedLogicalRefs[logicalRef] {
+			continue
+		}
+		cp.Artifacts[logicalRef] = cp.Outputs[id]
+		cp.ArtifactOwners[logicalRef] = id
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	cp.ArtifactRevisionsKnown = true
+	cp.ArtifactsKnown = true
 	// Recovery budgets clear over the UNFILTERED set: a node that failed
 	// has attempts recorded and no output, so keying this on `dropped`
 	// would leave the budget of the very node that failed untouched.
@@ -582,6 +828,11 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	// asked.
 	cp.InteractionID = ""
 	cp.InteractionQuestions = nil
+	// A pivot inside a fan-out is promoted to its router so every branch is
+	// replayed as one unit. Keeping its durable branch cursors would turn that
+	// replay into an immediate cache hit (and could retain an obsolete human
+	// interaction), so rewind always starts a fresh parallel invocation.
+	cp.Parallel = nil
 	// Drop backend rehydration so the pivot restarts from a clean
 	// conversation. Fork pins these from a turn checkpoint because it
 	// resumes mid-turn; a rewind wants the node re-run from scratch
@@ -589,6 +840,7 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	// carry the very context the operator is trying to change.
 	cp.BackendName = ""
 	cp.BackendSessionID = ""
+	cp.BackendSessionFingerprint = ""
 	cp.BackendConversation = nil
 	cp.BackendPendingToolUseID = ""
 	cp.BackendSessionStateRef = ""
@@ -681,7 +933,7 @@ type artifactTombstone struct {
 	supersedes int
 }
 
-// planArtifactTombstones decides which dropped nodes have a published
+// planArtifactTombstones decides which invalidated nodes have a published
 // artifact that must be superseded, and reserves the version each marker
 // will occupy.
 //
@@ -694,9 +946,9 @@ type artifactTombstone struct {
 // already invalidated. Appending a marker version fixes that while
 // keeping every earlier version on disk and readable, which is the same
 // append-only contract events.jsonl follows.
-func (s *Service) planArtifactTombstones(ctx context.Context, runID string, cp *store.Checkpoint, dropped []string) []artifactTombstone {
+func (s *Service) planArtifactTombstones(ctx context.Context, runID string, cp *store.Checkpoint, invalidated []string) []artifactTombstone {
 	var out []artifactTombstone
-	for _, id := range dropped {
+	for _, id := range invalidated {
 		latest, err := s.store.LoadLatestArtifact(ctx, runID, id)
 		if err != nil || latest == nil {
 			// No artifact published by this node — nothing to supersede.
@@ -861,10 +1113,12 @@ func joinStatuses(ss []store.RunStatus) string {
 	return strings.Join(out, ", ")
 }
 
-func mapKeys(m map[string]map[string]any) []string {
+func setKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+	for k, present := range m {
+		if present {
+			out = append(out, k)
+		}
 	}
 	return out
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
@@ -116,7 +117,12 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: bot is required")
 		return
 	}
-	entry, found, err := s.findBot(req.Bot)
+	// The card's bot resolves through the tier that will SERVE its launch —
+	// the same team the board itself was selected from. A check answering
+	// from the baked catalog alone refuses a bot only this team authored
+	// (no path exists for it) and admits a fork's origin in its place.
+	caller, _ := auth.FromContext(r.Context())
+	bot, found, err := s.resolvePipelineBot(r.Context(), caller.TeamID, req.Bot)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: discover bot: %v", err)
 		return
@@ -125,11 +131,18 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board task: bot %q not found", req.Bot)
 		return
 	}
-	if req.Start && !entry.Enabled {
-		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: bot %q is disabled", entry.Name)
+	// The bundle was materialized to prove the card is launchable; nothing
+	// past this point runs it.
+	defer bot.Launch.Cleanup()
+	if req.Start && !bot.Enabled {
+		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: bot %q is disabled", bot.Name)
 		return
 	}
-	board := boardStore.Board()
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: read board: %v", err)
+		return
+	}
 	if board == nil || len(board.States) == 0 {
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: native board has no states")
 		return
@@ -140,14 +153,14 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 
 	// Upsert: planners re-run without duplicating tickets for the same request file.
 	if req.Upsert {
-		if bot, inputPath, ok := native.UpsertKey(entry.Name, botArgs); ok {
-			existing, ferr := native.FindByBotInputPath(boardStore, bot, inputPath)
+		if upsertBot, inputPath, ok := native.UpsertKey(bot.Name, botArgs); ok {
+			existing, ferr := native.FindByBotInputPath(boardStore, upsertBot, inputPath)
 			if ferr != nil {
 				s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: upsert lookup: %v", ferr)
 				return
 			}
 			if existing != nil {
-				issue, uerr := s.upsertPipelineTask(boardStore, board, existing, req, entry.Name, botArgs, blockers)
+				issue, uerr := s.upsertPipelineTask(boardStore, board, existing, req, bot.Name, botArgs, blockers)
 				if uerr != nil {
 					if strings.Contains(uerr.Error(), "cycle") {
 						s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: %v", uerr)
@@ -223,7 +236,7 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		State:    state,
 		Labels:   append([]string(nil), req.Labels...),
 		Priority: req.Priority,
-		Bot:      entry.Name,
+		Bot:      bot.Name,
 		BotArgs:  cloneStringMap(req.BotArgs),
 		External: req.External,
 	}
@@ -351,23 +364,32 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		patch.Title = &title
 	}
 	if req.Bot != nil {
-		bot := strings.TrimSpace(*req.Bot)
+		name := strings.TrimSpace(*req.Bot)
 		// An empty bot would silently unbind the ticket — it then never
 		// launches and folds into Backlog with no UX to recover. Creation
 		// already rejects a missing bot; the patch must too (unbinding, if
 		// ever wanted, should be an explicit operation, not a blank field).
-		if bot == "" {
+		if name == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: bot cannot be empty")
 			return
 		}
-		if _, found, ferr := s.findBot(bot); ferr != nil {
+		// Same tier order as the create check and the launch: a re-binding
+		// this lane refuses is one the launch would have served.
+		caller, _ := auth.FromContext(r.Context())
+		bot, found, ferr := s.resolvePipelineBot(r.Context(), caller.TeamID, name)
+		if ferr != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: discover bot: %v", ferr)
 			return
-		} else if !found {
-			s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board update: bot %q not found", bot)
+		}
+		if !found {
+			s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board update: bot %q not found", name)
 			return
 		}
-		patch.Bot = &bot
+		bot.Launch.Cleanup()
+		// Record the canonical name, as creation does: the two write the
+		// same field and a card must not read differently for having been
+		// re-bound rather than created.
+		patch.Bot = &bot.Name
 	}
 	if req.Blockers != nil {
 		normalized := native.NormalizeBlockers(*req.Blockers)
@@ -424,10 +446,15 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board ready: invalid request: %v", err)
 		return
 	}
+	board, err := boardStore.Board()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: read board: %v", err)
+		return
+	}
 	// Unstage → backlog (prefer StateBacklog; StateInbox is the historical
 	// unstage target for boards that still use it as the first column).
 	target := native.StateBacklog
-	if board := boardStore.Board(); board != nil && board.StateByName(target) == nil {
+	if board != nil && board.StateByName(target) == nil {
 		target = native.StateInbox
 	}
 	if req.Ready {
@@ -438,7 +465,7 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		}
 		ok, open := native.BlockersSatisfiedForIssue(boardStore, iss)
 		if !ok {
-			if board := boardStore.Board(); board != nil && board.StateByName(native.StateWaitingDeps) != nil {
+			if board != nil && board.StateByName(native.StateWaitingDeps) != nil {
 				target = native.StateWaitingDeps
 			} else {
 				s.writeJSONError(w, r, http.StatusConflict, map[string]any{
@@ -452,7 +479,7 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 			target = native.StateReady
 		}
 	}
-	issue, err := boardStore.SetState(id, target)
+	issue, err := native.SetStateOrReopen(boardStore, id, target)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: set state: %v", err)
 		return

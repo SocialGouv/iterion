@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/brand"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -124,7 +125,19 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 			httpError(w, http.StatusBadRequest, "the token was rejected by %s — check it has api scope", provider)
 			return
 		}
-		httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
+		if !writeForgeUpstreamError(w, err, "could not reach %s: %v", provider, err) {
+			// Safe default, and this one IS clean — traced, not assumed.
+			// The client is a plain bearer built above from the pasted
+			// token (forgeAdminForToken, which has its own 400 arm), so
+			// there is no seal to open and no App JWT to sign lazily on
+			// the first call — the way an App client fails locally inside
+			// what looks like a round-trip (see newIterionFault's doc).
+			// WhoAmI is therefore the only thing that can fail here, and
+			// it must succeed BEFORE any store write. An error the
+			// classifier does not name yet is still an unreachable forge
+			// — never iterion's own state — so 502 is the true code.
+			httpError(w, http.StatusBadGateway, "could not reach %s: %v", provider, err)
+		}
 		return
 	}
 	connID := uuid.NewString()
@@ -137,7 +150,7 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 	conn := forge.Connection{
 		ID: connID, TenantID: teamID, Provider: provider, Kind: forge.KindPAT,
 		DisplayName: strutil.FirstNonBlank(req.DisplayName, ident.Login), ForgeBaseURL: baseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -146,6 +159,25 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		return
 	}
 	s.auditTenant(r, teamID, "forge.connection.created", "forge_connection", connID, map[string]any{"provider": provider, "kind": "pat"})
+	if ident.Kind == forge.AccountKindBot && !s.cfg.DisableForgeBrandAvatar {
+		// A bot identity gets the iterion-bot face the moment it is wired: the
+		// account exists for iterion (a group/project token created for it),
+		// and every comment it will post is signed by that avatar. A failure
+		// is recorded on the connection (AvatarError) and never fails the
+		// connect — the studio names it and offers a retry. The apply owns
+		// bounded contexts of its own, so a slow forge cannot hold the connect
+		// past the apply budget plus the record's (20 s + 10 s).
+		updated, _, err := s.applyBotAvatar(r.Context(), conn, brand.VariantPlain, false)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("forge connect: iterion-bot avatar not applied on @%s (%s): %v", conn.AccountLogin, conn.Host(), err)
+		}
+		if err == nil {
+			// The rebrand nobody asked for is the one that must leave a trace.
+			s.auditTenant(r, teamID, "forge.connection.avatar_applied", "forge_connection", connID,
+				map[string]any{"provider": provider, "variant": string(brand.VariantPlain), "automatic": true})
+		}
+		conn = updated
+	}
 	conn.SealedPayload = nil // never serialise
 	writeJSON(w, forgeConnectResp{Connection: &conn})
 }
@@ -242,7 +274,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: pending.Provider, Kind: forge.KindOAuthApp,
 		DisplayName: ident.Login, ForgeBaseURL: pending.ForgeBaseURL,
-		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace,
+		AccountLogin: ident.Login, AccountID: ident.ID, Namespace: ident.Namespace, AccountKind: ident.Kind,
 		Status: forge.StatusActive, SealedPayload: sealed, Scopes: tok.Scopes,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -416,7 +448,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	conn := forge.Connection{
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
-		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
+		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug, AccountKind: forge.AccountKindInstallation,
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
 		InstallationAccount: installAccount,
 		GrantedPermissions:  granted,

@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -87,7 +89,7 @@ func TestResumeFromFailure_ResumableStatusTable(t *testing.T) {
 				Outputs: map[string]map[string]any{"step_a": {"result": "ok"}},
 			}
 			if tc.viaFailResumable {
-				if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+				if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 					t.Fatalf("FailRunResumable: %v", err)
 				}
 			} else {
@@ -156,7 +158,7 @@ func TestResumeFromFailure_NoCheckpointRestartsFromEntry(t *testing.T) {
 	if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, nil, "pre-first-node boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, nil, "pre-first-node boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -290,7 +292,7 @@ func TestResumeFromFailure_RestoresLoopCounters(t *testing.T) {
 		Outputs:      map[string]map[string]any{"fix": {"attempt": 1}},
 		LoopCounters: map[string]int{"retry": 1},
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -342,7 +344,7 @@ func TestResumeFromFailure_CheckpointMapsNotMutated(t *testing.T) {
 		LoopCounters:     map[string]int{},
 		ArtifactVersions: map[string]int{},
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -419,7 +421,7 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 		BackendConversation: conversation,
 		BackendSessionID:    "sess-42",
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -526,7 +528,7 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 	if _, err := s.CreateRun(ctx, runID, "resume_char_env", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "step_a"}, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "step_a"}, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -575,7 +577,7 @@ func TestResumeFromFailure_BudgetSpendRestored(t *testing.T) {
 		Outputs:       map[string]map[string]any{"step_a": {"result": "ok"}},
 		BudgetCostUSD: 5.0, // already over the 1.0 cap
 	}
-	if err := s.FailRunResumable(ctx, runID, cp, "boom"); err != nil {
+	if err := s.FailRunResumable(ctx, runID, cp, "boom", ""); err != nil {
 		t.Fatalf("FailRunResumable: %v", err)
 	}
 
@@ -600,5 +602,193 @@ func TestResumeFromFailure_BudgetSpendRestored(t *testing.T) {
 	r, _ := s.LoadRun(ctx, runID)
 	if r.Status != store.RunStatusFailedResumable {
 		t.Errorf("status = %s, want failed_resumable (raise the cap + resume)", r.Status)
+	}
+}
+
+// TestResumeFromFailure_BudgetExitGraceFinishesAt105Percent pins the outage
+// redelivery case: a checkpoint already inside the bounded 10% exit grace
+// must reach the ordinary pre-exec gate, execute its delivery node once, and
+// finish instead of being killed by the sandbox preflight.
+func TestResumeFromFailure_BudgetExitGraceFinishesAt105Percent(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.1")
+	t.Setenv("ITERION_LOOP_BUDGET_GUARD", "on")
+	wf := charResumeWF()
+	wf.Budget = &ir.Budget{MaxCostUSD: 1.0}
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-char-budget-exit-grace"
+	if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{
+		NodeID:        "step_b",
+		Outputs:       map[string]map[string]any{"step_a": {"result": "ok"}},
+		BudgetCostUSD: 1.05,
+	}
+	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt", ""); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	var exitCalls int
+	exec := newStubExecutor()
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
+		exitCalls++
+		return map[string]any{"result": "delivered"}, nil
+	})
+
+	if err := New(wf, s, exec).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("Resume at 105%% of cap: %v", err)
+	}
+	if exitCalls != 1 {
+		t.Errorf("exit node executions = %d, want 1", exitCalls)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("status = %s, want finished", r.Status)
+	}
+	events, err := s.LoadEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	var graceEvents int
+	for _, evt := range events {
+		if evt.Type == store.EventBudgetExitGrace {
+			graceEvents++
+		}
+	}
+	if graceEvents != 2 {
+		t.Errorf("budget_exit_grace events = %d, want 2", graceEvents)
+	}
+}
+
+// TestResumeFromPause_HardLimitCheckpointKeepsHumanAnswers pins the narrow
+// pause path: answers are recorded before the next-node budget gate fails,
+// and the resulting failed_resumable checkpoint must contain those answers
+// and restart at the downstream node rather than asking the human again.
+func TestResumeFromPause_HardLimitCheckpointKeepsHumanAnswers(t *testing.T) {
+	wf := humanWorkflow()
+	wf.Budget = &ir.Budget{MaxCostUSD: 1.0}
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-human-budget-preflight"
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "needs review"}, nil
+	})
+	if err := New(wf, s, exec).Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun paused run: %v", err)
+	}
+	r.Checkpoint.BudgetCostUSD = 0.95
+	if err := s.SaveCheckpoint(ctx, runID, r.Checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint at hard limit: %v", err)
+	}
+
+	answers := map[string]any{"approved": true, "reason": "operator approved"}
+	err = New(wf, s, exec).Resume(ctx, runID, answers)
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeBudgetExceeded {
+		t.Fatalf("Resume error = %v, want RuntimeError BUDGET_EXCEEDED", err)
+	}
+	r, err = s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after resume: %v", err)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want failed_resumable", r.Status)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "integrate" {
+		t.Fatalf("checkpoint = %+v, want downstream node integrate", r.Checkpoint)
+	}
+	gotAnswers := r.Checkpoint.Outputs["review"]
+	if gotAnswers["approved"] != true || gotAnswers["reason"] != "operator approved" {
+		t.Errorf("checkpoint outputs[review] = %#v, want recorded operator answers", gotAnswers)
+	}
+}
+
+// TestResumeFromFailure_ExhaustedDurationFinalizesBeforeSandbox pins the
+// redelivery guard: persisted active time that already exhausted the run's
+// duration budget must produce the ordinary resumable budget death before
+// the sandbox lifecycle is invoked.
+func TestResumeFromFailure_ExhaustedDurationFinalizesBeforeSandbox(t *testing.T) {
+	wf := charResumeWF()
+	wf.Budget = &ir.Budget{MaxDuration: "10m"}
+	// Make sandbox provisioning observable if the guard ever moves too late.
+	wf.Sandbox = &ir.SandboxSpec{Mode: "inline", Image: "must-not-be-provisioned.invalid/test:latest"}
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-char-duration-preflight"
+	if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{
+		NodeID:          "step_b",
+		Outputs:         map[string]map[string]any{"step_a": {"result": "ok"}},
+		BudgetElapsedNS: (11 * time.Minute).Nanoseconds(),
+	}
+	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt", ""); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	var nodeCalls, sandboxStarts int
+	exec := newStubExecutor()
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
+		nodeCalls++
+		return map[string]any{"result": "unexpected"}, nil
+	})
+	err := New(wf, s, exec, WithSandboxRunObserver(func(sandbox.Run) {
+		sandboxStarts++
+	})).Resume(ctx, runID, nil)
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeBudgetExceeded {
+		t.Fatalf("error = %v, want RuntimeError BUDGET_EXCEEDED", err)
+	}
+	if nodeCalls != 0 {
+		t.Errorf("restart node executed %d times, want 0", nodeCalls)
+	}
+	if sandboxStarts != 0 {
+		t.Errorf("sandbox provisioning invoked %d times, want 0", sandboxStarts)
+	}
+
+	r, loadErr := s.LoadRun(ctx, runID)
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want failed_resumable", r.Status)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "step_b" {
+		t.Fatalf("checkpoint = %+v, want preserved at step_b", r.Checkpoint)
+	}
+
+	events, eventsErr := s.LoadEvents(ctx, runID)
+	if eventsErr != nil {
+		t.Fatalf("LoadEvents: %v", eventsErr)
+	}
+	var sawBudgetExceeded, sawBudgetRunFailed bool
+	for _, evt := range events {
+		switch evt.Type {
+		case store.EventBudgetExceeded:
+			sawBudgetExceeded = evt.Data["dimension"] == "duration"
+		case store.EventRunFailed:
+			if evt.Data["code"] == string(ErrCodeBudgetExceeded) {
+				sawBudgetRunFailed = true
+			}
+		case store.EventSandboxHostStateMounted, store.EventSandboxDevboxProvisioned,
+			store.EventSandboxStarted, store.EventNodeStarted:
+			t.Errorf("preflight emitted post-provision event %s: %+v", evt.Type, evt.Data)
+		}
+	}
+	if !sawBudgetExceeded || !sawBudgetRunFailed {
+		t.Errorf("events missing normal budget death: budget_exceeded=%v run_failed=%v", sawBudgetExceeded, sawBudgetRunFailed)
 	}
 }

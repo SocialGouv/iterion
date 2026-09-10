@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
@@ -27,11 +28,7 @@ func setupDiffRepo(t *testing.T) (string, string) {
 	}
 	gitRun(t, dir, "add", "a.txt")
 	gitRun(t, dir, "commit", "-q", "-m", "base")
-	baseOut, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse: %v", err)
-	}
-	base := strings.TrimSpace(string(baseOut))
+	base := gittest.Run(t, dir, "rev-parse", "HEAD")
 
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)

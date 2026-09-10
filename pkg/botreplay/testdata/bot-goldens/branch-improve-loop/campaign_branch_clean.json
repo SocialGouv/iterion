@@ -16,6 +16,9 @@
     "issues_remaining": "",
     "needs_human": false,
     "human_note": "",
+    "stopped_on_reserve": false,
+    "declined": false,
+    "decline_reason": "",
     "summary": "Branch diff reviewed against main: fixed the unchecked error return in the new uploader (fix(upload): propagate close error) and added the missing test for the empty-payload path (test(upload): cover empty payload); verify.sh green after each commit.",
     "finding_ledger": [
       {

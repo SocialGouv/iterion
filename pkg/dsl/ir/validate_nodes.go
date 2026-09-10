@@ -251,6 +251,21 @@ func (c *compiler) validateRepoDevbox(w *Workflow) {
 		w.Name, w.RepoDevbox)
 }
 
+// validateWorkspaceCheckpoint enforces that workspace_checkpoint is one of
+// the accepted barewords. The stakes are the reverse of the two above: the
+// default is ON, so a mistyped `off` reads as "inherit" and keeps pushing a
+// branch to the repository the bot was pointed at — the very thing an author
+// writing this field is trying to stop.
+func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
+	switch strings.ToLower(strings.TrimSpace(w.WorkspaceCheckpoint)) {
+	case "", "on", "off":
+		return
+	}
+	c.errorf(DiagInvalidWorkspaceCheckpoint,
+		"workflow %q has invalid workspace_checkpoint %q; valid values are on, off",
+		w.Name, w.WorkspaceCheckpoint)
+}
+
 // validateAutoMemory enforces that every auto_memory value (workflow-level +
 // every agent/judge node) is one of the accepted barewords, and warns when a
 // node asks for it on a backend that cannot deliver it. A typo would silently
@@ -1116,15 +1131,16 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 		}
 		// ultracode (xhigh + workflow-orchestration prerogative) relies on
 		// mid-conversation system messages, which Anthropic ships on Opus 4.8
-		// only. On any other model it degrades to plain xhigh — warn so the
-		// author knows the orchestration half won't be reliable.
-		if effort == "ultracode" && !modelIsOpus48(model) {
+		// and the Claude 5 family (Opus 5, Fable 5.1). On any other model it
+		// degrades to plain xhigh — warn so the author knows the orchestration
+		// half won't be reliable.
+		if effort == "ultracode" && !ModelSupportsUltracode(model) {
 			shown := model
 			if shown == "" {
 				shown = "(default)"
 			}
 			c.warnf(DiagUltracodeModelGate,
-				"node %q uses reasoning_effort: ultracode but model %q is not claude-opus-4-8; ultracode's workflow-orchestration prerogative is reliable only on Opus 4.8 and will degrade to plain xhigh elsewhere",
+				"node %q uses reasoning_effort: ultracode but model %q is neither Opus 4.8 nor a Claude 5 model (Opus 5, Fable 5.1); ultracode's workflow-orchestration prerogative is reliable only there and will degrade to plain xhigh elsewhere",
 				node.NodeID(), shown)
 		}
 	}
@@ -1162,12 +1178,14 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 	}
 }
 
-// modelIsOpus48 reports whether a model spec resolves to claude-opus-4-8.
-// An empty spec is treated as the default (Opus 4.8 when Anthropic is the
-// resolved backend) and env-substituted forms are deferred to runtime — both
-// suppress the ultracode gate warning. The bare "opus" alias resolves to the
-// newest Opus (4.8) in claw's registry.
-func modelIsOpus48(model string) bool {
+// ModelSupportsUltracode reports whether a model spec resolves to a model
+// that carries ultracode's orchestration half: claude-opus-4-8 or the
+// Claude 5 family (claude-opus-5, claude-fable-5-1). An empty spec is
+// treated as the default (the newest Opus when Anthropic is the resolved
+// backend) and env-substituted forms are deferred to runtime — both
+// suppress the ultracode gate warning. The bare "opus" and "fable" aliases
+// resolve to the newest of their line in claw's registry.
+func ModelSupportsUltracode(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" || IsEnvSubstitutedEffort(m) {
 		return true
@@ -1175,5 +1193,11 @@ func modelIsOpus48(model string) bool {
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	return m == "opus" || strings.Contains(m, "opus-4-8")
+	switch {
+	case m == "opus", m == "fable":
+		return true
+	case strings.Contains(m, "opus-4-8"), strings.Contains(m, "opus-5"), strings.Contains(m, "fable-5"):
+		return true
+	}
+	return false
 }

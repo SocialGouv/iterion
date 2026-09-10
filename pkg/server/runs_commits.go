@@ -8,6 +8,7 @@ import (
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -23,13 +24,14 @@ import (
 // value so the user sees the proposed message before clicking, and
 // toggles into edit mode only when they want to override.
 type runCommitsResponse struct {
-	Commits              []gitlib.CommitInfo `json:"commits"`
-	Count                int                 `json:"count"`
-	BaseCommit           string              `json:"base_commit,omitempty"`
-	HeadCommit           string              `json:"head_commit,omitempty"`
-	DefaultSquashMessage string              `json:"default_squash_message,omitempty"`
-	Available            bool                `json:"available"`
-	Reason               string              `json:"reason,omitempty"`
+	Commits              []gitlib.CommitInfo          `json:"commits"`
+	Count                int                          `json:"count"`
+	BaseCommit           string                       `json:"base_commit,omitempty"`
+	HeadCommit           string                       `json:"head_commit,omitempty"`
+	DefaultSquashMessage string                       `json:"default_squash_message,omitempty"`
+	Available            bool                         `json:"available"`
+	Reason               string                       `json:"reason,omitempty"`
+	WorkspaceCheckpoint  *runview.WorkspaceCheckpoint `json:"workspace_checkpoint,omitempty"`
 }
 
 // handleListRunCommits returns the per-iteration commits the workflow
@@ -108,21 +110,27 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		// end-of-life state for an old run, not a server fault: render
 		// the structured empty-state instead of a 500 with git stderr.
 		if errors.Is(logErr, gitlib.ErrNotGitRepo) || errors.Is(logErr, gitlib.ErrUnknownRevision) {
-			s.writeJSONFor(w, r, runCommitsResponse{
-				Commits:   []gitlib.CommitInfo{},
-				Available: false,
-				Reason:    "history_unavailable",
-			})
+			s.writeUnavailableRunCommits(w, r, run, "history_unavailable")
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "git log: %v", logErr)
 		return
 	}
 
+	s.writeUnavailableRunCommits(w, r, run, reasonForCommits(run))
+}
+
+func (s *Server) writeUnavailableRunCommits(w http.ResponseWriter, r *http.Request, run *store.Run, reason string) {
+	cp, err := runview.LoadWorkspaceCheckpoint(r.Context(), s.runs.RunStore(), run.ID)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "load workspace checkpoint: %v", err)
+		return
+	}
 	s.writeJSONFor(w, r, runCommitsResponse{
-		Commits:   []gitlib.CommitInfo{},
-		Available: false,
-		Reason:    reasonForCommits(run),
+		Commits:             []gitlib.CommitInfo{},
+		Available:           false,
+		Reason:              reason,
+		WorkspaceCheckpoint: cp,
 	})
 }
 

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -20,6 +22,20 @@ import (
 func newWebhookTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newOrgTestServer(t)
+	// The tenant every webhook fixture below is stamped with. A webhook
+	// whose team does not exist is REFUSED at intake (a config outliving
+	// its team must not keep launching), so the tests seed the team they
+	// have always implied.
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t1", Name: "t1", Slug: "webhook-t1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "t2", Name: "t2", Slug: "webhook-t2", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	s.webhookConfigs = webhooks.NewMemoryConfigStore()
 	s.webhookDeliveries = webhooks.NewMemoryDeliveryStore()
 	s.webhookCounter = webhooks.NewMemoryCounter()
@@ -43,6 +59,24 @@ func newWebhookTestServer(t *testing.T) *Server {
 	// route override this seam to return replyInThread=true.
 	s.webhookNoteGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, string) (bool, bool, string, string, error) {
 		return true, false, "", "test-gate", nil
+	}
+	// Allow-all generic command gate — the real gate needs a forge token +
+	// live GitLab API too (loop-guard, allowlist/role authz), same posture as
+	// webhookNoteGate above. Tests targeting a specific authorization outcome
+	// (refused, unevaluable) override this seam.
+	s.webhookCommandGate = func(context.Context, webhooks.Config, gitlab.ParsedNote, webhooks.CommandRoute) (prforgeGateOutcome, string, error) {
+		return gateAuthorized, "test-gate", nil
+	}
+	// Same-project by construction — the resolver echoes the note's own
+	// payload fields back as a PullRef whose HeadRepoFullName IS the note's
+	// project path, so the fork guard on the command lane's pr-surface never
+	// blocks a handler test that isn't exercising it. Fork-guard tests
+	// override this seam with a mismatched HeadRepoFullName.
+	s.webhookGitLabPRResolver = func(_ context.Context, _ webhooks.Config, p gitlab.ParsedNote, _ string) (forge.PullRef, error) {
+		return forge.PullRef{
+			State: "open", HeadRepoFullName: p.ProjectPath,
+			SourceBranch: p.SourceBranch, TargetBranch: p.TargetBranch, HeadSHA: p.HeadSHA,
+		}, nil
 	}
 	return s
 }
@@ -482,5 +516,75 @@ func TestWebhookHoldLabelsRoundTrip(t *testing.T) {
 	}
 	if len(stored.HoldLabels) != 0 {
 		t.Fatalf("hold_labels not clearable: %v", stored.HoldLabels)
+	}
+}
+
+// TestWebhookReviewRequestLoginsPatch pins the PATCH ingress for
+// review_request_logins. A managed webhook is created by the orchestrator
+// (Provision), never by POST — so PATCH is the ONLY writer that can arm the
+// re-request lane on the configs the feature exists for. Create-only would
+// make the field dead on every provisioned repo.
+func TestWebhookReviewRequestLoginsPatch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	ctx := superAdminCtx()
+
+	w := httptest.NewRecorder()
+	body := `{"name":"gh","bot_ids":["review-pr"],"review_request_logins":["iterion-bot"]}`
+	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks", body, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Config webhooks.Config `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !slices.Equal(created.Config.ReviewRequestLogins, []string{"iterion-bot"}) {
+		t.Fatalf("review_request_logins dropped on create: %v", created.Config.ReviewRequestLogins)
+	}
+
+	// PATCH replaces the set — arming a provisioned webhook after the fact.
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"review_request_logins":["revu-bot"]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch: code=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := s.webhookConfigs.Get(context.Background(), created.Config.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.ReviewRequestLogins, []string{"revu-bot"}) {
+		t.Fatalf("review_request_logins not applied on patch: %v", stored.ReviewRequestLogins)
+	}
+
+	// An omitted field leaves it untouched (a PATCH of something else must
+	// not silently disarm the button)...
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"name":"renamed"}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch name: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !slices.Equal(stored.ReviewRequestLogins, []string{"revu-bot"}) {
+		t.Fatalf("an unrelated patch cleared review_request_logins: %v", stored.ReviewRequestLogins)
+	}
+
+	// ...and an explicit empty list disarms it.
+	w = httptest.NewRecorder()
+	s.handleUpdateWebhook(w, whReq(ctx, "PATCH", "/api/teams/t1/webhooks/"+created.Config.ID,
+		`{"review_request_logins":[]}`, "t1", created.Config.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch clear: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if stored, err = s.webhookConfigs.Get(context.Background(), created.Config.ID); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(stored.ReviewRequestLogins) != 0 {
+		t.Fatalf("review_request_logins not clearable: %v", stored.ReviewRequestLogins)
 	}
 }

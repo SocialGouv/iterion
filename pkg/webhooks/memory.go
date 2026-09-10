@@ -76,6 +76,18 @@ func (s *MemoryDeliveryStore) Update(_ context.Context, d Delivery) error {
 	return s.kit.Replace(d.ID, d)
 }
 
+// ClaimFailedRetry is the compare-and-set take-over of a failed row (see
+// DeliveryStore). Keep its semantics in lock-step with the Mongo twin.
+func (s *MemoryDeliveryStore) ClaimFailedRetry(_ context.Context, d Delivery, expectAttempts int) (bool, error) {
+	return s.kit.Mutate(d.ID, func(cur *Delivery) bool {
+		if cur.Status != StatusLaunchError || cur.Attempts != expectAttempts {
+			return false
+		}
+		*cur = d
+		return true
+	})
+}
+
 func (s *MemoryDeliveryStore) ListByWebhook(_ context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
 	out := s.kit.List(func(d Delivery) bool {
 		return d.TenantID == tenantID && d.WebhookID == webhookID
@@ -85,6 +97,102 @@ func (s *MemoryDeliveryStore) ListByWebhook(_ context.Context, tenantID, webhook
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *MemoryDeliveryStore) CountLaunched(_ context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error) {
+	return len(s.kit.List(func(d Delivery) bool {
+		return d.TenantID == tenantID && d.WebhookID == webhookID &&
+			d.EventKind == eventKind && d.ProjectPath == projectPath &&
+			d.SubjectID == subjectID && d.RunID != ""
+	})), nil
+}
+
+// ListLaunchedBySubject returns the subject's launched deliveries.
+func (s *MemoryDeliveryStore) ListLaunchedBySubject(_ context.Context, tenantID, webhookID, projectPath, subjectID string) ([]Delivery, error) {
+	return s.kit.List(func(d Delivery) bool {
+		return d.TenantID == tenantID && d.WebhookID == webhookID &&
+			d.ProjectPath == projectPath && d.RunID != "" &&
+			(d.SubjectID == subjectID || d.ParentSubjectID == subjectID)
+	}), nil
+}
+
+// MemoryDeferredLaunchStore is an in-process DeferredLaunchStore. Keep
+// its semantics in lock-step with MongoDeferredLaunchStore.
+type MemoryDeferredLaunchStore struct {
+	mu   sync.Mutex
+	rows map[string]DeferredLaunch // by SubjectKey
+}
+
+func NewMemoryDeferredLaunchStore() *MemoryDeferredLaunchStore {
+	return &MemoryDeferredLaunchStore{rows: make(map[string]DeferredLaunch)}
+}
+
+func (s *MemoryDeferredLaunchStore) Upsert(_ context.Context, d DeferredLaunch) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Newest payload wins wholesale — including clearing any lease: a
+	// fresh push during a claimed row's launch re-arms the subject.
+	d.ClaimedUntil = time.Time{}
+	if prev, ok := s.rows[d.SubjectKey]; ok {
+		if DeferredPayloadIsStale(d.OrderKey, prev.OrderKey) {
+			return false, nil // a NEWER push is already parked
+		}
+		d.Generation = prev.Generation + 1
+		d.CreatedAt = prev.CreatedAt
+	} else {
+		d.Generation = 1
+	}
+	s.rows[d.SubjectKey] = d
+	return true, nil
+}
+
+func (s *MemoryDeferredLaunchStore) ClaimDue(_ context.Context, now time.Time, lease time.Duration, limit int) ([]DeferredLaunch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []DeferredLaunch
+	for k, d := range s.rows {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if d.FireAt.After(now) || d.ClaimedUntil.After(now) {
+			continue
+		}
+		d.ClaimedUntil = now.Add(lease)
+		s.rows[k] = d
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].FireAt.Before(out[j].FireAt) })
+	return out, nil
+}
+
+func (s *MemoryDeferredLaunchStore) Reschedule(_ context.Context, subjectKey string, generation int64, fireAt time.Time, attempts int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.rows[subjectKey]
+	if !ok || d.Generation != generation {
+		return nil // a fresh push already replaced this payload
+	}
+	d.FireAt = fireAt
+	d.Attempts = attempts
+	d.ClaimedUntil = time.Time{}
+	s.rows[subjectKey] = d
+	return nil
+}
+
+func (s *MemoryDeferredLaunchStore) Delete(_ context.Context, subjectKey string, generation int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d, ok := s.rows[subjectKey]; ok && d.Generation == generation {
+		delete(s.rows, subjectKey)
+	}
+	return nil
+}
+
+func (s *MemoryDeferredLaunchStore) DeleteBySubject(_ context.Context, subjectKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rows, subjectKey)
+	return nil
 }
 
 // MemoryCounter is an in-process monthly Counter. Production uses the

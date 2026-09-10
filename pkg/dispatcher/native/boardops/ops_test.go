@@ -19,6 +19,17 @@ func newStore(t *testing.T) *native.Store {
 	return s
 }
 
+// mustBoard is Board or Fatal: the contract reports a read failure rather
+// than substituting a default board for it (see native.BoardStore.Board).
+func mustBoard(t *testing.T, s native.BoardStore) *native.Board {
+	t.Helper()
+	b, err := s.Board()
+	if err != nil {
+		t.Fatalf("Board: %v", err)
+	}
+	return b
+}
+
 func TestNewCapabilities(t *testing.T) {
 	caps := NewCapabilities("board.create, board.read,,  board.move ")
 	for _, want := range []string{"board.create", "board.read", "board.move"} {
@@ -202,7 +213,7 @@ func TestRoundTrip_CreateTransitionGetList(t *testing.T) {
 		t.Fatalf("close_issue: %v", err)
 	}
 	got, _ = s.Get(created.ID)
-	if !s.Board().StateByName(got.State).Terminal {
+	if !mustBoard(t, s).StateByName(got.State).Terminal {
 		t.Fatalf("close_issue did not land on a terminal state: %s", got.State)
 	}
 }

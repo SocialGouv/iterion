@@ -3,7 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
-import { WORKFLOW_SOURCE_CHANGED_ERROR_CODE } from "@/api/runs";
+import {
+  ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+  WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+} from "@/api/runs";
 
 import PauseForm from "./PauseForm";
 
@@ -28,20 +31,24 @@ afterEach(() => {
   resumeRun.mockReset();
 });
 
-function sourceChangedError() {
+function forceRequiredError(
+  code = WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+) {
   // Deliberately omit the historical prose: rendering the retry proves the
   // component consumes errorCode rather than parsing this message.
   return new ApiError(
     400,
     "API error 400: resume rejected",
-    WORKFLOW_SOURCE_CHANGED_ERROR_CODE,
+    code,
   );
 }
 
 describe("PauseForm force resume", () => {
   it("submits the form values as they exist when force retry is clicked", async () => {
     resumeRun
-      .mockRejectedValueOnce(sourceChangedError())
+      .mockRejectedValueOnce(
+        forceRequiredError(ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE),
+      )
       .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
 
     render(
@@ -86,7 +93,7 @@ describe("PauseForm force resume", () => {
 
   it("replays the original one-click permission decision", async () => {
     resumeRun
-      .mockRejectedValueOnce(sourceChangedError())
+      .mockRejectedValueOnce(forceRequiredError())
       .mockResolvedValueOnce({ run_id: "run-1", status: "running" });
 
     render(
@@ -116,7 +123,7 @@ describe("PauseForm force resume", () => {
 
   it("does not carry a rejected decision into another run", async () => {
     resumeRun
-      .mockRejectedValueOnce(sourceChangedError())
+      .mockRejectedValueOnce(forceRequiredError())
       .mockResolvedValueOnce({ run_id: "run-2", status: "running" });
 
     const questions = {

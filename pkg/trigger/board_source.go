@@ -2,11 +2,13 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -144,10 +146,17 @@ func (b *BoardSource) worker() {
 
 // normalize converts a native.Event into a trigger.Event by reading the
 // current issue (the audit event payload is sparse — labels/title/body live on
-// the issue). Returns false when the issue can't be read (deleted between the
-// transition and the read).
+// the issue). Returns false when the issue can't be read. The local tail has
+// no cursor to protect, so a transient read error degrades to a skip like a
+// deletion (the dispatcher poll is this path's net) — the distinction only
+// buys something where an advanced cursor would make the loss permanent.
 func (b *BoardSource) normalize(evt native.Event) (Event, bool) {
-	return NormalizeBoardEvent(b.store.Get, evt, b.tenantID, b.repo, b.boardName)
+	ev, ok, err := NormalizeBoardEvent(b.store.Get, evt, b.tenantID, b.repo, b.boardName)
+	if err != nil {
+		b.logger.Warn("trigger: normalize board event for issue %s: %v", evt.IssueID, err)
+		return Event{}, false
+	}
+	return ev, ok
 }
 
 // IsCardEvent reports whether a native board event is one of the card
@@ -164,14 +173,23 @@ func IsCardEvent(t native.EventType) bool {
 // NormalizeBoardEvent converts a native board event into a trigger.Event by
 // reading the CURRENT issue through get (the audit event payload is sparse —
 // labels/title/body live on the issue). Shared by the local BoardSource and
-// the cloud board source; returns false when the issue can't be read
-// (deleted between the transition and the read). When the card links an
-// external forge issue, its repo slug is stamped on the event (falling back
-// to the source-wide repo) so repo-scoped subscriptions match.
-func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.Event, tenantID, repo, boardName string) (Event, bool) {
+// the cloud board source. ok=false with a nil error means the card is GONE
+// (deleted between the transition and the read — a definitive skip); a
+// non-nil error is a TRANSIENT store failure the caller must not treat as a
+// deletion: the cloud tail aborts its batch before advancing the cursor,
+// because an advanced cursor turns one Mongo blip into a permanently lost
+// trigger. When the card links an external forge issue, its repo slug is
+// stamped on the event (falling back to the source-wide repo) so repo-scoped
+// subscriptions match.
+func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.Event, tenantID, repo, boardName string) (Event, bool, error) {
 	iss, err := get(evt.IssueID)
-	if err != nil || iss == nil {
-		return Event{}, false
+	switch {
+	case errors.Is(err, tracker.ErrNotFound):
+		return Event{}, false, nil
+	case err != nil:
+		return Event{}, false, err
+	case iss == nil:
+		return Event{}, false, nil
 	}
 	kind := KindCardUpdated
 	switch evt.Type {
@@ -189,6 +207,15 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 	if from, ok := evt.Payload["from"].(string); ok {
 		payload["from_state"] = from
 	}
+	// Provenance travels verbatim; whether it is MACHINE provenance is the
+	// enumerated tracker.IsMachineReason — the same contract machineCaused
+	// reads on the effect side. A descriptive reason (unblocked) keeps its
+	// actor and its triggers.
+	machine := false
+	if reason, ok := evt.Payload["reason"].(string); ok && reason != "" {
+		payload["reason"] = reason
+		machine = tracker.IsMachineReason(reason)
+	}
 	if iss.External != nil && iss.External.Repo != "" {
 		repo = iss.External.Repo
 	}
@@ -205,11 +232,14 @@ func NormalizeBoardEvent(get func(id string) (*native.Issue, error), evt native.
 			Body:  iss.Body,
 			State: iss.State,
 		},
-		Actor:      iss.Assignee,
+		// A machine repair is not authored by the card's assignee. Leaving
+		// their name on it misreports who acted, to every Actor-reading
+		// subscription and audit surface.
+		Actor:      actorFor(iss.Assignee, machine),
 		Labels:     append([]string(nil), iss.Labels...),
 		Payload:    payload,
 		OccurredAt: evt.Timestamp,
-	}, true
+	}, true, nil
 }
 
 // NativeBoardEffect is the BoardEffect for the native board: it promotes a
@@ -302,3 +332,13 @@ func (n *NativeBoardEffect) ConsumeMatchLabels(_ context.Context, _ string, issu
 
 var _ BoardEffect = (*NativeBoardEffect)(nil)
 var _ LabelConsumer = (*NativeBoardEffect)(nil)
+
+// actorFor blanks the actor on a machine-caused event: attributing a
+// watchdog's repair to whoever the card is assigned to is a lie the
+// audit trail keeps.
+func actorFor(assignee string, machine bool) string {
+	if machine {
+		return ""
+	}
+	return assignee
+}

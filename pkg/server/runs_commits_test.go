@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -20,11 +20,7 @@ func commitInRunWorktree(t *testing.T, dir, relPath, content, msg string) string
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", relPath}, {"commit", "-q", "-m", msg}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	return revParse(t, dir, "HEAD")
 }
@@ -148,11 +144,7 @@ func TestRunCommitFileDiff_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "a.txt"}, {"commit", "-q", "-m", "v2"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gittest.Run(t, dir, args...)
 	}
 	target := revParse(t, dir, "HEAD")
 	seedRunWithBaseline(t, srv, "cdiff-ok", dir, baseSHA)

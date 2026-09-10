@@ -9,36 +9,116 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // recordOrgSpend charges the run's accumulated LLM consumption to the
-// org's monthly usage bucket. Called at the end of every execution
-// attempt — paused/cancelled/failed attempts incurred real spend too,
-// and a redelivered attempt re-charges only what it re-executed.
-// Detached ctx: a Mongo blip must not fail the run path; the miss is
+// org's monthly usage bucket AND bumps `last_used_at` on every API key
+// the attempt held. Called at the end of every execution attempt —
+// paused/cancelled/failed attempts incurred real spend too, and a
+// redelivered attempt re-charges only what it re-executed. Detached ctx
+// on both writes: a Mongo blip must not fail the run path; misses are
 // logged and the Prometheus counters still carry the global totals.
-func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
-	if r.cfg.OrgUsage == nil || usage == nil || msg.TenantID == "" {
+//
+// The bump is NOT behind the spend gate. RunTotals is a lossy signal —
+// a delegate that streams no usage, a run refused at its first call —
+// and the key was held for the whole attempt either way; gating the bump
+// on it is what left `last_used_at` frozen for hours on a key that was
+// serving (#659 pt 2). Bumped at attempt START too (injectCredentials);
+// nothing moves it DURING a turn — there is no live per-call signal to
+// key on, so a long attempt shows its start until it ends.
+func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usage *metricsEmitter) {
+	now := time.Now().UTC()
+	// Half 2 first: the held keys are a fact of the attempt, whatever it
+	// measured.
+	r.markCredFingerprintsUsed(ctx, msg, now)
+	if usage == nil {
 		return
 	}
-	costUSD, in, out := usage.RunTotals()
-	if costUSD <= 0 && in <= 0 && out <= 0 {
+	// The per-CREDENTIAL ledger, charged per (backend, model) route rather
+	// than from the run total — the same attempt, read by credential
+	// instead of by org (#641). Independent of the org gate below: a route
+	// the org bucket cannot break apart is exactly what this answers.
+	r.recordCredentialSpend(ctx, msg, usage, now)
+	costUSD, in, out, aggregate := usage.RunTotals()
+	spent := costUSD > 0 || in > 0 || out > 0 || aggregate > 0
+	if !spent {
 		return
 	}
-	// Charge the same usage key the launch gate metered the run on:
-	// the parent org (caps sum across the org's teams — charging the
-	// team key instead leaves the org's cost-cap document at zero, so
-	// the cap never trips in a multi-team org). OrgID is empty on
-	// pre-orgid messages and org-less pre-backfill teams — both were
-	// metered on the team key, so fall back to it.
-	key := msg.OrgID
-	if key == "" {
-		key = msg.TenantID
+
+	// Half 1: org usage bucket — the existing behaviour.
+	if r.cfg.OrgUsage != nil && msg.TenantID != "" {
+		// Charge the same usage key the launch gate metered the run on:
+		// the parent org (caps sum across the org's teams — charging the
+		// team key instead leaves the org's cost-cap document at zero,
+		// so the cap never trips in a multi-team org). OrgID is empty on
+		// pre-orgid messages and org-less pre-backfill teams — both were
+		// metered on the team key, so fall back to it.
+		key := msg.OrgID
+		if key == "" {
+			key = msg.TenantID
+		}
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.cfg.OrgUsage.AddSpend(bg, key, now, costUSD, in, out, aggregate); err != nil {
+			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
+		}
+		cancel()
+	}
+}
+
+// markCredFingerprintsUsed bumps `last_used_at` on every API key whose
+// fingerprint sits in the run's injected credentials — at attempt start
+// (from injectCredentials) and at attempt end (from recordOrgSpend).
+// Best-effort: a missing store, empty fingerprints, or a store failure
+// all quietly leave the observation on the floor rather than fail the
+// run. Detached context (5s bound) so the metering path is unaffected by
+// cancellation.
+//
+// Scope follows the key's TIER. A tenant's own key is bumped under the
+// run's tenant, so another tenant that stored the byte-identical secret
+// never sees its own key read as "in use" (the studio shows last_used_at
+// as exactly that, before a rotate or delete). A platform-tier or
+// pool-lent key is bumped WITHOUT a tenant filter: its row lives under the
+// platform sentinel or in the donor's tenant, and it serves every tenant.
+func (r *Runner) markCredFingerprintsUsed(ctx context.Context, msg *queue.RunMessage, at time.Time) {
+	if r.cfg.ApiKeys == nil {
+		return
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok || len(creds.Fingerprints) == 0 {
+		return
+	}
+	// Only API-key slots: an OAuth slot's fingerprint (a subscription's
+	// connect-time identity) lives in the OAuth store and would only
+	// cost the api_keys collection a lookup that matches nothing.
+	// Deduplicated: the update is idempotent, the round-trips are not
+	// free. A fingerprint any slot holds from another tier is bumped
+	// cross-tenant.
+	crossTenant := map[string]bool{}
+	fps := make([]string, 0, len(creds.Fingerprints))
+	for slot, fp := range creds.Fingerprints {
+		if secrets.OAuthKind(slot).Valid() || fp == "" {
+			continue
+		}
+		if _, seen := crossTenant[fp]; !seen {
+			fps = append(fps, fp)
+		}
+		crossTenant[fp] = crossTenant[fp] || !creds.IsTenantOwned(slot)
+	}
+	if len(fps) == 0 {
+		return
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.cfg.OrgUsage.AddSpend(bg, key, time.Now().UTC(), costUSD, in, out); err != nil {
-		r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
+	for _, fp := range fps {
+		bctx := bg
+		if !crossTenant[fp] && msg.TenantID != "" {
+			bctx = store.WithTenant(bg, msg.TenantID)
+		}
+		if err := r.cfg.ApiKeys.MarkFingerprintUsed(bctx, fp, at); err != nil {
+			r.cfg.Logger.Warn("runner: mark api-key fingerprint used (run %s fp=%s): %v", msg.RunID, fp, err)
+		}
 	}
 }
 
@@ -60,7 +140,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if r.cfg.CredPool == nil || usage == nil {
 		return
 	}
-	costUSD, in, out := usage.RunTotals()
+	costUSD, in, out, aggregate := usage.RunTotals()
 	condition, cooldownUntil := classifyPoolCondition(execErr, time.Now().UTC())
 	// An auth rejection the recovery machinery absorbed into a human pause
 	// leaves execErr saying only "paused". Without this the donor's dead
@@ -72,12 +152,13 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := r.cfg.CredPool.Report(bg, msg.RunID, credpool.Outcome{
-		CostUSD:       costUSD,
-		InputTokens:   in,
-		OutputTokens:  out,
-		Condition:     condition,
-		CooldownUntil: cooldownUntil,
-		Interim:       interim,
+		CostUSD:         costUSD,
+		InputTokens:     in,
+		OutputTokens:    out,
+		AggregateTokens: aggregate,
+		Condition:       condition,
+		CooldownUntil:   cooldownUntil,
+		Interim:         interim,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %v (the donor's slot frees on lease expiry)", msg.RunID, err)
 	}

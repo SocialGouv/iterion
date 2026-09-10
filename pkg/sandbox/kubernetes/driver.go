@@ -5,10 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,11 +46,73 @@ var (
 // not exist in pure k8s pod networking).
 const PodIPEnvVar = "ITERION_POD_IP"
 
-// DefaultPodReadyTimeoutSecs caps how long the driver waits for a
-// freshly-applied pod to reach Ready. Image pulls dominate this in
-// practice (cluster-cached images go Ready in <2s; cold pulls of
-// multi-GB images take 30-60s).
-const DefaultPodReadyTimeoutSecs = 180
+// DefaultPodReadyTimeout caps how long the driver waits for a
+// freshly-applied pod to reach Ready, unless PodReadyTimeoutEnvVar says
+// otherwise. The wait covers everything between apply and Ready:
+// scheduling (a cluster autoscaler adding a node takes minutes), the CNI
+// setup of a fresh node, and the image pull (a 736 MB sandbox image took
+// 1m37 to 3m05 on cold nodes). A 180 s cap killed pods one second after
+// their container started, right as the autoscaler had made room for them.
+const DefaultPodReadyTimeout = 10 * time.Minute
+
+// DefaultWorkspaceCopyTimeout bounds populateWorkspace (host tar |
+// kubectl exec pod tar) and the git fixup that follows, each end-to-end.
+// The pod-Ready wait has its own cap; without this one a stuck
+// kubectl-exec pipe blocks the run until the outer max_duration fires —
+// hours later, with no `sandbox_started` event to warn on (a resumed
+// review sat 2h 26m in the sandbox-start phase, was wiped by a runner
+// rollout, and its message re-delivered onto a stale `running` status —
+// #669 part 1).
+//
+// Fifteen minutes because no measured copy duration exists to size it
+// from: iterion's own checkout is 355 MB streamed through the apiserver,
+// and a cold copy on a slow apiserver must not be killed for being slow
+// but healthy. The halfway warning in sandbox.RunWithPhaseTimeout makes such a
+// copy visible at 7m30s, before the bound strikes. Overridable per host
+// via ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT (a Go duration).
+const DefaultWorkspaceCopyTimeout = 15 * time.Minute
+
+// workspaceCopyTimeoutEnv is the override key. Read once per call so
+// tests can flip it between subcases.
+const workspaceCopyTimeoutEnv = "ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT"
+
+// workspaceCopyTimeoutWarnOnce bounds the "unparseable override" warning
+// to one stderr line per process (the ITERION_BUDGET_EXIT_GRACE
+// convention): an operator input silently replaced by the default is an
+// override that never took, with nothing saying so.
+var workspaceCopyTimeoutWarnOnce sync.Once
+
+// DefaultApplyTimeout bounds one `kubectl apply` — the per-run Secret,
+// the CA Secret, the sandbox pod, the NetworkPolicy, and the mid-run
+// secret refresh. An apply against a healthy apiserver takes
+// milliseconds; a wedged one (a control-plane rollout, a throttled
+// admission webhook, a TCP connect that never completes) otherwise hangs
+// sandbox creation BEFORE the first bounded phase is reached, with no
+// `sandbox_started` event and no typed failure. Two minutes leaves a
+// contended apiserver plenty of room while keeping the stall inside the
+// window a redelivery can clear. Overridable per host via
+// ITERION_SANDBOX_K8S_APPLY_TIMEOUT (a Go duration).
+const DefaultApplyTimeout = 2 * time.Minute
+
+// applyTimeoutEnv is the override key for the apply family — one knob for
+// every resource the driver applies, since they share an apiserver and
+// stall together.
+const applyTimeoutEnv = "ITERION_SANDBOX_K8S_APPLY_TIMEOUT"
+
+// applyTimeoutWarnOnce is the apply family's half of the once-per-process
+// unparseable-override warning: each knob warns for itself, or a bad
+// value on one is silenced by a bad value on the other.
+var applyTimeoutWarnOnce sync.Once
+
+// resolveWorkspaceCopyTimeout returns the effective copy/fixup budget.
+func resolveWorkspaceCopyTimeout() time.Duration {
+	return sandbox.ResolvePhaseTimeout(workspaceCopyTimeoutEnv, DefaultWorkspaceCopyTimeout, &workspaceCopyTimeoutWarnOnce)
+}
+
+// resolveApplyTimeout returns the effective per-apply budget.
+func resolveApplyTimeout() time.Duration {
+	return sandbox.ResolvePhaseTimeout(applyTimeoutEnv, DefaultApplyTimeout, &applyTimeoutWarnOnce)
+}
 
 // Downward-API env vars the runner pod's Helm chart should inject so the
 // driver can set an ownerReference on every per-run resource (sandbox
@@ -67,6 +132,263 @@ const (
 	RunnerPodNameEnvVar = "ITERION_RUNNER_POD_NAME"
 	RunnerPodUIDEnvVar  = "ITERION_RUNNER_POD_UID"
 )
+
+// Scheduling knobs of the sibling pod, read from the runner's environment
+// once at construction and rendered on every pod it creates. They are a
+// deployment policy, not a workflow's: the operator sizes what one run may
+// claim, and a bot cannot lower it.
+//
+// A pod that requests nothing scores every node the same, so the scheduler
+// packs a campaign's runs onto whichever node already holds the image
+// (measured: 5 of 6 run pods on one 8-core worker at 89 % CPU while two
+// workers idled, and an oracle's 300 s boot budget blown at 459 s). The
+// request is what makes LeastAllocated spread them and what a cluster
+// autoscaler sizes the pool on; the spread constraint steers what the
+// request leaves equal. Unset → no `resources` (the manifest of a driver
+// without the knobs).
+const (
+	RequestsCPUEnvVar    = "ITERION_SANDBOX_K8S_REQUESTS_CPU"
+	RequestsMemoryEnvVar = "ITERION_SANDBOX_K8S_REQUESTS_MEMORY"
+	LimitsCPUEnvVar      = "ITERION_SANDBOX_K8S_LIMITS_CPU"
+	LimitsMemoryEnvVar   = "ITERION_SANDBOX_K8S_LIMITS_MEMORY"
+	// SpreadEnvVar selects the topology key of the soft spread constraint
+	// over sandbox-run pods: unset / "none" / "off" → no constraint (the
+	// scheduler's own policy decides, as it always did), "hostname" →
+	// kubernetes.io/hostname, any other value must be a prefixed label key
+	// (e.g. topology.kubernetes.io/zone) that the nodes actually carry —
+	// nodes without the label are excluded from scheduling, soft or not.
+	SpreadEnvVar = "ITERION_SANDBOX_K8S_SPREAD"
+	// PodReadyTimeoutEnvVar caps how long Start waits for the sibling pod to
+	// reach Ready, as a Go duration of at least 1s (e.g. 10m); unset =
+	// DefaultPodReadyTimeout. Validated with the rest of the policy at the
+	// runner's bootstrap.
+	PodReadyTimeoutEnvVar = "ITERION_SANDBOX_K8S_POD_READY_TIMEOUT"
+)
+
+// hostnameTopologyKey is the node-level spread, the one key every node
+// carries by construction.
+const hostnameTopologyKey = "kubernetes.io/hostname"
+
+// quantityRe is the subset of the Kubernetes quantity grammar the driver
+// accepts: a decimal (`2`, `.5`, `1.`, `+1`), an optional exponent (`1e3`)
+// or one of the SI / binary suffixes operators actually write for CPU and
+// memory (`500m`, `4Gi`). The micro/nano suffixes (`u`, `n`) the API also
+// admits are left out on purpose — no run is sized in nanocores. The API
+// server owns the rest of the semantics; the driver refuses what could never
+// be a sane quantity, so a typo fails once at startup instead of on every
+// pod apply.
+var quantityRe = regexp.MustCompile(`^\+?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
+
+// suffixScale is the multiplier of each quantity suffix, for the
+// request ≤ limit comparison.
+var suffixScale = map[string]float64{
+	"m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
+	"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40, "Pi": 1 << 50, "Ei": 1 << 60,
+}
+
+// splitQuantity separates a quantity matched by quantityRe into its numeric
+// text and its suffix ("" when none; an exponent counts as part of the
+// number).
+func splitQuantity(v string) (number, suffix string) {
+	v = strings.TrimPrefix(v, "+")
+	// Scanned from the right: the number ends at its last digit or dot, and a
+	// valid exponent ends in a digit too (`1e3`, `1e+3`), so it stays inside
+	// the number; `E` and `Ei` end in a letter and are suffixes.
+	for i := len(v) - 1; i >= 0; i-- {
+		if c := v[i]; (c >= '0' && c <= '9') || c == '.' {
+			return v[:i+1], v[i+1:]
+		}
+	}
+	return "", v
+}
+
+// quantityValue converts a quantity matched by quantityRe to a float for the
+// zero check and for comparisons (a request against its limit). Precision is
+// irrelevant here: the API server re-parses the strings themselves. A value
+// it cannot evaluate (an exponent out of float64 range, an unknown suffix)
+// is an error, never a silent zero; a value that evaluates to zero (`0`,
+// `0.0`, `0Gi`, an underflowing `1e-400`) is the caller's to refuse.
+func quantityValue(v string) (float64, error) {
+	number, suffix := splitQuantity(v)
+	f, err := strconv.ParseFloat(number, 64)
+	if err != nil {
+		return 0, fmt.Errorf("quantity %q: %w", v, err)
+	}
+	if suffix != "" {
+		scale, ok := suffixScale[suffix]
+		if !ok {
+			return 0, fmt.Errorf("quantity %q: unknown suffix %q", v, suffix)
+		}
+		f *= scale
+	}
+	if math.IsInf(f, 0) {
+		return 0, fmt.Errorf("quantity %q: out of range", v)
+	}
+	return f, nil
+}
+
+// topologyKeyRe is a prefixed Kubernetes label key (DNS-subdomain prefix,
+// "/", then the name). A bare word is refused on purpose: every topology
+// key a cluster actually carries is prefixed (kubernetes.io/hostname,
+// topology.kubernetes.io/zone, …), and a bare word is almost always a typo
+// of the keywords — which the API server would accept as a label no node
+// has, turning the spread into a silent no-op.
+var topologyKeyRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+
+// podScheduling is the parsed form of the scheduling env vars.
+type podScheduling struct {
+	resources    PodResources
+	spreadKey    string        // "" = no spread constraint
+	readyTimeout time.Duration // how long Start waits for the pod to be Ready
+}
+
+// String renders the policy for logs, events and the doctor report.
+func (s podScheduling) String() string {
+	var parts []string
+	side := func(label string, l ResourceList) {
+		var kv []string
+		if l.CPU != "" {
+			kv = append(kv, "cpu="+l.CPU)
+		}
+		if l.Memory != "" {
+			kv = append(kv, "memory="+l.Memory)
+		}
+		if len(kv) > 0 {
+			parts = append(parts, label+" "+strings.Join(kv, " "))
+		}
+	}
+	side("requests", s.resources.Requests)
+	side("limits", s.resources.Limits)
+	if len(parts) == 0 {
+		parts = append(parts, "no resources")
+	}
+	if s.spreadKey == "" {
+		parts = append(parts, "no spread")
+	} else {
+		parts = append(parts, "spread="+s.spreadKey)
+	}
+	parts = append(parts, "ready-timeout="+s.readyTimeout.String())
+	return strings.Join(parts, ", ")
+}
+
+// ValidateSchedulingEnv parses the scheduling policy from the process
+// environment and returns the error every sandbox Start would return. The
+// runner calls it at bootstrap so a misconfigured pod never becomes ready —
+// the driver factory skips constructor errors, so this is the only place a
+// bad value can stop a rollout instead of failing runs one by one.
+func ValidateSchedulingEnv() error {
+	_, err := schedulingFromEnv(os.Getenv)
+	return err
+}
+
+// schedulingFromEnv parses the scheduling env vars through getenv (injected
+// so tests never touch the process environment). Every set quantity must
+// match quantityRe, be non-zero and use a suffix that makes sense for its
+// resource; a limit needs its request (the API server would otherwise copy
+// the limit into the request at admission) and must not be below it; the
+// spread keywords are matched case-insensitively and anything else must be
+// a prefixed label key. Each error names the variable and the value.
+func schedulingFromEnv(getenv func(string) string) (podScheduling, error) {
+	var s podScheduling
+	quantities := []struct {
+		env    string
+		dst    *string
+		memory bool
+	}{
+		{RequestsCPUEnvVar, &s.resources.Requests.CPU, false},
+		{RequestsMemoryEnvVar, &s.resources.Requests.Memory, true},
+		{LimitsCPUEnvVar, &s.resources.Limits.CPU, false},
+		{LimitsMemoryEnvVar, &s.resources.Limits.Memory, true},
+	}
+	for _, q := range quantities {
+		v := strings.TrimSpace(getenv(q.env))
+		if v == "" {
+			continue
+		}
+		if !quantityRe.MatchString(v) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a Kubernetes quantity (want e.g. 500m, 2, 4Gi)", q.env, v)
+		}
+		// Evaluated for every set variable, not only when a limit exists: a
+		// zero (`0`, `0Gi`, an underflowing `1e-400`) renders a resources block
+		// that schedules exactly like no resources block, which is the one
+		// thing the policy exists to prevent — an operator reading the pod
+		// would believe the floor is set.
+		value, err := quantityValue(v)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", q.env, err)
+		}
+		if value == 0 {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is a zero quantity — it schedules like no request at all; unset the variable instead", q.env, v)
+		}
+		_, suffix := splitQuantity(v)
+		if q.memory && suffix == "m" {
+			// `400m` of memory is 0.4 bytes — always the CPU suffix on the
+			// wrong variable, never a size anyone meant.
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is a milli-byte quantity (m is the CPU suffix; want e.g. 512Mi, 4Gi)", q.env, v)
+		}
+		if !q.memory && len(suffix) == 2 {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q uses a byte suffix on a CPU quantity (want e.g. 500m, 2)", q.env, v)
+		}
+		// Below Kubernetes' own precision (1m of CPU, 1 byte of memory) the
+		// API server rounds up at admission: a "floor" of 5e-324 is a zero
+		// wearing a number.
+		if floor := 1.0; (!q.memory && value < 1e-3) || (q.memory && value < floor) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below the quantity precision (1m of CPU, 1 byte of memory) — it schedules like no request at all", q.env, v)
+		}
+		*q.dst = v
+	}
+	for _, pair := range []struct {
+		name, reqEnv, limEnv, req, lim string
+	}{
+		{"cpu", RequestsCPUEnvVar, LimitsCPUEnvVar, s.resources.Requests.CPU, s.resources.Limits.CPU},
+		{"memory", RequestsMemoryEnvVar, LimitsMemoryEnvVar, s.resources.Requests.Memory, s.resources.Limits.Memory},
+	} {
+		if pair.lim == "" {
+			continue
+		}
+		if pair.req == "" {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q without %s — the API server would copy the limit into the request at admission; set the request explicitly", pair.limEnv, pair.lim, pair.reqEnv)
+		}
+		lim, err := quantityValue(pair.lim)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.limEnv, err)
+		}
+		req, err := quantityValue(pair.req)
+		if err != nil {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s: %w", pair.reqEnv, err)
+		}
+		if lim < req {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is below %s=%q — a %s limit cannot be lower than its request", pair.limEnv, pair.lim, pair.reqEnv, pair.req, pair.name)
+		}
+	}
+	v := strings.TrimSpace(getenv(SpreadEnvVar))
+	switch strings.ToLower(v) {
+	case "", "none", "off":
+		s.spreadKey = ""
+	case "hostname":
+		s.spreadKey = hostnameTopologyKey
+	default:
+		if !topologyKeyRe.MatchString(v) {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a topology key (want hostname, none, or a prefixed label key such as topology.kubernetes.io/zone)", SpreadEnvVar, v)
+		}
+		s.spreadKey = v
+	}
+	s.readyTimeout = DefaultPodReadyTimeout
+	if v := strings.TrimSpace(getenv(PodReadyTimeoutEnvVar)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second {
+			return podScheduling{}, fmt.Errorf("kubernetes: %s=%q is not a duration of at least 1s (want e.g. 5m, 10m)", PodReadyTimeoutEnvVar, v)
+		}
+		s.readyTimeout = d
+	}
+	return s, nil
+}
+
+// SpreadTopologyKey is the topology key of the spread constraint the driver
+// renders, "" when it renders none. The doctor uses it to check that the
+// cluster's nodes carry the label — a node without it is excluded from
+// scheduling, which a soft constraint does not waive.
+func (d *Driver) SpreadTopologyKey() string { return d.sched.spreadKey }
 
 // deadlineMarginSecs is added to the run's budgeted max_duration when
 // deriving spec.activeDeadlineSeconds, so a run that legitimately uses
@@ -105,10 +427,20 @@ func New() (sandbox.Driver, error) {
 	if err != nil {
 		return nil, &sandbox.ErrUnavailable{Driver: "kubernetes", Reason: err.Error()}
 	}
+	// A malformed scheduling value is kept on the driver and fails every
+	// Start, not the constructor: the factory's preference walk skips ANY
+	// constructor error and ends on the always-constructible noop driver,
+	// so returning it here would degrade cloud runs to unsandboxed with a
+	// warning event as the only trace. Failing each run with the variable
+	// named is the loud path; `iterion sandbox doctor` reads the same
+	// error through SchedulingPolicy.
+	sched, schedErr := schedulingFromEnv(os.Getenv)
 	return &Driver{
 		kubectl:   binPath,
 		namespace: namespace,
 		logger:    iterlog.New(iterlog.LevelInfo, io.Discard),
+		sched:     sched,
+		schedErr:  schedErr,
 	}, nil
 }
 
@@ -126,6 +458,12 @@ type Driver struct {
 	kubectl   string
 	namespace string
 	logger    *iterlog.Logger
+
+	// sched is the deployment's pod scheduling policy (requests, limits,
+	// spread), parsed once from the environment; schedErr is the parse
+	// failure it carries, surfaced by Start on every run.
+	sched    podScheduling
+	schedErr error
 }
 
 // WithLogger returns a copy of the driver bound to a real logger.
@@ -141,6 +479,16 @@ func (d *Driver) WithLogger(l *iterlog.Logger) *Driver {
 
 // Name returns "kubernetes".
 func (d *Driver) Name() string { return "kubernetes" }
+
+// SchedulingPolicy implements [sandbox.SchedulingPolicyReporter]: the
+// deployment's pod scheduling policy as rendered on every sibling pod, or
+// the parse error every Start will return.
+func (d *Driver) SchedulingPolicy() (string, error) {
+	if d.schedErr != nil {
+		return "", d.schedErr
+	}
+	return d.sched.String(), nil
+}
 
 // ProxyConfig binds the network proxy on all interfaces (so sibling
 // sandbox pods can reach it across the cluster network) and advertises
@@ -236,6 +584,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if !ok {
 		return nil, fmt.Errorf("kubernetes: PreparedSpec from driver %q passed to kubernetes.Start", prepared.DriverName())
 	}
+	if d.schedErr != nil {
+		return nil, d.schedErr
+	}
+	d.logger.Info("kubernetes: pod scheduling policy: %s", d.sched)
 
 	podName := podNameFor(info.RunID)
 
@@ -270,7 +622,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, secretManifest); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -288,7 +640,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, caSecret); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
 				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
@@ -308,6 +660,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		SecretFilesSecretName: secretFilesSecretName,
 		Owner:                 owner,
 		ActiveDeadlineSeconds: activeDeadline,
+		Resources:             d.sched.resources,
+		SpreadTopologyKey:     d.sched.spreadKey,
 	})
 	if err != nil {
 		if caSecretName != "" {
@@ -324,11 +678,12 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// immutable and the runner SA intentionally lacks pods/patch → Forbidden,
 	// parking the run on the DLQ. Force-delete any stale pod so apply always
 	// CREATEs fresh; the resume re-populates the workspace from the checkpoint.
-	delStale := kubectlCmdContext(ctx, "--namespace", d.namespace, "delete", "pod", podName,
-		"--ignore-not-found=true", "--grace-period=0", "--force")
-	_, _ = delStale.CombinedOutput()
+	// Goes through deleteResource so it inherits that helper's bound: it is
+	// one apiserver call in the middle of the setup sequence, and an
+	// unbounded one hangs the run before the first bounded phase.
+	_ = deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := applyManifest(ctx, d.namespace, manifest); err != nil {
+	if err := applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
 			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
@@ -382,14 +737,21 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := applyManifest(ctx, d.namespace, netpolicy); err != nil {
+		if err := applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}
 		r.networkPolicyApplied = true
 	}
 
-	if err := waitForPodRunning(ctx, d.namespace, podName, DefaultPodReadyTimeoutSecs); err != nil {
+	// The policy is parsed by New(); a Driver built any other way has no
+	// timeout, and `kubectl wait --timeout=0s` would kill the pod at once.
+	if d.sched.readyTimeout < time.Second {
+		_ = r.Cleanup(ctx)
+		return nil, fmt.Errorf("kubernetes: pod ready timeout is unset (%s) — the driver was not built by New()", d.sched.readyTimeout)
+	}
+	readySecs := int((d.sched.readyTimeout + time.Second - 1) / time.Second) // rounded up: never shorter than configured
+	if err := waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
 	}
@@ -400,12 +762,24 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// via a tar stream. Without this the sandbox starts with an empty
 	// workspace (the V1 limitation, docs/sandbox.md) and a repo-bound bot
 	// has nothing to work on. Skipped for workspace-less runs.
+	//
+	// Both phases are BOUNDED (the pod-Ready wait has its own cap, the
+	// policy's readyTimeout): a stuck kubectl-exec pipe must fail the
+	// phase as a typed error, not block the run until the outer
+	// max_duration fires. resolveWorkspaceCopyTimeout is the budget
+	// (DefaultWorkspaceCopyTimeout; ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT
+	// overrides).
 	if info.WorkspacePath != "" {
-		if err := r.populateWorkspace(ctx, info.WorkspacePath, p.workspace); err != nil {
+		copyTimeout := resolveWorkspaceCopyTimeout()
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace copy", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+			return r.populateWorkspace(ctx, info.WorkspacePath, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: populate workspace: %w", err)
 		}
-		if err := r.fixupWorkspaceGit(ctx, p.workspace); err != nil {
+		if err := sandbox.RunWithPhaseTimeout(ctx, d.logger, "workspace git fixup", workspaceCopyTimeoutEnv, copyTimeout, func(ctx context.Context) error {
+			return r.fixupWorkspaceGit(ctx, p.workspace)
+		}); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: fixup workspace git: %w", err)
 		}
@@ -489,7 +863,7 @@ func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) 
 	if err != nil {
 		return err
 	}
-	if err := applyManifest(ctx, r.namespace, manifest); err != nil {
+	if err := applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
 		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
 	}
 	return nil
@@ -542,51 +916,141 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 // is the base, and per-call envs are layered on top via the env
 // command.
 //
-// LIMITATION: a `sh -c <huge-script>` cmd is passed as a single argv
-// element to `kubectl exec`, so a hundreds-of-KB interpolated script
-// can in principle trip the host's ARG_MAX (E2BIG) the same way the
-// docker driver did before its stdin-streaming fallback (see
-// [shouldStreamScriptViaStdin] in pkg/sandbox/docker/driver.go). Not
-// observed in practice yet — cloud runs interpolate smaller payloads
-// — so the kubernetes driver currently relies on the argv path. If a
-// real symptom appears, mirror the docker fix here using
-// `kubectl exec -i … -- sh -s` with the script wired to Cmd.Stdin.
+// A payload too large to survive the kernel's MAX_ARG_STRLEN cap on a
+// single argv element (32 pages = 128 KiB, no ulimit raises it) is
+// streamed through stdin as `kubectl exec --stdin … -- <shell> -s`
+// instead. Both exec shapes below can take that route, but they cross
+// the cap for different reasons — see [resolveStreamPayload].
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		return exec.CommandContext(ctx, "")
 	}
 
-	args := []string{"--namespace", r.namespace, "exec"}
-	if opts.Stdin != nil || opts.KeepStdinOpen {
-		args = append(args, "--stdin")
-	}
-	args = append(args, r.podName, "--container", "workload", "--")
-
 	// Per-call cwd is realised by `cd <dir> && exec ...` — kubectl
 	// exec doesn't take a --workdir flag. We avoid quoting issues
 	// by exec'ing through `sh -c` only when WorkDir is non-default;
 	// otherwise the pod's container.workingDir already applies.
-	workDir := opts.WorkDir
-	if workDir == "" || workDir == r.prepared.workspace {
+	customWorkDir := opts.WorkDir != "" && opts.WorkDir != r.prepared.workspace
+	var wrapped string
+	if customWorkDir {
+		wrapped = buildShellChdirExec(opts.WorkDir, cmd, opts.Env)
+	}
+
+	// Decide what is streamed BEFORE assembling argv, so the --stdin
+	// flag and the reader attached by cmdContext are derived from ONE
+	// value and cannot disagree. They must not: kubectl opens a stdin
+	// stream to the pod only when --stdin is present, so a payload
+	// attached without the flag is dropped on the floor — the in-pod
+	// `<shell> -s` reads EOF, runs nothing, and exits 0. A size failure
+	// would then present as a SUCCESSFUL empty run instead of a loud,
+	// retryable E2BIG.
+	streamPayload, streamShell := resolveStreamPayload(cmd, wrapped, customWorkDir, opts, opts.WorkDir, opts.Env)
+
+	args := []string{"--namespace", r.namespace, "exec"}
+	if opts.Stdin != nil || opts.KeepStdinOpen || streamPayload != "" {
+		args = append(args, "--stdin")
+	}
+	args = append(args, r.podName, "--container", "workload", "--")
+
+	switch {
+	case !customWorkDir:
 		// Default workingDir already set on the container; use direct
 		// argv form to avoid an extra shell layer (preserves signal
 		// semantics and exit codes).
 		args = appendEnvPrefix(args, opts.Env)
-		args = append(args, cmd...)
-		return r.cmdContext(ctx, args, opts)
+		if streamPayload != "" {
+			// `<shell> -s` reads the script from stdin. streamShell is
+			// the recipe's own shell, so a bash recipe keeps bash
+			// semantics. The env prefix still precedes it and applies to
+			// the shell that reads the script.
+			args = append(args, streamShell, "-s")
+		} else {
+			args = append(args, cmd...)
+		}
+	case streamPayload != "":
+		// The payload is the whole script; `<shell> -s` reads it from
+		// stdin. streamShell is the recipe's own shell when the payload
+		// IS the recipe (chdir + exports + script inline, nothing left on
+		// argv), and plain `sh` when it is a wrapper that still exec's
+		// cmd[0] itself — either way the recipe keeps its shell.
+		args = append(args, streamShell, "-s")
+	default:
+		args = append(args, "sh", "-c", wrapped)
 	}
+	return r.cmdContext(ctx, args, streamPayload, opts)
+}
 
-	// Custom workdir — wrap in `sh -c "cd <dir> && exec <cmd...>"`.
-	wrapped := buildShellChdirExec(workDir, cmd, opts.Env)
-	args = append(args, "sh", "-c", wrapped)
-	return r.cmdContext(ctx, args, opts)
+// resolveStreamPayload returns the exact bytes to feed the in-pod shell
+// through stdin, or "" to keep everything on argv. It is the single
+// decision point for the argv-vs-stdin choice; [Run.Command] derives
+// both the `--stdin` flag and the reader from this one value.
+//
+// Two distinct crossings, because the two exec shapes carry the payload
+// differently:
+//
+//   - Default workdir: cmd reaches kubectl unchanged, so the exposure is
+//     one oversized argv element. That is exactly the docker driver's
+//     case, so both share [sandbox.ShouldStreamScriptViaStdin] and can
+//     never drift apart.
+//   - Custom workdir: buildShellChdirExec concatenates EVERY argv
+//     element into one `sh -c` argument, so the wrapper can cross the
+//     cap even when no single element does (`prog --flag <60KB> --flag
+//     <60KB>`). Docker has no counterpart — it takes a native
+//     --workdir and never builds this — so the rule is k8s-only and
+//     deliberately shape-agnostic: any wrapper is a shell script, and
+//     one ending in `exec <prog>` runs identically under `sh -s` and
+//     `sh -c`.
+//
+// A custom workdir over an oversized `<shell> -c <script>` is the two
+// crossings AT ONCE, and streaming the wrapper alone would not fix it:
+// the wrapper ends in `exec <shell> -c '<script>'`, so the in-pod shell
+// re-issues the very execve the host just avoided, and MAX_ARG_STRLEN
+// applies there too — E2BIG relocated into the pod, for precisely the
+// shape this streaming exists to serve. That case therefore gets a
+// payload built by [buildShellChdirScript], which cds and then lets the
+// shell READ the script instead of passing it as an argument.
+//
+// The returned shell is the one to invoke as `<shell> -s`: the recipe's
+// own (so a bash recipe keeps bash semantics) when the payload is a
+// script, plain `sh` when it is a wrapper ending in `exec`.
+//
+// Both crossings refuse to touch a caller that owns stdin: an attached
+// reader (opts.Stdin) is never clobbered, and a caller that asked to
+// KEEP stdin open — pi_rpc, claw_backend and claude_code session mode
+// all wire cmd.StdinPipe() afterwards — must not have it commandeered,
+// which would fail their pipe with "exec: Stdin already set". Those
+// keep the argv path and its loud, retryable E2BIG.
+func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts sandbox.ExecOpts, workDir string, env map[string]string) (string, string) {
+	if !customWorkDir {
+		if script := sandbox.ShouldStreamScriptViaStdin(cmd, opts); script != "" {
+			return script, cmd[0]
+		}
+		return "", ""
+	}
+	if opts.Stdin != nil || opts.KeepStdinOpen {
+		return "", ""
+	}
+	if script := sandbox.ShouldStreamScriptViaStdin(cmd, opts); script != "" {
+		return buildShellChdirScript(workDir, env, script), cmd[0]
+	}
+	if len(wrapped) <= sandbox.MaxInlineArgBytes {
+		return "", ""
+	}
+	return wrapped, "sh"
 }
 
 // cmdContext finalises the *exec.Cmd: ctx, args, stdin pipe, pgid.
-func (r *Run) cmdContext(ctx context.Context, args []string, opts sandbox.ExecOpts) *exec.Cmd {
+// streamPayload, when non-empty, is the script fed to the in-pod shell
+// through stdin. Its caller MUST have added `--stdin` to args from the
+// same value — kubectl drops an unannounced stdin silently — which is
+// why [Run.Command] decides both from one expression.
+func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload string, opts sandbox.ExecOpts) *exec.Cmd {
 	c := exec.CommandContext(ctx, r.driver.kubectl, args...)
-	if opts.Stdin != nil {
+	switch {
+	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
+	case streamPayload != "":
+		c.Stdin = strings.NewReader(streamPayload)
 	}
 	proc.DetachProcessGroup(c)
 	return c
@@ -641,10 +1105,23 @@ func (r *Run) Cleanup(_ context.Context) error {
 }
 
 // runPostCreate executes the spec's post-create command inside the
-// freshly started pod.
+// freshly started pod, BOUNDED like the copy and the git fixup before
+// it: a snippet that never returns (a package install waiting on a dead
+// mirror, a command reading stdin) would otherwise hold the run in setup
+// until the outer max_duration fires — no typed failure, no redelivery,
+// the pod sitting on the run lease. The bound lives here rather than at
+// the Start call site so every caller inherits it. Budget:
+// sandbox.ResolvePostCreateTimeout (ITERION_SANDBOX_POST_CREATE_TIMEOUT)
+// — the same one the docker driver reads, the phase owning the knob
+// rather than the driver; the expiry carries sandbox.ErrPhaseTimeout, so
+// the engine parks the run failed_resumable with SANDBOX_SETUP_TIMEOUT
+// exactly as a copy stall does.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand in pod %s", r.podName)
-	return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+	return sandbox.RunWithPhaseTimeout(ctx, r.driver.logger, "post_create", sandbox.PostCreateTimeoutEnv, sandbox.ResolvePostCreateTimeout(),
+		func(ctx context.Context) error {
+			return sandbox.RunPostCreate(ctx, r, snippet, r.driver.logger)
+		})
 }
 
 // populateWorkspace copies the run's host workspace into the pod's

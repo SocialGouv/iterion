@@ -1,0 +1,20 @@
+## bare_fail_mini.bot — the untyped `-> fail` target, kept as the
+## regression anchor for #739: adding named fail nodes must not change what
+## the historical form puts on the run (terminal `failed`, FAIL_NODE, and
+## the wording operator greps key on).
+
+schema gauge:
+  ok: bool
+
+compute gate:
+  output: gauge
+  expr:
+    ok: "false"
+
+workflow bare_fail_mini:
+  worktree: none
+  sandbox: none
+  entry: gate
+
+  gate -> done when ok
+  gate -> fail else

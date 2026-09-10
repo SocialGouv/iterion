@@ -113,7 +113,7 @@ func (s *Service) startQueuedRun(it queuedItem) {
 		s.logger.Warn("runview: start queued pipeline %s: %v", it.runID, err)
 		s.pipelineQueue.slotFreed(it.runID)
 		ctx := store.WithoutTenantFilter(context.Background())
-		if uErr := s.store.UpdateRunStatus(ctx, it.runID, store.RunStatusFailed, "queued pipeline failed to start: "+err.Error()); uErr != nil {
+		if uErr := store.FailRunAtLaunch(ctx, s.store, it.runID, "queued pipeline failed to start: "+err.Error()); uErr != nil {
 			s.logger.Warn("runview: mark queued pipeline %s failed: %v", it.runID, uErr)
 		}
 	}

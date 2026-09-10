@@ -22,14 +22,18 @@ type capStatusStore struct {
 	store.RunStore
 	gotStatus store.RunStatus
 	gotErr    string
+	gotMeta   store.RunOutcomeMeta
 	gotFrom   []store.RunStatus
 	calls     int
 }
 
-func (s *capStatusStore) UpdateRunStatusIf(_ context.Context, _ string, status store.RunStatus, runErr string, from []store.RunStatus) (bool, error) {
+// The fake records the FULL meta — a fake that throws the metadata away
+// certifies a writer that could stop passing it (adversarial gate F5).
+func (s *capStatusStore) UpdateRunOutcome(_ context.Context, _ string, status store.RunStatus, runErr string, meta store.RunOutcomeMeta, from []store.RunStatus) (bool, error) {
 	s.calls++
 	s.gotStatus = status
 	s.gotErr = runErr
+	s.gotMeta = meta
 	s.gotFrom = from
 	return true, nil
 }
@@ -106,6 +110,9 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	}
 	if rs.calls != 1 || rs.gotStatus != store.RunStatusFailedResumable {
 		t.Fatalf("status flip: calls=%d status=%q — without failed_resumable the retry cannot arm", rs.calls, rs.gotStatus)
+	}
+	if rs.gotMeta.Code != store.FailureUsageLimitBlocked {
+		t.Errorf("failure code = %q, want USAGE_LIMIT_BLOCKED persisted with the flip", rs.gotMeta.Code)
 	}
 	if rs.gotErr == "" {
 		t.Error("the run must say why it did not start")
@@ -299,10 +306,21 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	}
 }
 
-func TestUsageGuardFor_NilWithoutAPolicy(t *testing.T) {
+// A cap nobody configured enforces nothing — but it still records, so the
+// evidence-based credential skips are not inert on that deployment (#629
+// pt 1). The "no guard" case is now only the one with no ledger either,
+// covered in usage_cap_evidence_test.go.
+func TestUsageGuardFor_UnconfiguredPolicyObservesButBlocksNothing(t *testing.T) {
 	r := capRunner(usagecap.Policy{}, usagecap.NewMemStore(), nil)
-	if g := r.usageGuardFor(context.Background(), &queue.RunMessage{}, iterlog.Nop()); g != nil {
-		t.Fatal("a deployment that configured no cap must not carry a guard")
+	g := r.usageGuardFor(context.Background(), &queue.RunMessage{}, iterlog.Nop())
+	if g == nil {
+		t.Fatal("want a guard: the ledger is what the credential skips read")
+	}
+	if d := g.Observe(usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Utilization: 0.99,
+		Status: usagecap.StatusWarning, ObservedAt: time.Now().UTC(),
+	}); d.Blocked {
+		t.Fatal("a deployment that configured no cap must not be blocked by one")
 	}
 }
 
@@ -466,4 +484,185 @@ func TestUsageCapKey_FingerprintFollowsTheSpendingCredential(t *testing.T) {
 	if got := usageCapKey(legacy, msg); got != want {
 		t.Errorf("legacy fingerprint-less credentials = %q, want the historical key %q", got, want)
 	}
+}
+
+// A reading is keyed under the credential its session ACTUALLY ran on —
+// the delegate's provider-routing label — not the bundle's default
+// precedence. A bundle holding both a z.ai token and an Anthropic key
+// previously charged an anthropic-pinned node's refusal to the z.ai
+// fingerprint, and the evidence-based skip then parked the healthy key
+// while keeping the frozen one.
+func TestUsageCapCredKeys_ReadingFollowsTheSessionSource(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderZAI:       "zai-token",
+			secrets.ProviderAnthropic: "sk-ant",
+		},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):       "fp-zai",
+			string(secrets.ProviderAnthropic): "fp-ant",
+			delegate.BackendClaudeCode:        "fp-oauth",
+		},
+	})
+	keys := usageCapCredKeys(ctx, msg)
+	scope := usagecap.TenantScope("team-7")
+
+	cases := []struct{ source, wantFP string }{
+		// Empty (older binary) and the inherited-env label follow the
+		// bundle default: z.ai first, the delegate's own precedence.
+		{"", "fp-zai"},
+		{"anthropic-env", "fp-zai"},
+		{"facade:https://api.z.ai/api/anthropic", "fp-zai"},
+		{"anthropic-direct", "fp-ant"},
+		{"anthropic-oauth", "fp-oauth"},
+	}
+	for _, c := range cases {
+		if got := keys.forSource(c.source); got != usagecap.Key(delegate.BackendClaudeCode, scope, c.wantFP) {
+			t.Errorf("forSource(%q) = %q, want fingerprint %q", c.source, got, c.wantFP)
+		}
+	}
+
+	// A source naming a shape the bundle does not hold falls back to the
+	// default rather than inventing an empty-fingerprint meter.
+	partial := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant"},
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-ant"},
+	})
+	pk := usageCapCredKeys(partial, msg)
+	if got := pk.forSource("facade:https://api.z.ai"); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "fp-ant") {
+		t.Errorf("facade source without a zai credential = %q, want the default fallback", got)
+	}
+}
+
+// #668, the incident as measured: a two-node rite with BOTH LLM nodes
+// pinned to claw + openai/gpt-5.6-sol was refused USAGE_LIMIT_BLOCKED for
+// the anthropic weekly reset — five days out — while its single-node
+// sibling on the identical pin sailed through. The cap meters the
+// Anthropic wire only; a run that cannot touch it must launch. Two
+// tenant shapes were probed: both keys held and the anthropic one capped,
+// and an openai-only tenant metered on the platform key.
+func TestUsageCapPreflight_SparesARunPinnedOffTheAnthropicWire(t *testing.T) {
+	offWire := func() *ir.Workflow {
+		return &ir.Workflow{
+			Name:  "rite",
+			Entry: "oracle_campaign",
+			Nodes: map[string]ir.Node{
+				"oracle_campaign":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "oracle_campaign"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "openai/gpt-5.6-sol"}},
+				"mutants_adversary": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "mutants_adversary"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "openai", Model: "openai/gpt-5.6-sol"}},
+				"done":              &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges: []*ir.Edge{{From: "oracle_campaign", To: "mutants_adversary"}, {From: "mutants_adversary", To: "done"}},
+		}
+	}
+	capped := func(t *testing.T, caps usagecap.Store, key string) {
+		t.Helper()
+		if err := caps.Record(context.Background(), key, usagecap.Reading{
+			Window:      usagecap.WindowSevenDay,
+			Utilization: 0.95,
+			Status:      usagecap.StatusRejected,
+			ResetsAt:    time.Now().UTC().Add(5 * 24 * time.Hour),
+			ObservedAt:  time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("tenant holds both keys, the anthropic meter is capped", func(t *testing.T) {
+		msg := &queue.RunMessage{RunID: "rite-1", TenantID: "team-7"}
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant", secrets.ProviderOpenAI: "sk-oai"},
+			Fingerprints: map[string]string{
+				string(secrets.ProviderAnthropic): "aaaa000011112222",
+				string(secrets.ProviderOpenAI):    "bbbb000011112222",
+			},
+		})
+		caps := usagecap.NewMemStore()
+		capped(t, caps, usageCapKey(ctx, msg))
+		rs := &capStatusStore{}
+		r := capRunner(capTestPolicy(), caps, rs)
+
+		if err := r.usageCapPreflight(ctx, offWire(), msg, iterlog.Nop()); err != nil {
+			t.Fatalf("a run pinned off the anthropic wire was parked on the anthropic cap: %v", err)
+		}
+		if rs.calls != 0 {
+			t.Errorf("flipped the run's status %d times without blocking it", rs.calls)
+		}
+		// The same ledger still refuses a run with ONE node on the wire.
+		onWire := offWire()
+		onWire.Nodes["mutants_adversary"] = &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "mutants_adversary"}}
+		if err := r.usageCapPreflight(ctx, onWire, msg, iterlog.Nop()); err == nil {
+			t.Error("an unpinned judge resolves to claude_code: the capped run must still be refused")
+		}
+	})
+
+	t.Run("openai-only tenant is metered on the capped platform key", func(t *testing.T) {
+		msg := &queue.RunMessage{RunID: "rite-2", TenantID: "team-8"}
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			APIKeys:      map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-oai"},
+			Fingerprints: map[string]string{string(secrets.ProviderOpenAI): "bbbb000011112222"},
+		})
+		caps := usagecap.NewMemStore()
+		key := usageCapKey(ctx, msg)
+		if want := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""); key != want {
+			t.Fatalf("an openai-only tenant keys on %q, want the platform key %q", key, want)
+		}
+		capped(t, caps, key)
+		rs := &capStatusStore{}
+		r := capRunner(capTestPolicy(), caps, rs)
+
+		if err := r.usageCapPreflight(ctx, offWire(), msg, iterlog.Nop()); err != nil {
+			t.Fatalf("an openai-only run was parked on the platform's anthropic cap: %v", err)
+		}
+		if err := r.usageCapPreflight(ctx, capLLMWorkflow(), msg, iterlog.Nop()); err == nil {
+			t.Error("an unpinned run may spend the platform forfait: it must still be refused")
+		}
+	})
+
+	t.Run("launch overrides pin a DSL-unpinned judge off the wire", func(t *testing.T) {
+		// The DSL alone would put both nodes on claude_code; the launch
+		// pinned both selectors to claw/openai — which is what the
+		// executor honours, so it is what the pre-flight must read.
+		ctx := context.Background()
+		caps := usagecap.NewMemStore()
+		capped(t, caps, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""))
+		rs := &capStatusStore{}
+		r := capRunner(capTestPolicy(), caps, rs)
+		wf := &ir.Workflow{
+			Name:  "rite",
+			Entry: "oracle_campaign",
+			Nodes: map[string]ir.Node{
+				"oracle_campaign":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "oracle_campaign"}},
+				"mutants_adversary": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "mutants_adversary"}},
+				"done":              &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			},
+			Edges: []*ir.Edge{{From: "oracle_campaign", To: "mutants_adversary"}, {From: "mutants_adversary", To: "done"}},
+		}
+		pin := func(selectors ...string) []queue.ModelOverride {
+			out := make([]queue.ModelOverride, 0, len(selectors))
+			for _, sel := range selectors {
+				out = append(out, queue.ModelOverride{Selector: sel, Backend: "claw", Model: "openai/gpt-5.6-sol", Provider: "openai"})
+			}
+			return out
+		}
+		both := &queue.RunMessage{RunID: "rite-3", ModelOverrides: pin("oracle_campaign", "mutants_adversary")}
+		if err := r.usageCapPreflight(ctx, wf, both, iterlog.Nop()); err != nil {
+			t.Fatalf("both selectors pinned off the wire, yet parked: %v", err)
+		}
+		agentOnly := &queue.RunMessage{RunID: "rite-4", ModelOverrides: pin("oracle_campaign")}
+		if err := r.usageCapPreflight(ctx, wf, agentOnly, iterlog.Nop()); err == nil {
+			t.Error("the judge still resolves to claude_code: the capped run must be refused")
+		}
+		// A run-level --fallback onto claude_code is a RESCUE route: it
+		// fires only on a failure the mid-run guard and the delegate's
+		// usage-window classification already refuse at dispatch. The
+		// pre-flight refuses in advance only what could not possibly
+		// avoid spending, so it must let this run start.
+		rescued := &queue.RunMessage{RunID: "rite-5", ModelOverrides: pin("oracle_campaign", "mutants_adversary"),
+			Fallback: queue.RunFallback{{Backend: "claude_code"}}}
+		if err := r.usageCapPreflight(ctx, wf, rescued, iterlog.Nop()); err != nil {
+			t.Errorf("a rescue route must not park a run whose every primary route is off the wire: %v", err)
+		}
+	})
 }

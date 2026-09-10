@@ -16,6 +16,7 @@ data:
   ITERION_NATS_STREAM: {{ .Values.config.nats.stream | quote }}
   ITERION_NATS_KV_BUCKET: {{ .Values.config.nats.kvBucket | quote }}
   ITERION_NATS_DLQ_STREAM: {{ .Values.config.nats.dlqStream | quote }}
+  ITERION_NATS_STREAM_REPLICAS: {{ .Values.config.nats.streamReplicas | quote }}
   ITERION_S3_ENDPOINT: {{ .Values.config.s3.endpoint | quote }}
   ITERION_S3_REGION: {{ .Values.config.s3.region | quote }}
   ITERION_S3_BUCKET: {{ .Values.config.s3.bucket | quote }}

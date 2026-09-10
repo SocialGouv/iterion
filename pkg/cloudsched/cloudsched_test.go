@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
@@ -253,7 +254,7 @@ func TestMongoStore_CAS(t *testing.T) {
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo cloudsched suite")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := mongotest.Ctx(t)
 	defer cancel()
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
@@ -263,7 +264,7 @@ func TestMongoStore_CAS(t *testing.T) {
 	_, _ = rand.Read(nonce)
 	db := client.Database("iterion_cloudsched_" + hex.EncodeToString(nonce))
 	t.Cleanup(func() {
-		drop, dc := context.WithTimeout(context.Background(), 10*time.Second)
+		drop, dc := mongotest.TeardownCtx()
 		defer dc()
 		_ = db.Drop(drop)
 		_ = client.Disconnect(drop)
@@ -303,6 +304,30 @@ func TestMongoStore_CAS(t *testing.T) {
 	got, _ := store.Get(ctx, "sb-1")
 	if !got.NextFireAt.Equal(newNext) || got.LastFireAt == nil {
 		t.Errorf("post-claim state: %+v", got)
+	}
+
+	// Launch health, the twin of MemoryStore.MarkLaunchError: a targeted
+	// $set/$unset on the two fields, round-tripped, and ErrNotFound for a
+	// row that is gone.
+	if err := store.MarkLaunchError(ctx, "sb-1", "launch gate: concurrency_cap_exceeded", now); err != nil {
+		t.Fatalf("MarkLaunchError: %v", err)
+	}
+	got, _ = store.Get(ctx, "sb-1")
+	if got.LastError != "launch gate: concurrency_cap_exceeded" || got.LastErrorAt == nil {
+		t.Errorf("launch health after a refusal = (%q, %v), want the message and its instant", got.LastError, got.LastErrorAt)
+	}
+	if !got.NextFireAt.Equal(newNext) {
+		t.Errorf("next_fire_at = %v after the health write, want %v — a $set must not disturb the CAS field", got.NextFireAt, newNext)
+	}
+	if err := store.MarkLaunchError(ctx, "sb-1", "", now); err != nil {
+		t.Fatalf("MarkLaunchError(clear): %v", err)
+	}
+	got, _ = store.Get(ctx, "sb-1")
+	if got.LastError != "" || got.LastErrorAt != nil {
+		t.Errorf("launch health after a clear = (%q, %v), want empty", got.LastError, got.LastErrorAt)
+	}
+	if err := store.MarkLaunchError(ctx, "ghost", "boom", now); !errors.Is(err, ErrNotFound) {
+		t.Errorf("MarkLaunchError on an unknown id = %v, want ErrNotFound", err)
 	}
 
 	if err := store.Delete(ctx, "sb-1"); err != nil {

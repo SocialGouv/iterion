@@ -69,7 +69,9 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ review ──▶ 
 
 (`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
 `verify_build`; the mr tail forks to `finalize_mr` (open PR) or the PR
-push-back lane — see below.)
+push-back lane — see below. Ahead of the loop, the diagram elides the
+deterministic `workspace_probe` entry precondition and the plan phase —
+both described under their own headings below.)
 
 - **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
   runs `git add -N .` then reads the branch diff, builds a living todo list of
@@ -196,14 +198,70 @@ See [main.bot](main.bot) for the full DSL.
 
 ## Plan phase (cross-model pair review, ADR-091)
 
-`plan_review: auto` resolves at launch from the run's credentials: when a
-SECOND model family is available, the diff triage is authored (claude,
-read-only), critiqued by a cross-family peer (`claw` +
-`openai/gpt-5.6-sol` by default), and revised by the SAME author session
-before the campaign fixes; otherwise the phase is bypassed whole (the v2
-shape, unchanged). `plan_review_policy` picks the mid-run
-peer-unavailability behaviour: `skip` (default — the reviewer's
-`action: skip` route: continue unreviewed, loudly stamped; the peer is
-an optional enrichment and must never block the campaign — Anthropic
-alone always suffices) or `wait` (the run parks failed_resumable, the
-usage-window retry resumes it — the deliberate-spend posture).
+The diff triage is AUTHORED by default on every deployment (claude,
+read-only); `plan_phase: off` is the explicit opt-out (plan in stride, the
+v2 shape). `plan_review: auto` resolves at launch from the run's
+credentials and gates ONLY the peer review: when a SECOND model family is
+available, the triage is critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default) and revised by the SAME author session
+before the campaign fixes; otherwise the campaign receives the author's
+triage stamped as unreviewed (`plan_provenance`, relayed through the
+budget gate). `plan_review_policy` picks the mid-run peer-unavailability
+behaviour: `skip` (default — the reviewer's `action: skip` route:
+continue unreviewed, loudly stamped; the peer is an optional enrichment
+and must never block the campaign — Anthropic alone always suffices) or
+`wait` (the run parks failed_resumable, the usage-window retry resumes it
+— the deliberate-spend posture). Either way `plan_budget_gate` bounds the
+phase (native:695).
+
+## Plan-phase budget guard (`plan_budget_gate`)
+
+One deterministic `compute`, the sole choke point before `campaign`. It
+reads the run itself — `run.elapsed_seconds` / `run.cost_usd` against
+`run.max_duration_seconds` / `run.max_cost_usd`, the caps IN FORCE after
+any `--max-duration` / `--max-cost-usd` override, the recipe, the
+platform ceiling and any live raise_budget — and refuses when either
+crosses `plan_budget_ratio` (default 0.3) of its cap. `campaign` is
+therefore guaranteed at least `1 - plan_budget_ratio` of the budget
+whenever it starts. A cap of `0` is UNBOUNDED on that axis, so a run
+launched with no cost cap never refuses on cost.
+
+The refusal is the named `plan_exhausted` fail node: `failure_code =
+PLAN_BUDGET_EXHAUSTED` and an `error` naming what was used against what
+was allowed, both on the RUN — `iterion runs list`, the studio, the
+merge-gate notice and the alert sinks read them. It is **resumable**: the
+checkpoint anchors on `plan_budget_gate`, so
+
+```sh
+iterion resume --run-id <id> --file bots/branch-improve-loop/main.bot \
+  --max-duration 5h --max-cost-usd 150
+```
+
+re-evaluates the guard against the new caps and takes the `campaign` edge
+— the plan phase this run already paid for is not re-run. Lowering
+`plan_budget_ratio` on the resume works the same way. Nothing picks the
+refusal up by itself (not `--auto-resume`, not the cloud retry): a
+deliberate refusal only changes verdict when an operator changes an input.
+
+## Precondition (`workspace_probe`)
+
+The run's entry is a deterministic tool node (~100ms, no LLM): a launch
+whose `workspace_dir` is absent or not a git repository, OR whose
+`base_ref` resolves nowhere or shares no history with HEAD (every
+diff-anchored instruction would then range over nothing), fails typed
+(`WORKSPACE_NOT_A_REPO` — on the run's own `failure_code`/`error` through
+the `workspace_not_a_repo` fail node, and on the probe's output) before
+any LLM node spends. `base_ref` is resolved, never fetched: the bare
+name first, then `refs/remotes/origin/<base_ref>` — a cloud PR run's
+checkout carries only the default branch and the PR head as local
+branches, so a PR targeting any other branch has its base only as a
+remote-tracking ref. `plan_scope_probe` measures the diff footprint
+against the same resolved base.
+
+## Persy (perseverance coach)
+
+A `supervisor persy:` block watches the `campaign` node
+(docs/supervisors.md): it pushes back on premature "unfixable" verdicts,
+expedient shortcuts, failure loops and unbanked state under budget
+pressure — a finding refused WITH evidence is not giving up.
+`--supervisors off` disables it per run.

@@ -4,9 +4,11 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +99,28 @@ func (r *Registry) registerDefaults() {
 					baseURL = secrets.ZAIDefaultBaseURL
 				}
 			}
+		}
+		// Desktop forfait, last: with no env credential at all, read this
+		// host's own Claude Code credentials — the twin of the openai factory's
+		// LoadCodexCredentialsFromDisk below. Without it the most common desktop
+		// setup (a Claude subscription, no API key) builds a client with NO
+		// credential and every claw call answers 401.
+		//
+		// Only onto the real Anthropic wire (secrets.AnthropicForfaitWireOK —
+		// the same predicate the ctx factory and the supervisor's funding check
+		// use): an operator who pointed ANTHROPIC_BASE_URL at a gateway chose
+		// that destination, and a subscription bearer, which carries the whole
+		// Claude account, must not be sent there implicitly. An explicit
+		// ANTHROPIC_AUTH_TOKEN still reaches any base URL — that one IS the
+		// operator's choice.
+		//
+		// KNOWN LIMITATION, shared with the codex path below: the resolved
+		// client is cached for the life of the process, so a long-running
+		// studio/dispatcher keeps the token captured at first resolve. Claude
+		// Code rotates it on expiry; restart the daemon to pick up the new one.
+		// An already-expired token is skipped rather than baked in.
+		if apiKey == "" && authToken == "" && secrets.AnthropicForfaitWireOK(baseURL) {
+			authToken = secrets.AnthropicForfaitAccessTokenFromDisk()
 		}
 		cfg := api.ProviderConfig{
 			APIKey:  apiKey,
@@ -290,11 +314,17 @@ func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
 // codexCLIVersion resolves the Codex CLI version string to send in the
 // `version:` HTTP header when claw operates in ChatGPT-OAuth mode. OpenAI's
 // backend gates model availability on this value (e.g. gpt-5.5 requires
-// codex-cli >= 0.130). Resolution precedence:
-//  1. ITERION_CODEX_VERSION env var (operator override; lets a fresh-but-
-//     binary-stale environment claim newer model access)
-//  2. `codex --version` parsed at most once per process (cached)
-//  3. "" — claw-code-go falls back to its baked-in version string
+// codex-cli >= 0.130, gpt-6-astra >= 0.144). Resolution precedence:
+//  1. ITERION_CODEX_VERSION env var (operator override, sent as-is; lets a
+//     fresh-but-binary-stale environment claim newer model access, or pin
+//     an older release deliberately)
+//  2. the newest of `codex --version` (parsed at most once per process),
+//     the host-side probe a sandbox launcher forwarded as
+//     ITERION_CODEX_HOST_VERSION, and claw's baked api.ChatGPTClientVersion
+//     — a stale codex binary on either side of the sandbox boundary must
+//     not downgrade the identity below what claw alone would present
+//     (measured: a runner image shipping 0.139.0 was refused a model the
+//     0.144.6 baseline is served)
 var (
 	codexVersionOnce   sync.Once
 	codexVersionCached string
@@ -320,7 +350,72 @@ func codexCLIVersion() string {
 		}
 		codexVersionCached = fields[len(fields)-1]
 	})
-	return codexVersionCached
+	return newerCodexVersion(newerCodexVersion(codexVersionCached, os.Getenv(codexHostVersionEnv)), api.ChatGPTClientVersion)
+}
+
+// codexHostVersionEnv carries the launcher's own `codex --version` probe into
+// a sandboxed runner, which cannot probe a binary the image does not ship.
+// Unlike ITERION_CODEX_VERSION it is a PROBE, not a decision: the runner
+// still keeps the newer of it and its own baked release.
+const codexHostVersionEnv = "ITERION_CODEX_HOST_VERSION"
+
+// newerCodexVersion returns the higher of two dotted numeric versions. A
+// side that does not parse loses; when neither parses, b (the baked value)
+// is returned. A pre-release ("0.145.0-beta.1") ranks below its release
+// ("0.145.0") and above the previous one, as semver orders them.
+func newerCodexVersion(a, b string) string {
+	av, apre, aok := parseDottedVersion(a)
+	bv, bpre, bok := parseDottedVersion(b)
+	switch {
+	case !aok:
+		return b
+	case !bok:
+		return a
+	}
+	for i := 0; i < len(av) || i < len(bv); i++ {
+		var x, y int
+		if i < len(av) {
+			x = av[i]
+		}
+		if i < len(bv) {
+			y = bv[i]
+		}
+		if x != y {
+			if x > y {
+				return a
+			}
+			return b
+		}
+	}
+	if apre && !bpre {
+		return b
+	}
+	return a
+}
+
+// parseDottedVersion reads "0.144.6" / "v0.145.0-beta.1" into its numeric
+// components; pre reports a pre-release suffix, whose own parts are not
+// compared. ok is false when a numeric component is not a number.
+func parseDottedVersion(s string) (parts []int, pre bool, ok bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" {
+		return nil, false, false
+	}
+	for _, p := range strings.Split(s, ".") {
+		if i := strings.IndexAny(p, "-+"); i >= 0 {
+			p = p[:i]
+			pre = true
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false, false
+		}
+		parts = append(parts, n)
+		if pre {
+			break
+		}
+	}
+	return parts, pre, true
 }
 
 // Register adds a provider factory under the given name.
@@ -454,6 +549,16 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 				return client, err
 			}
 		}
+		// Same for anthropic and the Claude Code forfait. Without this the
+		// fall-through below reaches the env factory, which on a runner pod
+		// sees no ANTHROPIC_* var and returns a client with NO credential —
+		// non-nil, so the caller proceeds, and every call answers 401
+		// "x-api-key header is required" (issue #687: Revi's pacer).
+		if providerName == "anthropic" {
+			if client, ok, err := r.anthropicFromCtxForfait(ctx, modelID); ok {
+				return client, err
+			}
+		}
 		// No tenant-scoped credential for this provider — fall back to the
 		// shared resolver (env vars + cache).
 		return r.Resolve(spec)
@@ -527,6 +632,101 @@ func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (ap
 	applyCodexOAuth(&cfg, view)
 	client, cerr := openaiprovider.New().NewClient(withClientIdentity(cfg))
 	return client, true, cerr
+}
+
+// anthropicFromCtxForfait builds an Anthropic client from the tenant's
+// per-run-materialised Claude Code forfait (Credentials.OAuthDir("claude_code")),
+// the twin of openAIFromCtxForfait. claw's anthropic provider takes the access
+// token as an OAuth bearer and sends `Authorization: Bearer` plus the
+// `anthropic-beta: oauth-2025-04-20` header the API requires — the same wire the
+// env factory builds from ANTHROPIC_AUTH_TOKEN.
+//
+// Returns ok=false (caller falls back to the shared resolver) when no dir is
+// resolved, when the blob carries no access token, or when the base URL points
+// at a z.ai/bigmodel facade — there the bearer is a BYOK key, not a forfait
+// token, so a subscription token would be the wrong credential entirely.
+//
+// Returns ok=true WITH an error when the operator forbade subscription-OAuth
+// spending: that is a refusal to surface, not a reason to fall through to an
+// unauthenticated client.
+//
+// BILLING: like the env path, this spends the subscription's EXTRA-USAGE
+// balance rather than the plan's limits, hence the same one-time notice.
+func (r *Registry) anthropicFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
+	baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+	if !secrets.AnthropicForfaitWireOK(baseURL) {
+		return nil, false, nil
+	}
+	dir := oauthDirLookup(ctx, string(secrets.OAuthKindClaudeCode))
+	if dir == "" {
+		return nil, false, nil
+	}
+	token, terr := secrets.AnthropicForfaitToken(dir)
+	if errors.Is(terr, secrets.ErrAnthropicForfaitExpired) {
+		// EXPIRED refuses even when an ambient credential could serve, and the
+		// forbid branch below deliberately does the opposite. The asymmetry is
+		// the policy, not an oversight:
+		//
+		//   - forbid  = the operator CONFIGURED "do not spend subscriptions
+		//     here", so serving the run from the deployment's own ambient key
+		//     is the arrangement they asked for.
+		//   - expired = nobody configured anything; the tenant HAD a
+		//     credential and the refresh worker did not renew it. Degrading to
+		//     the ambient key would put a broken tenant's spend on whoever owns
+		//     that key — the same billing-boundary slip R413769 closed one seam
+		//     over — and it would do so silently, at the exact moment something
+		//     is already wrong.
+		//
+		// So: a lapsed forfait fails loudly rather than borrowing someone
+		// else's account. Falling through would also reach the env factory,
+		// find no ANTHROPIC_* var on a pod with no ambient key, and build the
+		// unauthenticated client whose 401 loop is issue #687.
+		return nil, true, fmt.Errorf("claw: %w (model %s): the runner's OAuth refresh worker has not renewed it", terr, modelID)
+	}
+	if terr != nil || token == "" {
+		return nil, false, nil
+	}
+	if secrets.ForbidSubscriptionOAuth() {
+		// The flag means "this credential does not count", which is the reading
+		// pkg/supervise's ctxFundsProvider already takes — not "the run dies".
+		// A pod carrying an ambient key (the `anthropic-env` shape named in
+		// pkg/runner/usage_cap.go) served fine before this branch existed, and
+		// CLAUDE.md recommends the flag on exactly those shared deployments: a
+		// hard refusal here would break every run whose tenant merely HAS a
+		// forfait connected.
+		if ambientAnthropicCredential() {
+			return nil, false, nil
+		}
+		// Sole candidate: now the refusal IS the useful answer. Falling through
+		// would build the unauthenticated client this function exists to
+		// prevent, and a silent 401 per call is issue #687 itself.
+		return nil, true, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
+	}
+	claudeForfaitWarnOnce.Do(func() {
+		iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
+			secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
+	})
+	cfg := api.ProviderConfig{
+		Model:      modelID,
+		BaseURL:    baseURL,
+		OAuthToken: token,
+	}
+	client, cerr := anthropicprovider.New().NewClient(withClientIdentity(cfg))
+	return client, true, cerr
+}
+
+// ambientAnthropicCredential reports whether this process's own environment
+// already carries something that can authenticate an Anthropic call without the
+// forfait. The AUTH_TOKEN case is shape-checked on purpose: that variable is
+// overloaded — a z.ai facade key or a gateway bearer is an ordinary credential,
+// while an `sk-ant-oat…` value is another subscription token, which is the very
+// thing the forbid flag refuses.
+func ambientAnthropicCredential() bool {
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ZAI_API_KEY") != "" {
+		return true
+	}
+	tok := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	return tok != "" && !secrets.IsAnthropicSubscriptionToken(tok)
 }
 
 // oauthDirResolver maps an OAuth kind ("codex" / "claude_code") to its

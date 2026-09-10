@@ -1,7 +1,20 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.0.0
+version: 1.1.0
+## 1.1.0 — the publish tail is PLATFORM-AGNOSTIC. It used to speak one
+## platform (SSP Cloud datalab S3 + a standing serve service, three STS
+## secrets with a 7-day life that let the demo URL die by itself). It
+## now builds the site, packages it as a non-root nginx image pushed to
+## the operator's registry (`publish_image`, `registry_token`) and hands
+## that image to the operator-attached `deploy-target` skill with a
+## `deploy_credential` — the Appy pattern: the platform lives in the
+## attached skill + the mounted credential, no platform literal in the
+## DSL. publish_gate probes the generic preconditions (base URL, image,
+## both credentials); verify_publish still refuses any URL outside
+## `publish_base_url`. The schedule invocation now also defaults
+## `open_mr` on: a scheduled run on an ephemeral clone delivers only
+## through the PR tail.
 ## 1.0.0 — Functional (business-audience) product documentation,
 ## generated and maintained in a DEDICATED docs repository from a
 ## MULTI-REPO product catalog. Mirrors docs-refresh v3's topology (one
@@ -61,7 +74,10 @@ description: |
   Opt-in delivery: open_mr=true pushes the page series and opens ONE
   pull request at the end of the run — as a DRAFT by default, because
   functional documentation is validated by the product owners on the
-  forge and marking it ready is their act, not the bot's.
+  forge and marking it ready is their act, not the bot's. publish=true
+  additionally builds the pages into a static site, packages it as a
+  container image and puts it live through the operator-attached
+  `deploy-target` skill, then verifies the URL from outside.
 when_to_use: |
   Use to generate or maintain the FUNCTIONAL, non-technical
   documentation of a product — what it does for its users, role by
@@ -106,7 +122,7 @@ invocations:
     ## the pages against the source commits landed since the last run,
     ## not the whole corpus. Declared here so the scheduled run actually
     ## carries it — a var only a human can pass is not a schedule.
-    schedule: { suggested_cron: "0 5 * * 1", default_vars: { mode: incremental } }
+    schedule: { suggested_cron: "0 5 * * 1", default_vars: { mode: incremental, open_mr: "true" } }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in

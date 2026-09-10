@@ -122,6 +122,59 @@ information. When a reference moves, exactly one of two things is true:
 
 Both are stop conditions for this bot. Neither is yours to resolve.
 
+### Qualify the divergence before you ask for anything
+
+Rewriting is not yours. **Naming what moved, and why, is** — and doing it
+first changes what you ask for, because two of the three readings are
+repaired in the PRODUCT: one of them with no reference touched at all, the
+other by moving them once, deliberately, instead of once per environment:
+
+- **A betrayed intention.** The reference carries a behaviour someone chose,
+  often said in as many words in the corpus beside it, and your change broke
+  it: an account that used to sign in stops signing in because the new engine
+  compares identifiers case-sensitively. The gesture is in the product —
+  normalise the identifier — and **the reference does not move**. Asking to
+  re-record it is asking to make the loss official.
+- **An unspecified artefact.** The reference froze a detail nobody chose:
+  the order of ties no `ORDER BY` decides, an auto-assigned id, a timestamp,
+  a hash of an iteration order. The gesture is to make the product
+  **deterministic** — and the references that move once you do are still
+  announced, in a written request, and re-recorded ONE time under a cause
+  that names the determinism. Both environments agree afterwards, from one
+  reference set: never one per engine, per platform, per environment, since
+  a second set doubles the net's maintenance and hides the non-determinism
+  instead of removing it.
+- **Genuinely ambiguous.** Both readings defend themselves — an accent-aware
+  sort whose order follows the schema's collation, a locale-dependent format.
+  Look for the **overlay that reproduces the wanted behaviour** (declare the
+  collation, a comparator in the product, a locale the deployed application
+  carries), and try it — but only where it would be present in production,
+  never in the launcher the judge invokes (see *the environment the judge
+  looks through*, below: a fix that lives only there is the same cheat under
+  another name). Only when no such overlay holds does this become a request,
+  and then the request carries the classification and the overlay you tried.
+
+An improvement to the tree beats a re-recording of the snapshot every time
+the snapshot only froze an accident.
+
+**One request per red episode, classified path by path inside it.** The
+party that consumes a request re-records and compares the observed diff to
+your announced `expected_paths` **as a whole** — so splitting one red oracle
+into several requests makes every one of them mismatch, and a refused
+request is not retried. Announce exactly what the red report shows, and put
+the classification in the cause, path by path: which paths moved because the
+product became deterministic, which you closed in the product instead, which
+you are not asking for at all. If, after everything the classification let
+you close, paths of two different classes are still moving, that is a stop —
+say so and block, rather than asking for a mixture nobody can act on. The
+grain that can ever be acted is the CLASS, never the path: a request is
+acted whole or stays pending, so two classes moving at the same time are
+one impossible request, not two.
+(Measured: one lot filed seventeen paths in a single block across three
+distinct causes — an order artefact, a collation ambiguity, and a betrayed
+login behaviour that had no business being re-recorded at all. The cure is
+the classification inside the request, not more requests.)
+
 The second case has a written next step, and it IS yours to write even though
 it is not yours to resolve. When the move is the behaviour change the lot
 intends — and the lot's contract says `rebaseline_allowed: true` — announce it
@@ -157,6 +210,18 @@ testing, and asking past it means the lot overflowed.
 A red the ledger never heard about is a dead end: the supervising process can
 only execute what was announced. Every re-baseline need, however obvious it
 feels in the moment, goes to the ledger.
+
+The same channel exists for the opposite need. When the intent requires the
+net to OBSERVE something it does not cover yet — a new route, a state only
+the modernised code reaches — you do not write under the net to get it. You
+write an extension request in `EXTENSIONS.md` (same block discipline, blocks
+`iterion:extension-request`; canonical format in the golden-master doctrine
+skill) and the net's own bot acts it by pure addition, mechanically checked.
+The distinction that decides which ledger: MOVING a reference is a
+re-baseline and needs a human; ADDING an observation point is an extension
+and the net's bot may grant it. A rename is a move. If your request cannot be
+satisfied without touching an existing reference or entry, it is a
+re-baseline request wearing the wrong block.
 
 ## The third place a fix can cheat: the environment the judge looks through
 
@@ -224,6 +289,12 @@ diligence against exactly this, and its record belongs in the tree.
 
 Commit as you go. An interrupted run should leave landed work, not a worktree
 full of uncommitted changes that the next pass cannot tell apart from its own.
+
+Never write `status: done`. That word is the gate's — a tool node writes it
+after the verdict went green, in a commit of its own. Write `status: blocked`
+with the reason committed when you must stop. A run interrupted after a
+self-written `done` relaunches as a green no-op, and the verifier refuses the
+word before it runs a single gate command.
 
 Write the reasoning where a human will find it — in the commit message and, for
 anything longer, in a file you commit. A status field in a control-plane

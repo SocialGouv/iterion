@@ -156,25 +156,55 @@ func TestResolveModelWithHonoursCtxFundedHint(t *testing.T) {
 	}
 }
 
-// ctxFundsProvider: a per-provider API key funds its provider; the codex
-// ChatGPT forfait funds openai (the only OAuth path ResolveWithContext
-// actually has). The claude_code OAuth forfait does NOT fund anthropic —
-// claw's anthropic factory is env-only, so claiming it would resolve an
-// unauthenticated client.
+// ctxFundsProvider: a per-provider API key funds its provider, and each
+// subscription forfait funds the provider ResolveWithContext has a ctx branch
+// for — codex → openai, claude_code → anthropic. This map must stay in step
+// with those branches in both directions: claiming a provider nothing can
+// build resolves an unauthenticated client (401 per eval), and denying one
+// that IS buildable parks supervision for no reason.
 func TestCtxFundsProvider(t *testing.T) {
-	f := ctxFundsProvider(secrets.Credentials{
+	creds := secrets.Credentials{
 		APIKeys:              map[secrets.Provider]string{"zai": "zk"},
 		OAuthCredentialFiles: map[string]string{"claude_code": "/tmp/cc", "codex": "/tmp/cx"},
-	})
-	for provider, want := range map[string]bool{
-		"zai":       true,
-		"anthropic": false,
-		"openai":    true,
-		"xai":       false,
-	} {
-		if got := f(provider); got != want {
-			t.Errorf("ctxFundsProvider(%q) = %v, want %v", provider, got, want)
+	}
+
+	t.Run("forfaits fund their provider", func(t *testing.T) {
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+		t.Setenv("ANTHROPIC_BASE_URL", "")
+		t.Setenv("OPENAI_BASE_URL", "")
+		t.Setenv("ITERION_OPENAI_USE_OAUTH", "")
+		f := ctxFundsProvider(creds)
+		for provider, want := range map[string]bool{
+			"zai":       true,
+			"anthropic": true, // via the claude_code forfait
+			"openai":    true, // via the codex forfait
+			"xai":       false,
+		} {
+			if got := f(provider); got != want {
+				t.Errorf("ctxFundsProvider(%q) = %v, want %v", provider, got, want)
+			}
 		}
+	})
+
+	// Each kill-switch that makes the registry's ctx branch decline must make
+	// this predicate decline too, or the hint resolves a model the branch
+	// refuses to build.
+	for name, tc := range map[string]struct{ key, val, provider string }{
+		"FORBID_SUBSCRIPTION_OAUTH": {"ITERION_FORBID_SUBSCRIPTION_OAUTH", "1", "anthropic"},
+		"anthropic z.ai facade":     {"ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic", "anthropic"},
+		"openai oauth disabled":     {"ITERION_OPENAI_USE_OAUTH", "0", "openai"},
+		"openai base url override":  {"OPENAI_BASE_URL", "http://localhost:1234", "openai"},
+	} {
+		t.Run(name+" → unfunded", func(t *testing.T) {
+			t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+			t.Setenv("ANTHROPIC_BASE_URL", "")
+			t.Setenv("OPENAI_BASE_URL", "")
+			t.Setenv("ITERION_OPENAI_USE_OAUTH", "")
+			t.Setenv(tc.key, tc.val)
+			if ctxFundsProvider(creds)(tc.provider) {
+				t.Errorf("ctxFundsProvider(%q) = true with %s=%s, want false", tc.provider, tc.key, tc.val)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -54,8 +55,23 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
+	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
+	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
+	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
+	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("SaveRunVersionConflicts", func(t *testing.T) { testSaveRunVersionConflicts(t, factory) })
+	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
+	t.Run("ParallelCheckpointRoundTrip", func(t *testing.T) { testParallelCheckpointRoundTrip(t, factory(t)) })
+	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
+	t.Run("EndReasonLifecycle", func(t *testing.T) { testEndReasonLifecycle(t, factory(t)) })
+	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
+	t.Run("FinalContinuationDisarmsRetry", func(t *testing.T) { testFinalContinuationDisarmsRetry(t, factory(t)) })
+	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
+	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -64,10 +80,17 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("AwaitAnswersWaits", func(t *testing.T) { RunAwaitAnswersWaitConformance(t, factory(t)) })
 	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
 	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
+	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
+	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
+	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
+	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
+	t.Run("OutputCorrectionStore", func(t *testing.T) { testOutputCorrectionStore(t, factory(t)) })
+	t.Run("WatcherCursorStore", func(t *testing.T) { testWatcherCursorStore(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -75,6 +98,218 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testWatcherCursorStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	cursors := store.AsWatcherCursorStore(s)
+	if cursors == nil {
+		t.Skip("backend does not implement WatcherCursorStore")
+	}
+	ctx := testCtx()
+	const runID = "run_watcher_cursor"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, "waiting", store.FailureNetworkTransient); err != nil {
+		t.Fatalf("park run: %v", err)
+	}
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "agent"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	before, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun before: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	next := now.Add(time.Minute)
+	want := store.WatcherCursor{
+		WatcherID: "supervisor:conformance", LastProgressFingerprint: "progress",
+		LastProgressAt: now, LastEvaluationAt: &now,
+		LastAction: "observe", LastTriggerFingerprint: "trigger", NextEvaluationAt: &next,
+		ConsecutiveNoProgress: 2, ProgressSequence: 4, InterventionSequence: 3,
+		PendingInterventionID: "msg_pending", PendingInterventionTrigger: "pending-trigger", PendingInterventionSequence: 4,
+		UpdatedAt: now,
+	}
+	if err := cursors.SetWatcherCursor(ctx, runID, want.WatcherID, want); err != nil {
+		t.Fatalf("SetWatcherCursor: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after: %v", err)
+	}
+	cursor, ok := got.WatcherCursors[want.WatcherID]
+	if !ok || cursor.WatcherID != want.WatcherID || cursor.LastProgressFingerprint != "progress" ||
+		cursor.LastEvaluationAt == nil || !cursor.LastEvaluationAt.Equal(now) || cursor.NextEvaluationAt == nil ||
+		!cursor.NextEvaluationAt.Equal(next) || cursor.ConsecutiveNoProgress != 2 || cursor.ProgressSequence != 4 || cursor.InterventionSequence != 3 ||
+		cursor.PendingInterventionID != "msg_pending" || cursor.PendingInterventionTrigger != "pending-trigger" || cursor.PendingInterventionSequence != 4 {
+		t.Fatalf("watcher cursor round-trip = %+v, present=%t", cursor, ok)
+	}
+	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error ||
+		got.Checkpoint == nil || got.Checkpoint.NodeID != "agent" {
+		t.Fatalf("granular watcher write replaced peer fields: before=%+v after=%+v", before, got)
+	}
+	if err := cursors.SetWatcherCursor(ctx, "missing-watcher-cursor", want.WatcherID, want); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("missing run error = %v, want ErrRunNotFound", err)
+	}
+}
+
+func testOutputCorrectionStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	corrections := store.AsOutputCorrectionStore(s)
+	if corrections == nil {
+		t.Skip("backend does not implement OutputCorrectionStore")
+	}
+	ctx := testCtx()
+	const runID = "run_output_correction"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, "schema mismatch", store.FailureSchemaValidation); err != nil {
+		t.Fatalf("park run: %v", err)
+	}
+	if err := s.SaveCheckpoint(ctx, runID, &store.Checkpoint{NodeID: "writer"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	before, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun before: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	want := store.OutputCorrectionEpisode{
+		EpisodeID: "writer/root", InvocationID: "writer", NodeID: "writer",
+		Budget: 2, Attempts: 1, Status: "active", InputFingerprint: "input",
+		LastOutputFingerprint: "output", LastViolationFingerprint: "violation",
+		StartedAt: now, UpdatedAt: now,
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, runID, "writer_root", want); err != nil {
+		t.Fatalf("SetRunOutputCorrection: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after: %v", err)
+	}
+	if episode, ok := got.OutputCorrections["writer_root"]; !ok || episode.EpisodeID != want.EpisodeID || episode.Attempts != 1 || episode.Status != "active" || !episode.StartedAt.Equal(now) {
+		t.Fatalf("output correction round-trip = %+v, present=%t", episode, ok)
+	}
+	if got.Status != before.Status || got.FailureCode != before.FailureCode || got.Error != before.Error || got.Checkpoint == nil || got.Checkpoint.NodeID != "writer" {
+		t.Fatalf("granular correction write replaced peer fields: before=%+v after=%+v", before, got)
+	}
+	if err := corrections.SetRunOutputCorrection(ctx, "missing-output-correction", "writer_root", want); !errors.Is(err, store.ErrRunNotFound) {
+		t.Fatalf("missing run error = %v, want ErrRunNotFound", err)
+	}
+}
+
+func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_parallel_checkpoint"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{
+		NodeID:        "dispatch",
+		InteractionID: "interaction-1",
+		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		Artifacts: map[string]map[string]any{
+			"plan":    {"title": "ship"},
+			"pending": {"title": "fallback"},
+		},
+		ArtifactOwners: map[string]string{"plan": "planner", "pending": "planner", "historic": "planner"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":     {NodeID: "planner", Version: 2},
+			"pending":  {NodeID: "planner", Version: 1, Unverified: true},
+			"historic": {NodeID: "planner", Version: 0, ValueFromRevision: true},
+		},
+		ArtifactRevisionsKnown: true,
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:                "dispatch",
+			InvocationKey:               "dispatch@outer=2",
+			PendingBranchID:             "branch_dispatch_0",
+			PendingNodeID:               "gate",
+			PendingInteractionID:        "interaction-1",
+			PendingInteractionQuestions: map[string]any{"approved": "bool"},
+			ArtifactAllocations:         map[string]int{"branch/gate/outer=2": 3},
+			NextArtifactVersion:         map[string]int{"gate": 4},
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_dispatch_0": {
+					BranchID:           "branch_dispatch_0",
+					StartNodeID:        "work",
+					CurrentNodeID:      "gate",
+					Outputs:            map[string]map[string]any{"work": {"result": "ok"}},
+					Artifacts:          map[string]map[string]any{"report": {"path": "report.md"}},
+					ArtifactOwners:     map[string]string{"report": "work"},
+					ArtifactVersions:   map[string]int{"work": 2},
+					ArtifactRevisions:  map[string]store.ArtifactRevisionRef{"report": {NodeID: "work", Version: 1}},
+					LoopCounters:       map[string]int{"retry": 1},
+					LoopPreviousOutput: map[string]map[string]any{"retry": {"result": "before"}},
+					LoopCurrentOutput:  map[string]map[string]any{"retry": {"result": "after"}},
+					LoopBudgetMarks:    map[string]map[string]float64{"retry": {"tokens": 12}},
+					SelectedIncoming: map[string][]store.IncomingEdge{
+						"gate": {{From: "work", To: "gate", Condition: "ready"}},
+					},
+					CostUSD:        1.25,
+					ResumeAnswers:  map[string]any{"approved": true},
+					ResumeAnswered: true,
+				},
+			},
+		},
+	}
+	if err := s.SaveCheckpoint(ctx, runID, cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.Parallel == nil {
+		t.Fatalf("parallel checkpoint missing after round-trip: %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
+		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
+	}
+	if revision := r.Checkpoint.ArtifactRevisions["plan"]; revision.NodeID != "planner" || revision.Version != 2 {
+		t.Fatalf("artifact revision after round-trip = %+v", revision)
+	}
+	if !r.Checkpoint.ArtifactRevisionsKnown {
+		t.Fatal("artifact revision authority marker was lost in store round-trip")
+	}
+	if !r.Checkpoint.ArtifactsKnown || r.Checkpoint.Artifacts["plan"]["title"] != "ship" {
+		t.Fatalf("artifact logical snapshot was lost in store round-trip: %+v", r.Checkpoint.Artifacts)
+	}
+	if r.Checkpoint.ArtifactOwners["plan"] != "planner" {
+		t.Fatalf("artifact logical owner was lost in store round-trip: %+v", r.Checkpoint.ArtifactOwners)
+	}
+	if !r.Checkpoint.ArtifactRevisions["pending"].Unverified {
+		t.Fatalf("unverified artifact binding marker was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
+	if !r.Checkpoint.ArtifactRevisions["historic"].ValueFromRevision {
+		t.Fatalf("historical artifact value reference was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
+	got := r.Checkpoint.Parallel
+	branch := got.Branches["branch_dispatch_0"]
+	if got.InvocationKey != "dispatch@outer=2" || got.PendingNodeID != "gate" || got.NextArtifactVersion["gate"] != 4 {
+		t.Fatalf("parallel metadata after round-trip = %+v", got)
+	}
+	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
+		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
+	}
+	if revision := branch.ArtifactRevisions["report"]; revision.NodeID != "work" || revision.Version != 1 {
+		t.Fatalf("branch artifact revision after round-trip = %+v", revision)
+	}
+	if branch.ArtifactOwners["report"] != "work" {
+		t.Fatalf("branch artifact owner after round-trip = %+v", branch.ArtifactOwners)
+	}
+	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
+		t.Fatalf("branch nested state after round-trip = %+v", branch)
+	}
+	// The daily-cap ledger key is monotonic-max and process-local sequence
+	// numbers restart on resume, so the branch's cumulative spend must survive
+	// the round-trip or the resumed pass's cost is silently discarded.
+	if branch.CostUSD != 1.25 {
+		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
+	}
 }
 
 func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
@@ -101,7 +336,7 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// A delivery from before this requeue must not fail the new attempt.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || changed {
 		t.Fatalf("stale attempt CAS = (%t, %v), want (false, nil)", changed, err)
 	}
@@ -110,12 +345,21 @@ func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
 	}
 
 	// The delivery belonging to this attempt may perform the terminal flip.
-	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second))
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second), store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal})
 	if err != nil || !changed {
 		t.Fatalf("current attempt CAS = (%t, %v), want (true, nil)", changed, err)
 	}
-	if got, _ := s.LoadRun(ctx, runID); got == nil || got.Status != store.RunStatusFailedResumable {
+	got, _ := s.LoadRun(ctx, runID)
+	if got == nil || got.Status != store.RunStatusFailedResumable {
 		t.Fatalf("current attempt left run at %+v, want failed_resumable", got)
+	}
+	// The park's typed WHY rides the same write as the flip: a DLQ park
+	// with an empty code reads as a quota pause to the gate notice.
+	if got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("FailureCode after the admission park = %q, want %s (the notice keys on it)", got.FailureCode, store.FailureDLQParked)
+	}
+	if got.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("ContinuationState after the admission park = %q, want final (nothing on the platform wakes a parked run)", got.ContinuationState)
 	}
 }
 
@@ -818,6 +1062,12 @@ func testNodesServed(t *testing.T, s store.RunStore) {
 		DeclaredModel:   "anthropic/claude-opus-5",
 		ContextWindow:   200_000,
 		MaxOutputTokens: 8192,
+		// Set here, not left zero: the comparisons below are struct
+		// equality, so a field the fixture never populates proves
+		// nothing about its bson tag — both twins would return "" and
+		// agree. This is the only place the FS and Mongo halves are
+		// held to the same NodeServed shape.
+		Fingerprint: "facade:https://api.z.ai/api/anthropic",
 	}
 	if err := s.RecordNodeServed(ctx, "run_served", "implement", first); err != nil {
 		t.Fatalf("RecordNodeServed implement: %v", err)
@@ -1112,6 +1362,274 @@ func testStatusTransitions(t *testing.T, s store.RunStore) {
 	}
 }
 
+// testFailureCodeLifecycle pins the ADR-095 persistence discipline on
+// BOTH store twins: the typed code lands in the same write as the
+// failure status (plain, coded-CAS and FailRun* forms), an UNKNOWN
+// code round-trips unharmed (open-world contract), and EVERY
+// transition to a non-failure status clears it — the invariant that
+// keeps a resumed run from lying about a past failure.
+func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_fc", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	// FailRunResumable carries the code atomically.
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_fc", cp, "quota window shut", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_fc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FailureCode != store.FailureUsageLimitBlocked {
+		t.Fatalf("FailureCode after FailRunResumable: got %q", r.FailureCode)
+	}
+	// Resume (any transition to running) clears code AND error together.
+	if err := s.UpdateRunStatus(ctx, "run_fc", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" || r.Error != "" {
+		t.Fatalf("resume must clear code+error, got code=%q error=%q", r.FailureCode, r.Error)
+	}
+	// Coded CAS: code and status land in one write.
+	changed, err := s.UpdateRunStatusIfCoded(ctx, "run_fc", store.RunStatusCancelled, "run cancelled", store.FailureCancelled, []store.RunStatus{store.RunStatusRunning})
+	if err != nil || !changed {
+		t.Fatalf("coded CAS: changed=%v err=%v", changed, err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != store.FailureCancelled {
+		t.Fatalf("FailureCode after coded CAS: got %q", r.FailureCode)
+	}
+	// Transition to queued (the cloud resume pre-flip) clears it too —
+	// the invariant covers queued, not only running.
+	if _, err := s.UpdateRunStatusIf(ctx, "run_fc", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("queued must clear the code, got %q", r.FailureCode)
+	}
+	// A checkpoint-coupled pause (which bypasses the transition choke
+	// point) still clears the classification: paused is not a failure.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailedResumable, "parked", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_fc", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("pause must clear the code, got %q", r.FailureCode)
+	}
+
+	// Open-world: an unknown, non-empty code survives persistence.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailed, "boom", store.FailureCode("SOME_FUTURE_CODE_V9")); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "SOME_FUTURE_CODE_V9" {
+		t.Fatalf("unknown code mangled: %q", r.FailureCode)
+	}
+}
+
+// testEndReasonLifecycle pins the typed end-reason discipline on BOTH
+// store twins. It is the protocol the runner admission reads to drop a
+// redelivery for a run whose pull request closed, so it has to persist on
+// the same statuses as FailureCode, survive a same-status rewrite that
+// states none, and be cleared by every transition out of them — a resumed
+// run that still claimed "pr_closed" would be refused admission forever.
+func testEndReasonLifecycle(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_er", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, "run_er")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// The twins start a run differently on purpose — the filesystem store goes
+	// straight to running, the cloud one to queued (Opts.InitialStatus models
+	// it) — so the row states the status it CASes from instead of inheriting
+	// either default. What is under test is the end reason, not CreateRun.
+	if err := s.UpdateRunStatus(ctx, "run_er", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The cancel writes reason and status in ONE outcome write.
+	changed, err := s.UpdateRunOutcome(ctx, "run_er", store.RunStatusCancelled,
+		store.RunEndReasonPRClosed.Message(),
+		store.RunOutcomeMeta{Code: store.FailureCancelled, EndReason: store.RunEndReasonPRClosed},
+		[]store.RunStatus{store.RunStatusRunning})
+	if err != nil || !changed {
+		t.Fatalf("cancel outcome: changed=%v err=%v", changed, err)
+	}
+	if r := load(); r.EndReason != store.RunEndReasonPRClosed || r.FailureCode != store.FailureCancelled {
+		t.Fatalf("after the cancel: end_reason=%q failure_code=%q", r.EndReason, r.FailureCode)
+	}
+	// A same-status rewrite that states no reason keeps the one the
+	// transition wrote — an untyped writer must not erase it.
+	if err := s.UpdateRunStatusCoded(ctx, "run_er", store.RunStatusCancelled, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != store.RunEndReasonPRClosed {
+		t.Fatalf("a same-status rewrite erased the end reason: %q", r.EndReason)
+	}
+	// Any transition out of the carrying statuses clears it: an operator
+	// resume must not leave the run claiming why it once ended.
+	if _, err := s.UpdateRunStatusIf(ctx, "run_er", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != "" {
+		t.Fatalf("queued must clear the end reason, got %q", r.EndReason)
+	}
+	// Open-world, like FailureCode: an unknown reason round-trips.
+	if _, err := s.UpdateRunOutcome(ctx, "run_er", store.RunStatusFailed, "boom",
+		store.RunOutcomeMeta{Code: store.FailureExecutionFailed, EndReason: store.RunEndReason("some_future_reason")},
+		[]store.RunStatus{store.RunStatusQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if r := load(); r.EndReason != "some_future_reason" {
+		t.Fatalf("unknown reason mangled: %q", r.EndReason)
+	}
+	// A full-document write on a non-carrying status cannot resurrect it,
+	// and a document that already carries one is healed on read.
+	r := load()
+	r.Status = store.RunStatusRunning
+	r.EndReason = store.RunEndReasonPRClosed
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(); got.EndReason != "" {
+		t.Fatalf("SaveRun resurrected an end reason on a running run: %q", got.EndReason)
+	}
+}
+
+// testTransitionSideEffects pins the transition side effects BOTH twins
+// must share (each was a live FS↔Mongo divergence): the running claim
+// clears checkpoint AND error, PauseRun clears FinishedAt and the code,
+// SaveRun normalizes a stale code, and an empty-expectedFrom CAS is a
+// loud error — never a silent no-op on one twin and an unconditional
+// write on the other.
+func testTransitionSideEffects(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tse", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	// The running claim PRESERVES the previous attempt's checkpoint on
+	// both twins: the park writers that follow (drain, usage-cap,
+	// orphan sweeps) flip running→failed_resumable without a
+	// checkpoint of their own, and the resume point must survive that
+	// round trip — a pod dying between its claim and its first own
+	// checkpoint resumes from the previous attempt's node, never from
+	// the workflow entry.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, "should not persist"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_tse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "n1" {
+		t.Errorf("running claim destroyed the resume point (checkpoint %v)", r.Checkpoint)
+	}
+	if r.Error != "" {
+		t.Errorf("running run must carry no failure message, got %q", r.Error)
+	}
+	// PauseRun: not over, so no terminal timestamp and no failure code.
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_tse", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FinishedAt != nil {
+		t.Error("paused run kept a stale FinishedAt")
+	}
+	if r.FailureCode != "" {
+		t.Errorf("paused run kept a stale code %q", r.FailureCode)
+	}
+	// SaveRun normalizes: a copy loaded before a status change must not
+	// resurrect its failure code through the full-document write.
+	r.Status = store.RunStatusRunning
+	r.FailureCode = store.FailureUsageLimitBlocked
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FailureCode != "" {
+		t.Errorf("SaveRun resurrected a stale code %q on a running run", r.FailureCode)
+	}
+	// Finished keeps the checkpoint too: `iterion fork` reads a
+	// terminal parent's checkpoint for its upstream outputs.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusFinished, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Checkpoint == nil {
+		t.Error("finished transition destroyed the checkpoint a fork would read")
+	}
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty expectedFrom: a loud error on both twins (FS used to no-op
+	// silently while Mongo wrote unconditionally).
+	if _, err := s.UpdateRunStatusIf(ctx, "run_tse", store.RunStatusCancelled, "x", nil); err == nil {
+		t.Error("empty-expectedFrom CAS must be refused")
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Status == store.RunStatusCancelled {
+		t.Error("empty-expectedFrom CAS wrote anyway")
+	}
+}
+
+// testTombstoneRefusesWriters pins that a deleted run stays dead on both
+// twins: no status/checkpoint/pause/failure writer may mutate the
+// tombstone (Mongo used to write status, code and checkpoint onto the
+// skeleton and report success).
+func testTombstoneRefusesWriters(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tomb", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, "run_tomb"); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tomb", cp, "post-delete", store.FailureFailNode); err == nil {
+		t.Error("FailRunResumable succeeded on a tombstone")
+	}
+	if err := s.FailRunTerminal(ctx, "run_tomb", cp, "post-delete", ""); err == nil {
+		t.Error("FailRunTerminal succeeded on a tombstone")
+	}
+	if err := s.PauseRun(ctx, "run_tomb", cp); err == nil {
+		t.Error("PauseRun succeeded on a tombstone")
+	}
+	if err := s.SaveCheckpoint(ctx, "run_tomb", cp); err == nil {
+		t.Error("SaveCheckpoint succeeded on a tombstone")
+	}
+	if changed, _ := s.UpdateRunStatusIf(ctx, "run_tomb", store.RunStatusCancelled, "x", []store.RunStatus{store.RunStatusRunning, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusQueued, store.RunStatusFinished, store.RunStatusCancelled, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, "deleted"}); changed {
+		t.Error("status CAS wrote onto a tombstone")
+	}
+	if _, err := s.LoadRun(ctx, "run_tomb"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("tombstone must read as ErrRunDeleted, got %v", err)
+	}
+}
+
 // testFailRunTerminal pins the checkpoint-preserving terminal failure on
 // BOTH store twins: status failed + checkpoint retained + FinishedAt set,
 // and the atomic cancelled-outranks guard. The DSL fail-node path depends
@@ -1122,7 +1640,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 		t.Fatal(err)
 	}
 	cp := &store.Checkpoint{NodeID: "node-f"}
-	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node", store.FailureFailNode); err != nil {
 		t.Fatalf("FailRunTerminal: %v", err)
 	}
 	r, err := s.LoadRun(testCtx(), "run_ft")
@@ -1149,7 +1667,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 	if err := s.UpdateRunStatus(testCtx(), "run_ft_cancel", store.RunStatusCancelled, "operator stop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure", ""); err != nil {
 		t.Fatalf("FailRunTerminal on a cancelled run: %v", err)
 	}
 	r, err = s.LoadRun(testCtx(), "run_ft_cancel")
@@ -1309,7 +1827,9 @@ func testArtifactVersions(t *testing.T, s store.RunStore) {
 	if _, err := s.CreateRun(testCtx(), "run_5", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
-	for v := 1; v <= 3; v++ {
+	// Deliberately write out of order: artifact_index is a latest-version
+	// cache, so replaying an older immutable revision must never regress it.
+	for _, v := range []int{3, 1, 2} {
 		if err := s.WriteArtifact(testCtx(), &store.Artifact{
 			RunID:     "run_5",
 			NodeID:    "node_a",
@@ -1444,5 +1964,1231 @@ func testUserMessagesInbox(t *testing.T, s store.RunStore) {
 	// Updating an unknown ID returns ErrQueuedMessageNotFound.
 	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "nonexistent", store.QueuedMessageStatusDelivered); err == nil {
 		t.Fatalf("Update nonexistent: expected error")
+	}
+}
+
+// testPausePointerLifecycle holds both backends to the pause-pointer
+// consumption contract (store.CarriesPausePointer): the checkpoint
+// survives every transition (ADR-095 §5), but its interaction evidence
+// is a consumable — cleared by any transition into a status that
+// cannot truthfully carry it, and PRESERVED on the paused → queued
+// cloud-resume hop, which the runner's queued router reads to route a
+// human-answers resume. Without the consumption, a status-only cancel
+// of a paused run left the pointer live and a cloud resume crossed the
+// human gate with an empty answer.
+func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	cp := func() *store.Checkpoint {
+		return &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+			InteractionQuestions: map[string]any{"approve": "yes?"}}
+	}
+
+	// Cancel consumes: pause → cancelled clears the pointer, keeps the node.
+	if _, err := s.CreateRun(ctx, "pp-cancel", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(ctx, "pp-cancel", store.RunStatusCancelled, "operator cancel"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "gate" {
+		t.Fatalf("cancel must preserve the checkpoint anchor, got %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("cancel left the pause pointer live (%q, %d questions) — a cloud resume would cross the human gate with an empty answer",
+			r.Checkpoint.InteractionID, len(r.Checkpoint.InteractionQuestions))
+	}
+
+	// The queued hop preserves: pause → queued (SubmitResume with answers)
+	// must keep the pointer — it is what routes the runner's Resume into
+	// the pause path where the answers are recorded.
+	if _, err := s.CreateRun(ctx, "pp-queued", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-queued", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("the paused → queued hop must PRESERVE the pause pointer (the runner routes the answers resume on it), got %+v", r.Checkpoint)
+	}
+
+	// SaveRun on a non-carrying status must not resurrect a consumed
+	// pointer through a full-document write.
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Checkpoint.InteractionID = "I-resurrected"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" {
+		t.Errorf("SaveRun resurrected a consumed pause pointer on a cancelled run: %q", r.Checkpoint.InteractionID)
+	}
+
+	// SaveCheckpoint must not resurrect it either: SaveRun normalizes
+	// its own COPY, so a caller that then re-persists its original
+	// checkpoint (the rewind shape: SaveRun(run) then SaveCheckpoint(cp))
+	// would replay the live pointer. Only PauseRun writes one.
+	if err := s.SaveCheckpoint(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("SaveCheckpoint resurrected the pause pointer (%q) — the rewind write shape replays it", r.Checkpoint.InteractionID)
+	}
+
+	// …but on a PAUSED run the write-through is legitimate: budget/
+	// bookkeeping updates on a live pause must keep the pointer, or the
+	// next resume cannot load its interaction.
+	// pp-queued is queued (carries) — reuse it: bump a counter and re-save.
+	if ok, cerr := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusPausedWaitingHuman, "",
+		[]store.RunStatus{store.RunStatusQueued}); cerr != nil || !ok {
+		t.Fatalf("back to paused: ok=%v err=%v", ok, cerr)
+	}
+	pausedCp := cp()
+	pausedCp.BudgetCostUSD = 0.95
+	if err := s.SaveCheckpoint(ctx, "pp-queued", pausedCp); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
+	}
+}
+
+// testOutcomeSeqAndTypedCauses drives the outcome bookkeeping: every
+// terminal arrival is a new episode, typed metadata travels with the
+// transition that carries it (and ONLY that one), and full-document
+// savers can neither rewind the counter nor resurrect stale metadata.
+func testOutcomeSeqAndTypedCauses(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-outcome-seq"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		return r
+	}
+
+	// Non-terminal transitions don't count episodes.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	if r := load(); r.OutcomeSeq != 0 {
+		t.Fatalf("seq after running = %d, want 0", r.OutcomeSeq)
+	}
+
+	// First terminal arrival: episode 1, untyped ⇒ empty metadata.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("failed_resumable: %v", err)
+	}
+	r := load()
+	if r.OutcomeSeq != 1 || r.FailureCode != "" || r.ContinuationState != "" {
+		t.Fatalf("episode 1 = (seq %d, code %q, cont %q), want (1, \"\", \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// Typed transition: episode 2 carries its cause (ADR-095's
+	// failure_code — ONE taxonomy) and continuation.
+	changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusCancelled, "stopped",
+		store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal},
+		[]store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("typed cancel = (%t, %v), want (true, nil)", changed, err)
+	}
+	r = load()
+	if r.OutcomeSeq != 2 || r.FailureCode != store.FailureCancelled || r.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("episode 2 = (seq %d, code %q, cont %q)", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+	// The CAS arm still works.
+	if changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailed, "no",
+		store.RunOutcomeMeta{Code: store.FailureExecutionFailed}, []store.RunStatus{store.RunStatusRunning}); err != nil || changed {
+		t.Fatalf("outcome CAS mismatch = (%t, %v), want (false, nil)", changed, err)
+	}
+
+	// Leaving the terminal state clears the metadata: stale metadata
+	// must never describe a newer outcome.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 2 || r.FailureCode != "" || r.ContinuationState != "" {
+		t.Fatalf("post-resume = (seq %d, code %q, cont %q), want (2, \"\", \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// The checkpoint-aware ENGINE writer types its episode — code only:
+	// the engine does not know the queue topology, so it never states a
+	// continuation (the runner promotes it below).
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "n"}, "drained",
+		store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.FailureCode != store.FailureInterrupted || r.ContinuationState != "" {
+		t.Fatalf("episode 3 = (seq %d, code %q, cont %q), want (3, INTERRUPTED, \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// The RUNNER promotes the continuation at the actual NAK — a
+	// same-status write that states ownership WITHOUT inventing an
+	// episode (the transition-gated increment).
+	if changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "drained",
+		store.RunOutcomeMeta{Code: store.FailureInterrupted, Continuation: store.ContinuationRedeliveryPending},
+		[]store.RunStatus{store.RunStatusFailedResumable}); err != nil || !changed {
+		t.Fatalf("continuation promote = (%t, %v), want (true, nil)", changed, err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("promoted = (seq %d, cont %q), want (3, redelivery_pending) — a same-status promote must not invent an episode", r.OutcomeSeq, r.ContinuationState)
+	}
+
+	// A full-document save with a STALE in-memory run (same status)
+	// keeps the persisted bookkeeping — it can neither rewind the
+	// counter nor clear the cause/continuation a transition wrote
+	// meanwhile.
+	stale := *r
+	stale.OutcomeSeq = 0
+	stale.FailureCode = ""
+	stale.ContinuationState = ""
+	if err := s.SaveRun(ctx, &stale); err != nil {
+		t.Fatalf("stale SaveRun: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.FailureCode != store.FailureInterrupted || r.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("after stale save = (seq %d, code %q, cont %q), want preserved (3, INTERRUPTED, redelivery_pending)", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// A status CHANGE through SaveRun is a transition: metadata clears,
+	// and a terminal arrival counts an episode.
+	moved := *r
+	moved.Status = store.RunStatusRunning
+	if err := s.SaveRun(ctx, &moved); err != nil {
+		t.Fatalf("SaveRun to running: %v", err)
+	}
+	if r = load(); r.OutcomeSeq != 3 || r.FailureCode != "" {
+		t.Fatalf("save-to-running = (seq %d, code %q), want (3, \"\")", r.OutcomeSeq, r.FailureCode)
+	}
+	moved = *r
+	moved.Status = store.RunStatusFinished
+	if err := s.SaveRun(ctx, &moved); err != nil {
+		t.Fatalf("SaveRun to finished: %v", err)
+	}
+	if r = load(); r.OutcomeSeq != 4 {
+		t.Fatalf("save-to-finished seq = %d, want 4", r.OutcomeSeq)
+	}
+}
+
+// testSaveRunHostileValues guards the Mongo pipeline against
+// aggregation-expression evaluation of DATA: a $-prefixed string value
+// must round-trip verbatim (not be parsed as a field path and dropped
+// or substituted), and a dotted map key must not reject the write —
+// agent outputs ("$ ./gradlew build") and user inputs ("config.path")
+// produce both shapes routinely.
+func testSaveRunHostileValues(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-hostile-values"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Error = "$workflow_name is not a field path"
+	r.Inputs = map[string]any{"config.path": "/etc/app.yml", "cmd": "$JAVA_HOME/bin/java"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun with hostile values: %v", err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Error != r.Error {
+		t.Fatalf("Error = %q, want %q (a $-value was evaluated, not stored)", got.Error, r.Error)
+	}
+	if got.Inputs["config.path"] != "/etc/app.yml" || got.Inputs["cmd"] != "$JAVA_HOME/bin/java" {
+		t.Fatalf("Inputs = %v, want the hostile keys/values verbatim", got.Inputs)
+	}
+
+	// An upsert-create directly in a terminal status is NOT an episode:
+	// nothing transitioned, the document was born that way (fork seeds
+	// cancelled children through SaveRun on a run that does not exist).
+	born := *got
+	born.ID = "run-born-terminal"
+	born.CASVersion = 0
+	born.Status = store.RunStatusCancelled
+	born.OutcomeSeq = 0
+	if err := s.SaveRun(ctx, &born); err != nil {
+		t.Fatalf("SaveRun upsert-create: %v", err)
+	}
+	if b, err := s.LoadRun(ctx, "run-born-terminal"); err != nil || b.OutcomeSeq != 0 {
+		t.Fatalf("born-terminal = (seq %d, %v), want (0, nil)", b.OutcomeSeq, err)
+	}
+}
+
+// testMergeClaimCAS drives the merge state machine at the store level:
+// the claim CAS (entry), the conditional persist (exit), the stale
+// steal with claim-token isolation, and the no-clobber-merged
+// invariant that closes the double-squash TOCTOU.
+func testMergeClaimCAS(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-merge-claim"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	notStale := time.Now().Add(-15 * time.Minute)
+
+	// Entry: an unset merge_status is claimable, prior comes back "".
+	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || !claimed || prior != "" {
+		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
+	}
+	if tokenA.IsZero() {
+		t.Fatal("claim must return its token")
+	}
+	// A held (fresh) claim refuses the second claimant.
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
+	}
+
+	// Exit: the holder persists the outcome conditioned on "merging"
+	// AND its own token.
+	changed, err := s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{
+		Status:          store.MergeStatusMerged,
+		MergedCommit:    "abc123",
+		MergedInto:      "main",
+		MergeStrategy:   store.MergeStrategySquash,
+		ExpectClaimedAt: tokenA,
+	}, []store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || !changed {
+		t.Fatalf("persist merged = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.MergeStatus != store.MergeStatusMerged || r.MergedCommit != "abc123" || r.MergedInto != "main" {
+		t.Fatalf("merged bookkeeping = %+v (%v)", r, err)
+	}
+	if !r.MergeClaimedAt.IsZero() {
+		t.Errorf("MergeClaimedAt should be cleared by the exit write, got %v", r.MergeClaimedAt)
+	}
+
+	// No-clobber: a late writer still expecting "merging" (the loser of
+	// a race, or a stolen-claim holder) cannot overwrite "merged".
+	changed, err = s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{Status: store.MergeStatusFailed},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || changed {
+		t.Fatalf("clobber attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got.MergeStatus != store.MergeStatusMerged || got.MergedCommit != "abc123" {
+		t.Fatalf("merged record damaged: %+v", got)
+	}
+	// And "merged" is terminal for the claim too.
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerged {
+		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
+	}
+
+	// Stale steal: a claim whose stamp predates staleBefore is up for
+	// grabs — AND the stolen-from claimant's token consumes nothing
+	// afterwards (the claim names an owner, not just a state; without
+	// the token check the crashed claimant's late failure write would
+	// overwrite the live claimant's outcome).
+	const runID2 = "run-merge-claim-stale"
+	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale)
+	if err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
+	}
+	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	if err != nil || !claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
+	}
+	if tokenNew.Equal(tokenOld) {
+		t.Fatal("steal must issue a fresh token")
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID2, store.RunMergeUpdate{Status: store.MergeStatusFailed, ExpectClaimedAt: tokenOld},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || changed {
+		t.Fatalf("stolen-from claimant's write = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID2, store.RunMergeUpdate{Status: store.MergeStatusMerged, MergedCommit: "def456", MergedInto: "main", ExpectClaimedAt: tokenNew},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || !changed {
+		t.Fatalf("live claimant's write = (%t, %v), want (true, nil)", changed, err)
+	}
+
+	// A "merging" whose stamp is missing entirely (a full-document
+	// writer dropped it) is claimable — it must not wedge the run.
+	const runID3 = "run-merge-claim-nostamp"
+	if _, err := s.CreateRun(ctx, runID3, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if changed, err := s.UpdateRunMergeIf(ctx, runID3, store.RunMergeUpdate{Status: store.MergeStatusMerging},
+		[]store.MergeStatus{""}); err != nil || !changed {
+		t.Fatalf("seed stampless merging = (%t, %v)", changed, err)
+	}
+	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale)
+	if err != nil || !claimed {
+		t.Fatalf("stampless merging must be claimable = (%t, %v)", claimed, err)
+	}
+
+	// skipped and conflicted stay claimable (/merge is the only path
+	// that re-materialises a lost merge clone; a recovered run lands
+	// "skipped" and must stay mergeable).
+	for _, st := range []store.MergeStatus{store.MergeStatusSkipped, store.MergeStatusConflicted} {
+		id := "run-merge-claim-" + string(st)
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: st}, []store.MergeStatus{""}); err != nil || !changed {
+			t.Fatalf("seed %s = (%t, %v)", st, changed, err)
+		}
+		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale)
+		if err != nil || !claimed || prior != st {
+			t.Fatalf("claim on %s = (%t, %q, %v), want (true, %s, nil)", st, claimed, prior, err, st)
+		}
+	}
+
+	// Exit CAS with the empty status in expectedFrom matches an unset
+	// field (a run that never entered the machine).
+	const runID4 = "run-merge-claim-virgin"
+	if _, err := s.CreateRun(ctx, runID4, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID4, store.RunMergeUpdate{Status: store.MergeStatusPending},
+		[]store.MergeStatus{""})
+	if err != nil || !changed {
+		t.Fatalf("empty-status CAS = (%t, %v), want (true, nil)", changed, err)
+	}
+
+	// A missing run is an ERROR, not a silent (false, nil) — a caller
+	// must be able to tell a lost race from a deleted run.
+	if _, err := s.UpdateRunMergeIf(ctx, "run-merge-claim-ghost", store.RunMergeUpdate{Status: store.MergeStatusPending},
+		[]store.MergeStatus{""}); err == nil {
+		t.Fatal("UpdateRunMergeIf on a missing run must error")
+	}
+}
+
+// testSaveRunPreservesLiveMergeClaim: the merge claim is owned by the
+// merge choke points (ClaimMerge / UpdateRunMergeIf); a full-document
+// SaveRun from a writer that loaded the run BEFORE the claim (operator
+// rename, rewind bookkeeping, cloud publisher stamps) must not disavow
+// a live claim — clobbering merge_status+merge_claimed_at re-opens the
+// double-squash the claim exists to prevent (the next claimant passes
+// immediately while the first is mid-merge).
+func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "mc-save", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The stale copy, loaded before the claim.
+	stale, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	// The stale writer saves (e.g. a rename): the claim must survive.
+	stale.Name = "renamed"
+	if err := s.SaveRun(ctx, stale); !errors.Is(err, store.ErrRunConflict) {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name == "renamed" {
+		t.Errorf("a rejected stale save changed the name: %q", r.Name)
+	}
+	if r.MergeStatus != store.MergeStatusMerging {
+		t.Errorf("SaveRun disavowed a live merge claim: merge_status=%q, want %q — the next claimant would double-squash", r.MergeStatus, store.MergeStatusMerging)
+	}
+	if !r.MergeClaimedAt.Equal(token) {
+		t.Errorf("SaveRun dropped the claim stamp: %v, want %v", r.MergeClaimedAt, token)
+	}
+}
+
+// testRoutingPolicyImmutable: once the launch persisted the contract,
+// no full-document saver — however stale — can drop or replace it.
+// Retroactively changing the contract of already-produced work is the
+// exact attack the launch-frozen snapshot exists to prevent.
+func testRoutingPolicyImmutable(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-routing-policy"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	launch := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate.ok", AllowedActions: []string{"merge"}}
+	launch.Hash = launch.ComputeHash()
+	r.RoutingPolicy = launch
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun launch: %v", err)
+	}
+
+	// A stale saver without the field cannot drop it…
+	stale, _ := s.LoadRun(ctx, runID)
+	stale.RoutingPolicy = nil
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatalf("SaveRun stale: %v", err)
+	}
+	got, _ := s.LoadRun(ctx, runID)
+	if got.RoutingPolicy == nil || got.RoutingPolicy.Hash != launch.Hash {
+		t.Fatalf("policy dropped by a stale save: %+v", got.RoutingPolicy)
+	}
+
+	// …and a saver carrying a DIFFERENT contract cannot swap it.
+	evil, _ := s.LoadRun(ctx, runID)
+	swapped := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate.other"}
+	swapped.Hash = swapped.ComputeHash()
+	evil.RoutingPolicy = swapped
+	if err := s.SaveRun(ctx, evil); err != nil {
+		t.Fatalf("SaveRun swap: %v", err)
+	}
+	got, _ = s.LoadRun(ctx, runID)
+	if got.RoutingPolicy == nil || got.RoutingPolicy.Hash != launch.Hash {
+		t.Fatalf("policy swapped by a save: %+v", got.RoutingPolicy)
+	}
+	// The first-write window closes at the terminal: a run that
+	// finished WITHOUT a contract cannot be given one after the fact —
+	// that would decide already-produced work retroactively.
+	const lateID = "run-routing-policy-late"
+	if _, err := s.CreateRun(ctx, lateID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, lateID, store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	late, _ := s.LoadRun(ctx, lateID)
+	late.RoutingPolicy = launch
+	if err := s.SaveRun(ctx, late); err != nil {
+		t.Fatalf("SaveRun late: %v", err)
+	}
+	if got, _ := s.LoadRun(ctx, lateID); got.RoutingPolicy != nil {
+		t.Fatalf("a contract was fixed onto already-terminal work: %+v", got.RoutingPolicy)
+	}
+}
+
+// testOutputsSurviveTerminal: the checkpoint's outputs are the run's
+// terminal evidence — the values a routing contract evaluates. They
+// must survive the transition INTO finished on every backend (the FS
+// store used to clear them there while Mongo kept them: the two
+// backends diverged on the very field a decision reads).
+func testOutputsSurviveTerminal(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-outputs-survive"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{Outputs: map[string]map[string]any{"gate": {"converged": true}}}
+	if err := s.SaveCheckpoint(ctx, runID, cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.Outputs["gate"]["converged"] != true {
+		t.Fatalf("terminal outputs destroyed by the finish transition: %+v", r.Checkpoint)
+	}
+}
+
+// testRouteDecisionRegistry holds both registry backends to one
+// contract: the unique episode claim, the leased steal of an orphaned
+// "claimed" row, the bounded retry of "failed", the finish states, the
+// audit ordering and the sweep query.
+func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rds := store.AsRouteDecisionStore(s)
+	if rds == nil {
+		t.Skip("backend has no route-decision registry")
+	}
+	ctx := testCtx()
+	const runID = "run-route-registry"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// staleNever: the production threshold — a claim just taken is
+	// fresh. staleAlways: a future threshold, which reads every existing
+	// claim as expired (the ClaimMerge testability precedent).
+	staleNever := func() time.Time { return time.Now().Add(-store.RouteClaimLease) }
+	staleAlways := func() time.Time { return time.Now().Add(time.Hour) }
+
+	// Fresh claim; duplicate refused with the existing row.
+	claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge", Reason: "r1"}, staleNever())
+	if err != nil || !claimed {
+		t.Fatalf("first claim = (%t, %v)", claimed, err)
+	}
+	claimed, existing, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge"}, staleNever())
+	if err != nil || claimed || existing == nil || existing.State != store.RouteDecisionClaimed {
+		t.Fatalf("dup claim = (%t, %+v, %v), want refused with the claimed row", claimed, existing, err)
+	}
+
+	// Finish → succeeded; a succeeded episode is never reclaimable —
+	// not even under a threshold that reads every claim as stale.
+	if err := rds.FinishRouteDecision(ctx, runID, 1, store.RouteDecisionSucceeded, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1}, staleAlways()); err != nil || claimed {
+		t.Fatalf("succeeded episode reclaimed = (%t, %v)", claimed, err)
+	}
+
+	// A failed episode is reclaimable, but bounded by the attempt cap.
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim ep2 = (%t, %v)", claimed, err)
+	}
+	for attempt := 1; ; attempt++ {
+		if err := rds.FinishRouteDecision(ctx, runID, 2, store.RouteDecisionFailed, "transient"); err != nil {
+			t.Fatalf("fail ep2 (attempt %d): %v", attempt, err)
+		}
+		claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever())
+		if err != nil {
+			t.Fatalf("reclaim ep2: %v", err)
+		}
+		if !claimed {
+			if attempt < store.MaxRouteDecisionAttempts-1 {
+				t.Fatalf("failed episode refused after only %d attempts (cap %d)", attempt, store.MaxRouteDecisionAttempts)
+			}
+			break
+		}
+		if attempt > store.MaxRouteDecisionAttempts {
+			t.Fatalf("failed episode reclaimable beyond the cap (%d attempts)", attempt)
+		}
+	}
+
+	// The leased steal: a stale "claimed" row is re-claimable — but the
+	// steal is bounded by the SAME attempt cap, or a poison episode that
+	// keeps killing its claimant re-arms forever (measured 9 steals
+	// against a cap of 3 before the bound).
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim ep3 = (%t, %v)", claimed, err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleNever()); err != nil || claimed {
+		t.Fatalf("fresh claim stolen under the production threshold = (%t, %v)", claimed, err)
+	}
+	for steal := 2; steal <= store.MaxRouteDecisionAttempts; steal++ {
+		claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleAlways())
+		if err != nil || !claimed {
+			t.Fatalf("steal %d of stale claim = (%t, %v)", steal, claimed, err)
+		}
+	}
+	claimed, existing, err = rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleAlways())
+	if err != nil || claimed {
+		t.Fatalf("steal beyond the cap = (%t, %v), want refused", claimed, err)
+	}
+	if existing == nil || existing.Attempts < store.MaxRouteDecisionAttempts {
+		t.Fatalf("cap-refused steal must return the exhausted row, got %+v", existing)
+	}
+
+	// The audit lists newest episode first.
+	ds, err := rds.ListRouteDecisions(ctx, runID)
+	if err != nil || len(ds) != 3 || ds[0].OutcomeSeq != 3 || ds[1].OutcomeSeq != 2 || ds[2].OutcomeSeq != 1 {
+		t.Fatalf("ListRouteDecisions = %+v (%v)", ds, err)
+	}
+
+	// The activation watermark: established first-writer-wins, then
+	// stable across every later call (a restart must read the original
+	// activation, not its own boot). Backend round-trips may truncate
+	// sub-millisecond precision — equality within a second is the claim.
+	wm1, err := rds.EnsureRouterWatermark(ctx)
+	if err != nil || wm1.IsZero() {
+		t.Fatalf("EnsureRouterWatermark = (%v, %v)", wm1, err)
+	}
+	wm2, err := rds.EnsureRouterWatermark(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRouterWatermark (second): %v", err)
+	}
+	if d := wm2.Sub(wm1); d < -time.Second || d > time.Second {
+		t.Fatalf("watermark moved between calls: %v vs %v", wm1, wm2)
+	}
+
+	// The sweep query: only policy-carrying terminal runs, oldest first.
+	pol := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.g.ok", AllowedActions: []string{"merge"}}
+	pol.Hash = pol.ComputeHash()
+	mk := func(id string, terminal bool, withPolicy bool) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, _ := s.LoadRun(ctx, id)
+		if withPolicy {
+			r.RoutingPolicy = pol
+		}
+		if terminal {
+			r.Status = store.RunStatusFinished
+		}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	mk("routable-a", true, true)
+	mk("not-terminal", false, true)
+	mk("no-policy", true, false)
+	ids, err := rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["routable-a"] || found["not-terminal"] || found["no-policy"] {
+		t.Fatalf("sweep query = %v, want exactly the policy-carrying terminal run", ids)
+	}
+
+	// The anti-join: a run whose CURRENT episode is settled (succeeded)
+	// leaves the sweep list — decided terminals must not clog the batch
+	// head — while a failed-under-cap episode stays routable (its
+	// bounded retry still wants the re-offer).
+	ra, err := s.LoadRun(ctx, "routable-a")
+	if err != nil {
+		t.Fatalf("LoadRun routable-a: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: ra.ID, OutcomeSeq: ra.OutcomeSeq, Decision: "escalate"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim routable-a = (%t, %v)", claimed, err)
+	}
+	if err := rds.FinishRouteDecision(ctx, ra.ID, ra.OutcomeSeq, store.RouteDecisionSucceeded, ""); err != nil {
+		t.Fatalf("finish routable-a: %v", err)
+	}
+	mk("routable-b", true, true)
+	rb, err := s.LoadRun(ctx, "routable-b")
+	if err != nil {
+		t.Fatalf("LoadRun routable-b: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: rb.ID, OutcomeSeq: rb.OutcomeSeq, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim routable-b = (%t, %v)", claimed, err)
+	}
+	if err := rds.FinishRouteDecision(ctx, rb.ID, rb.OutcomeSeq, store.RouteDecisionFailed, "transient"); err != nil {
+		t.Fatalf("fail routable-b: %v", err)
+	}
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns (anti-join): %v", err)
+	}
+	found = map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if found["routable-a"] {
+		t.Fatalf("settled (succeeded) run still swept: %v", ids)
+	}
+	if !found["routable-b"] {
+		t.Fatalf("failed-under-cap run dropped from the sweep: %v", ids)
+	}
+
+	// Oldest first is the contract, and the limit truncates AFTER the
+	// sort: with limit 1 the oldest sleeping terminal must surface —
+	// not the lexically-first or insertion-first one (a directory-order
+	// truncation starves exactly the run the sweep net exists for).
+	time.Sleep(5 * time.Millisecond)
+	mk("aaa-routable-newer", true, true)
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 1)
+	if err != nil || len(ids) != 1 || ids[0] != "routable-b" {
+		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
+	}
+}
+
+// testCredFingerprintMeter exercises the credential-concurrency meter
+// pair: SetRunCredStamp (stamp + re-stamp, the skipped-credential
+// reopening instant) and CountAliveRunsWithCredFingerprint (queued/running
+// only, exclusion of the run being resolved, empty fingerprint counts
+// nothing).
+func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	mk := func(id string, status store.RunStatus, fps ...string) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if len(fps) > 0 {
+			if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: fps}); err != nil {
+				t.Fatalf("SetRunCredStamp %s: %v", id, err)
+			}
+		}
+	}
+
+	mk("fp_run1", store.RunStatusRunning, "fp-zai", "fp-oauth")
+	mk("fp_run2", store.RunStatusQueued, "fp-zai")
+	// Terminal and parked runs hold no slot.
+	mk("fp_done", store.RunStatusFinished, "fp-zai")
+	mk("fp_parked", store.RunStatusFailedResumable, "fp-zai")
+	// A run with other credentials does not count.
+	mk("fp_other", store.RunStatusRunning, "fp-anthropic")
+
+	n, err := s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", "")
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("alive(fp-zai) = %d, want 2 (running + queued; finished and parked hold no slot)", n)
+	}
+
+	// The run being resolved never counts toward its own ceiling.
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", "fp_run1"); err != nil || n != 1 {
+		t.Errorf("alive(fp-zai, excl fp_run1) = %d/%v, want 1", n, err)
+	}
+
+	// An empty fingerprint is not a meter.
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "", ""); err != nil || n != 0 {
+		t.Errorf("alive(empty) = %d/%v, want 0", n, err)
+	}
+
+	// Re-stamp replaces wholesale: a resume that resolved different
+	// credentials must not keep metering the old ones.
+	if err := s.SetRunCredStamp(ctx, "fp_run2", store.RunCredStamp{Fingerprints: []string{"fp-anthropic"}}); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Errorf("alive(fp-zai) after re-stamp = %d/%v, want 1", n, err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-anthropic", ""); err != nil || n != 2 {
+		t.Errorf("alive(fp-anthropic) after re-stamp = %d/%v, want 2", n, err)
+	}
+
+	// The skipped-credential reopening instant rides the same stamp: set
+	// when a usable credential was passed over, cleared by a re-stamp that
+	// skipped nothing — a stale instant would arm the next retry on a
+	// credential the run was never refused.
+	reopens := time.Date(2026, 9, 4, 16, 40, 0, 0, time.UTC)
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}, SkippedReopensAt: &reopens}); err != nil {
+		t.Fatalf("stamp with reopens_at: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "fp_run1")
+	if err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if got.SkippedCredReopensAt == nil || !got.SkippedCredReopensAt.Equal(reopens) {
+		t.Fatalf("SkippedCredReopensAt = %v, want %v", got.SkippedCredReopensAt, reopens)
+	}
+	if len(got.CredFingerprints) != 1 || got.CredFingerprints[0] != "fp-zai" {
+		t.Fatalf("CredFingerprints = %v, want [fp-zai] alongside the reopening instant", got.CredFingerprints)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp without reopens_at: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.SkippedCredReopensAt != nil {
+		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
+	}
+
+	// The model-idle marker: a running run executing no model-calling node
+	// holds its key's slot for nobody. Only fp_run1 (running) carries
+	// fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) before idle = %d/%v, want 1", n, err)
+	}
+	idle := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
+		t.Fatalf("LLMIdleSince = %v (%v), want %v", got.LLMIdleSince, err, idle)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 0 {
+		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 0 — an idle run must not hold a slot", n, err)
+	}
+	// The next model node clears it: the run counts again.
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", nil); err != nil {
+		t.Fatalf("SetRunLLMIdle(nil): %v", err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) after the marker cleared = %d/%v, want 1", n, err)
+	}
+	// A re-stamp (a resumed attempt's re-resolution) starts over: an idle
+	// marker left by the previous attempt must not exempt the new one.
+	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
+		t.Fatalf("a re-stamp must clear LLMIdleSince, got %v (%v)", got.LLMIdleSince, err)
+	}
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) after re-stamp = %d/%v, want 1", n, err)
+	}
+	// Unknown run: the error is the store's, not a silent no-op.
+	if err := s.SetRunLLMIdle(ctx, "fp_nope", &idle); err == nil {
+		t.Fatal("SetRunLLMIdle on an unknown run must error")
+	}
+}
+
+// testSetRunBudgetOverrides exercises the granular budget-ask setter
+// SubmitResume calls when the operator raises a cap on THIS resume
+// (E4, #652 review round 1). Contract: replaces the field wholesale,
+// nil clears, touches nothing else on the doc — SubmitResume has
+// already CAS-transitioned the status to `queued` and a whole-doc
+// SaveRun would clobber it.
+func testSetRunBudgetOverrides(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	// Seed a run with a launch-time budget ask; also set a peer field
+	// (Status) so the granular-update contract is verifiable.
+	if _, err := s.CreateRun(ctx, "bo_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Status = store.RunStatusQueued
+	r.BudgetOverrides = &store.RunBudgetOverrides{MaxCostUSD: 50, MaxDuration: "2h30m"}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	seeded, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun seeded: %v", err)
+	}
+	// Mongo stores updated_at at millisecond resolution, so give the
+	// setter's stamp a tick it can be strictly greater in.
+	time.Sleep(2 * time.Millisecond)
+
+	// Raise the cap — SubmitResume's E4 write.
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", &store.RunBudgetOverrides{MaxCostUSD: 120, MaxDuration: "4h", MaxTokens: 5_000_000}); err != nil {
+		t.Fatalf("SetRunBudgetOverrides: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.BudgetOverrides == nil {
+		t.Fatal("BudgetOverrides = nil after set")
+	}
+	if got.BudgetOverrides.MaxCostUSD != 120 || got.BudgetOverrides.MaxDuration != "4h" || got.BudgetOverrides.MaxTokens != 5_000_000 {
+		t.Fatalf("BudgetOverrides after set = %+v, want the raised ask", got.BudgetOverrides)
+	}
+	// The peer field must survive. NOTE this is a SERIAL call, so it
+	// does NOT prove the granularity the interface promises: a
+	// load-modify-save satisfies it trivially, nothing having changed
+	// between the load and the save. The granular shape is pinned
+	// per-twin instead (fs: TestSetRunBudgetOverridesDoesNotReplaceTheDocument
+	// on updated_at + the peer fields; mongo: the $set/$unset itself).
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("Status after SetRunBudgetOverrides = %s, want queued (a whole-doc replace would revert the CAS transition)", got.Status)
+	}
+	// updated_at is the half a whole-document replace fails even
+	// serially — SaveRun stamps no timestamp of its own.
+	if !got.UpdatedAt.After(seeded.UpdatedAt) {
+		t.Fatalf("UpdatedAt after SetRunBudgetOverrides = %s, want it advanced past %s (the setter owns budget_overrides AND updated_at)", got.UpdatedAt, seeded.UpdatedAt)
+	}
+
+	// Nil clears (the field is opt-in).
+	if err := s.SetRunBudgetOverrides(ctx, "bo_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetOverrides(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bo_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.BudgetOverrides != nil {
+		t.Fatalf("BudgetOverrides after nil set = %+v, want nil (clear)", got.BudgetOverrides)
+	}
+
+	// A missing run returns ErrRunNotFound.
+	err = s.SetRunBudgetOverrides(ctx, "does-not-exist", &store.RunBudgetOverrides{MaxCostUSD: 1})
+	if err == nil {
+		t.Fatal("SetRunBudgetOverrides on missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testFinalContinuationDisarmsRetry pins the transition-tail rule: a
+// `final` continuation (the DLQ park, the orphan sweeper, the PR-close
+// cancel) disarms retry_state.retry_after on both twins, because a doc
+// carrying both a final continuation and an armed retry gets BOTH
+// automations — the gate reconciler's dead-review repair and the
+// sweeper's auto-resume. The rest of the retry bookkeeping is history and
+// stays; a non-final write leaves the retry armed; a doc that never
+// carried retry state does not grow one.
+func testFinalContinuationDisarmsRetry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run_final_disarms_retry"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	at := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Millisecond)
+	r.Status = store.RunStatusFailedResumable
+	r.ContinuationState = store.ContinuationRetryArmed
+	r.RetryState = &store.RunRetryState{RetryAfter: &at, Reason: "usage_window", Code: "USAGE_LIMIT_BLOCKED", Attempts: 1}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// The runner's redelivery promote is not final: the retry stays armed.
+	changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "",
+		store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("redelivery promote: changed=%v err=%v", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil || got.RetryState.RetryAfter == nil || !got.RetryState.RetryAfter.Equal(at) {
+		t.Fatalf("retry state after a non-final write = %+v, want retry_after %s still armed", got.RetryState, at)
+	}
+
+	// The DLQ park is final: the arming goes, the bookkeeping stays.
+	changed, err = s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "max deliveries exhausted (parked on DLQ)",
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal}, []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("DLQ park: changed=%v err=%v", changed, err)
+	}
+	got, err = s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState == nil {
+		t.Fatal("retry state gone after the final write — attempts/reason are the run's history and must stay")
+	}
+	if got.RetryState.RetryAfter != nil {
+		t.Fatalf("retry_after = %s after a final continuation, want disarmed — the sweeper would auto-resume a DLQ-parked run the gate reconciler already repaired", got.RetryState.RetryAfter)
+	}
+	if got.RetryState.Attempts != 1 || got.RetryState.Reason != "usage_window" || got.RetryState.Code != "USAGE_LIMIT_BLOCKED" {
+		t.Fatalf("retry bookkeeping after the final write = %+v, want attempts/reason/code kept", got.RetryState)
+	}
+	if got.ContinuationState != store.ContinuationFinal || got.FailureCode != store.FailureDLQParked {
+		t.Fatalf("continuation/code = %q/%q, want final/DLQ_PARKED (the disarm must not disturb the transition)", got.ContinuationState, got.FailureCode)
+	}
+
+	// A doc that never carried retry state must not grow one.
+	const bare = "run_final_no_retry_state"
+	if _, err := s.CreateRun(ctx, bare, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := s.UpdateRunOutcome(ctx, bare, store.RunStatusFailedResumable, "orphaned",
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal}, nil); err != nil {
+		t.Fatalf("final write on a bare doc: %v", err)
+	}
+	got, err = s.LoadRun(ctx, bare)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.RetryState != nil {
+		t.Fatalf("a final write materialised retry state %+v on a doc that never had one", got.RetryState)
+	}
+}
+
+// testSetRunBudgetSnapshot exercises the granular effective-caps setter
+// every resume surface that raises a cap writes. Contract: replaces
+// Run.Budget wholesale, nil clears, touches nothing else on the doc — a
+// transition that landed between the resume's load and this write (here
+// a cancel with its typed cause) must survive, which a whole-doc SaveRun
+// from the stale copy would revert.
+func testSetRunBudgetSnapshot(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "bs_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.Budget = &store.RunBudget{MaxCostUSD: 20, MaxDuration: "2h30m", MaxTokens: 5000}
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	// The concurrent transition the granular write must not revert.
+	if err := s.UpdateRunStatusCoded(ctx, "bs_run", store.RunStatusCancelled, "cancelled by the operator", store.FailureCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", &store.RunBudget{MaxCostUSD: 50, MaxDuration: "4h", MaxTokens: 5000}); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.Budget == nil || got.Budget.MaxCostUSD != 50 || got.Budget.MaxDuration != "4h" || got.Budget.MaxTokens != 5000 {
+		t.Fatalf("Budget after set = %+v, want the raised effective caps", got.Budget)
+	}
+	if got.Status != store.RunStatusCancelled || got.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code after SetRunBudgetSnapshot = %s/%q, want cancelled/CANCELLED untouched (a whole-doc replace from the pre-cancel copy reverts the operator's cancel)", got.Status, got.FailureCode)
+	}
+
+	if err := s.SetRunBudgetSnapshot(ctx, "bs_run", nil); err != nil {
+		t.Fatalf("SetRunBudgetSnapshot(nil): %v", err)
+	}
+	got, err = s.LoadRun(ctx, "bs_run")
+	if err != nil {
+		t.Fatalf("LoadRun after clear: %v", err)
+	}
+	if got.Budget != nil {
+		t.Fatalf("Budget after nil set = %+v, want nil (clear)", got.Budget)
+	}
+	if err := s.SetRunBudgetSnapshot(ctx, "does-not-exist", &store.RunBudget{MaxCostUSD: 1}); err == nil {
+		t.Fatal("SetRunBudgetSnapshot on a missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// testSetRunnerVersion exercises the granular stamp of the build that
+// EXECUTED the run, beside the launcher's own. Contract: sets
+// Run.RunnerVersion, touches nothing else, and reports ErrRunNotFound for
+// a run that is not there. The concurrent-transition case is the same one
+// the budget setters guard: a runner writes its build at claim, and a
+// whole-doc replace from its already-stale copy would revert a cancel.
+func testSetRunnerVersion(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "rv_run", "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	launcher, err := s.LoadRun(ctx, "rv_run")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, "rv_run", store.RunStatusCancelled, "cancelled by the operator", store.FailureCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	if err := s.SetRunnerVersion(ctx, "rv_run", "v3.112.7+abc123def456"); err != nil {
+		t.Fatalf("SetRunnerVersion: %v", err)
+	}
+	got, err := s.LoadRun(ctx, "rv_run")
+	if err != nil {
+		t.Fatalf("LoadRun after set: %v", err)
+	}
+	if got.RunnerVersion != "v3.112.7+abc123def456" {
+		t.Fatalf("RunnerVersion = %q, want the executing build", got.RunnerVersion)
+	}
+	if got.IterionVersion != launcher.IterionVersion {
+		t.Fatalf("IterionVersion = %q, want the launcher's %q untouched — the PAIR is what makes a skew readable",
+			got.IterionVersion, launcher.IterionVersion)
+	}
+	if got.Status != store.RunStatusCancelled || got.FailureCode != store.FailureCancelled {
+		t.Fatalf("status/code after SetRunnerVersion = %s/%q, want cancelled/CANCELLED untouched", got.Status, got.FailureCode)
+	}
+	if err := s.SetRunnerVersion(ctx, "does-not-exist", "v1"); err == nil {
+		t.Fatal("SetRunnerVersion on a missing run returned nil, want ErrRunNotFound")
+	}
+}
+
+// Every mutation must invalidate a previously loaded full-document copy,
+// including metadata patches and writes that leave the status unchanged.
+func testSaveRunVersionConflicts(t *testing.T, factory func(*testing.T) store.RunStore) {
+	mutations := map[string]func(context.Context, store.RunStore, string) error{
+		"cancel": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.UpdateRunStatus(ctx, id, store.RunStatusCancelled, "operator cancel")
+		},
+		"checkpoint": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.SaveCheckpoint(ctx, id, &store.Checkpoint{NodeID: "new-node"})
+		},
+		"watched-issues": func(ctx context.Context, s store.RunStore, id string) error {
+			_, err := s.AddWatchedIssues(ctx, id, []string{"issue-2"})
+			return err
+		},
+		"subbot-child": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.SetSubbotChild(ctx, id, "child-key", "child-2")
+		},
+		"steering": func(ctx context.Context, s store.RunStore, id string) error {
+			return s.PatchRunSteering(ctx, id, map[string]int{"loop": 9}, nil)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			s := factory(t)
+			ctx := testCtx()
+			stale, err := s.CreateRun(ctx, "version-conflict", "wf", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mutate(ctx, s, stale.ID); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.LoadRun(ctx, stale.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale.Name = "stale rename"
+			if err := s.SaveRun(ctx, stale); !errors.Is(err, store.ErrRunConflict) {
+				t.Fatalf("stale save=%v", err)
+			}
+			after, err := s.LoadRun(ctx, stale.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("rejected save mutated document: before=%+v after=%+v", before, after)
+			}
+			winner := *after
+			winner.Name = "fresh rename"
+			if err := s.SaveRun(ctx, &winner); err != nil {
+				t.Fatal(err)
+			}
+			if winner.CASVersion <= after.CASVersion {
+				t.Fatal("successful save did not advance the caller's version")
+			}
+			if err := s.SaveRun(ctx, after); !errors.Is(err, store.ErrRunConflict) {
+				t.Fatalf("competing writer=%v", err)
+			}
+			winner.Name = "second fresh rename"
+			if err := s.SaveRun(ctx, &winner); err != nil {
+				t.Fatalf("reuse advanced version: %v", err)
+			}
+		})
 	}
 }

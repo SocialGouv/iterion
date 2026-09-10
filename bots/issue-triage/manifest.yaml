@@ -1,7 +1,7 @@
 name: issue-triage
 display_name: Triagy
 icon: 🏷️
-version: 0.1.0
+version: 0.2.0
 description: |
   Lightweight single-shot card triage. ONE cheap read-classify-stamp
   agent: reads a fresh board card, classifies it against the generated

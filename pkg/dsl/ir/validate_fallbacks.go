@@ -163,12 +163,45 @@ func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, node
 			routes = append(routes, fb.Backend)
 		}
 	}
-	if len(routes) == 0 {
-		return
+	if len(routes) > 0 {
+		c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
+			"%s %q: permission: %s is enforced on %s through a host-side CLI hook, which a sandboxed run cannot reach — and the shipped default is sandbox: auto, so this node will FAIL at run time unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+			kind, id, mode, strings.Join(dedupeStrings(routes), ", "))
 	}
-	c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
-		"%s %q: permission: %s is enforced on %s through a host-side CLI hook, which a sandboxed run cannot reach — and the shipped default is sandbox: auto, so this node will FAIL at run time unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
-		kind, id, mode, strings.Join(dedupeStrings(routes), ", "))
+
+	// claw enforces the gate sandboxed too (the policy crosses the IPC as
+	// a pre-task envelope) — EXCEPT an Ask decision, which has no seam to
+	// pause the parent run from inside the container. A policy that can
+	// ever produce one (mode ask, or any explicit ask rule, which
+	// outranks mode deny) fails a sandboxed claw route at run time; warn
+	// here so the coupling is learned before launch. Same
+	// warning-not-error rationale as above: --sandbox none and
+	// ITERION_SANDBOX_DEFAULT=none make the run legal without the
+	// workflow saying anything.
+	if mode == "ask" || len(w.PermissionAsk) > 0 {
+		clawRoutes := []string{}
+		if nodeBackend == clawBackendName {
+			clawRoutes = append(clawRoutes, nodeBackend)
+		}
+		for _, fb := range nn.GetFallbacks() {
+			if fb.Backend == clawBackendName {
+				clawRoutes = append(clawRoutes, fb.Backend)
+			}
+		}
+		if len(clawRoutes) > 0 {
+			c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
+				"%s %q: the permission policy can produce an Ask decision (mode %s%s), which a sandboxed claw route cannot pause for — this node will FAIL at run time on %s unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+				kind, id, mode, askRuleSuffix(len(w.PermissionAsk)), strings.Join(dedupeStrings(clawRoutes), ", "))
+		}
+	}
+}
+
+// askRuleSuffix names the ask-rule contribution in the C136 message.
+func askRuleSuffix(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" + %d ask rule(s)", n)
 }
 
 // sandboxOptsOut reports whether a spec explicitly declines the sandbox.

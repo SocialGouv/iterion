@@ -108,12 +108,24 @@ part of the work — the gate is here to force it. (iterion specifically:
 `task openapi:check` + the helm chart drift check are CI gates; a new
 `/api/...` route needs `task openapi:gen` committed.)
 
-This section is **deterministically enforced** by the verify gate: when the
-repo's CI config contains a drift gate and your `verify.sh` has no
-`git diff --exit-code`/`--quiet` line, the gate fails with a DRIFT GATE
-MISSING error; and a green verify that leaves new changes in the tree fails
-with UNCOMMITTED REGEN OUTPUT. Writing the gate here is cheaper than being
-bounced by the enforcement.
+This section is **deterministically enforced** by the verify gate, and the
+check is STRUCTURAL: it reads the script with comments stripped (a comment can
+describe a gate; only a command can be one) and accepts any shape that really
+fails the build on drift —
+
+```sh
+<regen> && git diff --exit-code                     # the probe's own status
+if ! git diff --quiet -- <paths>; then exit 1; fi   # negated conditional,
+                                                    # on one line or many
+set -e; <regen>; git diff --quiet                   # fail-fast: it aborts
+```
+
+— and rejects a *commit-if-changed* block (`if ! git diff --quiet; then git
+commit …; fi`), which ships the drift instead of failing on it. When the repo's
+CI enforces a drift gate and `verify.sh` carries none of these, the gate fails
+with DRIFT GATE MISSING (exit 3); a green verify that leaves new changes in the
+tree fails with UNCOMMITTED REGEN OUTPUT (exit 4). Writing the gate here is
+cheaper than being bounced by the enforcement.
 
 ## 2. Write the verify script to the scratch dir
 
@@ -142,6 +154,30 @@ The deterministic gate re-runs **this** script and gates the commit on its real
 exit code — so it must genuinely pass, not merely look plausible. A `verify.sh`
 that omits the §1b regen step when the repo has generated artifacts is the
 canonical way a change lands green-locally / red-in-CI.
+
+### Capture the status, then filter — never pipe a gate
+
+A pipeline exits with its **last** command's status. `go test ./... 2>&1 | tail
+-10` therefore reports `tail`, and a build whose compiler is not even installed
+reads as a pass (measured: a missing `tsc` returned 127 and the run recorded
+`EXIT=0`). `set -o pipefail` is **not POSIX** and `verify.sh` runs under
+`/bin/sh` — dash does not have it — so the convention is:
+
+```sh
+<check> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; }   # gate, then filter
+V=$(<producer> | head -1)                                      # a captured VALUE is fine
+<noisy-but-not-a-gate> | tail -5 || true                       # explicitly not a gate
+```
+
+Read `$?` from the command itself, never from an `echo` after a pipeline. A
+check whose tool is missing is **unavailable**, not passed — say so in the
+summary rather than letting it read green.
+
+This is **deterministically enforced**: the gate refuses a `verify.sh` that
+pipes a top-level command into an output filter (`tail`/`head`/`tee`/`wc`/a
+filtering `grep`) with **MASKED EXIT STATUS** (exit 5) *before* running it, and
+moves the script aside so it is regenerated. Comments are stripped first, and
+the three shapes above are never flagged.
 
 ## 3. Run it, and fix what the just-applied changes broke
 

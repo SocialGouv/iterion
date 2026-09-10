@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 )
 
 // MemorySubscriptionStore is the in-memory SubscriptionStore for tests and
@@ -43,6 +44,23 @@ func (m *MemorySubscriptionStore) Update(_ context.Context, s Subscription) erro
 		return ErrSubscriptionNotFound
 	}
 	m.items[s.ID] = s
+	return nil
+}
+
+func (m *MemorySubscriptionStore) MarkLaunchError(_ context.Context, id, lastError string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.items[id]
+	if !ok {
+		return ErrSubscriptionNotFound
+	}
+	s.LastError = lastError
+	s.LastErrorAt = nil
+	if lastError != "" {
+		t := at.UTC()
+		s.LastErrorAt = &t
+	}
+	m.items[id] = s
 	return nil
 }
 

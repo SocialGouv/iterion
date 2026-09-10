@@ -1,9 +1,11 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // handleDeleteRun permanently removes a run and ALL of its data — the run
@@ -28,7 +30,14 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.runs.DeleteRunCtx(r.Context(), id); err != nil {
-		// LoadRun-not-found (gone or outside the caller's tenant) → 404.
+		// A lifecycle refusal (the run exists and is ALIVE) is a 409 —
+		// answering 404 told the API/MCP caller the exact opposite of the
+		// refusal's own reason. LoadRun-not-found (gone or outside the
+		// caller's tenant) stays 404.
+		if errors.Is(err, runview.ErrRunNotDeletable) {
+			s.httpErrorFor(w, r, http.StatusConflict, "delete run: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "delete run: %v", err)
 		return
 	}

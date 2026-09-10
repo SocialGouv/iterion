@@ -26,7 +26,7 @@ The shortest path to a sandboxed run:
 1. Add (or reuse) a `.devcontainer/devcontainer.json` in your repo.
 2. Set `sandbox: auto` on your workflow:
 
-   ```iter
+   ```iter fragment
    workflow review:
      worktree: auto
      sandbox: auto
@@ -74,6 +74,61 @@ Kimi, Grok, or direct tool-node invocation. The container's PID 1 is
 `sleep infinity` —
 iterion deliberately ignores the image's CMD/ENTRYPOINT in favour of
 treating the container as a long-lived "ssh-like" target.
+
+### Setup phases and their timeouts
+
+Everything between "the container/pod is up" and "the first node runs"
+is **setup**, and each phase is bounded on its own. An unbounded phase
+does not fail — it *waits*, and a run waiting in setup has no
+`sandbox_started` event, holds its queue lease, and only dies when the
+run's own `max_duration` fires hours later (measured: 2h 26m in a
+workspace copy). So every phase either carries a bound or is named
+below as one that does not.
+
+| Phase | Driver | Bound | Env override (Go duration) |
+|---|---|---|---|
+| `kubectl apply` (per-run Secret, CA Secret, pod, NetworkPolicy, mid-run secret refresh) | kubernetes | 2 min each | `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` |
+| Pod Ready wait | kubernetes | 10 min | `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` |
+| Workspace copy (host tar → `kubectl exec` tar) | kubernetes | 15 min | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| Workspace git fixup | kubernetes | 15 min (shares the copy budget) | `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` |
+| `post_create` snippet | kubernetes | 30 min | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
+| Image pull | docker | 10 min | `ITERION_SANDBOX_PULL_TIMEOUT` |
+| `post_create` snippet | docker | 30 min (the same knob as kubernetes) | `ITERION_SANDBOX_POST_CREATE_TIMEOUT` |
+
+A budget belongs to the **phase**, not to the driver: `post_create` reads
+one knob wherever it runs, so an operator raising it for a slow toolchain
+install raises it everywhere. `post_create` gets its own, larger budget
+because installing a toolchain legitimately outlasts a copy; raising one
+knob does not move another. Every knob takes a Go duration (`5m`, `45m`,
+`2h`) and fails **closed**: a value that is not a positive duration —
+including `5`, which Go reads as five *nanoseconds*, not five minutes —
+is refused rather than honoured, the default applies, and one stderr line
+per process names the variable, the value and the default that replaced
+it.
+
+The apply bound is enforced on the process: the phase deadline kills the
+local `kubectl`. It is deliberately NOT also passed as kubectl's own
+`--request-timeout` — setting that flag at any value makes `kubectl` v1.36
+discard the in-cluster configuration and dial `http://localhost:8080`, so
+every apply fails at once (measured in production on 2026-09-07). `kubectl delete` (the
+stale-pod eviction before the pod apply, every rollback, the run's own
+cleanup) shares the apply budget but reports a plain deadline — a cleanup
+is not a setup phase and is never classified as one.
+
+A phase that burns its budget fails with `sandbox.ErrPhaseTimeout`, which
+the engine classifies as `SANDBOX_SETUP_TIMEOUT`: the run parks
+**`failed_resumable`** with its checkpoint intact, on a launch and on a
+resume alike. In cloud mode the runner then re-offers the delivery to a
+fresh pod after 2 minutes (the stall is usually infrastructure catching
+its breath); a stall that repeats through every permitted delivery ends
+parked on the DLQ, announced, rather than naking into nothing. Halfway
+through a phase's budget the runner logs a warning naming that phase and
+its own knob, so a slow-but-healthy copy is visible before the bound
+strikes.
+
+See [resume](resume.md#sandbox-startup--which-failures-are-resumable) for
+the full classification table (which failures are resumable and which
+stay terminal).
 
 ### Workspace bind-mount
 
@@ -126,6 +181,38 @@ executor, and `delegate.mirrorStateFileIntoSandbox` (pi's extension,
 system prompt and codex credential). A unit test whose fake
 `sandbox.Run` omits this interface tests the shared-filesystem half of
 the world only.
+
+#### A promise the driver drops takes its variable with it
+
+The mirror rule for anything the runtime hands the container as a PATH:
+every optional host bind (the run's attachments, its run-files
+directory, the bot's bundle) is dropped on a copy-based driver, and the
+promise made on it must go with it. On the pod backend:
+
+| Promise | On docker | On kubernetes |
+|---|---|---|
+| `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
+| Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
+| The bot's bundle `devbox.json` | provisioned | declined and reported (see [devbox provisioning](#best-effort-never-silent)) |
+
+The measured cost of getting this wrong: the run-files variable once
+named a directory the pod never had, a gate wrapper redirecting its
+report into it died on "Directory nonexistent", and four lots read an
+oracle verdict out of an environment failure.
+
+**Known gap — run-files on pods.** Nothing collects a pod's run files:
+the collector reads the host directory the bind would have served, and
+the pod writes to a temp dir that dies with it. Closing it needs a
+read-back seam the driver does not have — an emptyDir at the container
+path plus a drain at teardown, i.e. `WorkspaceExporter`'s shape widened
+past the workspace. Until then the artifact-files panel is empty for a
+pod run, and the variable stays honestly unset rather than naming a
+directory nobody reads.
+`TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt`
+([pkg/runtime](../pkg/runtime/sandbox_bind_promise_canary_test.go)) walks
+every `spec.Env` value and every path in `spec.PostCreate` against the
+mounts the driver keeps, so the next promise made on a dropped bind
+fails in CI rather than in a campaign.
 
 ### Host state mounts (`~/.iterion`, `~/.claude`)
 
@@ -276,7 +363,7 @@ Blocked requests surface to the run as a `network_blocked` event in
 
 The DSL accepts both short-form modes and block-form inline specs:
 
-```iter
+```iter fragment
 workflow x:
   # Short form: read .devcontainer/devcontainer.json, or fall back to
   # the default image when no devcontainer is present.
@@ -327,7 +414,7 @@ and auto-mode fallback cases.
 Per-node overrides accept the same short or block form on `agent`,
 `judge`, and `tool`:
 
-```iter
+```iter fragment
 agent shell_helper:
   sandbox: none      # this node runs on the host even though the
                      # workflow has sandbox: auto
@@ -368,6 +455,17 @@ iterion sandbox doctor                 # report driver + capabilities
   `~/.iterion` + `~/.claude` auto-mount (`""`, `auto`, or `none`).
   Defaults to `auto`. Set to `none` on multi-tenant / cloud runners
   to avoid leaking host OAuth credentials.
+- `ITERION_SANDBOX_WORKSPACE_COPY_TIMEOUT` — budget of the kubernetes
+  driver's workspace copy AND of the git fixup that follows, each
+  end-to-end. Unset → 15 min. See [setup phases and their
+  timeouts](#setup-phases-and-their-timeouts).
+- `ITERION_SANDBOX_POST_CREATE_TIMEOUT` — budget of the `post_create`
+  snippet on BOTH drivers. Unset → 30 min. Raise it for a devcontainer
+  that installs a large toolchain.
+- `ITERION_SANDBOX_K8S_APPLY_TIMEOUT` — budget of one `kubectl` control
+  call on the kubernetes driver (every `apply`, every `delete`), enforced
+  by killing the process; never passed as kubectl's `--request-timeout`,
+  which breaks its in-cluster configuration. Unset → 2 min.
 - `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
   `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
   `none` beats even a workflow's inline `sandbox:` block. Honoured by
@@ -507,7 +605,25 @@ Provisioning emits `sandbox_devbox_provisioned` (`target`
 `"sandbox"|"host"`, `sources`, `configs`, `bin_dirs`, `path`, plus
 `errors` on the host target when something failed) so you can audit
 what was picked up — and see when a declared toolchain could **not**
-be provisioned.
+be provisioned. A source that EXISTS and was deliberately declined is
+named on the same event, with its own reason:
+`skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel
+arrays; `reason` joins the distinct ones).
+
+Two declines ship today:
+
+- `repo_devbox off` — the target repo pins a toolchain this run does not
+  need (see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox)).
+- `no host bind mount on this driver` — the **bot's** `devbox.json` lives
+  in its bundle, which reaches the container as a host bind mount, and
+  the kubernetes driver has no host filesystem. The bundle is then not
+  declared at all, so no snippet is baked and no `PATH` entry promises a
+  directory nothing will populate. A bot that needs a tool on the pod
+  backend must get it from its `sandbox.image:` instead. The alternative
+  — a pod-side delivery channel for the bundle — would need a copy-in
+  seam that runs BEFORE `post_create`; the driver's only copy-in today is
+  the workspace tar, and the only writes it accepts afterwards
+  (`RefreshWorkspaceFile`) land after setup is over.
 
 ### Cost
 
@@ -548,7 +664,7 @@ your repo root and `sandbox: auto` will pick them up.
 | `kimi` / `grok` | **fully sandboxed** (CLI runs inside the container) |
 | `codex`       | **unsupported by the outer sandbox** — the pinned SDK cannot use Iterion's command builder, so the node fails explicitly |
 | `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
-| Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
+| Tool nodes    | **fully sandboxed** (`bash -c` runs inside the container) |
 | MCP servers   | Built-in board tools reach sandboxed `claude_code` and pi RPC over per-run HTTP; ask-user uses HTTP for Claude Code and pi's embedded control channel. Declared stdio servers remain host-side for Claude Code, but pi RPC starts them beside pi (inside the sandbox). See [MCP tools in a sandbox](#mcp-tools-in-a-sandbox). |
 
 ### Claw backend in sandbox
@@ -563,6 +679,17 @@ boundary instead of escaping to the host.
 `iterion` binary on PATH. The production Dockerfile installs it; for
 local sandboxes built from third-party images you can mount the host
 binary in (subject to architecture matching) via `runArgs`:
+
+> **The mount decision reads the EFFECTIVE backend, not the `.bot`.**
+> `--backend '*=claw'` (and `--model`, the studio override object,
+> `RunMessage.model_overrides`) is applied at dispatch and never folded
+> back into the IR, so the bind is decided through the executor's own
+> resolution chain — the same one the node will dispatch on. It is a
+> UNION with the authored IR, never a narrowing: a node that *declares*
+> `claw` keeps the mount even when an override routes it elsewhere,
+> because the resolver reads the HOST's credentials and the container may
+> resolve differently, and a missing binary is a hard mid-run death while
+> an unused read-only bind costs nothing.
 
 ```jsonc
 // .devcontainer/devcontainer.json
@@ -611,6 +738,90 @@ across the channel.
   envelope, the runner stashes the snapshot, then loads it into its
   local store once the task arrives so applySessionMessages
   prepends the replayed prior messages to the LLM's first call.
+- ✅ **Per-step LLM observability — metering parity.** The in-container
+  runner's claw backend carries [model.SandboxRelayHooks], which emit
+  each `llm_request` and `llm_step_finished` (model, input / output /
+  cache token counts, response text, thinking) as an `event` envelope;
+  the launcher's [delegate.MultiplexerHandler.OnEvent] decodes them
+  ([model.ApplyRelayedEvent]) and re-fires its OWN event hooks. A
+  sandboxed claw node therefore writes the same `llm_request` /
+  `llm_step_finished` / `assistant_text` events as an in-process one, the
+  host derives the same `usage_progress` samples from them (a
+  supervisor's `cost_gt` monitor works), and the runner pod's org,
+  per-credential and pool metering read the steps the same way. The
+  launcher still emits `delegate_started` / `delegate_finished` itself;
+  with the steps relayed, the delegation total is a summary and is not
+  counted again — see [quotas-and-limits.md](quotas-and-limits.md#per-credential-usage--what-did-this-key-cost)
+  for what a run whose container carries an older, non-relaying runner
+  is charged.
+- ✅ **Tool, retry, compaction and turn observability.** The same relay
+  carries everything else the in-container loop observes, so a sandboxed
+  claw node is not a blind spot on any consumer:
+  `tool_started` / `tool_called` for the builtins it executes **inside**
+  the container (tool name, correlation id, input, result, duration —
+  and, for a failed call, `tool_error` carrying the reason, which is what
+  makes an in-container permission denial auditable); `llm_retry`
+  (including the context-window force-compaction recovery, which the
+  in-process path also reports as a retry); `llm_compacted`; and the
+  per-turn `llm_turn_capture` checkpoints, so the studio timeline and
+  `iterion fork --turn` anchor on a sandboxed node exactly as on an
+  in-process one. Every one of them re-fires the launcher's own hooks, so
+  the studio timeline, the `EventObservers` a supervisor's `tool_*`
+  monitors ride, and the permission audit see what the in-process path
+  produces.
+
+  Two properties of that channel are worth knowing:
+
+  - **Nothing is dropped in silence.** A relayed NDJSON line over
+    `delegate.MaxEnvelopeLineBytes` (4 MiB) would fail the launcher's
+    reader and with it the whole IPC, so the relay cuts *before* it
+    writes, always visibly: a text field over 1 MiB (a tool result, an
+    assistant text) is truncated with a marker naming the byte count that
+    stayed in the container, and a JSON field over it (a `write_file`
+    input) is replaced by a `{"_iterion_sandbox_relay_omitted_bytes":N}`
+    marker — a document cut mid-way would not be JSON the host can
+    decode. `input_size` keeps the size the container measured, so the
+    honest number always travels beside the cut. An event whose fields
+    are each in budget but whose SUM is not (a step dispatching six large
+    `write_file` calls at once) keeps its **numbers** and loses its bulk,
+    every cut marked — the token counts are what the run is metered on. A
+    payload still over the cap after that (thousands of short strings,
+    nothing left to cut) is refused and reported on the runner's stderr,
+    which the launcher folds into the node's error: one lost
+    observation, never a dead channel, and never a silent one.
+  - **The reply direction is bounded the same way.** A host-side tool
+    result travelling BACK to the container (an MCP call's result, a
+    large file read, a `go test ./...` transcript) is cut to
+    `delegate.MaxToolResultBytes` (1 MiB) with a marker naming the bytes
+    produced on the host — the same ceiling the executor's own hooks
+    apply to an unsandboxed node's tool payload, so a sandboxed run and
+    an in-process one show the model the same amount of the same output.
+    A `ask_user` payload is the exception: its conversation is the
+    pre-pause LLM state the runner rebuilds from, so it crosses whole or
+    becomes an explicit tool error naming its size — a cut one would
+    resume onto a corrupted conversation. And whatever the producer,
+    `EnvelopeWriter` **refuses** an over-cap line at the source with a
+    typed error naming the envelope type: a writer that forgot to clamp
+    fails where it is, instead of killing the peer's reader with a
+    payload it can only report the size of.
+  - **A turn's conversation crosses whole or not at all.** The snapshot a
+    fork replays is relayed up to 2 MiB (a full 200k-token context, with
+    room under the line cap); a larger one is left out and the turn
+    crosses carrying its size, which the launcher logs as a warning
+    naming the node and the turn. The turn still anchors the timeline; a
+    fork from it starts that node fresh. It crosses on the wire rather
+    than being written to a run directory the host reads back because
+    there is no such directory to rely on: the kubernetes driver refuses
+    `host_state: auto` (no host filesystem in a pod), `host_state: none`
+    is the recommended posture for a multi-tenant runner, a store nested
+    in the workspace is skipped by the host-state bind, and a cloud run's
+    store is Mongo + S3, which no bind-mount reaches.
+
+  One observation of the in-container loop deliberately stays there:
+  `OnLLMResponse` (per-call latency). The host's own store hooks leave
+  that callback nil — the same numbers reach `llm_step_finished` with
+  per-step detail — so relaying it would fire nothing; its single
+  optional consumer is the `--metrics` Prometheus latency histogram.
 
 ### MCP tools in a sandbox
 
@@ -825,6 +1036,83 @@ TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
     plaintext-credential Secret would otherwise leak until the next rollout).
     Cadence: `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` = boot scan only).
 
+#### Scheduling: requests and node spread
+
+A sibling pod that requests nothing scores every node the same, so the
+scheduler packs a campaign's runs onto whichever node already holds the
+sandbox image (image locality is the tie-breaker). Measured on a three-worker
+pool: five of six run pods on one 8-core node at 89 % CPU while two workers
+idled, and an oracle's 300 s application boot budget blown at 459 s. The
+driver therefore stamps a deployment-level scheduling policy on every pod it
+creates, read from the runner's environment once at startup — wired through
+the chart's `runner.sandbox.scheduling` values, which render as **literal
+PodTemplate env** (never the shared ConfigMap: a pod created from an old
+ReplicaSet must keep the policy it was rolled out with, the same reason the
+epoch is literal — bump `config.rollout.runnerEpoch` with the rollout like any
+runner change):
+
+| Env var | Effect |
+|---|---|
+| `ITERION_SANDBOX_K8S_REQUESTS_CPU` / `…_REQUESTS_MEMORY` | `resources.requests` of the workload container. Unset → not rendered. |
+| `ITERION_SANDBOX_K8S_LIMITS_CPU` / `…_LIMITS_MEMORY` | `resources.limits`. Unset → not rendered (a run must be able to burst on a build). A limit needs its request (the API server would otherwise copy the limit into the request at admission) and cannot be below it. |
+| `ITERION_SANDBOX_K8S_SPREAD` | Topology key of a **soft** `topologySpreadConstraints` (maxSkew 1, `ScheduleAnyway`) over every `iterion.io/component=sandbox-run` pod of the namespace. Unset / `none` / `off` → no constraint (the default: the scheduler's own policy, as before). `hostname` → `kubernetes.io/hostname`. Any other value must be a **prefixed** label key the nodes carry (e.g. `topology.kubernetes.io/zone`) — a bare word is refused, because the API server would accept it as a label no node has; and a soft constraint does **not** waive the label: nodes without it are excluded, a key no node carries leaves every run Pending. |
+| `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT` | How long `Start` waits for the pod to be Ready, a Go duration of at least `1s` (chart: `runner.sandbox.scheduling.podReadyTimeout`). Unset → 10 min. The wait covers scheduling — once pods carry requests, a full cluster makes the autoscaler add a node, which takes minutes — a fresh node's CNI setup and the image pull (a 736 MB sandbox image took 1m37 to 3m05 on cold nodes). Measured with the former 180 s cap: a run scheduled 2 min after apply onto a node the autoscaler had just added was killed one second after its container started. |
+
+Quantities are the subset operators write — a decimal (`2`, `.5`, `500m`),
+an exponent, or the SI/binary byte suffixes (`4Gi`); `m` on memory
+(milli-bytes) and a byte suffix on CPU are refused, as are zero quantities
+(a block that schedules like no block). The API server owns the rest.
+
+**When the deadline does expire, the failure is classified.** The driver
+reads the pod's own status once, before deleting it, and decides between
+a PLACEMENT failure — the pod is still `Pending`, which is the API's own
+guarantee that no container was created: unscheduled (`Unschedulable`,
+`Insufficient cpu`) or scheduled onto a node that had not started it — and
+everything else. A placement failure carries `sandbox.ErrCapacity`, so the run parks
+`failed_resumable` + `SANDBOX_CAPACITY` and the cloud runner re-offers
+the delivery after a delay long enough for an autoscaler cycle, instead
+of dying terminal and silently losing an hourly sentinel's tick. A broken
+image reference, an invalid spec, a crash-looping container or a pod the
+driver could not read stay terminal `failed`: a redelivery re-hits them
+identically and spends a pod for it. The full table is in
+[resume](resume.md#sandbox-startup--which-failures-are-resumable).
+
+The capacity signal is read from the pod's `PodScheduled` condition, not
+from the `TriggeredScaleUp` **Event** the autoscaler writes: Events need
+a `get events` verb the runner's namespaced Role deliberately does not
+grant, and the condition already says the same thing. There is no second
+"keep waiting while a node is coming" deadline either — the resumable
+classification IS that wait, with the queue as its timer and a different,
+less loaded pod free to claim the redelivery; a run that needs longer in
+one shot raises `ITERION_SANDBOX_K8S_POD_READY_TIMEOUT`.
+
+**Nothing is shipped by default.** Measured on a three-worker cluster with the
+image on one node only: no requests → 2/3/1, requests alone → 2/2/2, requests
+plus spread → 2/2/2 — the request is the half that moves the pods (it is what
+`LeastAllocated` scores and what a cluster autoscaler sizes the pool on); the
+spread steers what equal requests leave equal. Set at least the requests on any
+multi-node cluster. It is a policy of the deployment, not of the workflow: a
+bot cannot lower it. It is also a policy of the **attempt**: a resume
+force-deletes and re-creates the pod under the policy of the runner that
+claims it, so during a rollout the two fleets may render one run differently —
+every `sandbox_started` event records the policy the pod was rendered under.
+
+A malformed value is refused with the variable and the value named at **three**
+gates: the runner refuses to start (`runner: sandbox scheduling policy: …`,
+before it claims the rollout epoch — the driver factory skips constructor
+errors, so the driver cannot refuse for it), `iterion sandbox doctor` (basic
+and `--strict`) reports the policy in force or that error — `--strict` also
+checks that the nodes carry a custom spread key, which needs `nodes/list`, a
+cluster-scoped permission the chart's namespaced runner Role does not grant on
+purpose: in-cluster the check warns with kubectl's reason and the operator runs
+`kubectl get nodes -L <key>` from a context that can — and every `Start`
+returns it. Accept a rollout on the **admitted** pod (`kubectl get pod … -o
+jsonpath='{.spec.containers[0].resources}{.spec.topologySpreadConstraints}'`),
+then on a burst of runs: placement skew, `PodScheduled` reasons, start
+latency. A pod that never becomes Ready reports its `PodScheduled` condition
+in the error, so a request no node can hold reads differently from a slow
+image pull.
+
 Security defaults applied to every sibling pod:
 
 | Setting                          | Value                              |
@@ -893,7 +1181,7 @@ service is deployed; the resulting image lands in the local Docker
 image store and the sibling container of the run consumes it via
 `docker run` like any pre-built ref.
 
-```iter
+```iter fragment:workflow
 sandbox:
   build:
     dockerfile: "examples/sandbox_build.dockerfile"
@@ -939,7 +1227,7 @@ already cover via CI:
 - Build the workflow's image in CI (GitHub Actions, GitLab CI…),
   push to a registry, pin by digest.
 - Reference the digest from the workflow:
-  ```iter
+  ```iter fragment:workflow
   sandbox:
     image: "ghcr.io/myorg/myimage@sha256:<digest>"
   ```
@@ -1004,6 +1292,10 @@ use an iterion sandbox image that includes the binary, add it to your
 custom image, set `ITERION_BIN` so the host can mount it, or add an
 explicit read-only mount that places a compatible `iterion` binary on
 the container PATH.
+
+The bind and the `sandbox_claw_routed_via_runner` event are decided on
+the backend DISPATCH resolves, launch overrides included — so a workflow
+of `claude_code` nodes run with `--backend '*=claw'` gets both.
 
 ### `network_blocked` events you don't expect
 

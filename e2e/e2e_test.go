@@ -193,6 +193,7 @@ func eventNodeIDs(events []*store.Event, t store.EventType) []string {
 //
 //	→ act_on_plan → final_verify(approved) → done
 func TestSingleModel_HappyPath(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "pr_refine_single_model.bot")
 	exec := newScenarioExecutor()
 
@@ -243,7 +244,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-happy", nil)
 	if err != nil {
@@ -317,6 +318,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 // TestSingleModel_RefineLoop — compliance_check fails, enters refine loop,
 // then compliance_check_after_refine approves.
 func TestSingleModel_RefineLoop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "pr_refine_single_model.bot")
 	exec := newScenarioExecutor()
 
@@ -389,7 +391,7 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-refine", nil)
 	if err != nil {
@@ -424,6 +426,7 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 // TestSingleModel_GlobalReloop — final_verify rejects, causing a global
 // reloop back to context_builder.
 func TestSingleModel_GlobalReloop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "pr_refine_single_model.bot")
 	exec := newScenarioExecutor()
 
@@ -481,7 +484,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-single-reloop", nil)
 	if err != nil {
@@ -524,6 +527,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 // TestDualParallel_HappyPath — both models review in parallel, plans are
 // synthesized, merged, act, final reviews approve.
 func TestDualParallel_HappyPath(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel.bot")
 	exec := newScenarioExecutor()
 
@@ -602,7 +606,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-dual-happy", nil)
 	if err != nil {
@@ -673,6 +677,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 // TestDualParallel_GlobalReloop — final compliance check rejects,
 // then approves on second full pass.
 func TestDualParallel_GlobalReloop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel.bot")
 	exec := newScenarioExecutor()
 
@@ -749,7 +754,7 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-dual-reloop", nil)
 	if err != nil {
@@ -773,6 +778,7 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 // TestCompliance_HappyPath_NoHumanGate — compliance passes, technical
 // decision gate says no human needed → straight to act.
 func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
@@ -853,7 +859,7 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-comp-nohuman", nil)
 	if err != nil {
@@ -874,6 +880,7 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 // TestCompliance_HumanGate — technical decision gate needs human,
 // run pauses, resume continues to completion.
 func TestCompliance_HumanGate(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
@@ -967,7 +974,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	// Phase 1: Run should pause at human checkpoint.
 	err := eng.Run(context.Background(), "e2e-comp-human", nil)
@@ -1046,6 +1053,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 // TestCompliance_RefineLoop — initial compliance fails, enters the
 // alternating Claude/GPT refine loop.
 func TestCompliance_RefineLoop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
@@ -1133,7 +1141,7 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-comp-refine", nil)
 	if err != nil {
@@ -1171,6 +1179,7 @@ func TestCompliance_RefineLoop(t *testing.T) {
 
 // TestCIFix_HappyPath — CI passes on first try after fix.
 func TestCIFix_HappyPath(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
@@ -1211,7 +1220,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-happy", nil)
 	if err != nil {
@@ -1279,6 +1288,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 // TestCIFix_FixLoop — CI fails first try, loops back to diagnose, then
 // succeeds on second attempt.
 func TestCIFix_FixLoop(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
@@ -1324,7 +1334,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-loop", nil)
 	if err != nil {
@@ -1376,6 +1386,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 
 // TestCIFix_LoopExhaustion — CI never goes green, loop exhausts after 5 iterations.
 func TestCIFix_LoopExhaustion(t *testing.T) {
+	t.Parallel()
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
@@ -1413,7 +1424,7 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-ci-exhaust", nil)
 	if err == nil {
@@ -1443,6 +1454,7 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 // ===========================================================================
 
 func TestAllFixturesCompile(t *testing.T) {
+	t.Parallel()
 	fixtures := []string{
 		"pr_refine_single_model.bot",
 		"pr_refine_dual_model_parallel.bot",
@@ -1514,6 +1526,7 @@ func TestAllFixturesCompile(t *testing.T) {
 // ===========================================================================
 
 func TestEventSequenceCoherence(t *testing.T) {
+	t.Parallel()
 	// Use the simplest workflow to validate event ordering rules.
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
@@ -1551,7 +1564,7 @@ func TestEventSequenceCoherence(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := newEngine(t, wf, s, exec)
 
 	if err := eng.Run(context.Background(), "e2e-events", nil); err != nil {
 		t.Fatalf("run error: %v", err)

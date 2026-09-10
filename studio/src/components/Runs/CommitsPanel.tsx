@@ -215,6 +215,10 @@ function MergeFooter({
     run.merge_status === "merged" || (!run.merge_status && Boolean(run.merged_into));
   const conflicted = run.merge_status === "conflicted";
   const failed = run.merge_status === "failed";
+  // A live claim: another worker is mid-merge — showing the form would
+  // offer a button that 409s ("merge in progress, claimed by another
+  // worker") until the claim resolves.
+  const merging = run.merge_status === "merging";
   // `skipped` is set when finalizeWorktree found no FF target: an explicit
   // merge_into=none at launch, OR a detached-HEAD worktree start — which is
   // EVERY dispatcher run (the dispatcher seeds workspaces via `git worktree
@@ -292,6 +296,18 @@ function MergeFooter({
           <div className="font-mono text-caption mt-0.5">{shortMerged}</div>
         )}
       </div>
+    );
+  }
+
+  // A worker holds the merge claim right now: no form, no button — a
+  // request would be refused server-side until the claim resolves. The
+  // record flips to merged/failed/conflicted when it does.
+  if (merging) {
+    return (
+      <NoticeFooter tone="muted">
+        Merge in progress — another worker holds the claim. This updates
+        when it completes.
+      </NoticeFooter>
     );
   }
 

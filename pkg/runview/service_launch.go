@@ -15,6 +15,7 @@ import (
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -47,14 +48,62 @@ type LaunchPublisher interface {
 	// flips the Mongo doc to cancelled regardless of whether a runner
 	// is currently holding the lease.
 	CancelRun(ctx context.Context, runID string) error
-	// CancelRunWithReason is CancelRun with an explicit reason recorded
-	// on the run (run.Error). Automated cancellations — the webhook
-	// supersede lane — pass what actually happened; CancelRun stays the
-	// operator-click shape ("cancelled by user").
-	CancelRunWithReason(ctx context.Context, runID, reason string) error
+	// CancelRunWithReason is CancelRun with an explicit, TYPED reason
+	// recorded on the run — the field the runner admission reads, and the
+	// message the run list shows, both derived from it. Automated
+	// cancellations — the webhook supersede, re-queue and closed-PR lanes
+	// — say what actually happened; CancelRun stays the operator-click
+	// shape (store.RunEndReasonOperator).
+	CancelRunWithReason(ctx context.Context, runID string, reason store.RunEndReason) error
 	// SubmitResume republishes a RunMessage with ResumeSpec set so
 	// the runner picks the run back up.
 	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error
+}
+
+// validateRoutingPolicyForLaunch is the ONE choke point freezing the
+// outcome contract (adversarial gate F2/F3): every launch surface that
+// reaches an engine — HTTP handler, MCP, a future reactor relaunch —
+// funnels through Service.Launch, so grammar, hash and workflow-ref
+// resolution happen here, not per-handler. A blocker on a field the
+// bot never publishes must be refused BEFORE any work happens: at the
+// terminal it would read "unreadable → escalate, forever" and silently
+// disable the automation the contract exists to allow.
+func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) error {
+	if p == nil {
+		return nil
+	}
+	if err := routing.Validate(p); err != nil {
+		return err
+	}
+	hasNode := func(node string) bool {
+		_, ok := wf.Nodes[node]
+		return ok
+	}
+	hasField := func(node, field string) bool {
+		n, ok := wf.Nodes[node]
+		if !ok {
+			return false
+		}
+		schemaName := ir.NodeOutputSchema(n)
+		if schemaName == "" {
+			return true // dynamic output shape — not statically checkable
+		}
+		schema, ok := wf.Schemas[schemaName]
+		if !ok || schema == nil {
+			return true
+		}
+		for _, f := range schema.Fields {
+			if f.Name == field {
+				return true
+			}
+		}
+		return false
+	}
+	if err := routing.ValidateRefs(p, hasNode, hasField); err != nil {
+		return err
+	}
+	p.Hash = p.ComputeHash()
+	return nil
 }
 
 // Launch starts a workflow asynchronously and returns once the run
@@ -121,6 +170,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Admission and the runner receive the same run-level permission
 		// override, so one authoritative resolution is sufficient.
 		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+			return nil, err
+		}
+		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
@@ -198,6 +250,9 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
+		return nil, err
+	}
 
 	// Apply budget overrides AFTER compile but BEFORE BuildExecutor — the
 	// executor snapshots Budget at construction, so a later mutation would
@@ -233,6 +288,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Inbox:          s.inboxBinder(),
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
+		SandboxDefault: s.sandboxDefault,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
 		RunFallback:    toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
@@ -307,6 +363,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		token:      spec.CallbackToken,
 		answerNode: spec.CallbackAnswerNode,
 	}
+	ctxContract := s.resolveExecutionContext(parent, runID, spec, wf, hash)
 
 	precreateInputs := inputs
 	if !precreate {
@@ -318,7 +375,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, permission: spec.Permission},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -352,17 +409,21 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
-	if err := validateResumable(r, spec.Answers); err != nil {
+	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
 	if err := resolveSharedResumeSpec(r, &spec); err != nil {
 		return err
 	}
-	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
-	return runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force)
+	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
+		return err
+	}
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	return err
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -380,6 +441,16 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
+	}
+	// E3 (part of #652 review round 1): validate the resume budget
+	// ask synchronously — a malformed max_duration ("4 hours") would
+	// otherwise ride RunMessage.Budget through the cloud queue, fail
+	// the runner's applyBudgetOverrides on EVERY redelivery, and burn
+	// the delivery budget into a DLQ park. Same pre-flight as Launch.
+	if spec.Budget != nil {
+		if err := spec.Budget.Validate(); err != nil {
+			return nil, fmt.Errorf("budget: %w", err)
+		}
 	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything
@@ -412,7 +483,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			r = reconciled
 		}
 	}
-	if err := validateResumable(r, spec.Answers); err != nil {
+	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
 	}
 
@@ -451,11 +522,45 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
 	}
+	inProcessResume := s.publisher == nil && !detachedEnabled()
+	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
+	if inProcessResume {
+		// This exact workflow is handed to an engine in this process. Emit any
+		// report-mode violation here, then let that engine reuse the verdict and
+		// the immutable bodies loaded by the exact-availability guard.
+		// Queued/detached engines repeat the emitting pass at their own boundary.
+		validateArtifacts = runtime.ValidateResumeArtifacts
+	}
+	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force)
+	if err != nil {
+		return nil, err
+	}
+	if !inProcessResume {
+		artifactPreflight = nil
+	}
+
+	// The budget a resume executes against composes, per field, the ask
+	// persisted at launch (the doc's replay source) and THIS resume's
+	// ask — non-zero wins, zero inherits — applied to wf BEFORE the
+	// branch fork so every downstream path (cloud publish, detached,
+	// in-process) sees the same caps. The executor snapshots Budget at
+	// construction time, so this must happen before BuildExecutor below.
+	// Same merge the cloud wire performs (resolveResumeBudgetAsk).
+	if fromDoc := runtime.BudgetOverridesFromRun(r.BudgetOverrides); fromDoc != nil {
+		ir.ApplyBudgetOverrides(wf, *fromDoc)
+	}
+	raised := spec.Budget != nil && !spec.Budget.IsZero()
+	if raised {
+		ir.ApplyBudgetOverrides(wf, *spec.Budget)
+	}
 
 	// Cloud-mode resume: republish the RunMessage with ResumeSpec
 	// set so the runner pool re-enters the engine via Engine.Resume.
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
-	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
+	// in MongoRunStore.SaveCheckpoint (CASVersion increment). The doc's
+	// effective-caps snapshot is the publisher's to stamp, from the
+	// merged ask, after its own status CAS — not this layer's: the wire
+	// carries the merge, and the doc copy loaded above is stale by then.
 	if s.publisher != nil {
 		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
 			return nil, err
@@ -463,6 +568,30 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		closed := make(chan struct{})
 		close(closed)
 		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
+	}
+
+	// Local paths (detached subprocess, in-process): a raised cap is
+	// persisted here twice over, the way SubmitResume does it on the
+	// cloud path — the MERGED ask as the replay source (so the next
+	// resume, ask-less or not, and the detached subprocess that re-reads
+	// the doc, keep the raise), and the effective caps as the snapshot
+	// the studio Overview draws — the engine re-stamps the same figure
+	// when it claims the resume, this write moves it before the claim so
+	// the meter never shows the cap that just killed the run. Both
+	// granular on purpose: a whole-doc SaveRun from the
+	// copy loaded at the top of this method would revert any transition
+	// that landed since (a cancel, a finish). Best-effort: a store blip
+	// here does not fail the resume.
+	if raised {
+		merged := runtime.MergeResumeBudgetAsk(spec.Budget, r.BudgetOverrides)
+		if perr := s.store.SetRunBudgetOverrides(parent, spec.RunID, runtime.RunBudgetOverridesOf(merged)); perr != nil && s.logger != nil {
+			s.logger.Warn("runview: resume: persist merged budget ask on %s: %v", spec.RunID, perr)
+		}
+		if snap := runtime.SnapshotBudgetForPersist(wf.Budget); snap != nil {
+			if serr := s.store.SetRunBudgetSnapshot(parent, spec.RunID, snap); serr != nil && s.logger != nil {
+				s.logger.Warn("runview: resume: refresh budget snapshot on %s: %v", spec.RunID, serr)
+			}
+		}
 	}
 
 	if detachedEnabled() {
@@ -500,7 +629,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// r.ExtraSkills, re-read from the run record, is what makes an
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume", supervisors: spec.Supervisors, permission: r.PermissionOverride},
+		launchExtras{
+			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			artifactResumePreflight: artifactPreflight,
+			extraSkills:             r.ExtraSkills, extraSkillsOrigin: "resume", permission: r.PermissionOverride,
+		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -509,7 +642,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			if err != nil {
 				return err
 			}
-			if err := validateResumable(r2, spec.Answers); err != nil {
+			if err := validateResumable(r2, spec.Answers, spec.Automatic); err != nil {
 				return err
 			}
 			return eng.Resume(ctx, spec.RunID, spec.Answers)
@@ -564,20 +697,23 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 	return spec
 }
 
-// validateResumable returns nil if r is in a state from which Resume
-// can proceed; otherwise it returns a descriptive error.
-func validateResumable(r *store.Run, answers map[string]any) error {
-	switch r.Status {
-	case store.RunStatusPausedWaitingHuman:
-		if len(answers) == 0 {
-			return fmt.Errorf("no answers provided; resume of paused run requires answers")
+// validateResumable returns nil if r is in a state from which Resume can
+// proceed; otherwise it returns a descriptive error. When automatic is true
+// the check uses CanAutoResume() — machinery must never override an operator's
+// cancel — else it falls back to the wider CanOperatorResume() (paused,
+// failed_resumable, cancelled). Same predicate ride SubmitResume.
+func validateResumable(r *store.Run, answers map[string]any, automatic bool) error {
+	if automatic {
+		if !r.Status.CanAutoResume() {
+			return fmt.Errorf("run %q cannot be auto-resumed (status: %s) — CanAutoResume() excludes it deliberately", r.ID, r.Status)
 		}
-		return nil
-	case store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		return nil
-	default:
+	} else if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
+	if r.Status.RequiresResumeAnswers() && len(answers) == 0 {
+		return fmt.Errorf("no answers provided; resume of paused run requires answers")
+	}
+	return nil
 }
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup
@@ -667,6 +803,7 @@ func (s *Service) spawnRun(
 	}
 
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
+	opts = consumeArtifactResumePreflight(opts, &ex)
 	// Subbot nodes need a host-supplied runner (the bare engine can't compile
 	// a child .bot — import cycle with runview). Wired on BOTH the launch and
 	// resume paths; without it, in-process studio runs of subbot-bearing bots
@@ -692,6 +829,9 @@ func (s *Service) spawnRun(
 	// Empty on resume, leaving the original launch's value intact.
 	if len(modelOverrides) > 0 {
 		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
+	}
+	if ex.routingPolicy != nil {
+		opts = append(opts, runtime.WithRoutingPolicy(ex.routingPolicy))
 	}
 	if cb.url != "" {
 		opts = append(opts, runtime.WithCallback(cb.url, cb.token, cb.answerNode))
@@ -852,6 +992,9 @@ type launchExtras struct {
 	workDir  string
 	dailyCap *runtime.DailyCapGuard
 	source   *store.RunSource
+	// routingPolicy mirrors LaunchSpec.RoutingPolicy: the launch-frozen
+	// outcome contract, handed to the engine for doc persistence.
+	routingPolicy *store.RoutingPolicy
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
@@ -885,6 +1028,16 @@ type launchExtras struct {
 	// permission is the strongest-precedence run-level gate choice. It is
 	// supplied on launch and replayed from the run document on resume.
 	permission string
+	// budgetAsk mirrors LaunchSpec.Budget: the operator's launch-time
+	// budget ask, handed to the engine so the run doc persists it as the
+	// replay source every resume surface reads (runtime.WithBudgetAsk).
+	budgetAsk *ir.BudgetOverrides
+	// executionContext is the resolved, versioned launch contract persisted
+	// by the engine before the first node executes.
+	executionContext *store.ExecutionContext
+	// artifactResumePreflight is confined to a synchronous same-process resume.
+	// It must never cross a detached process or queue boundary.
+	artifactResumePreflight *runtime.ArtifactResumePreflight
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -942,6 +1095,12 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	// onto the run record. Nil for CLI / studio / fork launches.
 	if ex.source != nil {
 		opts = append(opts, runtime.WithSource(ex.source))
+	}
+	if ex.budgetAsk != nil {
+		opts = append(opts, runtime.WithBudgetAsk(ex.budgetAsk))
+	}
+	if ex.executionContext != nil {
+		opts = append(opts, runtime.WithExecutionContext(ex.executionContext))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /
@@ -1003,6 +1162,20 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if fin.autoMerge {
 		opts = append(opts, runtime.WithAutoMerge(true))
 	}
+	return opts
+}
+
+// consumeArtifactResumePreflight transfers the same-process resume snapshot
+// into the engine option and clears launchExtras before spawnRun captures it in
+// the execution goroutine. Without the clear, the service would retain every
+// validation-only artifact body until the resumed run finished even after the
+// engine consumed its one-shot copy.
+func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtras) []runtime.EngineOption {
+	if ex == nil || ex.artifactResumePreflight == nil {
+		return opts
+	}
+	opts = append(opts, runtime.WithArtifactResumePreflight(ex.artifactResumePreflight))
+	ex.artifactResumePreflight = nil
 	return opts
 }
 

@@ -27,7 +27,7 @@ const (
 	DiagForeachConflictsLoop     DiagCode = "C118" // edge combines `as foreach` with `as <loop>` (error)
 	DiagSubbotNoSource           DiagCode = "C119" // subbot node without a `source:` child .bot (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
-	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
+	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that is neither Opus 4.8 nor Claude 5 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
 	DiagDuplicateWithKey         DiagCode = "C028" // duplicate with-mapping key across edges to same target
 	DiagUnknownRefNode           DiagCode = "C029" // outputs ref to non-existent node
@@ -96,6 +96,8 @@ const (
 	// Target-repo devbox provisioning switch diagnostics.
 	DiagInvalidRepoDevbox DiagCode = "C134" // repo_devbox: value not one of on|off (error)
 
+	DiagInvalidWorkspaceCheckpoint DiagCode = "C139" // workspace_checkpoint: value not one of on|off (error)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an
@@ -122,7 +124,7 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
-	DiagGatedCLIBackendSandbox  DiagCode = "C136" // an external-hook backend (grok/kimi) carries a gate but the workflow does not opt out of the sandbox (warning)
+	DiagGatedCLIBackendSandbox  DiagCode = "C136" // a gated route needs a host-side run: external-hook backend (grok/kimi) with any gate, or claw with an ask-capable policy, and the workflow does not opt out of the sandbox (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	DiagFileFieldNotHuman       DiagCode = "C129" // `file` schema field on the output of a node that never pauses for an operator (error — no LLM can produce a binary)
@@ -131,6 +133,10 @@ const (
 	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
 	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)
 	DiagVarEnumDuplicate    DiagCode = "C127" // duplicate enum values in a var constraint (warning; deduped)
+	// Expression builtins: a call the evaluator cannot satisfy. The NAME is
+	// already refused at parse (C040); the ARITY is not visible there, so a
+	// call with the wrong argument count used to compile and die mid-run.
+	DiagBuiltinArity DiagCode = "C138" // builtin call whose argument count the evaluator cannot satisfy (error)
 	// Event-driven primitives (ADR-051): emit/wait nodes.
 	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
 	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)
@@ -144,9 +150,16 @@ const (
 	DiagAwaitAnswersNoTimeout DiagCode = "C241" // await_answers node with no `timeout:` (error — the no-silent-infinity invariant)
 	DiagAwaitAnswersBadFrom   DiagCode = "C242" // await_answers `from:` names a node that is missing or not interaction: async (warning — it can only ever time out)
 	DiagPersistInFanOut       DiagCode = "C243" // session: persist on a node inside a fan_out_all / fan_out_each / llm-multi body (error — v1 is trunk-only)
-	// Parallel-branch bodies (fan_out_all / fan_out_each / llm multi) run
-	// through execBranch, which has no local loop counters. C244 refuses a
-	// bounded-iteration edge (loop or foreach) whose source sits in that
-	// body; the runtime skip of IsBoundedIteration() is defence in depth.
-	DiagLoopInExecBranch DiagCode = "C244"
+	// Parallel-branch diagnostics. C244 protects ownership boundaries while
+	// allowing one branch to own private bounded iteration. C245 keeps the
+	// trunk-only review and llm_or_human orchestration from becoming inert.
+	DiagLoopInExecBranch      DiagCode = "C244"
+	DiagHumanModeInExecBranch DiagCode = "C245"
+	DiagImplicitCollectorMove DiagCode = "C246" // bounded predecessor used to elect an implicit collector that now executes per branch (warning)
+	// Typed terminal failure (`fail <name>:` with code/message/resumable).
+	DiagInvalidFailCode  DiagCode = "C247" // `code:` on a fail node is not an UPPER_SNAKE identifier (error — it is persisted as the run's failure_code and read by machines)
+	DiagReservedFailCode DiagCode = "C248" // `code:` on a fail node collides with an engine failure code (error — the engine reads those as control flow: auto-resume, usage-window retry)
+	// C249 continues the C240 parallel-branch band: a branch-spawning router
+	// that names one target twice gives two goroutines one branch id.
+	DiagDuplicateFanOutTarget DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
 )

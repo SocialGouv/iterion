@@ -33,12 +33,16 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // kubeBinaryName is the kubectl CLI iterion shells out to. Hardcoded
@@ -95,6 +99,11 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	proc.DetachProcessGroup(cmd)
+	// A cancelled context kills kubectl, not the children it spawned (the
+	// process group is detached): a credential plugin still holding the
+	// stdout/stderr pipes would keep Wait blocked for as long as it lives.
+	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout.
+	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
 
@@ -103,23 +112,53 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 // diagnostic surfacing — kubectl writes the failure reason to
 // stderr in a structured way ("Error from server (NotFound)") that
 // callers can parse without re-issuing the request.
-func applyManifest(ctx context.Context, namespace string, manifest []byte) error {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "apply", "-f", "-")
-	cmd.Stdin = bytes.NewReader(manifest)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("kubectl apply: %w\noutput: %s", err, string(out))
-	}
-	return nil
+//
+// BOUNDED by the phase helper (resolveApplyTimeout,
+// ITERION_SANDBOX_K8S_APPLY_TIMEOUT), which kills the process on expiry;
+// without it an apply on the bare run context hangs sandbox creation
+// BEFORE the first bounded phase is reached. The expiry carries
+// sandbox.ErrPhaseTimeout, so the engine parks the run failed_resumable
+// with SANDBOX_SETUP_TIMEOUT like every other setup stall.
+//
+// kubectl's own `--request-timeout` is NOT passed: setting it at any value
+// makes kubectl v1.36 discard the in-cluster configuration and fall back to
+// http://localhost:8080, so every apply fails at once. Killing the process
+// is what bounds a wedged apiserver here.
+//
+// phase names WHICH apply stalled ("apply pod", "apply networkpolicy",
+// …) — every per-run resource shares one budget but not one diagnosis.
+func applyManifest(ctx context.Context, logger *iterlog.Logger, namespace, phase string, manifest []byte) error {
+	timeout := resolveApplyTimeout()
+	return sandbox.RunWithPhaseTimeout(ctx, logger, phase, applyTimeoutEnv, timeout, func(ctx context.Context) error {
+		cmd := kubectlCmdContext(ctx, "--namespace", namespace, "apply", "-f", "-")
+		cmd.Stdin = bytes.NewReader(manifest)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("kubectl apply: %w\noutput: %s", err, string(out))
+		}
+		return nil
+	})
 }
 
 // deleteResource runs `kubectl delete <kind> <name> --namespace ...`.
 // Treats NotFound as success — callers invoke it from defer paths
 // where the resource may already be gone (a panicking iterion run
-// can leak partial state).
-func deleteResource(ctx context.Context, namespace, kind, name string) error {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace, "delete", kind, name,
-		"--ignore-not-found=true", "--wait=false")
+// can leak partial state). extraArgs appends per-call flags (e.g. a
+// force-delete's `--grace-period=0 --force`).
+//
+// Bounded by the apply family's budget on the process: a delete is one
+// apiserver call like an apply, and most callers discard its result — a
+// wedged apiserver would otherwise hang a rollback or a stale-pod eviction
+// with nothing to show for it. Plain context deadline, NOT
+// sandbox.ErrPhaseTimeout: a cleanup is not a setup phase and must not be
+// classified as one. Like the apply, it passes no `--request-timeout`.
+func deleteResource(ctx context.Context, namespace, kind, name string, extraArgs ...string) error {
+	timeout := resolveApplyTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	args := []string{"--namespace", namespace,
+		"delete", kind, name, "--ignore-not-found=true", "--wait=false"}
+	cmd := kubectlCmdContext(ctx, append(args, extraArgs...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Even with --ignore-not-found, delete returns non-zero on
@@ -139,7 +178,55 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 		fmt.Sprintf("--timeout=%ds", timeoutSecs))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out))
+		// `kubectl wait` only says the condition never came. The cluster
+		// knows WHY, and the reason decides between two different fixes: a
+		// resource request no node can hold (Unschedulable: Insufficient
+		// memory) and a slow or broken image pull. Read it on the error
+		// path only — ONCE, since the same reading both decorates the
+		// error and classifies it (podStartFailure): a pod that never got
+		// placed carries sandbox.ErrCapacity and the run parks resumable,
+		// while a broken image reference stays terminal.
+		//
+		// Read BEFORE the caller's Cleanup, which deletes the pod.
+		return podStartFailure(
+			fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out)),
+			probePodStart(ctx, namespace, podName))
 	}
 	return nil
+}
+
+// NodeLabelCoverage counts the cluster's nodes and those carrying the label
+// key, for the doctor: a topology spread over a key some nodes lack
+// excludes those nodes from scheduling, soft constraint or not, and a key
+// no node carries leaves every pod Pending. Listing nodes is a
+// cluster-scoped permission the chart's namespaced runner Role does not
+// grant on purpose, so the error must carry kubectl's reason (Forbidden)
+// for the doctor to say why it could not answer.
+func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, err error) {
+	cmd := kubectlCmdContext(ctx, "get", "nodes", "-o", "json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if reason := strings.TrimSpace(stderr.String()); reason != "" {
+			return 0, 0, fmt.Errorf("kubectl get nodes: %w: %s", err, reason)
+		}
+		return 0, 0, fmt.Errorf("kubectl get nodes: %w", err)
+	}
+	var nodes struct {
+		Items []struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &nodes); err != nil {
+		return 0, 0, fmt.Errorf("kubectl get nodes: decode: %w", err)
+	}
+	for _, n := range nodes.Items {
+		if _, ok := n.Metadata.Labels[key]; ok {
+			labelled++
+		}
+	}
+	return labelled, len(nodes.Items), nil
 }
