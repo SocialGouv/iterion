@@ -3,6 +3,7 @@ package native
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // A card whose file is present but momentarily unreadable (EACCES here;
@@ -48,5 +49,39 @@ func TestReconcile_KeepsACardWhoseFileIsMomentarilyUnreadable(t *testing.T) {
 	}
 	if _, err := s.Get(gone.ID); err == nil {
 		t.Fatal("a card whose file is gone is still served from the index")
+	}
+}
+
+// A watch-loss callback may already have passed its stop-channel check when
+// Close begins. Once Close has marked the store closed, that late callback
+// must not arm a rescanner that outlives the store. (Landed first in #1020
+// under a `closing` flag of its own; the store's `closed` is that flag.)
+func TestWatchLostAfterCloseBeganArmsNoNet(t *testing.T) {
+	setRescanInterval(t, 20*time.Millisecond)
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	watcher, _, werr := s.watchState()
+	if watcher == nil {
+		_ = s.Close()
+		t.Skipf("this host refused a watch (%v); a watch cannot be lost", werr)
+	}
+
+	// Stage the exact Close boundary under the same mutex: a loss callback
+	// that reaches watchLost after this point is late and must be ignored.
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.watchLost(watcher)
+
+	_, rescanner, _ := s.watchState()
+	if rescanner != nil {
+		_ = rescanner.Close()
+		_ = watcher.Close()
+		t.Fatal("a watch lost after Close began armed a fallback rescanner")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
