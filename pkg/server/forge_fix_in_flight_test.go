@@ -396,6 +396,40 @@ func TestClearFixInFlight_LeavesAnotherRunsClaimAlone(t *testing.T) {
 	}
 }
 
+// THE WIRING. Every test above calls clearFixInFlight directly, and in
+// production exactly one call site reaches it: the gate reconciler, fed by the
+// run-outcome event and by the 60s sweep. Move or drop that line and every
+// claim this feature posts sits pending forever, with nothing failing.
+//
+// Its POSITION is the assertion, not merely its presence. A fixer holds no
+// gate_context and — in this fixture, as for any lane whose grant expired —
+// no publish grant either, so the reconciler bows out at "not a gating run" a
+// few lines below. The release has to have happened before that, and before
+// every other stand-down in that function.
+func TestReconcileGate_ReleasesTheFixerClaimBeforeStandingDown(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFinished)
+	// The reconciler loads the run by id, so the fixture's in-memory tenant,
+	// bot and status have to be on the stored document.
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+
+	if err := s.reconcileGateForRunID(context.Background(), run.ID, gateTriggerSweep); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d statuses, want 1 — the fixer's claim is released by this path and no other", gc.setCalls)
+	}
+	if !isFixDone(gc.last) {
+		t.Errorf("posted %q on %q, want the fixer's released marker", gc.last.Description, gc.last.Context)
+	}
+}
+
 // R4e92c6 — `pr_url` + `head_sha` are set on EVERY forge-launched run, so
 // without a role check before the network the clear pays a live
 // ListCommitStatuses for reviewers, branchers, implementers and docs-amenders
