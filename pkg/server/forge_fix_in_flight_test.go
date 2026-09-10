@@ -443,3 +443,72 @@ func TestFixerRoleCached_SecondLookupIsMemoised(t *testing.T) {
 		t.Errorf("an unrelated bot was served the memoised fixer answer")
 	}
 }
+
+// Rf4afa9 — keeping the claim through every resumable park has a counterpart:
+// a fixer that parks and never comes back (budget exceeded, retries exhausted,
+// a plain execution failure) leaves a pending nobody resolves. The next pass on
+// that unchanged head then read it as another run's LIVE claim and stood down —
+// the silent second pass again, through the stale-pending door this time.
+//
+// The claim's target URL names its owner, so the owner can be asked.
+func TestMarkFixInFlight_TakesOverAClaimWhoseRunIsOver(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/dead-fixer"},
+	}}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := fixLaunchFixture(t, gc)
+	s.cfg.Store = st
+	owner, err := st.CreateRun(context.Background(), "dead-fixer", "branch-improve-loop", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Status = store.RunStatusFailedResumable
+	if err := st.SaveRun(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a stale claim from a dead run silences every later pass on this head", gc.setCalls)
+	}
+	if gc.last.TargetURL != "https://iterion.test/runs/run-77" {
+		t.Errorf("claim still names %q, want the live run", gc.last.TargetURL)
+	}
+}
+
+// ...and a claim whose owner is STILL RUNNING is never taken over. Standing
+// down is the conservative direction: taking over on a guess is how a false
+// all-clear gets built.
+func TestMarkFixInFlight_LeavesAClaimWhoseRunIsAlive(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/live-fixer"},
+	}}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := fixLaunchFixture(t, gc)
+	s.cfg.Store = st
+	owner, err := st.CreateRun(context.Background(), "live-fixer", "branch-improve-loop", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Status = store.RunStatusRunning
+	if err := st.SaveRun(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+
+	if gc.setCalls != 0 {
+		t.Fatalf("took over a claim whose run is still rewriting the branch (%d posts)", gc.setCalls)
+	}
+}

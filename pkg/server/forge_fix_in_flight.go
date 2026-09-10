@@ -131,7 +131,7 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	// the other's live rewrite. Standing down instead leaves the warning up and
 	// attributed to the run that raised it, which is what a reader about to
 	// push needs — the warning is true whichever fixer is working.
-	if isFixInFlight(cur) && !gateStatusSpeaksFor(cur, runURL) {
+	if isFixInFlight(cur) && !gateStatusSpeaksFor(cur, runURL) && !s.fixClaimIsStale(ctx, cur) {
 		return
 	}
 	st := forge.CommitStatus{
@@ -262,6 +262,42 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 		s.logger.Info("forge fix: run %s is %s — released %s on %s@%s",
 			run.ID, run.Status, fixInFlightContext, repo, shortSHA(sha))
 	}
+}
+
+// fixClaimIsStale reports whether a live-looking claim belongs to a run that is
+// itself over.
+//
+// The counterpart of keeping the claim through every resumable park: a fixer
+// that parks and never comes back (budget exceeded, retries exhausted, a plain
+// execution failure — the gate lane's own comment says those "sit until a human
+// notices, which with an absent required check is never") leaves a pending
+// nobody resolves. Without this, the NEXT pass on that unchanged head reads the
+// stale claim as another run's live one and stands down — the silent second
+// pass, reappearing through the stale-pending door after the isFixDone branch
+// closed the done door.
+//
+// Ownership is the target URL, so the URL names the run to ask about. A claim
+// whose owner cannot be identified or read is treated as LIVE: standing down is
+// the conservative direction, and taking over a claim on a guess is how a false
+// all-clear gets built.
+func (s *Server) fixClaimIsStale(ctx context.Context, cur forge.CommitStatus) bool {
+	if s == nil || s.cfg.Store == nil {
+		return false
+	}
+	base := strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/") + "/runs/"
+	target := strings.TrimSpace(cur.TargetURL)
+	if base == "/runs/" || !strings.HasPrefix(target, base) {
+		return false
+	}
+	owner := strings.TrimSpace(strings.TrimPrefix(target, base))
+	if owner == "" {
+		return false
+	}
+	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), owner)
+	if err != nil || run == nil {
+		return false
+	}
+	return run.Status.IsTerminal()
 }
 
 // fixRoleTTL bounds how long a manifest classification is reused. Short enough
