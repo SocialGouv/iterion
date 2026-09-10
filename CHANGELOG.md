@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.135.0](https://github.com/SocialGouv/iterion/compare/v3.134.0...v3.135.0) (2026-09-10)
+
+### Features
+
+* **runs:** a run says which tier paid for it, and says it again after a resume ([#1105](https://github.com/SocialGouv/iterion/issues/1105)) ([75e4413](https://github.com/SocialGouv/iterion/commit/75e441320c46d17a96186e04a5c575cf8ac88716)), closes [#991](https://github.com/SocialGouv/iterion/issues/991), references [#992](https://github.com/SocialGouv/iterion/issues/992)
+
+    <details><summary>why</summary>
+
+    `run.bot_source_tier` answers "which bundle served this launch". Nothing answered the question an operator asks at least as often — "who paid for this run?" — although the publisher computes it: it resolves the credential through five tiers and names the winner in ONE INFO line. Answering for a run whose logs have rotated meant not answering at all.
+
+    </details>
+
 ## [3.134.0](https://github.com/SocialGouv/iterion/compare/v3.133.0...v3.134.0) (2026-09-10)
 
 ### Features
