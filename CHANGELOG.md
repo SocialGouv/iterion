@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.3](https://github.com/SocialGouv/iterion/compare/v3.132.2...v3.132.3) (2026-09-10)
+
+### Bug Fixes
+
+* **dsl:** empty blocks have a written form, an include never resolves against a relative name, C141 on a use of an empty group ([#1067](https://github.com/SocialGouv/iterion/issues/1067)) ([140102a](https://github.com/SocialGouv/iterion/commit/140102a3c46bd690e85599b9eb4cd6bacf7ad66c)), references [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1015](https://github.com/SocialGouv/iterion/issues/1015)
+
+    <details><summary>why</summary>
+
+    The block half of the empty-header class #1050 closed for declarations (Revi's R7f55fb on that PR): `budget:`, `memory:`, `compaction:`, `mcp:`, `auth:`, `cursors:`, `recovery:`, `sandbox:` (and its `build:`/`network:`) and the four top-level blocks were written as a bare header when empty — reachable from a plain file whose only property is zero-valued (`max_cost_usd: 0`, `args: {}`) and from the canvas document's `{}` — and a bare header did not parse (E002), so the save guard refused the…
+
+    </details>
+
 ## [3.132.2](https://github.com/SocialGouv/iterion/compare/v3.132.1...v3.132.2) (2026-09-10)
 
 ### Bug Fixes
