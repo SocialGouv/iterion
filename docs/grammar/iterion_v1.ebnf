@@ -23,20 +23,28 @@ top_level_decl = vars_decl | presets_decl | attachments_decl | secrets_decl
 
 (* ---------- Values and collections ---------- *)
 
-vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
+(* Every block — vars, presets, attachments, secrets, and the nested
+   mcp/auth/cursors/compaction/memory/recovery/budget/resources/sandbox
+   (and its build/network) blocks below — may stand as a bare header: at
+   the end of its parent (a DEDENT or the end of the file), or before a
+   BLANK LINE and a sibling. That is the empty block, kept as such; a
+   header followed directly by an unindented line is still an error. Same
+   rule as the empty declarations (see prompt_decl); fallbacks_block is the
+   exception, see there. *)
+vars_decl = "vars" ":" NEWLINE [ INDENT { var_field } DEDENT ] ;
 var_field = IDENT ":" type_expr [ enum_constraint ] [ "=" literal ] NEWLINE ;
 
 type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 literal = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
 enum_constraint = "[" "enum" ":" STRING_LIT { "," STRING_LIT } "]" ;
 
-presets_decl = "presets" ":" NEWLINE INDENT { preset_entry } DEDENT ;
+presets_decl = "presets" ":" NEWLINE [ INDENT { preset_entry } DEDENT ] ;
 preset_entry = IDENT ":" NEWLINE INDENT { preset_value } DEDENT ;
 preset_value = IDENT ":" literal NEWLINE ;
 
-attachments_decl = "attachments" ":" NEWLINE INDENT
+attachments_decl = "attachments" ":" NEWLINE [ INDENT
                      { attachment_field }
-                   DEDENT ;
+                   DEDENT ] ;
 attachment_field = IDENT ":" attachment_type NEWLINE
                    [ INDENT { attachment_prop } DEDENT ] ;
 attachment_type = "file" | "image" ;
@@ -44,7 +52,7 @@ attachment_prop = "description" ":" STRING_LIT NEWLINE
                 | "accept_mime" ":" string_list NEWLINE
                 | "required" ":" BOOL_LIT NEWLINE ;
 
-secrets_decl = "secrets" ":" NEWLINE INDENT { secret_field } DEDENT ;
+secrets_decl = "secrets" ":" NEWLINE [ INDENT { secret_field } DEDENT ] ;
 secret_field = IDENT ":" [ STRING_LIT ] NEWLINE
                [ INDENT { secret_prop } DEDENT ] ;
 secret_prop = "value" ":" STRING_LIT NEWLINE
@@ -85,7 +93,7 @@ mcp_server_prop = "transport" ":" mcp_transport NEWLINE
                 | mcp_auth_block ;
 mcp_transport = "stdio" | "http" | "sse" ;
 
-mcp_auth_block = "auth" ":" NEWLINE INDENT { mcp_auth_prop } DEDENT ;
+mcp_auth_block = "auth" ":" NEWLINE [ INDENT { mcp_auth_prop } DEDENT ] ;
 mcp_auth_prop = "type" ":" STRING_LIT NEWLINE
               | "auth_url" ":" STRING_LIT NEWLINE
               | "token_url" ":" STRING_LIT NEWLINE
@@ -93,7 +101,7 @@ mcp_auth_prop = "type" ":" STRING_LIT NEWLINE
               | "client_id" ":" STRING_LIT NEWLINE
               | "scopes" ":" string_list NEWLINE ;
 
-mcp_config_block = "mcp" ":" NEWLINE INDENT { mcp_config_prop } DEDENT ;
+mcp_config_block = "mcp" ":" NEWLINE [ INDENT { mcp_config_prop } DEDENT ] ;
 mcp_config_prop = "autoload_project" ":" BOOL_LIT NEWLINE
                 | "inherit" ":" BOOL_LIT NEWLINE
                 | "servers" ":" ident_list NEWLINE
@@ -108,7 +116,7 @@ cursor_prop = "description" ":" STRING_LIT NEWLINE
 cursor_value = IDENT ":" STRING_LIT NEWLINE ;
 cursor_band = STRING_LIT ":" STRING_LIT NEWLINE ;
 
-cursors_block = "cursors" ":" NEWLINE INDENT { cursor_setting } DEDENT ;
+cursors_block = "cursors" ":" NEWLINE [ INDENT { cursor_setting } DEDENT ] ;
 cursor_setting = IDENT ":" cursor_setting_value NEWLINE ;
 cursor_setting_value = IDENT | STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
 
@@ -126,6 +134,8 @@ supervisor_prop = "watches" ":" ident_list NEWLINE
 (* A node's ordered fallback routes (ADR-087). Entries are NAMED rather
    than an anonymous sequence because the lexer has no list-item token,
    and because the name is the stable id a fall-through is reported by. *)
+(* The one block that may not stand bare: a chain with no route is refused
+   by name (the AST has no empty chain to carry). *)
 fallbacks_block = "fallbacks" ":" NEWLINE INDENT { fallback_entry } DEDENT ;
 fallback_entry  = IDENT ":" NEWLINE INDENT { fallback_prop } DEDENT ;
 fallback_prop   = "backend" ":" STRING_LIT NEWLINE
@@ -184,13 +194,13 @@ loop_budget_guard_mode = "off" | "on" ;
 repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
 
-compaction_block = "compaction" ":" NEWLINE INDENT
+compaction_block = "compaction" ":" NEWLINE [ INDENT
                      { compaction_prop }
-                   DEDENT ;
+                   DEDENT ] ;
 compaction_prop = "threshold" ":" NUMBER_LIT NEWLINE
                 | "preserve_recent" ":" INT_LIT NEWLINE ;
 
-memory_block = "memory" ":" NEWLINE INDENT { memory_prop } DEDENT ;
+memory_block = "memory" ":" NEWLINE [ INDENT { memory_prop } DEDENT ] ;
 memory_prop = "enabled" ":" BOOL_LIT NEWLINE
             | "scope" ":" STRING_LIT NEWLINE
             | "autoload" ":" string_list NEWLINE
@@ -260,7 +270,7 @@ tool_prop = "description" ":" STRING_LIT NEWLINE
           | recovery_block | sandbox_decl ;
 script_language = "js" | "py" | "sh" | "bash" ;
 action_policy = "required" | "recover" | "best_effort" ;
-recovery_block = "recovery" ":" NEWLINE INDENT { recovery_prop } DEDENT ;
+recovery_block = "recovery" ":" NEWLINE [ INDENT { recovery_prop } DEDENT ] ;
 recovery_prop = "max_repair_attempts" ":" INT_LIT NEWLINE
               | "max_agent_attempts" ":" INT_LIT NEWLINE
               | "model" ":" STRING_LIT NEWLINE
@@ -352,23 +362,25 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
 
 worktree_mode = "auto" | "none" ;
 
-budget_block = "budget" ":" NEWLINE INDENT { budget_prop } DEDENT ;
+budget_block = "budget" ":" NEWLINE [ INDENT { budget_prop } DEDENT ] ;
 budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE
             | "max_duration" ":" STRING_LIT NEWLINE
             | "max_cost_usd" ":" NUMBER_LIT NEWLINE
             | "max_tokens" ":" INT_LIT NEWLINE
             | "max_iterations" ":" INT_LIT NEWLINE ;
 
-resources_block = "resources" ":" NEWLINE INDENT
+resources_block = "resources" ":" NEWLINE [ INDENT
                     { IDENT ":" resource_capacity NEWLINE }
-                  DEDENT ;
+                  DEDENT ] ;
 resource_capacity = INT_LIT | string_list ;
 needs_value = IDENT | ident_list ;
 
 (* ---------- Sandbox ---------- *)
 
 sandbox_decl = "sandbox" ":" sandbox_mode NEWLINE
-             | "sandbox" ":" NEWLINE INDENT { sandbox_prop } DEDENT ;
+             | "sandbox" ":" NEWLINE [ INDENT { sandbox_prop } DEDENT ] ;
+(* The bare block form is the inline block with nothing in it — which the
+   compiler refuses (C044) until it carries an image: or a build:. *)
 sandbox_mode = "auto" | "none" | "inline" ;
 sandbox_prop = "mode" ":" sandbox_mode NEWLINE
              | "image" ":" STRING_LIT NEWLINE
@@ -381,16 +393,16 @@ sandbox_prop = "mode" ":" sandbox_mode NEWLINE
              | "mounts" ":" string_or_ident_list NEWLINE
              | sandbox_network_block ;
 
-sandbox_build_block = "build" ":" NEWLINE INDENT
+sandbox_build_block = "build" ":" NEWLINE [ INDENT
                         { sandbox_build_prop }
-                      DEDENT ;
+                      DEDENT ] ;
 sandbox_build_prop = "dockerfile" ":" STRING_LIT NEWLINE
                    | "context" ":" STRING_LIT NEWLINE
                    | "args" ":" string_map ;
 
-sandbox_network_block = "network" ":" NEWLINE INDENT
+sandbox_network_block = "network" ":" NEWLINE [ INDENT
                           { sandbox_network_prop }
-                        DEDENT ;
+                        DEDENT ] ;
 sandbox_network_prop = "mode" ":" IDENT NEWLINE
                      | "preset" ":" string_or_ident NEWLINE
                      | "inherit" ":" IDENT NEWLINE

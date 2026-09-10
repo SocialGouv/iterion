@@ -593,8 +593,24 @@ func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
 	if j == nil {
 		return nil
 	}
+	// `sandbox: {}` — a block the canvas created and did not fill in — has
+	// no mode, which no .bot text can express (the block form is inline,
+	// the short form names a mode) and means what its absence means:
+	// inherit. It is read as absent, so the document saves and reads back
+	// the same.
+	if j.Mode == "" && j.Image == "" && j.Build == nil && j.User == "" && j.WorkspaceFolder == "" &&
+		j.HostState == "" && j.PostCreate == "" && len(j.Env) == 0 && len(j.Mounts) == 0 && j.Network == nil {
+		return nil
+	}
+	// A block with fields but no mode is the block form, which the parser
+	// reads as inline — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode.
+	mode := j.Mode
+	if mode == "" {
+		mode = "inline"
+	}
 	return &SandboxBlock{
-		Mode:            j.Mode,
+		Mode:            mode,
 		Image:           j.Image,
 		Build:           sandboxBuildBlockFromJSON(j.Build),
 		User:            j.User,
@@ -697,7 +713,11 @@ type jsonWorkflowDecl struct {
 	Skills         []string              `json:"skills,omitempty"`
 	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
 	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
-	Resources      map[string]int        `json:"resources,omitempty"`
+	// Resources is a pointer so the EMPTY block travels: a bare `resources:`
+	// (a block the canvas created and did not fill in, or a plain file's) is
+	// `{}`, an absent block is no key — with a plain map, omitempty would
+	// drop the empty one and a studio open → save would delete the header.
+	Resources *map[string]int `json:"resources,omitempty"`
 	// ResourceMembers carries the named-instance pools (`godot: [s1, s2]`):
 	// Resources keeps every resource's capacity (a pool's is its size), this
 	// map the member ids a lease hands out one at a time. Absent for a
@@ -1429,8 +1449,12 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxIterations:       w.Budget.MaxIterations,
 		}
 	}
-	if w.Resources != nil && len(w.Resources.Capacities) > 0 {
-		jw.Resources = w.Resources.Capacities
+	if w.Resources != nil {
+		caps := w.Resources.Capacities
+		if caps == nil {
+			caps = map[string]int{} // the empty block is `{}`, never absent
+		}
+		jw.Resources = &caps
 		if len(w.Resources.Members) > 0 {
 			jw.ResourceMembers = w.Resources.Members
 		}
@@ -2218,8 +2242,12 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
 	}
-	if len(jw.Resources) > 0 {
-		w.Resources = &ResourcesBlock{Capacities: jw.Resources}
+	if jw.Resources != nil {
+		caps := *jw.Resources
+		if caps == nil {
+			caps = map[string]int{}
+		}
+		w.Resources = &ResourcesBlock{Capacities: caps}
 		if len(jw.ResourceMembers) > 0 {
 			w.Resources.Members = jw.ResourceMembers
 		}

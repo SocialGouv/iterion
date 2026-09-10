@@ -34,6 +34,15 @@ func (c *compiler) expandGroups() {
 			c.errorf(DiagUseUnknownGroup, "use references unknown group %q", use.Group)
 			continue
 		}
+		// A group with no node expands to nothing, and nothing else says so
+		// unless a node of the instance is referenced: the group is a
+		// declaration the studio has not filled in yet, or its body landed
+		// at the wrong indentation after a blank line.
+		if len(g.Agents)+len(g.Judges)+len(g.Routers)+len(g.Humans)+len(g.Tools)+len(g.Computes) == 0 {
+			c.warnfAtSpan(DiagEmptyGroupUse, use.Span,
+				"use %q as %q expands an empty group: %q declares no node, so the instance is nothing",
+				use.Group, use.Prefix, use.Group)
+		}
 		// Two `use` blocks with one prefix would expand to the same node
 		// ids; reported HERE, on the repeated `use` line — the line to
 		// change — rather than as duplicate ids positioned on the group

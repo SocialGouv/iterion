@@ -130,6 +130,8 @@ var Catalog = map[DiagCode]DiagInfo{
 
 	DiagEmptySchema: {"Node references an empty schema", "Give the schema at least one field, or point the node at another schema; an empty schema is a declaration the studio has not filled in yet, not a contract."},
 
+	DiagEmptyGroupUse: {"Use of an empty group", "Give the group at least one node, or drop the `use`; an empty group is a declaration the studio has not filled in yet — or a body that landed at the wrong indentation after a blank line."},
+
 	// Verified actions (ADR-044).
 	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
 	DiagRecoveryNoPostcond:   {"Recovery without postcondition", "Add a `postcondition:` (the deterministic oracle) or drop the recovery."},

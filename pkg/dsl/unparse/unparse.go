@@ -241,6 +241,20 @@ func (w *fileWriter) ensureBody(mark int) {
 	}
 }
 
+// endBlock closes a block whose header was written at mark: when no
+// property followed, a blank line separates the bare header from what
+// comes next, which is how the parser tells an empty block from a body at
+// the wrong indentation. An empty block is written, never omitted: the
+// text carries the document as the author declared it, and whether an
+// empty block changes the program is the compiler's call, not the
+// writer's — today a `recovery:` block's presence is read by the
+// verified-action checks, the others compile as their absence does.
+func endBlock(b *buf, mark int) {
+	if b.Len() == mark {
+		b.WriteByte('\n')
+	}
+}
+
 // blankLine emits a separator newline before the next section, unless
 // this is the first section to write anything. Mirrors the closure that
 // used to live inside Unparse — preserve the contract exactly so
@@ -266,7 +280,7 @@ func (w *fileWriter) writeComments(comments []*ast.Comment) {
 }
 
 func (w *fileWriter) writeVars(vars *ast.VarsBlock) {
-	if vars == nil || len(vars.Fields) == 0 {
+	if vars == nil {
 		return
 	}
 	w.blankLine()
@@ -274,7 +288,7 @@ func (w *fileWriter) writeVars(vars *ast.VarsBlock) {
 }
 
 func (w *fileWriter) writePresets(presets *ast.PresetsBlock) {
-	if presets == nil || len(presets.Entries) == 0 {
+	if presets == nil {
 		return
 	}
 	w.blankLine()
@@ -282,7 +296,7 @@ func (w *fileWriter) writePresets(presets *ast.PresetsBlock) {
 }
 
 func (w *fileWriter) writeAttachments(att *ast.AttachmentsBlock) {
-	if att == nil || len(att.Fields) == 0 {
+	if att == nil {
 		return
 	}
 	w.blankLine()
@@ -290,7 +304,7 @@ func (w *fileWriter) writeAttachments(att *ast.AttachmentsBlock) {
 }
 
 func (w *fileWriter) writeSecrets(secrets *ast.SecretsBlock) {
-	if secrets == nil || len(secrets.Fields) == 0 {
+	if secrets == nil {
 		return
 	}
 	w.blankLine()
@@ -656,6 +670,7 @@ func writeRecoveryBlock(b *buf, r *ast.RecoveryBlock, indent string) {
 		return
 	}
 	fmt.Fprintf(b, "%srecovery:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if r.MaxRepairAttempts > 0 {
 		fmt.Fprintf(b, "%smax_repair_attempts: %d\n", inner, r.MaxRepairAttempts)
@@ -820,10 +835,13 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "workflow %s:\n", wf.Name)
 
-		if wf.Vars != nil && len(wf.Vars.Fields) > 0 {
+		// Written when present, empty or not — the same rule as the
+		// top-level blocks (an omitted empty block would be deleted from
+		// the file by a save of an unrelated field).
+		if wf.Vars != nil {
 			writeVarsBlock(&w.b, wf.Vars, "  ")
 		}
-		if wf.Attachments != nil && len(wf.Attachments.Fields) > 0 {
+		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
 		if wf.MCP != nil {
@@ -993,6 +1011,7 @@ func writeReasoningEffortProp(b *buf, value string) {
 
 func writeVarsBlock(b *buf, vars *ast.VarsBlock, indent string) {
 	fmt.Fprintf(b, "%svars:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, v := range vars.Fields {
 		b.WriteString(indent)
 		b.WriteString("  ")
@@ -1026,6 +1045,7 @@ func writeEnumConstraint(b *buf, vals []string) {
 
 func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 	fmt.Fprintf(b, "%ssecrets:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, s := range sb.Fields {
 		// Short form when only a value is set; block form when egress
 		// hosts, file materialisation, env wiring, or a description
@@ -1065,6 +1085,7 @@ func writeSecretsBlock(b *buf, sb *ast.SecretsBlock, indent string) {
 
 func writePresetsBlock(b *buf, pb *ast.PresetsBlock, indent string) {
 	fmt.Fprintf(b, "%spresets:\n", indent)
+	defer endBlock(b, b.Len())
 	// Sort preset names alphabetically for deterministic output.
 	names := make([]string, 0, len(pb.Entries))
 	byName := make(map[string]*ast.Preset, len(pb.Entries))
@@ -1088,6 +1109,7 @@ func writePresetsBlock(b *buf, pb *ast.PresetsBlock, indent string) {
 
 func writeAttachmentsBlock(b *buf, ab *ast.AttachmentsBlock, indent string) {
 	fmt.Fprintf(b, "%sattachments:\n", indent)
+	defer endBlock(b, b.Len())
 	for _, f := range ab.Fields {
 		// Short form when no extra props are set.
 		hasProps := f.Description != "" || len(f.AcceptMIME) > 0 || f.Required != nil
@@ -1134,6 +1156,7 @@ func writeLiteral(b *buf, lit *ast.Literal) {
 
 func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 	b.WriteString("  auth:\n")
+	defer endBlock(b, b.Len())
 	if auth.Type != "" {
 		fmt.Fprintf(b, "    type: %s\n", b.str(auth.Type))
 	}
@@ -1156,6 +1179,7 @@ func writeMCPAuthBlock(b *buf, auth *ast.MCPAuthDecl) {
 
 func writeMCPConfigBlock(b *buf, cfg *ast.MCPConfigDecl, indent string) {
 	fmt.Fprintf(b, "%smcp:\n", indent)
+	defer endBlock(b, b.Len())
 	if cfg.AutoloadProject != nil {
 		fmt.Fprintf(b, "%s  autoload_project: %t\n", indent, *cfg.AutoloadProject)
 	}
@@ -1375,7 +1399,7 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 	if sb == nil {
 		return false
 	}
-	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" {
+	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" || sb.HostState != "" {
 		return false
 	}
 	if len(sb.Env) > 0 || len(sb.Mounts) > 0 {
@@ -1389,6 +1413,7 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 
 func writeSandboxBuildBlock(b *buf, bb *ast.SandboxBuildBlock, indent string) {
 	fmt.Fprintf(b, "%sbuild:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if bb.Dockerfile != "" {
 		fmt.Fprintf(b, "%sdockerfile: %s\n", inner, b.str(bb.Dockerfile))
@@ -1406,6 +1431,7 @@ func writeSandboxBuildBlock(b *buf, bb *ast.SandboxBuildBlock, indent string) {
 
 func writeSandboxNetworkBlock(b *buf, n *ast.SandboxNetworkBlock, indent string) {
 	fmt.Fprintf(b, "%snetwork:\n", indent)
+	defer endBlock(b, b.Len())
 	inner := indent + "  "
 	if n.Mode != "" {
 		fmt.Fprintf(b, "%smode: %s\n", inner, n.Mode)
@@ -1435,6 +1461,7 @@ func writeCompaction(b *buf, compaction *ast.CompactionBlock, indent string, lea
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(b, "%scompaction:\n", indent)
+	defer endBlock(b, b.Len())
 	if compaction.Threshold != nil {
 		fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
 	}
@@ -1448,6 +1475,7 @@ func writeMemory(b *buf, m *ast.MemoryBlock, indent string, leadingBlank bool) {
 		b.WriteByte('\n')
 	}
 	fmt.Fprintf(b, "%smemory:\n", indent)
+	defer endBlock(b, b.Len())
 	if m.Enabled != nil {
 		fmt.Fprintf(b, "%s  enabled: %t\n", indent, *m.Enabled)
 	}
@@ -1507,6 +1535,7 @@ func writeCursorDecl(b *buf, c *ast.CursorDecl) {
 // implicit shape the parser assumes.
 func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 	fmt.Fprintf(b, "%scursors:\n", indent)
+	defer endBlock(b, b.Len())
 	if !cb.Enabled {
 		fmt.Fprintf(b, "%s  enabled: false\n", indent)
 	}
@@ -1527,7 +1556,18 @@ func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 // edit through parse → unparse, so an unserialised block is DELETED from
 // the .bot the next time anyone touches an unrelated field.
 func writeFallbacksBlock(b *buf, fbs []*ast.FallbackDecl, indent string) {
-	if len(fbs) == 0 {
+	// A header with no route under it does not parse (a chain with no
+	// route is refused by name), and a route with no name cannot be
+	// written — so the header goes only when a route will follow it.
+	// Verify refuses the nameless route before this is reached on the
+	// save path; here the header simply stays out.
+	writable := 0
+	for _, fb := range fbs {
+		if fb != nil && strings.TrimSpace(fb.Name) != "" {
+			writable++
+		}
+	}
+	if writable == 0 {
 		return
 	}
 	fmt.Fprintf(b, "%sfallbacks:\n", indent)
@@ -1584,6 +1624,7 @@ func isCursorValueBareIdent(s string) bool {
 
 func writeBudget(b *buf, budget *ast.BudgetBlock) {
 	b.WriteString("\n  budget:\n")
+	defer endBlock(b, b.Len())
 	if budget.MaxParallelBranches > 0 {
 		fmt.Fprintf(b, "    max_parallel_branches: %d\n", budget.MaxParallelBranches)
 	}
@@ -1607,10 +1648,11 @@ func writeBudget(b *buf, budget *ast.BudgetBlock) {
 // writeResources serializes the workflow `resources:` block. Names are
 // emitted in sorted order for deterministic, round-trip-stable output.
 func writeResources(b *buf, res *ast.ResourcesBlock) {
-	if res == nil || len(res.Capacities) == 0 {
+	if res == nil {
 		return
 	}
 	b.WriteString("\n  resources:\n")
+	defer endBlock(b, b.Len())
 	names := make([]string, 0, len(res.Capacities))
 	for name := range res.Capacities {
 		names = append(names, name)

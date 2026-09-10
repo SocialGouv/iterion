@@ -174,8 +174,14 @@ func RunValidate(path string, p *Printer) error {
 		BundleVersion: bundleVersion,
 	}
 
-	// Parse.
-	pr := parser.Parse(path, string(src))
+	// Parse — under the path in full: an include resolves beside the file
+	// so named, and the compiler refuses a relative name rather than read
+	// beside whatever the process sits in.
+	parsePath := path
+	if abs, err := filepath.Abs(path); err == nil {
+		parsePath = abs
+	}
+	pr := parser.Parse(parsePath, string(src))
 	for _, d := range pr.Diagnostics {
 		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
 		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{

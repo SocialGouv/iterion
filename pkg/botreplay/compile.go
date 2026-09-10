@@ -52,6 +52,9 @@ func CompileBot(bot string) (*ir.Workflow, error) {
 	if err != nil {
 		return nil, err
 	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs // an include resolves beside the file named in full
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("botreplay: read %s: %w", path, err)

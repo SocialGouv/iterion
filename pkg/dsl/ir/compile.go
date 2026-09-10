@@ -216,6 +216,11 @@ func (c *compiler) errorfAtSpan(code DiagCode, sp ast.Span, format string, args 
 	c.emit(SeverityError, code, "", "", sp, "", format, args...)
 }
 
+// warnfAtSpan is the warning counterpart to errorfAtSpan.
+func (c *compiler) warnfAtSpan(code DiagCode, sp ast.Span, format string, args ...any) {
+	c.emit(SeverityWarning, code, "", "", sp, "", format, args...)
+}
+
 // errorfAtNodeSpan attributes a diagnostic to a node AND to a specific span —
 // for a node that has more than one declaration, where the id alone would
 // resolve to the first one while the line to edit is the other.

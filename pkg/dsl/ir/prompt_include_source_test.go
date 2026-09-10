@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // The compiler never resolves an include against the process working
@@ -45,25 +44,5 @@ func TestCompileRefusesAnIncludeWhoseSourceIsNotAFile(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A real file named by a RELATIVE path (`iterion run main.bot`) is a file on
-// this host: its includes resolve beside it, as they always did.
-func TestCompileResolvesAnIncludeBesideARelativeSourceFile(t *testing.T) {
-	dir := t.TempDir()
-	src := "schema out:\n  ok: bool\n\nprompt p:\n  {{include \"rules.md\"}}\n\nagent a:\n  model: \"m\"\n  output: out\n  system: p\n\nworkflow w:\n  entry: a\n  a -> done\n"
-	for name, content := range map[string]string{"main.bot": src, "rules.md": "RULES-TEXT"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Chdir(dir)
-	cr := Compile(parser.Parse("main.bot", src).File)
-	if cr.HasErrors() {
-		t.Fatalf("a relative source file was refused: %v", cr.Diagnostics)
-	}
-	if !strings.Contains(cr.Workflow.Prompts["p"].Body, "RULES-TEXT") {
-		t.Fatalf("the include beside the relative source file was not resolved: %q", cr.Workflow.Prompts["p"].Body)
 	}
 }
