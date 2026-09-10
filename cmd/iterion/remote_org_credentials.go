@@ -22,7 +22,11 @@ var remoteOrgsOAuthCmd = &cobra.Command{
 	Short: "The org's shared OAuth forfait connections (claude_code|codex)",
 	Long: "List the org's shared forfait connections, or set one from a credentials\n" +
 		"blob (--from-file/--from-env/stdin). The org tier lends these to the teams\n" +
-		"named by `orgs credential-audience`.",
+		"named by `orgs credential-audience`.\n\n" +
+		"Each kind may hold a CHAIN: --rank 0 (the default) is the primary, --rank 1\n" +
+		"and up are the fallbacks tried in order when the link before them cannot\n" +
+		"serve — a second subscription that keeps the org's teams running while the\n" +
+		"first one's usage window is shut.",
 	Args: cobra.RangeArgs(0, 2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		org, err := c.ResolveOrg(cmd.Context(), remoteOrgFlag)
@@ -47,11 +51,23 @@ var remoteOrgsOAuthCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base+"/"+kind+"/credentials", string(blob), "credentials JSON")
+			path, err := cli.OAuthPath(base+"/"+kind+"/credentials", "", remoteOrgOAuthRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendData(cmd.Context(), c, p, "POST", path, string(blob), "credentials JSON")
 		case "refresh":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/"+kind+"/refresh", nil)
+			path, err := cli.OAuthPath(base+"/"+kind+"/refresh", "", remoteOrgOAuthRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", path, nil)
 		case "delete":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+kind, nil)
+			path, err := cli.OAuthPath(base+"/"+kind, "", remoteOrgOAuthRank)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", path, nil)
 		default:
 			return fmt.Errorf("unknown action %q (want set|refresh|delete)", action)
 		}
@@ -61,6 +77,9 @@ var remoteOrgsOAuthCmd = &cobra.Command{
 var (
 	remoteAudienceTeams    string
 	remoteAudienceAllTeams string
+	// remoteOrgOAuthRank selects which link of the org's credential chain a
+	// command addresses (0 = the primary).
+	remoteOrgOAuthRank int
 )
 
 var remoteOrgsAudienceCmd = &cobra.Command{
@@ -222,6 +241,7 @@ func init() {
 	}
 	remoteOrgsSettingsCmd.Flags().StringVar(&remoteOrgApprovalRequire, "require-approval", "", "true|false — park a team admin's repo provisioning for an org admin")
 	remoteOrgsSettingsCmd.Flags().StringVar(&remoteOrgApprovalScope, "approval-scope", "", "all|shared_credentials — what the approval gate parks")
+	remoteOrgsOAuthCmd.Flags().IntVar(&remoteOrgOAuthRank, "rank", 0, "Which link of the org's credential chain to address (0 = primary, 1+ = fallbacks tried in order)")
 	remoteOrgsOAuthCmd.Flags().StringVar(&remoteSecretFromEnv, "from-env", "", "Read the credentials blob from this environment variable")
 	remoteOrgsOAuthCmd.Flags().StringVar(&remoteSecretFromFile, "from-file", "", "Read the credentials blob from this file")
 	remoteOrgsAudienceCmd.Flags().StringVar(&remoteAudienceTeams, "teams", "", "Comma-separated team ids allowed to spend the org's credentials (empty string revokes all)")

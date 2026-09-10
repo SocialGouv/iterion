@@ -114,7 +114,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			return refreshed, fmt.Errorf("secrets: oauth refresh sweep: %w", oerr)
 		}
 		now := time.Now().UTC()
-		claimed, cerr := w.Store.ClaimRefresh(ctx, rec.UserID, rec.Kind, owner, now, now.Add(RefreshClaimTTL))
+		claimed, cerr := w.Store.ClaimRefresh(ctx, rec.ID, owner, now, now.Add(RefreshClaimTTL))
 		if cerr != nil {
 			failures++
 			if firstErr == nil {
@@ -130,13 +130,13 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 			// rather than wait the lease out. Best-effort: a claim we no
 			// longer own has already been superseded, and there is nothing
 			// to give back.
-			_ = w.Store.ReleaseRefreshClaim(ctx, rec.UserID, rec.Kind, owner, nil)
+			_ = w.Store.ReleaseRefreshClaim(ctx, rec.ID, owner, nil)
 			if errors.Is(err, ErrNotRefreshable) {
 				// Self-heal legacy records sealed before NotRefreshable
 				// existed so future sweeps skip them without decrypting.
 				// A partial write: the flag is the only thing learned here,
 				// and the record read a round trip ago may already be stale.
-				if uerr := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
+				if uerr := w.Store.UpdateTokens(ctx, rec.ID, OAuthTokenUpdate{NotRefreshable: true}); uerr != nil {
 					failures++
 					if firstErr == nil {
 						firstErr = fmt.Errorf("mark not-refreshable %s/%s: %w", rec.UserID, rec.Kind, uerr)
@@ -155,7 +155,7 @@ func (w *OAuthRefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		// clears it, and its credential must win — overwriting it here
 		// would replace an operator's freshly uploaded session with one
 		// refreshed from the session it replaced.
-		if err := w.Store.UpdateTokens(ctx, rec.UserID, rec.Kind, OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
+		if err := w.Store.UpdateTokens(ctx, rec.ID, OAuthTokenUpdateFrom(rec).WithClaim(owner)); err != nil {
 			if errors.Is(err, ErrRefreshClaimLost) {
 				if w.Logger != nil {
 					w.Logger.Warn("oauth-forfait refresh: %s/%s exchanged then DISCARDED — the record was "+
