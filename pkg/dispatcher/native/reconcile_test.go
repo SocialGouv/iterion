@@ -51,7 +51,16 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 
 	var duringScan, afterScan *Issue
 	var scanningOnce, scannedOnce sync.Once
-	setSeam(t, &reconcileScanning, func(*Store) {
+	// Both seams check the store: a seam is a PACKAGE hook, and any other
+	// store alive in the binary — one an earlier test left ticking its own
+	// 2s net — fires it too. Unguarded, that store's scan would spend the
+	// sync.Once, this store's scan would find both hooks already used, and
+	// the test would fail on duringScan == nil naming a mutex bug that is
+	// not there. Every other seam in the package is guarded the same way.
+	setSeam(t, &reconcileScanning, func(st *Store) {
+		if st != s {
+			return
+		}
 		scanningOnce.Do(func() {
 			// From another goroutine, bounded: a Create that cannot take
 			// the lock while the scan runs is the failure named.
@@ -72,7 +81,10 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			}
 		})
 	})
-	setSeam(t, &reconcileScanned, func(*Store) {
+	setSeam(t, &reconcileScanned, func(st *Store) {
+		if st != s {
+			return
+		}
 		scannedOnce.Do(func() {
 			iss, err := s.Create(Issue{Title: "Landed after the scan, before the swap", State: "backlog"})
 			if err != nil {
