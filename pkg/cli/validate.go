@@ -158,7 +158,12 @@ func RunValidate(path string, p *Printer) error {
 		// by the per-bot-memory stability check) is the archive's stem.
 		bundleDir = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	case bundle.KindBundleDir:
-		bundleDir = filepath.Base(path)
+		// The bundle's OWN root, never the path the operator typed: a bare
+		// main.bot promoted to its bundle by openBundleOrFile would else
+		// name the FILE, and the per-bot-memory name-stability check (C230)
+		// would refuse `validate bots/x/main.bot` on a bundle whose three
+		// names agree — while `validate bots/x` passes.
+		bundleDir = filepath.Base(bundleHandle.Dir)
 	}
 	path = iterPath
 
