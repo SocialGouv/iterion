@@ -287,6 +287,19 @@ schema scanner_output:
   finding_count:  int
   errors:         json
 
+## The deep scanner writes its findings to a file inside the sandbox, and the
+## pod is destroyed with the run: a pass that dies after it — at triage, at the
+## jury, on a usage cap — takes its whole contribution with it. Measured
+## 2026-09-10: 88 minutes of investigation lost that way, twice in one day.
+## deepsec_bank carries the findings THEMSELVES out of the pod, capped by a
+## byte budget, with the two counts that make truncation visible.
+schema deepsec_bank:
+  findings:   json
+  embedded:   int
+  total:      int
+  truncated:  bool
+  note:       string
+
 schema lang_input:
   langs:  json
 
@@ -2700,6 +2713,65 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
   output: scanner_output
   publish: deepsec_scan_artifact
 
+## bank_deepsec_findings — the findings leave the pod, or they do not exist.
+##
+## It sits BESIDE the path into triage, not on it: scan_join keeps referencing
+## run_deepsec_scanner, so the findings are NOT copied into the triage prompt
+## (the whole point of json_paths is that triage reads the file itself). This
+## node exists for the operator reading a run that died later.
+##
+## Always exits 0 and always emits its envelope: an absent export is a fact to
+## report (the scanner was skipped, or its output was dropped as unusable),
+## never a reason to fail the run.
+tool bank_deepsec_findings:
+  command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES=524288 python3 -c '
+import json, os
+
+out = os.environ["DEEPSEC_OUT"]
+try:
+    budget = int(os.environ.get("MAX_BYTES") or 0)
+except ValueError:
+    budget = 0
+if budget <= 0:
+    budget = 524288
+
+def emit(findings, embedded, total, truncated, note):
+    print(json.dumps({"findings": findings, "embedded": embedded,
+                      "total": total, "truncated": truncated, "note": note}))
+
+if not os.path.isfile(out):
+    emit([], 0, 0, False,
+         "no deepsec export at " + out + ": the scanner was skipped, or its output was dropped as unusable")
+    raise SystemExit(0)
+
+try:
+    with open(out, encoding="utf-8", errors="replace") as fh:
+        doc = json.load(fh)
+except (ValueError, OSError) as e:
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " could not be read: " + type(e).__name__ + ": " + str(e)[:200])
+    raise SystemExit(0)
+
+items = doc if isinstance(doc, list) else (doc.get("findings") or [])
+if not isinstance(items, list):
+    items = []
+
+# Truncation drops WHOLE findings and reports both counts, so a partial bank
+# is still parseable JSON and the gap is a subtraction, not a guess.
+kept, size = [], 0
+for it in items:
+    chunk = len(json.dumps(it, ensure_ascii=False))
+    if kept and size + chunk > budget:
+        break
+    kept.append(it)
+    size += chunk
+
+emit(kept, len(kept), len(items), len(kept) < len(items),
+     "banked " + str(len(kept)) + " of " + str(len(items)) + " findings from " + out)
+'`
+  output: deepsec_bank
+  publish: deepsec_findings_bank
+
 ## scan_join collects the five scanner outputs into one record for
 ## triage. The scanners run as a single sequential branch (generic →
 ## … → custom → [deepsec_gate → run_deepsec_scanner?] → scan_join),
@@ -4710,7 +4782,8 @@ workflow sec_audit_source:
 
   deepsec_gate -> run_deepsec_scanner when enabled
   deepsec_gate -> scan_join when not enabled
-  run_deepsec_scanner -> scan_join
+  run_deepsec_scanner -> bank_deepsec_findings
+  bank_deepsec_findings -> scan_join
 
   scan_join -> scan_health with {langs: "{{outputs.detect_tech.langs}}"}
   scan_health -> cap_findings
