@@ -108,15 +108,28 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	if prURL == "" || sha == "" {
 		return
 	}
-	// AS-PR MODE CLAIMS NOTHING, because the warning would be false — and this
-	// marker is never retracted, so a false one is false forever. With
-	// `open_mr` the fixer opens a SEPARATE pull request against the source
-	// branch instead of pushing back: there is no push-back to collide with,
-	// and a concurrent writer on this head is in nobody's way.
+	// THE WARNING IS ABOUT A PUSH-BACK, so it is posted only where one exists,
+	// and `push_branch` is the var that creates it: it routes the fixer's
+	// commits onto THIS pull request's head branch. Tested positively, on
+	// purpose.
+	//
+	// A negative guard — stand down when `open_mr` is "true" — reads the same
+	// on the two lanes anyone thinks of, and is wrong on the rest, because
+	// `open_mr` is OPTIONAL. It is stamped by fixerPRVars (the heal and
+	// gate-autofix lanes) and by stampBranchImprovePushBack, which returns
+	// without stamping anything unless the bot IS the brancher role. So a
+	// team's SECOND fixer — the case this design advertises as free, since any
+	// bot inherits this marker by declaring `consumes: review` — arrives from a
+	// `/command` invocation with a head sha and NEITHER var, and absence read
+	// as "pushes back".
 	//
 	// The counterpart of stating a fact that is never withdrawn is that it must
-	// be true when posted. This is the one lane where it would not be.
-	if strings.EqualFold(strings.TrimSpace(vars["open_mr"]), "true") {
+	// be true when posted, and an optional var cannot carry that: what makes
+	// the warning true is what has to be tested. As-PR mode is then covered by
+	// the same line rather than by a clause of its own — it sets `mr_base` and
+	// no `push_branch`, because it opens a separate pull request instead of
+	// rewriting this branch.
+	if strings.TrimSpace(vars["push_branch"]) == "" {
 		return
 	}
 	// The ROLE decides, never a bot id — the engine names no bot (CLAUDE.md),

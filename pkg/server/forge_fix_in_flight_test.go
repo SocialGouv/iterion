@@ -23,12 +23,25 @@ func fixLaunchFixture(t *testing.T, gc forgeGateClient) *Server {
 // fixLaunchVars is a fixer-shaped launch: a pull request and the revision it
 // is about to rewrite. Deliberately carries a gate_context too — a fixer
 // launched through a repo that pins one must still not write there.
+//
+// Built by the PRODUCTION var builder rather than by hand. A hand-written stub
+// carrying different terms than the real producer is precisely how the as-PR
+// lane's missing push_branch stayed invisible: every test agreed with every
+// other test, and none of them with fixerPRVars.
 func fixLaunchVars() map[string]string {
-	return map[string]string{
-		"pr_url":       "https://github.com/o/r/pull/42",
-		"head_sha":     "deadbeef",
-		"gate_context": "iterion/review",
-	}
+	v := fixerPRVars("main", "feat/x", "https://github.com/o/r/pull/42", "notes", false, nil)
+	v["head_sha"] = "deadbeef"
+	v["gate_context"] = "iterion/review"
+	return v
+}
+
+// fixLaunchVarsAsPR is the SAME builder in as-PR mode: it stamps mr_base and
+// leaves push_branch unset, because the fixer opens a separate pull request
+// instead of rewriting this branch.
+func fixLaunchVarsAsPR() map[string]string {
+	v := fixerPRVars("main", "feat/x", "https://github.com/o/r/pull/42", "notes", true, nil)
+	v["head_sha"] = "deadbeef"
+	return v
 }
 
 // The window this closes: a fixer works for tens of minutes and holds no
@@ -209,10 +222,11 @@ func TestMarkFixInFlight_HasExactlyOneMessage(t *testing.T) {
 func TestMarkFixInFlight_AcceptsTheFixerOnlyRevisionKey(t *testing.T) {
 	gc := &listingGateClient{}
 	s := fixLaunchFixture(t, gc)
-	vars := map[string]string{
-		"pr_url":       "https://github.com/o/r/pull/42",
-		"fix_head_sha": "aaa111", // no head_sha: the heal lane must not arm the gate
-	}
+	// The heal lane's real shape, from its own builder: push-back mode, plus
+	// the revision under the fixer-only key and NO head_sha (that key would
+	// also arm the gate claim, which this lane deliberately stood down from).
+	vars := fixerPRVars("main", "feat/x", "https://github.com/o/r/pull/42", "ejected from the merge queue", false, nil)
+	vars["fix_head_sha"] = "aaa111"
 
 	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
 
@@ -234,22 +248,51 @@ func TestMarkFixInFlight_AcceptsTheFixerOnlyRevisionKey(t *testing.T) {
 func TestMarkFixInFlight_SilentInAsPRMode(t *testing.T) {
 	gc := &listingGateClient{}
 	s := fixLaunchFixture(t, gc)
-	vars := fixLaunchVars()
-	vars["open_mr"] = "true"
 
-	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVarsAsPR(), "run-77")
 
 	if gc.setCalls != 0 {
 		t.Fatalf("claimed a push-back collision for a lane that opens a PR instead (%d posts) — and the claim is never retracted", gc.setCalls)
 	}
 }
 
-// ...and the push-back lane, which sets open_mr=false, still claims.
+// R5318a3 — THE generalisation of the test above, and the reason the guard is
+// positive rather than negative.
+//
+// `open_mr` is optional: fixerPRVars stamps it, and stampBranchImprovePushBack
+// stamps it only for the bot holding the brancher ROLE. A team's second fixer —
+// free by design, since a bot inherits this marker by declaring
+// `consumes: review` — is launched by /command with a head sha and neither var.
+// A guard that stood down only on `open_mr == "true"` read that absence as
+// "pushes back" and posted a warning that is false, on a head that never moves,
+// with nothing in the design able to retract it.
+func TestMarkFixInFlight_SilentWhenNoPushBackIsRouted(t *testing.T) {
+	gc := &listingGateClient{}
+	s := fixLaunchFixture(t, gc)
+	// A /command launch: the invocation carries the PR and the revision, and
+	// neither of the two vars that describe what the fixer does with them.
+	vars := map[string]string{
+		"pr_url":   "https://github.com/o/r/pull/42",
+		"head_sha": "deadbeef",
+	}
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
+
+	if gc.setCalls != 0 {
+		t.Fatalf("claimed for a launch that routes no push-back (%d posts) — absence of open_mr is not evidence of pushing back, and this claim is never retracted", gc.setCalls)
+	}
+}
+
+// ...and the push-back lane, the one whose commits really do land on this head,
+// still claims. This is the assertion that keeps the guard above from being
+// satisfied by never posting at all.
 func TestMarkFixInFlight_ClaimsWhenItPushesBack(t *testing.T) {
 	gc := &listingGateClient{}
 	s := fixLaunchFixture(t, gc)
 	vars := fixLaunchVars()
-	vars["open_mr"] = "false"
+	if vars["push_branch"] == "" {
+		t.Fatal("fixerPRVars stopped routing a push-back in push-back mode — the claim's whole premise")
+	}
 
 	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
 
