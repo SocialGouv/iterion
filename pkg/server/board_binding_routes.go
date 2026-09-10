@@ -213,9 +213,15 @@ func (s *Server) installationGrantsFor(ctx context.Context, conn forge.Connectio
 	if s.forgeInstallationGrants != nil {
 		return s.forgeInstallationGrants(ctx, conn)
 	}
-	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-	if !ok || conn.InstallationID == 0 {
+	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+	switch {
+	case errors.Is(err, errNoGitHubApp), err == nil && conn.InstallationID == 0:
+		// Nothing to probe with: the recorded grant is the best answer there is.
 		return conn.GrantedPermissions, nil
+	case err != nil:
+		// A read that failed is not a grant. Returning the stored set here
+		// would present stale permissions as the live ones.
+		return nil, err
 	}
 	inst, err := forgegithub.InstallationInfo(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
