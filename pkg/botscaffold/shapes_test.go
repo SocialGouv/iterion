@@ -354,18 +354,6 @@ func TestGalleryShapes(t *testing.T) {
 	}
 }
 
-// templateForShape returns the gallery template offering shape.
-func templateForShape(t *testing.T, shape string) Template {
-	t.Helper()
-	for _, tpl := range Templates() {
-		if tpl.Spec.Shape == shape {
-			return tpl
-		}
-	}
-	t.Fatalf("no template offers shape %q", shape)
-	return Template{}
-}
-
 // singleQuote mirrors the runtime's shell escaping of a substituted ref
 // (pkg/backend/model.shellEscape): wrap in single quotes, closing and
 // reopening around each one.
@@ -384,7 +372,11 @@ func TestCampaignLoopVerifyEmitsOnlyJSONOnStdout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the shape's command is POSIX sh")
 	}
-	spec := templateForShape(t, "campaign-loop").Spec
+	tpl, ok := TemplateByID("campaign-loop")
+	if !ok {
+		t.Fatal("the campaign-loop template is gone")
+	}
+	spec := tpl.Spec
 	spec.Slug = "stdout-campaign-loop"
 	_, w, _ := scaffoldAndCompile(t, spec)
 	tools := nodesOf[*ir.ToolNode](w)
