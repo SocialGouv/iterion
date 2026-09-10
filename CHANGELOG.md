@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.5](https://github.com/SocialGouv/iterion/compare/v3.131.4...v3.131.5) (2026-09-10)
+
+### Bug Fixes
+
+* **model:** a captured turn records the backend that produced it ([#1062](https://github.com/SocialGouv/iterion/issues/1062)) ([e8ec6eb](https://github.com/SocialGouv/iterion/commit/e8ec6eb6147e5c321e3e91657154f4a5ec70da2d)), closes [#1053](https://github.com/SocialGouv/iterion/issues/1053)
+
+    <details><summary>why</summary>
+
+    delegateHooksFor already receives the node's RESOLVED backend and threw it away, stamping delegate.BackendClaudeCode on every captured turn. pi fires the same OnTurnFinished hook (pi_rpc.go), so every pi turn was persisted under another backend's name in store.TurnCheckpoint.Backend.
+
+    </details>
+
 ## [3.131.4](https://github.com/SocialGouv/iterion/compare/v3.131.3...v3.131.4) (2026-09-10)
 
 ### Bug Fixes
