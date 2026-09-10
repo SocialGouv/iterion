@@ -37,13 +37,21 @@ list, with the two paths that still launch outside it.
    `MonthlyRunQuota`. This is also the **metering** step — a successful
    run consumes one slot at this point.
 
+Step 2 binds only when the launch **names** a repository, which every
+automated lane does at the gate. `POST /api/runs` is the exception in
+placement, not in effect: it learns its repository from a connection read that
+must sit behind the suspend check, so it re-runs step 2 — that step alone,
+since step 6 has already metered — once `repoProjectPath` resolves, before the
+forge reachability probe and the managed-secret mint.
+
 Steps 3 and 5 are additionally **lowered by any capacity reservation that
 does not name this launch's bot** — the floor described below — and refuse
 outright when those reserves take the whole cap (see [When the reserves
 swallow the whole cap](#when-the-reserves-swallow-the-whole-cap), which is
 the case a lowered ceiling cannot express). A reservation never creates a
 limit that is not configured, so a deployment with no concurrency or cost cap
-is unaffected by one.
+is unaffected by one — including a wiring whose run store cannot count active
+runs, where step 3 is inert and the slot reserve is inert with it.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
