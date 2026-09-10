@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.4](https://github.com/SocialGouv/iterion/compare/v3.132.3...v3.132.4) (2026-09-10)
+
+### Bug Fixes
+
+* **auth:** an org admin was offered teams the switch then refused ([#1083](https://github.com/SocialGouv/iterion/issues/1083)) ([8bb175b](https://github.com/SocialGouv/iterion/commit/8bb175b1be8879736409093746764e81191ec3b7))
+
+    <details><summary>why</summary>
+
+    `buildOrgTree` lists every team of an org for its admins, synthesizing a `RoleAdmin` grant — deliberately, since `canManageTeam`/`orgAdminOfTeam` already let them write to each of those teams. `SwitchTeam` never learned the same rule: it had a step-in for super-admins only, so every other team came back `403 user is not a member of the team`. The studio builds its switcher from the first and calls the second, so the click did nothing at all, with no message. Measured on prod: 19 teams offered,…
+
+    </details>
+
 ## [3.132.3](https://github.com/SocialGouv/iterion/compare/v3.132.2...v3.132.3) (2026-09-10)
 
 ### Bug Fixes
