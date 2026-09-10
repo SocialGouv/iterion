@@ -1,11 +1,28 @@
-// Package budgetfloor reserves capacity for a named workload — the one thing
-// iterion's budget machinery could not express.
+// Package budgetfloor holds capacity back from unreserved work so a named
+// workload keeps a shared credential longer — a PREFERENCE at admission, and
+// deliberately not called a guarantee.
+//
+// # The bound, stated first
+//
+// Nothing is ALLOCATED. Admission compares a total against a lowered ceiling
+// and acquires nothing, so work admitted below that ceiling can still consume
+// the band a reservation names; the bound on the overshoot is the combined
+// outstanding spend of every admitted attempt, and two replicas can both admit
+// into the last slot. The reserve acts at admission ONLY: a run in flight is
+// never re-judged, and the runner's own guard reads the deployment-wide policy
+// rather than the lowered one (pkg/runner/usage_cap.go). A real guarantee
+// needs durable allocation — reserve at admission, settle after completion,
+// reconcile on crash — which is tracked on #950 and not built here.
+//
+// What it does buy is real and was measured missing: unreserved work meets its
+// ceiling first, so it is sent to another credential while the named workload
+// keeps the shared one further into its window.
 //
 // Every existing mechanism is a CEILING. `max_cost_usd`, the org monthly caps
 // (pkg/orgusage), the per-credential meters (pkg/credusage), the window caps
 // (pkg/usagecap), the team concurrency and launch-rate caps, a pool pledge's
 // spend/day and runs/day — all of them answer *"how much may this stop at?"*.
-// None answers *"how much is reserved for this, whatever else runs?"*.
+// None answers *"which of them should stop FIRST?"*.
 //
 // The difference is not academic. Measured 2026-09-08: campaign bots and the
 // PR reviewer shared one Anthropic subscription; when its five-hour window
