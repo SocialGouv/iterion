@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // fixLaunchFixture is inFlightFixture plus the REAL bots/ catalog, because the
@@ -298,5 +301,68 @@ func TestMarkFixInFlight_ClaimsWhenItPushesBack(t *testing.T) {
 
 	if gc.setCalls != 1 {
 		t.Fatalf("posted %d, want 1 — the lane that DOES push back must warn", gc.setCalls)
+	}
+}
+
+// R902a73 — THE wiring test, and the only one here that proves the feature
+// exists at all.
+//
+// Every other test in this file calls markFixInFlight directly, so all of them
+// stay green when the ONE production call site — the webhook launch tail — is
+// deleted: the bench proves the function is correct, never that it is reached.
+// This drives a real fixer launch through the GitHub handler and asserts a
+// status actually landed on the pull request.
+//
+// The auto-heal lane is the subject because it is the one that FORCE-pushes,
+// and so the one a concurrent writer most needs warned about.
+func TestFixerLaunch_ClaimsThroughTheWebhookTail(t *testing.T) {
+	s := newWebhookTestServer(t)
+	gc := &listingGateClient{}
+	s.cfg.PublicURL = "https://iterion.test"
+	// The REAL catalog: the role comes from each bot's manifest, so without it
+	// every role reads `unknown` and this test would pass by claiming nothing.
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	s.forgeConnections = forge.NewMemoryConnectionStore()
+	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+		ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		return gc, nil
+	}
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-heal", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghDequeuedPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	if gc.setCalls != 1 {
+		t.Fatalf("the launch tail posted %d statuses, want exactly 1 — a fixer launched for real is visible nowhere", gc.setCalls)
+	}
+	if gc.last.Context != fixInFlightContext {
+		t.Errorf("context = %q, want %q", gc.last.Context, fixInFlightContext)
+	}
+	if gc.lastSHA != "aaa111" {
+		t.Errorf("posted on %q, want the dequeued head the heal is about", gc.lastSHA)
+	}
+	if !isFixInFlight(gc.last) {
+		t.Errorf("status is not recognisable as the claim: %q", gc.last.Description)
+	}
+	// Rcdaa46's other half, asserted rather than argued: this lane must write
+	// the fixer context and NOTHING else. It publishes its revision under
+	// `fix_head_sha` precisely so `head_sha` does not also arm markGateInFlight
+	// on a repo that pins a shared gate_context — a REQUIRED check this fixer
+	// would claim and never answer.
+	for _, st := range gc.posted {
+		if st.Context != fixInFlightContext {
+			t.Errorf("the heal lane also wrote %q — it answers no gate and must claim none", st.Context)
+		}
 	}
 }
