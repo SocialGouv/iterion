@@ -191,10 +191,12 @@ func TestBankSitsBesideTheTriagePath(t *testing.T) {
 	if !ok {
 		t.Fatalf("scan_join is %T, want *ir.ComputeNode", wf.Nodes["scan_join"])
 	}
+	sawDeepsecScan := false
 	for _, ex := range join.Exprs {
 		if ex.Key != "deepsec_scan" {
 			continue
 		}
+		sawDeepsecScan = true
 		if strings.Contains(ex.Raw, "bank_deepsec_findings") {
 			t.Errorf("scan_join reads the BANK (%s) — the banked findings would ride into the triage prompt, "+
 				"which is what json_paths exists to avoid", ex.Raw)
@@ -202,6 +204,12 @@ func TestBankSitsBesideTheTriagePath(t *testing.T) {
 		if !strings.Contains(ex.Raw, "run_deepsec_scanner") {
 			t.Errorf("scan_join no longer reads the scanner envelope: %s", ex.Raw)
 		}
+	}
+	// Both assertions above live inside the key filter. Rename or drop
+	// deepsec_scan and the loop body never runs, the test goes green, and it
+	// pins nothing — the same silent failure it exists to prevent.
+	if !sawDeepsecScan {
+		t.Fatal("scan_join has no deepsec_scan expr — this test now asserts nothing; re-anchor it on the current key")
 	}
 }
 
