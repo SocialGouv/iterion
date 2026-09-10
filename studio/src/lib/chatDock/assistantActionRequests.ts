@@ -223,8 +223,14 @@ export function validateAssistantActionRequest(
       detail = `${ready ? "Mark" : "Unmark"} pipeline task ${taskId} ${ready ? "ready" : "as ready"}`;
       break;
     }
+    case "pipeline.task.reset": {
+      const taskId = requiredId("task_id");
+      args = { task_id: taskId };
+      optional(args, "fresh", bool(source, "fresh"));
+      detail = `Reset pipeline task ${taskId}`;
+      break;
+    }
     case "pipeline.task.launch":
-    case "pipeline.task.reset":
     case "pipeline.task.close":
     case "pipeline.task.delete": {
       const taskId = requiredId("task_id");
@@ -371,7 +377,7 @@ export async function executeAssistantAction(
       await pipelineApi.launchPipelineTask(id("task_id"));
       return { message: `Launched pipeline task ${id("task_id")}` };
     case "pipeline.task.reset":
-      await pipelineApi.resetPipelineTask(id("task_id"));
+      await pipelineApi.resetPipelineTask(id("task_id"), { fresh: args.fresh === true });
       return { message: `Reset pipeline task ${id("task_id")}` };
     case "pipeline.task.close":
       await pipelineApi.closePipelineTask(id("task_id"));
