@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.0](https://github.com/SocialGouv/iterion/compare/v3.131.5...v3.132.0) (2026-09-10)
+
+### Features
+
+* **credentials:** a tenant may hold a CHAIN of forfaits, not one per kind ([#1065](https://github.com/SocialGouv/iterion/issues/1065)) ([ed8c522](https://github.com/SocialGouv/iterion/commit/ed8c52242c409e99beff943245bb1f30381926ec)), references [#945](https://github.com/SocialGouv/iterion/issues/945)
+
+    <details><summary>why</summary>
+
+    The store held exactly one OAuthRecord per (owner, kind), enforced by a unique index. That made the credential chain no deeper than the tiers themselves: an operator holding four Claude subscriptions could wire two — their org's and the deployment's — and had no way to say "try these in this order". On 2026-09-08 that ceiling stopped every claude_code run on a production deployment for three hours: the org forfait's five-hour window closed, the single tier behind it was already spent on its…
+
+    </details>
+* **credusage:** the repository becomes an accounting dimension ([#1069](https://github.com/SocialGouv/iterion/issues/1069)) ([9f0247f](https://github.com/SocialGouv/iterion/commit/9f0247f72f709cfca6f229bc75a1f63f0a078fd7)), references [#950](https://github.com/SocialGouv/iterion/issues/950)
+
+    <details><summary>why</summary>
+
+    "A quota per repo" had no subject to attach to: credusage.Key was {fingerprint, provider, tier, tenant} × month, and nothing carried the repository a run targeted into accounting — so "one busy repository is eating the shared subscription" was unanswerable while it happened.
+
+    </details>
+
 ## [3.131.5](https://github.com/SocialGouv/iterion/compare/v3.131.4...v3.131.5) (2026-09-10)
 
 ### Bug Fixes
