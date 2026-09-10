@@ -280,16 +280,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	// Launch admission: suspend → concurrency → rate → cost cap →
-	// monthly run quota (which also meters). Super-admin bypasses.
-	// No subject: the gate runs BEFORE the body is parsed, so the bot is
-	// not known yet, and moving the gate after the decode would let a
-	// malformed request skip the quota CAS. An operator-initiated launch is
-	// also not the automated fan-out the per-repo quota exists to bound.
-	if _, d := s.gateLaunch(r.Context(), launchSubject{}); d != nil {
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -312,6 +302,23 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
+		return
+	}
+	// Launch admission: suspend → concurrency → rate → cost cap →
+	// monthly run quota (which also meters). Super-admin bypasses.
+	//
+	// AFTER the decode, because the body is where this surface learns which
+	// bot it is launching, and an empty subject is not neutral: a RESERVED
+	// bot judged as ordinary work faces the ceiling its own reservation
+	// lowered, so the studio's Launch button would be refused on the very
+	// band held for that bot. The body is size-bounded and touches no store,
+	// so nothing but the caller's own payload is parsed before admission —
+	// and a request too malformed to name a bot now costs no metered run
+	// slot either. No repository: an operator-initiated launch is not the
+	// automated fan-out the per-repo quota exists to bound.
+	if _, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)}); d != nil {
+		s.writeLaunchDenial(w, r, d)
+		span.SetStatus(codes.Error, "launch denied")
 		return
 	}
 	if req.RoutingPolicy != nil {
@@ -585,10 +592,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	// No subject: the gate runs BEFORE the body is parsed, so the bot is
-	// not known yet, and moving the gate after the decode would let a
-	// malformed request skip the quota CAS. An operator-initiated launch is
-	// also not the automated fan-out the per-repo quota exists to bound.
+	// No subject, and this one stays FIRST, unlike the launch above: a
+	// resume learns its bot from the RUN, and loading the run before the
+	// gate would turn the suspend check into a run-existence probe (the
+	// lookup is deliberately not tenant-filtered). The cost is stated rather
+	// than hidden: a reserved bot resumed BY HAND is judged as ordinary
+	// work, so its own concurrency/dollar reserve lowers the ceiling it
+	// faces. The automated resume (the retry sweeper) already reads the run
+	// doc for other reasons and does pass the subject.
 	if _, d := s.gateLaunch(r.Context(), launchSubject{}); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return

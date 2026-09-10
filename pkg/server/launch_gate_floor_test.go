@@ -2,14 +2,18 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // withFloor installs a reservation policy on the test server, through the
@@ -271,6 +275,65 @@ func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
 		// And the holder still reaches its own band.
 		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
 			t.Fatalf("the reserved bot was refused inside its own reservation: %+v", d)
+		}
+	})
+}
+
+// The REST launch is the surface an operator uses by hand, and the subject it
+// passes decides whether a reservation protects that operator's bot or is
+// turned against it: judged as ordinary work, a RESERVED bot faces the ceiling
+// its own reservation lowered, so the studio's Launch button is refused on the
+// very band held for it. The body names the bot, so the gate is told.
+func TestHandleLaunchRun_CarriesTheRequestsBotToTheGate(t *testing.T) {
+	newSrv := func(t *testing.T, reserved string) (*Server, context.Context) {
+		t.Helper()
+		pub := &countingPublisher{}
+		s, rs := newGatedBoardServer(t, gateSpec{id: "t1", maxConcurrentRuns: 2}, pub)
+		s.cfg.Store = fakeActiveStore{RunStore: rs, active: 1}
+		s.orgUsage = orgusage.NewMemoryCounter()
+		pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+		withFloor(t, s, budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+			{BotID: reserved, Reserve: budgetfloor.Reserve{ConcurrentRuns: 1}},
+		}})
+		// newGatedBoardServer already seeded org+team "t1"; the handler needs
+		// the identity a signed-in operator would carry.
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+	}
+	launch := func(t *testing.T, s *Server, ctx context.Context, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.handleLaunchRun(rec, req)
+		return rec
+	}
+
+	t.Run("the reserved bot is admitted on its own slot", func(t *testing.T) {
+		s, ctx := newSrv(t, "probe")
+		if rec := launch(t, s, ctx, `{"bot_id":"probe"}`); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("the reserved bot was refused on its own reservation: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("an unreserved bot still stops at the unreserved slots", func(t *testing.T) {
+		s, ctx := newSrv(t, "review-pr")
+		rec := launch(t, s, ctx, `{"bot_id":"probe"}`)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429 — the free slot is held for review-pr: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a request too malformed to name a bot consumes no run slot", func(t *testing.T) {
+		s, ctx := newSrv(t, "probe")
+		if rec := launch(t, s, ctx, `{"nonsense":1}`); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+		}
+		u, err := s.orgUsage.Usage(context.Background(), "t1", time.Now().UTC())
+		if err != nil {
+			t.Fatalf("usage: %v", err)
+		}
+		if u.Runs != 0 {
+			t.Errorf("monthly runs = %d after a rejected body, want 0 — nothing was launched", u.Runs)
 		}
 	})
 }
