@@ -304,6 +304,40 @@ func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
 			t.Fatalf("the reserved bot was refused inside its own reservation: %+v", d)
 		}
 	})
+
+	// The property to know before setting this axis on a multi-tenant
+	// deployment, pinned so a change to it is deliberate: the policy is ONE
+	// deployment-wide document, but the cap it subtracts from is the LAUNCHING
+	// ORG's. So the reserve is applied to each tenant's cap independently —
+	// $30 held in every org, not $30 between them — and a tenant whose own cap
+	// is at or below the reserve has nothing left for unreserved work even if
+	// it never runs the reserved bot. There is no fleet-wide dollar cap to
+	// subtract from, so this is the only available reading; it is documented
+	// on Policy and in docs/quotas-and-limits.md, and this is where it is
+	// falsifiable.
+	t.Run("the dollar reserve is held in EACH tenant, not once for the fleet", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy) // $30, deployment-wide document
+		rich := seedGate(t, s, gateSpec{id: "rich", orgCostCapUSD: 50})
+		poor := seedGate(t, s, gateSpec{id: "poor", orgCostCapUSD: 20})
+
+		// The reserve comes off the rich org's own $50, leaving $20 — so its
+		// unreserved work is refused only past that, not past a fleet figure.
+		if _, d := s.gateLaunch(rich, launchSubject{BotID: "feature-dev"}); d != nil {
+			t.Fatalf("refused with $20 of unreserved band left in its own org: %+v", d)
+		}
+		// The poor org's whole cap is under the reserve: unreserved work has
+		// nothing there, and says so rather than running uncapped.
+		_, d := s.gateLaunch(poor, launchSubject{BotID: "feature-dev"})
+		if d == nil || d.reason != denyMonthlyCostCap {
+			t.Fatalf("denial = %+v, want %s — a $20 cap holds no $30 reserve", d, denyMonthlyCostCap)
+		}
+		// Even there, the holder still reaches everything its tenant has.
+		if _, d := s.gateLaunch(poor, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the holder was refused its tenant's whole cap: %+v", d)
+		}
+	})
 }
 
 // The REST launch is the surface an operator uses by hand, and the subject it
