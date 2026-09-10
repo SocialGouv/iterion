@@ -481,6 +481,23 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 			t.Fatalf("an unrelated repository was refused: %s", rec.Body.String())
 		}
 	})
+
+	t.Run("a super-admin bypasses it here as everywhere else", func(t *testing.T) {
+		// gateLaunch returns before the repo half for a super-admin, so the
+		// webhook, board, trigger, scheduled and resume lanes all let them
+		// through. This surface re-runs that half on its own; forgetting the
+		// exemption there made the SAME launch 402 on the one path an
+		// operator drives by hand — a bypass that holds on five surfaces and
+		// not the sixth is a refusal nobody can predict.
+		s, _ := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{
+			UserID: "root", TeamID: "t1", OrgID: "t1", IsSuperAdmin: true,
+		})
+		if rec := launch(t, s, ctx, "o/hungry"); rec.Code == http.StatusPaymentRequired {
+			t.Fatalf("a super-admin was refused by the repo quota: %s", rec.Body.String())
+		}
+	})
 }
 
 // The promise docs/quotas-and-limits.md makes for EVERY launch surface, and

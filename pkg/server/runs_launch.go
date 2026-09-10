@@ -590,6 +590,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// managed-secret mint, so an over-quota repository costs neither a
 		// forge round trip nor a minted credential.
 		//
+		// A super-admin bypasses it, as they bypass the gate above — the
+		// exemption is inside gateRepoQuota so both callsites read it off the
+		// same identity rather than one of them forgetting.
+		//
 		// Only the repo half of the gate is re-run: its monthly arm METERS,
 		// and this launch already charged its run slot up there — so the
 		// denial hands that slot back, through the deferred rollback every
