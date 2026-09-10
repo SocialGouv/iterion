@@ -217,6 +217,13 @@ func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res ex
 		out["items"] = items
 		out["complete"] = complete
 	}
+	// Only when a node cost MORE than one request, so the common case stays as
+	// small as it reads. A paginated action can spend twenty of a vendor's
+	// rate-limit slots behind what looks like a single call, and nothing said
+	// so — the operator found out on the vendor's dashboard.
+	if res.Requests > 1 {
+		out["requests"] = res.Requests
+	}
 	rendered, _ := json.Marshal(out)
 	e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, string(rendered), "", time.Since(start), nil)
 	return out

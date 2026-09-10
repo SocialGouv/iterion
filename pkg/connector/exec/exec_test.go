@@ -1051,6 +1051,40 @@ func TestAMissingCollectionIsAnErrorNotAnEmptyWalk(t *testing.T) {
 // above: an HONEST empty collection must keep ending the walk quietly. A guard
 // that turned every empty result into an error would be worse than the defect
 // it replaced.
+// TestAWalkREPORTSHowManyRequestsItMade.
+//
+// A paginated action can spend twenty of a vendor's rate-limit slots behind
+// what a run shows as one node, and nothing said so — the operator found out
+// on the vendor's dashboard. This is the smallest honest half of a per-request
+// accounting contract: it prices nothing, but it stops a walk being invisible.
+func TestAWalkReportsHowManyRequestsItMade(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		// A full page every time, so the walk runs to its ceiling of 3.
+		_, _ = w.Write([]byte(`[{"n": 1}, {"n": 2}]`))
+	})
+	defer done()
+
+	_, _, last, err := e.CallPaged(context.Background(), pkg, opOf(t, pkg, "probe.issue.list"),
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if last.Requests != 3 {
+		t.Errorf("Requests = %d, want 3 — the walk's total, not the last page's one", last.Requests)
+	}
+
+	// A single call reports one, so the field is never zero on a path that
+	// really did reach the vendor.
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Requests != 1 {
+		t.Errorf("Requests = %d, want 1", res.Requests)
+	}
+}
+
 // TestACursorWalkEndsOnTheCURSOR, not on a short page.
 //
 // A cursor API is free to hand back a partial page together with a next

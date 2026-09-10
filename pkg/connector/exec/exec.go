@@ -92,6 +92,16 @@ type Result struct {
 	// acts on work that has not happened, so it is surfaced rather than
 	// folded into success.
 	Pending bool
+	// Requests is how many HTTP requests produced this result: 1 for a single
+	// call, N for a walk.
+	//
+	// It exists because a paginated action can spend twenty of a vendor's
+	// rate-limit slots behind one node, and nothing said so — the node
+	// reported "a call" and the operator discovered the cost on the vendor's
+	// dashboard. It is the smallest honest half of a per-request accounting
+	// contract: it does not price anything, but it stops a walk being
+	// invisible.
+	Requests int
 	// Err is the typed failure, nil on success. It is a FIELD rather than a
 	// returned error because a business failure is a result a workflow
 	// branches on — `not_found` is an answer — while a returned error means
@@ -252,7 +262,9 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 		// ambiguous case: the vendor may well have performed it.
 		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, redactSecrets(readErr, op, params, cred))}, nil
 	}
-	return e.readResponse(pkg, op, resp, body), nil
+	res := e.readResponse(pkg, op, resp, body)
+	res.Requests = 1
+	return res, nil
 }
 
 // transportError classifies a call that got no usable answer.
@@ -380,6 +392,9 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if !res.OK() {
 			return items, false, res, nil
 		}
+		// The walk's TOTAL, not the last page's one: what an operator needs to
+		// know is how many of the vendor's rate-limit slots this node spent.
+		res.Requests = n + 1
 		last = res
 		batch, found := pageItems(res.Data, p.ItemsField)
 		if !found {

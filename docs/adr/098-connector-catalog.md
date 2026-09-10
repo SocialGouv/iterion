@@ -715,31 +715,60 @@ package is written.
 **F19** — every document is version-probed and carries a connector-identity
 check, not just `connector.yaml`.
 
+### The three that are BLOCKED, with the contract they must satisfy
+
+F16, F20 and F21 are not oversights and not quick fixes: each is a decision the
+cloud lot has to make, and none can be made honestly before `pkg/connection`
+has its Mongo twin and a runner path. What CAN be written now is the contract,
+so the lot is judged against something rather than re-argued.
+
+**F16 — credential-execution eligibility, stated per profile.** The reason
+first given here was wrong (see the correction above); the positive rule is
+owed. It must be expressed in terms of what a deployment's sandbox actually
+ISOLATES, never the name of a process:
+
+- Where the workload runs in a sibling pod or container the credential holder
+  does not share (the kubernetes driver, the docker driver), a node's
+  credential may be resolved by the process driving that workload.
+- Where the workload shares the process or the host — the `noop` driver, and a
+  runner configured as its own sandbox — an agent's commands execute exactly
+  where the credential lives, and the two are the same trust domain. That is
+  acceptable for a LOCAL run, where the OS user boundary is the operator's own
+  and `iterion secret` already sits behind it. It is NOT acceptable on a
+  multi-tenant deployment, and the resolver must refuse it there rather than
+  rely on nobody having configured it.
+- The refusal needs an explicit, greppable escape hatch, per this repository's
+  own doctrine on load-bearing limits.
+
+**F20 — the per-request accounting contract.** A first half shipped: a walk now
+reports how many HTTP requests it made (`Result.Requests`, surfaced on the
+node's output and its finish event when it is more than one), so twenty
+rate-limit slots spent behind one node are no longer invisible. What the cloud
+lot owes is the RECORD: one entry per physical request carrying the tenant, the
+connection, the operation, the vendor's request id where it gives one, and the
+outcome — enough to answer "what did this integration cost, and which calls
+completed before the run was cancelled". It belongs beside `pkg/credusage`,
+which answers the same question for LLM spend, and for the same reason: a
+per-run total belongs to nobody when one run spends two credentials.
+
+**F21 — wire authentication is not credential acquisition.** `pkg/connection`
+models the first: which scheme, which placement, which value. It does not model
+the second — how a credential is OBTAINED and RENEWED — and the two are
+different enough that GitHub Apps need an installation identity, an app-key
+linkage and a permission set, none of which is a "scheme". The lot needs a
+lifecycle adapter seam (authorization-code OAuth, client credentials, App
+installation minting, a static PAT) and a migration mapping for each existing
+forge kind, decided before any store changes.
+
 ### Tracked, not yet fixed
 
-What remains is execution-profile completeness and two design lots — not
-safety, and each one is its own piece of work.
-
-- **F9/F10/F11** — the body model cannot express a root array (it invents a
-  `body` member), vendor `+json` media types collapse to `json`, multipart file
-  parts are written as text fields, and `deepObject` / path-array styles are not
-  serialized as declared. Each publishes an operation as executable that sends
-  the wrong bytes; the honest interim is to REFUSE these shapes at generation.
 - **F13 (part)** — response-schema validation. A 2xx whose body does not match
   the declared schema is accepted as data. The status and redirect halves are
-  fixed; this one needs the schema validator the package does not have yet.
-- **F14 (part)** — `Validate` still does not check outcome expressions, so an
-  unparsable `success_when` is discovered after the POST returned.
-- **F16** — the ADR's stated REASON for rejecting runner-side execution was
-  wrong and has been corrected in place. What is still owed is the positive
-  rule: credential-execution eligibility stated per deployment profile, in
-  terms of isolation capability rather than process class.
-- **F20** — no per-request accounting contract: a paginated action makes twenty
-  billable calls that contribute nothing to the run's budget and leave no record
-  linking quota, vendor request id and credential.
-- **F21** — the connection generalization has no credential-LIFECYCLE model.
-  Wire authentication and credential acquisition/renewal are different things,
-  and GitHub App installation tokens need the second.
+  fixed; this one needs a schema validator the package does not have.
+- **The operation identity lock** — the overlay's `id:` pins match DERIVED ids,
+  not canonical method+path identities, so they cannot actually prevent a
+  vendor's next release from moving an id onto another operation. A committed
+  method+path → id mapping is what would.
 
 ### What is still only prose
 
