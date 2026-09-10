@@ -205,7 +205,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		return false
 	}
 	if !valid(w.Compress) {
-		c.errorf(DiagInvalidCompress,
+		c.errorfAtSpan(DiagInvalidCompress, c.workflowSpan(w.Name),
 			"workflow %q has invalid compress %q; valid values are on, off, ultra",
 			w.Name, w.Compress)
 	}
@@ -214,7 +214,7 @@ func (c *compiler) validateCompress(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Compress },
 		func(n Node, kind, compress string) {
 			if !valid(compress) {
-				c.errorf(DiagInvalidCompress,
+				c.errorfAt(DiagInvalidCompress, n.NodeID(), "",
 					"%s %q has invalid compress %q; valid values are on, off, ultra",
 					kind, n.NodeID(), compress)
 			}
@@ -232,7 +232,7 @@ func (c *compiler) validateLoopBudgetGuard(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorf(DiagInvalidLoopBudgetGuard,
+	c.errorfAtSpan(DiagInvalidLoopBudgetGuard, c.workflowSpan(w.Name),
 		"workflow %q has invalid loop_budget_guard %q; valid values are on, off",
 		w.Name, w.LoopBudgetGuard)
 }
@@ -246,7 +246,7 @@ func (c *compiler) validateRepoDevbox(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorf(DiagInvalidRepoDevbox,
+	c.errorfAtSpan(DiagInvalidRepoDevbox, c.workflowSpan(w.Name),
 		"workflow %q has invalid repo_devbox %q; valid values are on, off",
 		w.Name, w.RepoDevbox)
 }
@@ -261,7 +261,7 @@ func (c *compiler) validateWorkspaceCheckpoint(w *Workflow) {
 	case "", "on", "off":
 		return
 	}
-	c.errorf(DiagInvalidWorkspaceCheckpoint,
+	c.errorfAtSpan(DiagInvalidWorkspaceCheckpoint, c.workflowSpan(w.Name),
 		"workflow %q has invalid workspace_checkpoint %q; valid values are on, off",
 		w.Name, w.WorkspaceCheckpoint)
 }
@@ -286,7 +286,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		return false
 	}
 	if !valid(w.AutoMemory) {
-		c.errorf(DiagInvalidAutoMemory,
+		c.errorfAtSpan(DiagInvalidAutoMemory, c.workflowSpan(w.Name),
 			"workflow %q has invalid auto_memory %q; valid values are on, off",
 			w.Name, w.AutoMemory)
 	}
@@ -297,7 +297,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 		}
 		kind, value := nn.NodeKind().String(), nn.GetAutoMemory()
 		if !valid(value) {
-			c.errorf(DiagInvalidAutoMemory,
+			c.errorfAt(DiagInvalidAutoMemory, n.NodeID(), "",
 				"%s %q has invalid auto_memory %q; valid values are on, off",
 				kind, n.NodeID(), value)
 			continue
@@ -322,7 +322,7 @@ func (c *compiler) validateAutoMemory(w *Workflow) {
 			backend = w.DefaultBackend
 		}
 		if backend != "" && !automemory.SupportsBackend(backend) {
-			c.warnf(DiagAutoMemoryNotSupported,
+			c.warnfAt(DiagAutoMemoryNotSupported, n.NodeID(), "",
 				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
 				kind, n.NodeID(), backend)
 		}
@@ -387,15 +387,15 @@ func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
 		// "MEMORY.md is wired for claw only" is a strange thing to read on a
 		// workflow that HAS a claw node, and it points the author at the
 		// backends when half the answer is their own per-node `off`.
-		c.warnf(DiagAutoMemoryNotSupported,
+		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
 			"workflow %q sets auto_memory: on but nothing honours it: %d agent/judge node(s) override it with auto_memory: off, and the remaining %d are on a backend that ignores it (MEMORY.md is wired for claude_code, claw and pi only)",
 			w.Name, optedOut, unsupported)
 	case unsupported > 0:
-		c.warnf(DiagAutoMemoryNotSupported,
+		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
 			"workflow %q sets auto_memory: on but NO agent/judge node can honour it — MEMORY.md is wired for claude_code, claw and pi only",
 			w.Name)
 	case optedOut > 0:
-		c.warnf(DiagAutoMemoryNotSupported,
+		c.warnfAtSpan(DiagAutoMemoryNotSupported, c.workflowSpan(w.Name),
 			"workflow %q sets auto_memory: on but every agent/judge node overrides it with auto_memory: off — the workflow default has no effect",
 			w.Name)
 	}
@@ -439,7 +439,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		return false
 	}
 	if !valid(w.Permission) {
-		c.errorf(DiagInvalidPermission,
+		c.errorfAtSpan(DiagInvalidPermission, c.workflowSpan(w.Name),
 			"workflow %q has invalid permission %q; valid values are off, ask, deny",
 			w.Name, w.Permission)
 	}
@@ -448,7 +448,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 		func(nn *ToolNode) string { return nn.Permission },
 		func(n Node, kind, perm string) {
 			if !valid(perm) {
-				c.errorf(DiagInvalidPermission,
+				c.errorfAt(DiagInvalidPermission, n.NodeID(), "",
 					"%s %q has invalid permission %q; valid values are off, ask, deny",
 					kind, n.NodeID(), perm)
 				return
@@ -459,7 +459,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 			// Warn so an operator doesn't ship an inert security control.
 			if kind == "tool" {
 				if m := strings.ToLower(strings.TrimSpace(perm)); m == "ask" || m == "deny" {
-					c.warnf(DiagToolNodePermissionInert,
+					c.warnfAt(DiagToolNodePermissionInert, n.NodeID(), "",
 						"tool node %q sets permission: %s, but the gate only governs agent/judge LLM tool calls; a tool node's permission is not enforced (use goal/postcondition/policy/recovery to gate the action)",
 						n.NodeID(), m)
 				}
@@ -472,7 +472,7 @@ func (c *compiler) validatePermission(w *Workflow) {
 	gateDisabled := mode == "" || mode == "off"
 	hasRules := len(w.PermissionAllow) > 0 || len(w.PermissionAsk) > 0 || len(w.PermissionDeny) > 0
 	if gateDisabled && hasRules {
-		c.warnf(DiagPermissionRulesNoGate,
+		c.warnfAtSpan(DiagPermissionRulesNoGate, c.workflowSpan(w.Name),
 			"workflow %q declares allow/ask/deny permission rules but the permission gate is %s; rules are inert",
 			w.Name, modeLabel(mode))
 	}
@@ -500,7 +500,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 			continue
 		}
 		if !worktreeAuto {
-			c.errorf(DiagReviewNeedsWorktree,
+			c.errorfAt(DiagReviewNeedsWorktree, h.NodeID(), "",
 				"human %q uses interaction: review but the workflow does not declare worktree: auto — a review gate squash-merges the run's worktree, so there is nothing to merge without one",
 				h.NodeID())
 		}
@@ -509,7 +509,7 @@ func (c *compiler) validateReviewGates(w *Workflow) {
 				continue
 			}
 			if _, exists := w.Nodes[ref.Path[0]]; !exists {
-				c.warnf(DiagReviewURLUnknownRef,
+				c.warnfAt(DiagReviewURLUnknownRef, h.NodeID(), "",
 					"human %q review_url references output of unknown node %q",
 					h.NodeID(), ref.Path[0])
 			}
@@ -526,21 +526,21 @@ func (c *compiler) validateMemory(w *Workflow) {
 			return
 		}
 		if m.Scope == "" {
-			c.errorf(DiagMemoryMissingScope,
+			c.errorfAtScope(DiagMemoryMissingScope, scope, id,
 				"%s %q: memory: enabled requires a scope: name", scope, id)
 		}
 		if m.Visibility != "" {
 			if !knownMemoryVisibilities[m.Visibility] {
-				c.errorf(DiagMemoryInvalidVisibility,
+				c.errorfAtScope(DiagMemoryInvalidVisibility, scope, id,
 					"%s %q: memory: unknown visibility %q (bot|project|cross_project|user|org|global)", scope, id, m.Visibility)
 			}
 			if m.ProjectRoot {
-				c.errorf(DiagMemoryVisibilityConflict,
+				c.errorfAtScope(DiagMemoryVisibilityConflict, scope, id,
 					"%s %q: memory: visibility: and the legacy project_root: are mutually exclusive", scope, id)
 			}
 		}
 		if backend != "" && backend != "claw" {
-			c.warnf(DiagMemoryNotSupported,
+			c.warnfAtScope(DiagMemoryNotSupported, scope, id,
 				"%s %q: memory: has NO effect on backend=%q — memory_read/memory_write/memory_list and autoload are claw-only; switch to backend: \"claw\" or remove the memory: block",
 				scope, id, backend)
 		}
@@ -576,8 +576,8 @@ func (c *compiler) validatePlaywrightMCP(w *Workflow) {
 			continue
 		}
 		if !sandboxHasBrowserImage(w.Sandbox) {
-			c.errorf(
-				DiagPlaywrightNeedsBrowserImage,
+			c.errorfAtSpan(
+				DiagPlaywrightNeedsBrowserImage, c.workflowSpan(w.Name),
 				"mcp_servers.%s: Playwright MCP requires a sandbox image that bundles Chromium "+
 					"(e.g. ghcr.io/socialgouv/iterion-sandbox-browser); "+
 					"workflow.sandbox.image is %q",
@@ -647,10 +647,10 @@ func (c *compiler) validateCompaction(w *Workflow) {
 			return
 		}
 		if cp.Threshold != 0 && (math.IsNaN(cp.Threshold) || math.IsInf(cp.Threshold, 0) || cp.Threshold <= 0 || cp.Threshold > 1) {
-			c.errorf(DiagInvalidCompaction, "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
+			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
 		}
 		if cp.PreserveRecent < 0 {
-			c.errorf(DiagInvalidCompaction, "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
+			c.errorfAtScope(DiagInvalidCompaction, scope, id, "%s %q: compaction.preserve_recent must be >= 1 when set (0 = inherit), got %d", scope, id, cp.PreserveRecent)
 		}
 	}
 	check("workflow", w.Name, w.Compaction)
@@ -678,37 +678,37 @@ func (c *compiler) validateMCPAuth(w *Workflow) {
 		}
 		a := server.Auth
 		if a.Type == "" {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: auth block missing 'type'", name)
 			return
 		}
 		if a.Type != "oauth2" {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: auth type %q is not supported (only \"oauth2\" is wired)", name, a.Type)
 			return
 		}
 		if a.AuthURL == "" {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: oauth2 auth requires 'auth_url'", name)
 		} else if err := validateHTTPURL(a.AuthURL); err != nil {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: invalid 'auth_url' %q: %v", name, a.AuthURL, err)
 		}
 		if a.TokenURL == "" {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: oauth2 auth requires 'token_url'", name)
 		} else if err := validateHTTPURL(a.TokenURL); err != nil {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: invalid 'token_url' %q: %v", name, a.TokenURL, err)
 		}
 		if a.RevokeURL != "" {
 			if err := validateHTTPURL(a.RevokeURL); err != nil {
-				c.errorf(DiagUnsupportedMCPAuth,
+				c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 					"mcp server %q: invalid 'revoke_url' %q: %v", name, a.RevokeURL, err)
 			}
 		}
 		if a.ClientID == "" {
-			c.errorf(DiagUnsupportedMCPAuth,
+			c.errorfAtSpan(DiagUnsupportedMCPAuth, c.mcpServerSpan(name),
 				"mcp server %q: oauth2 auth requires 'client_id'", name)
 		}
 	}
@@ -757,7 +757,7 @@ func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
 	cap := w.Budget.MaxTokens
 	checkLLM := func(id string, mt int) {
 		if mt > 0 && mt > cap {
-			c.warnf(DiagNodeMaxTokensVsBudget,
+			c.warnfAt(DiagNodeMaxTokensVsBudget, id, "",
 				"node %q has max_tokens=%d which exceeds workflow.budget.max_tokens=%d", id, mt, cap)
 		}
 	}
@@ -1124,7 +1124,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			continue
 		}
 		if !ValidReasoningEfforts[effort] {
-			c.errorf(DiagInvalidReasoningEffort,
+			c.errorfAt(DiagInvalidReasoningEffort, node.NodeID(), "",
 				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, xhigh, max, ultracode",
 				node.NodeID(), effort)
 			continue
@@ -1139,7 +1139,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			if shown == "" {
 				shown = "(default)"
 			}
-			c.warnf(DiagUltracodeModelGate,
+			c.warnfAt(DiagUltracodeModelGate, node.NodeID(), "",
 				"node %q uses reasoning_effort: ultracode but model %q is neither Opus 4.8 nor a Claude 5 model (Opus 5, Fable 5.1); ultracode's workflow-orchestration prerogative is reliable only there and will degrade to plain xhigh elsewhere",
 				node.NodeID(), shown)
 		}
@@ -1167,12 +1167,12 @@ func (c *compiler) validateNodeTimeout(w *Workflow) {
 		}
 		d, err := time.ParseDuration(expanded)
 		if err != nil {
-			c.errorf(DiagInvalidNodeTimeout,
+			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
 				"node %q has an invalid timeout %q: %v", node.NodeID(), raw, err)
 			continue
 		}
 		if d <= 0 {
-			c.errorf(DiagInvalidNodeTimeout,
+			c.errorfAt(DiagInvalidNodeTimeout, node.NodeID(), "",
 				"node %q timeout must be positive, got %q", node.NodeID(), raw)
 		}
 	}

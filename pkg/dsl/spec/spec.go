@@ -466,7 +466,8 @@ var Kinds = []Kind{
 			prop("write", Bool, "Allow memory_write"),
 			prop("pre_compact_inject", Bool, "Re-inject memory before a compaction"),
 			prop("project_root", Bool, "Key the space on the repository root rather than the working directory (legacy; exclusive with visibility)"),
-			prop("visibility", String, "Who sees the space: bot, project, cross_project, user, org or global (C170)"),
+			Property{Name: "visibility", Form: String, Values: []string{"bot", "project", "cross_project", "user", "org", "global"},
+				Doc: "Who sees the space (C170); quoted"},
 		}},
 	{Name: "mcp", Role: BlockRole, Opener: "mcp", Hosts: []string{"workflow", "agent", "judge"}, Doc: "Which MCP servers are active; an empty block wires nothing (C135 stays an error).",
 		Properties: []Property{

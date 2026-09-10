@@ -265,12 +265,12 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		// author who wrote `mode: allowlist` under `sandbox:` (or whose
 		// `network:` body sat de-indented after a blank line) meant the
 		// network's.
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
 			scope, name, blk.Mode, blk.Mode)
 		return nil
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
 			scope, name, blk.Mode)
 		return nil
@@ -279,7 +279,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	switch blk.HostState {
 	case "", "auto", "none":
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox.host_state %q (want \"\", \"auto\", or \"none\")",
 			scope, name, blk.HostState)
 		return nil
@@ -310,7 +310,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Mode {
 		case "", "open", "allowlist", "denylist":
 		default:
-			c.errorfAt(DiagInvalidSandboxMode, name, "",
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
 				scope, name, blk.Network.Mode)
 			return nil
@@ -318,7 +318,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Inherit {
 		case "", "replace", "append":
 		default:
-			c.errorfAt(DiagInvalidSandboxMode, name, "",
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
 				scope, name, blk.Network.Inherit)
 			return nil
@@ -348,13 +348,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
 	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
 			scope, name)
 		return nil
 	}
 	if spec.Image != "" && spec.Build != nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil

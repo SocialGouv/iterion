@@ -174,6 +174,15 @@ func sampleValues(p spec.Property) []string {
 	}
 	switch p.Form {
 	case spec.String:
+		if len(p.Values) > 0 {
+			// A quoted value the compiler narrows (memory.visibility): each
+			// listed word, in the quotes the parser wants.
+			quoted := make([]string, 0, len(p.Values))
+			for _, v := range p.Values {
+				quoted = append(quoted, `"`+v+`"`)
+			}
+			return each(quoted)
+		}
 		return []string{p.Name + `: "x"`}
 	case spec.Ident, spec.StringOrIdent:
 		if len(p.Values) > 0 {
