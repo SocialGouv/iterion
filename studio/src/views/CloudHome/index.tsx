@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, ArrowUpRight, Check, ChevronRight, Clock3, Code2, GitBranch, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, ChevronRight, Code2, GitBranch, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
 import { GitHubLogoIcon } from "@radix-ui/react-icons";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { useThemeStore } from "@/store/theme";
@@ -47,60 +47,6 @@ function HeroVisual() {
   );
 }
 
-function UseCases() {
-  return (
-    <section className="ch-section ch-use-cases" id="connected-work" aria-labelledby="ch-use-cases-heading">
-      <div className="ch-section-heading">
-        <div>
-          <p className="ch-eyebrow">CONNECTED TO YOUR WORK.</p>
-          <h2 id="ch-use-cases-heading">Connect your repos.<br />React to events.<br />Run on schedule.</h2>
-        </div>
-        <p>A pull request, a webhook, or a recurring task.<br />Get the results where your team works.</p>
-      </div>
-      <div className="ch-trigger-columns">
-        <article className="ch-trigger-story" aria-labelledby="ch-repo-heading">
-          <p className="ch-trigger-label"><GitBranch size={17} /> REPOSITORY EVENTS</p>
-          <h3 id="ch-repo-heading">Put bots on your repositories.</h3>
-          <p className="ch-trigger-description">
-            Connect a GitHub, GitLab or Forgejo repository and enable the bots
-            you need. Pull requests trigger their work automatically.
-          </p>
-          <div className="ch-bot-stories">
-            <div className="ch-bot-story">
-              <h4><a href={`${GITHUB}/tree/main/bots/review-pr`} target="_blank" rel="noreferrer">Revi <ArrowUpRight size={13} /></a><span>Code review</span></h4>
-              <p>Reviews pull requests and posts findings directly on the changed lines, so the discussion stays with the code.</p>
-            </div>
-            <div className="ch-bot-story">
-              <h4><a href={`${GITHUB}/tree/main/bots/dep-update-guard`} target="_blank" rel="noreferrer">Vetty <ArrowUpRight size={13} /></a><span>Dependency maintenance</span></h4>
-              <p>Checks Dependabot and Renovate updates, adapts the code when needed, and runs the build and tests before reporting back on the PR.</p>
-            </div>
-          </div>
-          <p className="ch-trigger-summary">Repository event <ArrowRight size={13} /> Bot <ArrowRight size={13} /> PR feedback</p>
-        </article>
-        <article className="ch-trigger-story" aria-labelledby="ch-schedule-heading">
-          <p className="ch-trigger-label"><Clock3 size={17} /> RECURRING SCHEDULES</p>
-          <h3 id="ch-schedule-heading">Give recurring work a rhythm.</h3>
-          <p className="ch-trigger-description">
-            Choose a cadence and configure your bot. Iterion runs it on
-            schedule, whether the work is about your code or the world outside it.
-          </p>
-          <div className="ch-bot-stories">
-            <div className="ch-bot-story">
-              <h4><a href={`${GITHUB}/tree/main/bots/feed-watch`} target="_blank" rel="noreferrer">Vigie <ArrowUpRight size={13} /></a><span>News & technology watch</span></h4>
-              <p>Collects RSS/Atom feeds, removes duplicates and writes a sourced digest. Publishes it to your Slack or Mattermost channel at the cadence you choose.</p>
-            </div>
-            <div className="ch-bot-story">
-              <h4><a href={`${GITHUB}/tree/main/bots/docs-refresh`} target="_blank" rel="noreferrer">Doki <ArrowUpRight size={13} /></a><span>Documentation maintenance</span></h4>
-              <p>Aligns your documentation with the code, then keeps it current with scheduled incremental updates based on what changed. Delivers the changes as reviewable pull requests.</p>
-            </div>
-          </div>
-          <p className="ch-trigger-summary">Schedule <ArrowRight size={13} /> Bot <ArrowRight size={13} /> Published results</p>
-        </article>
-      </div>
-    </section>
-  );
-}
-
 export default function CloudHome({ marketplaceEnabled = false }: { marketplaceEnabled?: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const resolved = useThemeStore(s => s.resolved);
@@ -126,7 +72,7 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
           <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description">Linux runs apps. Kubernetes orchestrates containers.<br /><strong>Iterion orchestrates agents.</strong></p><div className="ch-hero-ctas"><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
           <HeroVisual />
         </section>
-        <div className="ch-container"><MissionExamples /><UseCases />
+        <div className="ch-container"><MissionExamples />
           <PlatformFeatures />
           <StackCompatibility />
           <section className="ch-final-cta" aria-labelledby="ch-deployment-heading">
