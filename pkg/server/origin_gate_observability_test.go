@@ -21,6 +21,34 @@ func gateServer(t *testing.T, buf *bytes.Buffer) *Server {
 	}
 }
 
+// TestRefusalIsLoggedAtInfoExactly pins the level, because it is not a free
+// choice and it is written down in two places an operator reads.
+//
+// Pinned by behaviour rather than by reading the call: emitted through a logger
+// at info, absent through one at warn — which is only true of info exactly.
+func TestRefusalIsLoggedAtInfoExactly(t *testing.T) {
+	refuse := func(level iterlog.Level) string {
+		var buf bytes.Buffer
+		s := &Server{
+			cfg:    Config{Port: 4123, PublicURL: "https://studio.example"},
+			logger: iterlog.New(level, &buf),
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/me/api-keys", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		if s.originGateAllows(httptest.NewRecorder(), req) {
+			t.Fatal("gate admitted a foreign origin")
+		}
+		return buf.String()
+	}
+
+	if refuse(iterlog.LevelInfo) == "" {
+		t.Error("nothing logged at info — the refusal is below the DEFAULT level, so it is invisible in production and the silence is back.\nIf the level moved on purpose, update docs/browser-security.md AND the CLAUDE.md runbook line, which tell an operator which level to grep.")
+	}
+	if got := refuse(iterlog.LevelWarn); got != "" {
+		t.Errorf("the refusal reached warn:\n%s\nAt warn it becomes a Sentry breadcrumb (errtrack hook fires at warn+) on a 100-entry ring, and the gate runs BEFORE auth — a stranger can then evict everyone's error context.\nIf the level moved on purpose, update docs/browser-security.md AND the CLAUDE.md runbook line.", got)
+	}
+}
+
 // TestRefusalDoesNotFireTheLogHook is the reason the refusal logs at info.
 //
 // pkg/log dispatches its Hook at warn and above, and errtrack's hook turns a
