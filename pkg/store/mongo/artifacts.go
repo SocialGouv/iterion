@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -69,7 +70,7 @@ func (s *Store) LoadArtifact(ctx context.Context, runID, nodeID string, version 
 	body, err := s.blob.GetArtifact(ctx, runID, nodeID, version)
 	if err != nil {
 		if errors.Is(err, blob.ErrArtifactNotFound) {
-			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found", runID, nodeID, version)
+			return nil, fmt.Errorf("store/mongo: artifact %s/%s/v%d not found: %w", runID, nodeID, version, os.ErrNotExist)
 		}
 		return nil, fmt.Errorf("store/mongo: blob get %s/%s/%d: %w", runID, nodeID, version, err)
 	}

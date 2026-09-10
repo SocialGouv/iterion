@@ -567,6 +567,22 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 					artifact, loadErr = e.store.LoadArtifact(ctx, r.ID, revision.NodeID, revision.Version)
 				}
 				if loadErr != nil || artifact == nil || artifact.RunID != r.ID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+					failure := "is temporarily unavailable"
+					detail := any(loadErr)
+					switch {
+					case loadErr != nil && errors.Is(loadErr, os.ErrNotExist):
+						failure = "is absent"
+					case loadErr == nil && artifact == nil:
+						failure = "is absent"
+						detail = "store returned no artifact and no error"
+					case loadErr == nil:
+						failure = "has mismatched persisted identity"
+						detail = fmt.Sprintf("got run=%q node=%q version=%d", artifact.RunID, artifact.NodeID, artifact.Version)
+					}
+					e.logger.Warn(
+						"runtime: resume %s: compacted artifact %q at %s/%d %s (%v); {{artifacts.%s}} stays unresolved under legacy policy",
+						r.ID, name, revision.NodeID, revision.Version, failure, detail, name,
+					)
 					clearProvisionalBinding(name)
 					delete(state.revisions, name)
 					continue

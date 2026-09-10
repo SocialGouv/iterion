@@ -1,14 +1,18 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -186,6 +190,12 @@ type artifactReadErrorStore struct{ store.RunStore }
 
 func (artifactReadErrorStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
 	return nil, errors.New("blob unavailable")
+}
+
+type artifactNotFoundStore struct{ store.RunStore }
+
+func (artifactNotFoundStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
+	return nil, fmt.Errorf("blob absent: %w", os.ErrNotExist)
 }
 
 type artifactBlockingEventStore struct {
@@ -2103,6 +2113,68 @@ func TestReferencedHistoricalArtifactUnavailableDoesNotBlockCompatibilityPolicie
 			}
 			if _, retained := state.artifacts["old-name"]; retained {
 				t.Fatalf("unavailable historical alias retained a fabricated value: %+v", state.artifacts)
+			}
+		})
+	}
+}
+
+func TestLegacyCompactedArtifactDropIsObservable(t *testing.T) {
+	cp := &store.Checkpoint{
+		Outputs:        map[string]map[string]any{"producer": {"value": "current"}},
+		Artifacts:      map[string]map[string]any{},
+		ArtifactOwners: map[string]string{"old-name": "producer"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"old-name": {NodeID: "producer", Version: 0, ValueFromRevision: true},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	run := &store.Run{
+		ID:               "observable-unavailable-history",
+		ExecutionContext: &store.ExecutionContext{Policy: store.ContextPolicyLegacy},
+	}
+	for _, tc := range []struct {
+		name      string
+		store     store.RunStore
+		wantCause string
+		wantError string
+	}{
+		{
+			name:      "transient backend failure",
+			store:     artifactReadErrorStore{tmpStore(t)},
+			wantCause: "is temporarily unavailable",
+			wantError: "blob unavailable",
+		},
+		{
+			name:      "missing body",
+			store:     artifactNotFoundStore{tmpStore(t)},
+			wantCause: "is absent",
+			wantError: "blob absent",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			eng := New(
+				&ir.Workflow{}, tc.store, newStubExecutor(),
+				WithLogger(iterlog.New(iterlog.LevelWarn, &logs)),
+			)
+			state, err := eng.prepareResumeArtifacts(context.Background(), run, cp)
+			if err != nil {
+				t.Fatalf("legacy policy became an availability gate: %v", err)
+			}
+			if _, retained := state.artifacts["old-name"]; retained {
+				t.Fatalf("unavailable historical alias retained a fabricated value: %+v", state.artifacts)
+			}
+			got := logs.String()
+			for _, want := range []string{
+				"compacted artifact \"old-name\" at producer/0",
+				tc.wantCause,
+				tc.wantError,
+				"{{artifacts.old-name}} stays unresolved under legacy policy",
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("warning %q does not contain %q", got, want)
+				}
 			}
 		})
 	}
