@@ -149,6 +149,41 @@ func TestGateLaunch_ConcurrencyReserve(t *testing.T) {
 		}
 	})
 
+	t.Run("the refusal names the reserve that lowered the cap", func(t *testing.T) {
+		// The number the denial prints is the LOWERED one, so on its own it
+		// sends an admin hunting for a cap of 1 in a team configured for 3 —
+		// and the missing slots are in a platform settings family, not on
+		// their team. So the detail has to name both figures and the reserve
+		// between them, or the refusal points at nothing anyone can change.
+		s, ctx := newServer(t, 1)
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil {
+			t.Fatal("expected a concurrency denial")
+		}
+		for _, want := range []string{"cap 1", "team's 3", "reserved for other workloads"} {
+			if !strings.Contains(d.detail, want) {
+				t.Errorf("detail = %q, want it to contain %q", d.detail, want)
+			}
+		}
+	})
+
+	t.Run("with no reserve the wording is untouched", func(t *testing.T) {
+		// Quoted verbatim in docs/quotas-and-limits.md, and read by every
+		// deployment that configured no floor at all: the explanation is
+		// added where it applies, never bolted onto the ordinary refusal.
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.cfg.Store = fakeActiveStore{active: 3}
+		ctx := seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 3})
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil {
+			t.Fatal("expected a concurrency denial")
+		}
+		if want := "org has 3 active runs (cap 3) — retry when one finishes"; d.detail != want {
+			t.Errorf("detail = %q, want the unchanged %q", d.detail, want)
+		}
+	})
+
 	t.Run("a reservation cannot create a concurrency cap", func(t *testing.T) {
 		s := newOrgTestServer(t)
 		s.orgUsage = orgusage.NewMemoryCounter()
@@ -258,6 +293,46 @@ func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
 		}
 		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
 			t.Fatalf("the reserved bot was refused inside its own band: %+v", d)
+		}
+	})
+
+	t.Run("the refusal names the reserve that lowered the cap", func(t *testing.T) {
+		// $20 is the ceiling that refused, and it appears in no setting the
+		// org admin can open: their cap is $50 and the missing $30 lives in
+		// a platform family. Printing $20 alone reads as a bug in the
+		// counter. The twin of the concurrency case above.
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 50})
+		if err := s.orgUsage.AddSpend(context.Background(), "t1", time.Now().UTC(), 25, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil {
+			t.Fatal("expected a cost-cap denial")
+		}
+		for _, want := range []string{"$20.00", "$30.00", "org's $50.00", "reserved for other workloads"} {
+			if !strings.Contains(d.detail, want) {
+				t.Errorf("detail = %q, want it to contain %q", d.detail, want)
+			}
+		}
+	})
+
+	t.Run("with no reserve the wording is untouched", func(t *testing.T) {
+		// The shape docs/quotas-and-limits.md prints as the denial envelope.
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 50})
+		if err := s.orgUsage.AddSpend(context.Background(), "t1", time.Now().UTC(), 60, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil {
+			t.Fatal("expected a cost-cap denial")
+		}
+		if want := "monthly LLM cost cap ($50.00) reached"; d.detail != want {
+			t.Errorf("detail = %q, want the unchanged %q", d.detail, want)
 		}
 	})
 

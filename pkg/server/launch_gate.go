@@ -395,7 +395,9 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 	// Counting the reserved bots' OWN active runs (and subtracting only the
 	// unused part of each reserve) is the exact rule, and it needs a per-bot
 	// active count the run store does not expose today.
-	if held := floor.OtherReservedSlots(subj.BotID); held > 0 {
+	configured := maxActive
+	held := floor.OtherReservedSlots(subj.BotID)
+	if held > 0 {
 		if held >= maxActive {
 			// Every slot is held elsewhere. The `active >= maxActive` test
 			// below would refuse this launch too (0 >= 0), but it would say
@@ -421,11 +423,28 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 		return &launchDenial{
 			status:     http.StatusTooManyRequests,
 			reason:     denyConcurrencyCap,
-			detail:     fmt.Sprintf("org has %d active runs (cap %d) — retry when one finishes", active, maxActive),
+			detail:     concurrencyDenialDetail(active, maxActive, configured, held),
 			retryAfter: 30 * time.Second,
 		}
 	}
 	return nil
+}
+
+// concurrencyDenialDetail names the ceiling that actually refused, and where
+// it came from when a reservation lowered it.
+//
+// The unreserved wording is unchanged — it is quoted in
+// docs/quotas-and-limits.md and read by operators who configured no floor. But
+// once a reserve applies, printing the LOWERED number alone sends the operator
+// hunting for a cap of 1 in a team configured for 3, and there is nowhere to
+// find it: the missing slots are in a platform settings family, not on their
+// team. A refusal has to name the setting whose change would lift it.
+func concurrencyDenialDetail(active, effective, configured, held int) string {
+	if held <= 0 {
+		return fmt.Sprintf("org has %d active runs (cap %d) — retry when one finishes", active, effective)
+	}
+	return fmt.Sprintf("org has %d active runs (cap %d — %d of the team's %d slots are reserved for other workloads) — retry when one finishes",
+		active, effective, held, configured)
 }
 
 func (s *Server) gateLaunchRate(t identity.Team) *launchDenial {
@@ -470,6 +489,7 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	// when a cap exists: a reservation holds work back, it never creates the
 	// cost cap it subtracts from — the same guard the window and slot axes
 	// carry, and the one that keeps an uncapped deployment uncapped.
+	configuredUSD, heldUSD := capUSD, 0.0
 	if capUSD > 0 {
 		if held := floor.OtherReservedUSD(subj.BotID); held > 0 {
 			if held >= capUSD {
@@ -487,6 +507,7 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 				}
 			}
 			capUSD -= held
+			heldUSD = held
 		}
 	}
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
@@ -508,11 +529,25 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 		return nil, &launchDenial{
 			status:  http.StatusPaymentRequired,
 			reason:  denyMonthlyCostCap,
-			detail:  fmt.Sprintf("monthly LLM cost cap ($%.2f) reached", capUSD),
+			detail:  costCapDenialDetail(capUSD, configuredUSD, heldUSD),
 			resetAt: nextMonthStart(now),
 		}
 	}
 	return &launchAdmission{counter: s.orgUsage, usageKey: usageKey, when: now}, nil
+}
+
+// costCapDenialDetail is concurrencyDenialDetail's twin on the dollar axis,
+// and it exists for the same reason: an org capped at $100 that reads
+// "monthly LLM cost cap ($70.00) reached" has no $70 anywhere in its
+// settings, and the $30 that explains it is in a platform family the org
+// admin may not even be able to see. Naming the reserve turns a figure that
+// looks like a bug into one that points at the operator who can lift it.
+func costCapDenialDetail(effective, configured, held float64) string {
+	if held <= 0 {
+		return fmt.Sprintf("monthly LLM cost cap ($%.2f) reached", effective)
+	}
+	return fmt.Sprintf("monthly LLM cost cap ($%.2f — $%.2f of the org's $%.2f is reserved for other workloads) reached",
+		effective, held, configured)
 }
 
 // nextMonthStart is when monthly quotas reset (first instant of the
