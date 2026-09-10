@@ -156,8 +156,8 @@ func TestDeepsecFindingsLeaveThePod(t *testing.T) {
 	// string and a bool all parse, and calling .get on one raises AttributeError
 	// OUTSIDE the read guard — the node then exited non-zero with empty stdout,
 	// and because the bank sits on the control path into scan_join it took the
-	// generic/lang/custom scanner results down with it. The node promises the
-	// opposite two lines above its body: always exit 0, always emit the envelope.
+	// generic/lang/custom scanner results down with it. The node's own header
+	// promises the opposite: always exit 0, always emit the envelope.
 	t.Run("a JSON export that is not a findings container is banked empty, not crashed", func(t *testing.T) {
 		for _, shape := range []string{"null", "5", `"oops"`, "true", `{"findings": "nope"}`, `{"findings": {"a": 1}}`} {
 			t.Run(shape, func(t *testing.T) {
