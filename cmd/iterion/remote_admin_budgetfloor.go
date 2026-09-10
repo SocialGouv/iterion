@@ -101,9 +101,14 @@ var remoteAdminBudgetFloorCmd = &cobra.Command{
 	Short: "Reserve capacity for a workload, and cap a repository inside the shared budget",
 	Long: `Show the reservations, or change one.
 
-Every other budget dial in iterion is a CEILING. This is the floor: a band
-of the shared budget held for a named bot, so a reviewer is not starved by
-the campaign bots it shares a subscription with.
+Every other budget dial in iterion is a CEILING. This one decides which
+workload meets those ceilings FIRST: it lowers them for every bot a
+reservation does not name, so a reviewer is not starved by the campaign bots
+it shares a subscription with.
+
+A PREFERENCE, not a guarantee: nothing is allocated, so work admitted below
+the lowered ceiling can still consume the band, and a run in flight is never
+re-judged. See docs/quotas-and-limits.md before relying on it.
 
   iterion remote admin budget-floor
   iterion remote admin budget-floor reserve --bot review-pr --five-hour 20

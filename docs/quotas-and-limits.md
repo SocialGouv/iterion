@@ -6,9 +6,8 @@ the operator-set platform defaults and the per-org overrides documented
 here come from real fields on real records — not aspirational settings.
 
 Iterion enforces six distinct limits at run launch and one at the
-webhook intake — and, since #950, **reserves** capacity for named
-workloads, which is the one thing on this page that is not a ceiling
-(see [Budget floors](#budget-floors--capacity-reserved-for-a-workload)). They live behind a single decision function
+webhook intake, and can **bias** which workload meets them first (see
+[Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work)). They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
 called by every code path that creates a run on a cloud instance: the
 HTTP launch and resume, the inbound webhooks, the retry sweeper's
@@ -25,7 +24,7 @@ list, with the two paths that still launch outside it.
 2. **Per-repository quota** — when the launch names a repository and a
    quota covers it, its month-to-date consumption (read off
    `pkg/credusage`'s repository dimension) must be under the ceiling. See
-   [Budget floors](#budget-floors--capacity-reserved-for-a-workload).
+   [Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work).
 3. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
    ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
    `queued` or `running`.
@@ -362,13 +361,26 @@ numbers:
 This is the accounting subject the per-repo quota is enforced against — see
 *Budget floors* below.
 
-## Budget floors — capacity RESERVED for a workload
+## Budget floors — holding capacity back from unreserved work
 
 Everything above this line is a **ceiling**: it answers *"how far may this
-go?"*. A floor answers the other question — *"how much is held for this,
-whatever else runs?"* — and until
-[#950](https://github.com/SocialGouv/iterion/issues/950) iterion could not
-express it.
+go?"*. This answers a different one — *"which workload should stop FIRST?"* —
+by lowering, for every bot a reservation does not name, the ceilings those
+gates already enforce.
+
+> **A preference, not a guarantee — and the gap is worth knowing before you
+> rely on it.** Nothing is allocated: admission compares a total against a
+> lowered ceiling and acquires nothing, so work admitted below it can still
+> consume the band a reservation names, bounded only by the combined
+> outstanding spend of every admitted attempt. Two replicas can both admit into
+> the last slot. The reserve acts at admission only: a run in flight is never
+> re-judged, and the runner's own guard
+> ([pkg/runner/usage_cap.go](../pkg/runner/usage_cap.go)) reads the
+> deployment-wide policy, not the lowered one.
+>
+> A real guarantee needs durable allocation — reserve at admission, settle
+> against actual spend when the attempt ends, reconcile on crash — tracked on
+> [#950](https://github.com/SocialGouv/iterion/issues/950) and not built.
 
 The difference is not academic. On 2026-09-08 campaign bots and the PR
 reviewer shared one Anthropic subscription; when its five-hour window closed
