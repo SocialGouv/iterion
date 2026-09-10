@@ -72,6 +72,41 @@ func TestWindowCeiling_CapBelowTheReservesIsHeldNotZero(t *testing.T) {
 	}
 }
 
+// An id typed with stray whitespace into the raw admin API (the CLI trims,
+// the API does not) must not turn a reservation against its own holder. That
+// is what trimming only the QUERY side does: " review-pr " never matches the
+// lookup, so Reserved says "unreserved" while OtherReserved counts the band as
+// somebody else's — the reservation refusing the workload it protects, and
+// Validate accepts the policy because it dedupes on the trimmed value.
+func TestLookupsTrimBothSidesOfAnIdentity(t *testing.T) {
+	p := Policy{
+		Reservations: []Reservation{{BotID: " review-pr ", Reserve: Reserve{FiveHourPercent: 20, ConcurrentRuns: 2, MonthlyUSD: 30}}},
+		RepoQuotas:   []RepoQuota{{Repo: " o/r ", MonthlyUSD: 10}},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if _, ok := p.Reserved("review-pr"); !ok {
+		t.Fatal("the holder does not find its own reservation")
+	}
+	if got := p.OtherReserved("review-pr", WindowFiveHour); got != 0 {
+		t.Errorf("OtherReserved for the holder = %d, want 0 — its own band is not another workload's", got)
+	}
+	if got := p.OtherReservedSlots("review-pr"); got != 0 {
+		t.Errorf("OtherReservedSlots for the holder = %d, want 0", got)
+	}
+	if got := p.OtherReservedUSD("review-pr"); got != 0 {
+		t.Errorf("OtherReservedUSD for the holder = $%.2f, want 0", got)
+	}
+	// And an unreserved bot still faces the band.
+	if got := p.OtherReserved("feature-dev", WindowFiveHour); got != 20 {
+		t.Errorf("OtherReserved for an unreserved bot = %d, want 20", got)
+	}
+	if usd, _ := p.RepoCap("o/r"); usd != 10 {
+		t.Errorf("RepoCap = $%.2f, want the $10 quota — a padded slug must not read as unlimited", usd)
+	}
+}
+
 // The zero value must reserve NOTHING: a deployment that never configured a
 // policy cannot start refusing work because the feature shipped.
 func TestZeroPolicyReservesNothing(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/httpx"
@@ -268,17 +269,22 @@ func (s *Server) budgetFloorPolicy(ctx context.Context) budgetfloor.Policy {
 // Fail-open on a degraded read, like every other quota here: a Mongo blip
 // must not wedge a repository's launches.
 func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, subj launchSubject, now time.Time) *launchDenial {
-	if s.credUsage == nil || subj.Repo == "" {
+	// Trimmed HERE because the meter is: the runner writes its RepoID as
+	// strings.TrimSpace(run.ProjectPath), so an untrimmed slug would query a
+	// ledger key nothing ever wrote and the quota would read as unused —
+	// inert, and silently, which is the worst shape for a ceiling.
+	repo := strings.TrimSpace(subj.Repo)
+	if s.credUsage == nil || repo == "" {
 		return nil
 	}
-	maxUSD, maxSpends := floor.RepoCap(subj.Repo)
+	maxUSD, maxSpends := floor.RepoCap(repo)
 	if maxUSD <= 0 && maxSpends <= 0 {
 		return nil
 	}
-	rows, err := s.credUsage.ListByRepo(ctx, now, subj.Repo)
+	rows, err := s.credUsage.ListByRepo(ctx, now, repo)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("launch gate: repo usage for %s: %v (fail-open)", subj.Repo, err)
+			s.logger.Warn("launch gate: repo usage for %s: %v (fail-open)", repo, err)
 		}
 		return nil
 	}
@@ -302,7 +308,7 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 		return &launchDenial{
 			status:  http.StatusPaymentRequired,
 			reason:  denyRepoQuota,
-			detail:  fmt.Sprintf("repository %s has used $%.2f of its $%.2f monthly quota", subj.Repo, spent, maxUSD),
+			detail:  fmt.Sprintf("repository %s has used $%.2f of its $%.2f monthly quota", repo, spent, maxUSD),
 			resetAt: nextMonthStart(now),
 		}
 	}
@@ -311,7 +317,7 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 			status: http.StatusPaymentRequired,
 			reason: denyRepoQuota,
 			detail: fmt.Sprintf("repository %s has recorded %d of its %d monthly metered route-spends (one per credential+model route a run charges, so a two-model run counts twice)",
-				subj.Repo, routeSpends, maxSpends),
+				repo, routeSpends, maxSpends),
 			resetAt: nextMonthStart(now),
 		}
 	}

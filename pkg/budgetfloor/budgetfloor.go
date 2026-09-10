@@ -286,6 +286,16 @@ func (p Policy) Validate() error {
 	return nil
 }
 
+// sameID compares two identifiers the way every lookup below must: on the
+// TRIMMED value of BOTH sides.
+//
+// Trimming only the query is the trap, and it fails in the dangerous
+// direction: a reservation stored as " review-pr " (an id typed into the raw
+// admin API — the CLI trims) would never match its holder, so Reserved says
+// "unreserved" while OtherReserved counts that band as somebody ELSE's, and
+// the reservation refuses the exact workload it protects.
+func sameID(stored, query string) bool { return strings.TrimSpace(stored) == query }
+
 // Reserved returns the reservation protecting a bot, if any.
 func (p Policy) Reserved(botID string) (Reservation, bool) {
 	bot := strings.TrimSpace(botID)
@@ -293,7 +303,7 @@ func (p Policy) Reserved(botID string) (Reservation, bool) {
 		return Reservation{}, false
 	}
 	for _, r := range p.Reservations {
-		if r.BotID == bot {
+		if sameID(r.BotID, bot) {
 			return r, true
 		}
 	}
@@ -313,7 +323,7 @@ func (p Policy) OtherReserved(botID string, w Window) int {
 	bot := strings.TrimSpace(botID)
 	total := 0
 	for _, r := range p.Reservations {
-		if r.BotID == bot {
+		if sameID(r.BotID, bot) {
 			continue
 		}
 		total += r.Reserve.WindowPercent(w)
@@ -328,7 +338,7 @@ func (p Policy) OtherReservedSlots(botID string) int {
 	bot := strings.TrimSpace(botID)
 	total := 0
 	for _, r := range p.Reservations {
-		if r.BotID == bot {
+		if sameID(r.BotID, bot) {
 			continue
 		}
 		total += r.Reserve.ConcurrentRuns
@@ -343,7 +353,7 @@ func (p Policy) OtherReservedUSD(botID string) float64 {
 	bot := strings.TrimSpace(botID)
 	total := 0.0
 	for _, r := range p.Reservations {
-		if r.BotID == bot {
+		if sameID(r.BotID, bot) {
 			continue
 		}
 		total += r.Reserve.MonthlyUSD
@@ -397,7 +407,7 @@ func (p Policy) RepoCap(repo string) (monthlyUSD float64, routeSpendsPerMonth in
 		return 0, 0
 	}
 	for _, q := range p.RepoQuotas {
-		if q.Repo != name {
+		if !sameID(q.Repo, name) {
 			continue
 		}
 		monthlyUSD, routeSpendsPerMonth = q.MonthlyUSD, q.RouteSpendsPerMonth
