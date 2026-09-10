@@ -31,6 +31,25 @@ import (
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
 func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
+	// A connector action's invariants are enforced HERE, before anything
+	// else can claim the node.
+	//
+	// The compiler already refuses these combinations (C261/C262), and that
+	// refusal is where an author meets them. It is not where they matter: a
+	// compile-time guard certifies the text a person wrote, while this
+	// function runs whatever IR it is handed — hand-built, restored from a
+	// checkpoint, or produced by a future path nobody has written yet.
+	// Without the check here, an action node carrying a postcondition took
+	// the Verified Action ladder below, whose first rung is an
+	// idempotent-skip: the node reported SUCCESS with no HTTP request ever
+	// made. A determinism promise that only holds for well-formed input is
+	// not a promise.
+	if node.Action != "" {
+		if err := checkActionInvariants(node); err != nil {
+			return nil, err
+		}
+		return e.executeToolNodeAction(ctx, node, input)
+	}
 	// Verified Action (ADR-044): a node with a postcondition runs through
 	// the escalation ladder (idempotent-skip → recipe → self-repair →
 	// agent recovery → policy), keying success on the postcondition rather
@@ -40,6 +59,26 @@ func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 		return e.executeVerifiedToolNode(ctx, node, input)
 	}
 	return e.executeToolNodeRecipe(ctx, node, input)
+}
+
+// checkActionInvariants re-states at RUNTIME what the compiler refuses at
+// C261/C262, for the reason given above: the two guards protect different
+// things, and only this one protects the run.
+//
+// Both refusals exist because the ADR-044 recovery ladder ends in an LLM
+// agent and can conclude success without executing the recipe — either of
+// which turns "this node involves no model and either performed the call or
+// failed" into something weaker.
+func checkActionInvariants(node *ir.ToolNode) error {
+	if node.Postcondition != "" {
+		return fmt.Errorf("model: tool node %q declares both `action:` and a postcondition; "+
+			"a connector action is its own verification and the Verified Action ladder may report success without calling the vendor", node.ID)
+	}
+	if node.Recovery != nil {
+		return fmt.Errorf("model: tool node %q declares both `action:` and `recovery:`; "+
+			"the recovery ladder ends in an LLM agent, which an action node is certified not to reach", node.ID)
+	}
+	return nil
 }
 
 // recipeKind classifies how a tool node's recipe is executed. The
@@ -78,6 +117,11 @@ func recipeKindOf(node *ir.ToolNode) recipeKind {
 func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	switch recipeKindOf(node) {
 	case recipeAction:
+		// Not reached from executeToolNode, which intercepts an action node
+		// above so it can never enter the Verified Action ladder this
+		// function also serves. Kept as the correct dispatch rather than
+		// deleted: falling through to the command arms would read an action
+		// node's empty Command as a tool name.
 		return e.executeToolNodeAction(ctx, node, input)
 	case recipeScript:
 		return e.executeToolNodeScript(ctx, node, input)

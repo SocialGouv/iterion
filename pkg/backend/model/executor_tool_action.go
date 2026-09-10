@@ -60,6 +60,9 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 	}
+	if err := checkOperationUsable(node, pkg, op); err != nil {
+		return nil, err
+	}
 
 	params, err := e.renderActionParams(ctx, node, op, input)
 	if err != nil {
@@ -106,6 +109,32 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 	return nil, e.finishAction(node, op, res, start, nil)
 }
 
+// checkOperationUsable refuses an operation the RESOLVER handed back that a
+// node may not run — checked here, at the moment of use, rather than trusted
+// from whoever produced the package.
+//
+// The two properties are the ones a `.bot` author cannot see. A package
+// declares each operation `deterministic`, and the whole value of the action
+// recipe is that the claim holds; `spotted` is the inert maturity level, the
+// way a catalog entry says "recorded, promising nothing". Both are decided by
+// data that arrives at run time from a tier the workflow never named — a
+// platform override, a team package, a marketplace entry — so the compiler
+// cannot have checked them, and a resolver is exactly the component that
+// might be wrong.
+func checkOperationUsable(node *ir.ToolNode, pkg *spec.Package, op spec.Operation) error {
+	if pkg == nil {
+		return fmt.Errorf("model: tool node %q: the connector resolver returned no package for %q", node.ID, node.Action)
+	}
+	if !op.Deterministic {
+		return fmt.Errorf("model: tool node %q: operation %q is not marked deterministic, and `action:` is the recipe that certifies it is; "+
+			"reach it through an agent's connector capability instead", node.ID, op.ID)
+	}
+	if m := pkg.EffectiveMaturity(op); !m.Attachable() {
+		return fmt.Errorf("model: tool node %q: operation %q is at maturity %q, which promises nothing and may not be bound to a node", node.ID, op.ID, m)
+	}
+	return nil
+}
+
 // finishAction emits the finish hooks and turns a typed failure into the
 // node's error.
 //
@@ -129,7 +158,13 @@ func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res ex
 	// The class leads the message because it is what an operator scans for,
 	// and `unknown_outcome` in particular has to be unmissable: it means the
 	// remote system may or may not have changed.
-	return fmt.Errorf("model: tool node %q: %s failed [%s]: %s", node.ID, op.ID, res.Err.Class, res.Err.Error())
+	//
+	// WRAPPED, not formatted in: the engine's recovery dispatcher classifies
+	// by type (`errors.As`), so a `%s` here left it reading plain text and
+	// bucketing an ambiguous mutation as an ordinary retryable failure. The
+	// typed error has to survive the node boundary for the no-retry guarantee
+	// to reach the one component that acts on it.
+	return fmt.Errorf("model: tool node %q: %s failed [%s]: %w", node.ID, op.ID, res.Err.Class, res.Err)
 }
 
 // actionOutput shapes a successful call into the node's output map.

@@ -113,6 +113,20 @@ cloud runner's `classifyExecResult` and its redelivery disposition, the
 CLI's `--auto-resume` gate, and the dispatcher's retry ladder. Every code
 the engine declares has a row, guarded against drift by a conformance test.
 
+**`AMBIGUOUS_EFFECT` sits in that table for the opposite reason.** Every
+other deterministic code is parked because a second attempt would reach the
+same verdict; this one is parked because a second attempt might reach a
+*different* one — it may duplicate a mutation that already landed. It is
+raised when a call that changes remote state loses its answer with no
+idempotency key to make a repeat safe: the request left, the vendor may have
+committed it, and nothing available to iterion can say which. Recovery
+refuses to retry it on any attempt
+([`AmbiguousEffectRecipe`](../pkg/runtime/recovery/recovery.go)), and the
+producer declares the ambiguity through the `runtime.AmbiguousEffect`
+interface rather than by type, so the engine never learns what a connector
+is. **Reconcile the remote state before resuming** — a resume re-executes
+the failing node, which here means performing the call again.
+
 The bar for *deterministic* is deliberately high: a resume **re-executes
 the failing node** on freshly resolved inputs, so anything an LLM decided
 — a `SCHEMA_VALIDATION` on an agent's output, a `NO_OUTGOING_EDGE` chosen

@@ -133,11 +133,31 @@ func (e *Error) Error() string {
 	return strings.Join(parts, ": ")
 }
 
+// AmbiguousEffect implements runtime.AmbiguousEffect, the seam that tells the
+// engine's recovery dispatcher this failure must never be retried
+// automatically.
+//
+// Retryable below is this package's own answer, and it was not enough: it is
+// consulted by a caller that decides to retry, whereas the ENGINE decides on
+// its own when a node returns an error. Without this, an `unknown_outcome`
+// reached recovery as ordinary text, classified as EXECUTION_FAILED, and was
+// replayed two seconds later — the duplicate mutation the class exists to
+// prevent, arriving through the one path that never asked.
+func (e *Error) AmbiguousEffect() bool {
+	return e != nil && e.Class == spec.ErrUnknownOutcome
+}
+
 // Retryable reports whether repeating this call is safe AND useful. It is the
 // one place the two questions meet, which is why it takes the operation: a
 // class may be retryable in the abstract while the operation is not, and
 // answering only the first is how a blind retry duplicates an effect.
-func (e *Error) Retryable(op spec.Operation) bool {
+//
+// It takes the call's ARGUMENTS as well, because the operation alone cannot
+// answer the question. What makes a repeat safe is a key the vendor actually
+// received, not a parameter the package mentions: an optional
+// `Idempotency-Key` that the caller left unset licensed the retry it was
+// supposed to earn.
+func (e *Error) Retryable(op spec.Operation, params map[string]any) bool {
 	if e == nil {
 		return false
 	}
@@ -153,10 +173,46 @@ func (e *Error) Retryable(op spec.Operation) bool {
 	if !op.Effect.Mutating() {
 		return true
 	}
-	// A mutation may only be repeated when the vendor offers a way to make it
-	// idempotent. Rate limiting is the exception: a 429 means the request was
-	// REFUSED, not performed, so repeating it cannot duplicate anything.
-	return e.Class == spec.ErrRateLimited || op.IdempotencyKeyParam != ""
+	// A mutation may only be repeated when THIS call carried a key that makes
+	// it idempotent. Rate limiting is the exception: a 429 means the request
+	// was REFUSED, not performed, so repeating it cannot duplicate anything.
+	return e.Class == spec.ErrRateLimited || idempotencyKeySent(op, params)
+}
+
+// idempotencyKeySent reports whether this call actually carried a usable
+// idempotency key.
+//
+// The one reading of that question, shared by Retryable and transportError,
+// because they are the two halves of the same promise: one decides whether a
+// repeat is allowed, the other decides whether a lost answer is ambiguous, and
+// they must never disagree about what makes a mutation safe.
+//
+// A declared parameter is not a sent key, and a sent EMPTY key is not a key:
+// a vendor receiving `Idempotency-Key: ""` deduplicates nothing.
+func idempotencyKeySent(op spec.Operation, params map[string]any) bool {
+	if op.IdempotencyKeyParam == "" {
+		return false
+	}
+	// The declaration may name either the public key or the wire name; the
+	// caller writes the public key. Validation guarantees one of them matches
+	// a declared parameter.
+	keys := []string{op.IdempotencyKeyParam}
+	for _, p := range op.Params {
+		if p.Name == op.IdempotencyKeyParam && p.Key != op.IdempotencyKeyParam {
+			keys = append(keys, p.Key)
+		}
+	}
+	for _, k := range keys {
+		v, ok := params[k]
+		if !ok || v == nil {
+			continue
+		}
+		if s, isStr := v.(string); isStr && strings.TrimSpace(s) == "" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // Call performs ONE attempt of an operation and classifies its answer.
@@ -181,7 +237,7 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 
 	resp, err := e.Client.Do(req)
 	if err != nil {
-		return Result{Err: e.transportError(op, err)}, nil
+		return Result{Err: e.transportError(op, params, err)}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -192,7 +248,7 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 	if readErr != nil {
 		// The status arrived, the body did not. For a mutation that is the
 		// ambiguous case: the vendor may well have performed it.
-		return Result{Status: resp.StatusCode, Err: e.transportError(op, readErr)}, nil
+		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, readErr)}, nil
 	}
 	return e.readResponse(pkg, op, resp, body), nil
 }
@@ -204,11 +260,11 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 // repeated, while a MUTATION that failed to answer may or may not have
 // happened. Reporting the second as a plain transport error would invite a
 // retry that duplicates the effect.
-func (e *Executor) transportError(op spec.Operation, cause error) *Error {
-	if op.Effect.Mutating() && op.IdempotencyKeyParam == "" {
+func (e *Executor) transportError(op spec.Operation, params map[string]any, cause error) *Error {
+	if op.Effect.Mutating() && !idempotencyKeySent(op, params) {
 		return &Error{
 			Class: spec.ErrUnknownOutcome,
-			Message: "the request was sent and no answer came back; this operation mutates and the vendor offers no idempotency key, " +
+			Message: "the request was sent and no answer came back; this operation mutates and this call carries no idempotency key, " +
 				"so iterion cannot tell whether it happened — reconcile before retrying",
 			Cause: cause,
 		}

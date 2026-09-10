@@ -172,6 +172,22 @@ const (
 	// RunStatusFailedResumable so an hourly sentinel does not silently
 	// lose its tick when the fleet sits at its request ceiling.
 	FailureSandboxCapacity FailureCode = "SANDBOX_CAPACITY"
+	// FailureAmbiguousEffect: the step MAY have taken effect on a remote
+	// system, and nothing available to iterion can say whether it did. The
+	// canonical case is a mutating HTTP call whose answer was lost after the
+	// request left — a comment posted, an issue created, money moved — with
+	// no idempotency key to make a second attempt safe.
+	//
+	// It exists because every other failure code answers "did it happen?"
+	// with yes or no, and this one answers "unknown". Routed to
+	// EXECUTION_FAILED, the ambiguity became an ordinary retry two seconds
+	// later, which is the duplicate the whole class exists to prevent.
+	//
+	// NEVER auto-retried and never on the auto-resume allow-list: only an
+	// operator who has RECONCILED the remote state can say what should
+	// happen next. Resumable so that reconciliation can be followed by a
+	// deliberate `iterion resume`, not so a scheduler can guess.
+	FailureAmbiguousEffect FailureCode = "AMBIGUOUS_EFFECT"
 )
 
 // ReservedFailureCodes is the exhaustive set of codes the ENGINE itself
@@ -222,6 +238,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSandboxSetupTimeout,
 	FailureSandboxCapacity,
 	FailureBotRequiresNewerEngine,
+	FailureAmbiguousEffect,
 }
 
 // reservedFailureCodes indexes ReservedFailureCodes for lookup. Built

@@ -322,7 +322,7 @@ func TestErrorsAreTyped(t *testing.T) {
 			if res.Err.Class != tc.wantClass {
 				t.Errorf("class = %q, want %q", res.Err.Class, tc.wantClass)
 			}
-			if got := res.Err.Retryable(op); got != tc.retryable {
+			if got := res.Err.Retryable(op, fullParams(tc.op)); got != tc.retryable {
 				t.Errorf("retryable = %v, want %v", got, tc.retryable)
 			}
 		})
@@ -350,7 +350,7 @@ func TestRateLimitCarriesItsDelay(t *testing.T) {
 	if res.Err.RetryAfter != 30*time.Second {
 		t.Errorf("retry-after = %v, want 30s", res.Err.RetryAfter)
 	}
-	if !res.Err.Retryable(op) {
+	if !res.Err.Retryable(op, fullParams("probe.issue.comment")) {
 		t.Error("a 429 refused the request, so even a mutation may be repeated")
 	}
 }
@@ -383,7 +383,7 @@ func TestAMutationWithNoAnswerIsUnknown(t *testing.T) {
 	if res.Err == nil || res.Err.Class != spec.ErrUnknownOutcome {
 		t.Fatalf("err = %v, want unknown_outcome", res.Err)
 	}
-	if res.Err.Retryable(mutate) {
+	if res.Err.Retryable(mutate, fullParams("probe.issue.comment")) {
 		t.Error("an unknown outcome must NEVER be retried automatically — that is the whole point of the class")
 	}
 
@@ -397,26 +397,100 @@ func TestAMutationWithNoAnswerIsUnknown(t *testing.T) {
 	if res.Err == nil || res.Err.Class != spec.ErrTransport {
 		t.Fatalf("err = %v, want transport for a read", res.Err)
 	}
-	if !res.Err.Retryable(read) {
+	if !res.Err.Retryable(read, fullParams("probe.issue.get")) {
 		t.Error("a read that got no answer may be repeated")
 	}
 }
 
 // TestAMutationWithAnIdempotencyKeyIsRetryable pins the other half: the rule
-// is about the vendor offering a way to be safe, not about mutations being
+// is about the call being safe to repeat, not about mutations being
 // untouchable.
+//
+// The distinction that matters is between a key DECLARED and a key SENT. A
+// vendor deduplicates on the value it received; a parameter the package
+// mentions and the caller omitted protects nothing, and treating it as
+// protection licensed exactly the duplicate the rule exists to forbid.
 func TestAMutationWithAnIdempotencyKeyIsRetryable(t *testing.T) {
 	pkg := probe("http://example.invalid")
 	op := opOf(t, pkg, "probe.issue.comment")
 	op.IdempotencyKeyParam = "body"
+	sent := map[string]any{"body": "abc-123"}
 
 	e := &exec.Error{Class: spec.ErrUpstream, Status: 503}
-	if !e.Retryable(op) {
-		t.Error("a mutation the vendor can make idempotent may be repeated")
+	if !e.Retryable(op, sent) {
+		t.Error("a mutation carrying an idempotency key may be repeated")
+	}
+	for _, tc := range []struct {
+		name   string
+		params map[string]any
+	}{
+		{"the key was never sent", map[string]any{}},
+		{"the key was sent empty", map[string]any{"body": ""}},
+		{"the key was sent blank", map[string]any{"body": "   "}},
+		{"the key was sent null", map[string]any{"body": nil}},
+	} {
+		if e.Retryable(op, tc.params) {
+			t.Errorf("%s: a declared key that did not reach the vendor deduplicates nothing — the mutation must not be repeated", tc.name)
+		}
 	}
 	op.IdempotencyKeyParam = ""
-	if e.Retryable(op) {
+	if e.Retryable(op, sent) {
 		t.Error("without an idempotency key, a mutation must not be repeated on a 5xx")
+	}
+}
+
+// TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT is the transport-side twin of
+// the test above. The two decisions — "may this be repeated?" and "is this
+// outcome undecided?" — are the same promise read from opposite ends, so they
+// share one predicate and must never disagree.
+func TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT(t *testing.T) {
+	// A server that takes the request and hangs up without answering.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	pkg := probe(srv.URL)
+	op := opOf(t, pkg, "probe.issue.comment")
+	op.IdempotencyKeyParam = "body"
+	args := map[string]any{"owner": "acme", "repo": "widgets", "index": 1, "body": "hello"}
+
+	res, err := e.Call(context.Background(), pkg, op, args, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a lost answer must produce an error")
+	}
+	if res.Err.Class == spec.ErrUnknownOutcome {
+		t.Error("the key WAS sent, so a repeat is safe — this is an ordinary transport failure, not an undecided one")
+	}
+
+	// Same operation, same lost answer, key omitted: now it is undecided.
+	delete(args, "body")
+	op.Params = append([]spec.Param{}, op.Params...)
+	for i := range op.Params {
+		if op.Params[i].Key == "body" {
+			op.Params[i].Required = false
+		}
+	}
+	res, err = e.Call(context.Background(), pkg, op, args, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil || res.Err.Class != spec.ErrUnknownOutcome {
+		t.Errorf("class = %v, want %q — a mutation with no key sent and no answer back is undecided", res.Err, spec.ErrUnknownOutcome)
 	}
 }
 

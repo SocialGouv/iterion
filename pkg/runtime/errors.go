@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,7 +47,40 @@ const (
 	// Raised before the first node when the attached bundle declares a
 	// `requires.iterion` this build is below (engine_requirement.go).
 	ErrCodeBotRequiresNewerEngine = store.FailureBotRequiresNewerEngine
+	// Raised when a node's failure leaves a remote effect UNDECIDED — see
+	// the AmbiguousEffect interface below.
+	ErrCodeAmbiguousEffect = store.FailureAmbiguousEffect
 )
+
+// AmbiguousEffect is implemented by an error whose operation may or may not
+// have taken effect somewhere the engine cannot observe.
+//
+// It is an INTERFACE rather than a check against a concrete type because the
+// engine must not learn what a connector is: any producer of side effects —
+// today the connector executor, tomorrow a plugin or a tool adapter — can
+// declare an outcome undecided by implementing this, and the recovery
+// dispatcher will refuse to guess on its behalf. That is the same seam
+// discipline the rest of the engine follows: a new capability implements an
+// existing interface instead of adding an arm to the core.
+//
+// Implementations must return true ONLY when the effect is genuinely unknown.
+// Returning true for an ordinary failure parks runs that should have retried;
+// returning false for a real ambiguity duplicates side effects, which is the
+// costlier direction and the reason this exists.
+type AmbiguousEffect interface {
+	error
+	// AmbiguousEffect reports whether the operation may have taken effect
+	// remotely despite the failure.
+	AmbiguousEffect() bool
+}
+
+// IsAmbiguousEffect reports whether err — or any error it wraps — declares
+// its remote effect undecided. It is the ONE reading of the interface, so a
+// second call site cannot drift into a different rule.
+func IsAmbiguousEffect(err error) bool {
+	var amb AmbiguousEffect
+	return errors.As(err, &amb) && amb.AmbiguousEffect()
+}
 
 // RuntimeError is a structured error carrying a machine-readable code,
 // the node where the error occurred, and a human-friendly hint for

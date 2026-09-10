@@ -306,6 +306,28 @@ func NetworkTransientRecipe(maxRetries int) Recipe {
 	})
 }
 
+// AmbiguousEffectRecipe: never retries, on any attempt.
+//
+// Every other recipe answers "how long should we wait before trying again?".
+// This one answers a different question — whether trying again is allowed at
+// all — and the answer is no, because the failure means the remote system may
+// ALREADY have done the thing. A retry is not a second chance at the effect;
+// it is a second effect.
+//
+// It is registered rather than left to Dispatch's unregistered-code
+// fall-through, which is terminal too: relying on the fall-through would make
+// this safety property accidental, invisible to a reader of the registry, and
+// removable by anyone who later wires a catch-all default.
+func AmbiguousEffectRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind: ActionFailTerminal,
+			Reason: "the call may have already taken effect on the remote system and no idempotency key makes a second attempt safe; " +
+				"reconcile the remote state before resuming — iterion will not retry this by itself",
+		}
+	})
+}
+
 // DefaultRecipes maps each well-known error code to its default
 // recipe. Hosts can override individual entries before installing.
 func DefaultRecipes() map[runtime.ErrorCode]Recipe {
@@ -321,6 +343,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeAuthFailed:            AuthFailedRecipe(),
 		runtime.ErrCodeModelUnavailable:      ModelUnavailableRecipe(),
 		runtime.ErrCodeSchemaUnusable:        SchemaUnusableRecipe(),
+		runtime.ErrCodeAmbiguousEffect:       AmbiguousEffectRecipe(),
 	}
 }
 
@@ -374,6 +397,16 @@ func Dispatch(recipes map[runtime.ErrorCode]Recipe) runtime.RecoveryDispatch {
 func Classify(err error) runtime.ErrorCode {
 	if err == nil {
 		return ""
+	}
+	// An UNDECIDED remote effect, checked before everything else including
+	// the RuntimeError code: a failure that may have already committed a
+	// mutation must not be reclassified into any bucket that retries. The
+	// transport wording of such a failure ("connection reset", "i/o
+	// timeout") matches the network-transient needles below almost by
+	// definition, so any later position would hand it to the exponential
+	// backoff — retrying the exact call whose effect is unknown.
+	if runtime.IsAmbiguousEffect(err) {
+		return runtime.ErrCodeAmbiguousEffect
 	}
 	var rerr *runtime.RuntimeError
 	if errors.As(err, &rerr) {
