@@ -374,3 +374,51 @@ func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
 		t.Fatalf("posted %d, want 1 — a run must be able to refresh its own claim", gc.setCalls)
 	}
 }
+
+// Rfa3481 — after a first pass terminates, the clear leaves `done` on that sha.
+// A second `/billy` on an UNCHANGED head — a first pass that BANKED instead of
+// pushing, which is the 2026-09-09 incident itself — read its predecessor's
+// marker as a foreign verdict and posted nothing. The second pass was then as
+// invisible as before this change, in the very lane it was written for.
+func TestMarkFixInFlight_ClaimsOverAResolvedMarker(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStateSuccess,
+			Description: fixDoneDescription,
+			TargetURL:   "https://iterion.test/runs/the-previous-pass"},
+	}}
+	s := fixLaunchFixture(t, gc)
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a second pass on an unchanged head stays invisible behind its predecessor's done marker", gc.setCalls)
+	}
+	if !isFixInFlight(gc.last) {
+		t.Errorf("claim = %q, want the in-flight marker", gc.last.Description)
+	}
+}
+
+// R0839e8 — the clear runs for every terminal forge run the sweeper offers,
+// every 60s for a 60-minute lookback, and the role walk is two Mongo reads plus
+// a full catalog parse. The memo makes the repeat offers free. Asserted on the
+// SECOND call being served without re-walking: a memo nothing reads is just a
+// map.
+func TestFixerRoleCached_SecondLookupIsMemoised(t *testing.T) {
+	gc := &listingGateClient{}
+	s := fixLaunchFixture(t, gc)
+
+	first := s.fixerRoleCached(context.Background(), "", "branch-improve-loop")
+	if first != pauseNoticeRoleFixer {
+		t.Fatalf("role = %v, want fixer — the memo must not change the answer", first)
+	}
+	// Break the underlying walk: only a memo hit can still answer correctly.
+	s.cfg.Bots.Paths = []string{t.TempDir()}
+	if again := s.fixerRoleCached(context.Background(), "", "branch-improve-loop"); again != pauseNoticeRoleFixer {
+		t.Errorf("second lookup = %v, want fixer from the memo — every sweep offer would re-walk the catalog", again)
+	}
+	// A different bot is a different key, so it really does re-walk (and now
+	// finds nothing) — proving the memo is keyed, not a blanket yes.
+	if other := s.fixerRoleCached(context.Background(), "", "review-pr"); other == pauseNoticeRoleFixer {
+		t.Errorf("an unrelated bot was served the memoised fixer answer")
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -64,6 +65,14 @@ func isFixInFlight(st forge.CommitStatus) bool {
 		strings.TrimSpace(st.Description) == fixInFlightDescription
 }
 
+// isFixDone recognises this server's own RESOLVED marker. A later fixer on the
+// same head must be able to write over it — it says no fixer is working, and a
+// launch is about to make that false.
+func isFixDone(st forge.CommitStatus) bool {
+	return st.State == forge.CommitStateSuccess &&
+		strings.TrimSpace(st.Description) == fixDoneDescription
+}
+
 // markFixInFlight claims the fixer context on the revision a freshly launched
 // fixer run is about to rewrite.
 //
@@ -103,7 +112,15 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	if err != nil || !readable {
 		return
 	}
-	if cur.State != "" && !isFixInFlight(cur) {
+	// Ours to write over: nothing, a live claim, or a RESOLVED one. That last
+	// case is not cosmetic — after a first pass terminates the clear leaves
+	// `done` on this sha, and a second `/billy` on an UNCHANGED head (a first
+	// pass that banked instead of pushing: the 2026-09-09 incident itself) read
+	// its predecessor's marker as a foreign verdict and posted nothing. The
+	// second pass was then as invisible as before this change, in the very lane
+	// it was written for. `done` means no fixer is working — which the launch
+	// below is about to make false, whoever posted it.
+	if cur.State != "" && !isFixInFlight(cur) && !isFixDone(cur) {
 		return
 	}
 	// AND never take over ANOTHER run's live claim — the same ownership test
@@ -188,7 +205,7 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if strings.TrimSpace(sourceTenant) == "" {
 		sourceTenant = run.TenantID
 	}
-	if s.handoffRoleFor(ctx, sourceTenant, run.BotID) != pauseNoticeRoleFixer {
+	if s.fixerRoleCached(ctx, sourceTenant, run.BotID) != pauseNoticeRoleFixer {
 		return
 	}
 	// Our own run's URL, resolved before the read: without it there is nothing
@@ -232,6 +249,49 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 		s.logger.Info("forge fix: run %s is %s — released %s on %s@%s",
 			run.ID, run.Status, fixInFlightContext, repo, shortSHA(sha))
 	}
+}
+
+// fixRoleTTL bounds how long a manifest classification is reused. Short enough
+// that a re-declared bot is picked up without a restart, long enough that the
+// sweeper's repeated offers of the same runs cost one walk instead of one per
+// pass.
+const fixRoleTTL = 5 * time.Minute
+
+type fixRoleEntry struct {
+	role    pauseNoticeRole
+	expires time.Time
+}
+
+// fixerRoleCached is handoffRoleFor with a memo, because the CLEAR calls it on
+// a hot path the claim does not share: reconcileGateForRunID runs it for every
+// terminal forge run the sweeper offers, every 60s, for a 60-minute lookback.
+// Uncached, a single non-fixer run costs two Mongo reads (bot row, then the
+// tenant's rows) plus a filesystem catalog discovery and a DSL parse of every
+// bot — per offer. The role is a manifest fact that changes on deploy, not per
+// run, so it is exactly the shape a memo is for.
+//
+// The memo is a PERFORMANCE filter only. Correctness never rests on it: the
+// claim is bound to its run by target URL, and a stale role can at worst delay
+// a claim's release by one TTL, never resolve one that is still live.
+func (s *Server) fixerRoleCached(ctx context.Context, sourceTenant, botID string) pauseNoticeRole {
+	key := strings.TrimSpace(sourceTenant) + "|" + strings.TrimSpace(botID)
+	now := time.Now()
+	s.fixRoleMu.Lock()
+	if e, ok := s.fixRoleMemo[key]; ok && now.Before(e.expires) {
+		s.fixRoleMu.Unlock()
+		return e.role
+	}
+	s.fixRoleMu.Unlock()
+
+	role := s.handoffRoleFor(ctx, sourceTenant, botID)
+
+	s.fixRoleMu.Lock()
+	if s.fixRoleMemo == nil {
+		s.fixRoleMemo = map[string]fixRoleEntry{}
+	}
+	s.fixRoleMemo[key] = fixRoleEntry{role: role, expires: now.Add(fixRoleTTL)}
+	s.fixRoleMu.Unlock()
+	return role
 }
 
 // fixStatusClientFor resolves the (connection, repo) a fixer claim writes
