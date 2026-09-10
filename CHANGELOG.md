@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.6](https://github.com/SocialGouv/iterion/compare/v3.132.5...v3.132.6) (2026-09-10)
+
+### Bug Fixes
+
+* **runner:** a per-credential spend never disappears without a line ([#1090](https://github.com/SocialGouv/iterion/issues/1090)) ([dda7468](https://github.com/SocialGouv/iterion/commit/dda74685465e7cf6308de31f1ceb0539e24fb7d6)), closes [#1052](https://github.com/SocialGouv/iterion/issues/1052), references [#1087](https://github.com/SocialGouv/iterion/issues/1087)
+
+    <details><summary>why</summary>
+
+    Four declines dropped an attempt's per-credential metering in silence: no counter wired, no credentials on the context, and — the one that matters — a resolved slot carrying no fingerprint. Its sibling one line above (no slot at all) already warned; this one just `continue`d.
+
+    </details>
+
 ## [3.132.5](https://github.com/SocialGouv/iterion/compare/v3.132.4...v3.132.5) (2026-09-10)
 
 ### Bug Fixes
