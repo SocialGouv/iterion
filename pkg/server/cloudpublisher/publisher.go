@@ -1309,7 +1309,10 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key, botID string) 
 // per call so a runtime change reaches the walk without a restart (the
 // ADR-090 doctrine the usage caps already follow).
 type BudgetFloorSource interface {
-	Effective(ctx context.Context) budgetfloor.Policy
+	// Get returns the stored policy, or nil when none is written — the
+	// platformcfg.Resolver shape, so the server's launch gate and this walk
+	// can share ONE resolver instance and see an admin write together.
+	Get(ctx context.Context) *budgetfloor.Policy
 }
 
 // capPolicyFor lowers the operator's usage-cap ceilings by what every OTHER
@@ -1339,10 +1342,11 @@ func (p *Publisher) capPolicyFor(ctx context.Context, botID string) usagecap.Pol
 	if p.budgetFloor == nil {
 		return base
 	}
-	floor := p.budgetFloor.Effective(ctx)
-	if len(floor.Reservations) == 0 {
+	stored := p.budgetFloor.Get(ctx)
+	if stored == nil || len(stored.Reservations) == 0 {
 		return base
 	}
+	floor := *stored
 	lower := func(wp usagecap.WindowPolicy, w budgetfloor.Window) usagecap.WindowPolicy {
 		if wp.MaxPercent <= 0 {
 			return wp

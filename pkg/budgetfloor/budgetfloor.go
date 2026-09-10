@@ -398,7 +398,9 @@ func (p Policy) RepoCap(repo string) (monthlyUSD float64, runsPerMonth int) {
 // runtime-mutable form is a platformcfg resolver over the same type.
 type Static Policy
 
-func (s Static) Effective(context.Context) Policy { return Policy(s) }
+// Get matches the platformcfg.Resolver shape every consumer reads, so a
+// static policy and a runtime-mutable one are interchangeable at the seam.
+func (s Static) Get(context.Context) *Policy { p := Policy(s); return &p }
 
 // Bots lists every reserved bot id, sorted — for the operator views, which
 // must not reorder between two reads.

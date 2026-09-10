@@ -188,4 +188,3 @@ func TestRepoCap_TheEmptyRepositoryIsNotAWildcard(t *testing.T) {
 		t.Fatalf("an unquotaed repository = $%.2f, want unlimited", usd)
 	}
 }
-

@@ -344,12 +344,110 @@ numbers:
   the route attribution: charged to the credential, attributed to nobody —
   never guessed.
 
-Enforcement is a separate promise. This is the accounting subject a per-repo
-quota needs; the quota itself, and the budget FLOORS that would reserve
-capacity for a workload rather than cap it, are not built — see
-[#950](https://github.com/SocialGouv/iterion/issues/950), whose finding is
-that every budget mechanism in iterion today is a ceiling and none is a
-floor.
+This is the accounting subject the per-repo quota is enforced against — see
+*Budget floors* below.
+
+## Budget floors — capacity RESERVED for a workload
+
+Everything above this line is a **ceiling**: it answers *"how far may this
+go?"*. A floor answers the other question — *"how much is held for this,
+whatever else runs?"* — and until
+[#950](https://github.com/SocialGouv/iterion/issues/950) iterion could not
+express it.
+
+The difference is not academic. On 2026-09-08 campaign bots and the PR
+reviewer shared one Anthropic subscription; when its five-hour window closed
+at 06:14Z, eight runs parked in six minutes and fourteen within the hour. **No
+cap had been exceeded and no quota breached** — every individual run stayed
+under its own ceiling all the way down. Review simply had nothing held for it.
+
+```sh
+iterion remote admin budget-floor                                     # show
+iterion remote admin budget-floor reserve --bot review-pr --five-hour 20
+iterion remote admin budget-floor quota --repo owner/repo --monthly-usd 50
+iterion remote admin budget-floor rm --bot review-pr
+```
+
+### The workload is a bot id
+
+`review-pr` — the thing that actually spends, already on every run and already
+the vocabulary a credential-pool pledge uses for its allow-list. No
+indirection, no new concept. The cost, stated because it is silent: **renaming
+or replacing the bot leaves the reservation pointing at an id nothing
+launches**, and it then protects nothing. Re-point it by hand.
+
+### The reserve holds a share of the provider's WINDOW by default
+
+On a subscription the provider bills nothing per call — which is exactly why
+`credusage` types those dollars `estimate`. Reserving "$X for the reviewer" on
+a forfait reserves a fiction: the run that dies does so because the five-hour
+window is spent, not because a figure was reached. So the default axis is the
+window, and enforcement needed no new gate — the credential walk already skips
+a forfait whose window is closed and falls through to the next tier; the
+reserve simply lowers the ceiling that skip is judged against, per bot.
+
+```
+5h window utilisation
+0%                     50%       60%        70%   80%       100%
+|-----------------------|---------|----------|-----|---------|
+      everyone      unreserved  feature-dev  review-pr   provider
+                     stops       stops        stops       wall
+```
+
+Two other axes are available where they are the honest answer, each enforced
+at the gate that already caps it: `--monthly-usd` (real money on a metered
+key) comes off the org's cost cap, and `--concurrent-runs` off the team's
+concurrency cap — the dial that keeps the reviewer answering a PR while a
+campaign runs. Any subset may be set.
+
+### Composition: protected from the others, never from itself
+
+A workload's ceiling is the deployment cap **minus the reserves of every
+OTHER workload**. With `review-pr` at 20 and `feature-dev` at 10 under an 80%
+cap: ordinary work stops at 50, `review-pr` may reach 70, `feature-dev` 60.
+
+Summing *every* reservation instead would refuse a workload on its own band —
+the reservation would make its holder stop **earlier** than before it existed,
+the exact opposite of a floor, and green under any test that only checks
+unreserved work.
+
+### Two things a reservation can never do
+
+- **Create a cap.** A window, cost cap or concurrency cap that is not
+  configured is returned untouched. Subtracting a reserve from zero yields a
+  positive limit out of nothing, and a deployment that never set a cap would
+  ACQUIRE one — every run refused because somebody wrote a reservation. A
+  floor may hold work back; it may not invent a ceiling.
+- **Let its holder overspend.** The reserved workload never passes the
+  deployment's own caps. A reservation holds capacity back from others; it is
+  not a way around the wall.
+
+### The per-repo quota
+
+A ceiling inside the shared budget, refused with its own reason
+(`repo_quota_exceeded`) because the operator's next move differs: raise *that
+repository's* quota, not the org's. Three forms — `--monthly-usd` (default),
+`--runs-per-month`, and `--reserve-share N --share-of-bot <bot>`, which slices
+a reservation so that raising the reservation raises every repository taking a
+share of it.
+
+A share of a **window-only** reserve is refused at configuration time, not
+resolved to zero: slicing a live five-hour window between repositories would
+need real-time arbitration across replicas, and a locally computed share is a
+number two pods disagree about. The refusal names the way out.
+
+It is read off the repository dimension above — the meter the runs actually
+write — so the figure `usage --by-credential --repo X` shows **is** the figure
+the gate refuses on. A view that disagreed with the gate could not exist.
+
+### What is not covered
+
+The gate is told what a launch is by an explicit subject, and two surfaces
+legitimately do not know: the REST `POST /runs` gates before its body is
+parsed (an operator-initiated launch, not the automated fan-out these quotas
+bound), and a trigger `emit` is one event that fans out to many launches —
+each of which is gated with its own subject. Both pass the empty subject and
+are judged as ordinary, uncapped work.
 
 ## Reading usage
 

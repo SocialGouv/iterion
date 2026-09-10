@@ -435,6 +435,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/budget-floor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/budget-floor */
+        get: operations["getAdminSettingsBudgetFloor"];
+        /** PUT /api/admin/settings/budget-floor */
+        put: operations["putAdminSettingsBudgetFloor"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/sandbox": {
         parameters: {
             query?: never;
@@ -7563,6 +7581,42 @@ export interface operations {
         };
     };
     putAdminSettingsBotVars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsBudgetFloor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBudgetFloor: {
         parameters: {
             query?: never;
             header?: never;

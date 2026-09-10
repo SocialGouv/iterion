@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"net/http"
 	"time"
 
@@ -85,6 +86,68 @@ func (s *Server) registerAdminSettingsFamilyRoutes() {
 		s.mux.Handle("GET /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetPlatformCredentials)))
 		s.mux.Handle("PUT /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutPlatformCredentials)))
 	}
+	if s.budgetFloorStore != nil {
+		s.mux.Handle("GET /api/admin/settings/budget-floor", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetBudgetFloor)))
+		s.mux.Handle("PUT /api/admin/settings/budget-floor", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutBudgetFloor)))
+	}
+}
+
+func (s *Server) handleAdminGetBudgetFloor(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.budgetFloorStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	var pol budgetfloor.Policy
+	origin := "default"
+	if rec != nil {
+		pol = *rec
+		if len(pol.Reservations) > 0 || len(pol.RepoQuotas) > 0 {
+			origin = "db"
+		}
+	}
+	s.writeJSONFor(w, r, map[string]any{
+		"stored": pol,
+		"origin": origin,
+		// The reserved bot ids, sorted — what an operator scans for before
+		// asking why a bot is being held back.
+		"reserved_bots": pol.Bots(),
+	})
+}
+
+// handleAdminPutBudgetFloor REPLACES the policy, unlike its merge-semantics
+// siblings. A reservation set is read as a whole — "these workloads hold
+// these bands" — and merging per key would make removing one reservation
+// impossible without a null-for-every-field dance. The read-modify-write is
+// the operator's, and the CAS token on the record is what stops two admins
+// from silently dropping each other's edits.
+func (s *Server) handleAdminPutBudgetFloor(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	var pol budgetfloor.Policy
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&pol); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	// The client does not get to stamp the CAS token.
+	pol.UpdatedAt = time.Time{}
+	// Validated BEFORE it is stored: a policy whose reservations sum past the
+	// window, or whose repository takes a share of something unshareable, is
+	// refused where the operator can still fix it — not resolved to a silent
+	// zero at the gate hours later.
+	if err := pol.Validate(); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if err := s.budgetFloorStore.Put(r.Context(), pol); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	// Reach this replica's own gates now instead of at the TTL — the same
+	// courtesy the other families extend.
+	s.budgetFloor.Invalidate()
+	s.handleAdminGetBudgetFloor(w, r)
 }
 
 func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *http.Request) {
