@@ -277,9 +277,12 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 
 	// A `"..."` DSL string is lexed in legacy escape mode unless the file opts
 	// into `## strict-escape: on`, and legacy mode keeps every \X VERBATIM. So
-	// a backslash-escaped quote written here survives into the shell, which
-	// reads \" as a LITERAL quote character — the argument then carries quotes
-	// instead of being quoted by them.
+	// a backslash-escaped quote written here survives into the shell — and
+	// WHERE it lands decides whether that is a defect: unquoted, the shell
+	// reads \" as a LITERAL quote character and the argument carries quotes
+	// instead of being quoted by them; inside a "…" region it is the ordinary
+	// nested quote. Hence a scan of the shell's quoting rather than a
+	// strings.Contains, which refused working shell — see the predicate.
 	//
 	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
 	//   npm error code EINVALIDPACKAGENAME
@@ -381,9 +384,10 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 // costs an author one bad bootstrap; a false one refuses the whole workflow.
 func shellHasLiteralEscapedQuote(cmd string) bool {
 	const (
-		unquoted = iota
-		inSingle // '…': nothing is special, not even a backslash
-		inDouble // "…": a backslash is special only before $ ` " \ and newline
+		unquoted       = iota
+		inSingle       // '…': nothing is special, not even a backslash
+		inDollarSingle // $'…': backslash escapes ARE processed, \' included
+		inDouble       // "…": a backslash is special only before $ ` " \ and newline
 	)
 	state := unquoted
 
@@ -391,6 +395,19 @@ func shellHasLiteralEscapedQuote(cmd string) bool {
 		switch state {
 		case inSingle:
 			if cmd[i] == '\'' {
+				state = unquoted
+			}
+
+		case inDollarSingle:
+			// The one region that ends at an UNESCAPED quote: `$'a\'b'` is a
+			// single word. Tracking it as a plain '…' would close it early and
+			// leave every later quote inverted — which is how a scanner starts
+			// reporting quoted text as unquoted. A `\"` here yields a quote on
+			// purpose, so it is never the defect.
+			switch cmd[i] {
+			case '\\':
+				i++
+			case '\'':
 				state = unquoted
 			}
 
@@ -421,12 +438,16 @@ func shellHasLiteralEscapedQuote(cmd string) bool {
 				state = inSingle
 			case '"':
 				state = inDouble
-			case '`':
-				return false // command substitution: unmodelled
 			case '$':
-				if i+1 < len(cmd) && cmd[i+1] == '(' {
+				switch {
+				case i+1 < len(cmd) && cmd[i+1] == '\'':
+					state = inDollarSingle
+					i++
+				case i+1 < len(cmd) && cmd[i+1] == '(':
 					return false // command substitution: unmodelled
 				}
+			case '`':
+				return false // command substitution: unmodelled
 			case '<':
 				if i+1 < len(cmd) && cmd[i+1] == '<' {
 					return false // here-document: unmodelled

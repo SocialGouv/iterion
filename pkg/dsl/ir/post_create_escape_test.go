@@ -194,6 +194,18 @@ func TestPostCreateEscapeCheckReadsShellQuoting(t *testing.T) {
 			fires: false,
 			why:   "the scanner does not model $( ) quoting and must fail open — a missed diagnostic beats a refused workflow",
 		},
+		{
+			name:  "ANSI-C quoting with an escaped quote of its own",
+			value: "`" + `printf %s $'it\'s \"fine\"'` + "`",
+			fires: false,
+			why:   "$'…' ends at an UNESCAPED quote, so \\' does not close it; reading it as a plain '…' closes the region early and inverts every quote after it",
+		},
+		{
+			name:  "text after an ANSI-C region stays correctly tracked",
+			value: "`" + `printf %s $'a\'b'; npm i --prefix \"$p\"` + "`",
+			fires: true,
+			why:   "the defect after the $'…' is only reachable if the region was closed at the right quote",
+		},
 	}
 
 	for _, tc := range cases {
