@@ -1897,6 +1897,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return &launchRefusal{cardID: iss.ID, cause: err}
 	}
 	runID := res.RunID
+	// And, for a FIXER, say on the pull request that its branch is being
+	// rewritten. This is where the claim MUST live for the primary lane: a
+	// `/billy` is a board-mode command, so with a coordinator wired the card IS
+	// the launch and the webhook tail — which holds the other call — is never
+	// reached. Claiming only there would leave the human `/billy` silent while
+	// the zero-touch auto-fix lane signalled, which is the worse half to lose.
+	// A no-op for every card that is not a fixer on a PR, which is nearly all.
+	s.markFixInFlight(ctx, tenant, tenant, iss.Bot, lc.Vars, runID)
 	// Stamp the launched run onto the card immediately (not after the run
 	// terminates) so the studio can link the LIVE run while it executes. The
 	// local dispatcher already does this via SetLastRun; the cloud coordinator

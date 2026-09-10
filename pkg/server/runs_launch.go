@@ -555,6 +555,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
+	// A fixer picked by hand rewrites the branch exactly like one a webhook
+	// launched, so it claims the same context here: this surface composes the
+	// PR launch context above and would otherwise be the third way to start a
+	// fixer with nothing on the pull request saying so. A no-op for every
+	// launch that is not a fixer on a PR — the vars decide.
+	s.markFixInFlight(ctx, retryTeamID, retryTeamID, botID, req.Vars, res.RunID)
 	// A deferred launch (over the local concurrency cap) reports the queued
 	// status + position so the studio doesn't claim "running" for a
 	// pipeline still waiting for a slot. QueuePosition is 0 for the normal

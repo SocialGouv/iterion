@@ -1,11 +1,21 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -341,5 +351,181 @@ func TestClearFixInFlight_LeavesAForeignStatusAlone(t *testing.T) {
 
 	if gc.setCalls != 0 {
 		t.Fatalf("overwrote a status this server does not own (%d posts)", gc.setCalls)
+	}
+}
+
+// recordingGateClient is listingGateClient with a lock, because the launch
+// surfaces below post from a goroutine the test does not own.
+type recordingGateClient struct {
+	fakeGateClient
+	mu     sync.Mutex
+	posted []forge.CommitStatus
+}
+
+func (f *recordingGateClient) ListCommitStatuses(context.Context, string, string) ([]forge.CommitStatus, error) {
+	return nil, nil
+}
+
+func (f *recordingGateClient) SetCommitStatus(_ context.Context, _, _ string, st forge.CommitStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.posted = append(f.posted, st)
+	return nil
+}
+
+func (f *recordingGateClient) claim() (forge.CommitStatus, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, st := range f.posted {
+		if st.Context == fixInFlightContext {
+			return st, true
+		}
+	}
+	return forge.CommitStatus{}, false
+}
+
+// writeFixerBundle is a launchable fixer: a manifest that CONSUMES a review
+// (which is the whole definition of the role — the engine names no bot) plus a
+// workflow trivial enough to run for real in a test. `worktree: none` because
+// the IR default would fork one off the live checkout and provision its devbox
+// for a fixture that only asserts on what got posted.
+func writeFixerBundle(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"),
+		[]byte("name: "+name+"\nschema_version: 1\nconsumes:\n  - kind: review\n    var: prior_review\n    scope: pr\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(
+		"schema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"yes\"}'`\n  output: probe_out\n\nworkflow board_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Dir(dir)
+}
+
+// A `/billy` on a cloud deployment is a BOARD-mode command
+// (bots/branch-improve-loop/manifest.yaml declares `mode: board`), so with a
+// coordinator wired the card IS the launch: dispatchInvocation returns
+// "carded" and the webhook launch tail — which holds the other claim call — is
+// never reached. Claiming only there would leave the primary human `/billy`
+// invisible while the zero-touch auto-fix lane (which does go through the
+// tail) signalled: the worse half to lose, and the exact lane the measured
+// collision happened on.
+//
+// Drives the real processBoardCard rather than markFixInFlight alone: a
+// correct claim is worthless if the launch path never calls it.
+func TestProcessBoardCard_ClaimsTheFixInFlightContext(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	s.cfg.PublicURL = "https://iterion.test"
+	s.cfg.Bots.Paths = []string{writeFixerBundle(t, "fixer")}
+	gc := &recordingGateClient{fakeGateClient: fakeGateClient{headSHA: "abc"}}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		return gc, nil
+	}
+
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.processBoardCard(ctx, "team1", native.Issue{
+			ID: "card1", Bot: "fixer", State: native.StateReady,
+			// The two vars ensureBoardCard carries onto a command card, and
+			// the two the claim needs.
+			BotArgs: map[string]string{
+				"pr_url":   "https://github.com/o/r/pull/7",
+				"head_sha": "deadbeef",
+			},
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	// Settling the run is the sync point: the claim is posted before the card
+	// poll begins, so a terminal run means it has been posted or never will be.
+	var settled *store.Run
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if ids, lerr := rs.ListRuns(ctx); lerr == nil && len(ids) > 0 {
+			if run, rerr := rs.LoadRun(ctx, ids[0]); rerr == nil && run.Status.IsTerminal() {
+				settled = run
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if settled == nil {
+		t.Fatal("no run settled from the card")
+	}
+
+	st, ok := gc.claim()
+	if !ok {
+		t.Fatal("the board lane launched a fixer onto a pull request and said nothing on it — the primary /billy path is exactly the one that must claim")
+	}
+	if !isFixInFlight(st) {
+		t.Errorf("posted %q on %s, which the terminal clear will not recognise as its own claim", st.Description, st.Context)
+	}
+	if st.TargetURL != "https://iterion.test/runs/"+settled.ID {
+		t.Errorf("target url = %q, want the launched run's console — ownership is the target URL", st.TargetURL)
+	}
+}
+
+// The third surface, and the one no webhook covers: a fixer picked by hand in
+// the studio (or over the HTTP API) on a pull request. It composes the same PR
+// launch context as the other two and rewrites the branch the same way, so
+// leaving it unclaimed would keep a whole way of starting a fixer invisible.
+func TestHandleLaunchRun_ClaimsTheFixInFlightContext(t *testing.T) {
+	s := launchPRContextServer(t, "team1")
+	s.cfg.Bots.Paths = []string{writeFixerBundle(t, "fixer")}
+	gc := &recordingGateClient{fakeGateClient: fakeGateClient{headSHA: "abc"}}
+	s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+		return gc, nil
+	}
+
+	body, err := json.Marshal(map[string]any{
+		// The bot id is what carries the ROLE — the manifest behind it is
+		// where `consumes: review` lives. The source rides along because a
+		// local studio launches from bytes, not from the catalog path.
+		"bot_id":    "fixer",
+		"file_path": "pr.bot",
+		"source":    "workflow pr:\n  entry: done\n",
+		"vars": map[string]string{
+			"pr_url":   "https://github.com/o/r/pull/42",
+			"head_sha": "deadbeef",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "u1", TeamID: "team1"}))
+	rec := httptest.NewRecorder()
+	s.handleLaunchRun(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("launch status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Posted synchronously by the handler, before it answers: no polling.
+	st, ok := gc.claim()
+	if !ok {
+		t.Fatal("a hand-launched fixer said nothing on the pull request it is about to rewrite")
+	}
+	if !isFixInFlight(st) {
+		t.Errorf("posted %q on %s, which the terminal clear will not recognise as its own claim", st.Description, st.Context)
+	}
+	var launched launchRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &launched); err != nil {
+		t.Fatalf("launch response: %v", err)
+	}
+	if st.TargetURL != "https://iterion.test/runs/"+launched.RunID {
+		t.Errorf("target url = %q, want the launched run's console — ownership is the target URL", st.TargetURL)
 	}
 }
