@@ -141,10 +141,23 @@ holds**.
 
 So for this release the refresh cookie is **written under both names** (same
 value; reads still prefer the prefixed one, so a tossed bare cookie cannot
-win), and read under both. In the next release, drop both halves together:
-the legacy write in `setAuthCookies` and the legacy read in `sessionCookie`.
-`ITERION_LEGACY_REFRESH_COOKIE=0` ends the write early for a deployment with
-no desktop clients.
+win), and read under both. `ITERION_LEGACY_REFRESH_COOKIE=0` ends the write
+early for a deployment with no desktop clients.
+
+**Removing it — both halves, together, not before 2026-10-10.** The date is
+one refresh TTL (30 days, `pkg/auth/service.go`) after the 2026-09-10 prod
+deploy: until then a browser can still be holding a legacy refresh cookie
+minted by the old build. Delete the legacy write in `setAuthCookies`, the
+legacy read in `sessionCookie`, and
+`TestLegacyRefreshCookieHalvesLiveAndDieTogether` with them.
+
+That test is there because each half-removal fails differently and neither is
+loud. Drop the **write** alone and an older desktop harvests nothing, replays
+its previous token, and has every one of its sessions revoked. Drop the
+**read** alone and the bare cookie is still set on every browser but no longer
+accepted — pure fixation surface for no benefit. The test asserts the two
+answers agree, behaviourally rather than by grepping the source, so it holds
+however the removal is spelled.
 
 The access cookie takes no such migration in either direction — it has no
 out-of-process consumer, and accepting a legacy one reopens the fixation
