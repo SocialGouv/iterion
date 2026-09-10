@@ -86,7 +86,7 @@ func snapshotArtifactState(artifacts map[string]map[string]any, owners map[strin
 				snapshotOwners[name] = owner
 			}
 		}
-		if output, present := outputs[owner]; owner != "" && present && artifactValuesEqual(artifacts[name], output) {
+		if output, present := outputs[owner]; owner != "" && present && ArtifactValuesEqual(artifacts[name], output) {
 			if revision, exact := snapshotRevisions[name]; exact {
 				revision.ValueFromRevision = false
 				snapshotRevisions[name] = revision
@@ -107,11 +107,11 @@ func snapshotArtifactState(artifacts map[string]map[string]any, owners map[strin
 	return values, snapshotOwners, snapshotRevisions
 }
 
-// artifactValuesEqual compares JSON-shaped values across the filesystem and
+// ArtifactValuesEqual compares JSON-shaped values across the filesystem and
 // Mongo decode contracts. BSON turns integral interface values into int64,
 // while artifact JSON turns them into float64; reflect.DeepEqual would treat
 // those equivalent numbers as different and defeat checkpoint compaction.
-func artifactValuesEqual(left, right any) bool {
+func ArtifactValuesEqual(left, right any) bool {
 	switch l := left.(type) {
 	case map[string]any:
 		r, ok := right.(map[string]any)
@@ -120,7 +120,7 @@ func artifactValuesEqual(left, right any) bool {
 		}
 		for key, value := range l {
 			other, present := r[key]
-			if !present || !artifactValuesEqual(value, other) {
+			if !present || !ArtifactValuesEqual(value, other) {
 				return false
 			}
 		}
@@ -131,7 +131,7 @@ func artifactValuesEqual(left, right any) bool {
 			return false
 		}
 		for i := range l {
-			if !artifactValuesEqual(l[i], r[i]) {
+			if !ArtifactValuesEqual(l[i], r[i]) {
 				return false
 			}
 		}
@@ -260,7 +260,7 @@ func inferArtifactOwners(artifacts, outputs map[string]map[string]any, owners ma
 		match := ""
 		matches := 0
 		for _, nodeID := range nodeIDs {
-			if !artifactValuesEqual(artifact, outputs[nodeID]) {
+			if !ArtifactValuesEqual(artifact, outputs[nodeID]) {
 				continue
 			}
 			matches++

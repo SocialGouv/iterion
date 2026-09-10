@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -728,7 +727,7 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 			owner := ""
 			matches := 0
 			for id, output := range cp.Outputs {
-				if !reflect.DeepEqual(artifact, output) {
+				if !runtime.ArtifactValuesEqual(artifact, output) {
 					continue
 				}
 				matches++
@@ -760,7 +759,7 @@ func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, 
 		}
 		for _, id := range invalidated {
 			output, present := cp.Outputs[id]
-			if !present || !reflect.DeepEqual(artifact, output) {
+			if !present || !runtime.ArtifactValuesEqual(artifact, output) {
 				continue
 			}
 			delete(cp.Artifacts, logicalRef)

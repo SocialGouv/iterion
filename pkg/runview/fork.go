@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"time"
 
@@ -320,7 +319,7 @@ func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {
 		owner := cp.ArtifactOwners[logicalRef]
 		revision, exact := cp.ArtifactRevisions[logicalRef]
 		ownedByAnchor := owner == nodeID || (exact && revision.NodeID == nodeID)
-		ownerlessAnchorValue := owner == "" && !exact && hasAnchorOutput && reflect.DeepEqual(value, anchorOutput)
+		ownerlessAnchorValue := owner == "" && !exact && hasAnchorOutput && runtime.ArtifactValuesEqual(value, anchorOutput)
 		if !ownedByAnchor && !ownerlessAnchorValue {
 			continue
 		}

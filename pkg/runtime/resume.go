@@ -418,7 +418,7 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 				// behind. The producer output identifies which retained binding
 				// is current even when more than one historical name remains.
 				for _, name := range names {
-					if artifactValuesEqual(checkpointArtifacts[name], outputs[nodeID]) {
+					if ArtifactValuesEqual(checkpointArtifacts[name], outputs[nodeID]) {
 						source = name
 						break
 					}

@@ -1453,10 +1453,10 @@ func TestApplyRewindDropsAmbiguousOwnerlessRenamedArtifact(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID: "later",
 		Outputs: map[string]map[string]any{
-			"seed":   {"value": "stale"},
-			"worker": {"value": "stale"},
+			"seed":   {"value": int64(7)},
+			"worker": {"value": int64(7)},
 		},
-		Artifacts:              map[string]map[string]any{"old": {"value": "stale"}},
+		Artifacts:              map[string]map[string]any{"old": {"value": float64(7)}},
 		ArtifactsKnown:         true,
 		ArtifactRevisionsKnown: true,
 	}
@@ -1465,5 +1465,31 @@ func TestApplyRewindDropsAmbiguousOwnerlessRenamedArtifact(t *testing.T) {
 
 	if _, retained := cp.Artifacts["old"]; retained {
 		t.Fatal("ambiguous ownerless artifact from invalidated output was retained")
+	}
+}
+
+func TestApplyRewindRecoversOwnerAcrossEquivalentJSONNumberTypes(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"seed":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "seed"}},
+		"worker": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "worker"}},
+	}}
+	cp := &store.Checkpoint{
+		NodeID: "later",
+		Outputs: map[string]map[string]any{
+			"seed":   {"value": int64(7)},
+			"worker": {"value": int64(9)},
+		},
+		Artifacts:              map[string]map[string]any{"old": {"value": float64(7)}},
+		ArtifactsKnown:         true,
+		ArtifactRevisionsKnown: true,
+	}
+
+	applyRewind(cp, wf, "worker", []string{"worker"}, []string{"worker"})
+
+	if _, retained := cp.Artifacts["old"]; !retained {
+		t.Fatal("rewind discarded an ownerless artifact produced by a retained node")
+	}
+	if owner := cp.ArtifactOwners["old"]; owner != "seed" {
+		t.Fatalf("recovered artifact owner = %q, want seed", owner)
 	}
 }

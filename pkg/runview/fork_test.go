@@ -319,13 +319,13 @@ func TestForkRebuildsArtifactFromRetainedSharedPublisher(t *testing.T) {
 func TestInvalidateForkAnchorArtifactsDropsAmbiguousLegacyBinding(t *testing.T) {
 	cp := &store.Checkpoint{
 		Outputs: map[string]map[string]any{
-			"anchor": {"value": "same"},
-			"peer":   {"value": "same"},
+			"anchor": {"value": int64(7)},
+			"peer":   {"value": int64(7)},
 		},
 		Artifacts: map[string]map[string]any{
-			"ownerless":  {"value": "same"},
+			"ownerless":  {"value": float64(7)},
 			"retained":   {"value": "different"},
-			"exact-peer": {"value": "same"},
+			"exact-peer": {"value": float64(7)},
 		},
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
 			"exact-peer":      {NodeID: "peer", Version: 0},
@@ -344,7 +344,7 @@ func TestInvalidateForkAnchorArtifactsDropsAmbiguousLegacyBinding(t *testing.T) 
 	if got := cp.Artifacts["retained"]["value"]; got != "different" {
 		t.Fatalf("fork removed unrelated ownerless artifact: %+v", cp.Artifacts)
 	}
-	if got := cp.Artifacts["exact-peer"]["value"]; got != "same" {
+	if got := cp.Artifacts["exact-peer"]["value"]; got != float64(7) {
 		t.Fatalf("fork removed an exact peer artifact with the same value: %+v", cp.Artifacts)
 	}
 	if _, present := cp.ArtifactRevisions["anchor-revision"]; present {
