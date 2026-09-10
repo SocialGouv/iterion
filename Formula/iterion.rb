@@ -11,18 +11,18 @@ class Iterion < Formula
     end
     on_intel do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-darwin-amd64"
-      sha256 "f070add59994c07edf538903dfb6982ebd877941eb0685bf7b5cc440921be7af"
+      sha256 "2c7c65cb891a94f2793c2022d409120d238ad4364ec9dd827d010311add23f3e"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-linux-arm64"
-      sha256 "a626a3bc7ad8769078d2447c5d8bf7c3eef1411d68c574a993f9460d315bfce4"
+      sha256 "d74886662c61ff49bb1406d5931b896db24c9fe739a4ac74ab4d09b6b9696fa2"
     end
     on_intel do
       url "https://github.com/SocialGouv/iterion/releases/download/v#{version}/iterion-linux-amd64"
-      sha256 "d29fb2580ca479cf2237608877670cef3c8ddd8a35b44667f367d8c5c7439fd4"
+      sha256 "a543da1dd0a08d0816530bc9a6b663e9e224136457593b37c0e5625edfe6b2fd"
     end
   end
 
