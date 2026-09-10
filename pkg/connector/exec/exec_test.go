@@ -508,6 +508,91 @@ func TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT(t *testing.T) {
 
 // TestPendingIsNotSuccess pins the 202 distinction: a workflow that reads
 // "accepted" as "done" acts on work that has not happened.
+// TestACredentialNeverAppearsInAnError.
+//
+// A transport failure's text is Go's *url.Error, which prints the FULL request
+// URL. An auth scheme placed `in: query` puts the credential there, so the
+// token appeared verbatim in an error that travels to the run's events, the
+// tool hooks and error tracking — none of which can redact what they cannot
+// recognise. Here is the only place the secret bytes are still known.
+func TestACredentialNeverAppearsInAnError(t *testing.T) {
+	const token = "s3cret-token-value"
+
+	// A server that hangs up, so the failure is a transport error carrying
+	// the URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("cannot hijack")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	pkg := probe(srv.URL)
+	// The leaking shape: the credential travels in the QUERY STRING.
+	pkg.Connector.Auth = []spec.AuthScheme{{
+		ID: "token", Kind: spec.AuthAPIKey, In: "query", Name: "access_token",
+	}}
+	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), exec.Credential{SchemeID: "token", Value: token})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a lost connection must produce an error")
+	}
+	text := res.Err.Error()
+	if strings.Contains(text, token) {
+		t.Errorf("the credential appears verbatim in an error that reaches the run's events: %s", text)
+	}
+	// The message must still be USEFUL: redaction that erased the diagnosis
+	// would trade one silent failure for another.
+	if !strings.Contains(text, "redacted") {
+		t.Errorf("the redaction must be visible, so a reader knows something was removed: %s", text)
+	}
+}
+
+// TestASecretParameterIsNotEchoedByARefusal covers the other direction: the
+// value being refused is itself the secret. `Secret: true` is the package
+// saying "this must never be logged", and a local refusal is still a log.
+func TestASecretParameterIsNotEchoedByARefusal(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.list")
+	for i := range op.Params {
+		if op.Params[i].Key == "state" {
+			op.Params[i].Secret = true
+		}
+	}
+	res, err := e.Call(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets", "state": "hunter2"}, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a value outside the declared enum must be refused")
+	}
+	if strings.Contains(res.Err.Error(), "hunter2") {
+		t.Errorf("a secret parameter's value must not be echoed by its own refusal: %s", res.Err.Error())
+	}
+	// The refusal still has to say WHICH parameter and what was allowed.
+	if !strings.Contains(res.Err.Error(), "state") {
+		t.Errorf("the refusal must still name the parameter: %s", res.Err.Error())
+	}
+}
+
 // TestARedirectIsNotAnAnswer.
 //
 // iterion's client deliberately does not follow redirects: the guarded dialer

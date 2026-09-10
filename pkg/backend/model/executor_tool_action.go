@@ -245,6 +245,14 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		// reaches a shell, and shell-escaping would wrap every value in
 		// quotes that would then travel to the vendor verbatim.
 		rendered := resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
+		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
+		// the whole point, since a secret must not sit in a command line or
+		// in a log. Every other recipe materialises it before use; this one
+		// did not, so the literal text `__ITERION_SECRET_NAME__` travelled to
+		// the vendor as the argument. The raw form is right here: nothing on
+		// this path reaches a shell, so the shell-escaping variants would
+		// corrupt the value.
+		rendered = e.secretGuard.Materialize(rendered)
 		decl, known := declared[p.Key]
 		if !known {
 			// exec refuses this too, and its message lists what the operation

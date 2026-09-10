@@ -28,9 +28,11 @@ package exec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -237,7 +239,7 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 
 	resp, err := e.Client.Do(req)
 	if err != nil {
-		return Result{Err: e.transportError(op, params, err)}, nil
+		return Result{Err: e.transportError(op, params, redactSecrets(err, op, params, cred))}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -248,7 +250,7 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 	if readErr != nil {
 		// The status arrived, the body did not. For a mutation that is the
 		// ambiguous case: the vendor may well have performed it.
-		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, readErr)}, nil
+		return Result{Status: resp.StatusCode, Err: e.transportError(op, params, redactSecrets(readErr, op, params, cred))}, nil
 	}
 	return e.readResponse(pkg, op, resp, body), nil
 }
@@ -418,6 +420,63 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 // defaultMaxPages bounds a walk whose package declared no ceiling. A
 // collection is unbounded from iterion's side; a run's budget is not.
 const defaultMaxPages = 20
+
+// redactedMarker replaces a secret in any text a human or a log will see.
+const redactedMarker = "…redacted…"
+
+// redactSecrets strips credential material out of a transport error before it
+// becomes a node error.
+//
+// A transport failure's text is Go's `*url.Error`, which prints the FULL
+// request URL — and an auth scheme placed `in: query` puts the credential
+// there, so the token appeared verbatim in an error that travels to the run's
+// events, the tool hooks and error tracking. A secret-marked parameter can
+// reach the same text. Neither belongs in any of those places, and no reader
+// downstream can redact what it cannot recognise: only here is it still known
+// which bytes are the secret.
+func redactSecrets(err error, op spec.Operation, params map[string]any, cred Credential) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	out := msg
+	// The credential itself, and its URL-escaped form: it reaches the query
+	// string encoded, so matching only the raw bytes would miss exactly the
+	// case that leaks.
+	for _, secret := range secretValues(op, params, cred) {
+		if secret == "" {
+			continue
+		}
+		out = strings.ReplaceAll(out, secret, redactedMarker)
+		if esc := url.QueryEscape(secret); esc != secret {
+			out = strings.ReplaceAll(out, esc, redactedMarker)
+		}
+	}
+	if out == msg {
+		return err
+	}
+	// The typed error is deliberately NOT preserved: its own Error() would
+	// re-render the URL and undo the redaction the moment anything unwrapped
+	// it. What a caller needs from a transport failure is the text.
+	return errors.New(out)
+}
+
+// secretValues lists every string in this call that must never appear in a
+// message: the credential, and each parameter the package marked secret.
+func secretValues(op spec.Operation, params map[string]any, cred Credential) []string {
+	out := []string{cred.Value}
+	for _, p := range op.Params {
+		if !p.Secret {
+			continue
+		}
+		if v, ok := params[p.Key]; ok {
+			if s := scalarString(v); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
 
 // asPositiveInt reads a page size a caller supplied. Values arrive from a
 // `.bot` through template rendering and JSON decoding, so the same number can

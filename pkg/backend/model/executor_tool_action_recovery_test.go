@@ -7,6 +7,7 @@ package model_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -276,6 +278,55 @@ func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) 
 	}
 	if !touched {
 		t.Error("the well-formed case never reached the vendor — the guard is refusing everything")
+	}
+}
+
+// TestASecretReferenceReachesTheVendorAsItsVALUE.
+//
+// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value — that is the
+// design, so a secret never sits in a command line or a log. Every other
+// recipe materialises it before use; the action path did not, so the literal
+// text `__ITERION_SECRET_NAME__` travelled to the vendor as the argument. The
+// symptom is a 401 that reads like a bad credential, on a run whose secret is
+// perfectly valid.
+//
+// The oracle is the SERVER: what the vendor received is the only thing that
+// settles it.
+func TestASecretReferenceReachesTheVendorAsItsVALUE(t *testing.T) {
+	const secretValue = "gh-pat-not-a-real-token"
+	var receivedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id": 1}`))
+	}))
+	defer srv.Close()
+
+	pkg, op := mutatingPackage(srv.URL)
+	guard := secretguard.New([]secretguard.Secret{{Name: "MY_SECRET", Value: secretValue}},
+		secretguard.DefaultConfig())
+
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment", Connection: "main",
+		Params: []ir.ActionParam{{
+			Key:   "body",
+			Value: "{{secrets.MY_SECRET}}",
+			Refs:  []*ir.Ref{{Kind: ir.RefSecrets, Path: []string{"MY_SECRET"}, Raw: "{{secrets.MY_SECRET}}"}},
+		}},
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithSecretGuard(guard),
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if strings.Contains(receivedBody, "__ITERION_SECRET") {
+		t.Errorf("the vendor received the PLACEHOLDER instead of the secret: %s", receivedBody)
+	}
+	if !strings.Contains(receivedBody, secretValue) {
+		t.Errorf("the vendor did not receive the secret's value: %s", receivedBody)
 	}
 }
 

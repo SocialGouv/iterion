@@ -177,9 +177,17 @@ func checkEnum(op spec.Operation, p spec.Param, v any) error {
 			return nil
 		}
 	}
+	// A secret's VALUE never appears, even when it is the thing being
+	// refused. This message reaches the node's event hooks and the run's
+	// events.jsonl, which are read by people and shipped to error tracking;
+	// `Secret: true` is the package saying "not there".
+	shown := strconv.Quote(got)
+	if p.Secret {
+		shown = "(the value is secret)"
+	}
 	return &Error{
 		Class:   spec.ErrBadRequest,
-		Message: fmt.Sprintf("operation %s: %s = %q is not one of %s", op.ID, p.Key, got, strings.Join(p.Enum, ", ")),
+		Message: fmt.Sprintf("operation %s: %s = %s is not one of %s", op.ID, p.Key, shown, strings.Join(p.Enum, ", ")),
 	}
 }
 
