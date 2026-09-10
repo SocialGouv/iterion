@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -118,19 +119,38 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	port := reserveLoopbackPort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	// Absorb SIGTERM for this test's lifetime. Registered FIRST so its cleanup
+	// runs LAST (t.Cleanup is LIFO), i.e. after the daemon is already down.
+	//
+	// This is what removes the CLASS rather than the instance. The stop below
+	// signals the process, and each previous round of this test tried to prove
+	// by reasoning that the signal could never land after RunDispatch had
+	// unregistered its own handler — first by checking a channel waitHealthy
+	// drains, then by checking one closed a moment too late. With an absorber
+	// registered, a SIGTERM nothing else is listening for is swallowed instead
+	// of killing the test binary, so the check below no longer has to be
+	// perfect in order to be safe.
+	absorb := make(chan os.Signal, 1)
+	signal.Notify(absorb, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(absorb) })
+
 	done := make(chan error, 1)
-	// A CLOSED channel, not a value on `done`: waitHealthy receives from
-	// `done` on its own failure path, and `done` is written exactly once, so
-	// a "has it exited?" check against it reads empty forever afterwards.
-	// `exited` stays readable once closed, whoever drained what.
+	// Closed, not a value on `done`: waitHealthy receives from `done` on its
+	// own failure path, and `done` is written exactly once, so a check against
+	// it reads empty forever afterwards.
 	exited := make(chan struct{})
 	go func() {
-		done <- cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
+		err := cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
 			ConfigPath: cfgPath,
 			StoreDir:   filepath.Join(dir, "store"),
 			Port:       port,
 		})
+		// Close BEFORE publishing. waitHealthy fails the test the instant it
+		// reads `done`, which runs the cleanup below — so anything able to
+		// observe `done` must already be able to observe `exited`. Publishing
+		// first left a window in which the cleanup read "still running".
 		close(exited)
+		done <- err
 	}()
 	// Registered BEFORE the first assertion, not after the last one. Every
 	// t.Fatalf between here and the end — waitHealthy timing out, the post
