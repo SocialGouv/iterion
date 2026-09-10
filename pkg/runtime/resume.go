@@ -103,6 +103,12 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
 	}
+	if checkpointArtifacts == nil {
+		// Report and legacy policies skip the enforce-only availability pass.
+		// Give contract validation and reconstruction one shared cache so report
+		// mode does not issue two S3 GETs for every immutable artifact body.
+		checkpointArtifacts = make(map[artifactRevisionKey]*store.Artifact)
+	}
 	if !preflightMatches && !e.artifactContractsChecked {
 		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts, false); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.

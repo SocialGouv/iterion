@@ -1268,6 +1268,50 @@ func TestResumeUsesPreclaimArtifactSnapshotWithoutSecondRead(t *testing.T) {
 	}
 }
 
+func TestReportResumeSharesArtifactContractAndReconstructionReads(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-report-one-read"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyReport,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := base.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "exact"},
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "writer", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "checkpoint"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0, ContractLogicalRef: "plan"},
+		},
+	}
+	if err := base.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 1}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(artifactResumeWorkflow("plan"), flaky, exec, WithWorkDir(t.TempDir()), WithSandboxOverride("none")).Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("report resume re-read artifacts during reconstruction: %v", err)
+	}
+	if flaky.loads != 1 {
+		t.Fatalf("artifact loads = %d, want one shared contract/reconstruction read", flaky.loads)
+	}
+}
+
 func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 	ctx := context.Background()
 	base := tmpStore(t)
