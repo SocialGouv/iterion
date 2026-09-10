@@ -359,6 +359,17 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 		// never invent a ceiling.
 		return nil
 	}
+	// Resolved BEFORE the reservation is applied, and not where the count is
+	// taken, because a store that cannot count leaves this cap UNENFORCED —
+	// every launch below returns nil. Subtracting a reserve from a ceiling
+	// nothing enforces would refuse work on a cap that does not exist, which
+	// is the invented ceiling the arm above refuses by name. So: no counter,
+	// no cap, and therefore nothing for a reservation to hold a slot inside
+	// of.
+	counter, ok := s.cfg.Store.(activeRunCounter)
+	if !ok {
+		return nil
+	}
 	// Slots held for OTHER workloads are not available to this one. The
 	// reserved bot itself faces the plain team cap, so a reservation never
 	// costs its holder a slot.
@@ -388,10 +399,6 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 			}
 		}
 		maxActive -= held
-	}
-	counter, ok := s.cfg.Store.(activeRunCounter)
-	if !ok {
-		return nil
 	}
 	active, err := counter.CountActiveRunsByTenant(ctx, t.ID)
 	if err != nil {
