@@ -72,6 +72,15 @@ func e012Hint(t *testing.T, doc string) string {
 // property of ANOTHER host draws no "enclosing <other>" remedy, and a
 // property of THIS host draws exactly that one.
 func TestTheEnclosingKindRemedyNamesTheHostTheBlockIsIn(t *testing.T) {
+	// A (block, host) pair with no qualifying name skips its assertion, so
+	// the count is pinned: a registry change that removes the last candidate
+	// of several pairs would otherwise turn the guard into a quiet no-op.
+	asserted := 0
+	defer func() {
+		if asserted < 12 {
+			t.Errorf("only %d host assertions ran — the probes have gone quiet, check hostProbes and borrowed()", asserted)
+		}
+	}()
 	for kind, byHost := range hostProbes {
 		block, ok := spec.Lookup(kind)
 		if !ok {
@@ -92,6 +101,7 @@ func TestTheEnclosingKindRemedyNamesTheHostTheBlockIsIn(t *testing.T) {
 					continue
 				}
 				hint := e012Hint(t, fmt.Sprintf(tmpl, name))
+				asserted++
 				if strings.Contains(hint, "enclosing `"+other+"`") {
 					t.Errorf("%s under %s: %q sent the author to `%s`, a host the block is not in", kind, host, name, other)
 				}
@@ -108,6 +118,7 @@ func TestTheEnclosingKindRemedyNamesTheHostTheBlockIsIn(t *testing.T) {
 			if own == "" {
 				continue
 			}
+			asserted++
 			if hint := e012Hint(t, fmt.Sprintf(tmpl, own)); !strings.Contains(hint, "enclosing `"+host+"`") {
 				t.Errorf("%s under %s: %q should name the enclosing `%s`, got %q", kind, host, own, host, hint)
 			}

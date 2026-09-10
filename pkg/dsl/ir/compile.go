@@ -621,7 +621,7 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
-		Worktree:            c.worktreeMode(wf.Name, wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
@@ -799,16 +799,17 @@ func defaultWorktreeMode(raw string) string {
 }
 
 // worktreeMode canonicalises a workflow's `worktree:` and refuses a value
-// that is neither auto nor none (C142), naming what was WRITTEN. The
-// runtime compares the canonical value to `auto` and nothing else, so a
+// that is neither auto nor none (C142), naming what was WRITTEN and where
+// (the workflow's span — the declaration keeps no per-property position).
+// The runtime compares the canonical value to `auto` and nothing else, so a
 // mistyped auto ran the workflow in place, in the operator's own checkout,
 // with every commit landing there, without a word.
-func (c *compiler) worktreeMode(workflow, raw string) string {
+func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
 	mode := defaultWorktreeMode(raw)
 	switch mode {
 	case "auto", "none":
 	default:
-		c.errorf(DiagInvalidWorktree,
+		c.errorfAtSpan(DiagInvalidWorktree, at,
 			"workflow %q has invalid worktree %q; valid values are auto, none",
 			workflow, raw)
 	}

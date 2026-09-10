@@ -77,12 +77,22 @@ var warningOnly = map[string]bool{"fallback.on": true}
 // compileDiags compiles a probe and returns its errors, and separately the
 // diagnostics that REFUSE the probed value: errors naming it, or warnings
 // naming it for the checks listed in warningOnly. A listed value must draw
-// no error; a bogus one must be refused.
-func compileDiags(t *testing.T, doc, value string, warnCounts bool) (errs, refusing []string) {
+// no error; a bogus one must be refused — by the compiler, or already by
+// the parser (a property that turns out to be the parser's is refused
+// earlier, which is a refusal, not a broken probe).
+func compileDiags(t *testing.T, doc, value string, warnCounts, bogus bool) (errs, refusing []string) {
 	t.Helper()
 	pr := parser.Parse("probe.bot", doc)
 	if len(pr.Diagnostics) != 0 {
-		t.Fatalf("probe does not parse: %q: %v", doc, pr.Diagnostics)
+		if !bogus {
+			t.Fatalf("probe does not parse: %q: %v", doc, pr.Diagnostics)
+		}
+		for _, d := range pr.Diagnostics {
+			if strings.Contains(d.Message, value) {
+				refusing = append(refusing, string(d.Code)+": "+d.Message)
+			}
+		}
+		return nil, refusing
 	}
 	for _, d := range ir.Compile(pr.File).Diagnostics {
 		line := string(d.Code) + ": " + d.Message
@@ -114,14 +124,14 @@ func TestEveryCompileCheckedValueCompiles(t *testing.T) {
 				continue
 			}
 			for _, v := range p.Values {
-				if errs, _ := compileDiags(t, fmt.Sprintf(tmpl, v), v, false); len(errs) != 0 {
+				if errs, _ := compileDiags(t, fmt.Sprintf(tmpl, v), v, false, false); len(errs) != 0 {
 					t.Errorf("%s.%s = %s is listed but the compiler refuses it: %v", kind, name, v, errs)
 				}
 			}
 			if notValidated[kind+"."+name] {
 				continue
 			}
-			if _, refusing := compileDiags(t, fmt.Sprintf(tmpl, "zz_bogus"), "zz_bogus", warningOnly[kind+"."+name]); len(refusing) == 0 {
+			if _, refusing := compileDiags(t, fmt.Sprintf(tmpl, "zz_bogus"), "zz_bogus", warningOnly[kind+"."+name], true); len(refusing) == 0 {
 				t.Errorf("%s.%s: a value outside the list is not refused — the list is not checked, the check is only a warning, or the probe misses it", kind, name)
 			}
 		}

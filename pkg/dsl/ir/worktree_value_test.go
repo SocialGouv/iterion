@@ -43,4 +43,12 @@ func TestWorktreeValueIsCheckedAtCompile(t *testing.T) {
 	if len(errs) != 1 || !strings.HasPrefix(errs[0], "C142: ") || !strings.Contains(errs[0], `invalid worktree "ATUO"`) {
 		t.Fatalf("want one C142 naming the value as written, got %v", errs)
 	}
+	// The diagnostic is positioned (the workflow's span): `iterion validate`
+	// prints a file:line for it, not a bare code.
+	pr := parser.Parse("wt.bot", "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  worktree: ATUO\n  a -> done\n")
+	for _, d := range Compile(pr.File).Diagnostics {
+		if d.Code == DiagInvalidWorktree && (d.File != "wt.bot" || d.Line == 0) {
+			t.Fatalf("C142 carries no source position: %s:%d:%d", d.File, d.Line, d.Column)
+		}
+	}
 }
