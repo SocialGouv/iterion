@@ -448,6 +448,50 @@ func (s *Service) resolveOrgForTeam(ctx context.Context, u identity.User, teamID
 	return t.OrgID, ""
 }
 
+// orgAdminOf reports whether the user administers an org without needing a
+// team grant inside it.
+func (s *Service) orgAdminOf(ctx context.Context, u identity.User, orgID string) bool {
+	if orgID == "" {
+		return false
+	}
+	om, err := s.store.GetOrgMembership(ctx, u.ID, orgID)
+	return err == nil && om.Role.AtLeast(identity.OrgRoleAdmin)
+}
+
+// effectiveMembership resolves the team grant a principal acts under. A real
+// membership row wins; without one, a super-admin steps into any team and an
+// org admin/owner into any team of THEIR org.
+//
+// The org-admin arm is not a widening: canManageTeam/orgAdminOfTeam already
+// let an org admin write to every team of their org, and buildOrgTree already
+// offers those teams in the switcher with a synthesized admin role. What was
+// missing was only the ACTIVE CONTEXT on the same team, so the switcher listed
+// teams the switch then refused — a click that did nothing, with no message.
+//
+// Non-existence is never disclosed to a principal that has no claim on the
+// team: an unauthorized caller gets ErrNotAMember whether or not the team
+// exists, and only a super-admin can tell the two apart.
+func (s *Service) effectiveMembership(ctx context.Context, u identity.User, teamID string) (identity.Membership, error) {
+	mb, err := s.store.GetMembership(ctx, u.ID, teamID)
+	if err == nil {
+		return mb, nil
+	}
+	if !errors.Is(err, identity.ErrNotFound) {
+		return identity.Membership{}, err
+	}
+	team, terr := s.store.GetTeam(ctx, teamID)
+	if terr != nil {
+		if u.IsSuperAdmin {
+			return identity.Membership{}, ErrTeamNotFound
+		}
+		return identity.Membership{}, ErrNotAMember
+	}
+	if !u.IsSuperAdmin && !s.orgAdminOf(ctx, u, team.OrgID) {
+		return identity.Membership{}, ErrNotAMember
+	}
+	return identity.Membership{UserID: u.ID, TeamID: team.ID, Role: identity.RoleAdmin}, nil
+}
+
 // pickActiveTeam picks the JWT-stamped team based on (1) the user's
 // stored DefaultTeamID, (2) the first team they're a member of, or
 // (3) empty (super-admin without memberships — UI lands them on
@@ -543,30 +587,18 @@ func (s *Service) Logout(ctx context.Context, presented string) error {
 	return s.sessions.RevokeSession(ctx, sess.ID, s.now().UTC())
 }
 
-// SwitchTeam re-issues the access JWT bound to teamID. Validates that
-// the current user is a member of the team — and, transitively, of its
-// parent org (you cannot hold a team grant without an org membership,
-// so the team check is sufficient; super-admins step into either).
+// SwitchTeam re-issues the access JWT bound to teamID. Validates that the
+// current user may act as the team — a membership row, or the step-in of a
+// super-admin / an admin of the team's parent org (see effectiveMembership).
+// A team grant implies an org membership, so the team check is sufficient.
 func (s *Service) SwitchTeam(ctx context.Context, userID, teamID string) (Identity, string, time.Time, error) {
 	u, err := s.store.GetUser(ctx, userID)
 	if err != nil {
 		return Identity{}, "", time.Time{}, err
 	}
-	mb, err := s.store.GetMembership(ctx, userID, teamID)
+	mb, err := s.effectiveMembership(ctx, u, teamID)
 	if err != nil {
-		if errors.Is(err, identity.ErrNotFound) {
-			if !u.IsSuperAdmin {
-				return Identity{}, "", time.Time{}, ErrNotAMember
-			}
-			// Super-admins can step into any team without a membership row.
-			team, terr := s.store.GetTeam(ctx, teamID)
-			if terr != nil {
-				return Identity{}, "", time.Time{}, ErrTeamNotFound
-			}
-			mb = identity.Membership{UserID: userID, TeamID: team.ID, Role: identity.RoleAdmin}
-		} else {
-			return Identity{}, "", time.Time{}, err
-		}
+		return Identity{}, "", time.Time{}, err
 	}
 	orgID, orgRole := s.resolveOrgForTeam(ctx, u, mb.TeamID)
 	id := Identity{
@@ -623,8 +655,8 @@ func (s *Service) SwitchOrg(ctx context.Context, userID, orgID string) (Identity
 			return Identity{}, "", time.Time{}, err
 		}
 	}
-	// Pick a team in the org the user is granted (or any team for a
-	// super-admin), preferring their stored default.
+	// Pick a team in the org the user is granted (or any team, for a
+	// principal that administers them all), preferring their stored default.
 	teamID, teamRole := s.pickActiveTeamInOrg(ctx, u, orgID)
 	id := Identity{
 		UserID:       u.ID,
@@ -652,8 +684,9 @@ func (s *Service) SwitchOrg(ctx context.Context, userID, orgID string) (Identity
 // pickActiveTeamInOrg selects a team for the user within one org: their
 // stored DefaultTeamID if it belongs to the org and they're a member,
 // else the first team they're granted in the org. Returns ("","") when
-// the user holds no team in the org (super-admins fall back to the org's
-// first team so they always land somewhere).
+// the user holds no team in the org — except for a principal that
+// administers them all (super-admin, or an admin/owner of THIS org),
+// which falls back to the org's first team so it always lands somewhere.
 func (s *Service) pickActiveTeamInOrg(ctx context.Context, u identity.User, orgID string) (string, identity.Role) {
 	memberships, err := s.store.ListMembershipsByUser(ctx, u.ID)
 	if err != nil {
@@ -684,7 +717,10 @@ func (s *Service) pickActiveTeamInOrg(ctx context.Context, u identity.User, orgI
 	if first != nil {
 		return first.TeamID, first.Role
 	}
-	if u.IsSuperAdmin && len(teams) > 0 {
+	// Same rule as effectiveMembership, applied when no team was named: a
+	// principal that administers every team of the org must land on one of
+	// them rather than on an empty workspace it cannot leave.
+	if len(teams) > 0 && (u.IsSuperAdmin || s.orgAdminOf(ctx, u, orgID)) {
 		return teams[0].ID, identity.RoleAdmin
 	}
 	return "", ""
