@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -108,6 +109,51 @@ func TestCredentialTiers_platformThenPoolAfterTheKeyIsWithdrawn(t *testing.T) {
 	}
 	if len(r.CredFingerprints) != len(resumed.fingerprints) {
 		t.Fatalf("applyTo left the fingerprints behind: %v vs %v", r.CredFingerprints, resumed.fingerprints)
+	}
+}
+
+// A credential with no fingerprint still PAID (Revi, #1105). The
+// fingerprint harvest skips it by construction — setOAuthFingerprint
+// refuses an empty stamp, so an unstamped forfait never enters the map the
+// harvest walks — and a tier collected from that map would have gone silent
+// on exactly the odd credential an operator is most likely to be chasing,
+// while the GRANTED log line still named its tier as `<unstamped>`.
+func TestCredentialTiers_anUnstampedCredentialStillNamesItsTier(t *testing.T) {
+	ctx := context.Background()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	// The platform's own forfait, sealed WITHOUT a fingerprint — the shape a
+	// record created before fingerprinting shipped still has.
+	oauth := secrets.NewMemoryOAuthStore()
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-platform-unstamped"}}`)
+	sealed, err := secrets.SealOAuthPayload(sealer, secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := oauth.Upsert(ctx, secrets.OAuthRecord{
+		UserID: secrets.PlatformOwnerKey, Kind: secrets.OAuthKindClaudeCode,
+		SealedPayload: sealed, Fingerprint: "", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	p := &Publisher{
+		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+		oauthForfait: oauth, logger: iterlog.New(iterlog.LevelError, nil),
+	}
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-unstamped",
+		poolOrg, poolTeam, "requester", "docs-refresh", nil, nil, nil, model.ModelOverrides{}, nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	// The premise: nothing to count, because there is no audit identity.
+	if len(creds.fingerprints) != 0 {
+		t.Fatalf("fingerprints = %v, want none — the record carries no stamp", creds.fingerprints)
+	}
+	// The answer that must survive it anyway.
+	if got := creds.tiers; len(got) != 1 || got[0] != store.CredentialTierPlatform {
+		t.Fatalf("tiers = %v, want [platform] — a credential with no fingerprint still paid for the run", got)
 	}
 }
 
