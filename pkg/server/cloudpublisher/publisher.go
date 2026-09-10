@@ -934,8 +934,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								if floorHeld {
 									// The RESERVE passed it over, not a closed window:
 									// the restore at the end of the walk must not hand
-									// back a credential another workload is holding.
-									skips.noteFloorHeld(string(rec.Kind))
+									// back a credential another workload is holding. This
+									// forfait — a sibling of the same kind whose window is
+									// genuinely spent must stay restorable.
+									skips.noteFloorHeld(rec.Fingerprint)
 								}
 								// Remembered: if the end of the resolution finds the
 								// wire still empty, this forfait is restored — a
@@ -1110,9 +1112,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if !ok || restoreTierOf(sk.org, sk.platform) != tier {
 								continue
 							}
-							if skips.heldByFloor(string(prov)) {
-								p.logger.Info("cloudpublisher: refused api-key NOT restored for run=%s provider=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
-									runID, prov, botID)
+							if skips.heldByFloor(sk.fingerprint) {
+								p.logger.Info("cloudpublisher: refused api-key NOT restored for run=%s provider=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
+									runID, prov, sk.fingerprint, botID)
 								continue
 							}
 							// The whitelist gates the restore like the fill: an
@@ -1166,9 +1168,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if restoreTierOf(sf.org, sf.platform) != tier || taken[secrets.WireFamily(kind)] {
 								continue
 							}
-							if skips.heldByFloor(kind) {
-								p.logger.Info("cloudpublisher: window-closed forfait NOT restored for run=%s kind=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
-									runID, kind, botID)
+							if skips.heldByFloor(sf.fp) {
+								p.logger.Info("cloudpublisher: window-closed forfait NOT restored for run=%s kind=%s fp=%s bot=%s — the reserve holds it for another workload; the credential is usable, it is spoken for",
+									runID, kind, sf.fp, botID)
 								continue
 							}
 							if !policy.sealableSlot(slotOfKind(kind)) {
@@ -1813,25 +1815,35 @@ type skipTracker struct {
 	// reads it: a dead credential is worth restoring (a parked run with a
 	// durable retry beats one that dies on an empty wire), a reserved one is
 	// not — handing it over is the starvation the reserve exists to prevent.
-	// Keyed by provider (api keys) or forfait kind, the names the restore
-	// looks up.
+	//
+	// Keyed by FINGERPRINT, because the restore decides about ONE credential
+	// and a provider can offer several. Keyed by provider or forfait kind, a
+	// walk that passed over a dead key AND a reserved one of the same
+	// provider marked the whole provider held, and then refused to restore
+	// the DEAD key — turning the park-and-retry that restore exists to buy
+	// into a run that dies on an empty wire. The fingerprint is also what
+	// makes the flag safe to set: only a metered credential can be
+	// floor-held (meteredWindow), and a metered one always has one.
 	floorHeld map[string]bool
 }
 
-// noteFloorHeld records that `name` was passed over by the budget floor.
-func (s *skipTracker) noteFloorHeld(name string) {
-	if s == nil || name == "" {
+// noteFloorHeld records that the credential with this fingerprint was passed
+// over by the budget floor.
+func (s *skipTracker) noteFloorHeld(fingerprint string) {
+	if s == nil || fingerprint == "" {
 		return
 	}
 	if s.floorHeld == nil {
 		s.floorHeld = map[string]bool{}
 	}
-	s.floorHeld[name] = true
+	s.floorHeld[fingerprint] = true
 }
 
-// heldByFloor reports whether the walk passed `name` over for the floor.
-func (s *skipTracker) heldByFloor(name string) bool {
-	return s != nil && s.floorHeld[name]
+// heldByFloor reports whether the walk passed this credential over for the
+// floor. An empty fingerprint is never held: nothing that can be floor-held
+// reaches the walk without one.
+func (s *skipTracker) heldByFloor(fingerprint string) bool {
+	return s != nil && fingerprint != "" && s.floorHeld[fingerprint]
 }
 
 func (s *skipTracker) note(until time.Time) {
@@ -1989,7 +2001,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 				if until, why, floorHeld := p.forfaitWindowClosed(ctx, usagecap.ScopePlatform, rec.UserID, botID, rec, payload); !until.IsZero() {
 					skips.note(until)
 					if floorHeld {
-						skips.noteFloorHeld(string(rec.Kind))
+						skips.noteFloorHeld(rec.Fingerprint)
 					}
 					if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
 						skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, id: rec.ID, connectedAt: rec.CreatedAt, platform: true}
@@ -2726,7 +2738,9 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope, runID, botID string
 		if floorHeld {
 			// Passed over by the RESERVE, not for being unusable: remember it
 			// so the walk's restore step does not hand it back at the end.
-			skips.noteFloorHeld(string(k.Provider))
+			// THIS key — a sibling key of the same provider that is genuinely
+			// dead must stay restorable.
+			skips.noteFloorHeld(k.Fingerprint)
 		}
 		return false
 	}

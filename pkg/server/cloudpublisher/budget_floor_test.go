@@ -271,6 +271,61 @@ func TestBudgetFloor_AHeldBackCredentialIsNotRestoredAtTheEndOfTheWalk(t *testin
 	}
 }
 
+// The mixed provider: one key the PROVIDER refused, one key the RESERVE holds
+// back. The two skips are different answers and the restore owes each its own.
+//
+// The tracker's flag is what tells them apart, and keyed by provider it could
+// not: the reserved key marked the whole provider held, so the DEAD key — the
+// one actually queued for restore, and the one whose restore buys the run a
+// park on a durable usage-window retry — was refused too, and the run went out
+// with an empty wire to die on a no-credential auth error nothing retries. The
+// reserve is entitled to withhold the credential it holds; it is not entitled
+// to withhold a different one that happens to share a provider.
+func TestBudgetFloor_ADeadSiblingKeyIsStillRestored(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	keys := secrets.NewMemoryApiKeyStore()
+	// Seeded first ⇒ the older CreatedAt ⇒ the key an unfiltered resolve
+	// prefers, so this is the one the restore step holds a candidate for.
+	seedKeyFP(t, keys, sealer, "team1", secrets.ProviderAnthropic, "sk-dead", "fp-dead")
+	seedKeyFP(t, keys, sealer, "team1", secrets.ProviderAnthropic, "sk-reserved", "fp-reserved")
+
+	caps := usagecap.NewMemStore()
+	// fp-dead: a fresh provider refusal — unusable by anyone, reserve or not.
+	recordRefusal(t, caps, usagecap.TenantScope("team1"), "fp-dead")
+	// fp-reserved: perfectly usable at 65%, but over the unreserved ceiling
+	// (80 - 20) — held for review-pr, not spent.
+	if err := caps.Record(context.Background(),
+		usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team1"), "fp-reserved"),
+		usagecap.Reading{Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed,
+			Utilization: 0.65, ObservedAt: time.Now(), ResetsAt: time.Now().Add(2 * time.Hour)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	p := &Publisher{
+		apiKeys: keys, usageCaps: caps,
+		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+		logger: iterlog.New(iterlog.LevelError, nil),
+		capPolicy: usagecap.StaticPolicy{
+			FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeHard},
+		},
+		budgetFloor: budgetfloor.Static{Reservations: []budgetfloor.Reservation{
+			{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}},
+		}},
+	}
+	got := resolveFloorBundle(t, p, "run-mixed", "team1", "feature-dev").APIKeys[secrets.ProviderAnthropic]
+	switch got {
+	case "sk-dead":
+		// Right: the dead key comes back, the run parks and retries.
+	case "sk-reserved":
+		t.Fatal("the RESERVED key was handed to an unreserved bot — the reserve leaked through the restore")
+	default:
+		t.Fatalf("anthropic wire = %q, want sk-dead restored: a key the PROVIDER refused is worth restoring, and the reserve holding a SIBLING key is not a reason to withhold it", got)
+	}
+}
+
 // A window carrying a percentage but mode `off` is a guard the operator
 // DISARMED — the shape `ITERION_USAGE_CAP=off` leaves behind over a stored
 // percentage, and the one usagecap promises can never re-arm ("an overridden
