@@ -557,11 +557,10 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 //	  model: "anthropic/claude-sonnet-4-6"
 //	  agent_tools: [bash, read_file]
 func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
-	p.expect(TokenColon)
 	rb := &ast.RecoveryBlock{Span: ast.Span{Start: p.pos(propTok)}}
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		// Empty block — recover gracefully.
+	if p.parseBlockBody() != headerBody {
+		// Empty: the bare header IS the empty block. Failed: reported;
+		// the block is kept so the node still parses.
 		return rb
 	}
 	for {
@@ -618,10 +617,15 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 // plain identifier — making it a reserved keyword would break any bot
 // with a node, prompt or schema of that name.
 func (p *parser) parseFallbacksBlock(propTok Token) []*ast.FallbackDecl {
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		// Empty block — recover gracefully; the IR validator reports it.
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		// A chain with no route is not a chain, and the AST has no way to
+		// carry an empty one (a nil list is "no fallbacks"), so the bare
+		// header is refused by name — not read as nothing, and not the
+		// E002 about indentation it used to draw.
+		p.addError(DiagExpectedToken, propTok, "fallbacks: declares no route — a fallback chain needs at least one named route (drop the block if there is none)")
 		return nil
 	}
 	var out []*ast.FallbackDecl

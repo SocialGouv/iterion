@@ -83,12 +83,13 @@ func (p *parser) parseMCPServerProp(md *ast.MCPServerDecl, propTok Token) {
 //	client_id:  "..."               (string, required for oauth2)
 //	scopes:     ["repo", "read:org"] (string list, optional)
 func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
 	auth := &ast.MCPAuthDecl{Span: ast.Span{Start: p.pos(authTok)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return auth
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()
@@ -146,13 +147,13 @@ func (p *parser) parseMCPTransport() ast.MCPTransport {
 
 func (p *parser) parseMCPConfigBlock() *ast.MCPConfigDecl {
 	start := p.next() // consume "mcp"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	cfg := &ast.MCPConfigDecl{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return cfg
+	}
 	for {
 		p.skipNewlines()
 		t := p.peek()

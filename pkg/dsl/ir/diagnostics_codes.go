@@ -100,6 +100,8 @@ const (
 
 	DiagEmptySchema DiagCode = "C140" // a node's input/output references a schema with no field (warning)
 
+	DiagEmptyGroupUse DiagCode = "C141" // a `use` instantiates a group that declares no node (warning)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an

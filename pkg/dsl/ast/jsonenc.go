@@ -593,6 +593,15 @@ func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
 	if j == nil {
 		return nil
 	}
+	// `sandbox: {}` — a block the canvas created and did not fill in — has
+	// no mode, which no .bot text can express (the block form is inline,
+	// the short form names a mode) and means what its absence means:
+	// inherit. It is read as absent, so the document saves and reads back
+	// the same.
+	if j.Mode == "" && j.Image == "" && j.Build == nil && j.User == "" && j.WorkspaceFolder == "" &&
+		j.HostState == "" && j.PostCreate == "" && len(j.Env) == 0 && len(j.Mounts) == 0 && j.Network == nil {
+		return nil
+	}
 	return &SandboxBlock{
 		Mode:            j.Mode,
 		Image:           j.Image,

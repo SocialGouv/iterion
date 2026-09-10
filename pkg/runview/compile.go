@@ -177,6 +177,11 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 	parserPath := path
 	if parserPath == "" {
 		parserPath = "<inline>"
+	} else if abs, err := filepath.Abs(parserPath); err == nil {
+		// An include resolves beside the file named in full, never against
+		// the process working directory — the compiler refuses a relative
+		// name — and the CLI hands the path over as typed.
+		parserPath = abs
 	}
 	pr := parser.Parse(parserPath, string(src))
 	for _, d := range pr.Diagnostics {

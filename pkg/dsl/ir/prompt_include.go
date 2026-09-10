@@ -133,15 +133,23 @@ func HasPromptInclude(body string) bool {
 
 // promptSourceDir is the directory an include in a prompt resolves against:
 // the directory of the file the prompt was read from, when that names an
-// existing regular file on this host. A synthetic name — "" from the JSON
-// transport, "<inline>" from an inline launch, "studio.bot" from the
-// studio's parse endpoint — is not a file, and filepath.Dir of it is ".":
-// the process working directory, which on a server is nobody's and on a
-// runner is the pod's own. The compiler refuses those; the export
-// (InlinePromptIncludes) is stricter still and wants an absolute path.
+// existing regular file on this host BY AN ABSOLUTE PATH. A synthetic name —
+// "" from the JSON transport, "<inline>" from an inline launch, "studio.bot"
+// from the studio's parse endpoint — is not a file; and a relative name is
+// refused even when a file of that name exists, because what it would
+// resolve against is the process working directory — on a server nobody's,
+// on a runner the pod's own — not the directory the document came from.
+// The compiler never picks that directory itself: a caller with a real file
+// names it in full — the CLI from the directory the operator typed the path
+// in, a server from inside its workspace — and a caller with anything else
+// passes a name that cannot be a file. The export (InlinePromptIncludes)
+// applies the same rule.
 func promptSourceDir(file string) (string, error) {
 	if file == "" {
 		return "", errors.New("the prompt has no source file (an inline or transported prompt must carry its includes resolved)")
+	}
+	if !filepath.IsAbs(file) {
+		return "", fmt.Errorf("the prompt's source %q is not an absolute path (an include resolves only beside a file named in full, never against the working directory)", file)
 	}
 	info, err := os.Stat(file)
 	if err != nil || info.IsDir() {

@@ -194,19 +194,39 @@ func (d toolDiag) hint(name string) string {
 //
 // It reads the two DSL surfaces the compiler has: top-level `mcp_server:`
 // declarations (w.MCPServers) and the `mcp:` activation blocks on the workflow
-// and the node (w.MCP / AgentNode.MCP / JudgeNode.MCP). It cannot see the
+// and the node (w.MCP / AgentNode.MCP / JudgeNode.MCP) — a block that WIRES
+// something: names a server, inherits the ambient set, or autoloads the
+// project's. A bare `mcp:` (the block the studio saves the moment it is
+// created) wires nothing and softens no error. The compiler cannot see the
 // ambient catalog — that is why an unidentifiable name warns even here.
 func mcpWiringVisible(w *Workflow, n Node) bool {
-	if w != nil && (len(w.MCPServers) > 0 || w.MCP != nil) {
+	if w != nil && (len(w.MCPServers) > 0 || mcpBlockWires(w.MCP)) {
 		return true
 	}
 	switch nn := n.(type) {
 	case *AgentNode:
-		return nn.MCP != nil
+		return mcpBlockWires(nn.MCP)
 	case *JudgeNode:
-		return nn.MCP != nil
+		return mcpBlockWires(nn.MCP)
 	}
 	return false
+}
+
+// mcpBlockWires reports whether an `mcp:` block brings any server into
+// reach: a named server, the inherited set, or the project's autoloaded
+// ones. A `disable:` alone removes; it wires nothing, and neither does an
+// empty block.
+func mcpBlockWires(cfg *MCPConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if len(cfg.Servers) > 0 {
+		return true
+	}
+	if cfg.Inherit != nil && *cfg.Inherit {
+		return true
+	}
+	return cfg.AutoloadProject != nil && *cfg.AutoloadProject
 }
 
 // unresolvableToolNames returns the entries of a `tools:` list that name a

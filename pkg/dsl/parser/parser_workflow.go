@@ -177,13 +177,13 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 func (p *parser) parseBudgetBlock() *ast.BudgetBlock {
 	start := p.next() // consume "budget"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	bb := &ast.BudgetBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return bb
+	}
 
 	for {
 		p.skipNewlines()
@@ -231,15 +231,15 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 // name is an arbitrary identifier (the resource), each value its slot count.
 func (p *parser) parseResourcesBlock() *ast.ResourcesBlock {
 	start := p.next() // consume "resources"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	rb := &ast.ResourcesBlock{
 		Capacities: make(map[string]int),
 		Span:       ast.Span{Start: p.pos(start)},
+	}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return rb
 	}
 
 	for {
@@ -285,13 +285,13 @@ func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
 
 func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
 	start := p.next() // consume "compaction"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	cb := &ast.CompactionBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return cb
+	}
 
 	for {
 		p.skipNewlines()
@@ -311,13 +311,13 @@ func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
 // judge node. All fields are optional; IR compile applies defaults.
 func (p *parser) parseMemoryBlock() *ast.MemoryBlock {
 	start := p.next() // consume "memory"
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
 	mb := &ast.MemoryBlock{Span: ast.Span{Start: p.pos(start)}}
+	switch p.parseBlockBody() {
+	case headerFailed:
+		return nil
+	case headerEmpty:
+		return mb
+	}
 
 	for {
 		p.skipNewlines()

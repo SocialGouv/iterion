@@ -231,6 +231,34 @@ func (p *parser) parseDeclHeaderOrEmpty(kind string) (start Token, name string, 
 	return start, name, headerBody
 }
 
+// parseBlockBody consumes the `:` after a block keyword — `budget:`,
+// `memory:`, `vars:` and the like — and the newlines after it, and says
+// what follows: an indented body (the INDENT is consumed), nothing (the
+// EMPTY block: the bare header stands at the end of its parent — a dedent
+// or the end of the file — or a blank line separates it from what
+// follows), or a mistake (the E002 with the indentation hint, reported
+// here). The blank line is the discriminant the empty declarations use; a
+// dedent needs none, since a body cannot be less indented than its header.
+func (p *parser) parseBlockBody() headerState {
+	colon, _ := p.expect(TokenColon)
+	return p.blockBodyAfter(colon)
+}
+
+// blockBodyAfter is parseBlockBody for a caller that consumed the colon
+// itself.
+func (p *parser) blockBodyAfter(colon Token) headerState {
+	blank := p.skipNewlinesFrom(colon.Line)
+	switch t := p.peek(); {
+	case t.Type == TokenIndent:
+		p.next()
+		return headerBody
+	case t.Type == TokenDedent || t.Type == TokenEOF || blank:
+		return headerEmpty
+	}
+	p.expect(TokenIndent) // reports the error, with the indentation hint
+	return headerFailed
+}
+
 // ---- file ----
 
 // isReservedName reports whether name collides with a reserved target

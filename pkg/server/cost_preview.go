@@ -102,7 +102,19 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 
 	// Inline source wins over file_path — matches POST /api/runs precedence.
 	src := req.Source
-	parserPath := req.FilePath
+	// The parse name decides where an include resolves: the file's absolute
+	// path INSIDE THE WORKSPACE, never the request's own spelling of it — a
+	// relative name is refused by the compiler, and an absolute one outside
+	// the workspace is not accepted as an include base either (the request
+	// would otherwise pick any directory on this host to read beside).
+	// Anything else parses under a synthetic name, whose includes are
+	// refused.
+	parserPath := ""
+	if req.FilePath != "" {
+		if abs, err := s.safePath(req.FilePath); err == nil {
+			parserPath = abs
+		}
+	}
 	if src == "" && req.FilePath != "" {
 		path, err := s.resolveWorkflowPath(req.FilePath, "")
 		if err != nil {
