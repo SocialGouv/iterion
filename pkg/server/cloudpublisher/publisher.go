@@ -685,7 +685,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
+		p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, skippedForfaits, apiKeyFPs, skips)
 	}
 	res.skippedReopensAt = skips.earliest
 
@@ -729,6 +729,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			setOAuthFingerprint(&bundle, kind, sf.fp)
 			if sf.org {
 				bundle.OrgSourced[kind] = true
+			}
+			if sf.platform {
+				bundle.PlatformSourced[kind] = true
 			}
 			taken[secrets.WireFamily(kind)] = true
 			p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
@@ -993,7 +996,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, skippedForfaits map[string]skippedForfait, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
 		return
 	}
@@ -1095,15 +1098,30 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 			if !fillable(string(rec.Kind)) {
 				continue
 			}
-			// Deliberately NO window skip here: the platform tier is the
-			// last DB-backed tier, and the runner's env backstop is
-			// invisible from the publisher. Skipping a refused platform
-			// forfait could only trade a self-healing park (one refused
-			// call, durable usage-window retry) for a possibly-stuck run
-			// with no credential at all.
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
+				continue
+			}
+			// The window skip applies to the CHAIN, not to the record. The
+			// rule this tier has always obeyed — the platform is the last
+			// DB-backed tier and the runner's env backstop is invisible from
+			// here, so passing over a refused forfait could only trade a
+			// self-healing park for a run with no credential at all — held
+			// while one platform record per kind was all the store could
+			// hold. It now holds a chain, and a closed link with an open one
+			// behind it is exactly what the chain exists for: `taken` stays
+			// untouched here so the next link of the same kind is tried, and
+			// a kind whose every link is closed is RESTORED by the shared
+			// restore step below, which reproduces the one-record behaviour
+			// the rule was written for.
+			if until, why := p.forfaitWindowClosed(ctx, usagecap.ScopePlatform, secrets.PlatformOwnerKey, rec, payload); !until.IsZero() {
+				p.logger.Info("cloudpublisher: oauth-forfait(platform) SKIPPED for run=%s kind=%s rank=%d fp=%s — %s (reopens %s); falling through to the next link of the chain",
+					runID, rec.Kind, rec.Rank, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+				skips.note(until)
+				if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
+					skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, platform: true}
+				}
 				continue
 			}
 			bundle.OAuthCredentials[string(rec.Kind)] = payload
@@ -1147,6 +1165,12 @@ type skippedForfait struct {
 	// org marks a forfait the ORG tier passed over, so a restore re-stamps
 	// the provenance the metering scope depends on.
 	org bool
+	// platform marks one the PLATFORM tier passed over — the deployment's
+	// own forfait, metered fleet-wide on usagecap.ScopePlatform. Without the
+	// re-stamp a restored one would be metered per tenant, which is the
+	// rotated-credential failure setOAuthFingerprint exists to prevent, one
+	// tier down.
+	platform bool
 }
 
 // skippedAPIKey is a provider's refused-but-only key, held back by the
