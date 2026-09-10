@@ -314,8 +314,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// band held for that bot. The body is size-bounded and touches no store,
 	// so nothing but the caller's own payload is parsed before admission —
 	// and a request too malformed to name a bot now costs no metered run
-	// slot either. No repository: an operator-initiated launch is not the
-	// automated fan-out the per-repo quota exists to bound.
+	// slot either.
+	//
+	// No repository YET: this surface learns which one it targets only after a
+	// connection read and a forge probe, and neither may run in front of the
+	// suspend check. The repo half of the admission is re-run below, on the
+	// line that resolves `repoProjectPath`.
 	if _, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)}); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		span.SetStatus(codes.Error, "launch denied")
@@ -427,9 +431,36 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
+		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+		// The repository half of the admission, taken at the FIRST line where
+		// this surface knows which repository it targets. `repoProjectPath` is
+		// the identity the run is stamped with below (spec.ProjectPath), which
+		// is the one pkg/credusage meters and the one the quota queries — never
+		// a second one derived here. Resolving it before the gate above was not
+		// an option: it costs a connection read, which a suspended tenant must
+		// not be able to drive.
+		//
+		// Only the repo half is re-run: gateLaunch's monthly arm METERS, and
+		// this launch already charged its run slot up there. Nothing has been
+		// created yet, so a denial here costs exactly what the repo-host
+		// refusal just above already costs — one metered slot on a launch that
+		// did not happen.
+		//
+		// Without it the quota bound every automated lane and the resume of a
+		// run, but not the surface an operator or a CI loop drives directly:
+		// the one place a repository could spend past its ceiling all month.
+		// And it sits AHEAD of the reachability probe and the managed-secret
+		// mint, so a repository that is over its quota costs neither a forge
+		// round trip nor a minted credential.
+		if d := s.gateRepoQuota(r.Context(), s.budgetFloorPolicy(r.Context()),
+			launchSubject{Repo: repoProjectPath}, time.Now().UTC()); d != nil {
+			s.writeLaunchDenial(w, r, d)
+			span.SetStatus(codes.Error, "launch denied")
+			return
+		}
 		// Fail at launch, not three hours in: a repo outside a "selected
 		// repositories" App installation can only fail at push time.
-		if err := s.forgeRepoReachable(r.Context(), conn, strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")); err != nil {
+		if err := s.forgeRepoReachable(r.Context(), conn, repoProjectPath); err != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 			span.SetStatus(codes.Error, "repo unreachable by connection")
 			return
@@ -441,7 +472,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		repoSecretOverrides = map[string]string{"forge_token": secID}
-		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
 		// Canonicalize to the .git clone URL: the runner clones with
 		// http.followRedirects=false (SSRF hardening), and GitLab 301s a
 		// bare repo path to its .git twin — which that git config turns
