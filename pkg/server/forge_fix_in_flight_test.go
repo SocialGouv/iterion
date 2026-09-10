@@ -366,3 +366,17 @@ func TestFixerLaunch_ClaimsThroughTheWebhookTail(t *testing.T) {
 		}
 	}
 }
+
+// The claim's identity is its TEXT, and it travels through
+// TruncateStatusDescription on the way out while isFixInFlight matches the
+// untruncated constant. They agree today at well under the cap — but a future
+// re-wording past it would not fail: the posted status would simply stop being
+// recognisable as ours, every later pass would read it as a foreign status and
+// stand down, and the feature would go quiet with every test still green.
+//
+// Cheaper to pin than to diagnose.
+func TestFixInFlightDescription_SurvivesTruncation(t *testing.T) {
+	if got := forge.TruncateStatusDescription(fixInFlightDescription); got != fixInFlightDescription {
+		t.Fatalf("the description does not survive its own truncation:\n posted: %q\n matched: %q\nisFixInFlight would no longer recognise this server's own claim", got, fixInFlightDescription)
+	}
+}
