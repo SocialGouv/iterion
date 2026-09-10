@@ -254,7 +254,14 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 		h.ProvisionedRepoCount = len(names)
 	}
 	if conn.Kind == forge.KindGitHubApp && conn.InstallationID != 0 {
-		if cfg, _, ok := s.githubAppConfigForConnection(r.Context(), conn); ok {
+		cfg, _, appErr := s.githubAppConfigForConnection(r.Context(), conn)
+		// A read that could not answer is reported, not skipped: this view is
+		// exactly where an operator looks to find out why a connection is
+		// misbehaving, and a silently missing live section reads as "fine".
+		if appErr != nil && !errors.Is(appErr, errNoGitHubApp) {
+			h.LiveError = appErr.Error()
+		}
+		if appErr == nil {
 			inst, err := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
 				forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
 			if err != nil {

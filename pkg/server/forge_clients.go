@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -159,9 +160,9 @@ type cachedForgeAppClient struct {
 // network-free at construction; a slug it learns lazily is recorded on the
 // connection through OnSlugResolved.
 func (s *Server) githubAppClientFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
-	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-	if !ok {
-		return nil, fmt.Errorf("forge: no github app available for this connection")
+	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.AppSlug == "" {
 		cfg.AppSlug = conn.AppSlug
@@ -296,30 +297,56 @@ func preflightForgeClient(ctx context.Context, c any, need ...string) error {
 	return nil
 }
 
+// errNoGitHubApp is the DEFINITE answer: there is no GitHub-App identity to
+// sign with here. A caller may act on it — fall back to another auth path,
+// tell the operator to install the App, skip a lane.
+//
+// It exists to be distinguishable from a store that could not ANSWER. The two
+// used to share one `ok bool`, so a Mongo blip was indistinguishable from a
+// deliberate absence and every caller acted on the wrong one — the operator
+// being told "no github app available for this connection" about a connection
+// whose App is sitting in the database.
+var errNoGitHubApp = errors.New("forge: no github app available for this connection")
+
 // githubAppConfigForTenant returns the GitHub-App identity (app id + private key
 // + slug) used to mint installation tokens for the least-privilege github_app
 // path. It prefers the tenant's own manifest-created App (its sealed private
-// key), falling back to the platform App (ITERION_FORGE_GITHUB_APP_*). ok is
-// false when neither is available.
+// key), falling back to the platform App (ITERION_FORGE_GITHUB_APP_*).
+//
+// The error is errNoGitHubApp when neither is available, and the store's own
+// error — never errNoGitHubApp — when the tenant's App could not be READ. That
+// distinction is load-bearing rather than cosmetic: falling through to the
+// SHARED platform App on a failed read swaps the signing identity behind the
+// operator's back, and the platform key can mint for ANY installation.
 //
 // shared reports whether the returned config is the SHARED platform App (the
 // fallback). It matters for the install callback: a per-tenant App's private
 // key is tenant-scoped, so it can only mint tokens for that tenant's own
 // installations, whereas the shared App's key can mint for ANY installation —
 // so the shared path (and only it) must verify installation ownership.
-func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (cfg forgegithub.AppConfig, shared bool, ok bool) {
+func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (cfg forgegithub.AppConfig, shared bool, err error) {
 	if s.forgeOAuthApps != nil {
 		base := forge.CanonicalBaseURL(forge.ProviderGitHub, "")
-		if app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base); err == nil {
+		app, readErr := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base)
+		switch {
+		case readErr == nil:
+			// A row that cannot mint (no key, unsealable, non-numeric id) is
+			// deliberately treated as "no app rather than half-valid" — see
+			// githubAppConfigFromRecord — so it falls through to the platform.
 			if cfg, ok := s.githubAppConfigFromRecord(app); ok {
-				return cfg, false, true
+				return cfg, false, nil
 			}
+		case errors.Is(readErr, forge.ErrOAuthAppNotFound):
+			// A definite "this tenant registered none": the platform App below
+			// is exactly the intended fallback.
+		default:
+			return forgegithub.AppConfig{}, false, fmt.Errorf("forge: github app for tenant %s is unreadable: %w", tenantID, readErr)
 		}
 	}
 	if s.forgeGitHubApp.Configured() {
-		return s.githubAppConfig(), true, true
+		return s.githubAppConfig(), true, nil
 	}
-	return forgegithub.AppConfig{}, false, false
+	return forgegithub.AppConfig{}, false, errNoGitHubApp
 }
 
 // githubAppConfigForConnection resolves the App identity that owns a
@@ -335,13 +362,26 @@ func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) 
 // Resolution order: the connection's own OAuthAppID, then the legacy
 // per-instance lookup (unambiguous for connections created while only one app
 // per host could exist), then the shared platform App.
-func (s *Server) githubAppConfigForConnection(ctx context.Context, conn forge.Connection) (cfg forgegithub.AppConfig, shared bool, ok bool) {
+//
+// The error is errNoGitHubApp for a definite absence and the store's own error
+// for a read that could not answer — see githubAppConfigForTenant.
+func (s *Server) githubAppConfigForConnection(ctx context.Context, conn forge.Connection) (cfg forgegithub.AppConfig, shared bool, err error) {
 	if conn.OAuthAppID != "" && s.forgeOAuthApps != nil {
-		app, err := s.forgeOAuthApps.Get(ctx, conn.OAuthAppID)
-		if err == nil && app.TenantID == conn.TenantID {
-			if cfg, ok := s.githubAppConfigFromRecord(app); ok {
-				return cfg, false, true
+		app, readErr := s.forgeOAuthApps.Get(ctx, conn.OAuthAppID)
+		switch {
+		case readErr == nil:
+			if app.TenantID == conn.TenantID {
+				if cfg, ok := s.githubAppConfigFromRecord(app); ok {
+					return cfg, false, nil
+				}
 			}
+		case errors.Is(readErr, forge.ErrOAuthAppNotFound):
+			// A dangling reference: the app it names is gone. Definite.
+		default:
+			// The read failed. Reporting this as "no app" would send the
+			// caller down a fallback path on a blip — and, worse, tell the
+			// operator their App is missing when it is merely unreachable.
+			return forgegithub.AppConfig{}, false, fmt.Errorf("forge: oauth app %s for connection %s is unreadable: %w", conn.OAuthAppID, conn.ID, readErr)
 		}
 		// Deliberate: a connection that NAMES an app whose key is unusable must
 		// not silently fall back to another tenant-level app and sign with the
@@ -349,7 +389,7 @@ func (s *Server) githubAppConfigForConnection(ctx context.Context, conn forge.Co
 		if s.logger != nil {
 			s.logger.Warn("forge: connection %s references oauth app %s which did not resolve to a usable key", conn.ID, conn.OAuthAppID)
 		}
-		return forgegithub.AppConfig{}, false, false
+		return forgegithub.AppConfig{}, false, errNoGitHubApp
 	}
 	return s.githubAppConfigForTenant(ctx, conn.TenantID)
 }
@@ -364,32 +404,42 @@ func (s *Server) githubAppConfigForConnection(ctx context.Context, conn forge.Co
 // does — the install callback's IDOR guard keys on it, so it is returned
 // explicitly rather than inferred from an empty record id (a tenant app whose
 // record lookup merely failed must not be mistaken for the platform app).
-func (s *Server) githubAppForInstall(ctx context.Context, tenantID, appID string) (cfg forgegithub.AppConfig, resolvedID string, shared bool, ok bool) {
+func (s *Server) githubAppForInstall(ctx context.Context, tenantID, appID string) (cfg forgegithub.AppConfig, resolvedID string, shared bool, err error) {
 	if appID != "" && s.forgeOAuthApps != nil {
-		app, err := s.forgeOAuthApps.Get(ctx, appID)
-		if err != nil || app.TenantID != tenantID {
-			return forgegithub.AppConfig{}, "", false, false
+		app, readErr := s.forgeOAuthApps.Get(ctx, appID)
+		switch {
+		case readErr == nil:
+			if app.TenantID != tenantID {
+				// Another team's App: a definite refusal, not a blip.
+				return forgegithub.AppConfig{}, "", false, errNoGitHubApp
+			}
+		case errors.Is(readErr, forge.ErrOAuthAppNotFound):
+			return forgegithub.AppConfig{}, "", false, errNoGitHubApp
+		default:
+			// Without this the operator is told to CREATE an App they
+			// already own, and blamed for it with a 400.
+			return forgegithub.AppConfig{}, "", false, fmt.Errorf("forge: oauth app %s is unreadable: %w", appID, readErr)
 		}
 		cfg, ok := s.githubAppConfigFromRecord(app)
 		if !ok {
-			return forgegithub.AppConfig{}, "", false, false
+			return forgegithub.AppConfig{}, "", false, errNoGitHubApp
 		}
-		return cfg, app.ID, false, true
+		return cfg, app.ID, false, nil
 	}
-	cfg, shared, ok = s.githubAppConfigForTenant(ctx, tenantID)
-	if !ok {
-		return forgegithub.AppConfig{}, "", false, false
+	cfg, shared, err = s.githubAppConfigForTenant(ctx, tenantID)
+	if err != nil {
+		return forgegithub.AppConfig{}, "", false, err
 	}
 	// Only a tenant-owned app has a record to pin; the shared platform app has
 	// none, and pinning "" keeps those connections on the legacy resolution.
 	if shared || s.forgeOAuthApps == nil {
-		return cfg, "", shared, true
+		return cfg, "", shared, nil
 	}
 	app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, forge.CanonicalBaseURL(forge.ProviderGitHub, ""))
 	if err != nil {
-		return cfg, "", shared, true
+		return cfg, "", shared, nil
 	}
-	return cfg, app.ID, shared, true
+	return cfg, app.ID, shared, nil
 }
 
 // githubAppConfigFromRecord unseals an app row into a usable App identity.
@@ -519,9 +569,9 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	if conn.Kind != forge.KindGitHubApp {
 		return "", fmt.Errorf("forge: not a github_app connection")
 	}
-	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-	if !ok {
-		return "", fmt.Errorf("forge: no github app available for this connection")
+	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+	if err != nil {
+		return "", err
 	}
 	// Fail closed: if the provisioned repo set can't be determined (transient
 	// store error), do NOT fall back to a whole-installation token. The
@@ -560,9 +610,9 @@ func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connec
 	if conn.Kind != forge.KindGitHubApp {
 		return "", time.Time{}, fmt.Errorf("forge: security-read tokens require a github_app connection")
 	}
-	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-	if !ok {
-		return "", time.Time{}, fmt.Errorf("forge: no github app available for this connection")
+	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	// A known-narrow grant fails BEFORE the mint with the remediation named,
 	// instead of surfacing GitHub's generic 422. An unknown grant set
@@ -735,8 +785,16 @@ func repoOutsideInstallationErr(repos []forge.RepoSummary, repoFullName string) 
 // OAuthExchanger and TokenRefresher.
 func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, _, ok := s.githubAppConfigForConnection(context.Background(), conn)
-		if !ok {
+		cfg, _, err := s.githubAppConfigForConnection(context.Background(), conn)
+		if err != nil {
+			// Returning nil here means "this connection has nothing to
+			// refresh", and the worker moves on for good. A definite
+			// absence deserves that silence; an unreadable store does
+			// not — without a line, a blip retires a live connection's
+			// refresher and the token expires hours later, far from here.
+			if !errors.Is(err, errNoGitHubApp) && s.logger != nil {
+				s.logger.Warn("forge: no refresher for connection %s — its app could not be read (%v); the connection is treated as having none until the next resolution", conn.ID, err)
+			}
 			return nil
 		}
 		return forgegithub.AppRefresher{HTTP: s.forgeHTTPClient(), Cfg: cfg, Repos: s.forgeMintRepoNames}

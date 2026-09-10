@@ -77,9 +77,15 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, t
 		httpError(w, http.StatusBadRequest, "the app mode is GitHub-only")
 		return
 	}
-	cfg, appID, _, ok := s.githubAppForInstall(r.Context(), teamID, req.OAuthAppID)
-	if !ok {
+	cfg, appID, _, err := s.githubAppForInstall(r.Context(), teamID, req.OAuthAppID)
+	switch {
+	case errors.Is(err, errNoGitHubApp):
 		httpError(w, http.StatusBadRequest, "no GitHub App available — first create one (Register an OAuth app → Create a GitHub App), or use OAuth/PAT")
+		return
+	case err != nil:
+		// Not the operator's fault, and not something they can fix by
+		// creating an App they may already own.
+		httpError(w, http.StatusInternalServerError, "cannot resolve the GitHub App to install with: %v", err)
 		return
 	}
 	state, _, _, err := oidc.GenerateStateAndPKCE()
@@ -340,9 +346,13 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	// not "the team's app for this host" — with several apps per host the
 	// latter can pick the wrong private key, which cannot mint for this
 	// installation at all.
-	cfg, appRecordID, shared, ok := s.githubAppForInstall(r.Context(), pending.TenantID, pending.OAuthAppID)
-	if !ok {
+	cfg, appRecordID, shared, err := s.githubAppForInstall(r.Context(), pending.TenantID, pending.OAuthAppID)
+	switch {
+	case errors.Is(err, errNoGitHubApp):
 		httpError(w, http.StatusBadRequest, "no github app available for this org")
+		return
+	case err != nil:
+		httpError(w, http.StatusInternalServerError, "cannot resolve the GitHub App for this install: %v", err)
 		return
 	}
 	base := forge.DefaultBaseURL(forge.ProviderGitHub)

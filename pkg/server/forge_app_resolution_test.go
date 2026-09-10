@@ -44,8 +44,8 @@ func TestGitHubAppConfigForConnection(t *testing.T) {
 
 	t.Run("resolves the app the connection names", func(t *testing.T) {
 		conn := forge.Connection{ID: "c1", TenantID: "t1", Kind: forge.KindGitHubApp, OAuthAppID: sandbox.ID}
-		cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-		if !ok {
+		cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+		if err != nil {
 			t.Fatal("want the sandbox app to resolve")
 		}
 		if cfg.AppID != 222 || cfg.PrivateKeyPEM != "PEM-SANDBOX" {
@@ -58,8 +58,8 @@ func TestGitHubAppConfigForConnection(t *testing.T) {
 	// collapsed onto one.
 	t.Run("a sibling connection on the same host resolves its own app", func(t *testing.T) {
 		conn := forge.Connection{ID: "c2", TenantID: "t1", Kind: forge.KindGitHubApp, OAuthAppID: prod.ID}
-		cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-		if !ok {
+		cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+		if err != nil {
 			t.Fatal("want the prod app to resolve")
 		}
 		if cfg.AppID != 111 {
@@ -72,8 +72,8 @@ func TestGitHubAppConfigForConnection(t *testing.T) {
 	// they keep resolving to the oldest.
 	t.Run("legacy connection falls back to the oldest app on the host", func(t *testing.T) {
 		conn := forge.Connection{ID: "c3", TenantID: "t1", Kind: forge.KindGitHubApp}
-		cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
-		if !ok {
+		cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+		if err != nil {
 			t.Fatal("want the legacy fallback to resolve")
 		}
 		if cfg.AppID != 111 {
@@ -85,14 +85,14 @@ func TestGitHubAppConfigForConnection(t *testing.T) {
 	// identity the operator did not choose.
 	t.Run("cross-tenant app id resolves to nothing", func(t *testing.T) {
 		conn := forge.Connection{ID: "c4", TenantID: "t1", Kind: forge.KindGitHubApp, OAuthAppID: other.ID}
-		if _, _, ok := s.githubAppConfigForConnection(ctx, conn); ok {
+		if _, _, err := s.githubAppConfigForConnection(ctx, conn); err == nil {
 			t.Fatal("a connection must never resolve another tenant's app")
 		}
 	})
 
 	t.Run("dangling app id resolves to nothing", func(t *testing.T) {
 		conn := forge.Connection{ID: "c5", TenantID: "t1", Kind: forge.KindGitHubApp, OAuthAppID: "deleted-app"}
-		if _, _, ok := s.githubAppConfigForConnection(ctx, conn); ok {
+		if _, _, err := s.githubAppConfigForConnection(ctx, conn); err == nil {
 			t.Fatal("a dangling app reference must not silently fall back")
 		}
 	})
@@ -108,19 +108,19 @@ func TestGitHubAppForInstall(t *testing.T) {
 	sandbox := storeApp(t, s, "app-sandbox", "t1", "iterion-sandbox", "222", "PEM-SANDBOX", t0.Add(time.Hour))
 	ctx := context.Background()
 
-	cfg, id, shared, ok := s.githubAppForInstall(ctx, "t1", sandbox.ID)
-	if !ok || id != sandbox.ID || cfg.AppID != 222 || shared {
-		t.Fatalf("explicit selection failed: ok=%v id=%q appID=%d shared=%v", ok, id, cfg.AppID, shared)
+	cfg, id, shared, err := s.githubAppForInstall(ctx, "t1", sandbox.ID)
+	if err != nil || id != sandbox.ID || cfg.AppID != 222 || shared {
+		t.Fatalf("explicit selection failed: err=%v id=%q appID=%d shared=%v", err, id, cfg.AppID, shared)
 	}
 
 	// No explicit choice keeps the legacy answer AND pins its record, so the
 	// resulting connection stops depending on the host lookup from then on.
-	cfg, id, _, ok = s.githubAppForInstall(ctx, "t1", "")
-	if !ok || id != prod.ID || cfg.AppID != 111 {
-		t.Fatalf("default selection failed: ok=%v id=%q appID=%d", ok, id, cfg.AppID)
+	cfg, id, _, err = s.githubAppForInstall(ctx, "t1", "")
+	if err != nil || id != prod.ID || cfg.AppID != 111 {
+		t.Fatalf("default selection failed: err=%v id=%q appID=%d", err, id, cfg.AppID)
 	}
 
-	if _, _, _, ok := s.githubAppForInstall(ctx, "t2", sandbox.ID); ok {
+	if _, _, _, err := s.githubAppForInstall(ctx, "t2", sandbox.ID); err == nil {
 		t.Fatal("a team must not be able to install another team's app")
 	}
 }
