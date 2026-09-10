@@ -37,6 +37,7 @@ tool tag_release:
   command: `git tag -a {{vars.tag}} -m {{vars.tag}}`
   goal: "The annotated tag {{vars.tag}} exists on HEAD."
   postcondition: `git rev-parse -q --verify refs/tags/{{vars.tag}} >/dev/null && printf '{"tag":"%s"}' {{vars.tag}}`
+  output: tagged
   policy: recover
   recovery:
     max_repair_attempts: 2

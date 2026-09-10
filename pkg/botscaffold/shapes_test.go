@@ -255,6 +255,14 @@ func TestGalleryShapes(t *testing.T) {
 			if a.Goal == "" || a.Postcondition == "" || a.Policy != "recover" || a.Recovery == nil {
 				t.Errorf("want the full quad (goal, postcondition, policy: recover, recovery), got goal=%q postcondition=%q policy=%q recovery=%v", a.Goal, a.Postcondition, a.Policy, a.Recovery)
 			}
+			// The shape's whole lesson is that the postcondition's JSON is
+			// the node's output on every rung; without the schema wired the
+			// declaration is dead (no diagnostic flags an unused schema).
+			if a.OutputSchema == "" {
+				t.Errorf("the verified action declares no output schema, so its postcondition's JSON reaches nothing")
+			} else if _, ok := w.Schemas[a.OutputSchema]; !ok {
+				t.Errorf("output schema %q is not declared", a.OutputSchema)
+			}
 			if w.Worktree != "auto" {
 				t.Errorf("worktree = %q, want auto (the action commits and tags)", w.Worktree)
 			}
