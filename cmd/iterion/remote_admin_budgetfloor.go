@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // remote admin budget-floor — capacity RESERVED for a workload, and the
@@ -121,34 +122,73 @@ every OTHER workload. With review-pr at 20 and feature-dev at 10 under an 80%
 cap, ordinary work stops at 50, review-pr may reach 70, feature-dev 60.
 
 A reservation never lets its holder past the deployment's own caps, and never
-creates a cap that was not configured.`,
+creates a cap that was not configured.
+
+` + "`reserve`" + ` and ` + "`quota`" + ` EDIT one entry: an axis you do not name keeps the
+value it has, so adding --concurrent-runs to a bot that already holds a window
+band keeps that band. Name an axis with 0 to clear it, or ` + "`rm`" + ` for the whole
+entry.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
 			return cli.RemoteGetPrint(cmd.Context(), c, p, budgetFloorPath)
 		}
+		edit := floorEditFromFlags(cmd, args[0])
 		return editFloorPolicy(cmd, c, p, func(pol budgetfloor.Policy) (budgetfloor.Policy, error) {
-			return applyFloorEdit(pol, args[0])
+			return applyFloorEdit(pol, edit)
 		})
 	}),
+}
+
+// floorEdit is one operator command, carrying WHICH axes were named as well as
+// their values — the distinction that makes an edit an edit.
+//
+// Without it, `reserve --bot review-pr --concurrent-runs 2` after
+// `reserve --bot review-pr --five-hour 20` writes a reservation whose window
+// band is zero: the default axis, the only one that measures what actually
+// runs out on a subscription, silently gone and indistinguishable from a
+// deliberate clear. So an axis the operator did not type is left as stored,
+// and typing `--five-hour 0` is how it is cleared.
+type floorEdit struct {
+	action string
+	named  map[string]bool
+}
+
+func floorEditFromFlags(cmd *cobra.Command, action string) floorEdit {
+	e := floorEdit{action: action, named: map[string]bool{}}
+	cmd.Flags().Visit(func(f *pflag.Flag) { e.named[f.Name] = true })
+	return e
 }
 
 // applyFloorEdit is the operator's single edit, as a pure function of the
 // policy it is applied to — which is what makes replaying it onto a freshly
 // read document (after a lost CAS race) the same edit and not a different one.
-func applyFloorEdit(pol budgetfloor.Policy, action string) (budgetfloor.Policy, error) {
-	switch action {
+func applyFloorEdit(pol budgetfloor.Policy, e floorEdit) (budgetfloor.Policy, error) {
+	switch e.action {
 	case "reserve":
 		bot := strings.TrimSpace(remoteFloorBot)
 		if bot == "" {
 			return pol, fmt.Errorf("--bot is required (the workload the reservation protects)")
 		}
-		res := budgetfloor.Reservation{BotID: bot, Note: strings.TrimSpace(remoteFloorNote), Reserve: budgetfloor.Reserve{
-			FiveHourPercent: remoteFloorFiveHour,
-			WeekPercent:     remoteFloorWeek,
-			MonthlyUSD:      remoteFloorUSD,
-			ConcurrentRuns:  remoteFloorSlots,
-		}}
+		// Start from what is stored: this is an edit of one reservation, not
+		// a fresh statement of it.
+		res, _ := pol.Reserved(bot)
+		res.BotID = bot
+		if e.named["note"] {
+			res.Note = strings.TrimSpace(remoteFloorNote)
+		}
+		if e.named["five-hour"] {
+			res.Reserve.FiveHourPercent = remoteFloorFiveHour
+		}
+		if e.named["week"] {
+			res.Reserve.WeekPercent = remoteFloorWeek
+		}
+		if e.named["monthly-usd"] {
+			res.Reserve.MonthlyUSD = remoteFloorUSD
+		}
+		if e.named["concurrent-runs"] {
+			res.Reserve.ConcurrentRuns = remoteFloorSlots
+		}
 		if res.Reserve.Empty() {
 			return pol, fmt.Errorf("reserve nothing? name at least one axis: --five-hour, --week, --monthly-usd or --concurrent-runs (use `rm --bot %s` to remove the reservation)", bot)
 		}
@@ -158,9 +198,19 @@ func applyFloorEdit(pol budgetfloor.Policy, action string) (budgetfloor.Policy, 
 		if repo == "" {
 			return pol, fmt.Errorf("--repo is required (the forge slug, e.g. owner/repo)")
 		}
-		q := budgetfloor.RepoQuota{
-			Repo: repo, MonthlyUSD: remoteFloorUSD, RouteSpendsPerMonth: remoteFloorRepoSpends,
-			ReserveSharePercent: remoteFloorRepoShare, ShareOfBot: strings.TrimSpace(remoteFloorShareOfBot),
+		q := findRepoQuota(pol.RepoQuotas, repo)
+		q.Repo = repo
+		if e.named["monthly-usd"] {
+			q.MonthlyUSD = remoteFloorUSD
+		}
+		if e.named["route-spends-per-month"] {
+			q.RouteSpendsPerMonth = remoteFloorRepoSpends
+		}
+		if e.named["reserve-share"] {
+			q.ReserveSharePercent = remoteFloorRepoShare
+		}
+		if e.named["share-of-bot"] {
+			q.ShareOfBot = strings.TrimSpace(remoteFloorShareOfBot)
 		}
 		if q.Empty() {
 			return pol, fmt.Errorf("cap nothing? name at least one of --monthly-usd, --route-spends-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
@@ -178,16 +228,28 @@ func applyFloorEdit(pol budgetfloor.Policy, action string) (budgetfloor.Policy, 
 			pol.RepoQuotas = dropRepoQuota(pol.RepoQuotas, repo)
 		}
 	default:
-		return pol, fmt.Errorf("unknown budget-floor action %q (want reserve|quota|rm)", action)
+		return pol, fmt.Errorf("unknown budget-floor action %q (want reserve|quota|rm)", e.action)
 	}
 	return pol, nil
+}
+
+// findRepoQuota returns the stored quota for a repository, or the zero value.
+// Trimmed on BOTH sides, like every lookup in pkg/budgetfloor: an id stored
+// with stray whitespace must not read as a different repository.
+func findRepoQuota(in []budgetfloor.RepoQuota, repo string) budgetfloor.RepoQuota {
+	for _, q := range in {
+		if strings.TrimSpace(q.Repo) == repo {
+			return q
+		}
+	}
+	return budgetfloor.RepoQuota{}
 }
 
 // upsertReservation replaces the entry for a bot, or appends it — so
 // `reserve` twice for one bot is an edit, not the duplicate Validate refuses.
 func upsertReservation(in []budgetfloor.Reservation, res budgetfloor.Reservation) []budgetfloor.Reservation {
 	for i := range in {
-		if in[i].BotID == res.BotID {
+		if strings.TrimSpace(in[i].BotID) == res.BotID {
 			in[i] = res
 			return in
 		}
@@ -197,7 +259,7 @@ func upsertReservation(in []budgetfloor.Reservation, res budgetfloor.Reservation
 
 func upsertRepoQuota(in []budgetfloor.RepoQuota, q budgetfloor.RepoQuota) []budgetfloor.RepoQuota {
 	for i := range in {
-		if in[i].Repo == q.Repo {
+		if strings.TrimSpace(in[i].Repo) == q.Repo {
 			in[i] = q
 			return in
 		}
@@ -208,7 +270,9 @@ func upsertRepoQuota(in []budgetfloor.RepoQuota, q budgetfloor.RepoQuota) []budg
 func dropReservation(in []budgetfloor.Reservation, bot string) []budgetfloor.Reservation {
 	out := in[:0]
 	for _, r := range in {
-		if r.BotID != bot {
+		// Trimmed like every other lookup: `rm --bot review-pr` must remove an
+		// entry stored as " review-pr " rather than silently no-op on it.
+		if strings.TrimSpace(r.BotID) != bot {
 			out = append(out, r)
 		}
 	}
@@ -218,7 +282,7 @@ func dropReservation(in []budgetfloor.Reservation, bot string) []budgetfloor.Res
 func dropRepoQuota(in []budgetfloor.RepoQuota, repo string) []budgetfloor.RepoQuota {
 	out := in[:0]
 	for _, q := range in {
-		if q.Repo != repo {
+		if strings.TrimSpace(q.Repo) != repo {
 			out = append(out, q)
 		}
 	}

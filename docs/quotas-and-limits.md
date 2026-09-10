@@ -421,7 +421,10 @@ Two other axes are available where they are the honest answer, each enforced
 at the gate that already caps it: `--monthly-usd` (real money on a metered
 key) comes off the org's cost cap, and `--concurrent-runs` off the team's
 concurrency cap — the dial that keeps the reviewer answering a PR while a
-campaign runs. Any subset may be set.
+campaign runs. Any subset may be set — and `reserve` (like `quota`) EDITS one
+entry: an axis you do not name keeps the value it has, so adding
+`--concurrent-runs` to a bot that already holds a window band keeps that band.
+Name an axis with `0` to clear it, or `rm` for the whole entry.
 
 `--concurrent-runs` is enforced **conservatively**, and the difference is
 worth knowing before you set it: the gate counts a tenant's active runs, not
