@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.4](https://github.com/SocialGouv/iterion/compare/v3.131.3...v3.131.4) (2026-09-10)
+
+### Bug Fixes
+
+* **security:** close the same-site CSRF hole on the API, and the browser gaps beside it ([#1058](https://github.com/SocialGouv/iterion/issues/1058)) ([d01f807](https://github.com/SocialGouv/iterion/commit/d01f80707d62fda77d45e61802aaa76ef5a793cd))
+
+    <details><summary>why</summary>
+
+    The Origin check was opt-in per handler, and opt-in drifted: 70 of 247 state-changing routes called requireSafeOrigin, leaving the BYOK keys, team and org secrets, OAuth forfaits, platform LLM credentials, forge connections, webhooks and org administration ungated.
+
+    </details>
+
 ## [3.131.3](https://github.com/SocialGouv/iterion/compare/v3.131.2...v3.131.3) (2026-09-10)
 
 ### Bug Fixes
