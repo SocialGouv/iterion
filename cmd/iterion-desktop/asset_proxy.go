@@ -180,10 +180,10 @@ func (h *assetProxyHandler) proxyFor(serverURL string, jar *cloudTokenJar) (*htt
 			// cookies so they never reach the webview.
 			var access, refresh string
 			for _, c := range resp.Cookies() {
-				switch c.Name {
-				case cloudAuthCookieName:
+				switch {
+				case iserver.SessionCookieMatches(c.Name, cloudAuthCookieName):
 					access = c.Value
-				case cloudRefreshCookieName:
+				case iserver.SessionCookieMatches(c.Name, cloudRefreshCookieName):
 					refresh = c.Value
 				}
 			}
@@ -191,8 +191,16 @@ func (h *assetProxyHandler) proxyFor(serverURL string, jar *cloudTokenJar) (*htt
 				if err := jar.applyRotation(access, refresh); err != nil {
 					log.Printf("desktop: cloud token rotation persist failed: %v", err)
 				}
-				stripSetCookies(resp, cloudAuthCookieName, cloudRefreshCookieName)
 			}
+			// Strip unconditionally, and in BOTH spellings. Gating this on a
+			// successful harvest tied the boundary "the cloud's session
+			// cookies never reach the webview" to the name matching: when the
+			// server started emitting `__Host-`, the harvest missed, the guard
+			// went false, and the cookies were forwarded into the webview.
+			stripSetCookies(resp, append(
+				iserver.SessionCookieSpellings(cloudAuthCookieName),
+				iserver.SessionCookieSpellings(cloudRefreshCookieName)...,
+			)...)
 			return nil
 		}
 	}

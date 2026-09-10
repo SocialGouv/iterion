@@ -28,7 +28,8 @@ func TestExtractBearerAcceptsTokenOnWSPaths(t *testing.T) {
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest("GET", tc.path+"?t=abc", nil)
-			if got := extractBearer(req); got != tc.want {
+			s := &Server{}
+			if got := s.extractBearer(req); got != tc.want {
 				t.Fatalf("extractBearer(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})

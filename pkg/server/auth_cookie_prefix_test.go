@@ -82,32 +82,76 @@ func TestHostPrefixWithheldWhenItsTermsCannotBeMet(t *testing.T) {
 // `iterion_auth` on Domain=<parent>, hoping to pin the victim onto its own
 // session. Reads must prefer the __Host- cookie, which no other host can write.
 func TestPrefixedCookieWinsOverATossedBareCookie(t *testing.T) {
+	s := newAuthCookieServer(true, "")
 	r := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
 	// Order matters: the tossed cookie is sent FIRST, so a naive
 	// r.Cookie(bare) would return the attacker's value.
 	r.AddCookie(&http.Cookie{Name: authCookieName, Value: "attacker-session"})
 	r.AddCookie(&http.Cookie{Name: hostCookiePrefix + authCookieName, Value: "real-session"})
 
-	if got := extractBearer(r); got != "real-session" {
+	if got := s.extractBearer(r); got != "real-session" {
 		t.Fatalf("extractBearer = %q; want real-session — a tossed bare cookie shadowed the __Host- one", got)
 	}
 }
 
-// TestLegacyCookieStillAccepted is the migration window: a session minted
-// before this change carries only the bare name and must keep working until it
-// expires, or the deploy signs everyone out.
-func TestLegacyCookieStillAccepted(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
-	r.AddCookie(&http.Cookie{Name: authCookieName, Value: "legacy-session"})
-	if got := extractBearer(r); got != "legacy-session" {
-		t.Fatalf("extractBearer = %q; want legacy-session", got)
-	}
-
+// TestATossedBareCookieCannotOutliveTheRealOne closes the window the first
+// version of this change left open.
+//
+// Preferring the prefixed name is not enough on its own: the prefixed ACCESS
+// cookie expires in 15 minutes, while a tossed bare one is attacker-controlled
+// and can carry a year. Once the real cookie ages out, the browser sends only
+// the attacker's, and a fallback read would adopt it — so every tab idle past
+// the access TTL was a fixation window, and "log out, then reload" landed on
+// the attacker's account (a host-only deletion cannot clear a Domain-scoped
+// cookie). Where the prefix is written, the bare access cookie is not a
+// credential at all.
+func TestATossedBareCookieCannotOutliveTheRealOne(t *testing.T) {
 	s := newAuthCookieServer(true, "")
-	r2 := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	r2.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "legacy-refresh"})
-	if got := s.refreshTokenFromRequest(r2); got != "legacy-refresh" {
-		t.Fatalf("refreshTokenFromRequest = %q; want legacy-refresh", got)
+	r := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	r.AddCookie(&http.Cookie{Name: authCookieName, Value: "attacker-session"})
+
+	if got := s.extractBearer(r); got != "" {
+		t.Fatalf("extractBearer = %q; want \"\" — a sibling host's cookie authenticated a request", got)
+	}
+}
+
+// TestStaleHostCookieIgnoredAfterRollback covers the operational trap: both
+// switches that decide the prefix are a single env var, i.e. exactly what an
+// operator reaches for to undo this change. If the READ preferred the prefixed
+// name unconditionally, a rollback would leave the browser holding a __Host-
+// cookie this build can neither overwrite nor delete — and a fresh login would
+// then be served the PREVIOUS user's session.
+func TestStaleHostCookieIgnoredAfterRollback(t *testing.T) {
+	for _, c := range []struct {
+		name, domain string
+		secure       bool
+	}{
+		{"CookieSecure rolled back", "", false},
+		{"CookieDomain reintroduced", "studio.example", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newAuthCookieServer(c.secure, c.domain)
+			r := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+			r.AddCookie(&http.Cookie{Name: hostCookiePrefix + authCookieName, Value: "previous-user"})
+			r.AddCookie(&http.Cookie{Name: authCookieName, Value: "current-user"})
+
+			if got := s.extractBearer(r); got != "current-user" {
+				t.Fatalf("extractBearer = %q; want current-user — a stale __Host- cookie this build cannot rewrite won the read", got)
+			}
+		})
+	}
+}
+
+// TestLegacyRefreshStillAccepted is the migration window. The REFRESH cookie
+// keeps its legacy fallback — it is server-verified, single-use and rotating,
+// so a stale one is a far smaller surface than an access cookie, and without it
+// the deploy signs out every existing browser.
+func TestLegacyRefreshStillAccepted(t *testing.T) {
+	s := newAuthCookieServer(true, "")
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "legacy-refresh"})
+	if got := s.refreshTokenFromRequest(r); got != "legacy-refresh" {
+		t.Fatalf("refreshTokenFromRequest = %q; want legacy-refresh — the deploy would sign everyone out", got)
 	}
 }
 
@@ -151,7 +195,29 @@ func TestHostPrefixedSessionRoundTrip(t *testing.T) {
 // a browser can hold the legacy cookie AND the prefixed one, so clearing only
 // the name this build writes would leave the other live.
 func TestClearAuthCookiesExpiresBothSpellings(t *testing.T) {
-	s := newAuthCookieServer(true, "")
+	// Run over the configurations that DIFFER from the prefix's terms too.
+	// Asserted only on {secure:true, domain:""} — where cfg already equals the
+	// hardcoded values — the `domain = ""` / `secure = true` overrides in
+	// clearAuthCookies are indistinguishable from reading the config, and
+	// deleting either one keeps the suite green.
+	for _, cfg := range []struct {
+		name   string
+		secure bool
+		domain string
+	}{
+		{"production shape", true, ""},
+		{"plaintext studio", false, ""},
+		{"explicit cookie domain", true, "studio.example"},
+	} {
+		t.Run(cfg.name, func(t *testing.T) {
+			clearAuthCookiesCase(t, cfg.secure, cfg.domain)
+		})
+	}
+}
+
+func clearAuthCookiesCase(t *testing.T, secure bool, domain string) {
+	t.Helper()
+	s := newAuthCookieServer(secure, domain)
 	w := httptest.NewRecorder()
 	s.clearAuthCookies(w)
 

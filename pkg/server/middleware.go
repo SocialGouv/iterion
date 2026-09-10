@@ -74,7 +74,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		token := extractBearer(r)
+		token := s.extractBearer(r)
 		if token == "" {
 			httpError(w, http.StatusUnauthorized, "authentication required")
 			return
@@ -217,11 +217,12 @@ func (s *Server) requireSuperAdmin(next http.Handler) http.Handler {
 
 // extractBearer pulls the access JWT from the Authorization header
 // or the auth cookie, returning the empty string if neither is set.
-func extractBearer(r *http.Request) string {
+func (s *Server) extractBearer(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
-	if v := cookieValue(r, authCookieName); v != "" {
+	// No legacy fallback for the ACCESS cookie — see sessionCookie.
+	if v := s.sessionCookie(r, authCookieName, false); v != "" {
 		return v
 	}
 	// Browsers can't attach Authorization headers to a WS upgrade,
@@ -423,7 +424,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// org-scoped visibility; only the no-credential case bypasses.
 		// Dev mode (DisableAuth) keeps going through requireAuth so its
 		// synthesized super-admin identity is injected.
-		if !s.cfg.DisableAuth && extractBearer(r) == "" &&
+		if !s.cfg.DisableAuth && s.extractBearer(r) == "" &&
 			isPublicMarketplaceRead(r.Method, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return

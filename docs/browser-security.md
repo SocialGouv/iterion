@@ -92,9 +92,25 @@ So the cookies are `__Host-iterion_auth` and `__Host-iterion_refresh`. A
 browser accepts a `__Host-` cookie only with `Secure`, `Path=/` and **no
 `Domain`** — terms no other host can satisfy on our behalf.
 
-- **Reads prefer the prefixed name** and fall back to the bare one, so a tossed
-  bare cookie can never shadow a migrated session (`cookieValue`,
-  [pkg/server/auth_sessions.go](../pkg/server/auth_sessions.go)).
+- **Reads are not symmetric with writes** (`sessionCookie`,
+  [pkg/server/auth_sessions.go](../pkg/server/auth_sessions.go)), and both
+  asymmetries were paid for:
+  - Where the prefix IS written, a bare **access** cookie is not a credential
+    at all. Merely *preferring* the prefixed one is not enough: the real access
+    cookie expires in 15 minutes while a tossed one is attacker-controlled and
+    can carry a year, so every tab idle past the access TTL would fall back
+    onto the attacker's session — and logout cannot help, since a host-only
+    deletion cannot clear a `Domain`-scoped cookie.
+  - Where the prefix is NOT written, the prefixed name is ignored **entirely**
+    rather than preferred. Both switches that decide this are a single env var,
+    i.e. what an operator reaches for to roll the change back; preferring it
+    would leave the browser holding a `__Host-` cookie the rolled-back build can
+    neither overwrite nor delete, and a fresh login would be served the previous
+    user's session.
+  - The **refresh** cookie does keep the legacy fallback — it is
+    server-verified, single-use and rotating, and without it the deploy signs
+    out every existing browser. A legacy browser pays one 401, which the SPA
+    answers with a silent refresh, and comes back migrated.
 - **The prefix is withheld** when `CookieSecure` is false (a plaintext local
   studio) or `CookieDomain` is set. Those terms are not a preference: a browser
   *discards* a `__Host-` cookie that breaks them, so emitting one there would

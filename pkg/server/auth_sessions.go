@@ -20,7 +20,7 @@ func (s *Server) usesHostPrefix() bool {
 }
 
 // authCookieWriteName is the name this deployment SETS for a session cookie.
-// Reads accept the legacy name too — see cookieValue.
+// Reads are governed by sessionCookie, which is deliberately NOT symmetric.
 func (s *Server) authCookieWriteName(base string) string {
 	if s.usesHostPrefix() {
 		return hostCookiePrefix + base
@@ -28,17 +28,39 @@ func (s *Server) authCookieWriteName(base string) string {
 	return base
 }
 
-// cookieValue reads a session cookie, preferring the __Host- form.
+// sessionCookie reads a session cookie under this deployment's own naming.
 //
-// The order is the point. A sibling host under the same registrable domain
-// can set a cookie with Domain=<shared parent> and the bare name, which the
-// browser then sends alongside ours ("cookie tossing") — enough to pin a
-// victim onto an attacker's session. A __Host- cookie cannot be written that
-// way at all, so preferring it means a tossed bare cookie can never shadow a
-// migrated session.
-func cookieValue(r *http.Request, base string) string {
-	if c, err := r.Cookie(hostCookiePrefix + base); err == nil && c != nil && c.Value != "" {
-		return c.Value
+// A sibling host under the same registrable domain can set a cookie with
+// Domain=<shared parent> and the bare name, which the browser then sends
+// alongside ours ("cookie tossing") — enough to pin a victim onto an
+// attacker's session. A __Host- cookie cannot be written that way, so where
+// this deployment writes the prefix, the prefixed name is what counts.
+//
+// Two rules, each paying for a way the naive version fails:
+//
+//   - When the prefix is NOT written (plaintext studio, explicit
+//     CookieDomain), the prefixed name is ignored ENTIRELY rather than
+//     preferred. Preferring it makes a config rollback a session-confusion
+//     bug: flipping CookieSecure or CookieDomain back leaves the browser
+//     holding a __Host- cookie this build can neither overwrite nor delete,
+//     and a fresh login would then read the PREVIOUS user's session.
+//   - `acceptLegacy` is for the migration, and only the refresh cookie gets
+//     it. Accepting a legacy ACCESS cookie reopens the very fixation it
+//     closes: the prefixed access cookie expires in 15 minutes while a tossed
+//     bare one is attacker-controlled and can outlive it, so every idle tab
+//     past the access TTL would silently adopt the attacker's session — and
+//     logout cannot clear a Domain-scoped cookie, so "log out, reload" would
+//     land on their account. A legacy browser instead pays one 401, which the
+//     SPA answers with a silent refresh (api/client.ts), and comes back fully
+//     migrated.
+func (s *Server) sessionCookie(r *http.Request, base string, acceptLegacy bool) string {
+	if s.usesHostPrefix() {
+		if c, err := r.Cookie(hostCookiePrefix + base); err == nil && c != nil && c.Value != "" {
+			return c.Value
+		}
+		if !acceptLegacy {
+			return ""
+		}
 	}
 	if c, err := r.Cookie(base); err == nil && c != nil {
 		return c.Value
@@ -120,7 +142,10 @@ func (s *Server) clearAuthCookies(w http.ResponseWriter) {
 }
 
 func (s *Server) refreshTokenFromRequest(r *http.Request) string {
-	if v := cookieValue(r, refreshCookieName); v != "" {
+	// acceptLegacy: a session minted before the migration must keep
+	// working until it expires, and the refresh token is server-verified,
+	// single-use and rotating — a far smaller window than the access cookie.
+	if v := s.sessionCookie(r, refreshCookieName, true); v != "" {
 		return v
 	}
 	// Fallback for SDK clients that send it in the body via header.
