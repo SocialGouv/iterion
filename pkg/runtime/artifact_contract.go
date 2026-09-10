@@ -145,11 +145,18 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 		tracked = false
 	}
 	overlayForward := tracked && incomingOnlyBounded(selected)
+	floor := settledFloorFor(nodeID, resolveScope{rs: rs})
 	return ir.NodeArtifactRefsForEdges(e.workflow, nodeID, func(edge *ir.Edge) bool {
 		if edge.From != "" {
 			if _, local := rs.outputs[edge.From]; !local {
 				if _, inherited := rs.inheritedOutputs[edge.From]; !inherited {
-					return false
+					// An edge the settled floor feeds into the node reaches
+					// it exactly like any other, so its artifact references
+					// belong in the node's contract. Same eligibility rule
+					// as the resolver — ONE function, so the two cannot
+					// drift and leave a join consuming an artifact its
+					// contract never named.
+					return settledFloorEligible(edge, floor, false)
 				}
 			}
 		}

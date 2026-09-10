@@ -298,16 +298,22 @@ func TestSelectedIncoming_StaleRecordFallsBack(t *testing.T) {
 	}
 }
 
+// An empty union still leaves the join UNTRACKED: an empty recorded set
+// would mark it tracked and filter every mapping away, and a foreign edge
+// whose source did run must still reach it through the untracked fallback.
+// What the mappings of the dead branches now ride instead is the settled
+// floor, asserted separately (settled_floor_test.go).
 func TestMergeJoinIncoming_EmptyUnionLeavesUntracked(t *testing.T) {
+	eng := New(fanOutWorkflow(ir.AwaitBestEffort), tmpStore(t), newStubExecutor())
 	rs := &runState{selectedIncoming: map[string][]store.IncomingEdge{
 		"join": {{From: "stale", To: "join"}},
 	}}
-	mergeJoinIncoming(rs, "join", []*branchResult{
+	eng.mergeJoinIncoming(rs, "join", []*branchResult{
 		{err: fmt.Errorf("failed"), selectedIncoming: map[string][]store.IncomingEdge{
 			"join": {{From: "a", To: "join"}},
 		}},
 		{err: fmt.Errorf("failed too")},
-	})
+	}, nil)
 	if _, tracked := rs.selectedIncoming["join"]; tracked {
 		t.Fatalf("empty union left join tracked: %#v", rs.selectedIncoming["join"])
 	}

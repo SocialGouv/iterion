@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -89,6 +90,12 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 			result[k] = v
 		}
 	}
+
+	// Settled floor: the mappings of a fan-out invocation that stabilized
+	// without any branch producing output. Applied here, under both passes
+	// below, so any live edge — and the back-edge overlay applied last —
+	// wins on a shared key (#559, #1113).
+	e.applySettledFloor(nodeID, sc, result)
 
 	// applyEdge merges one edge's with-mappings into result. A not-yet-run
 	// source never contributes (the mapping is left to a later-firing
@@ -213,6 +220,118 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	}
 
 	return result
+}
+
+// applySettledFloor merges the with-mappings of the edges a fan-out
+// invocation settled on whose source never produced output — every branch
+// failed under best_effort, or the collection fanned over was empty. Those
+// edges are dropped by every ordinary rule (no output, and the join is left
+// untracked), so without this the node executes with NO incoming mapping at
+// all — including the ones that read a durable parent output or a var and
+// never depended on the dead branch. A tool node is then handed the literal
+// `{{input.x}}` in its command, since shell rendering deliberately keeps an
+// unresolved reference visible (#559, #1113).
+//
+// What it does NOT do: make a mapping that reads the dead branch resolvable.
+// `{{outputs.agent_a}}` still lands nil. That is a narrower promise than it
+// looks — a nil renders empty in a prompt but stays a literal in a shell
+// command, so this reduces the leak without closing it.
+//
+// Two invariants keep it from reopening #484:
+//
+//   - Only an OUTPUT-LESS source contributes (settledFloorEligible). An edge
+//     whose source ran is left to the passes below, where routing's recorded
+//     selection still decides between exclusive siblings.
+//   - It is a FLOOR — applied before both passes, so a live edge and the
+//     back-edge overlay both win on a shared key.
+//
+// Membership is tested against the CURRENT workflow edges, which is what
+// revalidates a floor rehydrated by `resume --force` against an edited .bot:
+// per-edge, not per-node, so an identity that matches no current edge
+// contributes nothing and a wholly stale floor contributes nothing at all
+// (R25212d).
+func (e *Engine) applySettledFloor(nodeID string, sc resolveScope, result map[string]any) {
+	floor := settledFloorFor(nodeID, sc)
+	if len(floor) == 0 || e.workflow == nil {
+		return
+	}
+	// Resolve per SOURCE before writing anything: two floor edges from one
+	// source are exclusive alternatives (`when` / `else`) that routing never
+	// got to decide between, because the source never ran. Where they agree
+	// the value is theirs whichever would have fired; where they disagree,
+	// picking by declaration order is precisely the guess #484 removed.
+	type floorValue struct {
+		value    any
+		decided  bool
+		fromEdge string
+	}
+	sources := make([]string, 0, 2)
+	bySource := make(map[string]map[string]*floorValue)
+	for _, edge := range e.workflow.Edges {
+		if edge == nil || edge.To != nodeID || len(edge.With) == 0 {
+			continue
+		}
+		_, hasOutput := sc.outputs[edge.From]
+		if !settledFloorEligible(edge, floor, hasOutput) {
+			continue
+		}
+		bucket, seen := bySource[edge.From]
+		if !seen {
+			bucket = make(map[string]*floorValue, len(edge.With))
+			bySource[edge.From] = bucket
+			sources = append(sources, edge.From)
+		}
+		// The source produced nothing, so `{{input.*}}` on this edge has no
+		// namespace to read: an explicit empty map, never the caller's
+		// runInputs, which would silently promote a run-level payload into
+		// the source-output namespace (#479). warnMissingEdgeInput is
+		// deliberately skipped — it would fire on every field of a node that
+		// never ran, and say "not on the source node's output" about a source
+		// that has no output at all.
+		edgeScope := sc
+		edgeScope.runInputs = map[string]any{}
+		for _, dm := range edge.With {
+			val := e.resolveMapping(dm, edgeScope)
+			prev, dup := bucket[dm.Key]
+			if !dup {
+				bucket[dm.Key] = &floorValue{value: val, decided: true, fromEdge: edgeLabel(edge)}
+				continue
+			}
+			if prev.decided && !reflect.DeepEqual(prev.value, val) {
+				prev.decided = false
+				e.logger.Warn("runtime: node %s: incoming edges %s and %s are exclusive alternatives from %s, neither ran, and they disagree on %q (%v vs %v) — leaving it unset rather than picking by declaration order",
+					nodeID, prev.fromEdge, edgeLabel(edge), edge.From, dm.Key, prev.value, val)
+			}
+		}
+	}
+	for _, from := range sources {
+		for key, v := range bySource[from] {
+			if v.decided {
+				result[key] = v.value
+			}
+		}
+	}
+}
+
+// edgeLabel renders an edge's routing shape for a diagnostic: `a -> b`,
+// `a -> b when ok`, `a -> b else`. Enough to tell two alternatives apart in
+// a log line, which is the whole point of naming them.
+func edgeLabel(edge *ir.Edge) string {
+	if edge == nil {
+		return "<nil edge>"
+	}
+	label := edge.From + " -> " + edge.To
+	switch {
+	case edge.IsElse:
+		return label + " else"
+	case edge.ExpressionSrc != "":
+		return label + " when " + edge.ExpressionSrc
+	case edge.Condition != "" && edge.Negated:
+		return label + " when not " + edge.Condition
+	case edge.Condition != "":
+		return label + " when " + edge.Condition
+	}
+	return label
 }
 
 // warnMissingEdgeInput logs when a with-mapping {{input.x}} names a

@@ -393,6 +393,15 @@
             },
             "type": "object"
           },
+          "settled_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
           "start_node_id": {
             "type": "string"
           },
@@ -569,6 +578,15 @@
             "type": "object"
           },
           "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "settled_incoming": {
             "additionalProperties": {
               "items": {
                 "$ref": "#/components/schemas/IncomingEdge"

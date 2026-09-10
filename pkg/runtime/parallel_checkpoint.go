@@ -325,6 +325,7 @@ func newParallelInvocation(routerNodeID, invocationKey string, starts map[string
 			LoopCurrentOutput:  make(map[string]map[string]any),
 			LoopBudgetMarks:    make(map[string]map[string]float64),
 			SelectedIncoming:   make(map[string][]store.IncomingEdge),
+			SettledIncoming:    make(map[string][]store.IncomingEdge),
 		}
 	}
 	return &parallelExecutionState{cp: cp}
@@ -659,6 +660,7 @@ func cloneBranchCheckpoint(src *store.BranchCheckpoint) *store.BranchCheckpoint 
 		LoopCurrentOutput:  copyOutputs(src.LoopCurrentOutput),
 		LoopBudgetMarks:    cloneNestedFloatMap(src.LoopBudgetMarks),
 		SelectedIncoming:   cloneIncoming(src.SelectedIncoming),
+		SettledIncoming:    cloneIncoming(src.SettledIncoming),
 		JoinNodeID:         src.JoinNodeID,
 		TerminalNodeID:     src.TerminalNodeID,
 		Completed:          src.Completed,

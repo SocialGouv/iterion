@@ -1424,7 +1424,19 @@ type Checkpoint struct {
 	// existed — the resolver then falls back to "every incoming edge
 	// whose source has produced output".
 	SelectedIncoming map[string][]IncomingEdge `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	Vars             map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
+	// SettledIncoming records, per convergence node, the incoming edges a
+	// fan-out invocation stabilized on whose source produced no output —
+	// every branch failed, or the collection fanned over was empty. It has
+	// to survive the checkpoint because that failure is exactly what parks
+	// the run: a resume restarts AT the convergence node without replaying
+	// the fan-out, so a volatile marker would be gone at the one moment it
+	// is needed. Kept apart from SelectedIncoming, which a loop head's
+	// back-edge replaces on re-entry. Each edge is revalidated against the
+	// current graph at resolve time, so a `resume --force` against an
+	// edited .bot drops the identities that no longer match rather than
+	// the whole set.
+	SettledIncoming map[string][]IncomingEdge `json:"settled_incoming,omitempty" bson:"settled_incoming,omitempty"`
+	Vars            map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
@@ -1554,10 +1566,13 @@ type BranchCheckpoint struct {
 	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
 	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
 	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	JoinNodeID         string                         `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
-	TerminalNodeID     string                         `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
-	Completed          bool                           `json:"completed,omitempty" bson:"completed,omitempty"`
-	TerminatedAtDone   bool                           `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	// SettledIncoming is the branch-private twin of Checkpoint.SettledIncoming:
+	// the floor a NESTED fan-out left on a convergence inside this branch.
+	SettledIncoming  map[string][]IncomingEdge `json:"settled_incoming,omitempty" bson:"settled_incoming,omitempty"`
+	JoinNodeID       string                    `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID   string                    `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed        bool                      `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone bool                      `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
 	// CostUSD is this branch's cumulative LLM spend for the current
 	// invocation. The daily spend cap records per-branch spend under a
 	// monotonic-max ledger key, so a resumed branch must restart its

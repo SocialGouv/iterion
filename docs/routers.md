@@ -267,6 +267,23 @@ Parallel branches — whether from `fan_out_all`, `fan_out_each`, or `llm` multi
 
 One `join_ready` event is emitted per convergence, on the collector, naming the strategy — a second `join_ready`, or a second execution of the collector, is an engine defect, never a mode.
 
+**A branch that produced nothing still carries its `with` mappings.** When a
+branch fails — or when a `fan_out_each` fans over an empty collection, so no
+branch runs at all — the mappings on its edge into the collector are still
+applied, as a floor under every live edge. Most of them never depended on the
+branch: `{{outputs.<parent>.count}}` or `{{vars.x}}` resolves exactly as it
+would have. What reads the dead branch itself (`{{outputs.<branch>}}`) lands
+empty with its key present — an empty string in a prompt, but a `tool` node's
+command deliberately keeps an unresolved reference visible, so there it stays
+`{{input.<key>}}`.
+
+Precedence is the ordinary one: a live edge, and a loop back-edge, both
+outrank the floor on a shared key. Two exclusive alternatives from one dead
+source (`a -> collect when ok` and `a -> collect else`, with `a` never run)
+are genuinely undecided: where they agree the value applies, and where they
+disagree the key is left unset with a warning naming the node, both edges and
+the key — never picked by declaration order.
+
 **Which node is the collector.** A node that declares `await:` is the collector for the branches that reach it. Without the annotation, the engine elects the first node (breadth-first from the router's targets) that has more than one distinct predecessor, bounded back-edges excluded. For the router's **direct targets** — the branch heads — only predecessors inside the fan-out count (the router itself, or a node it reaches): the mono/dual topology, where a `condition` router reaches the same reviewer directly *or* through a `fan_out_all` router, gives that reviewer two predecessors, and it is still an ordinary branch head, not the collector. Below the heads every predecessor counts, including a trunk edge that bypasses the fan-out (`plan -> collect else` for the no-items case) — that bypass is what makes `collect` the implicit collector of a linear `fan_out_each` template. Declare `await:` on the intended collector rather than relying on the implicit election.
 
 Routers are fan-out sources and do not declare `await:` themselves.

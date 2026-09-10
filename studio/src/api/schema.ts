@@ -5754,6 +5754,9 @@ export interface components {
             selected_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
+            settled_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
             start_node_id: string;
             terminal_node_id?: string;
             terminated_at_done?: boolean;
@@ -5838,6 +5841,9 @@ export interface components {
                 [key: string]: number;
             };
             selected_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
+            settled_incoming?: {
                 [key: string]: components["schemas"]["IncomingEdge"][];
             };
             vars: {

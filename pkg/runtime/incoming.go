@@ -163,8 +163,9 @@ func cloneIncoming(m map[string][]store.IncomingEdge) map[string][]store.Incomin
 // mergeJoinIncoming unions the selected incoming edges that successful
 // fan-out branches recorded for the convergence node, and writes that
 // set onto the trunk runState so the join execution applies exactly those
-// mappings.
-func mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult) {
+// mappings. launched is the set of edges this invocation actually started
+// branches on — the provenance of the settled floor recorded alongside.
+func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult, launched []*ir.Edge) {
 	if rs == nil || joinNodeID == "" {
 		return
 	}
@@ -183,6 +184,10 @@ func mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult)
 			union = append(union, in)
 		}
 	}
+	// Record what this invocation settled on, whichever way it went: a
+	// fresh invocation owns the floor for its join, so one that produced
+	// output must not leave the previous one's floor standing.
+	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, launched, joinNodeID))
 	if len(union) == 0 {
 		// No successful branch recorded an edge into the join (every
 		// branch failed under best_effort, or the join came from the
@@ -199,4 +204,113 @@ func mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult)
 		rs.selectedIncoming = make(map[string][]store.IncomingEdge)
 	}
 	rs.selectedIncoming[joinNodeID] = union
+}
+
+// ---------------------------------------------------------------------------
+// Settled floor — the edges a stabilized fan-out left with no output behind
+// ---------------------------------------------------------------------------
+
+// settledEdgesInto returns the edges into joinNodeID that a fan-out
+// invocation would have fired, found by walking forward from the nodes it
+// actually entered.
+//
+// Provenance is the LAUNCHED edges, never the declared ones: an llm router
+// in multi-select mode starts a subset of what the graph declares, so
+// reading the declaration would sweep in the very foreign edge the floor
+// exists to exclude.
+//
+// Bounded-iteration edges are out of both the walk and the result. A
+// back-edge is a per-iteration overlay applied last, not part of a
+// stabilized forward pass (Rae4900).
+func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string) []store.IncomingEdge {
+	if wf == nil || joinNodeID == "" || len(launched) == 0 {
+		return nil
+	}
+	reachable := make(map[string]bool, len(launched))
+	frontier := make([]string, 0, len(launched))
+	push := func(id string) {
+		if id == "" || reachable[id] {
+			return
+		}
+		reachable[id] = true
+		frontier = append(frontier, id)
+	}
+	for _, edge := range launched {
+		if edge == nil || edge.IsBoundedIteration() {
+			continue
+		}
+		push(edge.To)
+	}
+	// Forward closure, stopping AT the join: expanding past it could
+	// re-enter through an unrelated downstream cycle and claim edges this
+	// invocation never owned.
+	for len(frontier) > 0 {
+		node := frontier[len(frontier)-1]
+		frontier = frontier[:len(frontier)-1]
+		if node == joinNodeID {
+			continue
+		}
+		for _, edge := range wf.Edges {
+			if edge == nil || edge.From != node || edge.IsBoundedIteration() {
+				continue
+			}
+			push(edge.To)
+		}
+	}
+	var settled []store.IncomingEdge
+	for _, edge := range wf.Edges {
+		if edge == nil || edge.To != joinNodeID || edge.IsBoundedIteration() {
+			continue
+		}
+		if edge.From == "" || !reachable[edge.From] {
+			continue
+		}
+		settled = append(settled, incomingFromEdge(edge))
+	}
+	return settled
+}
+
+// setSettledFloor stores — or clears — the settled floor for a convergence
+// node. Kept apart from selectedIncoming because a join may be a loop head
+// (TestValidateLoopAfterJoin_Allowed): selectEdgeRS REPLACES the selection
+// on re-entry, so a floor living there would vanish on the second visit.
+func (rs *runState) setSettledFloor(joinNodeID string, settled []store.IncomingEdge) {
+	if rs == nil || joinNodeID == "" {
+		return
+	}
+	if len(settled) == 0 {
+		delete(rs.settledIncoming, joinNodeID)
+		return
+	}
+	if rs.settledIncoming == nil {
+		rs.settledIncoming = make(map[string][]store.IncomingEdge)
+	}
+	rs.settledIncoming[joinNodeID] = settled
+}
+
+// settledFloorFor returns the floor recorded for nodeID, if any.
+func settledFloorFor(nodeID string, sc resolveScope) []store.IncomingEdge {
+	if sc.rs == nil {
+		return nil
+	}
+	return sc.rs.settledIncoming[nodeID]
+}
+
+// settledFloorEligible reports whether edge draws its with-mappings from
+// the floor recorded for its destination. THE shared eligibility rule:
+// buildNodeInputRS and consumedArtifactRefs both consult it, so an edge
+// that feeds the join can never sit outside the join's artifact contract.
+//
+// Only an output-less source qualifies. An edge whose source ran is left
+// to the ordinary passes, where routing's recorded selection still decides
+// between exclusive siblings — without that clause a `when`/`else` pair
+// downstream of a live node would both contribute again (#484).
+func settledFloorEligible(edge *ir.Edge, floor []store.IncomingEdge, hasOutput bool) bool {
+	if edge == nil || len(floor) == 0 || hasOutput || edge.From == "" {
+		return false
+	}
+	if edge.IsBoundedIteration() {
+		return false
+	}
+	return edgeInIncoming(edge, floor)
 }
