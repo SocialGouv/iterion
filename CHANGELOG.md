@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.136.0](https://github.com/SocialGouv/iterion/compare/v3.135.1...v3.136.0) (2026-09-10)
+
+### Features
+
+* **dsl:** the registry's value lists are held to the compiler, a block's remedy to its host, and worktree: is checked (C142) ([#1103](https://github.com/SocialGouv/iterion/issues/1103)) ([142755f](https://github.com/SocialGouv/iterion/commit/142755f7cd4f57096b1542c9fdeae87d592e6471)), references [#1092](https://github.com/SocialGouv/iterion/issues/1092) [#1084](https://github.com/SocialGouv/iterion/issues/1084) [#1094](https://github.com/SocialGouv/iterion/issues/1094) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1010](https://github.com/SocialGouv/iterion/issues/1010)
+
+    <details><summary>why</summary>
+
+    Revi's second verdict on #1092 named the class behind two guards that lot 1a added: the registry's value lists were proven to the PARSER only, and the "outdent it to the <host>'s level" remedy was right only because every multi-host block happened to call enterBlock.
+
+    </details>
+
 ## [3.135.1](https://github.com/SocialGouv/iterion/compare/v3.135.0...v3.135.1) (2026-09-10)
 
 ### Bug Fixes
