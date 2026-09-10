@@ -337,3 +337,67 @@ func TestHandleLaunchRun_CarriesTheRequestsBotToTheGate(t *testing.T) {
 		}
 	})
 }
+
+// A resume is judged like a launch, so it needs the same subject — and it can
+// only get it from the RUN. Judged as ordinary work, a RESERVED bot faces the
+// ceiling its own reservation lowered, so resuming it by hand is refused on
+// the band held for it; where the reserves take a whole cap, nothing could be
+// resumed or answered at all.
+func TestHandleResumeRun_TakesItsSubjectFromTheRun(t *testing.T) {
+	newSrv := func(t *testing.T, reserved string) (*Server, context.Context, string) {
+		t.Helper()
+		pub := &countingPublisher{}
+		s, rs := newGatedBoardServer(t, gateSpec{id: "t1", maxConcurrentRuns: 2}, pub)
+		s.cfg.Store = fakeActiveStore{RunStore: rs, active: 1}
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+			{BotID: reserved, Reserve: budgetfloor.Reserve{ConcurrentRuns: 1}},
+		}})
+		// A paused run of `probe`, the way the operator would find it.
+		ctx := context.Background()
+		runID := "run-paused-1"
+		if _, err := rs.CreateRun(ctx, runID, "board_probe", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		run, err := rs.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		run.Status = store.RunStatusPausedWaitingHuman
+		run.BotID = "probe"
+		if err := rs.SaveRun(ctx, run); err != nil {
+			t.Fatalf("SaveRun: %v", err)
+		}
+		return s, auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"}), runID
+	}
+
+	t.Run("the reserved bot is admitted on its own slot", func(t *testing.T) {
+		s, ctx, runID := newSrv(t, "probe")
+		rec := httptest.NewRecorder()
+		s.handleResumeRun(rec, orgReq(ctx, http.MethodPost, "/api/runs/"+runID+"/resume", `{}`, runID))
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("the reserved bot's own resume was refused on its reservation: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("an unreserved bot still stops at the unreserved slots", func(t *testing.T) {
+		s, ctx, runID := newSrv(t, "review-pr")
+		rec := httptest.NewRecorder()
+		s.handleResumeRun(rec, orgReq(ctx, http.MethodPost, "/api/runs/"+runID+"/resume", `{}`, runID))
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429 — the free slot is held for review-pr: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a run the store cannot answer for is still gated", func(t *testing.T) {
+		// The subject is best-effort; admission is not. The gate's denial must
+		// also come out AHEAD of the 404, or the (not tenant-filtered) lookup
+		// becomes a run-existence probe for a caller the gate refuses.
+		s, ctx, _ := newSrv(t, "review-pr")
+		rec := httptest.NewRecorder()
+		s.handleResumeRun(rec, orgReq(ctx, http.MethodPost, "/api/runs/nope/resume", `{}`, "nope"))
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want the gate's 429 rather than a 404: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
