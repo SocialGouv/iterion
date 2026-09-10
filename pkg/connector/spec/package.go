@@ -80,6 +80,32 @@ func (c *Connector) AuthScheme(id string) (AuthScheme, bool) {
 	return AuthScheme{}, false
 }
 
+// EffectiveOutcome resolves the outcome policy an operation runs under: its
+// own if it declares one, else the connector's. One resolver, because a
+// reader that consulted only the operation would read a status-only policy
+// for an API that signals failure in the body — the exact defect the policy
+// exists to remove.
+func (p *Package) EffectiveOutcome(op Operation) *OutcomePolicy {
+	if op.Outcome != nil {
+		return op.Outcome
+	}
+	return p.Connector.Outcome
+}
+
+// EffectiveSecurity resolves the requirements an operation authorizes under:
+// its own, else the connector default. An operation marked Anonymous returns
+// nil — the explicit "no credential needed", which is not the same as an
+// operation that simply declared nothing.
+func (p *Package) EffectiveSecurity(op Operation) []SecurityRequirement {
+	if op.Anonymous {
+		return nil
+	}
+	if len(op.Security) > 0 {
+		return op.Security
+	}
+	return p.Connector.DefaultSecurity
+}
+
 // EffectiveMaturity resolves an operation's maturity against the package
 // floor. The floor WINS when it is lower: a package nobody qualified cannot
 // contain a qualified operation, so the clamp lives here rather than in each
@@ -146,6 +172,50 @@ func (p *Package) Validate() error {
 	}
 	if c.BaseURL.Default == "" && !c.BaseURL.OperatorSupplied {
 		return fmt.Errorf("connector %q: no default base url and not operator-supplied — no call could be addressed", c.ID)
+	}
+	// Every security requirement must name a scheme the package declares.
+	// Otherwise a binding is accepted at launch and the operation fails
+	// mid-run against the vendor, which is the same defect as an unknown
+	// schema ref — just deferred to a place where it costs a run.
+	for _, req := range c.DefaultSecurity {
+		if err := checkRequirement(c, req, "connector "+c.ID+" default_security"); err != nil {
+			return err
+		}
+	}
+	for _, f := range p.Ops {
+		for _, op := range f.Operations {
+			for _, req := range op.Security {
+				if err := checkRequirement(c, req, "operation "+op.ID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRequirement verifies a requirement's terms against the declared
+// schemes, including that a named scope is one the scheme advertises when it
+// advertises any at all. A required scope no scheme offers cannot be granted,
+// so an operation asking for one can never be authorized.
+func checkRequirement(c *Connector, req SecurityRequirement, where string) error {
+	for _, t := range req.Terms {
+		scheme, ok := c.AuthScheme(t.SchemeID)
+		if !ok {
+			return fmt.Errorf("%s: security names unknown auth scheme %q", where, t.SchemeID)
+		}
+		if len(scheme.SupportedScopes) == 0 {
+			continue // the vendor advertises none; nothing to check against
+		}
+		supported := make(map[string]bool, len(scheme.SupportedScopes))
+		for _, s := range scheme.SupportedScopes {
+			supported[s] = true
+		}
+		for _, want := range t.Scopes {
+			if !supported[want] {
+				return fmt.Errorf("%s: requires scope %q, which scheme %q does not advertise", where, want, t.SchemeID)
+			}
+		}
 	}
 	return nil
 }
@@ -235,10 +305,21 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	// path param must appear in the path. A mismatch is the failure that
 	// otherwise surfaces as a request to a literally-templated URL.
 	declared := map[string]bool{}
+	keys := map[string]bool{}
 	for _, prm := range op.Params {
 		if prm.Name == "" {
 			return fmt.Errorf("operation %q: a parameter has no name", op.ID)
 		}
+		// The public key is what a `.bot` writes; two parameters sharing one
+		// would make the second unaddressable, which is silent — the first
+		// value would simply be sent twice.
+		if prm.Key == "" {
+			return fmt.Errorf("operation %q: parameter %q has no key", op.ID, prm.Name)
+		}
+		if keys[prm.Key] {
+			return fmt.Errorf("operation %q: two parameters share the key %q — one of them could never be addressed", op.ID, prm.Key)
+		}
+		keys[prm.Key] = true
 		if prm.SchemaRef != "" && schemas != nil {
 			if _, ok := schemas[prm.SchemaRef]; !ok {
 				return fmt.Errorf("operation %q: parameter %q references unknown schema %q", op.ID, prm.Name, prm.SchemaRef)
@@ -259,9 +340,40 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 			return fmt.Errorf("operation %q: path %q has placeholder {%s} with no path parameter", op.ID, op.HTTP.Path, name)
 		}
 	}
-	if op.Result.SchemaRef != "" && schemas != nil {
-		if _, ok := schemas[op.Result.SchemaRef]; !ok {
-			return fmt.Errorf("operation %q: result references unknown schema %q", op.ID, op.Result.SchemaRef)
+	// A body with no declared encoding is a body the executor would have to
+	// guess the bytes of: the same fields mean different requests as JSON, as
+	// form-urlencoded and as multipart.
+	if op.HasBodyParams() && op.HTTP.RequestBody == "" {
+		return fmt.Errorf("operation %q: has body parameters but declares no request_body encoding (json|form|multipart)", op.ID)
+	}
+	// The encoding is checked whether or not body parameters SURVIVED, and
+	// that is the point: an operation whose only media type is one iterion
+	// cannot build reaches here with an encoding marker and no params, and
+	// admitting it would publish an operation that silently drops its
+	// payload and reports success.
+	if op.HTTP.RequestBody != "" && !ValidBodyEncoding(op.HTTP.RequestBody) {
+		return fmt.Errorf("operation %q: request body encoding %q is not one iterion can build (want json|form|multipart)", op.ID, op.HTTP.RequestBody)
+	}
+	seenStatus := map[int]bool{}
+	for _, r := range op.Results {
+		if seenStatus[r.Status] {
+			return fmt.Errorf("operation %q: duplicate result status %d", op.ID, r.Status)
+		}
+		seenStatus[r.Status] = true
+		if r.SchemaRef != "" && schemas != nil {
+			if _, ok := schemas[r.SchemaRef]; !ok {
+				return fmt.Errorf("operation %q: result %d references unknown schema %q", op.ID, r.Status, r.SchemaRef)
+			}
+		}
+	}
+	for _, req := range op.Security {
+		if len(req.Terms) == 0 {
+			return fmt.Errorf("operation %q: a security requirement has no terms (use anonymous: true for a public operation)", op.ID)
+		}
+		for _, t := range req.Terms {
+			if strings.TrimSpace(t.SchemeID) == "" {
+				return fmt.Errorf("operation %q: a security term names no scheme", op.ID)
+			}
 		}
 	}
 	// An idempotency key that names no parameter is worse than none: it would
@@ -269,7 +381,7 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 	if op.IdempotencyKeyParam != "" {
 		found := false
 		for _, prm := range op.Params {
-			if prm.Name == op.IdempotencyKeyParam {
+			if prm.Name == op.IdempotencyKeyParam || prm.Key == op.IdempotencyKeyParam {
 				found = true
 				break
 			}

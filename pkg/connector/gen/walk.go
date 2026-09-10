@@ -35,6 +35,14 @@ type walker struct {
 	// skipped collects the operations the description described badly enough
 	// that iterion could not derive a callable one. See Report.
 	skipped []Skip
+	// authIDBySourceKey maps the vendor's own securityDefinitions key onto the
+	// iterion scheme id derived from it. An operation's `security` block names
+	// the VENDOR's key, while everything downstream stores iterion's — without
+	// this translation a per-operation requirement could never be resolved.
+	authIDBySourceKey map[string]string
+	// defaultSecurity is the description's root-level `security`, applied to
+	// every operation that declares none of its own.
+	defaultSecurity []spec.SecurityRequirement
 }
 
 func (w *walker) run() error {
@@ -49,6 +57,12 @@ func (w *walker) run() error {
 	// where that judgement belongs. The generated package simply does not
 	// pass the complete Validate until an overlay supplies one.
 	w.auth = w.readAuth()
+	// The root `security` is the default for every operation that declares
+	// none. Read AFTER the schemes, since a requirement names a vendor key
+	// that only readAuth can translate.
+	if list, ok := w.doc["security"].([]any); ok {
+		w.defaultSecurity = w.requirements(list)
+	}
 	w.readSchemas()
 	return w.readPaths()
 }
@@ -119,6 +133,7 @@ func (w *walker) readAuth() []spec.AuthScheme {
 	}
 
 	seen := map[string]int{}
+	w.authIDBySourceKey = map[string]string{}
 	var out []spec.AuthScheme
 	for _, key := range sortedKeys(raw) {
 		sm, ok := raw[key].(map[string]any)
@@ -133,6 +148,7 @@ func (w *walker) readAuth() []spec.AuthScheme {
 			s.ID = fmt.Sprintf("%s_%d", s.ID, n+1)
 		}
 		seen[baseAuthID(s)]++
+		w.authIDBySourceKey[key] = s.ID
 		out = append(out, s)
 	}
 	return out
@@ -204,11 +220,15 @@ func (w *walker) authScheme(key string, sm map[string]any) (spec.AuthScheme, boo
 			f := mapAt(flows, "authorizationCode")
 			s.AuthURL = str(f, "authorizationUrl")
 			s.TokenURL = str(f, "tokenUrl")
-			s.Scopes = sortedKeys(mapAt(f, "scopes"))
+			// What the vendor ADVERTISES. Copying it into DefaultScopes would
+			// make every connection request every scope the API offers, which
+			// is the opposite of least privilege — what a connection asks for
+			// is decided by the overlay and the operations actually bound.
+			s.SupportedScopes = sortedKeys(mapAt(f, "scopes"))
 		} else {
 			s.AuthURL = str(sm, "authorizationUrl")
 			s.TokenURL = str(sm, "tokenUrl")
-			s.Scopes = sortedKeys(mapAt(sm, "scopes"))
+			s.SupportedScopes = sortedKeys(mapAt(sm, "scopes"))
 		}
 		if s.AuthURL == "" || s.TokenURL == "" {
 			return spec.AuthScheme{}, false
@@ -321,13 +341,118 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		}
 		out.Params = append(out.Params, w.params(pm)...)
 	}
+	// The body encoding. Swagger 2 states it as the operation's `consumes`
+	// (inherited from the root) and carries body members either as one
+	// `in: body` schema or as `in: formData` parameters; OpenAPI 3 states it
+	// as the requestBody's media type. Both land on one BodyEncoding, because
+	// the executor needs to know which bytes to build, not which format said
+	// so.
 	if w.format == FormatOpenAPI3 {
-		out.Params = append(out.Params, w.requestBodyParams(mapAt(op, "requestBody"))...)
+		body, encoding := w.requestBody(mapAt(op, "requestBody"))
+		out.Params = append(out.Params, body...)
+		out.HTTP.RequestBody = encoding
+	} else {
+		out.HTTP.RequestBody = w.swaggerBodyEncoding(op)
 	}
 	out.Params = sortParams(dedupParams(out.Params))
+	assignParamKeys(out.Params)
 
-	out.Result, out.Errors = w.responses(mapAt(op, "responses"))
+	out.Results, out.Errors = w.responses(mapAt(op, "responses"))
+	out.Security, out.Anonymous = w.security(op)
 	return out
+}
+
+// security reads an operation's own requirements. An EMPTY `security: []` is
+// the explicit "this operation needs no credential" in both formats — which
+// is different from declaring nothing, where the root default applies — so
+// the two are returned apart rather than collapsed into a nil slice.
+func (w *walker) security(op map[string]any) ([]spec.SecurityRequirement, bool) {
+	raw, present := op["security"]
+	if !present {
+		return nil, false
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	if len(list) == 0 {
+		return nil, true
+	}
+	return w.requirements(list), false
+}
+
+// requirements converts a format-level security list — an array of maps from
+// scheme name to required scopes — into iterion's alternatives-of-conjunctions
+// shape. A scheme the package did not derive is dropped: naming it would
+// produce a requirement nothing could ever satisfy.
+func (w *walker) requirements(list []any) []spec.SecurityRequirement {
+	var out []spec.SecurityRequirement
+	for _, raw := range list {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		var req spec.SecurityRequirement
+		for _, key := range sortedKeys(m) {
+			id, ok := w.authIDBySourceKey[key]
+			if !ok {
+				continue
+			}
+			term := spec.SecurityTerm{SchemeID: id}
+			if scopes, ok := m[key].([]any); ok {
+				for _, s := range scopes {
+					if str, ok := s.(string); ok {
+						term.Scopes = append(term.Scopes, str)
+					}
+				}
+			}
+			req.Terms = append(req.Terms, term)
+		}
+		if len(req.Terms) > 0 {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// swaggerBodyEncoding reads Swagger 2's `consumes`, falling back to the root's.
+// The list is ordered by the vendor's preference, so the FIRST media type
+// iterion can build wins — Slack advertises form-urlencoded before JSON, and
+// its Web API is the form one.
+func (w *walker) swaggerBodyEncoding(op map[string]any) spec.BodyEncoding {
+	consumes := strSlice(op, "consumes")
+	if len(consumes) == 0 {
+		consumes = strSlice(w.doc, "consumes")
+	}
+	for _, mt := range consumes {
+		if e := spec.NormalizeMediaType(mt); e != "" {
+			return e
+		}
+	}
+	// A Swagger operation with body members and no `consumes` anywhere means
+	// JSON by the format's own default.
+	return spec.BodyJSON
+}
+
+// assignParamKeys gives every parameter its public key — the name a `.bot`
+// writes. It is the WIRE name whenever that is unambiguous, and the location
+// plus the wire name when it is not: an operation legitimately carries `name`
+// in its path and another `name` in its body, and one flat map cannot hold
+// both. Path parameters keep the bare name in a conflict, since a `.bot`
+// author reads those off the URL.
+func assignParamKeys(params []spec.Param) {
+	taken := make(map[string]bool, len(params))
+	for i := range params {
+		key := params[i].Name
+		if taken[key] {
+			key = string(params[i].In) + "_" + params[i].Name
+		}
+		for n := 2; taken[key]; n++ {
+			key = fmt.Sprintf("%s_%s_%d", params[i].In, params[i].Name, n)
+		}
+		taken[key] = true
+		params[i].Key = key
+	}
 }
 
 // params flattens ONE declared parameter into iterion's flat list. Swagger
@@ -354,7 +479,10 @@ func (w *walker) params(pm map[string]any) []spec.Param {
 		schema := mapAt(pm, "schema")
 		return w.bodyParams(schema)
 	case "formdata":
-		return []spec.Param{w.scalarParam(pm, spec.InForm)}
+		// Swagger 2's formData is a BODY member: whether it goes on the wire
+		// as form-urlencoded or as multipart is the operation's `consumes`,
+		// not the parameter's location. Slack's entire Web API is this case.
+		return []spec.Param{w.scalarParam(pm, spec.InBody)}
 	case "path":
 		p := w.scalarParam(pm, spec.InPath)
 		p.Required = true
@@ -395,8 +523,64 @@ func (w *walker) scalarParam(pm map[string]any, in spec.ParamIn) spec.Param {
 	if p.Type == "" {
 		p.Type = "string"
 	}
+	p.Style, p.Explode = serialization(pm, in, p.Type)
 	return p
 }
+
+// serialization resolves how a non-scalar value reaches the wire.
+//
+// The two formats say it differently and both say it explicitly: OpenAPI 3
+// carries `style`/`explode`, Swagger 2 carries `collectionFormat`. Dropping
+// it is not a documentation loss — `labels=[a,b]` reaches a vendor as
+// `labels=a,b`, as `labels=a&labels=b` or as `labels=a%20b` depending on the
+// answer, and only one of those is the one the vendor parses.
+//
+// A scalar gets no style: there is nothing to serialize, and recording one
+// would add bytes to every parameter of every package for no meaning.
+func serialization(pm map[string]any, in spec.ParamIn, typ string) (spec.ParamStyle, *bool) {
+	if typ != "array" && typ != "object" {
+		return "", nil
+	}
+	if style := str(pm, "style"); style != "" {
+		var explode *bool
+		if v, ok := pm["explode"].(bool); ok {
+			explode = &v
+		}
+		return spec.ParamStyle(style), explode
+	}
+	if v, ok := pm["explode"].(bool); ok {
+		return defaultStyleFor(in), &v
+	}
+	switch str(pm, "collectionFormat") {
+	case "csv":
+		return defaultStyleFor(in), boolPtr(false)
+	case "ssv":
+		return spec.StyleSpaceDelimited, boolPtr(false)
+	case "pipes":
+		return spec.StylePipeDelimited, boolPtr(false)
+	case "multi":
+		// Repeated `k=v` pairs — only meaningful in a query or a form.
+		return spec.StyleForm, boolPtr(true)
+	case "tsv":
+		// Tab-separated has no OpenAPI 3 equivalent and no executor support;
+		// leaving it unset would silently comma-join. Named as unsupported so
+		// the operation becomes a coverage gap rather than a wrong request.
+		return spec.ParamStyle("tsv"), boolPtr(false)
+	}
+	return defaultStyleFor(in), nil
+}
+
+// defaultStyleFor is each location's default per OpenAPI 3.0.3.
+func defaultStyleFor(in spec.ParamIn) spec.ParamStyle {
+	switch in {
+	case spec.InPath, spec.InHeader:
+		return spec.StyleSimple
+	default:
+		return spec.StyleForm
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // bodyParams expands a request-body object into one param per member.
 // A body that is not an object (an array, a bare string) cannot be flattened
@@ -462,10 +646,18 @@ func (w *walker) bodyParams(schema map[string]any) []spec.Param {
 	return out
 }
 
-// requestBodyParams is the OpenAPI 3 half of the same flattening.
-func (w *walker) requestBodyParams(rb map[string]any) []spec.Param {
+// requestBody is the OpenAPI 3 half of the same flattening, and it returns
+// the ENCODING alongside the members — because in OpenAPI 3 the media type is
+// the key of the content map, so it is known exactly here and nowhere else.
+//
+// A media type iterion cannot build returns an empty encoding rather than an
+// empty parameter list. The difference matters: no params means "this
+// operation has no body", which is a callable operation, while an unsupported
+// encoding must make the operation a COVERAGE GAP — an operation that looks
+// executable but would drop its payload is the failure this package refuses.
+func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding) {
 	if len(rb) == 0 {
-		return nil
+		return nil, ""
 	}
 	if ref := str(rb, "$ref"); ref != "" {
 		if r := w.resolveRef(ref); r != nil {
@@ -473,23 +665,42 @@ func (w *walker) requestBodyParams(rb map[string]any) []spec.Param {
 		}
 	}
 	content := mapAt(rb, "content")
-	media := mapAt(content, "application/json")
-	if len(media) == 0 {
-		// A form body is the other shape iterion can place on the wire; any
-		// other media type is left to the overlay rather than mis-encoded.
-		if form := mapAt(content, "multipart/form-data"); len(form) > 0 {
-			out := w.bodyParams(mapAt(form, "schema"))
-			for i := range out {
-				out[i].In = spec.InForm
-			}
-			return out
+	if len(content) == 0 {
+		return nil, ""
+	}
+	// Sorted so a description offering several media types always resolves to
+	// the same one; JSON is preferred where offered because it is the shape
+	// with the least encoding ambiguity.
+	var chosen string
+	var encoding spec.BodyEncoding
+	for _, mt := range sortedKeys(content) {
+		e := spec.NormalizeMediaType(mt)
+		if e == "" {
+			continue
 		}
-		return nil
+		if encoding == "" || e == spec.BodyJSON {
+			chosen, encoding = mt, e
+		}
+		if e == spec.BodyJSON {
+			break
+		}
+	}
+	if encoding == "" {
+		// Every media type this body offers is one iterion cannot build.
+		return nil, spec.BodyEncoding(unsupportedBodyMarker(content))
 	}
 	// `required: true` on the body itself is NOT propagated onto its members:
 	// it says the envelope must be sent, while which members are mandatory is
 	// the schema's own `required` list, which bodyParams already read.
-	return w.bodyParams(mapAt(media, "schema"))
+	return w.bodyParams(mapAt(mapAt(content, chosen), "schema")), encoding
+}
+
+// unsupportedBodyMarker names the media types a body offered, so the skip
+// reason says WHICH encoding was refused instead of "unsupported". The value
+// is never a valid BodyEncoding, so validation rejects it — which is the
+// mechanism that turns it into a coverage gap.
+func unsupportedBodyMarker(content map[string]any) string {
+	return "unsupported:" + strings.Join(sortedKeys(content), ",")
 }
 
 // dedupParams keeps the first declaration of each (in, name). A path item's
@@ -517,7 +728,7 @@ func dedupParams(in []spec.Param) []spec.Param {
 // members — and a package's diff would move for reasons that are not change.
 func sortParams(in []spec.Param) []spec.Param {
 	rank := map[spec.ParamIn]int{
-		spec.InPath: 0, spec.InQuery: 1, spec.InHeader: 2, spec.InBody: 3, spec.InForm: 4,
+		spec.InPath: 0, spec.InQuery: 1, spec.InHeader: 2, spec.InBody: 3,
 	}
 	sort.SliceStable(in, func(i, j int) bool {
 		ri, rj := rank[in[i].In], rank[in[j].In]
@@ -532,10 +743,9 @@ func sortParams(in []spec.Param) []spec.Param {
 // responses splits a response map into the success shape and the documented
 // failures. The lowest 2xx is the success: a vendor listing both 200 and 201
 // describes one operation whose normal answer is the first of them.
-func (w *walker) responses(resp map[string]any) (spec.Result, []spec.ErrorSpec) {
-	var result spec.Result
+func (w *walker) responses(resp map[string]any) ([]spec.ResultCase, []spec.ErrorSpec) {
+	var results []spec.ResultCase
 	var errs []spec.ErrorSpec
-	best := 0
 	for _, code := range sortedKeys(resp) {
 		rm, ok := resp[code].(map[string]any)
 		if !ok {
@@ -552,11 +762,12 @@ func (w *walker) responses(resp map[string]any) (spec.Result, []spec.ErrorSpec) 
 		}
 		switch {
 		case status >= 200 && status < 300:
-			if best != 0 && status >= best {
-				continue
-			}
-			best = status
-			result = w.result(status, rm)
+			// EVERY success variant is kept, not just the lowest. A vendor
+			// answering 201 for a created resource and 202 for one queued
+			// describes two different things, and a workflow that must tell
+			// "done" from "accepted, not finished" can only do so if the
+			// package still carries both.
+			results = append(results, w.result(status, rm))
 		case status >= 400:
 			errs = append(errs, spec.ErrorSpec{
 				Status:      status,
@@ -565,12 +776,16 @@ func (w *walker) responses(resp map[string]any) (spec.Result, []spec.ErrorSpec) 
 			})
 		}
 	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Status < results[j].Status })
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Status < errs[j].Status })
-	return result, errs
+	return results, errs
 }
 
-func (w *walker) result(status int, rm map[string]any) spec.Result {
-	out := spec.Result{Status: status, Description: firstLine(str(rm, "description"))}
+func (w *walker) result(status int, rm map[string]any) spec.ResultCase {
+	// 202 Accepted means the work was taken, not finished. Marking it is the
+	// difference between a workflow acting on a completed change and acting
+	// on one that may still fail somewhere the caller cannot see.
+	out := spec.ResultCase{Status: status, Description: firstLine(str(rm, "description")), Pending: status == 202}
 	schema := mapAt(rm, "schema") // swagger 2
 	if w.format == FormatOpenAPI3 {
 		schema = mapAt(mapAt(mapAt(rm, "content"), "application/json"), "schema")

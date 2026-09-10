@@ -58,6 +58,16 @@ type Connector struct {
 	// never HIGHER than this one — a package nobody has qualified cannot
 	// contain a qualified operation.
 	Maturity Maturity `yaml:"maturity" json:"maturity"`
+
+	// Outcome describes an API that signals failure inside a successful HTTP
+	// status. It sits here rather than on each operation because an API that
+	// does this does it everywhere — Slack's entire Web API answers 200 with
+	// `{"ok": false}` — and an operation may still override.
+	Outcome *OutcomePolicy `yaml:"outcome,omitempty" json:"outcome,omitempty"`
+
+	// DefaultSecurity applies to every operation that declares none of its
+	// own, mirroring both formats' root-level `security`.
+	DefaultSecurity []SecurityRequirement `yaml:"default_security,omitempty" json:"default_security,omitempty"`
 }
 
 // Provenance records where the package's content came from and what may be
@@ -148,12 +158,20 @@ type AuthScheme struct {
 	// re-pasted token cannot end up double-prefixed.
 	ValuePrefix string `yaml:"value_prefix,omitempty" json:"value_prefix,omitempty"`
 
-	// OAuth2 endpoints, when Kind is AuthOAuth2. Scopes are the default set
-	// requested at authorize time.
-	AuthURL   string   `yaml:"auth_url,omitempty" json:"auth_url,omitempty"`
-	TokenURL  string   `yaml:"token_url,omitempty" json:"token_url,omitempty"`
-	RevokeURL string   `yaml:"revoke_url,omitempty" json:"revoke_url,omitempty"`
-	Scopes    []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	// OAuth2 endpoints, when Kind is AuthOAuth2.
+	AuthURL   string `yaml:"auth_url,omitempty" json:"auth_url,omitempty"`
+	TokenURL  string `yaml:"token_url,omitempty" json:"token_url,omitempty"`
+	RevokeURL string `yaml:"revoke_url,omitempty" json:"revoke_url,omitempty"`
+
+	// SupportedScopes is everything the vendor ADVERTISES for this scheme.
+	// DefaultScopes is what a connection asks for when the operator picks no
+	// narrower set. They are separate, and neither is "the scopes granted" —
+	// which only the provider's answer says. Collapsing the three is how an
+	// integration that reads one channel ends up requesting every scope a
+	// vendor offers, so a package that cannot tell them apart is a package
+	// that cannot be least-privilege.
+	SupportedScopes []string `yaml:"supported_scopes,omitempty" json:"supported_scopes,omitempty"`
+	DefaultScopes   []string `yaml:"default_scopes,omitempty" json:"default_scopes,omitempty"`
 	// PKCE marks a public client (no secret), so a self-hosted deployment can
 	// connect without registering a confidential app.
 	PKCE bool `yaml:"pkce,omitempty" json:"pkce,omitempty"`

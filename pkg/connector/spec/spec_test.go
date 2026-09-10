@@ -33,8 +33,8 @@ func validPackage() *spec.Package {
 			Operations: []spec.Operation{{
 				ID: "probe.issue.get", Resource: "issue", Verb: "get",
 				HTTP:          spec.HTTPBinding{Method: "GET", Path: "/issues/{id}"},
-				Params:        []spec.Param{{Name: "id", In: spec.InPath, Type: "integer", Required: true}},
-				Result:        spec.Result{Status: 200, SchemaRef: "Issue"},
+				Params:        []spec.Param{{Key: "id", Name: "id", In: spec.InPath, Type: "integer", Required: true}},
+				Results:       []spec.ResultCase{{Status: 200, SchemaRef: "Issue"}},
 				Effect:        spec.EffectRead,
 				Deterministic: true,
 			}},
@@ -86,7 +86,7 @@ func TestValidateRefusals(t *testing.T) {
 			// Prevents: a result nothing can validate or type.
 			name: "result references an unknown schema",
 			mutate: func(p *spec.Package) {
-				p.Ops[0].Operations[0].Result.SchemaRef = "Ghost"
+				p.Ops[0].Operations[0].Results[0].SchemaRef = "Ghost"
 			},
 			wantMsg: "unknown schema",
 		},

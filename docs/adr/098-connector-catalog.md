@@ -391,6 +391,53 @@ Seven findings changed the design:
   the unknown-outcome contract), the trigger ingress family, the per-process
   devbox profile, and the studio surfaces. Each is a later lot of #1072.
 
+## The execution profile — what schema v1 actually promises
+
+The review's F14/F15/F16 said the supported request/response semantics must be
+settled *before* `spec.SchemaVersion` 1 is frozen, because a reduced model
+publishes operations that look executable and are not. They are settled here,
+and measured on the same four descriptions.
+
+**Requests.** A body's encoding is declared (`json` | `form` | `multipart`),
+never guessed — the same field set means different bytes in each. Non-scalar
+parameters carry their serialization (`style` + `explode`, mapped from
+Swagger's `collectionFormat`), because `labels=[a,b]` reaches a vendor as
+`a,b`, as `a&labels=b` or as `a%20b` and only one is what it parses. Each
+parameter has a public **key** distinct from its wire **name**, since an
+operation legitimately carries `name` in its path and another in its body and
+one flat `params:` map must hold both.
+
+**Security.** Requirements are per operation: alternatives of conjunctions,
+naming a scheme and the scopes *that operation* needs. `security: []` is
+explicit anonymity, distinct from declaring nothing. And the three scope sets
+stay apart — what a vendor **advertises**, what a connection **requests**, what
+it was **granted** — because collapsing them is how an integration that reads
+one channel asks for every scope the API offers. `Operation.SatisfiedBy`
+answers a binding check at launch instead of a vendor 403 mid-run.
+
+**Responses.** Every 2xx variant is kept, with 202 marked *pending*: a workflow
+that reads "accepted" as "done" acts on work that has not happened. And an
+`OutcomePolicy` expresses an API that signals failure **inside** a success
+status — Slack answers 200 with `{"ok": false, "error": …}`, so a status-only
+model would checkpoint a failure as a success. An unmapped vendor code inside a
+2xx classifies as `bad_request`, never as success.
+
+What this cost and recovered, measured:
+
+- **Slack: 91 of its 174 operations gained a body.** They previously had *no
+  arguments at all* — Swagger's `formData` was being read as a location iterion
+  did not send, so `chat.postMessage` was published with nothing to post.
+- **GitHub dropped 1225 → 1223 operations**, and that is the mechanism working:
+  `POST /markdown/raw` (`text/plain`) and the release-asset upload
+  (`application/octet-stream`) are raw-body operations. They were previously
+  published as executable with an empty body; they are now named coverage gaps.
+- Packages grew ~7 % (Forgejo 615 → 660 KiB, GitLab 3.58 → 3.81 MiB).
+
+**Known gap, named rather than discovered later**: there is no `raw` body
+encoding, so uploading a release asset and rendering raw markdown are out of
+reach for now. Adding one needs a "the body IS this value" parameter shape,
+which is a deliberate later decision, not an oversight.
+
 ## Adversarial review disposition (codex `gpt-6-astra`, xhigh — 22 findings)
 
 Reviewed at commit `4b8a9bd3c`, read-only against the worktree. 4 critical,
