@@ -180,6 +180,16 @@
 .ch-capability-group li p { font-size: 12px; line-height: 1.8; color: var(--ch-muted); margin: 0; }
 .ch-capability-docs { display: inline-flex; align-items: center; gap: 8px; margin-top: 22px; color: var(--ch-muted); font-size: 12px; }
 .ch-capability-docs:hover { color: var(--ch-accent); }
+.ch-open-source-note { display: grid; grid-template-columns: 1fr 1.15fr; align-items: center; gap: 45px; padding: 34px 36px; margin-bottom: 52px; border: 1px solid var(--ch-line); border-radius: 12px; background: linear-gradient(120deg, var(--ch-accent-soft), var(--ch-panel) 65%); scroll-margin-top: 110px; }
+.ch-open-source-note .ch-eyebrow { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; font-size: 8px; }
+.ch-open-source-note h2 { font-size: 32px; line-height: 1.2; letter-spacing: -1px; }
+.ch-open-source-note h2 > span { color: var(--ch-accent); }
+.ch-open-source-invite > p { margin: 0 0 20px; font-size: 13px; line-height: 1.85; color: var(--ch-muted); }
+.ch-open-source-invite > p > a { color: var(--ch-text); text-decoration: underline; text-underline-offset: 3px; }
+.ch-open-source-invite > p > a:hover { color: var(--ch-accent); }
+.ch-open-source-invite > div { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.ch-open-source-invite > div > span { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ch-muted); }
+.ch-open-source-invite > div > span > svg { color: var(--ch-accent); }
 .ch-no-wrap { white-space: nowrap; }
 .ch-final-cta { position: relative; text-align: center; padding: 60px 20px 100px; }
 .ch-final-cta .ch-eyebrow { font-size: 8px; color: var(--ch-faint); margin-bottom: 15px; }
@@ -218,6 +228,7 @@
   .cloud-home h2 { font-size: 36px; }
 }
 @media (max-width: 850px) {
+  .ch-open-source-note { grid-template-columns: 1fr; gap: 22px; padding: 28px; margin-bottom: 35px; }
   .ch-missions-connect { max-width: 500px; }
   .ch-appy-overview { grid-template-columns: 1fr; gap: 23px; }
   .ch-mission-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -260,6 +271,8 @@
   .ch-footer nav > span { width: 100%; text-align: right; }
 }
 @media (max-width: 520px) {
+  .ch-open-source-note { padding: 24px; }
+  .ch-open-source-invite > p { font-size: 12px; }
   .ch-mission-card { padding: 24px; }
   .ch-appy-story h3 { font-size: 30px; }
   .ch-appy-modes { gap: 21px; }

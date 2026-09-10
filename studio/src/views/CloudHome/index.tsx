@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, ArrowUpRight, Check, ChevronRight, Code2, GitBranch, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, ChevronRight, Code2, GitBranch, GitFork, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
 import { GitHubLogoIcon } from "@radix-ui/react-icons";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { useThemeStore } from "@/store/theme";
@@ -24,6 +24,21 @@ function GitHubStar() {
         <Star size={15} aria-hidden="true" /> Star on GitHub <ArrowUpRight size={13} aria-hidden="true" />
       </a>
     </div>
+  );
+}
+
+function OpenSource() {
+  return (
+    <section id="open-source" className="ch-open-source-note" aria-labelledby="ch-open-source-heading">
+      <div>
+        <p className="ch-eyebrow"><GitFork size={16} aria-hidden="true" /> PROUDLY OPEN SOURCE</p>
+        <h2 id="ch-open-source-heading">Our secret sauce?<br /><span>You can fork it.</span></h2>
+      </div>
+      <div className="ch-open-source-invite">
+        <p>The engine, the bots, the studio: all on GitHub, under the <a href={`${GITHUB}/blob/main/LICENSE`} target="_blank" rel="noreferrer">MIT license</a>. Read the code, make it yours, and send your improvements upstream.</p>
+        <div><a href={GITHUB} target="_blank" rel="noreferrer" className="ch-button ch-button-secondary"><GitHubLogoIcon width={17} height={17} aria-hidden="true" /> Explore the source <ArrowUpRight size={14} aria-hidden="true" /></a><span><GitPullRequest size={14} aria-hidden="true" /> Pull requests welcome.</span></div>
+      </div>
+    </section>
   );
 }
 
@@ -81,6 +96,7 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
             <p>The same workflow engine, wherever you run it.<br />Use Iterion Cloud, work locally, or deploy on your own infrastructure.</p>
             <div><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href={`${DOCS}quickstart.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-secondary">Run locally <ArrowUpRight size={14} /></a><a href={`${DOCS}cloud-deployment.html`} target="_blank" rel="noreferrer" className="ch-button ch-button-text">Self-host Iterion <ArrowUpRight size={14} /></a></div>
           </section>
+          <OpenSource />
         </div>
       </main>
       <footer className="ch-footer ch-container"><div><Brand /><p>Complex work. Beautifully orchestrated.</p></div><nav aria-label="Footer navigation"><a href={DOCS} target="_blank" rel="noreferrer">Docs <ArrowUpRight size={12} /></a><a href={GITHUB} target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a>{marketplaceEnabled && <Link href="/marketplace">Marketplace <ArrowRight size={12} /></Link>}<span>Open source · MIT license</span></nav></footer>
