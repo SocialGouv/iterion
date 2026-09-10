@@ -19,6 +19,15 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	// A store that is never closed keeps its inotify instance and, since
+	// the reconciliation net landed, a rescan ticker that ReadDirs the
+	// t.TempDir long after it was removed. Measured on `go test -count=4
+	// -v` before this line: 475 EMFILE ("too many open files") at
+	// fs.inotify.max_user_instances, 221 rescans of a deleted issues/,
+	// and — the part that cost real coverage — five of the watch-dependent
+	// tests SKIPPING, because by the time they ran there was no inotify
+	// instance left for them to arm a watch with.
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
