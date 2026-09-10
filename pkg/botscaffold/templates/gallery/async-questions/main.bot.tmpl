@@ -35,8 +35,15 @@ prompt final_user:
 
   Resolve every placeholder and return the final result.
 
+## The working set is DECLARED here because `interaction:` grants the
+## ask tools by adding them to this list — and on claw a non-empty list
+## is the node's whole toolset. Left empty, the grant turns "no
+## restriction" into exactly {ask_user, ask_user_async, await_answers,
+## todo_write}: the agent could ask, and nothing else. Widen it for what
+## your mission needs (`web_fetch`, an `mcp.<server>.*`).
 agent draft:<%template "llm_fields" .%>
   interaction: async
+  tools: [bash, read_file, write_file, file_edit, glob, grep, todo_write, skill]
   system: mission
   user: draft_user
   output: draft_out

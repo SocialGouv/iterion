@@ -270,8 +270,25 @@ func TestGalleryShapes(t *testing.T) {
 		"async-questions": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
 			var async int
 			for _, a := range nodesOf[*ir.AgentNode](w) {
-				if a.Interaction == ir.InteractionAsync {
-					async++
+				if a.Interaction != ir.InteractionAsync {
+					continue
+				}
+				async++
+				// `interaction:` grants the ask tools by ensureToolPresent
+				// on THIS list, and on claw a non-empty list is the whole
+				// toolset — so an async node that declares none is left
+				// with the ask tools alone and cannot do the work it is
+				// supposed to keep doing while the answers arrive.
+				var working int
+				for _, name := range a.Tools {
+					switch name {
+					case "ask_user", "ask_user_async", "await_answers", "todo_write":
+					default:
+						working++
+					}
+				}
+				if working == 0 {
+					t.Errorf("agent %q declares no working tool (%v); on claw the interaction grant would be its whole toolset", a.ID, a.Tools)
 				}
 			}
 			if async != 1 {
