@@ -19,6 +19,17 @@ func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
 	for name, f := range emptyBlockCases() {
 		t.Run(name, func(t *testing.T) {
 			text := Unparse(f)
+			// The header must be IN the text: with a workflow present the
+			// guard compares compiled programs, and an empty block compiles
+			// like its absence — so a writer that omitted the block would
+			// pass the guard and still delete the header on save.
+			header, ok := emptyBlockHeaders[name]
+			if !ok {
+				t.Fatalf("no expected header for case %q", name)
+			}
+			if !strings.Contains(text, header) {
+				t.Fatalf("the empty %s block was omitted (no %q in the text):\n%s", name, header, text)
+			}
 			if err := Verify(f, text); err != nil {
 				t.Fatalf("an empty %s block does not round-trip: %v\n%s", name, err, text)
 			}
@@ -27,6 +38,29 @@ func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// emptyBlockHeaders is the header each empty block must leave in the text.
+var emptyBlockHeaders = map[string]string{
+	"vars":                  "vars:",
+	"presets":               "presets:",
+	"attachments":           "attachments:",
+	"secrets":               "secrets:",
+	"mcp_server auth":       "auth:",
+	"agent mcp":             "mcp:",
+	"agent compaction":      "compaction:",
+	"agent memory":          "memory:",
+	"agent cursors":         "cursors:",
+	"agent sandbox":         "sandbox: inline",
+	"agent sandbox build":   "build:",
+	"agent sandbox network": "network:",
+	"tool recovery":         "recovery:",
+	"workflow vars":         "vars:",
+	"workflow attachments":  "attachments:",
+	"workflow mcp":          "mcp:",
+	"workflow budget":       "budget:",
+	"workflow resources":    "resources:",
+	"workflow compaction":   "compaction:",
 }
 
 // emptyBlockCases is one document per block the AST can hold empty, each
@@ -131,6 +165,49 @@ func TestVerifyAcceptsAnEmptySandboxFromTheTransport(t *testing.T) {
 		if err := Verify(f, text); err != nil {
 			t.Fatalf("%s: a `sandbox: {}` from the canvas cannot be saved: %v\n%s", name, err, text)
 		}
+	}
+}
+
+// A group's agents and judges are written by the same writers as the
+// top-level ones, so a nameless route on one of them is refused by name
+// too — named by group and node — instead of vanishing on save.
+func TestVerifyRefusesANamelessFallbackRouteInAGroup(t *testing.T) {
+	f := &ast.File{
+		Groups: []*ast.GroupDecl{{
+			Name:   "g",
+			Agents: []*ast.AgentDecl{{Name: "a", LLMDecl: ast.LLMDecl{Model: "m", Fallbacks: []*ast.FallbackDecl{{Name: "", Backend: "claw"}}}}},
+		}},
+	}
+	err := Verify(f, Unparse(f))
+	if err == nil {
+		t.Fatal("a nameless fallback route on a group's agent was accepted — and dropped from the saved text")
+	}
+	if !strings.Contains(err.Error(), `group "g"`) || !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), "no name") {
+		t.Fatalf("the refusal does not name the group, the node and the cause: %v", err)
+	}
+}
+
+// A sandbox whose only field beside its mode is host_state: is not the
+// short form: written as `sandbox: auto` alone, the host_state would be
+// dropped on save. The block form carries it, and a transported block
+// with only host_state: (no mode) reads back as it was written.
+func TestSandboxHostStateSurvivesTheWriter(t *testing.T) {
+	f := promptDoc("x")
+	f.Agents[0].Sandbox = &ast.SandboxBlock{Mode: "auto", HostState: "none"}
+	text := Unparse(f)
+	if !strings.Contains(text, "host_state: none") {
+		t.Fatalf("host_state was dropped by the short form:\n%s", text)
+	}
+	if err := Verify(f, text); err != nil {
+		t.Fatalf("a sandbox with a host_state does not round-trip: %v\n%s", err, text)
+	}
+	doc := `{"agents":[{"name":"a","model":"m","sandbox":{"host_state":"none"}}],"workflows":[{"name":"w","entry":"a","edges":[{"from":"a","to":"done"}]}]}`
+	g, err := ast.UnmarshalFile([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(g, Unparse(g)); err != nil {
+		t.Fatalf("a transported sandbox with only host_state cannot be saved: %v\n%s", err, Unparse(g))
 	}
 }
 

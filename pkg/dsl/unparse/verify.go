@@ -47,6 +47,19 @@ func Verify(f *ast.File, text string) error {
 			return fmt.Errorf("judge %q cannot be written as .bot source: %v", j.Name, err)
 		}
 	}
+	// A group's members go through the same writers.
+	for _, g := range f.Groups {
+		for _, a := range g.Agents {
+			if err := checkFallbackNames(a.Fallbacks); err != nil {
+				return fmt.Errorf("group %q, agent %q cannot be written as .bot source: %v", g.Name, a.Name, err)
+			}
+		}
+		for _, j := range g.Judges {
+			if err := checkFallbackNames(j.Fallbacks); err != nil {
+				return fmt.Errorf("group %q, judge %q cannot be written as .bot source: %v", g.Name, j.Name, err)
+			}
+		}
+	}
 	f = canonicalPrompts(f)
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document

@@ -835,10 +835,13 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "workflow %s:\n", wf.Name)
 
-		if wf.Vars != nil && len(wf.Vars.Fields) > 0 {
+		// Written when present, empty or not — the same rule as the
+		// top-level blocks (an omitted empty block would be deleted from
+		// the file by a save of an unrelated field).
+		if wf.Vars != nil {
 			writeVarsBlock(&w.b, wf.Vars, "  ")
 		}
-		if wf.Attachments != nil && len(wf.Attachments.Fields) > 0 {
+		if wf.Attachments != nil {
 			writeAttachmentsBlock(&w.b, wf.Attachments, "  ")
 		}
 		if wf.MCP != nil {
@@ -1396,7 +1399,7 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 	if sb == nil {
 		return false
 	}
-	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" {
+	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" || sb.HostState != "" {
 		return false
 	}
 	if len(sb.Env) > 0 || len(sb.Mounts) > 0 {
