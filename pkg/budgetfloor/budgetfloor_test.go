@@ -20,7 +20,7 @@ func TestWindowCeiling_AWorkloadIsProtectedFromOthersAndNotFromItself(t *testing
 	}
 	for _, tc := range []struct {
 		bot  string
-		want int
+		want float64
 		why  string
 	}{
 		{"review-pr", 70, "its own 20 points stay available to it; only feature-dev's 10 are held back"},
@@ -28,8 +28,13 @@ func TestWindowCeiling_AWorkloadIsProtectedFromOthersAndNotFromItself(t *testing
 		{"whole-improve-loop", 50, "an unreserved bot faces the sum of both bands"},
 		{"", 50, "a run with no bot is nobody's workload and faces the full sum"},
 	} {
-		if got := p.WindowCeiling(tc.bot, WindowFiveHour, 80); got != tc.want {
-			t.Errorf("WindowCeiling(%q) = %d, want %d — %s", tc.bot, got, tc.want, tc.why)
+		got, held := p.WindowCeiling(tc.bot, WindowFiveHour, 80)
+		if held {
+			t.Errorf("WindowCeiling(%q) reported the window entirely reserved under an 80%% cap — %s", tc.bot, tc.why)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("WindowCeiling(%q) = %.0f, want %.0f — %s", tc.bot, got, tc.want, tc.why)
 		}
 	}
 }
@@ -39,21 +44,31 @@ func TestWindowCeiling_AWorkloadIsProtectedFromOthersAndNotFromItself(t *testing
 // would refuse every run on a deployment that had no cap at all.
 func TestWindowCeiling_NoCapMeansNoCeiling(t *testing.T) {
 	p := Policy{Reservations: []Reservation{{BotID: "review-pr", Reserve: Reserve{FiveHourPercent: 20}}}}
-	if got := p.WindowCeiling("anything", WindowFiveHour, 0); got != 0 {
-		t.Fatalf("WindowCeiling with no cap = %d, want 0 (unenforced) — a reservation must not create a cap", got)
+	got, held := p.WindowCeiling("anything", WindowFiveHour, 0)
+	if got != 0 || held {
+		t.Fatalf("WindowCeiling with no cap = %.0f (held=%v), want 0/false (unenforced) — a reservation must not create a cap", got, held)
 	}
 }
 
-// An operator can lower the cap below the reserves without touching them.
-// Clamped at zero rather than negative: the reserved workload keeps what
-// remains and everyone else is held off, which is what was asked for.
-func TestWindowCeiling_CapBelowTheReservesClampsAtZero(t *testing.T) {
+// An operator can lower the cap below the reserves without touching them (and
+// Validate cannot catch it — it knows the 100% window, never the deployment's
+// own cap). The unreserved workload is then held off ENTIRELY, and that is the
+// one answer a ceiling cannot carry: usagecap reads MaxPercent 0 as "this
+// window is not enforced", so returning 0 would UNCAP exactly the workloads
+// the reserve holds back. It comes back as held=true, and the caller refuses
+// the credential instead of lowering a ceiling.
+func TestWindowCeiling_CapBelowTheReservesIsHeldNotZero(t *testing.T) {
 	p := Policy{Reservations: []Reservation{{BotID: "review-pr", Reserve: Reserve{FiveHourPercent: 40}}}}
-	if got := p.WindowCeiling("feature-dev", WindowFiveHour, 30); got != 0 {
-		t.Fatalf("ceiling for unreserved work under a cap below the reserve = %d, want 0", got)
+	if _, held := p.WindowCeiling("feature-dev", WindowFiveHour, 30); !held {
+		t.Fatal("unreserved work under a cap below the reserve was handed a ceiling — 0 means UNENFORCED downstream, so this must be reported as held")
 	}
-	if got := p.WindowCeiling("review-pr", WindowFiveHour, 30); got != 30 {
-		t.Fatalf("the reserved workload's ceiling = %d, want the whole remaining cap 30", got)
+	// Exactly equal is the same answer: nothing is left for anyone else.
+	if _, held := p.WindowCeiling("feature-dev", WindowFiveHour, 40); !held {
+		t.Fatal("a reserve exactly equal to the cap left the window enforced-at-0 instead of held")
+	}
+	got, held := p.WindowCeiling("review-pr", WindowFiveHour, 30)
+	if held || got != 30 {
+		t.Fatalf("the reserved workload's ceiling = %.0f (held=%v), want the whole remaining cap 30 — a reservation never costs its own holder", got, held)
 	}
 }
 
@@ -64,8 +79,9 @@ func TestZeroPolicyReservesNothing(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("the zero policy must be valid: %v", err)
 	}
-	if got := p.WindowCeiling("review-pr", WindowFiveHour, 80); got != 80 {
-		t.Fatalf("zero policy ceiling = %d, want the cap 80 untouched", got)
+	got, held := p.WindowCeiling("review-pr", WindowFiveHour, 80)
+	if held || got != 80 {
+		t.Fatalf("zero policy ceiling = %.0f (held=%v), want the cap 80 untouched", got, held)
 	}
 	usd, runs := p.RepoCap("SocialGouv/iterion")
 	if usd != 0 || runs != 0 {
