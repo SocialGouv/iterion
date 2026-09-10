@@ -980,14 +980,17 @@ dispatcher at once. inotify is a lossy carrier: a host at
 `max_user_instances` refuses the descriptor (`EMFILE`), a full kernel
 queue drops events (`ErrEventOverflow`), and a watched directory that is
 removed, renamed or unmounted loses its watch without a word (the loop
-asks fsnotify every 5 s whether the watch still exists, and hands over after two consecutive empty answers). Each of those
-used to leave the index frozen until the daemon restarted; each now
-falls back to a full rescan of `issues/` — outside the store mutex, so
-board reads never wait behind disk I/O — every `ITERION_NATIVE_INDEX_RESCAN`
-(a Go duration or a bare number of seconds, default `2s`; measured at
-~4 ms for 200 cards and ~19 ms for 2 000). `off`, `0`, `0s` or any
-non-positive value disables the net and restores the blind-until-restart
-behaviour; an unparsable value falls back to `2s`. The symptom the net
+asks fsnotify every 5 s whether the watch still exists, and hands over
+after two consecutive empty answers). Each of those used to leave the
+index frozen until the daemon restarted; each now falls back to a full
+rescan of `issues/` — outside the store mutex, so board reads never wait
+behind disk I/O — every `ITERION_NATIVE_INDEX_RESCAN` (a Go duration or a
+bare number of seconds, default `2s`; measured at ~4 ms for 200 cards and
+~19 ms for 2 000). `off`, `0`, `0s` or any non-positive value disables the
+net and restores the blind-until-restart behaviour. Anything else — `OFF`,
+`none`, `2 s` — is not a disable this recognises: it falls back to `2s`
+rather than guess an operator out of their net, and the line the store
+writes when it arms one names the value it ignored. The symptom the net
 answers is a card written on disk that `/board` never shows; the log
 says which mode the store is in (`native index watcher unavailable: …
 falling back to a 2s disk rescan`, `kernel event queue overflowed; index
