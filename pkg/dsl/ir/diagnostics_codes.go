@@ -98,7 +98,11 @@ const (
 
 	DiagInvalidWorkspaceCheckpoint DiagCode = "C139" // workspace_checkpoint: value not one of on|off (error)
 
-	DiagEmptySchema DiagCode = "C140" // a node's input/output references a schema with no field (warning)
+	// A shell-bound DSL string carrying a backslash-escaped quote. Legacy
+	// escape mode keeps \X verbatim, so \" reaches the shell as a literal
+	// quote character and the argument is malformed rather than quoted.
+	DiagEscapedQuoteInShellString DiagCode = "C143" // \" in sandbox.post_create (warning)
+	DiagEmptySchema               DiagCode = "C140" // a node's input/output references a schema with no field (warning)
 
 	DiagEmptyGroupUse DiagCode = "C141" // a `use` instantiates a group that declares no node (warning)
 
