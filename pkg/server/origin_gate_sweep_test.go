@@ -294,3 +294,59 @@ func TestNonAPIPathsAreNotGated(t *testing.T) {
 		}
 	}
 }
+
+// TestNoMethodlessAPIRegistration pins the property the OPTIONS exemption
+// rests on.
+//
+// authMiddleware lets every OPTIONS through unauthenticated, which is safe
+// only because an OPTIONS under /api/ can then match nothing but the
+// `OPTIONS /api/` preflight responder. That holds because every production
+// route declares its method — including the sub-trees registered on the raw
+// ServeMux, whose own comment says "one pattern per (method, path)". True
+// today, but a property of the route table rather than of any code, so a
+// method-less registration added tomorrow would silently hand an
+// unauthenticated OPTIONS to a real handler. Raised by Revi on the PR.
+func TestNoMethodlessAPIRegistration(t *testing.T) {
+	srv := newSweepServer(t)
+	for _, rt := range srv.mux.Routes() {
+		if strings.HasPrefix(rt.Pattern, "/api/") && rt.Method == "" {
+			t.Errorf("%q is registered with no method: an unauthenticated OPTIONS would reach its handler instead of the preflight responder", rt.Pattern)
+		}
+	}
+}
+
+// TestOptionsReachesOnlyThePreflightResponder is the runtime half, and it
+// covers the sub-trees the recording mux cannot see. The preflight responder
+// answers 204 with an empty body; any other status means an OPTIONS found a
+// business handler.
+func TestOptionsReachesOnlyThePreflightResponder(t *testing.T) {
+	srv := newSweepServer(t)
+	paths := []string{
+		"/api/runs",
+		"/api/me/api-keys",
+		"/api/auth/login",
+		// The sub-trees registered on the concrete ServeMux.
+		"/api/v1/native/issues",
+		"/api/v1/dispatcher/refresh",
+		"/api/v1/mcp/board",
+	}
+	for _, p := range paths {
+		r := httptest.NewRequest(http.MethodOptions, p, nil)
+		r.Host = sweepHost
+		r.Header.Set("Origin", foreignOrigin)
+		r.Header.Set("Access-Control-Request-Method", "POST")
+		w := httptest.NewRecorder()
+		srv.handler.ServeHTTP(w, r)
+
+		if w.Code != http.StatusNoContent {
+			t.Errorf("OPTIONS %s: status %d; want 204 — it did not land on the preflight responder", p, w.Code)
+		}
+		if body := w.Body.String(); body != "" {
+			t.Errorf("OPTIONS %s: body %q; the preflight responder writes none, so a handler answered", p, body)
+		}
+		// And it must not hand a foreign origin an ACAO.
+		if acao := w.Header().Get("Access-Control-Allow-Origin"); acao != "" {
+			t.Errorf("OPTIONS %s: ACAO %q for a foreign origin", p, acao)
+		}
+	}
+}

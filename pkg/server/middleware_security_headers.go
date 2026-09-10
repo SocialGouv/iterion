@@ -45,7 +45,22 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"font-src 'self'; " +
 	"connect-src 'self'; " +
 	"worker-src 'self' blob:; " +
-	"frame-src 'self' blob:; " +
+	// frame-src admits arbitrary http(s) because that is the Browser pane's
+	// whole job: BrowserPane proxies through /api/runs/{id}/preview only for
+	// `scope: internal`, and the DEFAULT scope is `external`, which iframes
+	// the URL verbatim — one a workflow published or the operator typed. A
+	// tighter value renders an empty frame with no in-product error, and
+	// routing everything through the preview proxy is not the alternative it
+	// looks like: that proxy fetches ONE document under a size cap, so a real
+	// site loses every subresource.
+	//
+	// The give is small and bounded: frame-src governs what this page may
+	// EMBED, a cross-origin frame cannot read our DOM, clickjacking is
+	// frame-ancestors' business (still 'self'), and injecting the markup to
+	// create a frame needs script execution, which script-src 'self' refuses.
+	// On an https deployment `http:` is inert anyway — mixed content blocks
+	// it — so it only serves a plaintext local studio.
+	"frame-src 'self' blob: https: http:; " +
 	"frame-ancestors 'self'; " +
 	"base-uri 'self'; " +
 	"form-action 'self'; " +
