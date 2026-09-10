@@ -131,3 +131,84 @@ func TestBudgetFloorEdit_GivesUpAfterOneRetry(t *testing.T) {
 		t.Fatalf("%d PUT(s), want exactly 2 (one attempt, one retry)", puts)
 	}
 }
+
+// `reserve` and `quota` EDIT one entry; an axis the operator did not name is
+// left as stored. Replacing the whole entry from flag defaults instead makes
+// the natural second command — adding a slot reserve to a bot that already has
+// a window band — silently zero that band: the default axis, the only one that
+// measures what actually runs out on a subscription, gone with nothing to
+// distinguish it from a deliberate clear.
+func TestApplyFloorEdit_EditsOneAxisAndLeavesTheRest(t *testing.T) {
+	stored := budgetfloor.Policy{
+		Reservations: []budgetfloor.Reservation{
+			{BotID: "review-pr", Note: "keeps review moving", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}},
+		},
+		RepoQuotas: []budgetfloor.RepoQuota{{Repo: "o/r", MonthlyUSD: 50}},
+	}
+
+	t.Run("a new axis joins the stored ones", func(t *testing.T) {
+		remoteFloorBot, remoteFloorSlots = "review-pr", 2
+		t.Cleanup(func() { remoteFloorBot, remoteFloorSlots = "", 0 })
+		got, err := applyFloorEdit(stored, floorEdit{action: "reserve", named: map[string]bool{"bot": true, "concurrent-runs": true}})
+		if err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		res, ok := got.Reserved("review-pr")
+		if !ok {
+			t.Fatal("the reservation vanished")
+		}
+		if res.Reserve.FiveHourPercent != 20 {
+			t.Errorf("five_hour = %d, want the stored 20 — an unnamed axis must not be zeroed", res.Reserve.FiveHourPercent)
+		}
+		if res.Reserve.ConcurrentRuns != 2 {
+			t.Errorf("concurrent_runs = %d, want 2", res.Reserve.ConcurrentRuns)
+		}
+		if res.Note != "keeps review moving" {
+			t.Errorf("note = %q, want the stored one", res.Note)
+		}
+	})
+
+	t.Run("naming an axis with 0 clears it", func(t *testing.T) {
+		remoteFloorBot, remoteFloorFiveHour, remoteFloorSlots = "review-pr", 0, 2
+		t.Cleanup(func() { remoteFloorBot, remoteFloorFiveHour, remoteFloorSlots = "", 0, 0 })
+		got, err := applyFloorEdit(stored, floorEdit{action: "reserve",
+			named: map[string]bool{"bot": true, "five-hour": true, "concurrent-runs": true}})
+		if err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		res, _ := got.Reserved("review-pr")
+		if res.Reserve.FiveHourPercent != 0 {
+			t.Errorf("five_hour = %d, want it cleared — naming a flag is how an axis is set to zero", res.Reserve.FiveHourPercent)
+		}
+	})
+
+	t.Run("a quota keeps the axes it does not name", func(t *testing.T) {
+		remoteFloorRepo, remoteFloorRepoSpends = "o/r", 40
+		t.Cleanup(func() { remoteFloorRepo, remoteFloorRepoSpends = "", 0 })
+		got, err := applyFloorEdit(stored, floorEdit{action: "quota",
+			named: map[string]bool{"repo": true, "route-spends-per-month": true}})
+		if err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		usd, spends := got.RepoCap("o/r")
+		if usd != 50 || spends != 40 {
+			t.Errorf("quota = $%.2f / %d, want $50 / 40 — the stored amount must survive", usd, spends)
+		}
+	})
+
+	t.Run("rm removes an entry stored with stray whitespace", func(t *testing.T) {
+		padded := budgetfloor.Policy{
+			Reservations: []budgetfloor.Reservation{{BotID: " review-pr ", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}}},
+			RepoQuotas:   []budgetfloor.RepoQuota{{Repo: " o/r ", MonthlyUSD: 50}},
+		}
+		remoteFloorBot, remoteFloorRepo = "review-pr", "o/r"
+		t.Cleanup(func() { remoteFloorBot, remoteFloorRepo = "", "" })
+		got, err := applyFloorEdit(padded, floorEdit{action: "rm", named: map[string]bool{"bot": true, "repo": true}})
+		if err != nil {
+			t.Fatalf("rm: %v", err)
+		}
+		if len(got.Reservations) != 0 || len(got.RepoQuotas) != 0 {
+			t.Fatalf("rm left %+v — an id the API accepted padded must still be removable", got)
+		}
+	})
+}
