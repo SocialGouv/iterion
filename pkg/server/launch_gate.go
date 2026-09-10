@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 )
@@ -72,6 +73,11 @@ const (
 	denyMonthlyCostCap    = "monthly_cost_cap_exceeded"
 	denyConcurrencyCap    = "concurrency_cap_exceeded"
 	denyLaunchRateLimited = "launch_rate_limited"
+	// denyRepoQuota is one REPOSITORY over its own ceiling inside the
+	// shared budget — distinct from the tenant-wide caps above, because the
+	// operator's next move is different: raise that repo's quota, not the
+	// org's.
+	denyRepoQuota = "repo_quota_exceeded"
 	// denyNoWorkspace refuses a signed-in user who belongs to no team (the
 	// GitHub "submitter" tier): they have no workspace to launch into.
 	denyNoWorkspace = "no_workspace"
@@ -108,6 +114,19 @@ type launchAdmission struct {
 	when     time.Time
 }
 
+// launchSubject names what a launch is, for the gates that reserve capacity
+// for a workload or cap a repository. Both fields are best-effort: a surface
+// that genuinely does not know (a plain .bot upload names no bot; a local run
+// targets no repository) passes the zero value and is judged as ordinary,
+// uncapped work — which is what it is.
+type launchSubject struct {
+	// BotID is the workload a reservation can name.
+	BotID string
+	// Repo is the forge slug (store.Run.ProjectPath), the same identity
+	// pkg/credusage meters against — never a second one derived here.
+	Repo string
+}
+
 func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 	if a == nil || a.counter == nil || a.usageKey == "" {
 		return
@@ -138,7 +157,14 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // entirely.
 // The run-quota increment is the one exception to fail-open being
 // "free": when AllowRun errors the launch proceeds unmetered (logged).
-func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenial) {
+//
+// `subj` names WHAT is being launched, for the capacity reservations and the
+// per-repository quotas (pkg/budgetfloor). It is an explicit parameter rather
+// than a context value on purpose: a caller that forgot to pass it would make
+// the protected workload read as ordinary, and the reservation would then
+// REFUSE the very run it exists to protect. A compile error is the only
+// version of that mistake anyone ever sees.
+func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial) {
 	id, _ := auth.FromContext(ctx)
 	st := s.authStore()
 	// st == nil is local/filesystem mode (no auth, single operator); a
@@ -204,13 +230,87 @@ func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenia
 		}
 	}
 	now := time.Now().UTC()
-	if d := s.gateConcurrency(ctx, t); d != nil {
+	floor := s.budgetFloorPolicy(ctx)
+	if d := s.gateRepoQuota(ctx, floor, subj, now); d != nil {
+		return nil, d
+	}
+	if d := s.gateConcurrency(ctx, t, floor, subj); d != nil {
 		return nil, d
 	}
 	if d := s.gateLaunchRate(t); d != nil {
 		return nil, d
 	}
-	return s.gateMonthlyCaps(ctx, org, t, now)
+	return s.gateMonthlyCaps(ctx, org, t, floor, subj, now)
+}
+
+// budgetFloorPolicy resolves the deployment's reservations, or the zero
+// policy when the family is unwired or unwritten — which reserves and caps
+// nothing, so every gate below behaves exactly as it did before.
+func (s *Server) budgetFloorPolicy(ctx context.Context) budgetfloor.Policy {
+	if s.budgetFloor == nil {
+		return budgetfloor.Policy{}
+	}
+	if p := s.budgetFloor.Get(ctx); p != nil {
+		return *p
+	}
+	return budgetfloor.Policy{}
+}
+
+// gateRepoQuota stops ONE repository from eating the shared budget. It is a
+// ceiling, not a floor: the reservations above answer "what is held for this
+// workload", this answers "how far may this repository go".
+//
+// Read off pkg/credusage's repository dimension, which is the meter the runs
+// actually write — so the number an operator sees in
+// `usage --by-credential --repo X` is the number this refuses on, and a view
+// that disagreed with the gate could not exist.
+//
+// Fail-open on a degraded read, like every other quota here: a Mongo blip
+// must not wedge a repository's launches.
+func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, subj launchSubject, now time.Time) *launchDenial {
+	if s.credUsage == nil || subj.Repo == "" {
+		return nil
+	}
+	maxUSD, maxRuns := floor.RepoCap(subj.Repo)
+	if maxUSD <= 0 && maxRuns <= 0 {
+		return nil
+	}
+	rows, err := s.credUsage.ListByRepo(ctx, now, subj.Repo)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("launch gate: repo usage for %s: %v (fail-open)", subj.Repo, err)
+		}
+		return nil
+	}
+	var spent float64
+	runs := 0
+	for _, r := range rows {
+		// metered and estimated are added HERE and nowhere else: the quota is
+		// a budget for the repository's consumption, and on a fleet mixing a
+		// forfait with a metered key the two halves are both real usage even
+		// though only one is an invoice. The REPORTING keeps them apart
+		// (metered_usd / estimated_usd) precisely so this is the only place
+		// the sum is taken, deliberately.
+		spent += r.CostUSD
+		runs += r.Runs
+	}
+	if maxUSD > 0 && spent >= maxUSD {
+		return &launchDenial{
+			status:  http.StatusPaymentRequired,
+			reason:  denyRepoQuota,
+			detail:  fmt.Sprintf("repository %s has used $%.2f of its $%.2f monthly quota", subj.Repo, spent, maxUSD),
+			resetAt: nextMonthStart(now),
+		}
+	}
+	if maxRuns > 0 && runs >= maxRuns {
+		return &launchDenial{
+			status:  http.StatusPaymentRequired,
+			reason:  denyRepoQuota,
+			detail:  fmt.Sprintf("repository %s has used %d of its %d monthly runs", subj.Repo, runs, maxRuns),
+			resetAt: nextMonthStart(now),
+		}
+	}
+	return nil
 }
 
 // orgForTeam resolves the parent org for the launch gate: the JWT's
@@ -233,10 +333,19 @@ func (s *Server) orgForTeam(ctx context.Context, st identity.Store, id auth.Iden
 	return o
 }
 
-func (s *Server) gateConcurrency(ctx context.Context, t identity.Team) *launchDenial {
+func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor budgetfloor.Policy, subj launchSubject) *launchDenial {
 	maxActive := orValue(t.MaxConcurrentRuns, s.orgDefaults.MaxConcurrentRuns)
 	if maxActive <= 0 {
+		// No cap to hold slots inside of. A reservation must not create one:
+		// same rule as the window axis — a floor may hold work back, it may
+		// never invent a ceiling.
 		return nil
+	}
+	// Slots held for OTHER workloads are not available to this one. The
+	// reserved bot itself faces the plain team cap, so a reservation never
+	// costs its holder a slot.
+	if held := floor.OtherReservedSlots(subj.BotID); held > 0 {
+		maxActive = max(maxActive-held, 0)
 	}
 	counter, ok := s.cfg.Store.(activeRunCounter)
 	if !ok {
@@ -288,7 +397,7 @@ func (s *Server) gateLaunchRate(t identity.Team) *launchDenial {
 // the org couldn't be resolved (pre-backfill row) we fall back to the
 // team id as the metering key + platform defaults, so launches still
 // meter.
-func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, now time.Time) (*launchAdmission, *launchDenial) {
+func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, floor budgetfloor.Policy, subj launchSubject, now time.Time) (*launchAdmission, *launchDenial) {
 	if s.orgUsage == nil {
 		return nil, nil
 	}
@@ -298,6 +407,15 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	}
 	maxRuns := orValue(org.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
 	capUSD := orValue(org.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
+	// Dollars held for OTHER workloads come off this launch's ceiling. Only
+	// when a cap exists: a reservation holds work back, it never creates the
+	// cost cap it subtracts from — the same guard the window and slot axes
+	// carry, and the one that keeps an uncapped deployment uncapped.
+	if capUSD > 0 {
+		if held := floor.OtherReservedUSD(subj.BotID); held > 0 {
+			capUSD = max(capUSD-held, 0)
+		}
+	}
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
 	if err != nil {
 		if s.logger != nil {

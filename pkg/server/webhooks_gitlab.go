@@ -1214,7 +1214,8 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	// so a cron cadence is not a way around any of them. The denial is
 	// returned so the ticker records it on the schedule and audits the tick;
 	// the metered slot goes back when the run service then refuses.
-	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: sb.TenantID, UserID: scheduledLaunchActor}))
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: sb.TenantID, UserID: scheduledLaunchActor}),
+		launchSubject{BotID: spec.BotID, Repo: spec.ProjectPath})
 	if deny != nil {
 		return deny.err()
 	}

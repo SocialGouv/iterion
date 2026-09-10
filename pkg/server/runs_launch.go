@@ -282,7 +282,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	// No subject: the gate runs BEFORE the body is parsed, so the bot is
+	// not known yet, and moving the gate after the decode would let a
+	// malformed request skip the quota CAS. An operator-initiated launch is
+	// also not the automated fan-out the per-repo quota exists to bound.
+	if _, d := s.gateLaunch(r.Context(), launchSubject{}); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -581,7 +585,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
+	// No subject: the gate runs BEFORE the body is parsed, so the bot is
+	// not known yet, and moving the gate after the decode would let a
+	// malformed request skip the quota CAS. An operator-initiated launch is
+	// also not the automated fan-out the per-repo quota exists to bound.
+	if _, d := s.gateLaunch(r.Context(), launchSubject{}); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}

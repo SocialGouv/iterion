@@ -147,7 +147,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// and a concurrency/rate cap clears in minutes, so abandoning on those
 	// would throw the run away for a condition that resolves itself. A
 	// suspended org or a missing workspace needs a human.
-	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref))
+	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), launchSubject{})
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
 			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))

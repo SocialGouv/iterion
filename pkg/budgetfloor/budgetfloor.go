@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Window names a provider usage window a reserve can be expressed against.
@@ -200,6 +201,11 @@ func (q RepoQuota) Empty() bool {
 type Policy struct {
 	Reservations []Reservation `bson:"reservations,omitempty" json:"reservations,omitempty"`
 	RepoQuotas   []RepoQuota   `bson:"repo_quotas,omitempty" json:"repo_quotas,omitempty"`
+	// UpdatedAt is the compare-and-set token the platform-settings store
+	// writes on every save. Present because the whole policy is replaced as
+	// a unit: without it two admins editing at once would silently drop one
+	// another's reservations under ReplaceOne semantics.
+	UpdatedAt time.Time `bson:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 
 // Validate checks the whole policy, including the cross-references a single
@@ -292,6 +298,36 @@ func (p Policy) OtherReserved(botID string, w Window) int {
 			continue
 		}
 		total += r.Reserve.WindowPercent(w)
+	}
+	return total
+}
+
+// OtherReservedSlots sums the concurrency slots every workload OTHER than
+// botID holds. Same composition rule as OtherReserved, on the axis that
+// protects responsiveness rather than quota.
+func (p Policy) OtherReservedSlots(botID string) int {
+	bot := strings.TrimSpace(botID)
+	total := 0
+	for _, r := range p.Reservations {
+		if r.BotID == bot {
+			continue
+		}
+		total += r.Reserve.ConcurrentRuns
+	}
+	return total
+}
+
+// OtherReservedUSD sums the monthly spend every workload OTHER than botID
+// holds — the axis that is real money on a metered key and an estimate on a
+// forfait (see the package doc).
+func (p Policy) OtherReservedUSD(botID string) float64 {
+	bot := strings.TrimSpace(botID)
+	total := 0.0
+	for _, r := range p.Reservations {
+		if r.BotID == bot {
+			continue
+		}
+		total += r.Reserve.MonthlyUSD
 	}
 	return total
 }

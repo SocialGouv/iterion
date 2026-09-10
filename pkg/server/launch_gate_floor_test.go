@@ -1,0 +1,197 @@
+package server
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
+)
+
+// withFloor installs a reservation policy on the test server, through the
+// same resolver production uses.
+func withFloor(t *testing.T, s *Server, p budgetfloor.Policy) {
+	t.Helper()
+	if err := p.Validate(); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	st := platformcfg.NewMemoryStore[budgetfloor.Policy]()
+	if err := st.Put(context.Background(), p); err != nil {
+		t.Fatalf("put policy: %v", err)
+	}
+	s.budgetFloor = platformcfg.NewResolver(st, nil)
+}
+
+func seedRepoUsage(t *testing.T, c credusage.Counter, repo string, costUSD float64, runs int) {
+	t.Helper()
+	for i := 0; i < runs; i++ {
+		if err := c.AddSpend(context.Background(), time.Now().UTC(), credusage.Spend{
+			Key: credusage.Key{
+				Fingerprint: "fp", Provider: "anthropic",
+				Tier: credusage.TierTeam, TenantID: "t1", RepoID: repo,
+			},
+			Nature: credusage.NatureMetered, Backend: "claw",
+			CostUSD: costUSD / float64(runs), InputTokens: 10,
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+}
+
+// The second half of the ask: "a quota per repo within that global budget".
+// It is a CEILING — the reservations answer what is held for a workload, this
+// answers how far one repository may go — and it is read off the very meter
+// the runs write, so the number `usage --by-credential --repo X` shows is the
+// number this refuses on.
+func TestGateLaunch_RepoQuota(t *testing.T) {
+	newServer := func(t *testing.T, quota budgetfloor.RepoQuota) (*Server, context.Context) {
+		t.Helper()
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.credUsage = credusage.NewMemoryCounter()
+		withFloor(t, s, budgetfloor.Policy{RepoQuotas: []budgetfloor.RepoQuota{quota}})
+		return s, seedGate(t, s, gateSpec{id: "t1"})
+	}
+
+	t.Run("a repository over its monthly amount is refused", func(t *testing.T) {
+		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr", Repo: "o/hungry"})
+		if d == nil || d.reason != denyRepoQuota {
+			t.Fatalf("denial = %+v, want %s", d, denyRepoQuota)
+		}
+		if d.resetAt.IsZero() || !d.resetAt.After(time.Now()) {
+			t.Fatalf("resetAt = %v, want the next month boundary", d.resetAt)
+		}
+	})
+
+	t.Run("another repository is untouched by it", func(t *testing.T) {
+		// The quota bounds ONE repository. A shared budget in which one repo's
+		// overrun stopped every other repo would be a tenant cap wearing a
+		// repository's name.
+		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr", Repo: "o/quiet"}); d != nil {
+			t.Fatalf("an unrelated repository was refused: %+v", d)
+		}
+		// And a run that names NO repository is not "every repository".
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("a run with no repository was refused by a repo quota: %+v", d)
+		}
+	})
+
+	t.Run("under the quota it launches", func(t *testing.T) {
+		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 100})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr", Repo: "o/hungry"}); d != nil {
+			t.Fatalf("refused at $12 of a $100 quota: %+v", d)
+		}
+	})
+
+	t.Run("the run-count axis refuses on attempts, not amount", func(t *testing.T) {
+		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/busy", RunsPerMonth: 3})
+		seedRepoUsage(t, s.credUsage, "o/busy", 0.03, 3) // cheap, but three of them
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr", Repo: "o/busy"})
+		if d == nil || d.reason != denyRepoQuota {
+			t.Fatalf("denial = %+v, want %s on the run count", d, denyRepoQuota)
+		}
+	})
+}
+
+// A reservation holds concurrency slots back from every OTHER workload, and
+// none from its holder.
+func TestGateLaunch_ConcurrencyReserve(t *testing.T) {
+	// 3 slots, 2 held for the reviewer: ordinary work may take 1.
+	policy := budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+		{BotID: "review-pr", Reserve: budgetfloor.Reserve{ConcurrentRuns: 2}},
+	}}
+	newServer := func(t *testing.T, active int) (*Server, context.Context) {
+		t.Helper()
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.cfg.Store = fakeActiveStore{active: active}
+		withFloor(t, s, policy)
+		return s, seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 3})
+	}
+
+	t.Run("an ordinary bot stops at the unreserved slots", func(t *testing.T) {
+		s, ctx := newServer(t, 1) // 1 active, ordinary ceiling is 3-2 = 1
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil || d.reason != denyConcurrencyCap {
+			t.Fatalf("denial = %+v, want %s — the reserved slots are not free", d, denyConcurrencyCap)
+		}
+	})
+
+	t.Run("the reserved bot uses the whole team cap", func(t *testing.T) {
+		s, ctx := newServer(t, 1)
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the reserved bot was refused a slot it holds: %+v", d)
+		}
+	})
+
+	t.Run("a reservation cannot create a concurrency cap", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.cfg.Store = fakeActiveStore{active: 99}
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1"}) // no maxConcurrentRuns
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"}); d != nil {
+			t.Fatalf("refused on a team with NO concurrency cap: %+v — the reservation invented one", d)
+		}
+	})
+}
+
+// The monthly-dollar reserve: real money on a metered key, and the same
+// no-invented-ceiling guard as the other two axes.
+func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
+	policy := budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+		{BotID: "review-pr", Reserve: budgetfloor.Reserve{MonthlyUSD: 30}},
+	}}
+
+	t.Run("an ordinary bot stops at the unreserved dollars", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 50})
+		// $25 already spent: under the $50 cap, over the $20 an ordinary bot
+		// may reach once $30 is held for the reviewer.
+		if err := s.orgUsage.AddSpend(context.Background(), "t1", time.Now().UTC(), 25, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil || d.reason != denyMonthlyCostCap {
+			t.Fatalf("denial = %+v, want %s — $30 of the $50 is held for the reviewer", d, denyMonthlyCostCap)
+		}
+	})
+
+	t.Run("the reserved bot reaches the whole cap", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 50})
+		if err := s.orgUsage.AddSpend(context.Background(), "t1", time.Now().UTC(), 25, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the reserved bot was refused inside its own band: %+v", d)
+		}
+	})
+
+	t.Run("a reservation cannot create a cost cap", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1"}) // no cost cap at all
+		if err := s.orgUsage.AddSpend(context.Background(), "t1", time.Now().UTC(), 999, 10, 10, 0); err != nil {
+			t.Fatalf("seed spend: %v", err)
+		}
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"}); d != nil {
+			t.Fatalf("refused on an org with NO cost cap: %+v — the reservation invented one", d)
+		}
+	})
+}
