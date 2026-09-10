@@ -384,12 +384,17 @@ func (s *Server) handleDLQReplay(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadGateway, "dlq replay: %v", err)
 		return
 	}
-	// A DLQ park is FINAL for automation, so a fixer's in-flight warning was
-	// released when it parked — and this replay wakes that same run to go on
-	// rewriting its branch. Raise the warning again, or the whole replayed
-	// pass runs behind "pushing is safe again". No-op for every run that never
-	// claimed, which is nearly all of them.
-	s.reclaimFixInFlight(store.WithTenant(r.Context(), run.TenantID), run)
+	// NO fixer re-claim here, deliberately — see reclaimFixInFlight. A replay
+	// republishes the message VERBATIM, and the runner's own admission then
+	// drops it for the very run whose claim this would re-raise: a DLQ park
+	// writes FailureDLQParked, which pkg/retrypolicy classifies deterministic,
+	// so the redelivery is ack-dropped without touching the doc. The run's
+	// status never changes, no outcome event fires, and updated_at stays at
+	// the park — hours or days outside the gate sweep's window by the time an
+	// operator replays. A warning raised here could never be released.
+	// A replay that DOES revive (a message parked before the run ever
+	// executed) revives a run whose claim was never released in the first
+	// place, since the clear only fires on a terminal run.
 	s.auditPlatform(r, "", "dlq.replayed", "run", runID, map[string]any{"seq": seq})
 	writeJSON(w, map[string]any{"status": "replayed", "run_id": runID})
 }

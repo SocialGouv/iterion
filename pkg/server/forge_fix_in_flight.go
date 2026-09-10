@@ -196,13 +196,26 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 // released comes back to life.
 //
 // The stand-down in the clear keeps the claim for a park the PLATFORM will
-// resume by itself. Two revivals are not that: a DLQ replay and an operator
-// resume both act on a run the clear has already announced done — and both
-// wake the SAME run id, which then goes on rewriting the branch and pushing
-// back. Without this the row stays `success` for that entire second pass, and
-// then forever: the clear at the end of it reads a status that is no longer
-// in-flight and does nothing. A green check over a live rewrite is the failure
-// this file exists to prevent, arrived at from the other direction.
+// resume by itself. An operator resume is not that: it acts on a run the clear
+// has already announced done — a DLQ park, or a resumable park nothing owned —
+// and wakes the SAME run id, which then goes on rewriting the branch and
+// pushing back. Without this the row stays `success` for that entire second
+// pass, and then forever: the clear at the end of it reads a status that is no
+// longer in-flight and does nothing. A green check over a live rewrite is the
+// failure this file exists to prevent, arrived at from the other direction.
+//
+// TERMINAL runs only, which is the same question the clear asks first. A
+// resume of a PAUSED fixer revives a run whose claim was never released (the
+// clear stands down on anything not terminal), so re-raising there would be a
+// forge round trip to post a status identical to the one already on the head —
+// and on a provider that refuses a same-state transition, a logged failure for
+// a claim that was never in danger.
+//
+// It is also why the DLQ replay endpoint does NOT call this, though it looks
+// like the same shape: a replay republishes the parked message verbatim, and
+// the runner ack-drops it for a DLQ-parked run without touching the doc, so
+// nothing would ever release a warning raised there (see the note at that call
+// site). A revival that leaves the run's status where it was is not a revival.
 //
 // It is markFixInFlight, fed from the run doc instead of from launch vars —
 // including its read-before-write, which is what lets a claim be raised over
@@ -211,7 +224,7 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 // and the tier its bot came from), because those two must agree about what
 // this run is: a reclaim the clear could not later resolve would strand.
 func (s *Server) reclaimFixInFlight(ctx context.Context, run *store.Run) {
-	if s == nil || run == nil {
+	if s == nil || run == nil || !run.Status.IsTerminal() {
 		return
 	}
 	prURL := runInputString(run, "pr_url")

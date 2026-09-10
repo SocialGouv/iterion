@@ -603,11 +603,16 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		c.sendError("no_answers", "answers is required", env.AckID)
 		return
 	}
+	// Loaded BEFORE the resume, and unconditionally: besides the persisted
+	// FilePath this frame may need, it is the run's status AS IT WAS that
+	// decides whether a fixer's in-flight warning has to be raised again
+	// below — after the resume the run reads `running`, which answers nothing.
+	// The load error is still only surfaced on the path that needs the path.
+	runMeta, metaErr := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
-		if err != nil {
-			c.sendError("run_not_found", err.Error(), env.AckID)
+		if metaErr != nil {
+			c.sendError("run_not_found", metaErr.Error(), env.AckID)
 			return
 		}
 		filePath = runMeta.FilePath
@@ -633,6 +638,13 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		c.sendError("resume_failed", err.Error(), env.AckID)
 		return
 	}
+	// This frame resumes anything an operator may resume — including a
+	// CANCELLED run and a resumable park nothing owned, both of which the
+	// gate reconciler has already announced done on the pull request. A
+	// resumed FIXER goes on rewriting its branch, so raise its warning again;
+	// no-op for a paused run (its claim was never released) and for every run
+	// that never claimed. Same call, same reason, as the REST resume.
+	c.server.reclaimFixInFlight(c.authCtx(), runMeta)
 	c.sendAck(env.AckID)
 }
 
