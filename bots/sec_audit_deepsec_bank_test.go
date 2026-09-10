@@ -213,6 +213,43 @@ func TestBankSitsBesideTheTriagePath(t *testing.T) {
 	}
 }
 
+// The byte budget is the sole knob deciding how much of the operator's
+// investigation survives the pod, and on a large audit it silently drops
+// findings — reported, but unrecoverable. A literal here is a ceiling nobody
+// can raise short of editing the bot, which is the shape CLAUDE.md principle 1
+// names a defect, and the opposite of what every sibling deepsec knob does
+// (enable_deepsec, deepsec_concurrency, deepsec_process_limit, deepsec_root,
+// deepsec_out are all declared vars).
+func TestBankBudgetIsOperatorOverridable(t *testing.T) {
+	raw, err := os.ReadFile("sec-audit-source/main.bot")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cmd string
+	for _, blk := range commandBackticks(string(raw)) {
+		if strings.Contains(blk, "no deepsec export at ") {
+			cmd = blk
+			break
+		}
+	}
+	if cmd == "" {
+		t.Fatal("no bank_deepsec_findings command found — re-anchor this test on the current node")
+	}
+	i := strings.Index(cmd, "MAX_BYTES=")
+	if i < 0 {
+		t.Fatal("the banking command sets no MAX_BYTES budget")
+	}
+	if rest := cmd[i+len("MAX_BYTES="):]; !strings.HasPrefix(rest, "{{vars.") {
+		t.Errorf("MAX_BYTES is hardcoded (%.40q) — the operator cannot raise the bank budget without editing the bot", rest)
+	}
+	// A var referenced but never declared renders empty; the script floors an
+	// unparseable budget back to its default, so the failure would be a
+	// silently un-raisable ceiling rather than an error.
+	if !strings.Contains(string(raw), "deepsec_bank_max_bytes:") {
+		t.Error("deepsec_bank_max_bytes is not declared in vars — the interpolation would render empty and the knob would be inert")
+	}
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	raw, err := json.Marshal(v)

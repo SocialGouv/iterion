@@ -168,6 +168,16 @@ vars:
   ## json_paths.deepsec when enable_deepsec=true. The directory part
   ## doubles as the `.deepsec/` workspace target for init.
   deepsec_out:         string = "${PROJECT_SCRATCH_DIR}/sec-audit-source/scan/deepsec.json"
+  ## Byte budget for bank_deepsec_findings — how much of the export is
+  ## carried OUT of the pod inside the published artifact, so a pass that
+  ## dies later (triage, jury, usage cap) does not take the findings with
+  ## it. Truncation drops whole findings and reports both counts, so a
+  ## raise here is the difference between a partial bank and a complete
+  ## one on a large audit. A non-positive value floors back to 524288.
+  ## Approximate rather than exact: the size is summed from per-finding
+  ## json.dumps LENGTHS (characters, not bytes), so an export heavy in
+  ## non-ASCII can overshoot the number set here.
+  deepsec_bank_max_bytes: int  = 524288
   ## ─── Enhancement 2 — N-vote adversarial revalidation ──────────────
   ## The revalidate phase is a FIXED POOL OF 3 always-on adversarial
   ## "disprove" voters; majority vote drives the final verdict
@@ -2724,7 +2734,7 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 ## report (the scanner was skipped, or its output was dropped as unusable),
 ## never a reason to fail the run.
 tool bank_deepsec_findings:
-  command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES=524288 python3 -c '
+  command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
 import json, os
 
 out = os.environ["DEEPSEC_OUT"]
