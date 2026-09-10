@@ -94,12 +94,27 @@ func concretePath(pattern string) string {
 	}
 }
 
-// sweptRoutes returns every state-changing /api route in the LIVE routing
-// table. Reading the table (rather than a hand-kept list) is the whole point:
-// a route added tomorrow is swept tomorrow, with no edit here.
+// unrecordedSubtrees are state-changing /api paths that the recording mux
+// CANNOT see: the native board, the dispatcher and the board-MCP transport are
+// handed the concrete *http.ServeMux and register on it directly, which is why
+// the published OpenAPI says they are "served but registered on a separate
+// mux". The gate covers them anyway — it is a path+method predicate evaluated
+// before routing — but "anyway" is exactly the kind of claim that should be
+// asserted rather than reasoned about, so they are swept explicitly.
+var unrecordedSubtrees = []RouteInfo{
+	{Method: http.MethodPost, Pattern: "/api/v1/native/issues"},
+	{Method: http.MethodPost, Pattern: "/api/v1/native/issues/x/transition"},
+	{Method: http.MethodPost, Pattern: "/api/v1/dispatcher/refresh"},
+	{Method: http.MethodPost, Pattern: "/api/v1/mcp/board"},
+}
+
+// sweptRoutes returns every state-changing /api route this server exposes:
+// the recorded routing table, plus the sub-trees above that it cannot record.
+// Reading the table (rather than a hand-kept list) is the point — a route
+// added tomorrow is swept tomorrow, with no edit here.
 func sweptRoutes(t *testing.T, srv *Server) []RouteInfo {
 	t.Helper()
-	var out []RouteInfo
+	out := append([]RouteInfo(nil), unrecordedSubtrees...)
 	for _, rt := range srv.mux.Routes() {
 		if !strings.HasPrefix(rt.Pattern, "/api/") {
 			continue
@@ -158,6 +173,9 @@ func TestEveryStateChangingAPIRouteRefusesForeignOrigin(t *testing.T) {
 		"POST /api/teams/{id}/secrets",
 		"POST /api/orgs/{id}/api-keys",
 		"POST /api/auth/login",
+		// The sub-trees the recording mux cannot see.
+		"POST /api/v1/native/issues",
+		"POST /api/v1/mcp/board",
 	} {
 		if !seen[must] {
 			t.Fatalf("%q is not in the swept set — the sweep no longer covers the endpoints it was written for", must)

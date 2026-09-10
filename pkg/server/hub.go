@@ -133,9 +133,16 @@ func sameOrigin(origin string, r *http.Request) bool {
 // than refusing a deployment whose proxy sets no forwarding header.
 func requestScheme(r *http.Request) string {
 	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		// A chain of proxies appends, so the client's own value is first.
-		if i := strings.IndexByte(p, ','); i >= 0 {
-			p = p[:i]
+		// The LAST value, not the first. A single proxy REPLACES this header
+		// (nginx: `proxy_set_header X-Forwarded-Proto $scheme`), so there is
+		// one value and the choice is moot. It only matters in a chain that
+		// APPENDS — and there the first entry is whatever the CLIENT sent.
+		// Reading that would let a caller disable the check below by sending
+		// `X-Forwarded-Proto: http` and having the proxy append `,https`.
+		// The last entry is the nearest proxy's own view, which no client can
+		// prepend its way past.
+		if i := strings.LastIndexByte(p, ','); i >= 0 {
+			p = p[i+1:]
 		}
 		return strings.ToLower(strings.TrimSpace(p))
 	}

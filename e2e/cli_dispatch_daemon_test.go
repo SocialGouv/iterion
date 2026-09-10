@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,6 +91,69 @@ func waitHealthy(t *testing.T, base string, done <-chan error) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("daemon never became healthy on /healthz")
+}
+
+// TestDispatchDaemonRefusesCrossOriginWrites pins the browser-facing guard on
+// the dispatcher daemon's own mux.
+//
+// It builds that mux by hand rather than through Server.routes(), so it used
+// to reach none of the studio's protections: a page the operator had open
+// could POST a board card cross-origin, transition it into the
+// dispatcher-eligible state and force the poll — which launches a workflow,
+// with tools, on the host. Loopback-bound is not a defence when the browser is
+// on the host. Found by adversarial review, which drove the whole chain live.
+//
+// Content-Type text/plain makes it a CORS "simple request": no preflight, and
+// the JSON decoders never inspect Content-Type.
+func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeDispatchConfig(t, dir)
+	port := reserveLoopbackPort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
+			ConfigPath: cfgPath,
+			StoreDir:   filepath.Join(dir, "store"),
+			Port:       port,
+		})
+	}()
+	waitHealthy(t, base, done)
+
+	post := func(path, origin, body string) int {
+		req, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer res.Body.Close()
+		_, _ = io.Copy(io.Discard, res.Body)
+		return res.StatusCode
+	}
+
+	for _, path := range []string{"/api/v1/native/issues", "/api/v1/dispatcher/refresh"} {
+		if got := post(path, "https://evil.example", `{"title":"csrf"}`); got != http.StatusForbidden {
+			t.Errorf("POST %s cross-origin = %d; want 403 — a drive-by page can drive the dispatcher", path, got)
+		}
+	}
+
+	// The board UI is served from this same origin and must keep working, as
+	// must a non-browser caller (curl, a script) that sends no Origin at all.
+	if got := post("/api/v1/native/issues", base, `{"title":"same-origin"}`); got == http.StatusForbidden {
+		t.Error("same-origin POST was refused; the board UI would be broken")
+	}
+	if got := post("/api/v1/native/issues", "", `{"title":"no-origin"}`); got == http.StatusForbidden {
+		t.Error("POST with no Origin was refused; that is the CLI/script caller")
+	}
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {

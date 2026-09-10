@@ -108,6 +108,17 @@ func (s *Server) refreshCookiePath() string {
 	return "/api/auth"
 }
 
+// agentBindingCookiePath returns the path for a per-flow CSRF-binding cookie:
+// its natural narrow path, or "/" where the __Host- prefix applies (which
+// mandates it). Same trade as refreshCookiePath — the path was never the
+// boundary; being unwritable by a sibling host is.
+func (s *Server) agentBindingCookiePath(narrow string) string {
+	if s.usesHostPrefix() {
+		return "/"
+	}
+	return narrow
+}
+
 // clearAuthCookies expires BOTH spellings. During the migration a browser can
 // hold the legacy cookie and the prefixed one at once; clearing only the name
 // this build writes would leave the other live and log the user back in.

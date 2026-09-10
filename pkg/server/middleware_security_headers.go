@@ -51,6 +51,29 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"form-action 'self'; " +
 	"object-src 'none'"
 
+// BrowserGuard wraps a handler with the browser-facing protections the studio
+// server applies: the CSRF origin gate, then the security headers.
+//
+// It is exported for the surfaces that build their OWN mux instead of going
+// through Server.routes(). `iterion dispatch` serves the native board and the
+// dispatcher REST API from a bare http.NewServeMux, so none of this reached
+// them: a page the operator visited while the daemon ran could create a board
+// card cross-origin, move it into the dispatcher-eligible state and force the
+// poll — which runs a workflow, with tools, on the host. Loopback-bound is not
+// a defence when the browser is on the host.
+//
+// port and publicURL feed the same allowlist Server uses, so a caller cannot
+// drift from it: the predicate is Server.originGateAllows itself.
+func BrowserGuard(port int, publicURL string, next http.Handler) http.Handler {
+	s := &Server{cfg: Config{Port: port, PublicURL: publicURL}}
+	return securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.originGateAllows(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // securityHeaders sets the response headers the studio had been serving
 // without. Measured on production before this change, the only one present
 // was Strict-Transport-Security (added by the ingress): no CSP, no framing

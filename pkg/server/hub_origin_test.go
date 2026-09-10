@@ -34,8 +34,11 @@ func TestSameWSOrigin(t *testing.T) {
 		{"plaintext origin on a TLS request is refused", "http://iterion.cloud", "iterion.cloud", "https", false},
 		{"https origin behind the ingress", "https://iterion.cloud", "iterion.cloud", "https", true},
 		{"plaintext origin on a plaintext request (local studio)", "http://localhost:4891", "localhost:4891", "http", true},
-		// A proxy chain appends; the client's own value is first.
-		{"proxy chain, client used https", "http://iterion.cloud", "iterion.cloud", "https, http", false},
+		// A chain appends, and the FIRST entry is whatever the client sent —
+		// so a caller must not be able to disable the rule by prepending its
+		// own value. Both orders below arrive over TLS at the nearest proxy.
+		{"proxy chain, nearest proxy says https", "http://iterion.cloud", "iterion.cloud", "http, https", false},
+		{"proxy chain, client tried to prepend http", "http://iterion.cloud", "iterion.cloud", "http,https", false},
 		// No forwarding header + no TLS = a local plaintext server: stay permissive.
 		{"https origin with no forwarding header", "https://iterion.cloud", "iterion.cloud", "", true},
 	}

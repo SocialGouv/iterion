@@ -121,9 +121,29 @@ browser accepts a `__Host-` cookie only with `Secure`, `Path=/` and **no
 - **Logout expires both spellings**, because mid-migration a browser can hold
   the legacy cookie and the prefixed one.
 
-**Migration:** the current build reads both names and writes only the prefixed
-one. Drop the bare-name read once the longest refresh TTL has elapsed since the
-deploy.
+**The same treatment covers the per-flow binding cookies** — `iterion_oidc_agent`
+and `iterion_forge_agent`, the login-CSRF guard of RFC 9700 §4.7.1. They were
+left bare on the reasoning that a cross-site script "can't set a cookie for
+iterion's origin (same-origin policy)", which is exactly the claim a shared
+registrable domain falsifies. Tossing one defeats the guard and completes an
+SSO flow onto the attacker's account. They accept **no** legacy fallback: a
+flow interrupted by the deploy is a re-login, a defeated CSRF guard is an
+account takeover.
+
+**Migration:** the current build reads both names for the refresh cookie and
+writes only the prefixed one. Drop the bare-name read once the longest refresh
+TTL has elapsed since the deploy.
+
+### The daemon has its own mux
+
+`iterion dispatch` builds its HTTP surface with a bare `http.NewServeMux`
+rather than `Server.routes()`, so none of the above reached it: a page the
+operator had open could create a board card cross-origin, transition it into
+the dispatcher-eligible state and force the poll — which runs a workflow, with
+tools, on the host. Binding to loopback is not a defence when the browser is on
+the host. It now wraps its mux in `server.BrowserGuard`, which applies the same
+`originGateAllows` predicate rather than a copy of it. **Any new surface that
+builds its own mux must do the same.**
 
 ## Response headers and the CSP
 
