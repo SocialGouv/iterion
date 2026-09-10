@@ -1049,11 +1049,17 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 	if e.hooks.OnLLMTurnCapture != nil {
 		fn := e.hooks.OnLLMTurnCapture
 		h.OnTurnFinished = func(info delegate.TurnFinishedInfo) {
-			// One TurnCheckpoint per delegate call; the CLI's session
-			// jsonl at ~/.claude/projects/<key>/<uuid>.jsonl is the
-			// source of truth for the conversation, and SessionID is
+			// One TurnCheckpoint per delegate call. For claude_code the
+			// CLI's session jsonl at ~/.claude/projects/<key>/<uuid>.jsonl
+			// is the source of truth for the conversation, and SessionID is
 			// the anchor the Fork API uses to relaunch claude with
 			// --resume + --fork-session.
+			//
+			// Backend is the name the caller RESOLVED, never a constant:
+			// pi fires this same hook (pi_rpc.go), so stamping claude_code
+			// here recorded every pi turn under another backend's name —
+			// and fork.go decides its claw-conversation branch on this
+			// field (#1053).
 			fn(nodeID, LLMTurnCaptureInfo{
 				Step:            1,
 				Text:            info.Text,
@@ -1062,7 +1068,7 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				OutputTokens:    info.OutputTokens,
 				AggregateTokens: info.AggregateTokens,
 				SessionID:       info.SessionID,
-				Backend:         delegate.BackendClaudeCode,
+				Backend:         backendName,
 				Iteration:       iteration,
 			})
 		}
