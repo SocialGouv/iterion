@@ -119,12 +119,18 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	done := make(chan error, 1)
+	// A CLOSED channel, not a value on `done`: waitHealthy receives from
+	// `done` on its own failure path, and `done` is written exactly once, so
+	// a "has it exited?" check against it reads empty forever afterwards.
+	// `exited` stays readable once closed, whoever drained what.
+	exited := make(chan struct{})
 	go func() {
 		done <- cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
 			ConfigPath: cfgPath,
 			StoreDir:   filepath.Join(dir, "store"),
 			Port:       port,
 		})
+		close(exited)
 	}()
 	// Registered BEFORE the first assertion, not after the last one. Every
 	// t.Fatalf between here and the end — waitHealthy timing out, the post
@@ -134,13 +140,14 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	// original failure under every later test in the package.
 	t.Cleanup(func() {
 		select {
-		case err := <-done:
-			// Already returned — it never started, or a sibling's signal
-			// reached it. Nothing to stop, and signalling now could land on a
-			// process with no handler left registered.
-			if err != nil {
-				t.Logf("RunDispatch had already returned: %v", err)
-			}
+		case <-exited:
+			// Already returned — it never started (bind race, bad config), or
+			// a sibling's signal reached it. There is nothing to stop, and
+			// signalling now would be worse than doing nothing: RunDispatch
+			// registers its handler with signal.NotifyContext + defer cancel,
+			// so once it returns nothing catches SIGTERM and the default
+			// disposition kills the whole test binary — turning one readable
+			// failure into "signal: terminated" for the entire package.
 			return
 		default:
 		}
@@ -149,10 +156,7 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 			return
 		}
 		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunDispatch returned %v on SIGTERM, want a clean exit", err)
-			}
+		case <-exited:
 		case <-time.After(30 * time.Second):
 			t.Error("RunDispatch did not return within 30s of SIGTERM — the daemon is still holding its watches")
 		}

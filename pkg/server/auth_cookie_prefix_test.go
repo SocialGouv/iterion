@@ -322,10 +322,17 @@ func TestLegacyRefreshCookieHalvesLiveAndDieTogether(t *testing.T) {
 
 	switch {
 	case writesLegacy && !acceptsLegacy:
+		// The READ went first. The cookie is still set on every browser and
+		// nothing accepts it: a stale name, and a desktop presenting it just
+		// gets a 401. Dead surface, not a session massacre.
 		t.Fatal("the legacy refresh cookie is still WRITTEN but no longer ACCEPTED: " +
-			"an older desktop harvests it, presents it, and gets every session of that user revoked")
+			"it is set on every browser and nothing reads it — dead surface, drop the write too")
 	case !writesLegacy && acceptsLegacy:
+		// The WRITE went first, and this is the dangerous order: an older
+		// desktop harvests nothing, keeps its previous token and replays it,
+		// which the server reads as theft.
 		t.Fatal("the legacy refresh cookie is no longer WRITTEN but is still ACCEPTED: " +
-			"that is fixation surface kept for no remaining benefit — drop the read too")
+			"an older desktop harvests nothing, replays its previous token, and gets every session of that user revoked — " +
+			"restore the write and soak with ITERION_LEGACY_REFRESH_COOKIE=0 first")
 	}
 }
