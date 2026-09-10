@@ -383,6 +383,68 @@ them was already exhausted on its weekly window. Before trusting a fallback,
 check the **account labels**, not the fingerprints — and give each tier a
 genuinely different account.
 
+## The fallback chain — several forfaits behind one tier
+
+A tier is not limited to one forfait per kind. Each connection carries a
+**rank**: `0` is the primary, `1` and up are fallbacks, and that order is the
+order they are tried in. It is the answer to the failure the section above
+describes — the tier's account shuts its window and the run has nowhere to go
+inside its own tier.
+
+**The resolution already worked this way; it just had nowhere to continue.**
+`resolveAndSealCredentials` walks the owner's records and *skips* a forfait
+whose provider window is closed (the `oauth-forfait(…) SKIPPED … falling
+through to the next credential tier` line). With one record per kind that skip
+fell straight out of the tier; with a chain it lands on rank 1 of the same
+tier first. Records come back ordered by kind then rank, so nothing had to
+learn what a rank is — `ListByUser` hands them over in try order.
+
+Provision a fallback by naming its rank. It is always explicit, never
+inferred, so no operator lands on a fallback by accident:
+
+```sh
+# Platform tier — a second Claude account behind the deployment's own.
+iterion remote admin llm oauth set claude_code --rank 1 \
+  --account-label "backup@example.org" --from-file ~/.secrets/claude-setup-token
+
+# Org tier — same idea, for the org's shared forfait.
+iterion remote orgs oauth set codex --rank 1 --from-file ~/.codex/auth.json
+
+# The team tier has no typed subcommand yet; the raw endpoint takes the same query.
+iterion remote api POST \
+  "/api/teams/<team-id>/oauth/claude_code/credentials?rank=1&account_label=backup@example.org" \
+  --data "@$HOME/.secrets/claude-setup-token"
+```
+
+Every action addresses exactly the link `--rank` names — `set`, `connect`,
+`name`, `refresh` and `delete` alike. Read the chain back with the ordinary
+listing, which reports each link's rank:
+
+```sh
+iterion remote admin llm oauth            # → connections[].rank, 0 first
+iterion remote admin llm oauth name claude_code --rank 1 --account-label backup
+iterion remote admin llm oauth delete claude_code --rank 1
+```
+
+Four things worth knowing before building one:
+
+- **Nothing moves when the feature arrives.** Rank 0 keeps the record id it
+  always had, so every credential connected before chains existed *is* the
+  primary, and the migration runs itself at startup. An invocation that names
+  no rank sends the byte-identical request it sent before.
+- **A chain of the same account is not a fallback.** The trap of the previous
+  section applies with full force here: two connections of one Anthropic
+  subscription are two fingerprints and two meters, and they shut *together*.
+  Check the account labels.
+- **`refresh --rank N` renews that link and no other.** This matters more than
+  it looks: the provider RETIRES the refresh token it is handed, so a refresh
+  aimed at the wrong record spends a live credential's token and leaves the
+  dying one exactly as dying.
+- **Only the primary can be lent to the credential pool.** A pledge is keyed
+  on (owner, source, kind) with no rank, so `pool lend` offers rank 0. Lending
+  a specific fallback is not wired — see
+  [docs/credential-pool.md](credential-pool.md).
+
 ## Activating the cross-model plan review (one credential, nothing else)
 
 The plan-phase campaign bots (feature-dev, app-dev,

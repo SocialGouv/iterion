@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,32 @@ import (
 // are specific to this surface.
 
 func adminLLMOAuthBase(kind string) string { return "/api/admin/llm/oauth/" + kind }
+
+// OAuthPath composes an OAuth endpoint's query for every tier's CLI: the
+// account label to stamp (empty = none) and which link of the owner's
+// credential chain to address.
+//
+// Rank 0 is the primary and is left IMPLICIT, so a command written before
+// chains existed emits the byte-identical request it always did. A negative
+// rank is refused rather than clamped: dropping it would silently address the
+// primary, which on `delete` is the one credential the operator was not
+// aiming at.
+func OAuthPath(base, accountLabel string, rank int) (string, error) {
+	if rank < 0 {
+		return "", fmt.Errorf("--rank must be >= 0 (0 = the primary credential, 1 and up = its fallbacks), got %d", rank)
+	}
+	q := url.Values{}
+	if lbl := strings.TrimSpace(accountLabel); lbl != "" {
+		q.Set("account_label", lbl)
+	}
+	if rank > 0 {
+		q.Set("rank", strconv.Itoa(rank))
+	}
+	if len(q) == 0 {
+		return base, nil
+	}
+	return base + "?" + q.Encode(), nil
+}
 
 // ReadSecretBlob resolves a possibly multi-line secret payload (e.g. a
 // credentials.json) from --from-env, a file, or — unlike ReadSecretValue's
@@ -122,8 +149,15 @@ func credentialSourceLabel(fromEnv, fromFile string) string {
 // browser and pastes the resulting `code#state`, authorize/complete
 // exchanges it server-side into the stored credentials blob. A non-empty
 // accountLabel names the account on that completing call, so the browser
-// path can name at connect time exactly like the paste path.
-func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer, kind, accountLabel string) error {
+// path can name at connect time exactly like the paste path, and rank picks
+// which link of the chain it becomes.
+func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer, kind, accountLabel string, rank int) error {
+	// Composed before anything is minted: a rejected --rank must not surface
+	// after the operator has already been through the browser round trip.
+	complete, err := OAuthPath(adminLLMOAuthBase(kind)+"/authorize/complete", accountLabel, rank)
+	if err != nil {
+		return err
+	}
 	var start struct {
 		AuthorizeURL string `json:"authorize_url"`
 		State        string `json:"state"`
@@ -143,10 +177,6 @@ func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer
 			return fmt.Errorf("read authorization code: %w", err)
 		}
 		return fmt.Errorf("no authorization code pasted")
-	}
-	complete := adminLLMOAuthBase(kind) + "/authorize/complete"
-	if accountLabel != "" {
-		complete += "?account_label=" + url.QueryEscape(accountLabel)
 	}
 	raw, err := c.Call(ctx, "POST", complete,
 		map[string]string{"code": code, "state": start.State}, nil)
