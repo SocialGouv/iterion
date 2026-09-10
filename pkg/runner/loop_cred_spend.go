@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The per-CREDENTIAL half of an attempt's metering (#641), beside
@@ -46,6 +47,7 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	repoID := r.repoForSpend(bg, msg)
 	for route, totals := range routes {
 		slot := credentialSlotForRoute(creds, route.backend, route.model)
 		if slot == "" {
@@ -72,6 +74,7 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 				Provider:    slot,
 				Tier:        credentialTier(creds, slot),
 				TenantID:    msg.TenantID,
+				RepoID:      repoID,
 			},
 			Nature:          credentialNature(slot),
 			Backend:         route.backend,
@@ -84,6 +87,33 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 			r.cfg.Logger.Warn("runner: credential spend record for %s (run %s): %v", fp, msg.RunID, err)
 		}
 	}
+}
+
+// repoForSpend names the repository this attempt's spend is attributed to,
+// or "" when iterion cannot say.
+//
+// The value is store.Run.ProjectPath — the forge slug the launch surfaces
+// already stamp and the studio already groups runs by, not a second identity
+// derived here from a clone URL. Read from the run document rather than added
+// to the queue message on purpose: the RunMessage schema is the contract
+// between a server and runner pods that deploy independently, and widening it
+// for an accounting field would couple this to a rollout order for no gain.
+//
+// Best-effort like everything on this path, and SILENT about a miss: a run
+// that legitimately targets no repository is the common case, so a warning
+// here would fire on most local and non-webhook runs. An attempt whose repo
+// cannot be read meters without one — charged to the credential, attributed
+// to nobody — which is the same rule the route attribution follows: never
+// guess a subject.
+func (r *Runner) repoForSpend(ctx context.Context, msg *queue.RunMessage) string {
+	if r.cfg.Store == nil || msg == nil || msg.RunID == "" {
+		return ""
+	}
+	run, err := r.cfg.Store.LoadRun(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.RunID)
+	if err != nil || run == nil {
+		return ""
+	}
+	return strings.TrimSpace(run.ProjectPath)
 }
 
 // credentialNature says what a credential's dollar figure MEANS.
