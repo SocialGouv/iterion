@@ -35,14 +35,12 @@ func TestApplyEvent_DuringARebuildIsNotReverted(t *testing.T) {
 	scanned := make(chan struct{})
 	release := make(chan struct{})
 	var once atomic.Bool
-	prev := reconcileScanned
-	reconcileScanned = func(st *Store) {
+	setSeam(t, &reconcileScanned, func(st *Store) {
 		if st == s && once.CompareAndSwap(false, true) {
 			close(scanned)
 			<-release
 		}
-	}
-	t.Cleanup(func() { reconcileScanned = prev })
+	})
 	t.Cleanup(func() {
 		select {
 		case <-release:
@@ -94,8 +92,7 @@ func TestRebuildAsync_RerunsForARequestThatArrivedMidPass(t *testing.T) {
 	var scans atomic.Int32
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st != s {
 			return
 		}
@@ -103,8 +100,7 @@ func TestRebuildAsync_RerunsForARequestThatArrivedMidPass(t *testing.T) {
 			entered <- struct{}{}
 			<-release
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	})
 
 	s.rebuildAsync("first")
 	<-entered

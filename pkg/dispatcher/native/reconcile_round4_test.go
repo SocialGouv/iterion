@@ -20,22 +20,18 @@ func TestRebuildAsync_DoesNotLoseARequestAtTheEndOfAPass(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	var scans atomic.Int32
-	prevScanning := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s {
 			scans.Add(1)
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prevScanning })
+	})
 
 	var late atomic.Bool
-	prevEnding := rebuildPassEnding
-	rebuildPassEnding = func(st *Store) {
+	setSeam(t, &rebuildPassEnding, func(st *Store) {
 		if st == s && late.CompareAndSwap(false, true) {
 			s.rebuildAsync("arrived as the pass was ending") // the lost-wakeup window
 		}
-	}
-	t.Cleanup(func() { rebuildPassEnding = prevEnding })
+	})
 
 	s.rebuildAsync("first")
 	waitRebuildIdle(t, s)
@@ -63,8 +59,7 @@ func TestClose_WaitsForARebuildInFlightAndRefusesALaterOne(t *testing.T) {
 
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s {
 			select {
 			case entered <- struct{}{}:
@@ -72,8 +67,7 @@ func TestClose_WaitsForARebuildInFlightAndRefusesALaterOne(t *testing.T) {
 			}
 			<-release
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	})
 
 	s.rebuildAsync("in flight at Close")
 	<-entered
@@ -96,11 +90,11 @@ func TestClose_WaitsForARebuildInFlightAndRefusesALaterOne(t *testing.T) {
 	waitRebuildIdle(t, s)
 
 	// After Close, a scan is refused before it touches the disk.
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s {
 			t.Error("a scan ran on a closed store")
 		}
-	}
+	})
 	if err := s.Reconcile(); err != nil {
 		t.Fatalf("Reconcile on a closed store: %v", err)
 	}
@@ -120,8 +114,7 @@ func TestReconcile_DoesNotLandAnOlderScanOverTheLockedRebuild(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	var once atomic.Bool
-	prev := reconcileScanned
-	reconcileScanned = func(st *Store) {
+	setSeam(t, &reconcileScanned, func(st *Store) {
 		if st != s || !once.CompareAndSwap(false, true) {
 			return
 		}
@@ -134,8 +127,7 @@ func TestReconcile_DoesNotLandAnOlderScanOverTheLockedRebuild(t *testing.T) {
 		if err != nil {
 			t.Errorf("reconcileLocked: %v", err)
 		}
-	}
-	t.Cleanup(func() { reconcileScanned = prev })
+	})
 
 	if err := s.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)

@@ -16,11 +16,9 @@ import (
 // degraded path is exercised on any host instead of only on an exhausted one.
 func refuseWatch(t *testing.T) {
 	t.Helper()
-	prev := newFSWatcher
-	newFSWatcher = func() (*fsnotify.Watcher, error) {
+	setSeam(t, &newFSWatcher, func() (*fsnotify.Watcher, error) {
 		return nil, &os.SyscallError{Syscall: "inotify_init1", Err: syscall.EMFILE}
-	}
-	t.Cleanup(func() { newFSWatcher = prev })
+	})
 }
 
 // fastPathBudget is how long waitForIndex gives the fsnotify fast path

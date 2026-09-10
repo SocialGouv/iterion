@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -13,9 +14,17 @@ import (
 )
 
 // newFSWatcher is the seam through which a test can make the host refuse
-// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Production
-// always gets fsnotify's own constructor.
-var newFSWatcher = fsnotify.NewWatcher
+// a watch (the ENOSPC/EMFILE a loaded CI runner really returns). Atomic
+// like every seam in this package — see fireSeam.
+var newFSWatcher atomic.Pointer[func() (*fsnotify.Watcher, error)]
+
+// fsWatcherCtor is fsnotify's own constructor unless a test installed one.
+func fsWatcherCtor() func() (*fsnotify.Watcher, error) {
+	if f := newFSWatcher.Load(); f != nil {
+		return *f
+	}
+	return fsnotify.NewWatcher
+}
 
 // indexWatcher watches <root>/issues/ for filesystem changes made by
 // out-of-process writers (typically the `iterion __mcp-board` stdio
@@ -55,7 +64,7 @@ type indexWatcher struct {
 // environment); the Store still works, it just can't see out-of-
 // process writes — same as before this watcher existed.
 func startIndexWatcher(s *Store) (*indexWatcher, error) {
-	w, err := newFSWatcher()
+	w, err := fsWatcherCtor()()
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +117,14 @@ func (iw *indexWatcher) Close() error {
 // question costs one mutex and a map lookup.
 const defaultWatchCheckInterval = 5 * time.Second
 
-// watchCheckIntervalOverride lets a test tighten the check.
-var watchCheckIntervalOverride *time.Duration
+// watchCheckIntervalOverride lets a test tighten the check. Atomic like
+// every seam in this package — and this is the one the race detector
+// catches first, since loop() reads it on the watcher's own goroutine.
+var watchCheckIntervalOverride atomic.Pointer[time.Duration]
 
 func watchCheckInterval() time.Duration {
-	if watchCheckIntervalOverride != nil {
-		return *watchCheckIntervalOverride
+	if d := watchCheckIntervalOverride.Load(); d != nil {
+		return *d
 	}
 	return defaultWatchCheckInterval
 }
