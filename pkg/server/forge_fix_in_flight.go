@@ -122,6 +122,41 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	}
 }
 
+// platformOwnsRunFuture reports whether something on the platform will act on
+// this run without anyone asking: a queue redelivery (the NAK family — a
+// sandbox setup phase that hit its bound, a pod the cluster could not place, a
+// drained runner) or an armed retry (the usage-window park). `failed_resumable`
+// is terminal to Status.IsTerminal, but such a run is PARKED, not done — it
+// wakes up and goes on rewriting the branch, and neither wake-up passes through
+// a launch surface, so nothing re-claims on the way back.
+//
+// The same predicate the rest of the platform already reads —
+// dispatcher.decideByStatus ("the platform owns its future"), the outcome
+// router, the board's `settled` test — spelled once here so the gate
+// reconciler's own RetryAfter-only stand-down can adopt it in a follow-up
+// rather than grow a fourth variant. It has that same hole today.
+//
+// A DLQ park is FINAL for automation whatever the markers still say (the queue
+// exhausted its deliveries; only an operator's replay wakes it), so that one is
+// not owned and resolves normally.
+func platformOwnsRunFuture(run *store.Run) bool {
+	if run == nil || run.Status != store.RunStatusFailedResumable {
+		return false
+	}
+	if run.FailureCode == store.FailureDLQParked {
+		return false
+	}
+	switch run.ContinuationState {
+	case store.ContinuationRedeliveryPending, store.ContinuationRetryArmed:
+		return true
+	}
+	// Legacy fallback: continuation_state is promoted by the runner at the
+	// actual Nak and by the retry-arming write, but a doc written before that
+	// rule — or by a path that bypassed it — carries only the timestamp. The
+	// retry sweeper distrusts a bare armed retry for exactly this reason.
+	return run.RetryState != nil && run.RetryState.RetryAfter != nil
+}
+
 // clearFixInFlight resolves THIS RUN's fixer claim once the run is terminal.
 //
 // Idempotent and narrow: it only ever replaces the marker this very run
@@ -130,6 +165,16 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 // RUN's claim is ever touched.
 func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || s.forgeConnections == nil || !run.Status.IsTerminal() {
+		return
+	}
+	// A run the platform still owns is parked, not done. Clearing here would
+	// post "pushing is safe again" on the head and then let the very same run
+	// resume and rewrite the branch — the false all-clear this file's own
+	// comment calls worse than the silence it replaces, in the quota-park and
+	// sandbox-stall lanes it was written for. The NAK family fires no outcome
+	// event, but the gate sweep still offers the run (ListNotifiableRuns
+	// includes failed_resumable), so the event path being quiet is no guard.
+	if platformOwnsRunFuture(run) {
 		return
 	}
 	prURL := runInputString(run, "pr_url")

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -203,6 +204,76 @@ func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
 		if gc.setCalls != 0 {
 			t.Errorf("%s: released the claim on a run still in flight", status)
 		}
+	}
+}
+
+// R51e567 — `failed_resumable` is terminal to Status.IsTerminal, but a run the
+// PLATFORM still owns is parked, not done: the queue redelivers it (the NAK
+// family — sandbox setup timeout, capacity, a drained runner) or the retry
+// sweeper resumes it (the usage-window park). It then goes on rewriting the
+// branch, and neither wake-up passes through a launch surface, so nothing
+// re-claims: the status would stay green for that whole second pass.
+//
+// The NAK family fires no outcome event, which is why the guard cannot live on
+// the event path — the gate SWEEP offers the same run (ListNotifiableRuns
+// includes failed_resumable) and calls the clear from there.
+func TestClearFixInFlight_SilentWhileThePlatformOwnsTheRun(t *testing.T) {
+	retryAfter := time.Now().Add(30 * time.Minute)
+	for name, park := range map[string]func(*store.Run){
+		// A Nak'd redelivery: the runner promotes the continuation and writes
+		// NO RetryState at all, so a RetryAfter-only guard misses it entirely.
+		"queue redelivery": func(r *store.Run) {
+			r.ContinuationState = store.ContinuationRedeliveryPending
+		},
+		"armed retry": func(r *store.Run) {
+			r.ContinuationState = store.ContinuationRetryArmed
+			r.RetryState = &store.RunRetryState{RetryAfter: &retryAfter}
+		},
+		// A doc written before the continuation promote, or by a path that
+		// bypassed it: the timestamp is all the ownership there is.
+		"legacy armed retry, no continuation": func(r *store.Run) {
+			r.RetryState = &store.RunRetryState{RetryAfter: &retryAfter}
+		},
+	} {
+		gc := &listingGateClient{statuses: []forge.CommitStatus{
+			{Context: fixInFlightContext, State: forge.CommitStatePending,
+				Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+		}}
+		s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+		park(run)
+
+		s.clearFixInFlight(context.Background(), run)
+
+		if gc.setCalls != 0 {
+			t.Errorf("%s: posted the all-clear (%d) on a run the platform will resume — it goes on rewriting the branch with the PR saying pushing is safe", name, gc.setCalls)
+		}
+	}
+}
+
+// The other half of that guard, and the one a later simplification would
+// delete: a DLQ park is FINAL for automation whatever the markers still say —
+// the queue exhausted its deliveries and only an operator's replay wakes it.
+// Its claim must resolve, or it sits pending on a run nothing will ever
+// continue. (The retry sweeper disarms exactly such a stale armed retry.)
+func TestClearFixInFlight_ResolvesADLQPark(t *testing.T) {
+	retryAfter := time.Now().Add(30 * time.Minute)
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.FailureCode = store.FailureDLQParked
+	// Markers that survived the park: the guard must not read them as ownership.
+	run.ContinuationState = store.ContinuationRetryArmed
+	run.RetryState = &store.RunRetryState{RetryAfter: &retryAfter}
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a DLQ-parked fixer's claim would sit pending forever", gc.setCalls)
+	}
+	if gc.last.State != forge.CommitStateSuccess {
+		t.Errorf("state = %q, want success", gc.last.State)
 	}
 }
 
