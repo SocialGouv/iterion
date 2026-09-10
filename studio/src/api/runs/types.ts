@@ -360,6 +360,11 @@ export interface RunHeader {
   // identities the key/connection views show — never secrets); what the
   // per-key concurrency ceiling counts. Absent for local runs.
   cred_fingerprints?: string[];
+  // Which resolution tiers FUNDED the run — byok, oauth-forfait, org, pool
+  // or platform — stamped with the fingerprints above and re-read at every
+  // resume, so it names who is paying now rather than who paid at launch.
+  // Plural: one attempt can spend two tiers. Absent for local runs.
+  credential_tiers?: string[];
   // Set while the run executes no model-calling node: it then holds none
   // of its credentials' concurrency slots.
   llm_idle_since?: string;

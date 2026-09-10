@@ -366,6 +366,24 @@ asking "which key paid for this, and why not the other one". The cheapest way
 to get one on demand is to `resume` a run parked on a usage window: a resume
 re-resolves credentials, so it both proves the wiring and unblocks the run.
 
+**The run itself now carries which TIER paid** (`credential_tiers` on
+`GET /api/runs/{id}`, shown as a `paid by …` badge on the run header). It is
+stamped with `cred_fingerprints`, as one unit, at launch and at **every
+resume** — a resume can be funded by a different tier than the launch, so a
+field that recorded only the first answer would send you to the wrong door.
+It survives log rotation, which the lines above do not:
+
+```json
+{ "cred_fingerprints": ["1cf39b47…"], "credential_tiers": ["oauth-forfait"] }
+```
+
+It is **plural** because a run is: one attempt can spend a team forfait on
+its implementer and the platform's codex key on its plan review, and naming
+one of them "the tier" would be wrong about the other. It carries no slot
+names — for the (slot, tier, fingerprint) triple, the GRANTED line above
+remains the place to look, and the two cannot drift because they are computed
+by the same function.
+
 ### Two connections of the same account are two meters
 
 A Claude `credentials.json` carries no account or subscription id, so

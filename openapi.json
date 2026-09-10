@@ -2167,6 +2167,12 @@
             },
             "type": "array"
           },
+          "credential_tiers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "current_run_start": {
             "format": "date-time",
             "type": "string"

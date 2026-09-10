@@ -6326,6 +6326,7 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             cred_fingerprints?: string[];
+            credential_tiers?: string[];
             /** Format: date-time */
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];

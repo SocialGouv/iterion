@@ -292,6 +292,23 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               </span>
             </Tooltip>
           )}
+          {run.credential_tiers && run.credential_tiers.length > 0 && (
+            <Tooltip
+              content={
+                `Which tier funded this run — re-read at every resume, so it names who is paying NOW.` +
+                (run.credential_tiers.length > 1
+                  ? " Two tiers: one attempt can spend a team forfait on one node and a shared credential on another."
+                  : "")
+              }
+            >
+              <span
+                className="inline-flex items-center gap-1 rounded border border-border-default px-1.5 py-0.5 text-micro text-fg-subtle"
+                data-testid="run-credential-tiers"
+              >
+                paid by {run.credential_tiers.join(" · ")}
+              </span>
+            </Tooltip>
+          )}
           {active && (
             <LiveDot
               tone="live"

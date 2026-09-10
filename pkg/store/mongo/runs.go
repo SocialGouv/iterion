@@ -696,7 +696,11 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // patch: the caller stamps a run it just persisted. Granular $set/$unset
 // so a status transition racing this write is never disturbed.
 func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunCredStamp) error {
-	set := bson.M{"cred_fingerprints": stamp.Fingerprints, "updated_at": time.Now().UTC()}
+	set := bson.M{
+		"cred_fingerprints": stamp.Fingerprints,
+		"credential_tiers":  stamp.Tiers,
+		"updated_at":        time.Now().UTC(),
+	}
 	// A re-stamp is a fresh attempt: it counts until it proves idle.
 	unset := bson.M{"llm_idle_since": ""}
 	if stamp.SkippedReopensAt != nil {
