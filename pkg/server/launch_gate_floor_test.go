@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -480,6 +481,41 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 			t.Fatalf("an unrelated repository was refused: %s", rec.Body.String())
 		}
 	})
+}
+
+// The promise docs/quotas-and-limits.md makes for EVERY launch surface, and
+// the one processBoardCard's comment cites this handler for: the gate meters a
+// monthly run, and when the run service then refuses — a draining server, a
+// queue outage, a bot that does not compile — no run exists, so the slot goes
+// back. Each of those is a condition the caller retries, so a leak here is one
+// slot per attempt against the tenant's month.
+func TestHandleLaunchRun_ARefusedLaunchConsumesNoMonthlySlot(t *testing.T) {
+	pub := &countingPublisher{err: errors.New("queue unavailable")}
+	s, rs := newGatedBoardServer(t, gateSpec{id: "t1"}, pub)
+	s.cfg.Store = fakeActiveStore{RunStore: rs}
+	s.orgUsage = orgusage.NewMemoryCounter()
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+
+	src, err := json.Marshal(boardGateProbeBot)
+	if err != nil {
+		t.Fatalf("marshal source: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs",
+		strings.NewReader(`{"source":`+string(src)+`}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleLaunchRun(rec, req)
+
+	if rec.Code/100 == 2 {
+		t.Fatalf("status = %d, want a refusal — the publisher rejected the launch: %s", rec.Code, rec.Body.String())
+	}
+	u, err := s.orgUsage.Usage(context.Background(), "t1", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if u.Runs != 0 {
+		t.Errorf("monthly runs = %d after a launch the run service refused, want 0 — no run exists to have consumed one", u.Runs)
+	}
 }
 
 // A resume is judged like a launch, so it needs the same subject — and it can

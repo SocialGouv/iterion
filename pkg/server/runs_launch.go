@@ -575,6 +575,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	launchLB.StampBundle(&spec)
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
+		// No run exists on ANY arm below — a draining server, a queue
+		// outage, a spent usage window, a bot that does not compile — so the
+		// monthly slot metered by the gate goes back. That is the promise
+		// docs/quotas-and-limits.md makes for every launch surface, and the
+		// one processBoardCard's comment cites this handler for; it was the
+		// only surface not keeping it, because the handle was discarded at
+		// the gate rather than held. Each of these is a condition the caller
+		// retries, so the leak was one slot per attempt.
+		admission.rollback(s.logger)
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
 			span.SetStatus(codes.Error, "server draining")
