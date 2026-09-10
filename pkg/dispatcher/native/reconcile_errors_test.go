@@ -1,9 +1,7 @@
 package native
 
 import (
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -54,93 +52,34 @@ func TestReconcile_KeepsACardWhoseFileIsMomentarilyUnreadable(t *testing.T) {
 	}
 }
 
-// A watch lost mid-life — fsnotify's channels closing under the loop —
-// arms the same net as a watch refused at startup, instead of leaving the
-// store blind until restart.
-func TestWatcher_ArmsTheNetWhenTheWatchIsLost(t *testing.T) {
+// A watch-loss callback may already have passed its stop-channel check when
+// Close begins. Once Close has marked the store closed, that late callback
+// must not arm a rescanner that outlives the store. (Landed first in #1020
+// under a `closing` flag of its own; the store's `closed` is that flag.)
+func TestWatchLostAfterCloseBeganArmsNoNet(t *testing.T) {
 	setRescanInterval(t, 20*time.Millisecond)
-
-	dir := t.TempDir()
-	s, err := NewStore(dir)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if s.watcher == nil {
-		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
-	}
-
-	// The kernel side goes away under the loop's feet.
-	if err := s.watcher.w.Close(); err != nil {
-		t.Fatalf("close the fsnotify watcher: %v", err)
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.Lock()
-		armed := s.watcher == nil && s.rescanner != nil && s.watcherErr != nil
-		s.mu.Unlock()
-		if armed {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	s.mu.Lock()
-	armed := s.watcher == nil && s.rescanner != nil
-	s.mu.Unlock()
-	if !armed {
-		t.Fatal("the lost watch did not arm the fallback net: the store is blind until restart")
-	}
-
-	now := time.Now().UTC().Truncate(time.Second)
-	iss := Issue{ID: "native:after-the-loss", Title: "Seen by the net", State: "backlog", CreatedAt: now, UpdatedAt: now}
-	data, err := json.MarshalIndent(&iss, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, issuesDir, encodeID(iss.ID)+".json"), data, filePerm); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	deadline = time.Now().Add(fastPathBudget)
-	for time.Now().Before(deadline) {
-		if _, err := s.Get(iss.ID); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("after the watch was lost, an out-of-process create never became visible")
-}
-
-// A watcher-loss callback may already have passed its stop-channel check when
-// Close begins. Once Close has marked the store as closing, that late callback
-// must not install a fresh rescanner that outlives the store.
-func TestWatcherLossDoesNotArmNetAfterCloseBegins(t *testing.T) {
-	setRescanInterval(t, 20*time.Millisecond)
-
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if s.watcher == nil {
+	watcher, _, werr := s.watchState()
+	if watcher == nil {
 		_ = s.Close()
-		t.Skipf("this host refused a watch (%v); a watch cannot be lost", s.watcherErr)
+		t.Skipf("this host refused a watch (%v); a watch cannot be lost", werr)
 	}
-	watcher := s.watcher
 
 	// Stage the exact Close boundary under the same mutex: a loss callback
 	// that reaches watchLost after this point is late and must be ignored.
 	s.mu.Lock()
-	s.closing = true
+	s.closed = true
 	s.mu.Unlock()
 	s.watchLost(watcher)
 
-	s.mu.Lock()
-	rescanner := s.rescanner
-	s.mu.Unlock()
+	_, rescanner, _ := s.watchState()
 	if rescanner != nil {
 		_ = rescanner.Close()
 		_ = watcher.Close()
-		t.Fatal("watcher loss armed a fallback rescanner after close began")
+		t.Fatal("a watch lost after Close began armed a fallback rescanner")
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

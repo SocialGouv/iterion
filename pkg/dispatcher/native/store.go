@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -54,6 +55,7 @@ type Store struct {
 	// host refused a watch — the rescanner below then carries the same
 	// promise on a slower path.
 	watcher *indexWatcher
+
 	// watcherErr records why the watch could not be armed. From the
 	// outside an absent watcher is a nil field either way, so without
 	// this a host that refused the watch (ENOSPC at max_user_watches,
@@ -67,17 +69,41 @@ type Store struct {
 	// was armed (the fast path needs no net) or when the net is off.
 	rescanner *indexRescanner
 
-	// closing is set under mu before Close snapshots the background workers.
-	// It prevents a watcher-loss callback that was already in flight from
-	// installing a new rescanner after that snapshot.
-	closing bool
+	// scanning is >0 while Reconcile's disk scan is in flight, and dirty
+	// collects the ids the process wrote meanwhile (every file write
+	// through writeIssueLocked, every Delete) — both under mu. The scan
+	// runs WITHOUT the mutex, so a write that lands during it is one the
+	// scan may or may not have seen; the swap takes the index's own value
+	// for those ids instead of the scan's, and never reverts one.
+	scanning int
+	dirty    map[string]bool
 
-	// writes counts the in-process mutations of issues/ (every file write
-	// through writeIssueLocked, every Delete), under mu. Reconcile scans
-	// the disk WITHOUT the mutex and compares this counter before it
-	// swaps the scan in: a write that landed during the scan makes the
-	// scan stale, and a stale swap would revert it.
-	writes uint64
+	// scanEpoch is bumped by the locked rebuild (the panic-recovery path,
+	// which holds mu and so cannot wait on reconcileMu): an unlocked scan
+	// that started before the bump is older than the index and does not
+	// swap in.
+	scanEpoch uint64
+
+	// unreadableFP fingerprints the set of cards the last scan could not
+	// read, so the warning is written when the set CHANGES, not on every
+	// tick of a net that runs every two seconds.
+	unreadableFP string
+
+	// closed is set by Close under mu; a watch lost after that arms no net.
+	closed bool
+
+	// rebuildPending coalesces the rebuilds a kernel-queue overflow asks
+	// for: one runs at a time; rebuildRerun records that a request came
+	// in while it ran, so the goroutine goes once more instead of
+	// dropping a request the running scan could not have covered.
+	rebuildPending atomic.Bool
+	rebuildRerun   atomic.Bool
+
+	// rebuildWG counts the rebuild goroutines that are alive, so Close
+	// waits for the whole goroutine and not merely for the scan inside it.
+	// The Add happens under mu and only while !closed, which is what keeps
+	// it from racing Close's Wait.
+	rebuildWG sync.WaitGroup
 
 	// reconcileMu serialises Reconcile callers (the rescan ticker, a
 	// kernel-queue overflow, an explicit call) so two scans cannot
@@ -161,8 +187,9 @@ func NewStore(root string) (*Store, error) {
 	}
 	s.seq = maxSeq + 1
 
-	// Populate the index from disk. Corrupt files are skipped (a
-	// warning would be nice but the store doesn't carry a logger).
+	// Populate the index from disk. A file that cannot be read is skipped
+	// and said so — the store carries a logger from its construction above,
+	// which is what the note that used to sit here said it did not.
 	if err := s.populateIndex(); err != nil {
 		return nil, err
 	}
@@ -174,12 +201,16 @@ func NewStore(root string) (*Store, error) {
 	// store is blind until the daemon restarts". Record why, say so,
 	// and fall back to the reconciliation net so the store's promise
 	// survives a host that has no watch descriptor to give.
-	if w, err := startIndexWatcher(s); err == nil {
-		s.watcher = w
-	} else {
+	// startIndexWatcher publishes the watcher on the store itself, under
+	// the lock and before its loop runs.
+	if _, err := startIndexWatcher(s); err != nil {
+		s.mu.Lock()
 		s.watcherErr = err
-		if s.rescanner = startFallbackRescan(s); s.rescanner != nil {
-			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, s.rescanner.interval)
+		s.rescanner = startFallbackRescan(s)
+		r := s.rescanner
+		s.mu.Unlock()
+		if r != nil {
+			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, r.describe())
 		} else {
 			s.logger.Warn("native index watcher unavailable: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", err)
 		}
@@ -207,9 +238,18 @@ func (s *Store) getLogger() *iterlog.Logger {
 	return s.logger
 }
 
-// Close releases store-owned resources (currently the fsnotify
-// watcher goroutine). Safe to call multiple times; safe on a Store
+// Close releases what the store owns: the fsnotify watcher goroutine, the
+// rescan net that replaces it on a host that refused a watch, and the
+// overflow-rebuild goroutine. Safe to call multiple times; safe on a Store
 // whose watcher never started.
+//
+// The guarantee, stated as narrowly as it is true: when Close returns, no
+// scan, no index write and no disk I/O of this store is in flight, and
+// none will start. What it does not promise is that every goroutine that
+// ever mentioned this store has returned — a watcher loop that handed the
+// store over itself (watchLost) is not waited for, because the store no
+// longer holds it by then. It is on its last two instructions and touches
+// no store state.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -217,17 +257,43 @@ func (s *Store) Close() error {
 	// Snapshot under the lock — a watch lost mid-life swaps these from the
 	// watcher goroutine — and close outside it: closing the watcher waits
 	// for its loop, which may itself be waiting for the store mutex.
+	//
+	// Setting closed and taking the snapshot in ONE critical section is
+	// what makes the hand-over safe, and watchLost reads both in one of
+	// its own: it either finished arming its net before this snapshot (so
+	// the snapshot has it) or is refused after (so there is nothing to
+	// find). The second look further down is therefore belt and braces
+	// today, kept because it costs one mutex and because it is what a
+	// future change that splits this critical section would need.
 	s.mu.Lock()
-	s.closing = true
+	s.closed = true
 	rescanner, watcher := s.rescanner, s.watcher
 	s.mu.Unlock()
 	if rescanner != nil {
 		_ = rescanner.Close()
 	}
+	var err error
 	if watcher != nil {
-		return watcher.Close()
+		err = watcher.Close()
 	}
-	return nil
+	s.mu.Lock()
+	late := s.rescanner
+	s.mu.Unlock()
+	if late != nil && late != rescanner {
+		_ = late.Close()
+	}
+	// Wait for the overflow rebuild GOROUTINE, not just for the scan it is
+	// running. Its work does not end when Reconcile returns: it still has
+	// to release the pending flag and look once more for a request that
+	// raced it, and reconcileMu — released inside Reconcile — says nothing
+	// about that tail. rebuildAsync takes a ticket under mu and refuses one
+	// once closed is set, which is set above, so no goroutine can be added
+	// after this Wait starts.
+	s.rebuildWG.Wait()
+	// And for an explicit Reconcile from outside, which owns no ticket.
+	s.reconcileMu.Lock()
+	s.reconcileMu.Unlock() //nolint:staticcheck // an empty critical section is the wait
+	return err
 }
 
 // populateIndex loads every committed issue file into the index at
@@ -240,7 +306,7 @@ func (s *Store) populateIndex() error {
 		return err
 	}
 	for id, iss := range fresh {
-		s.index[id] = iss
+		s.setIndexLocked(id, iss)
 	}
 	if len(unreadable) > 0 && s.logger != nil {
 		for id, err := range unreadable {
@@ -251,17 +317,30 @@ func (s *Store) populateIndex() error {
 	return nil
 }
 
-// errWatchLost is recorded on a store whose armed watch went away
-// mid-life: fsnotify closed its channels under the loop.
-var errWatchLost = errors.New("fsnotify watch lost mid-life (event channel closed)")
+// watchState reports the watcher, the net and the reason for its absence
+// under the lock — the watcher goroutine swaps them when a watch is lost,
+// so a reader outside the lock races it.
+func (s *Store) watchState() (*indexWatcher, *indexRescanner, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.watcher, s.rescanner, s.watcherErr
+}
 
-// watchLost is called by the watcher loop when its channels close without
-// a Close: the fast path is gone, so the store arms the same net a watch
-// refused at startup gets, with the reason recorded, instead of serving
-// its last snapshot until restart.
+// errWatchLost is recorded on a store whose armed watch went away
+// mid-life: the kernel dropped it (issues/ removed, renamed or unmounted
+// — fsnotify forgets the watch and says nothing), or fsnotify closed its
+// channels under the loop.
+var errWatchLost = errors.New("inotify watch on issues/ lost mid-life")
+
+// watchLost is called by the watcher loop once it has established that
+// its watch is gone: the fast path is over, so the store arms the same
+// net a watch refused at startup gets, with the reason recorded, instead
+// of serving its last snapshot until restart. The fsnotify watcher is
+// closed here — its inotify descriptor is the scarce thing on the host
+// this happens on — and a store that is closing arms nothing.
 func (s *Store) watchLost(iw *indexWatcher) {
 	s.mu.Lock()
-	if s.closing || s.watcher != iw {
+	if s.watcher != iw || s.closed {
 		s.mu.Unlock()
 		return
 	}
@@ -270,10 +349,11 @@ func (s *Store) watchLost(iw *indexWatcher) {
 	s.rescanner = startFallbackRescan(s)
 	r, logger := s.rescanner, s.logger
 	s.mu.Unlock()
+	_ = iw.w.Close()
 	switch {
 	case logger == nil:
 	case r != nil:
-		logger.Warn("native index watcher: %v — falling back to a %s disk rescan for out-of-process issue changes", errWatchLost, r.interval)
+		logger.Warn("native index watcher: %v — falling back to a %s disk rescan for out-of-process issue changes", errWatchLost, r.describe())
 	default:
 		logger.Warn("native index watcher: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", errWatchLost)
 	}
