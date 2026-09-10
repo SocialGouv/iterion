@@ -462,18 +462,27 @@ at write time — it knows the 100% window, never the deployment's own cap.
 A ceiling inside the shared budget, refused with its own reason
 (`repo_quota_exceeded`) because the operator's next move differs: raise *that
 repository's* quota, not the org's. Three forms — `--monthly-usd` (default),
-`--runs-per-month`, and `--reserve-share N --share-of-bot <bot>`, which slices
-a reservation so that raising the reservation raises every repository taking a
-share of it.
+`--route-spends-per-month`, and `--reserve-share N --share-of-bot <bot>`, which
+slices a reservation so that raising the reservation raises every repository
+taking a share of it.
 
-A share of a **window-only** reserve is refused at configuration time, not
-resolved to zero: slicing a live five-hour window between repositories would
-need real-time arbitration across replicas, and a locally computed share is a
-number two pods disagree about. The refusal names the way out.
+A share of a **window-only** (or concurrency-only) reserve is refused at
+configuration time, not resolved to zero: slicing a live five-hour window
+between repositories would need real-time arbitration across replicas, and a
+locally computed share is a number two pods disagree about. Only `--monthly-usd`
+can be sliced into a repository ceiling, and the refusal names the way out.
 
 It is read off the repository dimension above — the meter the runs actually
 write — so the figure `usage --by-credential --repo X` shows **is** the figure
 the gate refuses on. A view that disagreed with the gate could not exist.
+
+**`--route-spends-per-month` does not count runs**, and is named so nobody
+reads it as if it did. The ledger increments once per `AddSpend`, and the
+runner calls `AddSpend` once per `(credential, backend, model)` **route** an
+attempt charged: an agent on opus with a judge on haiku spends two, a
+`fallbacks:` crossing spends two, and a resumed run spends again. Cap
+*attempts* with the org-level monthly run quota; this axis caps metered
+activity in one repository.
 
 ### What is not covered
 
@@ -483,6 +492,12 @@ parsed (an operator-initiated launch, not the automated fan-out these quotas
 bound), and a trigger `emit` is one event that fans out to many launches —
 each of which is gated with its own subject. Both pass the empty subject and
 are judged as ordinary, uncapped work.
+
+Everything else names its bot: the webhook launches, the trigger spine, the
+cloud scheduler, the board dispatcher and the retry sweeper. That matters in
+the direction people do not expect — a launch judged as ordinary work faces
+the ceiling its OWN reservation lowered, so a missing subject makes a
+reservation refuse the very workload it protects.
 
 ## Reading usage
 

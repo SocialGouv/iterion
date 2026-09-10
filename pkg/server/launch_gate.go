@@ -271,8 +271,8 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 	if s.credUsage == nil || subj.Repo == "" {
 		return nil
 	}
-	maxUSD, maxRuns := floor.RepoCap(subj.Repo)
-	if maxUSD <= 0 && maxRuns <= 0 {
+	maxUSD, maxSpends := floor.RepoCap(subj.Repo)
+	if maxUSD <= 0 && maxSpends <= 0 {
 		return nil
 	}
 	rows, err := s.credUsage.ListByRepo(ctx, now, subj.Repo)
@@ -283,7 +283,7 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 		return nil
 	}
 	var spent float64
-	runs := 0
+	routeSpends := 0
 	for _, r := range rows {
 		// metered and estimated are added HERE and nowhere else: the quota is
 		// a budget for the repository's consumption, and on a fleet mixing a
@@ -292,7 +292,11 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 		// (metered_usd / estimated_usd) precisely so this is the only place
 		// the sum is taken, deliberately.
 		spent += r.CostUSD
-		runs += r.Runs
+		// Not a run count: credusage increments this once per AddSpend, and
+		// the runner calls AddSpend once per (credential, backend, model)
+		// route an attempt charged. Named for what it counts everywhere it
+		// is shown — see RepoQuota.RouteSpendsPerMonth.
+		routeSpends += r.Runs
 	}
 	if maxUSD > 0 && spent >= maxUSD {
 		return &launchDenial{
@@ -302,11 +306,12 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 			resetAt: nextMonthStart(now),
 		}
 	}
-	if maxRuns > 0 && runs >= maxRuns {
+	if maxSpends > 0 && routeSpends >= maxSpends {
 		return &launchDenial{
-			status:  http.StatusPaymentRequired,
-			reason:  denyRepoQuota,
-			detail:  fmt.Sprintf("repository %s has used %d of its %d monthly runs", subj.Repo, runs, maxRuns),
+			status: http.StatusPaymentRequired,
+			reason: denyRepoQuota,
+			detail: fmt.Sprintf("repository %s has recorded %d of its %d monthly metered route-spends (one per credential+model route a run charges, so a two-model run counts twice)",
+				subj.Repo, routeSpends, maxSpends),
 			resetAt: nextMonthStart(now),
 		}
 	}
