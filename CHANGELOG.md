@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.133.0](https://github.com/SocialGouv/iterion/compare/v3.132.8...v3.133.0) (2026-09-10)
+
+### Features
+
+* **dsl:** a property registry the parser is held to, and E012 names the remedy (lot 1a of [#1010](https://github.com/SocialGouv/iterion/issues/1010)) ([#1092](https://github.com/SocialGouv/iterion/issues/1092)) ([57564e7](https://github.com/SocialGouv/iterion/commit/57564e765e5bc8ef4c5c34d02752da6ecba7fd47)), closes [#1084](https://github.com/SocialGouv/iterion/issues/1084), references [#1084](https://github.com/SocialGouv/iterion/issues/1084) [#1094](https://github.com/SocialGouv/iterion/issues/1094)
+
+    <details><summary>why</summary>
+
+    Lot 1a of #1010 (#1084). The DSL's property surface was written by hand in five places (the parser's switch arms, the EBNF, the readable grammar, the root SKILL.md, the whats-next quickref) and drifted: the quickref's canonical examples did not parse until lot 0 rewrote them, and an unknown property was refused with E012 and a pointer to a table.
+
+    </details>
+
 ## [3.132.8](https://github.com/SocialGouv/iterion/compare/v3.132.7...v3.132.8) (2026-09-10)
 
 ### Bug Fixes
