@@ -195,7 +195,32 @@ func TestGateLaunch_ConcurrencyReserve(t *testing.T) {
 			t.Fatalf("the holder was refused its own slots: %+v", d)
 		}
 	})
+
+	t.Run("a store that cannot count runs has no cap for a reserve to hold", func(t *testing.T) {
+		// The concurrency cap only binds on a store implementing
+		// activeRunCounter (the Mongo one). Anywhere else the gate counts
+		// nothing and admits everything, so the cap is INERT — and a reserve
+		// subtracted from an inert cap would refuse work on a ceiling that
+		// does not exist, which is the same invented ceiling the uncapped-team
+		// case refuses by name. The whole-cap reserve is the shape that shows
+		// it: it denies before the count is ever taken.
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.cfg.Store = countlessStore{}
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 2})
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"}); d != nil {
+			t.Fatalf("refused on a cap nothing enforces: %+v — the reservation invented one", d)
+		}
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the holder was refused too: %+v", d)
+		}
+	})
 }
+
+// countlessStore is a run store WITHOUT CountActiveRunsByTenant — every store
+// but the Mongo one. The concurrency cap is unenforceable against it.
+type countlessStore struct{ store.RunStore }
 
 // The monthly-dollar reserve: real money on a metered key, and the same
 // no-invented-ceiling guard as the other two axes.
