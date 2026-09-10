@@ -24,7 +24,7 @@ each property live in the [DSL guide](../dsl.md). The value forms:
 | one of … | one of the listed bare words |
 | ident list, string list, tool list, skill list | an inline `[a, b]` list; tool refs may be dotted (`mcp.server.*`), a quoted element is the literal name |
 | map | `{ KEY: "v" }` inline, or an indented `KEY: v` block |
-| with { … } | `with { key: "value", … }` |
+| `with { … }` | `with { key: "value", … }` |
 | block → kind | an indented block whose lines are that kind's properties |
 
 <!-- dsl-spec:begin reference -->
@@ -410,7 +410,7 @@ A node: `subbot <name>:` at the top level or inside a `group`.
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `source` | string | Path of the child .bot, relative to this file |
-| `with` | with { … } | Child vars; {{…}} references are allowed in the values |
+| `with` | `with { … }` | Child vars; {{…}} references are allowed in the values |
 | `output` | ident | Schema the node's structured output must match |
 | `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
 | `isolated` | bool | Asserts the child runs in its own workspace |
@@ -425,7 +425,7 @@ A node: `emit <name>:` at the top level or inside a `group`.
 |---|---|---|
 | `description` | string | Free-text description shown by the studio and the reports |
 | `event` | string | Event name |
-| `with` | with { … } | Payload fields |
+| `with` | `with { … }` | Payload fields |
 
 ### wait
 

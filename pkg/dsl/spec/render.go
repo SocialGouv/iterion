@@ -207,6 +207,8 @@ func Table(k Kind) string {
 
 func valueCell(p Property) string {
 	switch p.Form {
+	case WithMap:
+		return "`" + string(p.Form) + "`"
 	case Enum:
 		return "one of " + codes(p.Values)
 	case Block:
