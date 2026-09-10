@@ -104,7 +104,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		}
 	}
 	if !preflightMatches && !e.artifactContractsChecked {
-		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts); err != nil {
+		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts, false); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.
 			if errors.Is(err, ErrArtifactContractUnavailable) {
 				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)

@@ -165,7 +165,7 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 // are accepted; report/legacy context policies record the mismatch through
 // the caller while enforce refuses it nondestructively.
 func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, true, nil)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, true, nil, false)
 }
 
 // ValidateArtifactContractsPreflight applies the synchronous compatibility
@@ -173,7 +173,7 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 // queued handoff: Engine.Resume repeats the authoritative check and emits the
 // single event for that execution attempt.
 func ValidateArtifactContractsPreflight(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false, nil)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false, nil, false)
 }
 
 // ArtifactResumePreflight is an opaque, same-process snapshot of the exact
@@ -238,11 +238,16 @@ func ValidateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.R
 	return validateResumeArtifacts(ctx, s, run, wf, currentRevision, forceSourceChange, true)
 }
 
-// ValidateResumeArtifactsPreflight is the non-emitting variant for a detached
-// or queued handoff. The remote Engine repeats the authoritative emitting
-// check, but this boundary still avoids duplicate reads locally.
+// ValidateResumeArtifactsPreflight is the non-emitting, verify-only variant
+// for a detached or queued handoff. It validates each artifact in one pass
+// without retaining its body: the remote Engine must load the immutable
+// bodies itself, and a shared control-plane process must not accumulate an
+// entire run's artifact history merely to admit the queued resume.
 func ValidateResumeArtifactsPreflight(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) (*ArtifactResumePreflight, error) {
-	return validateResumeArtifacts(ctx, s, run, wf, currentRevision, forceSourceChange, false)
+	if err := validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false, nil, true); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 func validateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange, emitReport bool) (*ArtifactResumePreflight, error) {
@@ -253,7 +258,7 @@ func validateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.R
 	if loaded == nil {
 		loaded = make(map[artifactRevisionKey]*store.Artifact)
 	}
-	if err := validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, emitReport, loaded); err != nil {
+	if err := validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, emitReport, loaded, false); err != nil {
 		return nil, err
 	}
 	p := &ArtifactResumePreflight{
@@ -274,7 +279,7 @@ func validateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.R
 // It is used by rewind after it has computed the exact downstream set: an
 // obsolete artifact must not prevent the operation that removes it.
 func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes, true, nil)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes, true, nil, false)
 }
 
 // ValidateCheckpointArtifactAvailability verifies that every exact physical
@@ -358,7 +363,7 @@ func loadCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, r
 	return loaded, nil
 }
 
-func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool, emitReport bool, preloaded map[artifactRevisionKey]*store.Artifact) error {
+func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool, emitReport bool, preloaded map[artifactRevisionKey]*store.Artifact, requireExactAvailability bool) error {
 	if run == nil || s == nil || wf == nil {
 		return nil
 	}
@@ -403,6 +408,9 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	validateRevision = func(revision artifactValidationRevision) error {
 		nodeID, version := revision.NodeID, revision.Version
 		if nodeID == "" {
+			if requireExactAvailability && policy == store.ContextPolicyEnforce {
+				return fmt.Errorf("%w: artifact %q has no persisted producer identity", ErrArtifactContractUnavailable, revision.LogicalRef)
+			}
 			violations = append(violations, fmt.Sprintf("artifact %q has no persisted producer identity", revision.LogicalRef))
 			return nil
 		}
@@ -429,17 +437,23 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			return nil
 		}
 		if artifact == nil {
+			if requireExactAvailability && policy == store.ContextPolicyEnforce {
+				return fmt.Errorf("%w: artifact %s/%d returned no persisted body", ErrArtifactContractUnavailable, nodeID, version)
+			}
 			violations = append(violations, fmt.Sprintf("artifact %s/%d returned no persisted body", nodeID, version))
+			return nil
+		}
+		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version {
+			if requireExactAvailability && policy == store.ContextPolicyEnforce {
+				return fmt.Errorf("%w: artifact %s/%d has mismatched persisted identity", ErrArtifactContractUnavailable, nodeID, version)
+			}
+			violations = append(violations, fmt.Sprintf("artifact %s/%d loaded as %s/%s/%d", nodeID, version, artifact.RunID, artifact.NodeID, artifact.Version))
 			return nil
 		}
 		if artifact.Contract == nil {
 			return nil
 		}
 		contract := artifact.Contract
-		if artifact.RunID != run.ID || artifact.NodeID != nodeID || artifact.Version != version {
-			violations = append(violations, fmt.Sprintf("artifact %s/%d loaded as %s/%s/%d", nodeID, version, artifact.RunID, artifact.NodeID, artifact.Version))
-			return nil
-		}
 		if contract.ProducerNode != nodeID {
 			violations = append(violations, fmt.Sprintf("artifact %s/%d names producer %q", nodeID, version, contract.ProducerNode))
 			return nil

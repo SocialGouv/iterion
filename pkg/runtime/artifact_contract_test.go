@@ -1332,6 +1332,49 @@ func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 	}
 }
 
+func TestDetachedResumePreflightVerifiesWithoutRetainingArtifactBodies(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-verify-only"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	for _, nodeID := range []string{"a", "b"} {
+		if err := base.WriteArtifact(ctx, &store.Artifact{
+			RunID: runID, NodeID: nodeID, Version: 0, Data: map[string]any{"value": nodeID},
+			Contract: &store.ArtifactContract{LogicalRef: nodeID, ProducerNode: nodeID, Version: 0},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Checkpoint = &store.Checkpoint{
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"a": {NodeID: "a", Version: 0},
+			"b": {NodeID: "b", Version: 0},
+		},
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "a"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "b"},
+	}}
+	counting := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 2}
+	preflight, err := ValidateResumeArtifactsPreflight(ctx, counting, run, wf, "", false)
+	if err != nil {
+		t.Fatalf("verify-only preflight: %v", err)
+	}
+	if preflight != nil {
+		t.Fatal("detached preflight retained an artifact snapshot")
+	}
+	if counting.loads != 2 {
+		t.Fatalf("artifact loads = %d, want one streaming pass over two bodies", counting.loads)
+	}
+}
+
 func TestResumeInvalidatesArtifactPreflightAfterCheckpointChange(t *testing.T) {
 	ctx := context.Background()
 	base := tmpStore(t)
