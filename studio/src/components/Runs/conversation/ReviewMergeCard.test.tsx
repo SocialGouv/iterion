@@ -149,15 +149,21 @@ describe("ReviewMergeCard — pipeline board handoff", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve & merge" }));
     const force = await screen.findByRole("button", {
       name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(screen.getByLabelText("Merge strategy"), {
+      target: { value: "merge" },
     });
     fireEvent.click(force);
 
     await waitFor(() => expect(apiMocks.resumeRun).toHaveBeenCalledTimes(2));
     expect(apiMocks.resumeRun).toHaveBeenNthCalledWith(2, "run-guided", {
-      answers: { __review_action: "request_changes" },
+      answers: {
+        __review_action: "approve_merge",
+        __review_merge_strategy: "merge",
+      },
       source: undefined,
       force: true,
     });
