@@ -586,7 +586,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// Only the repo half is re-run: gateLaunch's monthly arm METERS, and
 		// this launch already charged its run slot up there — a denial here
 		// hands it back through the deferred rollback, like every refusal
-		// before the run service is called.
+		// before the run service is called. Without that, a CI loop against a
+		// repository sitting at its quota would spend the ORG's monthly run
+		// quota on launches that never happened, turning a repo-scoped refusal
+		// into a tenant-wide one.
 		//
 		// Without it the quota bound every automated lane and the resume of a
 		// run, but not the surface an operator or a CI loop drives directly:
