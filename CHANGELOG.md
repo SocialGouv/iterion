@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.2](https://github.com/SocialGouv/iterion/compare/v3.132.1...v3.132.2) (2026-09-10)
+
+### Bug Fixes
+
+* **docs:** the docs site has not built since the browser-security page landed ([#1077](https://github.com/SocialGouv/iterion/issues/1077)) ([a613c3e](https://github.com/SocialGouv/iterion/commit/a613c3edafd4e94d12c08fbeff890638acee673b))
+
+    <details><summary>why</summary>
+
+    `check-links.mjs` resolves this site's github blob links against the real tree, and `studio/src/lib/monaco.ts` is not a path in it — the module is `monaco.tsx`. One character, and `pnpm -C docs build` exits 1 on it, so every push to main since d01f80707 (08:54Z, six commits) has failed to publish the documentation.
+
+    </details>
+
 ## [3.132.1](https://github.com/SocialGouv/iterion/compare/v3.132.0...v3.132.1) (2026-09-10)
 
 ### Bug Fixes
