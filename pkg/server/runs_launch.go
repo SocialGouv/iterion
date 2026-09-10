@@ -592,21 +592,36 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	// No subject, and this one stays FIRST, unlike the launch above: a
-	// resume learns its bot from the RUN, and loading the run before the
-	// gate would turn the suspend check into a run-existence probe (the
-	// lookup is deliberately not tenant-filtered). The cost is stated rather
-	// than hidden: a reserved bot resumed BY HAND is judged as ordinary
-	// work, so its own concurrency/dollar reserve lowers the ceiling it
-	// faces. The automated resume (the retry sweeper) already reads the run
-	// doc for other reasons and does pass the subject.
-	if _, d := s.gateLaunch(r.Context(), launchSubject{}); d != nil {
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
+	// The subject comes from the RUN, so the run is read first — and its
+	// error is deliberately NOT answered yet: the gate's denial has to come
+	// out ahead of any 404, or this lookup (which is not tenant-filtered)
+	// would turn the suspend check into a run-existence probe. Passing the
+	// subject matters in the direction nobody expects: judged as ordinary
+	// work, a RESERVED bot faces the ceiling its own reservation lowered, so
+	// resuming it by hand could be refused on the band held for it — and
+	// where the reserves take a whole cap, no run could be resumed at all.
+	// The automated twin (the retry sweeper) reads the same doc and passes
+	// the same subject.
 	id := r.PathValue("id")
 	if id == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var (
+		gateMeta    *store.Run
+		gateMetaErr = errors.New("run service unavailable")
+		subj        launchSubject
+	)
+	// Nil in a degraded/local wiring — and the gate must still answer there,
+	// so an unreadable run costs the subject, never the admission.
+	if s.runs != nil {
+		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
+		if gateMetaErr == nil && gateMeta != nil {
+			subj = launchSubject{BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
+		}
+	}
+	if _, d := s.gateLaunch(r.Context(), subj); d != nil {
+		s.writeLaunchDenial(w, r, d)
 		return
 	}
 	spanCtx, span := otel.Tracer(tracerName).Start(r.Context(), "iterion.api.resume_run",
@@ -631,11 +646,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Load the run once: its persisted FilePath is the fallback when the body
-	// omits one, and its TenantID is required to scope the resume's Mongo
-	// queries (see below). LoadRunCtx looks a run up by id without a tenant
-	// filter, so it is safe to call before the tenant is on the context.
-	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	// The run read for the gate's subject above, answered HERE: one load
+	// serves both. Its persisted FilePath is the fallback when the body omits
+	// one, and its TenantID scopes the resume's Mongo queries (see below).
+	// LoadRunCtx looks a run up by id without a tenant filter, which is why
+	// its failure is reported only now — after the admission gate has had its
+	// say, so a caller the gate refuses learns nothing about which run ids
+	// exist.
+	runMeta, err := gateMeta, gateMetaErr
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		span.SetStatus(codes.Error, "run not found")
