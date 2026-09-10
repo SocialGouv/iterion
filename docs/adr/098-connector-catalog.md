@@ -126,7 +126,11 @@ can read a different tier from the one that serves it.
 
 ### 6. `tool` gains a third recipe rather than a new node type
 
-```iter fragment
+Proposed syntax — the grammar does not accept it yet, which is why the fence
+below is untagged (an `iter` fence is compiled by the docs guard against the
+CURRENT grammar, and the docs must never show something the engine cannot run):
+
+```
 tool comment:
   action: forgejo.issue.create_comment
   connection: forge_main
@@ -167,6 +171,14 @@ generates the operations at install time. That is licit, it keeps operations
 fresh, and it lets an operator generate against **their own** self-hosted
 instance's description.
 
+A licence is not a boolean, which is why `redistributable` is an explicit
+assertion rather than a lookup on `spec_license`: GitLab's description is
+CC BY-SA 4.0 — commercial use is fine, but attribution and share-alike attach
+to the derived files, and even MIT requires the notice to travel. So a
+redistributed package carries its provenance in every generated file, and P1
+owes the notice header that makes that true on disk (recorded here rather
+than discovered at the twentieth connector).
+
 ## What the P0 prototype measured
 
 The generator ([pkg/connector/gen](../../pkg/connector/gen)) and the
@@ -178,22 +190,26 @@ ITERION_CONNECTOR_SPEC=/tmp/forgejo_swagger.json ITERION_CONNECTOR_ID=forgejo \
   go test ./pkg/connector/gen -run Measure -v
 ```
 
-| | Forgejo | GitHub |
-|---|---|---|
-| Format | Swagger 2.0 | OpenAPI 3.0.3 |
-| Licence | **MIT**, "for the purpose of interoperability" | **MIT** |
-| Operations / domains | 506 / 10 | 1225 / 47 |
-| Schemas | 246 | 967 |
-| Effects (read/create/update/delete) | 261 / 102 / 58 / 85 | 644 / 190 / 204 / 187 |
-| Package size | **615 KiB** (ops 499, schemas 115) | **4.74 MiB** (ops 1.68 MiB, schemas 3.06 MiB) |
-| Auth derived | token (header `Authorization`, prefix `token `), basic, +3 | **none — the spec declares no security scheme** |
+| | Forgejo | Slack | GitHub | GitLab |
+|---|---|---|---|---|
+| Format | Swagger 2.0 | Swagger 2.0 | OpenAPI 3.0.3 | OpenAPI 3.0.0 (YAML, 3.6 MB) |
+| Licence | **MIT** ("for the purpose of interoperability") | **MIT** | **MIT** | **CC BY-SA 4.0** (`info.license`) |
+| Operations / domains | 506 / 10 | 174 / 55 | 1225 / 47 | 1844 / 170 |
+| Schemas | 246 | 48 | 967 | 889 |
+| Package size | **615 KiB** | **186 KiB** | **4.74 MiB** | **3.58 MiB** |
+| Auth derived | token (`Authorization`, prefix `token `), basic, +3 | oauth2 | **none** | bearer, oauth2 |
+| Operations skipped | 0 | 0 | 0 | 2 |
+| Ids needing a counter | 0 | 0 | 0 | 91 (4.9 %) |
+| Complete without an overlay | no (auth) | yes | no (auth) | yes |
 
-Licences verified the same day, per artifact: GitHub MIT, Forgejo MIT, Slack
-MIT (Swagger 2.0), Jira Cloud `info.license` Apache 2.0 (developer ToS still
-to read), Mattermost **CC BY-NC-SA 3.0**. GitLab's published path 404s and is
-still to be located.
+Licences verified the same day, per artifact — and they fall into **three**
+groups, not two: permissive (GitHub, Forgejo, Slack: MIT; Jira Cloud:
+`info.license` Apache 2.0, developer ToS still to read), **copyleft but
+commercial** (GitLab: CC BY-SA 4.0 — redistributable *with* attribution and
+share-alike on the derived files), and **non-commercial** (Mattermost:
+CC BY-NC-SA 3.0 — the install-time lane, never the shipped catalog).
 
-Four findings changed the design:
+Six findings changed the design:
 
 1. **A first-rate permissive spec can omit auth entirely.** GitHub's declares
    no security scheme anywhere — not at the root, not per operation, not in
@@ -214,6 +230,25 @@ Four findings changed the design:
    506 operations name their resource in short form (`orgCreateTeam` under tag
    `organization`), against 187 that spell it out. Without the strip every
    call site reads `organization.org_create_team`.
+5. **One malformed operation must not fail the generation.** GitLab's
+   auto-generated description declares a path parameter `issue_id` on a path
+   templated `{epic_issue_id}` (and one more like it). Failing there would
+   lose its other 1842 operations to those two — the shape of the broken
+   manifest that failed every launch of a team for 2h22 (ADR-080's
+   amendment). So each operation is validated as it is derived, the bad ones
+   are skipped, and the skips come back to the caller in a `Report`: a
+   catalog with invisible holes is the other way to be wrong.
+6. **A collision must be disambiguated by the PATH, not by a counter.** A
+   large description collides constantly — GitLab derives the same
+   `boards.create_lists` for the group-scoped and the project-scoped endpoint
+   — and `create_3` becomes `create_4` the day the vendor adds an operation
+   that sorts earlier, silently breaking every `.bot` that quoted it. The
+   path is the operation's real identity, so the suffix comes from it.
+   Measured after the change: 0 counters on Forgejo, GitHub and Slack; 91 of
+   1844 on GitLab, which the overlay must pin. And GitLab's own operation ids
+   are machine-generated from the path
+   (`postApiV4GroupsIdDashEpicsEpicIidIssuesIssueId`), so they are detected
+   and discarded in favour of the path derivation.
 
 ## Consequences
 

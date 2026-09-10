@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/connector/gen"
@@ -35,7 +36,7 @@ func TestMeasureRealSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read spec: %v", err)
 	}
-	pkg, err := gen.Generate(data, gen.Options{
+	pkg, report, err := gen.Generate(data, gen.Options{
 		ConnectorID:             id,
 		SpecURL:                 os.Getenv("ITERION_CONNECTOR_SPEC_URL"),
 		SpecLicense:             os.Getenv("ITERION_CONNECTOR_SPEC_LICENSE"),
@@ -45,6 +46,17 @@ func TestMeasureRealSpec(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
+	}
+
+	if len(report.Skipped) > 0 {
+		t.Logf("SKIPPED        %d operations the description described badly enough to be uncallable:", len(report.Skipped))
+		for i, s := range report.Skipped {
+			if i == 8 {
+				t.Logf("  … and %d more", len(report.Skipped)-8)
+				break
+			}
+			t.Logf("  %s %s (%s): %s", s.Method, s.Path, s.SourceOperationID, s.Reason)
+		}
 	}
 
 	dir := t.TempDir()
@@ -58,9 +70,16 @@ func TestMeasureRealSpec(t *testing.T) {
 
 	ops := pkg.Operations()
 	byEffect := map[spec.Effect]int{}
-	withBody, withEnum, noSummary := 0, 0, 0
+	withBody, withEnum, noSummary, numbered := 0, 0, 0, 0
 	for _, op := range ops {
 		byEffect[op.Effect]++
+		// An id ending in `_<n>` is the last-resort counter: two operations
+		// no name could tell apart. It is the derivation's quality metric —
+		// a numbered id is UNSTABLE across a vendor's next release, so the
+		// count is what says how much the overlay has to pin.
+		if endsInCounter(op.ID) {
+			numbered++
+		}
 		for _, p := range op.Params {
 			if p.In == spec.InBody {
 				withBody++
@@ -87,6 +106,7 @@ func TestMeasureRealSpec(t *testing.T) {
 	t.Logf("effects        read=%d create=%d update=%d delete=%d",
 		byEffect[spec.EffectRead], byEffect[spec.EffectCreate], byEffect[spec.EffectUpdate], byEffect[spec.EffectDelete])
 	t.Logf("params         %d ops carry a body, %d carry an enum, %d have no summary", withBody, withEnum, noSummary)
+	t.Logf("id quality     %d of %d ids fell back to a numeric counter (unstable — the overlay must pin those)", numbered, len(ops))
 	t.Logf("SIZE  total    %s in %d files", human(size.Total()), size.Files)
 	t.Logf("SIZE  ops/     %s", human(size.Ops))
 	t.Logf("SIZE  schemas  %s", human(size.Schemas))
@@ -145,6 +165,21 @@ func sampleOps(ops []spec.Operation) []spec.Operation {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// endsInCounter reports whether an id ends in the `_<digits>` suffix the
+// generator appends only when nothing else could tell two operations apart.
+func endsInCounter(id string) bool {
+	i := strings.LastIndexByte(id, '_')
+	if i < 0 || i == len(id)-1 {
+		return false
+	}
+	for _, r := range id[i+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func human(n int64) string {

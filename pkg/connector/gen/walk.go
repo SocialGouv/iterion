@@ -32,6 +32,9 @@ type walker struct {
 	// not always unique once normalised, and two operations sharing an id
 	// would make one of them unaddressable.
 	usedIDs map[string]bool
+	// skipped collects the operations the description described badly enough
+	// that iterion could not derive a callable one. See Report.
+	skipped []Skip
 }
 
 func (w *walker) run() error {
@@ -252,25 +255,40 @@ func (w *walker) readPaths() error {
 			if !ok {
 				continue
 			}
-			generated, err := w.operation(path, method, op, shared)
-			if err != nil {
-				return err
+			generated := w.operation(path, method, op, shared)
+			// Validated ONE AT A TIME, here, rather than only as a package at
+			// the end. A vendor description of any size carries a few
+			// malformed operations — GitLab's declares a path parameter
+			// `issue_id` on a path templated `{epic_issue_id}` — and the
+			// choice is between losing that one with a reason and losing all
+			// 1200 of them. The skip is not silent: it reaches the caller in
+			// the Report.
+			if err := generated.ValidateStandalone(w.opts.ConnectorID, w.schemas); err != nil {
+				w.usedIDs[generated.ID] = false
+				delete(w.usedIDs, generated.ID)
+				w.skipped = append(w.skipped, Skip{
+					Path:              path,
+					Method:            strings.ToUpper(method),
+					SourceOperationID: generated.SourceOperationID,
+					Reason:            err.Error(),
+				})
+				continue
 			}
 			domain := generated.Resource
 			w.ops[domain] = append(w.ops[domain], generated)
 		}
 	}
 	if len(w.usedIDs) == 0 {
-		return fmt.Errorf("gen: no operation could be derived from the description")
+		return fmt.Errorf("gen: no operation could be derived from the description (%d were skipped as malformed)", len(w.skipped))
 	}
 	return nil
 }
 
-func (w *walker) operation(path, method string, op map[string]any, shared []any) (spec.Operation, error) {
+func (w *walker) operation(path, method string, op map[string]any, shared []any) spec.Operation {
 	tags := strSlice(op, "tags")
 	sourceID := str(op, "operationId")
 	resource, verb := deriveName(tags, sourceID, method, path)
-	id := w.uniqueID(w.opts.ConnectorID + "." + resource + "." + verb)
+	id := w.uniqueID(w.opts.ConnectorID+"."+resource+".", verb, path, resource)
 
 	out := spec.Operation{
 		ID:                id,
@@ -303,7 +321,7 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 	out.Params = dedupParams(out.Params)
 
 	out.Result, out.Errors = w.responses(mapAt(op, "responses"))
-	return out, nil
+	return out
 }
 
 // params flattens ONE declared parameter into iterion's flat list. Swagger
@@ -546,16 +564,32 @@ func (w *walker) result(status int, rm map[string]any) spec.Result {
 	return out
 }
 
-// uniqueID guards the derived namespace. A collision is disambiguated with a
-// numeric suffix rather than dropped: losing an operation because the vendor
-// named two of them alike would be a silent hole in the catalog.
-func (w *walker) uniqueID(id string) string {
-	if !w.usedIDs[id] {
+// uniqueID guards the derived namespace, disambiguating a collision with the
+// PATH rather than with a counter.
+//
+// The path is the operation's real identity, so a path-derived suffix is
+// stable: it changes only when the endpoint itself does. A numeric one is
+// not — `create_3` becomes `create_4` the day the vendor adds an operation
+// that sorts earlier, silently breaking every `.bot` that quoted it. Which
+// matters here because a large spec collides constantly: GitLab derives the
+// same `boards.create_lists` for the group-scoped and the project-scoped
+// endpoint, and 1844 operations produce hundreds of such pairs.
+//
+// A counter remains as the last resort, for two operations that differ in
+// nothing a name can carry.
+func (w *walker) uniqueID(prefix, verb, path, resource string) string {
+	if id := prefix + verb; !w.usedIDs[id] {
 		w.usedIDs[id] = true
 		return id
 	}
+	if scope := pathScope(path, verb, resource); scope != "" {
+		if id := prefix + verb + "_" + scope; !w.usedIDs[id] {
+			w.usedIDs[id] = true
+			return id
+		}
+	}
 	for n := 2; ; n++ {
-		candidate := fmt.Sprintf("%s_%d", id, n)
+		candidate := fmt.Sprintf("%s%s_%d", prefix, verb, n)
 		if !w.usedIDs[candidate] {
 			w.usedIDs[candidate] = true
 			return candidate

@@ -173,7 +173,7 @@ func (p *Package) ValidateGenerated() error {
 	seen := map[string]string{}
 	for _, f := range p.Ops {
 		for _, op := range f.Operations {
-			if err := op.validate(c.ID, p.Schemas); err != nil {
+			if err := op.ValidateStandalone(c.ID, p.Schemas); err != nil {
 				return err
 			}
 			if prev, dup := seen[op.ID]; dup {
@@ -212,7 +212,16 @@ func (a AuthScheme) validate(connector string) error {
 	return nil
 }
 
-func (op Operation) validate(connector string, schemas map[string]Schema) error {
+// ValidateStandalone checks ONE operation against its connector id and the
+// package's shared schemas — everything that can be judged without seeing its
+// siblings (uniqueness and the maturity clamp need the package; Validate adds
+// them).
+//
+// It is exported because a GENERATOR must judge each operation as it derives
+// it: a vendor description of any size carries a few malformed ones, and
+// validating only the finished package would force the generator to lose
+// every operation to the worst one.
+func (op Operation) ValidateStandalone(connector string, schemas map[string]Schema) error {
 	if !strings.HasPrefix(op.ID, connector+".") {
 		return fmt.Errorf("connector %q: operation id %q must start with %q", connector, op.ID, connector+".")
 	}

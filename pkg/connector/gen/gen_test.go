@@ -120,9 +120,12 @@ const openapi3Fixture = `{
 
 func generate(t *testing.T, body string) *spec.Package {
 	t.Helper()
-	pkg, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+	pkg, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
 	if err != nil {
 		t.Fatalf("generate: %v", err)
+	}
+	if len(report.Skipped) > 0 {
+		t.Fatalf("the fixture must generate cleanly, skipped: %+v", report.Skipped)
 	}
 	return pkg
 }
@@ -300,7 +303,7 @@ func TestGeneratedPackageAwaitsItsOverlay(t *testing.T) {
 		t.Fatal("fixture edit did not apply — the test would prove nothing")
 	}
 
-	pkg, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+	pkg, _, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
 	if err != nil {
 		t.Fatalf("generation must succeed without a security scheme: %v", err)
 	}
@@ -319,6 +322,66 @@ func TestGeneratedPackageAwaitsItsOverlay(t *testing.T) {
 	}
 }
 
+// TestOneMalformedOperationIsSkippedNotFatal is the choice a real vendor
+// description forces. GitLab's auto-generated OpenAPI declares a path
+// parameter `issue_id` on a path templated `{epic_issue_id}`; failing the
+// generation there would lose its other ~1200 operations to that one — the
+// shape of the broken manifest that failed every launch of a team for 2h22
+// (ADR-080's amendment). The skip must reach the caller, though: a catalog
+// with invisible holes is the other way to be wrong.
+func TestOneMalformedOperationIsSkippedNotFatal(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/good/{id}": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Fine",
+        "parameters": [{"name": "id", "in": "path", "required": true, "type": "string"}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/bad/{epic_issue_id}": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetBad", "summary": "Mismatched",
+        "parameters": [{"name": "issue_id", "in": "path", "required": true, "type": "string"}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	pkg, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+	if err != nil {
+		t.Fatalf("one malformed operation must not fail the generation: %v", err)
+	}
+	if _, ok := pkg.Operation("probe.thing.get_thing"); !ok {
+		t.Errorf("the good operation was lost, got %v", opIDs(pkg))
+	}
+	if _, ok := pkg.Operation("probe.thing.get_bad"); ok {
+		t.Error("the malformed operation must not be in the package")
+	}
+	if len(report.Skipped) != 1 {
+		t.Fatalf("report.Skipped = %+v, want exactly the one bad operation", report.Skipped)
+	}
+	skip := report.Skipped[0]
+	if skip.Path != "/bad/{epic_issue_id}" || skip.Method != "GET" {
+		t.Errorf("the skip must locate the operation in the description, got %+v", skip)
+	}
+	if skip.SourceOperationID != "thingGetBad" {
+		t.Errorf("the skip must name the vendor's own id, got %q", skip.SourceOperationID)
+	}
+	if !strings.Contains(skip.Reason, "issue_id") {
+		t.Errorf("the reason must name what is wrong, got %q", skip.Reason)
+	}
+	// A skipped id must not stay reserved: the next operation deriving the
+	// same name would otherwise be pushed to `…_2` by a ghost.
+	if _, ok := pkg.Operation("probe.thing.get_bad_2"); ok {
+		t.Error("a skipped operation left its id reserved")
+	}
+}
+
 func TestRejectsUnknownFormats(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"no version marker", `{"paths": {}}`, "not an API description"},
@@ -327,7 +390,7 @@ func TestRejectsUnknownFormats(t *testing.T) {
 		{"no path", `{"swagger": "2.0", "paths": {}}`, "declares no path"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := gen.Generate([]byte(tc.body), gen.Options{ConnectorID: "probe"})
+			_, _, err := gen.Generate([]byte(tc.body), gen.Options{ConnectorID: "probe"})
 			if err == nil {
 				t.Fatalf("want an error mentioning %q", tc.want)
 			}
@@ -366,7 +429,7 @@ paths:
         "200":
           description: ok
 `
-	pkg, err := gen.Generate([]byte(y), gen.Options{ConnectorID: "probe"})
+	pkg, _, err := gen.Generate([]byte(y), gen.Options{ConnectorID: "probe"})
 	if err != nil {
 		t.Fatalf("generate from YAML: %v", err)
 	}
@@ -380,11 +443,11 @@ paths:
 // unreviewable diff.
 func TestDeterministicOutput(t *testing.T) {
 	fixed := func() spec.Maturity { return spec.MaturityExperimental }()
-	a, err := gen.Generate([]byte(swagger2Fixture), gen.Options{ConnectorID: "probe", Maturity: fixed})
+	a, _, err := gen.Generate([]byte(swagger2Fixture), gen.Options{ConnectorID: "probe", Maturity: fixed})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := gen.Generate([]byte(swagger2Fixture), gen.Options{ConnectorID: "probe", Maturity: fixed})
+	b, _, err := gen.Generate([]byte(swagger2Fixture), gen.Options{ConnectorID: "probe", Maturity: fixed})
 	if err != nil {
 		t.Fatal(err)
 	}

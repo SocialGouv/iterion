@@ -72,6 +72,32 @@ func (o *Options) defaults() {
 	}
 }
 
+// Skip records one operation the generator could not derive, and why.
+type Skip struct {
+	// Path and Method locate it in the description; SourceOperationID is the
+	// vendor's own id when it declared one. Together they are what a reader
+	// needs to find the offending block in a multi-megabyte document.
+	Path              string
+	Method            string
+	SourceOperationID string
+	Reason            string
+}
+
+// Report is what a generation produced BESIDES the package.
+//
+// It exists because a real vendor description of any size contains a few
+// malformed operations, and the two obvious reactions are both wrong: failing
+// the whole generation loses 1200 good operations to one bad one — the same
+// shape as the broken manifest that failed every launch of a team for 2h22
+// (ADR-080's amendment) — while skipping in silence produces a catalog with
+// holes nobody can see. So the generation proceeds and hands back the list.
+//
+// Measured: GitLab's auto-generated OpenAPI declares a path parameter
+// `issue_id` on a path templated `{epic_issue_id}`.
+type Report struct {
+	Skipped []Skip
+}
+
 // Format is a recognised description format.
 type Format string
 
@@ -89,23 +115,23 @@ const (
 // generation that produced an incoherent operation fails right away, while
 // one that merely awaits its overlay succeeds and stays unusable until the
 // overlay lands.
-func Generate(data []byte, opts Options) (*spec.Package, error) {
+func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 	opts.defaults()
 	if strings.TrimSpace(opts.ConnectorID) == "" {
-		return nil, fmt.Errorf("gen: connector id is required")
+		return nil, nil, fmt.Errorf("gen: connector id is required")
 	}
 	doc, err := decode(data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	format, err := detectFormat(doc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	w := &walker{doc: doc, format: format, opts: opts, schemas: map[string]spec.Schema{}}
 	if err := w.run(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pkg := &spec.Package{
@@ -132,9 +158,12 @@ func Generate(data []byte, opts Options) (*spec.Package, error) {
 		Schemas: w.schemas,
 	}
 	if err := pkg.ValidateGenerated(); err != nil {
-		return nil, fmt.Errorf("gen: generated package is invalid: %w", err)
+		// A failure HERE is a generator bug, not bad vendor data: every
+		// operation was already validated on its own during the walk, so
+		// what is left is a package-level contradiction the walk built.
+		return nil, nil, fmt.Errorf("gen: generated package is invalid: %w", err)
 	}
-	return pkg, nil
+	return pkg, &Report{Skipped: w.skipped}, nil
 }
 
 // decode reads a description that may be JSON or YAML into a generic tree.
