@@ -441,22 +441,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// an option: it costs a connection read, which a suspended tenant must
 		// not be able to drive.
 		//
-		// Only the repo half is re-run: gateLaunch's monthly arm METERS, and
-		// this launch already charged its run slot up there — so the denial
-		// hands it back, the same `rollback` every other surface calls when it
-		// abandons an admitted launch without creating a run. Without that, a
-		// CI loop against a repository sitting at its quota would spend the
-		// ORG's monthly run quota on launches that never happened, turning a
-		// repo-scoped refusal into a tenant-wide one. (The refusals just above
-		// pre-date this and still consume their slot; they are a malformed
-		// request, not a loop with a reason to retry.)
+		// Without this the quota bound every automated lane and the resume of
+		// a run, but not the surface an operator or a CI loop drives
+		// directly: the one place a repository could spend past its ceiling
+		// all month. It sits AHEAD of the reachability probe and the
+		// managed-secret mint, so an over-quota repository costs neither a
+		// forge round trip nor a minted credential.
 		//
-		// Without it the quota bound every automated lane and the resume of a
-		// run, but not the surface an operator or a CI loop drives directly:
-		// the one place a repository could spend past its ceiling all month.
-		// And it sits AHEAD of the reachability probe and the managed-secret
-		// mint, so a repository that is over its quota costs neither a forge
-		// round trip nor a minted credential.
+		// Only the repo half of the gate is re-run: its monthly arm METERS,
+		// and this launch already charged its run slot up there — so the
+		// denial hands that slot back, the same `rollback` every other launch
+		// surface calls when it abandons an admitted launch without creating
+		// a run. Without it a CI loop against a repository at its ceiling
+		// would spend the ORG's monthly run quota on launches that never
+		// happened, turning a repo-scoped refusal into a tenant-wide one.
+		//
+		// The validation refusals around it (host mismatch, reachability, the
+		// managed-secret mint) still consume their slot. That is older than
+		// this branch and left alone deliberately: the promise in
+		// docs/quotas-and-limits.md is about the run service refusing a
+		// launch it was asked to perform, which is the Launch error block far
+		// below — not about a request rejected before anything was asked.
 		if d := s.gateRepoQuota(r.Context(), s.budgetFloorPolicy(r.Context()),
 			launchSubject{Repo: repoProjectPath}, time.Now().UTC()); d != nil {
 			admission.rollback(s.logger)
