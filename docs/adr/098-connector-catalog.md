@@ -548,10 +548,25 @@ host, with the MCP facade as its narrow gateway — is **partly adopted**: its
 shared-contract core (one credential resolution, one request construction,
 one quota path, one attempt record) is exactly F4/F18's requirement and is
 now in the ADR. Its proposal to execute agent calls on the *runner* rather
-than the server is not: that would put the credential back inside the pod the
-agent runs in, which decision 4 exists to prevent. Its scope advice — qualify
-a small Forgejo operation set, keep the rest as unqualified catalog data —
-matches the maturity model already specified.
+than the server is not adopted. Its scope advice — qualify a small Forgejo
+operation set, keep the rest as unqualified catalog data — matches the
+maturity model already specified.
+
+> **The reason first given here was wrong** (round-two F16). It said runner-side
+> execution "would put the credential back inside the pod the agent runs in".
+> That conflates a process CLASS with an isolation BOUNDARY: under the
+> kubernetes driver the sandbox is a sibling pod, explicitly distinct from the
+> runner ([pkg/sandbox/kubernetes/manifest.go](../../pkg/sandbox/kubernetes/manifest.go)),
+> so the runner is not the agent's pod. The premise is also false in the other
+> direction — under the noop driver, and where a runner is configured as its own
+> sandbox, agent commands execute exactly where the plan's own deterministic
+> nodes hold credentials.
+>
+> The decision stands on the argument that survives: the boundary is a
+> deployment's actual isolation capability, not the name of the process. What
+> is owed is a stated rule for credential-execution eligibility per profile,
+> refusing the combinations that do not isolate — not a claim that "runner"
+> means "unsafe".
 
 ## Alternatives rejected
 
@@ -572,3 +587,159 @@ matches the maturity model already specified.
 - **Requiring OpenAPI 3.x and converting 2.0 out of band.** Adds a Node
   toolchain to a project that has just refused Node at execution time, and it
   is unavailable in the install-time generation lane.
+
+## Adversarial review disposition, round two (codex `gpt-6-astra`, xhigh — 21 findings)
+
+Run against the implementation, not the prose: the reviewer had read access to
+the worktree and drove the executor, the compiler, the AST transport and the
+real recovery dispatcher with isolated probes. Twenty-one findings — one
+critical, fourteen high. Its most useful contribution was not any single
+finding but a table separating what this ADR *claims* from what the code
+*does*, reproduced under "What is still only prose" below.
+
+### Fixed in this branch
+
+**F1 (critical) — an ambiguous mutation was retried by the engine.** The
+executor classified a lost-answer POST as `unknown_outcome` and said "reconcile
+before retrying"; the node boundary formatted that typed error into a string
+with `%s`, so the recovery dispatcher — which classifies with `errors.As` — saw
+plain text, bucketed it as `EXECUTION_FAILED`, and retried two seconds later.
+Every component was individually correct and the property was false anyway,
+which is the shape of defect only a composition test finds. Fixed with a new
+seam: `runtime.AmbiguousEffect`, an interface an error implements to declare its
+remote effect undecided, checked FIRST in the classifier (a lost-answer error
+matches the network-transient needles almost by definition, so any later
+position would hand it to the exponential backoff) and answered by a recipe that
+never retries. New reserved code `AMBIGUOUS_EFFECT`, classified
+`DispositionDeterministic` for the opposite reason to its neighbours — not "a
+second attempt would reach the same verdict" but "a second attempt might
+duplicate what already landed".
+
+**F2 — a declared idempotency key licensed a retry.** Both readers took
+`op.IdempotencyKeyParam != ""` as proof, so an OPTIONAL key the caller omitted
+earned the retry it was meant to prevent. One shared predicate over the actual
+arguments now answers it, rejecting empty and blank values too.
+
+**F6 — the runtime enforces what the compiler promises.** A hand-built action
+node carrying a postcondition took the ADR-044 ladder and reported success from
+its idempotent-skip rung with no HTTP request made. The invariants are checked
+at the executor before anything can claim the node, and the resolver's answer is
+checked at the point of use: a non-deterministic operation, or one from a
+`spotted` package, is refused rather than trusted from whoever produced it.
+
+**F8 — pagination reported truncation as completeness**, in four ways. The
+extraction returned an empty slice when it could not FIND the collection, which
+reads exactly like a short page; the shipped Forgejo `repository.search` had
+that shape and returned zero repositories with `complete = true`. Extraction is
+now fallible, `Validate` refuses pagination over a non-array response with no
+`items_field` (the generator already recorded the shape in `ResultCase.Array` —
+the data was there all along), a cursor walk ends on the CURSOR rather than on a
+short page, page sizes are measured against what was actually requested rather
+than the package default, and a hand-picked page is never "complete".
+
+**F13 (part) — a redirect was a success.** The reader refused only statuses
+≥400, while the guarded client deliberately does not follow redirects, so a 302
+returned OK with an empty body. Also: 202 is now pending by DEFAULT, since
+generators only see what a vendor documented and most do not document their
+202s. *Response-schema validation remains unimplemented — see below.*
+
+**F17 — two passes did not know the third recipe existed.** Ref validation
+collected command and script refs but not action params, so a typo'd reference
+rendered empty and was SENT instead of raising C029; group expansion
+substituted every scalar field and left the params alone, so they reached the
+vendor as literal `{{params.repo}}`. The second needed a DEEP copy — the
+shallow one shared the slice with the group template, so the first
+instantiation's values would have leaked into every later `use`.
+
+**F18 — `retry:` was dead config**, compiled and stored and read by nobody. It
+now performs N extra attempts gated by the same safety predicate, so `retry: 5`
+re-drives a throttled read and performs a lost-answer POST exactly once. The
+duration form is refused: it gave the field two readings, and the delay is not
+the workflow's to guess.
+
+**F4 — secret handling, two opposite bugs.** The `{{secrets.NAME}}` placeholder
+was sent to the vendor instead of the value (every other recipe materialises;
+this one did not), and the credential appeared verbatim in transport errors,
+which travel to the run's events and error tracking — `*url.Error` prints the
+full URL, and an `in: query` scheme puts the token in it. Redaction now happens
+where the secret bytes are still identifiable, over raw and URL-escaped forms.
+
+Every fix above was **falsified before being trusted**: the change was reverted
+and the test watched to fail on the reviewer's exact reported output.
+
+### Tracked, not yet fixed
+
+These are real and reproduced; they are execution-profile completeness rather
+than safety, and each one is a lot of its own.
+
+- **F3** — the generator infers `EffectRead` from a derived verb prefix, so a
+  POST named `getOrCreateLease` is classified as a safe repeat. Effects must
+  come from HTTP semantics, with an overlay correction required to call a POST
+  read-only.
+- **F5** — `ITERION_LLM_CLASSIFIER_MODEL` still chains an LLM classifier over
+  the shared tool-node policy check, so a deployment setting it puts a model in
+  front of every action. The promised behavioural test (zero model requests
+  with the variable SET) is still unwritten, and until it exists the
+  no-LLM claim is a claim.
+- **F7** — generation silently drops security schemes it cannot resolve, and
+  execution accepts any matching term when scopes are unknown, defeating
+  `SatisfiedBy`'s conjunction refusal. Needs an explicit "scopes unknown" state
+  distinct from "no scopes".
+- **F9/F10/F11** — the body model cannot express a root array (it invents a
+  `body` member), vendor `+json` media types collapse to `json`, multipart file
+  parts are written as text fields, and `deepObject` / path-array styles are not
+  serialized as declared. Each publishes an operation as executable that sends
+  the wrong bytes; the honest interim is to REFUSE these shapes at generation.
+- **F12** — parameter coercion parses every value as JSON first, so
+  `9007199254740993` loses precision, `hello {{input.who}}` becomes `hello
+  "Alice"`, and an empty string is dropped. Whole-value references should
+  resolve as typed values and strings interpolate as text.
+- **F14** — generation erases what it cannot derive (unresolved body refs,
+  unsupported parameters) and reports zero skips, and `Validate` does not check
+  outcome expressions. Derivation errors should propagate rather than vanish.
+- **F15** — `connectors gen` writes the MERGED package and `validate` applies
+  the overlay again over already-renamed ids, so regenerating Forgejo and
+  re-validating fails on thirteen missing operations. The generated half must
+  be persisted unmerged.
+- **F16** — the ADR rejects runner-side agent execution on a pod-isolation
+  premise that is false for Kubernetes sibling sandboxes and for the supported
+  noop / runner-as-sandbox profiles. **The rejection stands on other grounds
+  but its stated reason is wrong and must be rewritten** in terms of isolation
+  capability per deployment profile, not process class.
+- **F19** — the version probe guards `connector.yaml` only; ops and schema
+  documents are decoded without a version or identity check.
+- **F20** — no per-request accounting contract: a paginated action makes twenty
+  billable calls that contribute nothing to the run's budget and leave no record
+  linking quota, vendor request id and credential.
+- **F21** — the connection generalization has no credential-LIFECYCLE model.
+  Wire authentication and credential acquisition/renewal are different things,
+  and GitHub App installation tokens need the second.
+
+### What is still only prose
+
+The reviewer's most valuable output. Of the round-one controls this ADR records
+as adopted, these exist **in the plan only** — they were adopted into lots not
+yet built, which is honest, but nothing in this document should be read as
+describing shipped behaviour:
+
+| Control | State |
+|---|---|
+| Tenant-carrying connector grant | Prose only — no grant, no production `ResolveAction` |
+| Guarded dialer on every connector path | Only for CLI spec fetching; execution accepts any non-nil client |
+| Execution-only credential capability | Not implemented; the executor takes a plaintext `Credential` |
+| Fenced refresh claim | Not implemented — `pkg/forge/refresh.go` still scans without a claim |
+| Immutable retained packages / `ConnectorRefs` | Not implemented; queue versions remain 14/10 |
+| Zero-LLM action policy | Not implemented (F5) |
+
+Round-one dispositions the reviewer judged wrong, and which are accepted as
+wrong: **F4's ordering** (building the node path through generic retry recovery
+before the attempt state machine existed is what produced F1); **F12's claimed
+closure** (compiler rejection is not a runtime invariant — now fixed as F6);
+**the "execution profile settled" conclusion** (parameter precedence was fixed,
+but security, body shapes, serialization and response interpretation are not
+ready to freeze as v1); and **treating overlay id pins as identity protection**
+(they match derived ids, not canonical method/path identities — the identity
+lock is still owed).
+
+The single most dangerous thing the reviewer named — "the executor says
+reconcile before retrying; the engine retries two seconds later" — is fixed.
