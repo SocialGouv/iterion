@@ -206,15 +206,21 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	// the false all-clear this file calls worse than the silence it replaces,
 	// in the very lane (a quota park) the change was written for.
 	//
-	// The gate lane's predicate, INCLUDING its DLQ exception — the first draft
-	// of this comment claimed parity it did not have, which is worse than
-	// having neither. A DLQ park is FINAL for automation whatever RetryState
-	// still says: a retry_after can survive on such a doc (the usage-window
-	// park that preceded an operator resume, when the clear on resume did not
-	// land), and standing down on it would leave the claim pending for a run
-	// nothing will ever wake. So the exception is tested FIRST, exactly as
-	// forge_gate_reconcile.go does, and only a park something will actually
-	// resume keeps the claim.
+	// The DLQ exception is the gate lane's, and is tested FIRST exactly as
+	// forge_gate_reconcile.go tests it: a DLQ park is FINAL for automation
+	// whatever RetryState still says — a retry_after can survive on such a doc
+	// (the usage-window park that preceded an operator resume, when the clear
+	// on resume did not land) — and standing down on it would leave the claim
+	// pending for a run nothing will ever wake.
+	//
+	// What comes AFTER it is NOT the gate lane's test, and this comment says so
+	// rather than claiming a parity it does not have (the first draft did, and
+	// that is worse than having neither): the gate lane keys on an armed
+	// RetryAfter, this one on the continuation. The two answer different
+	// questions — the gate lane decides whether to post a synthetic failure for
+	// a review that will never arrive, this one whether announcing a branch free
+	// would be a lie — and only the second is wrong about a run the queue will
+	// simply redeliver. See fixParkWillResume.
 	if run.Status == store.RunStatusFailedResumable &&
 		run.FailureCode != store.FailureDLQParked &&
 		fixParkWillResume(run) {
@@ -309,12 +315,18 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 // on this same pair.
 //
 // The UNKNOWN continuation (empty — the type's doc says never treat it as
-// final) does clear here, deliberately: no outcome event ever observes a
-// nak-parked run (outcomeSideEffectsFire is false for every nak action), so
-// the only reader is the 60s sweep, racing a promote the runner writes
-// immediately. The residual is a promote whose store write failed — a warn in
-// the runner log — and a false all-clear on a run that is genuinely dead is
-// the one this file cannot leave standing.
+// final) does clear here, and that is a decision, not an oversight. It has to
+// clear: an interrupted run on its last delivery ends unknown for good, and
+// refusing to release those would leave a warning standing over a branch
+// nobody is rewriting — the ambiguity this whole file exists to remove, merely
+// inverted. What makes it SAFE is that no reader can catch a nak-parked run
+// during the window in which it still reads unknown: the outcome event never
+// fires for a nak (outcomeSideEffectsFire is false for every nak action), and
+// the sweep — the only other caller — skips anything updated within
+// gateSweepGrace (3 minutes), while the runner's promote is a store write with
+// a 10s timeout issued at the Nak itself. The residual is a promote that FAILS
+// that write (a Warn in the runner log), which is a run whose future nothing
+// records at all.
 //
 // RetryAfter stays as the compatibility fallback: a row parked before the
 // typed bookkeeping carries the armed retry and no continuation.
