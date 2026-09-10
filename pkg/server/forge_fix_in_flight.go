@@ -3,83 +3,91 @@ package server
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// A FIXER run in flight is invisible on the pull request it is rewriting, and
-// that invisibility costs whole runs.
+// A FIXER run holds no required check, so while it rewrites a branch NOTHING on
+// the pull request says it is there.
 //
-// The fixer works for tens of minutes, then pushes. If the branch moved
-// underneath in the meantime, push_back rebases; when the rebase conflicts it
-// banks the commits on `iterion/banked/…` and asks for a manual reconcile.
-// Everything the pass integrated after the other write is lost work.
-//
-// Nothing warned the other writer, because the fixer holds NO required check:
-// markGateInFlight claims `gate_context`, and a fixer has none — it does not
-// gate the merge, it answers a review. So the only signal that a fixer is
-// working is a COMMENT, and only in one case (a quota park, which posts the
-// pause notice whose fixer branch already says "don't push"). A fixer that is
-// simply working says nothing at all.
+// markGateInFlight claims `gate_context`, and a fixer has none — it answers a
+// review rather than gating the merge. The only signal that ever existed is a
+// comment, in one case only: a quota park, whose pause notice already tells the
+// reader not to push. A fixer that is simply working says nothing at all.
 //
 // Measured 2026-09-09 on one pull request: two fixer passes, 11 and 12 commits,
-// both banked on an auto-rebase conflict, both needing a hand reconcile — while
-// a second writer pushed three times without ever seeing that anything was in
-// flight. Four passes of integration work, thrown away for want of a signal
-// that costs one status.
+// both banked on an auto-rebase conflict and needing a hand reconcile, while a
+// second writer pushed three times without ever seeing that anything was in
+// flight. Four passes of integration work, thrown away for want of a signal.
 //
-// So the launch claims a status of its OWN. Deliberately NOT the gate context:
+// # What this states, and what it deliberately does NOT
+//
+// The claim is a fact about the PAST: *a fix run took this revision as its
+// base*. It is never retracted, and that is the whole design.
+//
+// An earlier version also RESOLVED the claim once the run reached a terminal
+// state, so the check would read "pushing is safe again". That is a statement
+// about the PRESENT — "no fixer is working right now" — and the engine cannot
+// know it:
+//
+//   - several runs share one head sha BY CONSTRUCTION (the auto-fix lane
+//     launches the fixer on the reviewer's own head_sha; consecutive passes
+//     reuse it), so "this run ended" never means "no run is working";
+//   - `failed_resumable` conflates a park that comes BACK (a usage window, and
+//     the runner's nak paths for a drained pod, a sandbox phase timeout, a
+//     capacity refusal — none of which arm a RetryAfter) with one that is
+//     simply dead;
+//   - and a status is a single slot per (sha, context): it cannot represent two
+//     concurrent workers at all.
+//
+// Eight review findings on this branch were one defect wearing different
+// clothes — the resolved marker announcing "done" while a fixer was still
+// rewriting. Each fix moved the error rather than removing it, because the
+// assertion itself was unwarranted. So it is gone.
+//
+// Nothing is lost by that. A fixer that SUCCEEDS pushes, which moves the head —
+// and a status lives on a sha, so the claim stops being rendered next to the
+// merge button exactly when the danger ends. A fixer that does NOT push leaves
+// the claim standing, which is correct: its work is banked, a reconcile is
+// owed, and a pusher would collide with it.
+//
+// # Why a status, and never the gate context
 //
 //   - a fixer must never occupy a context branch protection may require —
 //     writing there could blank a reviewer's verdict back to "running", the
 //     exact harm markGateInFlight is written to avoid;
-//   - and this claim must never be able to block a merge. On its own context
-//     it is advisory unless a repo chooses otherwise, which stays the repo's
-//     call, not the engine's.
+//   - and this must never be able to block a merge. On its own context it is
+//     advisory unless a repo chooses otherwise, which stays the repo's call.
 //
-// It is a status rather than a comment because a comment is what already
-// existed and what was already missed: a status sits in the checks list the
-// forge renders next to the merge button, which is where someone about to
-// write is looking.
+// A status rather than a comment because a comment is what already existed and
+// what was already missed: a status sits in the checks list the forge renders
+// next to the merge button, where someone about to write is looking.
 const fixInFlightContext = "iterion/fix-in-flight"
 
 // fixInFlightDescription is the claim's identity as well as its text: the
 // predicate below matches on it, so it must stay stable and distinct from
 // gateInFlightDescription — two markers that read alike would let one lane
-// clear the other's claim.
-const fixInFlightDescription = "a fix run is rewriting this branch — a push now collides with what it pushes back"
-
-// fixDoneDescription replaces the claim when the run reaches a terminal state.
-// It resolves rather than deletes: a status that disappears reads as "never
-// claimed", which is the ambiguity this whole file exists to remove.
-const fixDoneDescription = "the fix run is done — pushing is safe again"
+// overwrite the other's.
+//
+// Worded as the fact it is. An earlier draft said "is rewriting this branch", a
+// present-tense claim the marker cannot keep once the run ends; this one stays
+// true forever, which is what lets it never need retracting.
+const fixInFlightDescription = "a fix run took this revision — pushing on it collides with what it pushes back"
 
 // isFixInFlight reports whether a status is this server's own fixer claim.
 // Matched on state AND description, like isGateInFlight: a bare `pending`
-// belongs to whoever posted it, and clearing someone else's is worse than
+// belongs to whoever posted it, and overwriting someone else's is worse than
 // leaving ours.
 func isFixInFlight(st forge.CommitStatus) bool {
 	return st.State == forge.CommitStatePending &&
 		strings.TrimSpace(st.Description) == fixInFlightDescription
 }
 
-// isFixDone recognises this server's own RESOLVED marker. A later fixer on the
-// same head must be able to write over it — it says no fixer is working, and a
-// launch is about to make that false.
-func isFixDone(st forge.CommitStatus) bool {
-	return st.State == forge.CommitStateSuccess &&
-		strings.TrimSpace(st.Description) == fixDoneDescription
-}
-
 // markFixInFlight claims the fixer context on the revision a freshly launched
 // fixer run is about to rewrite.
 //
 // Best-effort and silent on everything that is not a fixer on a pull request:
-// the overwhelming majority of launches are neither, and a claim nobody can
-// attribute is worse than none (same reasoning as the gate claim: ownership is
-// read off the target URL).
+// the overwhelming majority of launches are neither.
 func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botID string, vars map[string]string, runID string) {
 	if s == nil || s.forgeConnections == nil || vars == nil {
 		return
@@ -90,269 +98,52 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 		return
 	}
 	// The ROLE decides, never a bot id — the engine names no bot (CLAUDE.md),
-	// and a new fixer inherits this by declaring `consumes: review`, exactly
-	// as it inherits the pause notice's push warning.
+	// and a new fixer inherits this by declaring `consumes: review`, exactly as
+	// it inherits the pause notice's push warning. Read at LAUNCH only, which
+	// is rare: no sweep path pays for it.
 	if s.handoffRoleFor(ctx, sourceTenant, botID) != pauseNoticeRoleFixer {
-		return
-	}
-	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID)
-	if runURL == "" {
-		// Unattributable: the terminal clear below identifies its own claim by
-		// target URL, so a claim posted without one could never be resolved
-		// and would sit pending forever. Better to say nothing.
 		return
 	}
 	gc, repo, ok := s.fixStatusClientFor(ctx, teamID, prURL)
 	if !ok {
 		return
 	}
-	// Read before write, and only over NOTHING or over our own claim. A
-	// verdict some other tool posted on this context is not ours to blank.
+	// Read before write, and only over NOTHING or over a claim of our own kind:
+	// a verdict some other tool posted on this context is not ours to blank.
+	//
+	// There is deliberately NO ownership test on our own kind. Refreshing a
+	// claim with a newer run's URL cannot make it false — both runs took this
+	// revision, both warnings are true, and the marker asserts nothing about
+	// either still working. That is exactly what the removed resolve got wrong.
 	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, fixInFlightContext)
 	if err != nil || !readable {
 		return
 	}
-	// Ours to write over: nothing, a live claim, or a RESOLVED one. That last
-	// case is not cosmetic — after a first pass terminates the clear leaves
-	// `done` on this sha, and a second `/billy` on an UNCHANGED head (a first
-	// pass that banked instead of pushing: the 2026-09-09 incident itself) read
-	// its predecessor's marker as a foreign verdict and posted nothing. The
-	// second pass was then as invisible as before this change, in the very lane
-	// it was written for. `done` means no fixer is working — which the launch
-	// below is about to make false, whoever posted it.
-	if cur.State != "" && !isFixInFlight(cur) && !isFixDone(cur) {
+	if cur.State != "" && !isFixInFlight(cur) {
 		return
 	}
-	// AND never take over ANOTHER run's live claim — the same ownership test
-	// the clear applies, on the site it was first forgotten. Several runs share
-	// one head sha, so a second fixer launching on a head a first already
-	// claimed would replace the target URL with its own; from then on the claim
-	// is the newcomer's, and whichever run ends FIRST posts the all-clear over
-	// the other's live rewrite. Standing down instead leaves the warning up and
-	// attributed to the run that raised it, which is what a reader about to
-	// push needs — the warning is true whichever fixer is working.
-	if isFixInFlight(cur) && !gateStatusSpeaksFor(cur, runURL) && !s.fixClaimIsStale(ctx, cur) {
-		return
-	}
+	// The target URL names the MOST RECENT claimant, so a reader lands on a
+	// live console instead of guessing. Unlike the gate claim, nothing here has
+	// to tell one run's marker from another's, so an unattributable claim (no
+	// PublicURL configured) is still worth posting.
 	st := forge.CommitStatus{
 		State:       forge.CommitStatePending,
 		Context:     fixInFlightContext,
 		Description: forge.TruncateStatusDescription(fixInFlightDescription),
-		TargetURL:   runURL,
+		TargetURL:   gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID),
 	}
 	if err := gc.SetCommitStatus(ctx, repo, sha, st); err != nil {
 		s.fixInFlightDebug(runID, "claim: %v", err)
 		return
 	}
 	if s.logger != nil {
-		s.logger.Info("forge fix: run %s claimed %s on %s@%s — a push while it works collides with its push-back",
+		s.logger.Info("forge fix: run %s claimed %s on %s@%s — a push on this revision collides with its push-back",
 			runID, fixInFlightContext, repo, shortSHA(sha))
 	}
 }
 
-// fixRunIsOver is THE definition of "this fixer will not come back", and it
-// exists because two sites need it and a second copy drifted immediately: the
-// clear kept the claim through every resumable park, while the staleness test
-// next door asked store.IsTerminal() — which INCLUDES failed_resumable. The two
-// contradicted each other, so a fixer parked on a usage window (which does come
-// back) had its live claim taken over, and whichever run ended first posted the
-// all-clear over the other's rewrite.
-//
-// An armed RetryAfter is only one of the ways a run returns: the runner turns a
-// rolling-deploy drain, a sandbox phase timeout and a capacity refusal into
-// failed_resumable plus a JetStream nak, with no RetryAfter ever written. So
-// resumable means NOT over — except a DLQ park, whose deliveries the queue has
-// exhausted and which no automation wakes.
-func fixRunIsOver(run *store.Run) bool {
-	if run == nil || !run.Status.IsTerminal() {
-		return false
-	}
-	if run.Status == store.RunStatusFailedResumable {
-		return run.FailureCode == store.FailureDLQParked
-	}
-	return true
-}
-
-// clearFixInFlight resolves THIS RUN's fixer claim once the run is terminal.
-//
-// Idempotent and narrow: it only ever replaces the marker this very run
-// posted, so a double fire (the outcome event and the sweep both offering the
-// same run) costs one read, and neither another tool's status nor another
-// RUN's claim is ever touched.
-func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
-	if s == nil || run == nil || s.forgeConnections == nil || !fixRunIsOver(run) {
-		return
-	}
-	// AN ARMED RETRY IS NOT AN ENDING. IsTerminal() includes failed_resumable,
-	// and that is exactly where a fixer lands when it parks on a usage window
-	// or a sandbox timeout — with a durable retry the sweeper will resume. The
-	// run then goes on rewriting the branch and pushing back, and nothing
-	// re-claims on the way: markFixInFlight is reachable only from the webhook
-	// launch, while the resume runs through runview's Resume. Clearing here
-	// would leave "pushing is safe again" standing for the whole second pass —
-	// the false all-clear this file calls worse than the silence it replaces,
-	// in the very lane (a quota park) the change was written for.
-	//
-	// The gate lane's predicate, INCLUDING its DLQ exception — the first draft
-	// of this comment claimed parity it did not have, which is worse than
-	// having neither. A DLQ park is FINAL for automation whatever RetryState
-	// still says: a retry_after can survive on such a doc (the usage-window
-	// park that preceded an operator resume, when the clear on resume did not
-	// land), and standing down on it would leave the claim pending for a run
-	// nothing will ever wake. So the exception is tested FIRST, exactly as
-	// forge_gate_reconcile.go does, and only a park something will actually
-	// resume keeps the claim.
-	prURL := runInputString(run, "pr_url")
-	sha := runInputString(run, "head_sha")
-	if prURL == "" || sha == "" {
-		return
-	}
-	// ROLE BEFORE THE NETWORK. `pr_url` + `head_sha` are set on every
-	// forge-launched run — reviewer, brancher, implementer, docs-amender — so
-	// without this the clear would pay a live ListCommitStatuses round trip for
-	// each of them, on every sweep pass, for the whole lookback: a path that
-	// used to exit on a local field read with zero forge traffic. Only a fixer
-	// can ever have claimed, so only a fixer has anything to resolve.
-	// Same provenance the CLAIM used, or as close as the run doc allows: the
-	// claim resolves under the launching team, and a run records the tier its
-	// bot came from. An empty BotSourceTenant (not recorded) falls back to the
-	// run's own tenant rather than to none, so a team-forked fixer resolves on
-	// both sides instead of claiming under one lookup and being unresolvable
-	// under a stricter one.
-	sourceTenant := run.BotSourceTenant
-	if strings.TrimSpace(sourceTenant) == "" {
-		sourceTenant = run.TenantID
-	}
-	if s.fixerRoleCached(ctx, sourceTenant, run.BotID) != pauseNoticeRoleFixer {
-		return
-	}
-	// Our own run's URL, resolved before the read: without it there is nothing
-	// to test ownership against and the claim must be left alone.
-	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), run.ID)
-	if runURL == "" {
-		return
-	}
-	gc, repo, ok := s.fixStatusClientFor(ctx, run.TenantID, prURL)
-	if !ok {
-		return
-	}
-	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, fixInFlightContext)
-	if err != nil || !readable || !isFixInFlight(cur) {
-		return
-	}
-	// AND this run's own claim, not merely "a claim shaped like ours". Several
-	// runs share ONE head sha by construction: the auto-fix lane launches the
-	// fixer on the reviewer's own head_sha, and consecutive fixer passes reuse
-	// it too. The sweeper re-offers every terminal run for the full lookback,
-	// so without this test the reviewer's own reconcile pass — terminal, same
-	// sha — reads the live fixer's claim, matches the description, and posts
-	// "done" while the branch is still being rewritten. A false all-clear is
-	// worse than the silence this replaces, and it would defeat the feature in
-	// the exact lane it was written for. Ownership is the target URL, the same
-	// test the gate lane uses.
-	if !gateStatusSpeaksFor(cur, runURL) {
-		return
-	}
-	st := forge.CommitStatus{
-		State:       forge.CommitStateSuccess,
-		Context:     fixInFlightContext,
-		Description: forge.TruncateStatusDescription(fixDoneDescription),
-		TargetURL:   cur.TargetURL,
-	}
-	if err := gc.SetCommitStatus(ctx, repo, sha, st); err != nil {
-		s.fixInFlightDebug(run.ID, "clear: %v", err)
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("forge fix: run %s is %s — released %s on %s@%s",
-			run.ID, run.Status, fixInFlightContext, repo, shortSHA(sha))
-	}
-}
-
-// fixClaimIsStale reports whether a live-looking claim belongs to a run that is
-// itself over.
-//
-// The counterpart of keeping the claim through every resumable park: a fixer
-// that parks and never comes back (budget exceeded, retries exhausted, a plain
-// execution failure — the gate lane's own comment says those "sit until a human
-// notices, which with an absent required check is never") leaves a pending
-// nobody resolves. Without this, the NEXT pass on that unchanged head reads the
-// stale claim as another run's live one and stands down — the silent second
-// pass, reappearing through the stale-pending door after the isFixDone branch
-// closed the done door.
-//
-// Ownership is the target URL, so the URL names the run to ask about. A claim
-// whose owner cannot be identified or read is treated as LIVE: standing down is
-// the conservative direction, and taking over a claim on a guess is how a false
-// all-clear gets built.
-func (s *Server) fixClaimIsStale(ctx context.Context, cur forge.CommitStatus) bool {
-	if s == nil || s.cfg.Store == nil {
-		return false
-	}
-	base := strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/") + "/runs/"
-	target := strings.TrimSpace(cur.TargetURL)
-	if base == "/runs/" || !strings.HasPrefix(target, base) {
-		return false
-	}
-	owner := strings.TrimSpace(strings.TrimPrefix(target, base))
-	if owner == "" {
-		return false
-	}
-	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), owner)
-	if err != nil || run == nil {
-		return false
-	}
-	// The SAME definition the clear uses. Two answers to "is this run over?"
-	// is how the contradiction above was built.
-	return fixRunIsOver(run)
-}
-
-// fixRoleTTL bounds how long a manifest classification is reused. Short enough
-// that a re-declared bot is picked up without a restart, long enough that the
-// sweeper's repeated offers of the same runs cost one walk instead of one per
-// pass.
-const fixRoleTTL = 5 * time.Minute
-
-type fixRoleEntry struct {
-	role    pauseNoticeRole
-	expires time.Time
-}
-
-// fixerRoleCached is handoffRoleFor with a memo, because the CLEAR calls it on
-// a hot path the claim does not share: reconcileGateForRunID runs it for every
-// terminal forge run the sweeper offers, every 60s, for a 60-minute lookback.
-// Uncached, a single non-fixer run costs two Mongo reads (bot row, then the
-// tenant's rows) plus a filesystem catalog discovery and a DSL parse of every
-// bot — per offer. The role is a manifest fact that changes on deploy, not per
-// run, so it is exactly the shape a memo is for.
-//
-// The memo is a PERFORMANCE filter only. Correctness never rests on it: the
-// claim is bound to its run by target URL, and a stale role can at worst delay
-// a claim's release by one TTL, never resolve one that is still live.
-func (s *Server) fixerRoleCached(ctx context.Context, sourceTenant, botID string) pauseNoticeRole {
-	key := strings.TrimSpace(sourceTenant) + "|" + strings.TrimSpace(botID)
-	now := time.Now()
-	s.fixRoleMu.Lock()
-	if e, ok := s.fixRoleMemo[key]; ok && now.Before(e.expires) {
-		s.fixRoleMu.Unlock()
-		return e.role
-	}
-	s.fixRoleMu.Unlock()
-
-	role := s.handoffRoleFor(ctx, sourceTenant, botID)
-
-	s.fixRoleMu.Lock()
-	if s.fixRoleMemo == nil {
-		s.fixRoleMemo = map[string]fixRoleEntry{}
-	}
-	s.fixRoleMemo[key] = fixRoleEntry{role: role, expires: now.Add(fixRoleTTL)}
-	s.fixRoleMu.Unlock()
-	return role
-}
-
 // fixStatusClientFor resolves the (connection, repo) a fixer claim writes
-// through. Shared by the claim and the clear so the two can never disagree
-// about which repository they are speaking on.
+// through.
 func (s *Server) fixStatusClientFor(ctx context.Context, teamID, prURL string) (forgeGateClient, string, bool) {
 	host, repo, _, err := forge.ParsePullURL(prURL)
 	if err != nil {

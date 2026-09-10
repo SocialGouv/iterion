@@ -58,11 +58,6 @@ type Server struct {
 	// acceptable: the SPA reset on `project_switched` invalidates any
 	// inflight request data before it's surfaced.
 	stateMu sync.RWMutex
-	// Manifest role classification, memoised for the fix-in-flight clear: the
-	// gate sweeper offers every terminal forge run every 60s for a 60-minute
-	// lookback, and the walk is two Mongo reads plus a full catalog parse.
-	fixRoleMu   sync.Mutex
-	fixRoleMemo map[string]fixRoleEntry
 	// boardClockWarned dedups the launch guard's clock-degradation warn on
 	// its edge (empty = healthy). Guarded by stateMu.
 	boardClockWarned string
