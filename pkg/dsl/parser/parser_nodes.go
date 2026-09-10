@@ -97,7 +97,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 			d.Fallbacks = p.parseFallbacksBlock(propTok, kind)
 		default:
 			p.unknownProperty(kind, propTok, propTok.Value)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	case TokenReadonly:
 		p.expect(TokenColon)
@@ -162,7 +162,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Cursors = p.parseCursorsBlock()
 	default:
 		p.unknownProperty(kind, propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -281,12 +281,12 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			} else {
 				p.unknownProperty("router", t, t.Value)
 				p.next()
-				p.skipToNewline()
+				p.skipUnknownProperty()
 			}
 		default:
 			p.unknownProperty("router", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -415,11 +415,11 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 			hd.MaxTurns = p.expectInt()
 		default:
 			p.unknownProperty("human", propTok, propTok.Value)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	default:
 		p.unknownProperty("human", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -537,11 +537,11 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			}
 		default:
 			p.unknownProperty("tool", propTok, propTok.Value)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	default:
 		p.unknownProperty("tool", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -592,7 +592,7 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 			rb.AgentTools = p.parseToolList()
 		default:
 			p.unknownProperty("recovery", t, name)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -714,7 +714,7 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			fd.When = p.expectString()
 		default:
 			p.unknownProperty("fallback", t, propName)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		fd.Span.End = p.pos(t)
 		p.skipNewlines()
@@ -779,11 +779,11 @@ func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
 			cd.Description = p.expectString()
 		default:
 			p.unknownProperty("compute", propTok, propTok.Value)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	default:
 		p.unknownProperty("compute", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -912,6 +912,18 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 		case TokenComment:
 			p.next()
 		default:
+			if isTopLevelKeyword(t.Type) && p.declHeaderAhead() {
+				// A declaration a group cannot hold (an emit, a prompt, a
+				// workflow…): say so, rather than read its keyword as the
+				// source of an edge and ask for the arrow; its body goes
+				// with it. A node NAMED like a keyword is still an edge
+				// endpoint — that shape has no `<name>:` after the keyword.
+				p.addErrorHint(DiagUnexpectedToken, t, "'"+t.Value+"' cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
+					"Move the `"+t.Value+"` declaration to the top level, outside the group.")
+				p.next()
+				p.skipUnknownProperty()
+				continue
+			}
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
 				if e := p.parseEdge(); e != nil {
 					gd.Edges = append(gd.Edges, e)
@@ -1002,7 +1014,7 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 		default:
 			p.unknownProperty("subbot", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return sd
@@ -1045,7 +1057,7 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 		default:
 			p.unknownProperty("emit", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ed
@@ -1092,7 +1104,7 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 		default:
 			p.unknownProperty("wait", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return wd
@@ -1151,7 +1163,7 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 		default:
 			p.unknownProperty("fail", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return fd
@@ -1194,7 +1206,7 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 		default:
 			p.unknownProperty("await_answers", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ad

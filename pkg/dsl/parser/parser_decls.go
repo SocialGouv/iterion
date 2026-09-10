@@ -250,7 +250,7 @@ func (p *parser) parseAttachmentField() *ast.AttachmentField {
 			af.Required = p.parseBool()
 		default:
 			p.unknownProperty("attachment", t, propName)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -355,7 +355,7 @@ func (p *parser) parseSecretField() *ast.SecretField {
 			sf.Description = p.expectString()
 		default:
 			p.unknownProperty("secret", t, propName)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -634,7 +634,7 @@ func (p *parser) parseCursorDecl() *ast.CursorDecl {
 			cd.Bands = p.parseCursorBands()
 		default:
 			p.unknownProperty("cursor", t, propName)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return cd
@@ -777,7 +777,7 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			p.skipNewlines()
 		default:
 			p.unknownProperty("supervisor", t, propName)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return sd

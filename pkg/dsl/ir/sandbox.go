@@ -69,7 +69,7 @@ type SandboxNetwork struct {
 	Mode    string   // "allowlist" | "denylist" | "open" | ""
 	Preset  string   // "iterion-default" or named preset
 	Rules   []string // glob patterns + "!exclusions"
-	Inherit string   // "merge" (default) | "replace" | "append" — node scope only
+	Inherit string   // "" (merge, the default) | "replace" | "append" — node scope only; the word merge is not a value
 }
 
 // IsActive reports whether the spec requests an active sandbox mode

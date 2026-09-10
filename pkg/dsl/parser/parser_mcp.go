@@ -64,7 +64,7 @@ func (p *parser) parseMCPServerProp(md *ast.MCPServerDecl, propTok Token) {
 		md.Auth = p.parseMCPAuthBlock(propTok)
 	default:
 		p.unknownProperty("mcp_server", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -102,7 +102,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 		if t.Type != TokenIdent {
 			p.unknownProperty("auth", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 			continue
 		}
 		propTok := p.next()
@@ -122,7 +122,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 			auth.Scopes = p.parseStringList()
 		default:
 			p.unknownProperty("auth", propTok, propTok.Value)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -186,7 +186,7 @@ func (p *parser) parseMCPConfigProp(cfg *ast.MCPConfigDecl, propTok Token) {
 		cfg.Disable = p.parseIdentList()
 	default:
 		p.unknownProperty("mcp", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }

@@ -168,9 +168,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 				p.next()
 				if p.peek().Type == TokenColon {
 					p.unknownProperty("workflow", t, t.Value)
-					p.skipToNewline()
-					p.skipNewlines()
-					p.skipIndentedBlock() // a misspelt block header: its body is not a run of strays
+					p.skipUnknownProperty() // a misspelt block header: its body is not a run of strays
 					continue
 				}
 				p.backup()
@@ -234,7 +232,7 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 		bb.MaxIterations = p.expectInt()
 	default:
 		p.unknownProperty("budget", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -360,7 +358,7 @@ func (p *parser) parseCompactionProp(cb *ast.CompactionBlock, propTok Token) {
 		cb.PreserveRecent = &v
 	default:
 		p.unknownProperty("compaction", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -406,7 +404,7 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		mb.Visibility = &v
 	default:
 		p.unknownProperty("memory", propTok, propTok.Value)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }

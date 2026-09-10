@@ -113,7 +113,7 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 		sb.Build = p.parseSandboxBuildBody(propTok, colon)
 	default:
 		p.unknownProperty("sandbox", propTok, name)
-		p.skipToNewline()
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -158,7 +158,7 @@ func (p *parser) parseSandboxBuildBody(startTok, colon Token) *ast.SandboxBuildB
 			bb.Args = p.parseStringMapBlock()
 		default:
 			p.unknownProperty("sandbox.build", t, name)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -213,7 +213,7 @@ func (p *parser) parseSandboxNetworkBody(startTok, colon Token) *ast.SandboxNetw
 			nb.Rules = p.parseStringOrIdentList()
 		default:
 			p.unknownProperty("sandbox.network", t, name)
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}

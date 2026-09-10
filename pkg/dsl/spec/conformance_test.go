@@ -157,6 +157,91 @@ func TestRegistryMatchesTheParser(t *testing.T) {
 	}
 }
 
+// sampleValues writes the property line (or lines) with a WELL-FORMED value
+// of the property's declared form — EVERY listed value when the form names
+// some, since each is rendered to authors as accepted — so the parser's
+// acceptance is proven on a clean document rather than inferred from the
+// absence of E012 alone: a listed property whose form was wrong, a listed
+// value the parser refuses, or a name refused through another code, draws a
+// diagnostic here. Continuation lines are indented relative to the property.
+func sampleValues(p spec.Property) []string {
+	each := func(values []string) []string {
+		out := make([]string, 0, len(values))
+		for _, v := range values {
+			out = append(out, p.Name+": "+v)
+		}
+		return out
+	}
+	switch p.Form {
+	case spec.String:
+		return []string{p.Name + `: "x"`}
+	case spec.Ident, spec.StringOrIdent:
+		if len(p.Values) > 0 {
+			return each(p.Values)
+		}
+		return []string{p.Name + ": x"}
+	case spec.Int, spec.Number:
+		return []string{p.Name + ": 1"}
+	case spec.Bool:
+		return []string{p.Name + ": true", p.Name + ": false"}
+	case spec.Enum, spec.BlockOrIdent:
+		return each(p.Values)
+	case spec.IdentList, spec.ToolList, spec.MixedList:
+		if len(p.Values) > 0 {
+			return []string{p.Name + ": [" + strings.Join(p.Values, ", ") + "]"}
+		}
+		return []string{p.Name + ": [a]"}
+	case spec.StringList, spec.SkillList:
+		return []string{p.Name + `: ["a"]`}
+	case spec.IdentOrList:
+		return []string{p.Name + ": a", p.Name + ": [a, b]"}
+	case spec.Map:
+		return []string{p.Name + `: { A: "v" }`}
+	case spec.WithMap:
+		return []string{p.Name + ` { k: "v" }`}
+	case spec.Block:
+		switch p.Body {
+		case "expr":
+			return []string{"expr:\n  f: \"1\""}
+		case "cursor.values":
+			return []string{"values:\n  a: \"f\""}
+		case "cursor.bands":
+			return []string{"bands:\n  \"0..1\": \"f\""}
+		case "fallback":
+			return []string{"fallbacks:\n  r:\n    backend: \"claw\""}
+		}
+		return []string{p.Name + ":"} // an empty block: the bare header
+	}
+	return []string{p.Name + ": 1"}
+}
+
+// TestEveryListedPropertyParsesCleanWithItsForm proves the other half of
+// "listed ⇒ accepted": with a value of its declared form — each listed value
+// in turn — every property of every kind parses with NO diagnostic at all,
+// not merely without E012.
+func TestEveryListedPropertyParsesCleanWithItsForm(t *testing.T) {
+	n := 0
+	for kind, tmpl := range probes {
+		k, _ := spec.Lookup(kind)
+		line := strings.Replace(tmpl, "%s: 1", "%s", 1)
+		at := strings.Index(line, "%s")
+		indent := line[strings.LastIndex(line[:at], "\n")+1 : at]
+		for _, p := range k.Properties {
+			for _, sample := range sampleValues(p) {
+				n++
+				value := strings.ReplaceAll(sample, "\n", "\n"+indent)
+				doc := fmt.Sprintf(line, value)
+				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
+					t.Errorf("%s.%s (%s): %q drew %v", kind, p.Name, p.Form, doc, res.Diagnostics)
+				}
+			}
+		}
+	}
+	if n < 300 {
+		t.Fatalf("only %d documents probed — the sweep is not covering the registry", n)
+	}
+}
+
 // TestEveryFixedTableHasAProbe: a kind added to the registry with properties
 // but no probe would be a table nothing holds to the parser.
 func TestEveryFixedTableHasAProbe(t *testing.T) {
