@@ -63,3 +63,96 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
+  # Publishing is this workflow's whole job, and `docs` is deliberately NOT a
+  # required check — blocking a hotfix on a doc build would be the wrong
+  # trade. The consequence is that a broken publish rides main in silence: the
+  # merge queue never looks at it, so each following merge inherits a red main
+  # without having caused it. Measured 2026-09-10: one wrong file extension in
+  # a doc link kept the site from building across six consecutive commits and
+  # ~100 minutes, noticed only because somebody read the run list by hand.
+  #
+  # So the workflow reports on itself. The alert is a STATE, not a stream —
+  # one open issue at a time, closed again by the next build that succeeds —
+  # because a per-commit notification on a condition that persists is how an
+  # alert gets muted.
+  alert:
+    needs: [build, deploy]
+    # `failure()` covers a skipped deploy too: when build fails, deploy never
+    # runs, and the workflow is still a failed publish.
+    # Push only — a manual dispatch already has someone watching it.
+    if: failure() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      # Narrowed here rather than at the workflow level: `build` and `deploy`
+      # have no business writing issues.
+      issues: write
+    steps:
+      - name: Open (or update) the docs-build issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LABEL: ci:docs-build
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Idempotent: a label that already exists is not an error here.
+          gh label create "$LABEL" --color B60205 \
+            --description "The documentation site is failing to build on main" >/dev/null 2>&1 || true
+          # A DEDICATED marker label, not an existing one: the lookup below is
+          # what keeps this to a single issue, and overloading a label humans
+          # also use would make it match theirs.
+          existing=$(gh issue list --label "$LABEL" --state open --limit 1 \
+            --json number --jq '.[0].number // empty')
+          note=$(printf '%s\n' \
+            "The documentation site failed to build on \`main\` at \`${COMMIT}\`." \
+            "" \
+            "- Run: ${RUN_URL}" \
+            "- Reproduce locally: \`devbox run -- corepack pnpm -C docs build\`" \
+            "" \
+            "The build runs two checks VitePress does not: \`check-mermaid.mjs\`," \
+            "and \`check-links.mjs\`, which resolves this site's github blob links" \
+            "against the real tree — so a link to a path that does not exist" \
+            "(a wrong extension, a moved file) fails the publish." \
+            "" \
+            "\`docs\` is advisory, so this does not block merges: main stays red," \
+            "and the site stops updating, until someone fixes it. This issue" \
+            "closes itself on the next successful build.")
+          if [ -n "$existing" ]; then
+            # Already open: comment rather than open a second one, so the
+            # issue accumulates the commits that inherited the breakage.
+            gh issue comment "$existing" --body "$note"
+            echo "commented on #$existing"
+          else
+            gh issue create --title "docs: the documentation site is not building on main" \
+              --label "$LABEL" --body "$note"
+          fi
+
+  # The other half: an alert nobody closes is an alert nobody reads.
+  resolve:
+    needs: [build, deploy]
+    if: success() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close the docs-build issue once the site builds again
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LABEL: ci:docs-build
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # No label yet (the alert has never fired) means nothing to close,
+          # and `gh issue list` on an unknown label is an error — so ask for
+          # the list without failing the job over it.
+          existing=$(gh issue list --label "$LABEL" --state open --limit 10 \
+            --json number --jq '.[].number' 2>/dev/null || true)
+          for n in $existing; do
+            gh issue close "$n" --reason completed \
+              --comment "The documentation site builds again at \`${COMMIT}\` (${RUN_URL})."
+            echo "closed #$n"
+          done
