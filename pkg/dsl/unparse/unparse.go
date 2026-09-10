@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // Unparse renders an ast.File back to .bot DSL source text.
@@ -322,11 +323,17 @@ func (w *fileWriter) writePrompts(prompts []*ast.PromptDecl) {
 	for _, p := range prompts {
 		w.blankLine()
 		fmt.Fprintf(&w.b, "prompt %s:\n", p.Name)
-		// Trim trailing newlines so a body ending in "\n" (the standard
-		// text-block shape) doesn't unparse into a trailing indented
-		// blank line that the lexer would re-read as an extra prompt
-		// line, breaking parse → unparse → re-parse round-trip stability.
-		body := strings.TrimRight(p.Body, "\n")
+		// The body is written in the lexer's canonical form — the only
+		// form the text can carry: a blank line under a prompt header is
+		// skipped when read, so writing one (or a trailing indented blank)
+		// would put on disk a line that says nothing and re-reads as
+		// something else than the document. A canvas body with a paragraph
+		// break or an Enter after the last line lands as its canonical form,
+		// which is what any reader of the file gets. A body the syntax cannot
+		// carry at all (parser.CheckPromptBody) lands as its nearest form,
+		// de-indented; Verify, which every production caller runs on this
+		// text, refuses it by name.
+		body := parser.CanonicalPromptBody(p.Body)
 		if body == "" {
 			// A bare header IS the empty prompt; an indented blank line
 			// would be neither a body nor a valid empty form.

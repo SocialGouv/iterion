@@ -15,15 +15,15 @@ import (
 // AST mirror is the oracle there.
 func TestVerifyIsNotBlindToADocumentWithoutAWorkflow(t *testing.T) {
 	f := &ast.File{
-		Prompts: []*ast.PromptDecl{{Name: "p", Body: "hello\n\n\n"}},
+		Prompts: []*ast.PromptDecl{{Name: "p", Body: "hello"}},
 		Tools:   []*ast.ToolNodeDecl{{Name: "t", Command: "echo one"}},
 	}
-	text := unparse.Unparse(f)
-	// Sabotage the text the way a lossy writer would: drop the prompt's
-	// trailing blank lines, which changes the prompt body.
+	// Sabotage the text the way a lossy writer would: a prompt line that
+	// is not the document's.
+	text := strings.Replace(unparse.Unparse(f), "  hello\n", "  hullo\n", 1)
 	err := unparse.Verify(f, text)
 	if err == nil {
-		t.Fatal("a body with trailing blank lines is not what the text holds; Verify must say so")
+		t.Fatal("a prompt line that is not the document's is not what the text holds; Verify must say so")
 	}
 	if !strings.Contains(err.Error(), "prompts") && !strings.Contains(err.Error(), "document") {
 		t.Errorf("the refusal does not name what changed: %v", err)

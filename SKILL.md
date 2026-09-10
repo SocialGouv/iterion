@@ -175,6 +175,10 @@ shipped bots, so they are written here:
 - **A `#` never means anything else outside a string, a prompt body or a
   block scalar** — it is a comment, so a literal `{{…}}` example belongs in
   prose, not in a prompt (every reference in a prompt is validated).
+- **A blank line inside a prompt body is dropped.** The lexer skips blank
+  and space-only lines under a prompt header, so a paragraph break reaches
+  the model as a single newline; put a heading or a line of prose where the
+  model must see a break.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code.
 

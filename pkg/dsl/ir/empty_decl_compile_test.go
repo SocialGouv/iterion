@@ -34,6 +34,25 @@ func TestEmptySupervisorIsNotArmed(t *testing.T) {
 	}
 }
 
+// A bare `workflow w:` compiles to the diagnostic the author can act on —
+// the workflow declares no entry — not to a lookup of a node named "".
+func TestEmptyWorkflowNamesWhatItLacks(t *testing.T) {
+	pr := parser.Parse("x.bot", "workflow w:\n")
+	if len(pr.Diagnostics) != 0 {
+		t.Fatalf("parse: %v", pr.Diagnostics)
+	}
+	cr := Compile(pr.File)
+	for _, d := range cr.Diagnostics {
+		if d.Code == DiagMissingEntry {
+			if !strings.Contains(d.Message, "declares no entry") {
+				t.Fatalf("C008 on an empty workflow reads %q; want it to say the workflow declares no entry", d.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("no C008 for a workflow with no entry: %v", cr.Diagnostics)
+}
+
 // A node whose output schema has no field is warned about (C140): the
 // schema is a declaration the studio has not filled in, not a contract a
 // model can fill.

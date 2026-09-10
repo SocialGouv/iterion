@@ -51,6 +51,29 @@ func TestEmptyDeclarationAtEndOfFile(t *testing.T) {
 	}
 }
 
+// A bare `workflow w:` — the canvas right after its last node is deleted,
+// or a freshly scaffolded bot — is the empty workflow, like the other
+// empty-able declarations; it then draws the compiler's own diagnostic (no
+// entry), not a lexer error about an INDENT.
+func TestEmptyWorkflowParses(t *testing.T) {
+	for _, src := range []string{
+		"workflow w:\n",
+		"prompt p:\n  x\n\nworkflow w:\n",
+		"workflow w:\n\nschema s:\n  ok: bool\n",
+	} {
+		pr := Parse("empty.bot", src)
+		for _, d := range pr.Diagnostics {
+			t.Errorf("%q: unexpected diagnostic: %s", src, d.Error())
+		}
+		if len(pr.File.Workflows) != 1 || pr.File.Workflows[0].Name != "w" || pr.File.Workflows[0].Entry != "" {
+			t.Errorf("%q: empty workflow not kept: %+v", src, pr.File.Workflows)
+		}
+	}
+	if pr := Parse("bad.bot", "workflow w:\nentry: a\n"); !indentError(pr) {
+		t.Fatalf("an unindented workflow body parsed without the indentation error: %v", pr.Diagnostics)
+	}
+}
+
 func indentError(pr *ParseResult) bool {
 	for _, d := range pr.Diagnostics {
 		if strings.Contains(d.Message, "INDENT") {

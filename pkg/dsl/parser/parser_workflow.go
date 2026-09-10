@@ -7,14 +7,21 @@ import (
 // ---- workflow ----
 
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
-	start, name, ok := p.parseDeclHeader("workflow")
-	if !ok {
+	// The workflow may be EMPTY like a prompt or a schema: the canvas right
+	// after its last node is deleted, or a freshly scaffolded bot, has a
+	// `workflow w:` with nothing under it, and the compiler — not the lexer
+	// — is who tells the author what it lacks.
+	start, name, state := p.parseDeclHeaderOrEmpty("workflow")
+	if state == headerFailed {
 		return nil
 	}
 
 	wd := &ast.WorkflowDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start)},
+	}
+	if state == headerEmpty {
+		return wd
 	}
 
 	for {

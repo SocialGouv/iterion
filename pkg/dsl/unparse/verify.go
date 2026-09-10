@@ -18,7 +18,22 @@ import (
 // somewhere the program is later read from (the studio's save path) refuses
 // on an error rather than write a file that means something else than the
 // document it came from.
+//
+// Prompt bodies are compared in the lexer's canonical form
+// (parser.CanonicalPromptBody): a canvas body with a paragraph break or a
+// trailing newline has no other written form, and every reader of the file
+// gets the canonical one — so that is the program the document IS, and the
+// guard refuses only what would actually change. A body the syntax cannot
+// carry at all (parser.CheckPromptBody: a first line indented deeper than a
+// later one) IS such a change — its nearest written form de-indents it —
+// and is refused by name before anything is compared.
 func Verify(f *ast.File, text string) error {
+	for _, p := range f.Prompts {
+		if err := parser.CheckPromptBody(p.Body); err != nil {
+			return fmt.Errorf("prompt %q cannot be written as .bot source: %v", p.Name, err)
+		}
+	}
+	f = canonicalPrompts(f)
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
 	// from the JSON transport has no source file: naming one here made the
@@ -76,6 +91,20 @@ func sourceFile(f *ast.File) string {
 	return ""
 }
 
+// canonicalPrompts is a shallow copy of f whose prompt bodies are in the
+// lexer's canonical form — the form the writer emits and the re-parse
+// yields. The document itself is left as it came.
+func canonicalPrompts(f *ast.File) *ast.File {
+	cp := *f
+	cp.Prompts = make([]*ast.PromptDecl, len(f.Prompts))
+	for i, p := range f.Prompts {
+		q := *p
+		q.Body = parser.CanonicalPromptBody(p.Body)
+		cp.Prompts[i] = &q
+	}
+	return &cp
+}
+
 // withoutComments is a shallow copy of f with its comment list dropped.
 func withoutComments(f *ast.File) *ast.File {
 	cp := *f
@@ -90,7 +119,12 @@ func firstJSONDifference(a, b []byte) string {
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
 		return "the documents differ"
 	}
-	return diffAny("document", x, y)
+	if d := diffAny("document", x, y); d != "" {
+		return d
+	}
+	// The bytes differ but the decoded values do not (one side escaped a
+	// rune the other wrote raw): still a refusal, never an empty reason.
+	return "the documents differ in their encoding"
 }
 
 func diffAny(path string, x, y any) string {

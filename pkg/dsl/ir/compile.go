@@ -517,8 +517,12 @@ func (c *compiler) compile() *Workflow {
 
 	wf := c.file.Workflows[0]
 
-	// Validate entry node.
-	if _, ok := c.nodes[wf.Entry]; !ok {
+	// Validate entry node. A workflow with no entry at all (the bare
+	// `workflow w:` the studio saves before a node exists) is told so,
+	// not sent looking for a node named "".
+	if wf.Entry == "" {
+		c.errorf(DiagMissingEntry, "workflow %q declares no entry node", wf.Name)
+	} else if _, ok := c.nodes[wf.Entry]; !ok {
 		c.errorf(DiagMissingEntry, "entry node %q not found", wf.Entry)
 	}
 

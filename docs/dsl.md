@@ -29,7 +29,7 @@ agent, judge, router, human, tool, compute, emit, wait, await_answers, subbot,
 group, use, workflow
 ```
 
-Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor` or `group` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191). `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
+Declarations may appear in any order subject to validation. A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header with no indented body — followed by a blank line and another declaration, or by the end of the file — declares an empty one (the studio saves a declaration the moment it is created); a body at the wrong indentation, or a comment alone under the header, is still the indentation error, and node declarations keep needing a body. An empty schema referenced by a node draws C140; an empty supervisor is not armed (C191); an empty workflow draws the compiler's own diagnostics (no entry first). `#` starts a comment that runs to the end of the line (`##` is the same comment; both forms are accepted everywhere except inside a string, a prompt body or a `|` block scalar, where a `#` is text). Values accept quoted strings, backtick-delimited raw strings, and `|` block scalars where the grammar expects a string.
 
 ## Inputs and reusable values
 
@@ -98,6 +98,8 @@ prompt review_user:
   {{input.code}}
   Previous result: {{outputs.prior.summary}}
 ```
+
+A prompt body is the indented text under the header, its lines joined by single newlines. The first line's indentation is the body's: a deeper line keeps its extra indentation, and no later line can be shallower than the first (the body ends there — the studio refuses such a body at save, naming the line). A **blank or space-only line inside the body is skipped** — a paragraph break reaches the model as a single newline, and a body never ends with one; write a heading or a line of prose where the model must see a break. A carriage return before a newline is folded away with it. That canonical form is the only one the syntax carries: the studio's save writes a document's prompts in it, and its save guard compares them in it.
 
 `{{include "relative/path.md"}}` inlines a file at compile time. Paths are relative to the file that contains the include — the `.bot` for a prompt declared in it, a bundle's `prompts/` directory for a `prompts/*.md` — may not escape that directory (including through symlinks), and are capped at 256 KiB. Included content may contain normal runtime templates. On a cloud launch the includes are resolved into the prompt bodies by the server before the run is queued, so the runner never needs the files; a `.bot` uploaded inline (`iterion remote runs launch x.bot`, a studio launch of a loose file) has no files beside it, and an include in it is refused at publish — launch such a bot as a bundle.
 

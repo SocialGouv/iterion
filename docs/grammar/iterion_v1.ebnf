@@ -55,14 +55,19 @@ secret_prop = "value" ":" STRING_LIT NEWLINE
             | "hosts" ":" string_list NEWLINE
             | "description" ":" STRING_LIT NEWLINE ;
 
-(* A prompt, schema, mcp_server, cursor, supervisor or group header may
-   stand with no body at all — followed by a BLANK LINE and another
-   declaration, or by the end of the file — and declares an EMPTY one: the
-   studio saves a declaration the moment it is created. The blank line is
-   the discriminant: a header followed directly by an unindented line (a
-   body at the wrong indentation) is still an error. *)
+(* A prompt, schema, mcp_server, cursor, supervisor, group or workflow
+   header may stand with no body at all — followed by a BLANK LINE and
+   another declaration, or by the end of the file — and declares an EMPTY
+   one: the studio saves a declaration the moment it is created. The blank
+   line is the discriminant: a header followed directly by an unindented
+   line (a body at the wrong indentation) is still an error. *)
 
 prompt_decl = "prompt" IDENT ":" NEWLINE [ INDENT prompt_body DEDENT ] ;
+(* A blank or space-only line under the header is skipped, not a text line:
+   a paragraph break does not survive, and a body never ends with a
+   newline; a CR before the newline is folded away with it. The first text
+   line's indentation is the body's: a deeper line keeps the difference, a
+   shallower one ends the body. *)
 prompt_body = { PROMPT_TEXT_LINE } ;
 
 schema_decl = "schema" IDENT ":" NEWLINE [ INDENT { schema_field } DEDENT ] ;
@@ -321,9 +326,11 @@ use_decl = "use" IDENT "as" IDENT [ with_block ] NEWLINE ;
 
 (* ---------- Workflows ---------- *)
 
-workflow_decl = "workflow" IDENT ":" NEWLINE INDENT
+(* The body is optional like a prompt's or a schema's: a bare header is the
+   empty workflow (see the note above prompt_decl). *)
+workflow_decl = "workflow" IDENT ":" NEWLINE [ INDENT
                   { workflow_member }
-                DEDENT ;
+                DEDENT ] ;
 workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "entry" ":" node_ref NEWLINE
                 | "default_backend" ":" STRING_LIT NEWLINE

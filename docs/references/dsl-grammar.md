@@ -87,7 +87,7 @@ schema = "schema" IDENT ":" [ INDENT { schema_field } DEDENT ] ;
 schema_field = IDENT ":" ( type | "file" ) [ enum ] ;
 ```
 
-A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor` or `group` header may stand with no body at all — followed by a **blank line** and another declaration, or by the end of the file — and declares an empty one: the studio saves a declaration the moment it is created, before it has a field or a line. The blank line is what tells an empty declaration from a body at the wrong indentation (a group's members are top-level keywords themselves): a header followed directly by an unindented line, or by an indented comment alone, is still the indentation error. Node declarations (`agent`, `tool`, …) keep needing a body.
+A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header may stand with no body at all — followed by a **blank line** and another declaration, or by the end of the file — and declares an empty one: the studio saves a declaration the moment it is created, before it has a field or a line (an empty workflow then draws the compiler's own diagnostics, no entry first). The blank line is what tells an empty declaration from a body at the wrong indentation (a group's members are top-level keywords themselves): a header followed directly by an unindented line, or by an indented comment alone, is still the indentation error. Node declarations (`agent`, `tool`, …) keep needing a body.
 
 Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema fields accept the six variable types, plus `file` — an operator-supplied binary valid only on a human node's schema; the compiler rejects it elsewhere ([C129](diagnostics.md)).
 
