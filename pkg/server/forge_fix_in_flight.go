@@ -132,6 +132,25 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || s.forgeConnections == nil || !run.Status.IsTerminal() {
 		return
 	}
+	// AN ARMED RETRY IS NOT AN ENDING. IsTerminal() includes failed_resumable,
+	// and that is exactly where a fixer lands when it parks on a usage window
+	// or a sandbox timeout — with a durable retry the sweeper will resume. The
+	// run then goes on rewriting the branch and pushing back, and nothing
+	// re-claims on the way: markFixInFlight is reachable only from the webhook
+	// launch, while the resume runs through runview's Resume. Clearing here
+	// would leave "pushing is safe again" standing for the whole second pass —
+	// the false all-clear this file calls worse than the silence it replaces,
+	// in the very lane (a quota park) the change was written for.
+	//
+	// The same predicate, the same call as the gate lane next door: a resumable
+	// failure is only dead when nothing will actually resume it
+	// (forge_gate_reconcile.go, "A resumable failure is only 'not dead' when
+	// something will actually resume it"). Two lanes reading one state must not
+	// disagree about whether it is an ending.
+	if run.Status == store.RunStatusFailedResumable &&
+		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		return
+	}
 	prURL := runInputString(run, "pr_url")
 	sha := runInputString(run, "head_sha")
 	if prURL == "" || sha == "" {

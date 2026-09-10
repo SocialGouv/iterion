@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -186,6 +187,47 @@ func TestClearFixInFlight_ResolvesOurOwnClaim(t *testing.T) {
 		if isFixInFlight(gc.last) {
 			t.Errorf("%s: still reads as in-flight after the run ended", status)
 		}
+	}
+}
+
+// R51e567 — IsTerminal() includes failed_resumable, and that is exactly where
+// a fixer lands when it parks on a usage window: with a durable retry the
+// sweeper will resume. Clearing there posts "pushing is safe again", then the
+// same run wakes and goes on rewriting the branch — and nothing re-claims,
+// because the resume path never reaches markFixInFlight. The all-clear would
+// stand for the whole second pass.
+//
+// An armed retry is not an ending. Same call as the gate lane next door.
+func TestClearFixInFlight_SilentOnAParkedRunWithAnArmedRetry(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	at := time.Now().UTC().Add(time.Hour)
+	run.RetryState = &store.RunRetryState{RetryAfter: &at}
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 0 {
+		t.Fatalf("announced the fixer done while its retry is armed (%d posts) — it resumes and keeps rewriting the branch behind a green check", gc.setCalls)
+	}
+}
+
+// ...but a resumable failure with NOTHING armed to resume it IS dead, and its
+// claim must not outlive it. The two halves of the same predicate.
+func TestClearFixInFlight_ResolvesAParkedRunNothingWillResume(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.RetryState = nil
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a run nothing will resume leaves its claim pending forever", gc.setCalls)
 	}
 }
 
