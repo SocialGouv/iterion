@@ -391,6 +391,46 @@ Seven findings changed the design:
   the unknown-outcome contract), the trigger ingress family, the per-process
   devbox profile, and the studio surfaces. Each is a later lot of #1072.
 
+## What an overlay has to carry
+
+P0 asked what an overlay must supply that a description cannot. The answer is
+measured rather than guessed — it is what four real descriptions turned out to
+be unable to state, and the shipped Forgejo overlay
+([connectors/forgejo/overlay.yaml](../../connectors/forgejo/overlay.yaml), 5.6
+KiB against 651 KiB of generated operations) is the reference:
+
+- **Auth, sometimes entirely.** GitHub declares no security scheme at all.
+  Forgejo declares *five*, and only two are credentials a connection can hold:
+  `Sudo` is an admin impersonation modifier and `X-FORGEJO-OTP` a second
+  factor, so offering them in a connection wizard would ask an operator to
+  authenticate with something that is not an identity. Slack declares OAuth
+  but passes the credential as an ordinary parameter, which must be marked
+  secret or it reaches a model's context.
+- **Pagination.** A description shows a `page` parameter exists; it never
+  shows the response is a page OF something, nor where the walk should stop.
+- **The curated MCP set.** 15 of Forgejo's 506 operations are worth offering
+  an agent by name. Which fifteen is a product judgement.
+- **Identity pins.** The overlay states an id; the derivation only proposes
+  one. This is F13's identity lock in its per-operation form.
+- **Outcome.** That Slack signals failure as `{"ok": false}` inside a 200 is
+  prose.
+- **Corrections** a human sees and a derivation cannot: a POST that searches,
+  an endpoint that runs a model, an operation to drop outright.
+
+Two properties make the split hold. An overlay entry that matches **nothing**
+is an error, not a no-op: the usual cause is a regeneration that moved a
+derived id, and ignoring it would bring the operation back *uncorrected* while
+the overlay still looked applied. And `deterministic` is a **one-way door** —
+an overlay may remove the claim (this endpoint runs a model) but never assert
+it, because a human overruling a structural refusal with a promise is exactly
+what this catalog must not accept on trust.
+
+`iterion connectors gen|validate` is what makes a committed package
+reproducible; a generated package nobody can regenerate is a blob, and the
+whole split rests on the generated half being disposable. It is also the
+install-time lane, which is why `--license` and `--redistributable` are
+explicit inputs recorded in the provenance rather than inferred.
+
 ## The execution profile — what schema v1 actually promises
 
 The review's F14/F15/F16 said the supported request/response semantics must be

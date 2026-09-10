@@ -1,0 +1,3763 @@
+schema_version: 1
+connector: forgejo
+domain: issue
+operations:
+- id: forgejo.issue.add_label
+  source_operation_id: issueAddLabel
+  summary: Add a label to an issue
+  resource: issue
+  verb: add_label
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: labels
+    name: labels
+    in: body
+    type: array
+    description: Labels can be a list of integers representing label IDs
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+  results:
+  - status: 200
+    schema_ref: Label
+    array: true
+    description: LabelListWithoutPagination - Labels for a specific issue (no pagination
+      headers)
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.add_subscription
+  source_operation_id: issueAddSubscription
+  summary: Subscribe user to issue
+  resource: issue
+  verb: add_subscription
+  tags:
+  - issue
+  http:
+    method: PUT
+    path: /repos/{owner}/{repo}/issues/{index}/subscriptions/{user}
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: user
+    name: user
+    in: path
+    type: string
+    required: true
+    description: user to subscribe
+  results:
+  - status: 200
+    description: Already subscribed
+  - status: 201
+    description: Successfully Subscribed
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.issue.add_time
+  source_operation_id: issueAddTime
+  summary: Add tracked time to a issue
+  resource: issue
+  verb: add_time
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/times
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: created
+    name: created
+    in: body
+    type: string
+    format: date-time
+  - key: time
+    name: time
+    in: body
+    type: integer
+    format: int64
+    required: true
+    description: time in seconds
+  - key: user_name
+    name: user_name
+    in: body
+    type: string
+    description: User who spent the time (optional)
+  results:
+  - status: 200
+    schema_ref: TrackedTime
+    description: TrackedTime
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.check_subscription
+  source_operation_id: issueCheckSubscription
+  summary: Check if user is subscribed to an issue
+  resource: issue
+  verb: check_subscription
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/subscriptions/check
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: WatchInfo
+    description: WatchInfo
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.clear_labels
+  source_operation_id: issueClearLabels
+  summary: Remove all labels from an issue
+  resource: issue
+  verb: clear_labels
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.create_comment
+  source_operation_id: issueCreateComment
+  summary: Add a comment to an issue
+  resource: issue
+  verb: create_comment
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/comments
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body
+    name: body
+    in: body
+    type: string
+    required: true
+    description: The body of the comment
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+    description: The time of the comment's update, needs admin or repository owner
+      permission
+  results:
+  - status: 201
+    schema_ref: Comment
+    description: Comment
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_issue
+  source_operation_id: issueCreateIssue
+  summary: Create an issue. If using deadline only the date will be taken into account,
+    and time of day ignored.
+  resource: issue
+  verb: create_issue
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues
+    request_body: json
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: assignee
+    name: assignee
+    in: body
+    type: string
+    description: deprecated
+  - key: assignees
+    name: assignees
+    in: body
+    type: array
+    items: string
+  - key: body
+    name: body
+    in: body
+    type: string
+  - key: closed
+    name: closed
+    in: body
+    type: boolean
+  - key: due_date
+    name: due_date
+    in: body
+    type: string
+    format: date-time
+  - key: labels
+    name: labels
+    in: body
+    type: array
+    items: integer
+    description: list of label ids
+  - key: milestone
+    name: milestone
+    in: body
+    type: integer
+    format: int64
+    description: milestone id
+  - key: ref
+    name: ref
+    in: body
+    type: string
+  - key: title
+    name: title
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 201
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 412
+    class: bad_request
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_issue_attachment
+  source_operation_id: issueCreateIssueAttachment
+  summary: Create an issue attachment
+  resource: issue
+  verb: create_issue_attachment
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/assets
+    request_body: multipart
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: name
+    name: name
+    in: query
+    type: string
+    description: name of the attachment
+  - key: updated_at
+    name: updated_at
+    in: query
+    type: string
+    format: date-time
+    description: time of the attachment's creation. This is a timestamp in RFC 3339
+      format
+  - key: attachment
+    name: attachment
+    in: body
+    type: file
+    required: true
+    description: attachment to upload
+  results:
+  - status: 201
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 413
+    class: bad_request
+    description: QuotaExceeded
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_issue_blocking
+  source_operation_id: issueCreateIssueBlocking
+  summary: Block the issue given in the body by the issue in path
+  resource: issue
+  verb: create_issue_blocking
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/blocks
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body_index
+    name: index
+    in: body
+    type: integer
+    format: int64
+    required: true
+  - key: body_owner
+    name: owner
+    in: body
+    type: string
+    required: true
+  - key: body_repo
+    name: repo
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 201
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 404
+    class: not_found
+    description: the issue does not exist
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_issue_comment_attachment
+  source_operation_id: issueCreateIssueCommentAttachment
+  summary: Create a comment attachment
+  resource: issue
+  verb: create_issue_comment_attachment
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets
+    request_body: multipart
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: name
+    name: name
+    in: query
+    type: string
+    description: name of the attachment
+  - key: updated_at
+    name: updated_at
+    in: query
+    type: string
+    format: date-time
+    description: time of the attachment's creation. This is a timestamp in RFC 3339
+      format
+  - key: attachment
+    name: attachment
+    in: body
+    type: file
+    required: true
+    description: attachment to upload
+  results:
+  - status: 201
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 413
+    class: bad_request
+    description: QuotaExceeded
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_issue_dependencies
+  source_operation_id: issueCreateIssueDependencies
+  summary: Make the issue in the url depend on the issue in the form.
+  resource: issue
+  verb: create_issue_dependencies
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/dependencies
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body_index
+    name: index
+    in: body
+    type: integer
+    format: int64
+    required: true
+  - key: body_owner
+    name: owner
+    in: body
+    type: string
+    required: true
+  - key: body_repo
+    name: repo
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 201
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 404
+    class: not_found
+    description: the issue does not exist
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_label
+  source_operation_id: issueCreateLabel
+  summary: Create a label
+  resource: issue
+  verb: create_label
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/labels
+    request_body: json
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: color
+    name: color
+    in: body
+    type: string
+    required: true
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: exclusive
+    name: exclusive
+    in: body
+    type: boolean
+  - key: is_archived
+    name: is_archived
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 201
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.issue.create_milestone
+  source_operation_id: issueCreateMilestone
+  summary: Create a milestone
+  resource: issue
+  verb: create_milestone
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/milestones
+    request_body: json
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: due_on
+    name: due_on
+    in: body
+    type: string
+    format: date-time
+  - key: state
+    name: state
+    in: body
+    type: string
+    enum:
+    - open
+    - closed
+  - key: title
+    name: title
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: Milestone
+    description: Milestone
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.delete
+  source_operation_id: issueDelete
+  summary: Delete an issue
+  resource: issue
+  verb: delete
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of issue to delete
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_comment
+  source_operation_id: issueDeleteComment
+  summary: Delete a comment
+  resource: issue
+  verb: delete_comment
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/comments/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of comment to delete
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_comment_deprecated
+  source_operation_id: issueDeleteCommentDeprecated
+  summary: Delete a comment
+  resource: issue
+  verb: delete_comment_deprecated
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/comments/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of comment to delete
+  - key: index
+    name: index
+    in: path
+    type: integer
+    required: true
+    description: this parameter is ignored
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_comment_reaction
+  source_operation_id: issueDeleteCommentReaction
+  summary: Remove a reaction from a comment of an issue
+  resource: issue
+  verb: delete_comment_reaction
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/comments/{id}/reactions
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: content
+    name: content
+    in: body
+    type: string
+  results:
+  - status: 200
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_issue_attachment
+  source_operation_id: issueDeleteIssueAttachment
+  summary: Delete an issue attachment
+  resource: issue
+  verb: delete_issue_attachment
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to delete
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_issue_comment_attachment
+  source_operation_id: issueDeleteIssueCommentAttachment
+  summary: Delete a comment attachment
+  resource: issue
+  verb: delete_issue_comment_attachment
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to delete
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_issue_reaction
+  source_operation_id: issueDeleteIssueReaction
+  summary: Remove a reaction from an issue
+  resource: issue
+  verb: delete_issue_reaction
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/reactions
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: content
+    name: content
+    in: body
+    type: string
+  results:
+  - status: 200
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_label
+  source_operation_id: issueDeleteLabel
+  summary: Delete a label
+  resource: issue
+  verb: delete_label
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/labels/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to delete
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_milestone
+  source_operation_id: issueDeleteMilestone
+  summary: Delete a milestone
+  resource: issue
+  verb: delete_milestone
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/milestones/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: the milestone to delete, identified by ID and if not available by
+      name
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_stop_watch
+  source_operation_id: issueDeleteStopWatch
+  summary: Delete an issue's existing stopwatch.
+  resource: issue
+  verb: delete_stop_watch
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/stopwatch/delete
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to stop the stopwatch on
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: Not repo writer, user does not have rights to toggle stopwatch
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: Cannot cancel a non existent stopwatch
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_subscription
+  source_operation_id: issueDeleteSubscription
+  summary: Unsubscribe user from issue
+  resource: issue
+  verb: delete_subscription
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/subscriptions/{user}
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: user
+    name: user
+    in: path
+    type: string
+    required: true
+    description: user witch unsubscribe
+  results:
+  - status: 200
+    description: Already unsubscribed
+  - status: 201
+    description: Successfully Unsubscribed
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.delete_time
+  source_operation_id: issueDeleteTime
+  summary: Delete specific tracked time
+  resource: issue
+  verb: delete_time
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/times/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of time to delete
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.edit_comment
+  source_operation_id: issueEditComment
+  summary: Edit a comment
+  resource: issue
+  verb: edit_comment
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/comments/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body
+    name: body
+    in: body
+    type: string
+    required: true
+    description: The body of the comment
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+    description: The time of the comment's update, needs admin or repository owner
+      permission
+  results:
+  - status: 200
+    schema_ref: Comment
+    description: Comment
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_comment_deprecated
+  source_operation_id: issueEditCommentDeprecated
+  summary: Edit a comment
+  resource: issue
+  verb: edit_comment_deprecated
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/{index}/comments/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment to edit
+  - key: index
+    name: index
+    in: path
+    type: integer
+    required: true
+    description: this parameter is ignored
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body
+    name: body
+    in: body
+    type: string
+    required: true
+    description: The body of the comment
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+    description: The time of the comment's update, needs admin or repository owner
+      permission
+  results:
+  - status: 200
+    schema_ref: Comment
+    description: Comment
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_issue
+  source_operation_id: issueEditIssue
+  summary: Edit an issue. If using deadline only the date will be taken into account,
+    and time of day ignored.
+  resource: issue
+  verb: edit_issue
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/{index}
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: assignee
+    name: assignee
+    in: body
+    type: string
+    description: deprecated
+  - key: assignees
+    name: assignees
+    in: body
+    type: array
+    items: string
+  - key: body
+    name: body
+    in: body
+    type: string
+  - key: due_date
+    name: due_date
+    in: body
+    type: string
+    format: date-time
+  - key: milestone
+    name: milestone
+    in: body
+    type: integer
+    format: int64
+  - key: ref
+    name: ref
+    in: body
+    type: string
+  - key: state
+    name: state
+    in: body
+    type: string
+  - key: title
+    name: title
+    in: body
+    type: string
+  - key: unset_due_date
+    name: unset_due_date
+    in: body
+    type: boolean
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+  results:
+  - status: 201
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 412
+    class: bad_request
+    description: APIError is error format response
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_issue_attachment
+  source_operation_id: issueEditIssueAttachment
+  summary: Edit an issue attachment
+  resource: issue
+  verb: edit_issue_attachment
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}
+    request_body: json
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to edit
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: browser_download_url
+    name: browser_download_url
+    in: body
+    type: string
+    description: (Can only be set if existing attachment is of external type)
+  - key: name
+    name: name
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 413
+    class: bad_request
+    description: QuotaExceeded
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_issue_comment_attachment
+  source_operation_id: issueEditIssueCommentAttachment
+  summary: Edit a comment attachment
+  resource: issue
+  verb: edit_issue_comment_attachment
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}
+    request_body: json
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to edit
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: browser_download_url
+    name: browser_download_url
+    in: body
+    type: string
+    description: (Can only be set if existing attachment is of external type)
+  - key: name
+    name: name
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  - status: 413
+    class: bad_request
+    description: QuotaExceeded
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_issue_deadline
+  source_operation_id: issueEditIssueDeadline
+  summary: Set an issue deadline. If set to null, the deadline is deleted. If using
+    deadline only the date will be taken into account, and time of day ignored.
+  resource: issue
+  verb: edit_issue_deadline
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/deadline
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to create or update a deadline on
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: due_date
+    name: due_date
+    in: body
+    type: string
+    format: date-time
+    required: true
+  results:
+  - status: 201
+    schema_ref: IssueDeadline
+    description: IssueDeadline
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.edit_label
+  source_operation_id: issueEditLabel
+  summary: Update a label
+  resource: issue
+  verb: edit_label
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/labels/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: color
+    name: color
+    in: body
+    type: string
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: exclusive
+    name: exclusive
+    in: body
+    type: boolean
+  - key: is_archived
+    name: is_archived
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.issue.edit_milestone
+  source_operation_id: issueEditMilestone
+  summary: Update a milestone
+  resource: issue
+  verb: edit_milestone
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/milestones/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: the milestone to edit, identified by ID and if not available by name
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: due_on
+    name: due_on
+    in: body
+    type: string
+    format: date-time
+  - key: state
+    name: state
+    in: body
+    type: string
+  - key: title
+    name: title
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Milestone
+    description: Milestone
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.issue.get_comment
+  source_operation_id: issueGetComment
+  summary: Get a comment
+  resource: issue
+  verb: get_comment
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/comments/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Comment
+    description: Comment
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_comment_reactions
+  source_operation_id: issueGetCommentReactions
+  summary: Get a list of reactions from a comment of an issue
+  resource: issue
+  verb: get_comment_reactions
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/comments/{id}/reactions
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Reaction
+    array: true
+    description: ReactionListWithoutPagination - Reactions for a specific comment
+      (no pagination headers)
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_comments
+  source_operation_id: issueGetComments
+  summary: List all comments on an issue
+  resource: issue
+  verb: get_comments
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/comments
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated before the provided time are returned.
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated since the specified time are returned.
+  results:
+  - status: 200
+    schema_ref: Comment
+    array: true
+    description: CommentList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_comments_and_timeline
+  source_operation_id: issueGetCommentsAndTimeline
+  summary: List all comments and events on an issue
+  resource: issue
+  verb: get_comments_and_timeline
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/timeline
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated before the provided time are returned.
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated since the specified time are returned.
+  results:
+  - status: 200
+    schema_ref: TimelineComment
+    array: true
+    description: TimelineList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_issue
+  source_operation_id: issueGetIssue
+  summary: Get an issue
+  resource: issue
+  verb: get_issue
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to get
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_issue_attachment
+  source_operation_id: issueGetIssueAttachment
+  summary: Get an issue attachment
+  resource: issue
+  verb: get_issue_attachment
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/assets/{attachment_id}
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to get
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_issue_comment_attachment
+  source_operation_id: issueGetIssueCommentAttachment
+  summary: Get a comment attachment
+  resource: issue
+  verb: get_issue_comment_attachment
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets/{attachment_id}
+  params:
+  - key: attachment_id
+    name: attachment_id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the attachment to get
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Attachment
+    description: Attachment
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_issue_reactions
+  source_operation_id: issueGetIssueReactions
+  summary: Get a list reactions of an issue
+  resource: issue
+  verb: get_issue_reactions
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/reactions
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Reaction
+    array: true
+    description: ReactionList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_label
+  source_operation_id: issueGetLabel
+  summary: Get a single label
+  resource: issue
+  verb: get_label
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/labels/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to get
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_labels
+  source_operation_id: issueGetLabels
+  summary: Get an issue's labels
+  resource: issue
+  verb: get_labels
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Label
+    array: true
+    description: LabelListWithoutPagination - Labels for a specific issue (no pagination
+      headers)
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_milestone
+  source_operation_id: issueGetMilestone
+  summary: Get a milestone
+  resource: issue
+  verb: get_milestone
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/milestones/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: the milestone to get, identified by ID and if not available by name
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Milestone
+    description: Milestone
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_milestones_list
+  source_operation_id: issueGetMilestonesList
+  summary: Get all of a repository's opened milestones
+  resource: issue
+  verb: get_milestones_list
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/milestones
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: name
+    name: name
+    in: query
+    type: string
+    description: filter by milestone name
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: state
+    name: state
+    in: query
+    type: string
+    description: Milestone state, Recognized values are open, closed and all. Defaults
+      to "open"
+  results:
+  - status: 200
+    schema_ref: Milestone
+    array: true
+    description: MilestoneList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.get_repo_comments
+  source_operation_id: issueGetRepoComments
+  summary: List all comments in a repository
+  resource: issue
+  verb: get_repo_comments
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/comments
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated before the provided time are returned.
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: if provided, only comments updated since the provided time are returned.
+  results:
+  - status: 200
+    schema_ref: Comment
+    array: true
+    description: CommentList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  - status: 500
+    class: upstream
+    description: APIInternalServerError is an error that is raised when an internal
+      server error occurs
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_blocks
+  source_operation_id: issueListBlocks
+  summary: List issues that are blocked by this issue
+  resource: issue
+  verb: list_blocks
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/blocks
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Issue
+    array: true
+    description: IssueListWithoutPagination - Issues without pagination headers (used
+      for pinned issues, dependencies, etc.)
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_issue_attachments
+  source_operation_id: issueListIssueAttachments
+  summary: List issue's attachments
+  resource: issue
+  verb: list_issue_attachments
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/assets
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Attachment
+    array: true
+    description: AttachmentList
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_issue_comment_attachments
+  source_operation_id: issueListIssueCommentAttachments
+  summary: List comment's attachments
+  resource: issue
+  verb: list_issue_comment_attachments
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 200
+    schema_ref: Attachment
+    array: true
+    description: AttachmentList
+  errors:
+  - status: 404
+    class: not_found
+    description: APIError is error format response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_issue_dependencies
+  source_operation_id: issueListIssueDependencies
+  summary: List an issue's dependencies, i.e all issues that block this issue.
+  resource: issue
+  verb: list_issue_dependencies
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/dependencies
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Issue
+    array: true
+    description: IssueListWithoutPagination - Issues without pagination headers (used
+      for pinned issues, dependencies, etc.)
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_issues
+  source_operation_id: issueListIssues
+  summary: List a repository's issues
+  resource: issue
+  verb: list_issues
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: assigned_by
+    name: assigned_by
+    in: query
+    type: string
+    description: Only show items for which the given user is assigned
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show items updated before the given time. This is a timestamp
+      in RFC 3339 format
+  - key: created_by
+    name: created_by
+    in: query
+    type: string
+    description: Only show items which were created by the given user
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: comma separated list of labels. Fetch only issues that have any of
+      this labels. Non existent labels are discarded
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: mentioned_by
+    name: mentioned_by
+    in: query
+    type: string
+    description: Only show items in which the given user was mentioned
+  - key: milestones
+    name: milestones
+    in: query
+    type: string
+    description: comma separated list of milestone names or ids. It uses names and
+      fall back to ids. Fetch only issues that have any of this milestones. Non existent
+      milestones are discarded
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: search string
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show items updated after the given time. This is a timestamp
+      in RFC 3339 format
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - relevance
+    - latest
+    - oldest
+    - recentupdate
+    - leastupdate
+    - mostcomment
+    - leastcomment
+    - nearduedate
+    - farduedate
+    default: latest
+    description: Type of sort
+  - key: state
+    name: state
+    in: query
+    type: string
+    enum:
+    - closed
+    - open
+    - all
+    description: whether issue is open or closed
+  - key: type
+    name: type
+    in: query
+    type: string
+    enum:
+    - issues
+    - pulls
+    description: filter by type (issues / pulls) if set
+  results:
+  - status: 200
+    schema_ref: Issue
+    array: true
+    description: IssueList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.issue.list_labels
+  source_operation_id: issueListLabels
+  summary: Get all of a repository's labels
+  resource: issue
+  verb: list_labels
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/labels
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - mostissues
+    - leastissues
+    - reversealphabetically
+    description: 'Specifies the sorting method: mostissues, leastissues, or reversealphabetically.'
+  results:
+  - status: 200
+    schema_ref: Label
+    array: true
+    description: LabelList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.move_issue_pin
+  source_operation_id: moveIssuePin
+  summary: Moves the Pin to the given Position
+  resource: issue
+  verb: move_issue_pin
+  tags:
+  - issue
+  http:
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/{index}/pin/{position}
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: position
+    name: position
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: the new position
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.issue.pin_issue
+  source_operation_id: pinIssue
+  summary: Pin an Issue
+  resource: issue
+  verb: pin_issue
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/pin
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of issue to pin
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.post_comment_reaction
+  source_operation_id: issuePostCommentReaction
+  summary: Add a reaction to a comment of an issue
+  resource: issue
+  verb: post_comment_reaction
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/comments/{id}/reactions
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the comment to edit
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: content
+    name: content
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Reaction
+    description: Reaction
+  - status: 201
+    schema_ref: Reaction
+    description: Reaction
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.post_issue_reaction
+  source_operation_id: issuePostIssueReaction
+  summary: Add a reaction to an issue
+  resource: issue
+  verb: post_issue_reaction
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/reactions
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: content
+    name: content
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Reaction
+    description: Reaction
+  - status: 201
+    schema_ref: Reaction
+    description: Reaction
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.issue.remove_issue_blocking
+  source_operation_id: issueRemoveIssueBlocking
+  summary: Unblock the issue given in the body by the issue in path
+  resource: issue
+  verb: remove_issue_blocking
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/blocks
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body_index
+    name: index
+    in: body
+    type: integer
+    format: int64
+    required: true
+  - key: body_owner
+    name: owner
+    in: body
+    type: string
+    required: true
+  - key: body_repo
+    name: repo
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 200
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.remove_issue_dependencies
+  source_operation_id: issueRemoveIssueDependencies
+  summary: Remove an issue dependency
+  resource: issue
+  verb: remove_issue_dependencies
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/dependencies
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: body_index
+    name: index
+    in: body
+    type: integer
+    format: int64
+    required: true
+  - key: body_owner
+    name: owner
+    in: body
+    type: string
+    required: true
+  - key: body_repo
+    name: repo
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 200
+    schema_ref: Issue
+    description: Issue
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 423
+    class: bad_request
+    description: APIRepoArchivedError is an error that is raised when an archived
+      repo should be modified
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.remove_label
+  source_operation_id: issueRemoveLabel
+  summary: Remove a label from an issue
+  resource: issue
+  verb: remove_label
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/labels/{identifier}
+    request_body: json
+  params:
+  - key: identifier
+    name: identifier
+    in: path
+    type: string
+    required: true
+    description: name or id of the label to remove
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.replace_labels
+  source_operation_id: issueReplaceLabels
+  summary: Replace an issue's labels
+  resource: issue
+  verb: replace_labels
+  tags:
+  - issue
+  http:
+    method: PUT
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+    request_body: json
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: labels
+    name: labels
+    in: body
+    type: array
+    description: Labels can be a list of integers representing label IDs
+  - key: updated_at
+    name: updated_at
+    in: body
+    type: string
+    format: date-time
+  results:
+  - status: 200
+    schema_ref: Label
+    array: true
+    description: LabelListWithoutPagination - Labels for a specific issue (no pagination
+      headers)
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.issue.reset_time
+  source_operation_id: issueResetTime
+  summary: Reset a tracked time of an issue
+  resource: issue
+  verb: reset_time
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/times
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to add tracked time to
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.issue.search_issues
+  source_operation_id: issueSearchIssues
+  summary: Search for issues across the repositories that the user has access to
+  resource: issue
+  verb: search_issues
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/issues/search
+  params:
+  - key: assigned
+    name: assigned
+    in: query
+    type: boolean
+    default: false
+    description: Filter issues or pulls assigned to the authenticated user
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show issues updated before the given time (RFC 3339 format)
+  - key: created
+    name: created
+    in: query
+    type: boolean
+    default: false
+    description: Filter issues or pulls created by the authenticated user
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: Comma-separated list of label names. Fetch only issues that have
+      any of these labels. Non existent labels are discarded.
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: Number of items per page
+  - key: mentioned
+    name: mentioned
+    in: query
+    type: boolean
+    default: false
+    description: Filter issues or pulls mentioning the authenticated user
+  - key: milestones
+    name: milestones
+    in: query
+    type: string
+    description: Comma-separated list of milestone names. Fetch only issues that have
+      any of these milestones. Non existent milestones are discarded.
+  - key: owner
+    name: owner
+    in: query
+    type: string
+    description: Filter by repository owner
+  - key: page
+    name: page
+    in: query
+    type: integer
+    default: 1
+    description: Page number of results to return (1-based)
+  - key: priority_repo_id
+    name: priority_repo_id
+    in: query
+    type: integer
+    format: int64
+    description: Repository ID to prioritize in the results
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: Search string
+  - key: review_requested
+    name: review_requested
+    in: query
+    type: boolean
+    default: false
+    description: Filter pull requests where the authenticated user's review was requested
+  - key: reviewed
+    name: reviewed
+    in: query
+    type: boolean
+    default: false
+    description: Filter pull requests reviewed by the authenticated user
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show issues updated after the given time (RFC 3339 format)
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - relevance
+    - latest
+    - oldest
+    - recentupdate
+    - leastupdate
+    - mostcomment
+    - leastcomment
+    - nearduedate
+    - farduedate
+    default: latest
+    description: Type of sort
+  - key: state
+    name: state
+    in: query
+    type: string
+    enum:
+    - open
+    - closed
+    - all
+    default: open
+    description: State of the issue
+  - key: team
+    name: team
+    in: query
+    type: string
+    description: Filter by team (requires organization owner parameter)
+  - key: type
+    name: type
+    in: query
+    type: string
+    enum:
+    - issues
+    - pulls
+    description: Filter by issue type
+  results:
+  - status: 200
+    schema_ref: Issue
+    array: true
+    description: IssueList
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.issue.start_stop_watch
+  source_operation_id: issueStartStopWatch
+  summary: Start stopwatch on an issue.
+  resource: issue
+  verb: start_stop_watch
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/stopwatch/start
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to create the stopwatch on
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 201
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: Not repo writer, user does not have rights to toggle stopwatch
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: Cannot start a stopwatch again if it already exists
+  effect: create
+  deterministic: true
+- id: forgejo.issue.stop_stop_watch
+  source_operation_id: issueStopStopWatch
+  summary: Stop an issue's existing stopwatch.
+  resource: issue
+  verb: stop_stop_watch
+  tags:
+  - issue
+  http:
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/stopwatch/stop
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue to stop the stopwatch on
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 201
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: Not repo writer, user does not have rights to toggle stopwatch
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 409
+    class: conflict
+    description: Cannot stop a non existent stopwatch
+  effect: create
+  deterministic: true
+- id: forgejo.issue.subscriptions
+  source_operation_id: issueSubscriptions
+  summary: Get users who subscribed on an issue.
+  resource: issue
+  verb: subscriptions
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/subscriptions
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.issue.tracked_times
+  source_operation_id: issueTrackedTimes
+  summary: List an issue's tracked times
+  resource: issue
+  verb: tracked_times
+  tags:
+  - issue
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/times
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of the issue
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show times updated before the given time. This is a timestamp
+      in RFC 3339 format
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show times updated after the given time. This is a timestamp
+      in RFC 3339 format
+  - key: user
+    name: user
+    in: query
+    type: string
+    description: optional filter by user (available for issue managers)
+  results:
+  - status: 200
+    schema_ref: TrackedTime
+    array: true
+    description: TrackedTimeList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.issue.unpin_issue
+  source_operation_id: unpinIssue
+  summary: Unpin an Issue
+  resource: issue
+  verb: unpin_issue
+  tags:
+  - issue
+  http:
+    method: DELETE
+    path: /repos/{owner}/{repo}/issues/{index}/pin
+  params:
+  - key: index
+    name: index
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: index of issue to unpin
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true

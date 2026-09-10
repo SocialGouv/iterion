@@ -1,0 +1,68 @@
+schema_version: 1
+connector: forgejo
+domain: settings
+operations:
+- id: forgejo.settings.get_general_apisettings
+  source_operation_id: getGeneralAPISettings
+  summary: Get instance's global settings for api
+  resource: settings
+  verb: get_general_apisettings
+  tags:
+  - settings
+  http:
+    method: GET
+    path: /settings/api
+  results:
+  - status: 200
+    schema_ref: GeneralAPISettings
+    description: GeneralAPISettings
+  effect: read
+  deterministic: true
+- id: forgejo.settings.get_general_attachment_settings
+  source_operation_id: getGeneralAttachmentSettings
+  summary: Get instance's global settings for Attachment
+  resource: settings
+  verb: get_general_attachment_settings
+  tags:
+  - settings
+  http:
+    method: GET
+    path: /settings/attachment
+  results:
+  - status: 200
+    schema_ref: GeneralAttachmentSettings
+    description: GeneralAttachmentSettings
+  effect: read
+  deterministic: true
+- id: forgejo.settings.get_general_repository_settings
+  source_operation_id: getGeneralRepositorySettings
+  summary: Get instance's global settings for repositories
+  resource: settings
+  verb: get_general_repository_settings
+  tags:
+  - settings
+  http:
+    method: GET
+    path: /settings/repository
+  results:
+  - status: 200
+    schema_ref: GeneralRepoSettings
+    description: GeneralRepoSettings
+  effect: read
+  deterministic: true
+- id: forgejo.settings.get_general_uisettings
+  source_operation_id: getGeneralUISettings
+  summary: Get instance's global settings for ui
+  resource: settings
+  verb: get_general_uisettings
+  tags:
+  - settings
+  http:
+    method: GET
+    path: /settings/ui
+  results:
+  - status: 200
+    schema_ref: GeneralUISettings
+    description: GeneralUISettings
+  effect: read
+  deterministic: true

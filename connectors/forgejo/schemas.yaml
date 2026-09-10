@@ -1,0 +1,4784 @@
+schema_version: 1
+connector: forgejo
+schemas:
+  APIError:
+    type: object
+    description: APIError is an api error with a message
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APIForbiddenError:
+    type: object
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APIInternalServerError:
+    type: object
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APIInvalidTopicsError:
+    type: object
+    properties:
+      invalidTopics:
+        type: array
+        items:
+          type: string
+      message:
+        type: string
+  APINotFound:
+    type: object
+    properties:
+      errors:
+        type: array
+        items:
+          type: string
+      message:
+        type: string
+      url:
+        type: string
+  APIRepoArchivedError:
+    type: object
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APIUnauthorizedError:
+    type: object
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APIValidationError:
+    type: object
+    properties:
+      message:
+        type: string
+      url:
+        type: string
+  APRemoteFollowOption:
+    type: object
+    properties:
+      target:
+        type: string
+  AccessToken:
+    type: object
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      repositories:
+        type: array
+        description: Indicates that an access token only has access to the specified
+          repositories.  Will be null if the access token
+        items:
+          ref: RepositoryMeta
+      scopes:
+        type: array
+        items:
+          type: string
+      sha1:
+        type: string
+      token_last_eight:
+        type: string
+  ActionArtifact:
+    type: object
+    description: ActionArtifact represents an artifact of a workflow run
+    properties:
+      archive_download_url:
+        type: string
+        description: the URL to download the artifact zip archive
+      created_at:
+        type: string
+        format: date-time
+      expired:
+        type: boolean
+        description: whether the artifact has expired
+      expires_at:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+        description: the artifact's ID
+      name:
+        type: string
+        description: the artifact's name
+      run_id:
+        type: integer
+        format: int64
+        description: the ID of the workflow run that produced this artifact
+      size_in_bytes:
+        type: integer
+        format: int64
+        description: the total size of the artifact in bytes
+      updated_at:
+        type: string
+        format: date-time
+  ActionRun:
+    type: object
+    description: ActionRun represents an action run
+    properties:
+      ScheduleID:
+        type: integer
+        format: int64
+        description: the cron id for the schedule trigger
+      approved_by:
+        type: integer
+        format: int64
+        description: who approved this action run
+      commit_sha:
+        type: string
+        description: the commit sha the action run ran on
+      created:
+        type: string
+        format: date-time
+        description: when the action run was created
+      duration:
+        ref: Duration
+      event:
+        type: string
+        description: the webhook event that causes the workflow to run
+      event_payload:
+        type: string
+        description: the payload of the webhook event that causes the workflow to
+          run
+      html_url:
+        type: string
+        description: the url of this action run
+      id:
+        type: integer
+        format: int64
+        description: the action run id
+      index_in_repo:
+        type: integer
+        format: int64
+        description: a unique number for each run of a repository
+      is_fork_pull_request:
+        type: boolean
+        description: If this is triggered by a PR from a forked repository or an untrusted
+          user, we need to check if it is approved and limit permissions when running
+          the workflow.
+      is_ref_deleted:
+        type: boolean
+        description: has the commit/tag/… the action run ran on been deleted
+      need_approval:
+        type: boolean
+        description: may need approval if it's a fork pull request
+      prettyref:
+        type: string
+        description: the commit/tag/… the action run ran on
+      repository:
+        ref: Repository
+      started:
+        type: string
+        format: date-time
+        description: when the action run was started
+      status:
+        type: string
+        description: the current status of this run
+      stopped:
+        type: string
+        format: date-time
+        description: when the action run was stopped
+      title:
+        type: string
+        description: the action run's title
+      trigger_event:
+        type: string
+        description: the trigger event defined in the `on` configuration of the triggered
+          workflow
+      trigger_user:
+        ref: User
+      updated:
+        type: string
+        format: date-time
+        description: when the action run was last updated
+      workflow_id:
+        type: string
+        description: the name of workflow file
+  ActionRunJob:
+    type: object
+    description: ActionRunJob represents a job of a run
+    properties:
+      attempt:
+        type: integer
+        format: int64
+        description: How many times the job has been attempted including the current
+          attempt.
+      handle:
+        type: string
+        description: Opaque identifier that uniquely identifies a single attempt of
+          a job.
+      id:
+        type: integer
+        format: int64
+        description: Identifier of this job.
+      name:
+        type: string
+        description: the action run job name
+      needs:
+        type: array
+        description: the action run job needed ids
+        items:
+          type: string
+      owner_id:
+        type: integer
+        format: int64
+        description: the owner id
+      repo_id:
+        type: integer
+        format: int64
+        description: the repository id
+      run_id:
+        type: integer
+        format: int64
+        description: Identifier of the workflow run this job belongs to.
+      runs_on:
+        type: array
+        description: the action run job labels to run on
+        items:
+          type: string
+      status:
+        type: string
+        description: the action run job status
+      task_id:
+        type: integer
+        format: int64
+        description: the action run job latest task id
+  ActionRunner:
+    type: object
+    description: ActionRunner represents a runner
+    properties:
+      description:
+        type: string
+        description: Description provides optional details about this runner.
+      ephemeral:
+        type: boolean
+        description: Indicates if runner is ephemeral runner
+      id:
+        type: integer
+        format: int64
+        description: ID uniquely identifies this runner.
+      labels:
+        type: array
+        description: Labels is a list of labels attached to this runner.
+        items:
+          type: string
+      name:
+        type: string
+        description: Name of the runner; not unique.
+      owner_id:
+        type: integer
+        format: int64
+        description: OwnerID is the identifier of the user or organization this runner
+          belongs to. O if the runner is owned by a
+      repo_id:
+        type: integer
+        format: int64
+        description: RepoID is the identifier of the repository this runner belongs
+          to. 0 if the runner belongs to a user or
+      status:
+        type: string
+        description: Status indicates whether this runner is offline, or active, for
+          example.
+        enum:
+        - offline
+        - idle
+        - active
+      uuid:
+        type: string
+        description: UUID uniquely identifies this runner.
+      version:
+        type: string
+        description: Version is the self-reported version string of Forgejo Runner.
+  ActionTask:
+    type: object
+    description: ActionTask represents a ActionTask
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      display_title:
+        type: string
+      event:
+        type: string
+      head_branch:
+        type: string
+      head_sha:
+        type: string
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      run_number:
+        type: integer
+        format: int64
+      run_started_at:
+        type: string
+        format: date-time
+      status:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+      workflow_id:
+        type: string
+  ActionTaskResponse:
+    type: object
+    description: ActionTaskResponse returns a ActionTask
+    properties:
+      total_count:
+        type: integer
+        format: int64
+      workflow_runs:
+        type: array
+        items:
+          ref: ActionTask
+  ActionVariable:
+    type: object
+    description: ActionVariable return value of the query API
+    properties:
+      data:
+        type: string
+        description: the value of the variable
+      name:
+        type: string
+        description: the name of the variable
+      owner_id:
+        type: integer
+        format: int64
+        description: the owner to which the variable belongs
+      repo_id:
+        type: integer
+        format: int64
+        description: the repository to which the variable belongs
+  Activity:
+    type: object
+    properties:
+      act_user:
+        ref: User
+      act_user_id:
+        type: integer
+        format: int64
+      comment:
+        ref: Comment
+      comment_id:
+        type: integer
+        format: int64
+      content:
+        type: string
+      created:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      is_private:
+        type: boolean
+      op_type:
+        type: string
+        description: the type of action
+        enum:
+        - create_repo
+        - rename_repo
+        - star_repo
+        - watch_repo
+        - commit_repo
+        - create_issue
+        - create_pull_request
+        - transfer_repo
+        - push_tag
+        - comment_issue
+        - merge_pull_request
+        - close_issue
+        - reopen_issue
+        - close_pull_request
+        - reopen_pull_request
+        - delete_tag
+        - delete_branch
+        - mirror_sync_push
+        - mirror_sync_create
+        - mirror_sync_delete
+        - approve_pull_request
+        - reject_pull_request
+        - comment_pull
+        - publish_release
+        - pull_review_dismissed
+        - pull_request_ready_for_review
+        - auto_merge_pull_request
+      ref_name:
+        type: string
+      repo:
+        ref: Repository
+      repo_id:
+        type: integer
+        format: int64
+      user_id:
+        type: integer
+        format: int64
+  ActivityPub:
+    type: object
+    description: ActivityPub type
+    properties:
+      '@context':
+        type: string
+  AddCollaboratorOption:
+    type: object
+    description: AddCollaboratorOption options when adding a user as a collaborator
+      of a repository
+    properties:
+      permission:
+        type: string
+        enum:
+        - read
+        - write
+        - admin
+  AddTimeOption:
+    type: object
+    description: AddTimeOption options for adding time to an issue
+    required:
+    - time
+    properties:
+      created:
+        type: string
+        format: date-time
+      time:
+        type: integer
+        format: int64
+        description: time in seconds
+      user_name:
+        type: string
+        description: User who spent the time (optional)
+  AnnotatedTag:
+    type: object
+    description: AnnotatedTag represents an annotated tag
+    properties:
+      archive_download_count:
+        ref: TagArchiveDownloadCount
+      message:
+        type: string
+      object:
+        ref: AnnotatedTagObject
+      sha:
+        type: string
+      tag:
+        type: string
+      tagger:
+        ref: CommitUser
+      url:
+        type: string
+      verification:
+        ref: PayloadCommitVerification
+  AnnotatedTagObject:
+    type: object
+    description: AnnotatedTagObject contains meta information of the tag object
+    properties:
+      sha:
+        type: string
+      type:
+        type: string
+      url:
+        type: string
+  Attachment:
+    type: object
+    description: Attachment a generic attachment
+    properties:
+      browser_download_url:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      download_count:
+        type: integer
+        format: int64
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      size:
+        type: integer
+        format: int64
+      type:
+        type: string
+        enum:
+        - attachment
+        - external
+      uuid:
+        type: string
+  BlockedUser:
+    type: object
+    properties:
+      block_id:
+        type: integer
+        format: int64
+      created_at:
+        type: string
+        format: date-time
+  Branch:
+    type: object
+    description: Branch represents a repository branch
+    properties:
+      commit:
+        ref: PayloadCommit
+      effective_branch_protection_name:
+        type: string
+      enable_status_check:
+        type: boolean
+      name:
+        type: string
+      protected:
+        type: boolean
+      required_approvals:
+        type: integer
+        format: int64
+      status_check_contexts:
+        type: array
+        items:
+          type: string
+      user_can_merge:
+        type: boolean
+      user_can_push:
+        type: boolean
+  BranchProtection:
+    type: object
+    description: BranchProtection represents a branch protection for a repository
+    properties:
+      apply_to_admins:
+        type: boolean
+      approvals_whitelist_teams:
+        type: array
+        items:
+          type: string
+      approvals_whitelist_username:
+        type: array
+        items:
+          type: string
+      block_on_official_review_requests:
+        type: boolean
+      block_on_outdated_branch:
+        type: boolean
+      block_on_rejected_reviews:
+        type: boolean
+      branch_name:
+        type: string
+        description: 'Deprecated: true'
+      created_at:
+        type: string
+        format: date-time
+      dismiss_stale_approvals:
+        type: boolean
+      enable_approvals_whitelist:
+        type: boolean
+      enable_merge_whitelist:
+        type: boolean
+      enable_push:
+        type: boolean
+      enable_push_whitelist:
+        type: boolean
+      enable_status_check:
+        type: boolean
+      ignore_stale_approvals:
+        type: boolean
+      merge_whitelist_teams:
+        type: array
+        items:
+          type: string
+      merge_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      protected_file_patterns:
+        type: string
+      push_whitelist_deploy_keys:
+        type: boolean
+      push_whitelist_teams:
+        type: array
+        items:
+          type: string
+      push_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      require_signed_commits:
+        type: boolean
+      required_approvals:
+        type: integer
+        format: int64
+      rule_name:
+        type: string
+      status_check_contexts:
+        type: array
+        items:
+          type: string
+      unprotected_file_patterns:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+  ChangeFileOperation:
+    type: object
+    description: ChangeFileOperation for creating, updating or deleting a file
+    required:
+    - operation
+    - path
+    properties:
+      content:
+        type: string
+        description: new or updated file content, must be base64 encoded
+      from_path:
+        type: string
+        description: old path of the file to move
+      operation:
+        type: string
+        description: indicates what to do with the file
+        enum:
+        - create
+        - update
+        - delete
+      path:
+        type: string
+        description: path to the existing or new file
+      sha:
+        type: string
+        description: sha is the SHA for the file that already exists, required for
+          update or delete
+  ChangeFilesOptions:
+    type: object
+    description: ChangeFilesOptions options for creating, updating or deleting multiple
+      files
+    required:
+    - files
+    properties:
+      author:
+        ref: Identity
+      branch:
+        type: string
+        description: branch (optional) to base this file from. if not given, the default
+          branch is used
+      committer:
+        ref: Identity
+      dates:
+        ref: CommitDateOptions
+      files:
+        type: array
+        description: list of file operations
+        items:
+          ref: ChangeFileOperation
+      force_overwrite_new_branch:
+        type: boolean
+        description: (optional) will do a force-push if the new branch already exists
+      message:
+        type: string
+        description: message (optional) for the commit of this file. if not supplied,
+          a default message will be used
+      new_branch:
+        type: string
+        description: new_branch (optional) will make a new branch from `branch` before
+          creating the file
+      signoff:
+        type: boolean
+        description: Add a Signed-off-by trailer by the committer at the end of the
+          commit log message.
+  ChangedFile:
+    type: object
+    description: ChangedFile store information about files affected by the pull request
+    properties:
+      additions:
+        type: integer
+        format: int64
+      changes:
+        type: integer
+        format: int64
+      contents_url:
+        type: string
+      deletions:
+        type: integer
+        format: int64
+      filename:
+        type: string
+      html_url:
+        type: string
+      previous_filename:
+        type: string
+      raw_url:
+        type: string
+      status:
+        type: string
+  CombinedStatus:
+    type: object
+    description: CombinedStatus holds the combined state of several statuses for a
+      single commit
+    properties:
+      commit_url:
+        type: string
+      repository:
+        ref: Repository
+      sha:
+        type: string
+      state:
+        ref: CommitStatusState
+      statuses:
+        type: array
+        items:
+          ref: CommitStatus
+      total_count:
+        type: integer
+        format: int64
+      url:
+        type: string
+  Comment:
+    type: object
+    description: Comment represents a comment on a commit or issue
+    properties:
+      assets:
+        type: array
+        description: The attachments to the comment
+        items:
+          ref: Attachment
+      body:
+        type: string
+        description: The body of the comment
+      created_at:
+        type: string
+        format: date-time
+        description: The time of the comment's creation
+      html_url:
+        type: string
+        description: The HTML URL of the comment
+      id:
+        type: integer
+        format: int64
+        description: The identifier of the comment
+      issue_url:
+        type: string
+        description: The HTML URL of the issue if the comment is posted on an issue,
+          else empty string
+      original_author:
+        type: string
+        description: The original author that posted the comment if it was not posted
+          locally, else empty string
+      original_author_id:
+        type: integer
+        format: int64
+        description: The ID of the original author that posted the comment if it was
+          not posted locally, else 0
+      pull_request_url:
+        type: string
+        description: The HTML URL of the pull request if the comment is posted on
+          a pull request, else empty string
+      updated_at:
+        type: string
+        format: date-time
+        description: The time of the comment's update
+      user:
+        ref: User
+  Commit:
+    type: object
+    properties:
+      author:
+        ref: User
+      commit:
+        ref: RepoCommit
+      committer:
+        ref: User
+      created:
+        type: string
+        format: date-time
+      files:
+        type: array
+        items:
+          ref: CommitAffectedFiles
+      html_url:
+        type: string
+      parents:
+        type: array
+        items:
+          ref: CommitMeta
+      sha:
+        type: string
+      stats:
+        ref: CommitStats
+      url:
+        type: string
+  CommitAffectedFiles:
+    type: object
+    description: CommitAffectedFiles store information about files affected by the
+      commit
+    properties:
+      filename:
+        type: string
+      status:
+        type: string
+  CommitDateOptions:
+    type: object
+    description: CommitDateOptions store dates for GIT_AUTHOR_DATE and GIT_COMMITTER_DATE
+    properties:
+      author:
+        type: string
+        format: date-time
+      committer:
+        type: string
+        format: date-time
+  CommitMeta:
+    type: object
+    properties:
+      created:
+        type: string
+        format: date-time
+      sha:
+        type: string
+      url:
+        type: string
+  CommitStats:
+    type: object
+    description: CommitStats is statistics for a RepoCommit
+    properties:
+      additions:
+        type: integer
+        format: int64
+      deletions:
+        type: integer
+        format: int64
+      total:
+        type: integer
+        format: int64
+  CommitStatus:
+    type: object
+    description: CommitStatus holds a single status of a single Commit
+    properties:
+      context:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      creator:
+        ref: User
+      description:
+        type: string
+      id:
+        type: integer
+        format: int64
+      status:
+        ref: CommitStatusState
+      target_url:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+  CommitStatusState:
+    type: string
+    description: CommitStatusState holds the state of a CommitStatus
+  CommitUser:
+    type: object
+    properties:
+      date:
+        type: string
+      email:
+        type: string
+        format: email
+      name:
+        type: string
+  Compare:
+    type: object
+    properties:
+      commits:
+        type: array
+        items:
+          ref: Commit
+      files:
+        type: array
+        items:
+          ref: CommitAffectedFiles
+      total_commits:
+        type: integer
+        format: int64
+  ContentsResponse:
+    type: object
+    description: ContentsResponse contains information about a repo's entry's (dir,
+      file, symlink, submodule) metadata and content
+    properties:
+      _links:
+        ref: FileLinksResponse
+      content:
+        type: string
+        description: '`content` is populated when `type` is `file`, otherwise null'
+      download_url:
+        type: string
+      encoding:
+        type: string
+        description: '`encoding` is populated when `type` is `file`, otherwise null'
+      git_url:
+        type: string
+      html_url:
+        type: string
+      last_commit_sha:
+        type: string
+      last_commit_when:
+        type: string
+        format: date-time
+      name:
+        type: string
+      path:
+        type: string
+      sha:
+        type: string
+      size:
+        type: integer
+        format: int64
+      submodule_git_url:
+        type: string
+        description: '`submodule_git_url` is populated when `type` is `submodule`,
+          otherwise null'
+      target:
+        type: string
+        description: '`target` is populated when `type` is `symlink`, otherwise null'
+      type:
+        type: string
+        description: '`type` will be `file`, `dir`, `symlink`, or `submodule`'
+      url:
+        type: string
+  CreateAccessTokenOption:
+    type: object
+    description: CreateAccessTokenOption options when create access token
+    required:
+    - name
+    properties:
+      name:
+        type: string
+      repositories:
+        type: array
+        description: If provided and not-empty, creates an access token with access
+          only to specified repositories.
+        items:
+          ref: RepoTargetOption
+      scopes:
+        type: array
+        items:
+          type: string
+  CreateBranchProtectionOption:
+    type: object
+    description: CreateBranchProtectionOption options for creating a branch protection
+    properties:
+      apply_to_admins:
+        type: boolean
+      approvals_whitelist_teams:
+        type: array
+        items:
+          type: string
+      approvals_whitelist_username:
+        type: array
+        items:
+          type: string
+      block_on_official_review_requests:
+        type: boolean
+      block_on_outdated_branch:
+        type: boolean
+      block_on_rejected_reviews:
+        type: boolean
+      branch_name:
+        type: string
+        description: 'Deprecated: true'
+      dismiss_stale_approvals:
+        type: boolean
+      enable_approvals_whitelist:
+        type: boolean
+      enable_merge_whitelist:
+        type: boolean
+      enable_push:
+        type: boolean
+      enable_push_whitelist:
+        type: boolean
+      enable_status_check:
+        type: boolean
+      ignore_stale_approvals:
+        type: boolean
+      merge_whitelist_teams:
+        type: array
+        items:
+          type: string
+      merge_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      protected_file_patterns:
+        type: string
+      push_whitelist_deploy_keys:
+        type: boolean
+      push_whitelist_teams:
+        type: array
+        items:
+          type: string
+      push_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      require_signed_commits:
+        type: boolean
+      required_approvals:
+        type: integer
+        format: int64
+      rule_name:
+        type: string
+      status_check_contexts:
+        type: array
+        items:
+          type: string
+      unprotected_file_patterns:
+        type: string
+  CreateBranchRepoOption:
+    type: object
+    description: CreateBranchRepoOption options when creating a branch in a repository
+    required:
+    - new_branch_name
+    properties:
+      new_branch_name:
+        type: string
+        description: Name of the branch to create
+      old_branch_name:
+        type: string
+        description: 'Deprecated: true'
+      old_ref_name:
+        type: string
+        description: Name of the old branch/tag/commit to create from
+  CreateEmailOption:
+    type: object
+    description: CreateEmailOption options when creating email addresses
+    properties:
+      emails:
+        type: array
+        description: email addresses to add
+        items:
+          type: string
+  CreateFileOptions:
+    type: object
+    description: CreateFileOptions options for creating files
+    required:
+    - content
+    properties:
+      author:
+        ref: Identity
+      branch:
+        type: string
+        description: branch (optional) to base this file from. if not given, the default
+          branch is used
+      committer:
+        ref: Identity
+      content:
+        type: string
+        description: content must be base64 encoded
+      dates:
+        ref: CommitDateOptions
+      force_overwrite_new_branch:
+        type: boolean
+        description: (optional) will do a force-push if the new branch already exists
+      message:
+        type: string
+        description: message (optional) for the commit of this file. if not supplied,
+          a default message will be used
+      new_branch:
+        type: string
+        description: new_branch (optional) will make a new branch from `branch` before
+          creating the file
+      signoff:
+        type: boolean
+        description: Add a Signed-off-by trailer by the committer at the end of the
+          commit log message.
+  CreateForkOption:
+    type: object
+    description: CreateForkOption options for creating a fork
+    properties:
+      name:
+        type: string
+        description: name of the forked repository
+      organization:
+        type: string
+        description: organization name, if forking into an organization
+  CreateGPGKeyOption:
+    type: object
+    description: CreateGPGKeyOption options create user GPG key
+    required:
+    - armored_public_key
+    properties:
+      armored_public_key:
+        type: string
+        description: An armored GPG key to add
+      armored_signature:
+        type: string
+  CreateHookOption:
+    type: object
+    description: CreateHookOption options when create a hook
+    required:
+    - type
+    - config
+    properties:
+      active:
+        type: boolean
+      authorization_header:
+        type: string
+      branch_filter:
+        type: string
+      config:
+        ref: CreateHookOptionConfig
+      events:
+        type: array
+        items:
+          type: string
+      type:
+        type: string
+        enum:
+        - forgejo
+        - dingtalk
+        - discord
+        - gitea
+        - gogs
+        - msteams
+        - slack
+        - telegram
+        - feishu
+        - wechatwork
+        - packagist
+  CreateHookOptionConfig:
+    type: object
+    description: CreateHookOptionConfig has all config options in it
+  CreateIssueCommentOption:
+    type: object
+    description: CreateIssueCommentOption options for creating a comment on an issue
+    required:
+    - body
+    properties:
+      body:
+        type: string
+        description: The body of the comment
+      updated_at:
+        type: string
+        format: date-time
+        description: The time of the comment's update, needs admin or repository owner
+          permission
+  CreateIssueOption:
+    type: object
+    description: CreateIssueOption options to create one issue
+    required:
+    - title
+    properties:
+      assignee:
+        type: string
+        description: deprecated
+      assignees:
+        type: array
+        items:
+          type: string
+      body:
+        type: string
+      closed:
+        type: boolean
+      due_date:
+        type: string
+        format: date-time
+      labels:
+        type: array
+        description: list of label ids
+        items:
+          type: integer
+          format: int64
+      milestone:
+        type: integer
+        format: int64
+        description: milestone id
+      ref:
+        type: string
+      title:
+        type: string
+  CreateKeyOption:
+    type: object
+    description: CreateKeyOption options when creating a key
+    required:
+    - title
+    - key
+    properties:
+      key:
+        type: string
+        description: An armored SSH key to add
+      read_only:
+        type: boolean
+        description: Describe if the key has only read access or read/write
+      title:
+        type: string
+        description: Title of the key to add
+  CreateLabelOption:
+    type: object
+    description: CreateLabelOption options for creating a label
+    required:
+    - name
+    - color
+    properties:
+      color:
+        type: string
+      description:
+        type: string
+      exclusive:
+        type: boolean
+      is_archived:
+        type: boolean
+      name:
+        type: string
+  CreateMilestoneOption:
+    type: object
+    description: CreateMilestoneOption options for creating a milestone
+    properties:
+      description:
+        type: string
+      due_on:
+        type: string
+        format: date-time
+      state:
+        type: string
+        enum:
+        - open
+        - closed
+      title:
+        type: string
+  CreateOAuth2ApplicationOptions:
+    type: object
+    description: CreateOAuth2ApplicationOptions holds options to create an oauth2
+      application
+    properties:
+      confidential_client:
+        type: boolean
+      name:
+        type: string
+      redirect_uris:
+        type: array
+        items:
+          type: string
+  CreateOrUpdateSecretOption:
+    type: object
+    required:
+    - data
+    properties:
+      data:
+        type: string
+        description: Data of the secret. Special characters will be retained. Line
+          endings will be normalized to LF to match the
+  CreateOrgOption:
+    type: object
+    description: CreateOrgOption options for creating an organization
+    required:
+    - username
+    properties:
+      description:
+        type: string
+      email:
+        type: string
+      full_name:
+        type: string
+      location:
+        type: string
+      repo_admin_change_team_access:
+        type: boolean
+      username:
+        type: string
+      visibility:
+        type: string
+        description: possible values are `public` (default), `limited` or `private`
+        enum:
+        - public
+        - limited
+        - private
+      website:
+        type: string
+  CreatePullRequestOption:
+    type: object
+    description: CreatePullRequestOption options when creating a pull request
+    properties:
+      assignee:
+        type: string
+      assignees:
+        type: array
+        items:
+          type: string
+      base:
+        type: string
+      body:
+        type: string
+      due_date:
+        type: string
+        format: date-time
+      head:
+        type: string
+      labels:
+        type: array
+        items:
+          type: integer
+          format: int64
+      milestone:
+        type: integer
+        format: int64
+      title:
+        type: string
+  CreatePullReviewComment:
+    type: object
+    description: CreatePullReviewComment represent a review comment for creation api
+    properties:
+      body:
+        type: string
+      extra_lines_count:
+        type: integer
+        format: int64
+        description: number of additional lines after the commented line (0 = single
+          line comment)
+      new_position:
+        type: integer
+        format: int64
+        description: if comment to new file line or 0
+      old_position:
+        type: integer
+        format: int64
+        description: if comment to old file line or 0
+      path:
+        type: string
+        description: the tree path
+  CreatePullReviewCommentOptions:
+    ref: CreatePullReviewComment
+  CreatePullReviewOptions:
+    type: object
+    description: CreatePullReviewOptions are options to create a pull review
+    properties:
+      body:
+        type: string
+      comments:
+        type: array
+        items:
+          ref: CreatePullReviewComment
+      commit_id:
+        type: string
+      event:
+        ref: ReviewStateType
+  CreatePushMirrorOption:
+    type: object
+    properties:
+      branch_filter:
+        type: string
+      interval:
+        type: string
+      remote_address:
+        type: string
+      remote_password:
+        type: string
+      remote_username:
+        type: string
+      sync_on_commit:
+        type: boolean
+      use_ssh:
+        type: boolean
+  CreateQuotaGroupOptions:
+    type: object
+    description: CreateQutaGroupOptions represents the options for creating a quota
+      group
+    properties:
+      name:
+        type: string
+        description: Name of the quota group to create
+      rules:
+        type: array
+        description: Rules to add to the newly created group.
+        items:
+          ref: CreateQuotaRuleOptions
+  CreateQuotaRuleOptions:
+    type: object
+    description: CreateQuotaRuleOptions represents the options for creating a quota
+      rule
+    properties:
+      limit:
+        type: integer
+        format: int64
+        description: The limit set by the rule
+      name:
+        type: string
+        description: Name of the rule to create
+      subjects:
+        type: array
+        description: The subjects affected by the rule
+        items:
+          type: string
+  CreateReleaseOption:
+    type: object
+    description: CreateReleaseOption options when creating a release
+    required:
+    - tag_name
+    properties:
+      body:
+        type: string
+      draft:
+        type: boolean
+      hide_archive_links:
+        type: boolean
+      name:
+        type: string
+      prerelease:
+        type: boolean
+      tag_name:
+        type: string
+      target_commitish:
+        type: string
+  CreateRepoOption:
+    type: object
+    description: CreateRepoOption options when creating repository
+    required:
+    - name
+    properties:
+      auto_init:
+        type: boolean
+        description: Whether the repository should be auto-initialized?
+      default_branch:
+        type: string
+        description: DefaultBranch of the repository (used when initializes and in
+          template)
+      description:
+        type: string
+        description: Description of the repository to create
+      gitignores:
+        type: string
+        description: Gitignores to use, separated by commas
+      issue_labels:
+        type: string
+        description: Label-Set to use
+      license:
+        type: string
+        description: License to use
+      name:
+        type: string
+        description: Name of the repository to create
+      object_format_name:
+        type: string
+        description: ObjectFormatName of the underlying git repository
+        enum:
+        - sha1
+        - sha256
+      private:
+        type: boolean
+        description: Whether the repository is private
+      readme:
+        type: string
+        description: Readme of the repository to create
+      template:
+        type: boolean
+        description: Whether the repository is template
+      trust_model:
+        type: string
+        description: TrustModel of the repository
+        enum:
+        - default
+        - collaborator
+        - committer
+        - collaboratorcommitter
+  CreateStatusOption:
+    type: object
+    description: CreateStatusOption holds the information needed to create a new CommitStatus
+      for a Commit
+    properties:
+      context:
+        type: string
+      description:
+        type: string
+      state:
+        ref: CommitStatusState
+      target_url:
+        type: string
+  CreateTagOption:
+    type: object
+    description: CreateTagOption options when creating a tag
+    required:
+    - tag_name
+    properties:
+      message:
+        type: string
+      tag_name:
+        type: string
+      target:
+        type: string
+  CreateTagProtectionOption:
+    type: object
+    description: CreateTagProtectionOption options for creating a tag protection
+    properties:
+      name_pattern:
+        type: string
+      whitelist_teams:
+        type: array
+        items:
+          type: string
+      whitelist_usernames:
+        type: array
+        items:
+          type: string
+  CreateTeamOption:
+    type: object
+    description: CreateTeamOption options for creating a team
+    required:
+    - name
+    properties:
+      can_create_org_repo:
+        type: boolean
+      description:
+        type: string
+      includes_all_repositories:
+        type: boolean
+      name:
+        type: string
+      permission:
+        type: string
+        enum:
+        - read
+        - write
+        - admin
+      units:
+        type: array
+        items:
+          type: string
+      units_map:
+        type: object
+  CreateUserOption:
+    type: object
+    description: CreateUserOption create user options
+    required:
+    - username
+    - email
+    properties:
+      created_at:
+        type: string
+        format: date-time
+        description: For explicitly setting the user creation timestamp. Useful when
+          users are
+      email:
+        type: string
+        format: email
+      full_name:
+        type: string
+      login_name:
+        type: string
+      must_change_password:
+        type: boolean
+      password:
+        type: string
+      restricted:
+        type: boolean
+      send_notify:
+        type: boolean
+      source_id:
+        type: integer
+        format: int64
+      username:
+        type: string
+      visibility:
+        type: string
+  CreateVariableOption:
+    type: object
+    required:
+    - value
+    properties:
+      value:
+        type: string
+        description: Value of the variable to create. Special characters will be retained.
+          Line endings will be normalized to LF to
+  CreateWikiPageOptions:
+    type: object
+    description: CreateWikiPageOptions form for creating wiki
+    properties:
+      content_base64:
+        type: string
+        description: content must be base64 encoded
+      message:
+        type: string
+        description: optional commit message summarizing the change
+      title:
+        type: string
+        description: page title. leave empty to keep unchanged
+  Cron:
+    type: object
+    description: Cron represents a Cron task
+    properties:
+      exec_times:
+        type: integer
+        format: int64
+      name:
+        type: string
+      next:
+        type: string
+        format: date-time
+      prev:
+        type: string
+        format: date-time
+      schedule:
+        type: string
+  DeleteEmailOption:
+    type: object
+    description: DeleteEmailOption options when deleting email addresses
+    properties:
+      emails:
+        type: array
+        description: email addresses to delete
+        items:
+          type: string
+  DeleteFileOptions:
+    type: object
+    description: DeleteFileOptions options for deleting files (used for other File
+      structs below)
+    required:
+    - sha
+    properties:
+      author:
+        ref: Identity
+      branch:
+        type: string
+        description: branch (optional) to base this file from. if not given, the default
+          branch is used
+      committer:
+        ref: Identity
+      dates:
+        ref: CommitDateOptions
+      force_overwrite_new_branch:
+        type: boolean
+        description: (optional) will do a force-push if the new branch already exists
+      message:
+        type: string
+        description: message (optional) for the commit of this file. if not supplied,
+          a default message will be used
+      new_branch:
+        type: string
+        description: new_branch (optional) will make a new branch from `branch` before
+          creating the file
+      sha:
+        type: string
+        description: sha is the SHA for the file that already exists
+      signoff:
+        type: boolean
+        description: Add a Signed-off-by trailer by the committer at the end of the
+          commit log message.
+  DeleteLabelsOption:
+    type: object
+    description: DeleteLabelOption options for deleting a label
+    properties:
+      updated_at:
+        type: string
+        format: date-time
+  DeployKey:
+    type: object
+    description: DeployKey a deploy key
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      fingerprint:
+        type: string
+      id:
+        type: integer
+        format: int64
+      key:
+        type: string
+      key_id:
+        type: integer
+        format: int64
+      read_only:
+        type: boolean
+      repository:
+        ref: Repository
+      title:
+        type: string
+      url:
+        type: string
+  DismissPullReviewOptions:
+    type: object
+    description: DismissPullReviewOptions are options to dismiss a pull review
+    properties:
+      message:
+        type: string
+      priors:
+        type: boolean
+  DispatchWorkflowOption:
+    type: object
+    description: DispatchWorkflowOption options when dispatching a workflow
+    required:
+    - ref
+    properties:
+      inputs:
+        type: object
+        description: Input keys and values configured in the workflow file.
+      ref:
+        type: string
+        description: Git reference for the workflow
+      return_run_info:
+        type: boolean
+        description: Flag to return the run info
+  DispatchWorkflowRun:
+    type: object
+    description: DispatchWorkflowRun represents a workflow run
+    properties:
+      id:
+        type: integer
+        format: int64
+        description: the workflow run id
+      jobs:
+        type: array
+        description: the jobs name
+        items:
+          type: string
+      run_number:
+        type: integer
+        format: int64
+        description: a unique number for each run of a repository
+  Duration:
+    type: integer
+    format: int64
+    description: A Duration represents the elapsed time between two instants
+  EditAttachmentOptions:
+    type: object
+    description: EditAttachmentOptions options for editing attachments
+    properties:
+      browser_download_url:
+        type: string
+        description: (Can only be set if existing attachment is of external type)
+      name:
+        type: string
+  EditBranchProtectionOption:
+    type: object
+    description: EditBranchProtectionOption options for editing a branch protection
+    properties:
+      apply_to_admins:
+        type: boolean
+      approvals_whitelist_teams:
+        type: array
+        items:
+          type: string
+      approvals_whitelist_username:
+        type: array
+        items:
+          type: string
+      block_on_official_review_requests:
+        type: boolean
+      block_on_outdated_branch:
+        type: boolean
+      block_on_rejected_reviews:
+        type: boolean
+      dismiss_stale_approvals:
+        type: boolean
+      enable_approvals_whitelist:
+        type: boolean
+      enable_merge_whitelist:
+        type: boolean
+      enable_push:
+        type: boolean
+      enable_push_whitelist:
+        type: boolean
+      enable_status_check:
+        type: boolean
+      ignore_stale_approvals:
+        type: boolean
+      merge_whitelist_teams:
+        type: array
+        items:
+          type: string
+      merge_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      protected_file_patterns:
+        type: string
+      push_whitelist_deploy_keys:
+        type: boolean
+      push_whitelist_teams:
+        type: array
+        items:
+          type: string
+      push_whitelist_usernames:
+        type: array
+        items:
+          type: string
+      require_signed_commits:
+        type: boolean
+      required_approvals:
+        type: integer
+        format: int64
+      status_check_contexts:
+        type: array
+        items:
+          type: string
+      unprotected_file_patterns:
+        type: string
+  EditDeadlineOption:
+    type: object
+    description: EditDeadlineOption options for creating a deadline
+    required:
+    - due_date
+    properties:
+      due_date:
+        type: string
+        format: date-time
+  EditGitHookOption:
+    type: object
+    description: EditGitHookOption options when modifying one Git hook
+    properties:
+      content:
+        type: string
+  EditHookOption:
+    type: object
+    description: EditHookOption options when modify one hook
+    properties:
+      active:
+        type: boolean
+      authorization_header:
+        type: string
+      branch_filter:
+        type: string
+      config:
+        type: object
+      events:
+        type: array
+        items:
+          type: string
+  EditIssueCommentOption:
+    type: object
+    description: EditIssueCommentOption options for editing a comment
+    required:
+    - body
+    properties:
+      body:
+        type: string
+        description: The body of the comment
+      updated_at:
+        type: string
+        format: date-time
+        description: The time of the comment's update, needs admin or repository owner
+          permission
+  EditIssueOption:
+    type: object
+    description: EditIssueOption options for editing an issue
+    properties:
+      assignee:
+        type: string
+        description: deprecated
+      assignees:
+        type: array
+        items:
+          type: string
+      body:
+        type: string
+      due_date:
+        type: string
+        format: date-time
+      milestone:
+        type: integer
+        format: int64
+      ref:
+        type: string
+      state:
+        type: string
+      title:
+        type: string
+      unset_due_date:
+        type: boolean
+      updated_at:
+        type: string
+        format: date-time
+  EditLabelOption:
+    type: object
+    description: EditLabelOption options for editing a label
+    properties:
+      color:
+        type: string
+      description:
+        type: string
+      exclusive:
+        type: boolean
+      is_archived:
+        type: boolean
+      name:
+        type: string
+  EditMilestoneOption:
+    type: object
+    description: EditMilestoneOption options for editing a milestone
+    properties:
+      description:
+        type: string
+      due_on:
+        type: string
+        format: date-time
+      state:
+        type: string
+      title:
+        type: string
+  EditOrgOption:
+    type: object
+    description: EditOrgOption options for editing an organization
+    properties:
+      description:
+        type: string
+      email:
+        type: string
+      full_name:
+        type: string
+      location:
+        type: string
+      repo_admin_change_team_access:
+        type: boolean
+      visibility:
+        type: string
+        description: possible values are `public`, `limited` or `private`
+        enum:
+        - public
+        - limited
+        - private
+      website:
+        type: string
+  EditPullRequestOption:
+    type: object
+    description: EditPullRequestOption options when modify pull request
+    properties:
+      allow_maintainer_edit:
+        type: boolean
+      assignee:
+        type: string
+      assignees:
+        type: array
+        items:
+          type: string
+      base:
+        type: string
+      body:
+        type: string
+      due_date:
+        type: string
+        format: date-time
+      labels:
+        type: array
+        items:
+          type: integer
+          format: int64
+      milestone:
+        type: integer
+        format: int64
+      state:
+        type: string
+      title:
+        type: string
+      unset_due_date:
+        type: boolean
+  EditQuotaRuleOptions:
+    type: object
+    description: EditQuotaRuleOptions represents the options for editing a quota rule
+    properties:
+      limit:
+        type: integer
+        format: int64
+        description: The limit set by the rule
+      subjects:
+        type: array
+        description: The subjects affected by the rule
+        items:
+          type: string
+  EditReactionOption:
+    type: object
+    description: EditReactionOption contain the reaction type
+    properties:
+      content:
+        type: string
+  EditReleaseOption:
+    type: object
+    description: EditReleaseOption options when editing a release
+    properties:
+      body:
+        type: string
+      draft:
+        type: boolean
+      hide_archive_links:
+        type: boolean
+      name:
+        type: string
+      prerelease:
+        type: boolean
+      tag_name:
+        type: string
+      target_commitish:
+        type: string
+  EditRepoOption:
+    type: object
+    description: EditRepoOption options when editing a repository's properties
+    properties:
+      allow_fast_forward_only_merge:
+        type: boolean
+        description: either `true` to allow fast-forward-only merging pull requests,
+          or `false` to prevent fast-forward-only merging.
+      allow_manual_merge:
+        type: boolean
+        description: either `true` to allow mark pr as merged manually, or `false`
+          to prevent it.
+      allow_merge_commits:
+        type: boolean
+        description: either `true` to allow merging pull requests with a merge commit,
+          or `false` to prevent merging pull requests with merge commits.
+      allow_rebase:
+        type: boolean
+        description: either `true` to allow rebase-merging pull requests, or `false`
+          to prevent rebase-merging.
+      allow_rebase_explicit:
+        type: boolean
+        description: either `true` to allow rebase with explicit merge commits (--no-ff),
+          or `false` to prevent rebase with explicit merge commits.
+      allow_rebase_update:
+        type: boolean
+        description: either `true` to allow updating pull request branch by rebase,
+          or `false` to prevent it.
+      allow_squash_merge:
+        type: boolean
+        description: either `true` to allow squash-merging pull requests, or `false`
+          to prevent squash-merging.
+      archived:
+        type: boolean
+        description: set to `true` to archive this repository.
+      autodetect_manual_merge:
+        type: boolean
+        description: 'either `true` to enable AutodetectManualMerge, or `false` to
+          prevent it. Note: In some special cases, misjudgments can occur.'
+      default_allow_maintainer_edit:
+        type: boolean
+        description: set to `true` to allow edits from maintainers by default
+      default_branch:
+        type: string
+        description: sets the default branch for this repository.
+      default_delete_branch_after_merge:
+        type: boolean
+        description: set to `true` to delete pr branch after merge by default
+      default_merge_style:
+        type: string
+        description: 'set to a merge style to be used by this repository: "merge",
+          "rebase", "rebase-merge", "squash", "fast-forward-only", "manually-merged",
+          or "rebase-update-only".'
+      default_update_style:
+        type: string
+        description: 'set to a update style to be used by this repository: "rebase"
+          or "merge"'
+      description:
+        type: string
+        description: a short description of the repository.
+      enable_prune:
+        type: boolean
+        description: enable prune - remove obsolete remote-tracking references when
+          mirroring
+      external_tracker:
+        ref: ExternalTracker
+      external_wiki:
+        ref: ExternalWiki
+      globally_editable_wiki:
+        type: boolean
+        description: set the globally editable state of the wiki
+      has_actions:
+        type: boolean
+        description: either `true` to enable actions unit, or `false` to disable them.
+      has_issues:
+        type: boolean
+        description: either `true` to enable issues for this repository or `false`
+          to disable them.
+      has_packages:
+        type: boolean
+        description: either `true` to enable packages unit, or `false` to disable
+          them.
+      has_projects:
+        type: boolean
+        description: either `true` to enable project unit, or `false` to disable them.
+      has_pull_requests:
+        type: boolean
+        description: either `true` to allow pull requests, or `false` to prevent pull
+          request.
+      has_releases:
+        type: boolean
+        description: either `true` to enable releases unit, or `false` to disable
+          them.
+      has_wiki:
+        type: boolean
+        description: either `true` to enable the wiki for this repository or `false`
+          to disable it.
+      ignore_whitespace_conflicts:
+        type: boolean
+        description: either `true` to ignore whitespace for conflicts, or `false`
+          to not ignore whitespace.
+      internal_tracker:
+        ref: InternalTracker
+      mirror_interval:
+        type: string
+        description: set to a string like `8h30m0s` to set the mirror interval time
+      name:
+        type: string
+        description: name of the repository
+      private:
+        type: boolean
+        description: either `true` to make the repository private or `false` to make
+          it public.
+      template:
+        type: boolean
+        description: either `true` to make this repository a template or `false` to
+          make it a normal repository
+      website:
+        type: string
+        description: a URL with more information about the repository.
+      wiki_branch:
+        type: string
+        description: sets the branch used for this repository's wiki.
+  EditTagProtectionOption:
+    type: object
+    description: EditTagProtectionOption options for editing a tag protection
+    properties:
+      name_pattern:
+        type: string
+      whitelist_teams:
+        type: array
+        items:
+          type: string
+      whitelist_usernames:
+        type: array
+        items:
+          type: string
+  EditTeamOption:
+    type: object
+    description: EditTeamOption options for editing a team
+    required:
+    - name
+    properties:
+      can_create_org_repo:
+        type: boolean
+      description:
+        type: string
+      includes_all_repositories:
+        type: boolean
+      name:
+        type: string
+      permission:
+        type: string
+        enum:
+        - read
+        - write
+        - admin
+      units:
+        type: array
+        items:
+          type: string
+      units_map:
+        type: object
+  EditUserOption:
+    type: object
+    description: EditUserOption edit user options
+    properties:
+      active:
+        type: boolean
+      admin:
+        type: boolean
+      allow_create_organization:
+        type: boolean
+      allow_git_hook:
+        type: boolean
+      allow_import_local:
+        type: boolean
+      description:
+        type: string
+      email:
+        type: string
+        format: email
+      full_name:
+        type: string
+      hide_email:
+        type: boolean
+      location:
+        type: string
+      login_name:
+        type: string
+      max_repo_creation:
+        type: integer
+        format: int64
+      must_change_password:
+        type: boolean
+      password:
+        type: string
+      prohibit_login:
+        type: boolean
+      pronouns:
+        type: string
+      restricted:
+        type: boolean
+      source_id:
+        type: integer
+        format: int64
+      visibility:
+        type: string
+      website:
+        type: string
+  Email:
+    type: object
+    description: Email an email address belonging to a user
+    properties:
+      email:
+        type: string
+        format: email
+      primary:
+        type: boolean
+      user_id:
+        type: integer
+        format: int64
+      username:
+        type: string
+      verified:
+        type: boolean
+  ExternalTracker:
+    type: object
+    description: ExternalTracker represents settings for external tracker
+    properties:
+      external_tracker_format:
+        type: string
+        description: External Issue Tracker URL Format. Use the placeholders {user},
+          {repo} and {index} for the username, repository name and issue index.
+      external_tracker_regexp_pattern:
+        type: string
+        description: External Issue Tracker issue regular expression
+      external_tracker_style:
+        type: string
+        description: External Issue Tracker Number Format, either `numeric`, `alphanumeric`,
+          or `regexp`
+      external_tracker_url:
+        type: string
+        description: URL of external issue tracker.
+  ExternalWiki:
+    type: object
+    description: ExternalWiki represents setting for external wiki
+    properties:
+      external_wiki_url:
+        type: string
+        description: URL of external wiki.
+  FileCommitResponse:
+    type: object
+    properties:
+      author:
+        ref: CommitUser
+      committer:
+        ref: CommitUser
+      created:
+        type: string
+        format: date-time
+      html_url:
+        type: string
+      message:
+        type: string
+      parents:
+        type: array
+        items:
+          ref: CommitMeta
+      sha:
+        type: string
+      tree:
+        ref: CommitMeta
+      url:
+        type: string
+  FileDeleteResponse:
+    type: object
+    description: FileDeleteResponse contains information about a repo's file that
+      was deleted
+    properties:
+      commit:
+        ref: FileCommitResponse
+      content: {}
+      verification:
+        ref: PayloadCommitVerification
+  FileLinksResponse:
+    type: object
+    description: FileLinksResponse contains the links for a repo's file
+    properties:
+      git:
+        type: string
+      html:
+        type: string
+      self:
+        type: string
+  FileResponse:
+    type: object
+    description: FileResponse contains information about a repo's file
+    properties:
+      commit:
+        ref: FileCommitResponse
+      content:
+        ref: ContentsResponse
+      verification:
+        ref: PayloadCommitVerification
+  FilesResponse:
+    type: object
+    description: FilesResponse contains information about multiple files from a repo
+    properties:
+      commit:
+        ref: FileCommitResponse
+      files:
+        type: array
+        items:
+          ref: ContentsResponse
+      verification:
+        ref: PayloadCommitVerification
+  ForgeLike:
+    type: object
+    description: ForgeLike activity data type
+  ForgeOutbox:
+    type: object
+    description: ActivityStream OrderedCollection of activities
+  GPGKey:
+    type: object
+    description: GPGKey a user GPG key to sign commit and tag in repository
+    properties:
+      can_certify:
+        type: boolean
+      can_encrypt_comms:
+        type: boolean
+      can_encrypt_storage:
+        type: boolean
+      can_sign:
+        type: boolean
+      created_at:
+        type: string
+        format: date-time
+      emails:
+        type: array
+        items:
+          ref: GPGKeyEmail
+      expires_at:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      key_id:
+        type: string
+      primary_key_id:
+        type: string
+      public_key:
+        type: string
+      subkeys:
+        type: array
+        items:
+          ref: GPGKey
+      verified:
+        type: boolean
+  GPGKeyEmail:
+    type: object
+    description: GPGKeyEmail an email attached to a GPGKey
+    properties:
+      email:
+        type: string
+      verified:
+        type: boolean
+  GeneralAPISettings:
+    type: object
+    description: GeneralAPISettings contains global api settings exposed by it
+    properties:
+      default_git_trees_per_page:
+        type: integer
+        format: int64
+      default_max_blob_size:
+        type: integer
+        format: int64
+      default_paging_num:
+        type: integer
+        format: int64
+      max_response_items:
+        type: integer
+        format: int64
+  GeneralAttachmentSettings:
+    type: object
+    description: GeneralAttachmentSettings contains global Attachment settings exposed
+      by API
+    properties:
+      allowed_types:
+        type: string
+      enabled:
+        type: boolean
+      max_files:
+        type: integer
+        format: int64
+      max_size:
+        type: integer
+        format: int64
+  GeneralRepoSettings:
+    type: object
+    description: GeneralRepoSettings contains global repository settings exposed by
+      API
+    properties:
+      forks_disabled:
+        type: boolean
+      http_git_disabled:
+        type: boolean
+      lfs_disabled:
+        type: boolean
+      migrations_disabled:
+        type: boolean
+      mirrors_disabled:
+        type: boolean
+      stars_disabled:
+        type: boolean
+      time_tracking_disabled:
+        type: boolean
+  GeneralUISettings:
+    type: object
+    description: GeneralUISettings contains global ui settings exposed by API
+    properties:
+      allowed_reactions:
+        type: array
+        items:
+          type: string
+      custom_emojis:
+        type: array
+        items:
+          type: string
+      default_theme:
+        type: string
+  GenerateRepoOption:
+    type: object
+    description: GenerateRepoOption options when creating repository using a template
+    required:
+    - owner
+    - name
+    properties:
+      avatar:
+        type: boolean
+        description: include avatar of the template repo
+      default_branch:
+        type: string
+        description: Default branch of the new repository
+      description:
+        type: string
+        description: Description of the repository to create
+      git_content:
+        type: boolean
+        description: include git content of default branch in template repo
+      git_hooks:
+        type: boolean
+        description: include git hooks in template repo
+      labels:
+        type: boolean
+        description: include labels in template repo
+      name:
+        type: string
+        description: Name of the repository to create
+      owner:
+        type: string
+        description: The organization or person who will own the new repository
+      private:
+        type: boolean
+        description: Whether the repository is private
+      protected_branch:
+        type: boolean
+        description: include protected branches in template repo
+      topics:
+        type: boolean
+        description: include topics in template repo
+      webhooks:
+        type: boolean
+        description: include webhooks in template repo
+  GitBlob:
+    type: object
+    description: GitBlob represents a git blob
+    properties:
+      content:
+        type: string
+      encoding:
+        type: string
+      sha:
+        type: string
+      size:
+        type: integer
+        format: int64
+      url:
+        type: string
+  GitEntry:
+    type: object
+    description: GitEntry represents a git tree
+    properties:
+      mode:
+        type: string
+      path:
+        type: string
+      sha:
+        type: string
+      size:
+        type: integer
+        format: int64
+      type:
+        type: string
+      url:
+        type: string
+  GitHook:
+    type: object
+    description: GitHook represents a Git repository hook
+    properties:
+      content:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+  GitObject:
+    type: object
+    properties:
+      sha:
+        type: string
+      type:
+        type: string
+      url:
+        type: string
+  GitTreeResponse:
+    type: object
+    description: GitTreeResponse returns a git tree
+    properties:
+      page:
+        type: integer
+        format: int64
+      sha:
+        type: string
+      total_count:
+        type: integer
+        format: int64
+      tree:
+        type: array
+        items:
+          ref: GitEntry
+      truncated:
+        type: boolean
+      url:
+        type: string
+  GitignoreTemplateInfo:
+    type: object
+    description: GitignoreTemplateInfo name and text of a gitignore template
+    properties:
+      name:
+        type: string
+      source:
+        type: string
+  Hook:
+    type: object
+    description: Hook a hook is a web hook when one repository changed
+    properties:
+      active:
+        type: boolean
+      authorization_header:
+        type: string
+      branch_filter:
+        type: string
+      config:
+        type: object
+        description: 'Deprecated: use Metadata instead'
+      content_type:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      events:
+        type: array
+        items:
+          type: string
+      id:
+        type: integer
+        format: int64
+      metadata: {}
+      type:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+  Identity:
+    type: object
+    description: Identity for a person's identity like an author or committer
+    properties:
+      email:
+        type: string
+        format: email
+      name:
+        type: string
+  InternalTracker:
+    type: object
+    description: InternalTracker represents settings for internal tracker
+    properties:
+      allow_only_contributors_to_track_time:
+        type: boolean
+        description: Let only contributors track time (Built-in issue tracker)
+      enable_issue_dependencies:
+        type: boolean
+        description: Enable dependencies for issues and pull requests (Built-in issue
+          tracker)
+      enable_time_tracker:
+        type: boolean
+        description: Enable time tracking (Built-in issue tracker)
+  Issue:
+    type: object
+    description: Issue represents an issue in a repository
+    properties:
+      assets:
+        type: array
+        items:
+          ref: Attachment
+      assignee:
+        ref: User
+      assignees:
+        type: array
+        items:
+          ref: User
+      body:
+        type: string
+      closed_at:
+        type: string
+        format: date-time
+      comments:
+        type: integer
+        format: int64
+      created_at:
+        type: string
+        format: date-time
+      due_date:
+        type: string
+        format: date-time
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      is_locked:
+        type: boolean
+      labels:
+        type: array
+        items:
+          ref: Label
+      milestone:
+        ref: Milestone
+      number:
+        type: integer
+        format: int64
+      original_author:
+        type: string
+      original_author_id:
+        type: integer
+        format: int64
+      pin_order:
+        type: integer
+        format: int64
+      pull_request:
+        ref: PullRequestMeta
+      ref:
+        type: string
+      repository:
+        ref: RepositoryMeta
+      state:
+        ref: StateType
+      title:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+      user:
+        ref: User
+  IssueConfig:
+    type: object
+    properties:
+      blank_issues_enabled:
+        type: boolean
+      contact_links:
+        type: array
+        items:
+          ref: IssueConfigContactLink
+  IssueConfigContactLink:
+    type: object
+    properties:
+      about:
+        type: string
+      name:
+        type: string
+      url:
+        type: string
+  IssueConfigValidation:
+    type: object
+    properties:
+      message:
+        type: string
+      valid:
+        type: boolean
+  IssueDeadline:
+    type: object
+    description: IssueDeadline represents an issue deadline
+    properties:
+      due_date:
+        type: string
+        format: date-time
+  IssueFormField:
+    type: object
+    description: IssueFormField represents a form field
+    properties:
+      attributes:
+        type: object
+      id:
+        type: string
+      type:
+        ref: IssueFormFieldType
+      validations:
+        type: object
+      visible:
+        type: array
+        items:
+          ref: IssueFormFieldVisible
+  IssueFormFieldType:
+    type: string
+  IssueFormFieldVisible:
+    type: string
+    description: IssueFormFieldVisible defines issue form field visible
+  IssueLabelsOption:
+    type: object
+    description: IssueLabelsOption a collection of labels
+    properties:
+      labels:
+        type: array
+        description: Labels can be a list of integers representing label IDs
+      updated_at:
+        type: string
+        format: date-time
+  IssueMeta:
+    type: object
+    description: IssueMeta basic issue information
+    required:
+    - index
+    - owner
+    - repo
+    properties:
+      index:
+        type: integer
+        format: int64
+      owner:
+        type: string
+      repo:
+        type: string
+  IssueTemplate:
+    type: object
+    description: IssueTemplate represents an issue template for a repository
+    properties:
+      about:
+        type: string
+      body:
+        type: array
+        items:
+          ref: IssueFormField
+      content:
+        type: string
+      file_name:
+        type: string
+      labels:
+        ref: IssueTemplateLabels
+      name:
+        type: string
+      ref:
+        type: string
+      title:
+        type: string
+  IssueTemplateLabels:
+    type: array
+    items:
+      type: string
+  Label:
+    type: object
+    description: Label a label to an issue or a pr
+    properties:
+      color:
+        type: string
+      description:
+        type: string
+      exclusive:
+        type: boolean
+      id:
+        type: integer
+        format: int64
+      is_archived:
+        type: boolean
+      name:
+        type: string
+      url:
+        type: string
+  LabelTemplate:
+    type: object
+    description: LabelTemplate info of a Label template
+    properties:
+      color:
+        type: string
+      description:
+        type: string
+      exclusive:
+        type: boolean
+      name:
+        type: string
+  LicenseTemplateInfo:
+    type: object
+    description: LicensesInfo contains information about a License
+    properties:
+      body:
+        type: string
+      implementation:
+        type: string
+      key:
+        type: string
+      name:
+        type: string
+      url:
+        type: string
+  LicensesTemplateListEntry:
+    type: object
+    description: LicensesListEntry is used for the API
+    properties:
+      key:
+        type: string
+      name:
+        type: string
+      url:
+        type: string
+  ListActionRunResponse:
+    type: object
+    description: ListActionRunResponse return a list of ActionRun
+    properties:
+      total_count:
+        type: integer
+        format: int64
+      workflow_runs:
+        type: array
+        items:
+          ref: ActionRun
+  MarkdownOption:
+    type: object
+    description: MarkdownOption markdown options
+    properties:
+      Context:
+        type: string
+        description: Context to render
+      Mode:
+        type: string
+        description: Mode to render (comment, gfm, markdown)
+      Text:
+        type: string
+        description: Text markdown to render
+      Wiki:
+        type: boolean
+        description: Is it a wiki page ?
+  MarkupOption:
+    type: object
+    description: MarkupOption markup options
+    properties:
+      BranchPath:
+        type: string
+        description: The current branch path where the form gets posted
+      Context:
+        type: string
+        description: Context to render
+      FilePath:
+        type: string
+        description: File path for detecting extension in file mode
+      Mode:
+        type: string
+        description: Mode to render (comment, gfm, markdown, file)
+      Text:
+        type: string
+        description: Text markup to render
+      Wiki:
+        type: boolean
+        description: Is it a wiki page ?
+  MergePullRequestOption:
+    type: object
+    description: MergePullRequestForm form for merging Pull Request
+    required:
+    - Do
+    properties:
+      Do:
+        type: string
+        enum:
+        - merge
+        - rebase
+        - rebase-merge
+        - squash
+        - fast-forward-only
+        - manually-merged
+      MergeCommitID:
+        type: string
+      MergeMessageField:
+        type: string
+      MergeTitleField:
+        type: string
+      delete_branch_after_merge:
+        type: boolean
+      force_merge:
+        type: boolean
+      head_commit_id:
+        type: string
+      merge_when_checks_succeed:
+        type: boolean
+  MigrateRepoOptions:
+    type: object
+    description: MigrateRepoOptions options for migrating repository's
+    required:
+    - clone_addr
+    - repo_name
+    properties:
+      auth_password:
+        type: string
+      auth_token:
+        type: string
+      auth_username:
+        type: string
+      clone_addr:
+        type: string
+      description:
+        type: string
+      issues:
+        type: boolean
+      labels:
+        type: boolean
+      lfs:
+        type: boolean
+      lfs_endpoint:
+        type: string
+      milestones:
+        type: boolean
+      mirror:
+        type: boolean
+      mirror_interval:
+        type: string
+      private:
+        type: boolean
+      pull_requests:
+        type: boolean
+      releases:
+        type: boolean
+      repo_name:
+        type: string
+      repo_owner:
+        type: string
+        description: Name of User or Organisation who will own Repo after migration
+      service:
+        type: string
+        enum:
+        - git
+        - github
+        - gitea
+        - gitlab
+        - gogs
+        - onedev
+        - gitbucket
+        - codebase
+        - forgejo
+        - pagure
+      uid:
+        type: integer
+        format: int64
+        description: deprecated (only for backwards compatibility)
+      wiki:
+        type: boolean
+  Milestone:
+    type: object
+    description: Milestone milestone is a collection of issues on one repository
+    properties:
+      closed_at:
+        type: string
+        format: date-time
+      closed_issues:
+        type: integer
+        format: int64
+      created_at:
+        type: string
+        format: date-time
+      description:
+        type: string
+      due_on:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      open_issues:
+        type: integer
+        format: int64
+      state:
+        ref: StateType
+      title:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+  NewIssuePinsAllowed:
+    type: object
+    description: NewIssuePinsAllowed represents an API response that says if new Issue
+      Pins are allowed
+    properties:
+      issues:
+        type: boolean
+      pull_requests:
+        type: boolean
+  NodeInfo:
+    type: object
+    description: NodeInfo contains standardized way of exposing metadata about a server
+      running one of the distributed social networks
+    properties:
+      metadata:
+        type: object
+      openRegistrations:
+        type: boolean
+      protocols:
+        type: array
+        items:
+          type: string
+      services:
+        ref: NodeInfoServices
+      software:
+        ref: NodeInfoSoftware
+      usage:
+        ref: NodeInfoUsage
+      version:
+        type: string
+  NodeInfoServices:
+    type: object
+    description: NodeInfoServices contains the third party sites this server can connect
+      to via their application API
+    properties:
+      inbound:
+        type: array
+        items:
+          type: string
+      outbound:
+        type: array
+        items:
+          type: string
+  NodeInfoSoftware:
+    type: object
+    description: NodeInfoSoftware contains Metadata about server software in use
+    properties:
+      homepage:
+        type: string
+      name:
+        type: string
+      repository:
+        type: string
+      version:
+        type: string
+  NodeInfoUsage:
+    type: object
+    description: NodeInfoUsage contains usage statistics for this server
+    properties:
+      localComments:
+        type: integer
+        format: int64
+      localPosts:
+        type: integer
+        format: int64
+      users:
+        ref: NodeInfoUsageUsers
+  NodeInfoUsageUsers:
+    type: object
+    description: NodeInfoUsageUsers contains statistics about the users of this server
+    properties:
+      activeHalfyear:
+        type: integer
+        format: int64
+      activeMonth:
+        type: integer
+        format: int64
+      total:
+        type: integer
+        format: int64
+  Note:
+    type: object
+    description: Note contains information related to a git note
+    properties:
+      commit:
+        ref: Commit
+      message:
+        type: string
+  NoteOptions:
+    type: object
+    properties:
+      message:
+        type: string
+  NotificationCount:
+    type: object
+    description: NotificationCount number of unread notifications
+    properties:
+      new:
+        type: integer
+        format: int64
+  NotificationSubject:
+    type: object
+    description: NotificationSubject contains the notification subject (Issue/Pull/Commit)
+    properties:
+      html_url:
+        type: string
+      latest_comment_html_url:
+        type: string
+      latest_comment_url:
+        type: string
+      state:
+        ref: StateType
+      title:
+        type: string
+      type:
+        ref: NotifySubjectType
+      url:
+        type: string
+  NotificationThread:
+    type: object
+    description: NotificationThread expose Notification on API
+    properties:
+      id:
+        type: integer
+        format: int64
+      pinned:
+        type: boolean
+      repository:
+        ref: Repository
+      subject:
+        ref: NotificationSubject
+      unread:
+        type: boolean
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+  NotifySubjectType:
+    type: string
+    description: NotifySubjectType represent type of notification subject
+  OAuth2Application:
+    type: object
+    properties:
+      client_id:
+        type: string
+      client_secret:
+        type: string
+      confidential_client:
+        type: boolean
+      created:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      redirect_uris:
+        type: array
+        items:
+          type: string
+  Organization:
+    type: object
+    description: Organization represents an organization
+    properties:
+      avatar_url:
+        type: string
+      created:
+        type: string
+        format: date-time
+      description:
+        type: string
+      email:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: integer
+        format: int64
+      location:
+        type: string
+      name:
+        type: string
+      repo_admin_change_team_access:
+        type: boolean
+      username:
+        type: string
+        description: deprecated
+      visibility:
+        type: string
+      website:
+        type: string
+  OrganizationPermissions:
+    type: object
+    description: OrganizationPermissions list different users permissions on an organization
+    properties:
+      can_create_repository:
+        type: boolean
+      can_read:
+        type: boolean
+      can_write:
+        type: boolean
+      is_admin:
+        type: boolean
+      is_owner:
+        type: boolean
+  PRBranchInfo:
+    type: object
+    description: PRBranchInfo information about a branch
+    properties:
+      label:
+        type: string
+      ref:
+        type: string
+      repo:
+        ref: Repository
+      repo_id:
+        type: integer
+        format: int64
+      sha:
+        type: string
+  Package:
+    type: object
+    description: Package represents a package
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      creator:
+        ref: User
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      owner:
+        ref: User
+      repository:
+        ref: Repository
+      type:
+        type: string
+      version:
+        type: string
+  PackageFile:
+    type: object
+    description: PackageFile represents a package file
+    properties:
+      Size:
+        type: integer
+        format: int64
+      id:
+        type: integer
+        format: int64
+      md5:
+        type: string
+      name:
+        type: string
+      sha1:
+        type: string
+      sha256:
+        type: string
+      sha512:
+        type: string
+  PayloadCommit:
+    type: object
+    description: PayloadCommit represents a commit
+    properties:
+      added:
+        type: array
+        items:
+          type: string
+      author:
+        ref: PayloadUser
+      committer:
+        ref: PayloadUser
+      id:
+        type: string
+        description: sha1 hash of the commit
+      message:
+        type: string
+      modified:
+        type: array
+        items:
+          type: string
+      removed:
+        type: array
+        items:
+          type: string
+      timestamp:
+        type: string
+        format: date-time
+      url:
+        type: string
+      verification:
+        ref: PayloadCommitVerification
+  PayloadCommitVerification:
+    type: object
+    description: PayloadCommitVerification represents the GPG verification of a commit
+    properties:
+      payload:
+        type: string
+      reason:
+        type: string
+      signature:
+        type: string
+      signer:
+        ref: PayloadUser
+      verified:
+        type: boolean
+  PayloadUser:
+    type: object
+    description: PayloadUser represents the author or committer of a commit
+    properties:
+      email:
+        type: string
+        format: email
+      name:
+        type: string
+        description: Full name of the commit author
+      username:
+        type: string
+  Permission:
+    type: object
+    description: Permission represents a set of permissions
+    properties:
+      admin:
+        type: boolean
+      pull:
+        type: boolean
+      push:
+        type: boolean
+  PublicKey:
+    type: object
+    description: PublicKey publickey is a user key to push code to repository
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      fingerprint:
+        type: string
+      id:
+        type: integer
+        format: int64
+      key:
+        type: string
+      key_type:
+        type: string
+      read_only:
+        type: boolean
+      title:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+      user:
+        ref: User
+      verified:
+        type: boolean
+  PullRequest:
+    type: object
+    description: PullRequest represents a pull request
+    properties:
+      additions:
+        type: integer
+        format: int64
+      allow_maintainer_edit:
+        type: boolean
+      assignee:
+        ref: User
+      assignees:
+        type: array
+        items:
+          ref: User
+      base:
+        ref: PRBranchInfo
+      body:
+        type: string
+      changed_files:
+        type: integer
+        format: int64
+      closed_at:
+        type: string
+        format: date-time
+      comments:
+        type: integer
+        format: int64
+      created_at:
+        type: string
+        format: date-time
+      deletions:
+        type: integer
+        format: int64
+      diff_url:
+        type: string
+      draft:
+        type: boolean
+      due_date:
+        type: string
+        format: date-time
+      flow:
+        type: integer
+        format: int64
+      head:
+        ref: PRBranchInfo
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      is_locked:
+        type: boolean
+      labels:
+        type: array
+        items:
+          ref: Label
+      merge_base:
+        type: string
+      merge_commit_sha:
+        type: string
+      mergeable:
+        type: boolean
+      merged:
+        type: boolean
+      merged_at:
+        type: string
+        format: date-time
+      merged_by:
+        ref: User
+      milestone:
+        ref: Milestone
+      number:
+        type: integer
+        format: int64
+      patch_url:
+        type: string
+      pin_order:
+        type: integer
+        format: int64
+      requested_reviewers:
+        type: array
+        items:
+          ref: User
+      requested_reviewers_teams:
+        type: array
+        items:
+          ref: Team
+      review_comments:
+        type: integer
+        format: int64
+        description: number of review comments made on the diff of a PR review (not
+          including comments on commits or issues in a PR)
+      state:
+        ref: StateType
+      title:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+      user:
+        ref: User
+  PullRequestMeta:
+    type: object
+    description: PullRequestMeta PR info if an issue is a PR
+    properties:
+      draft:
+        type: boolean
+      html_url:
+        type: string
+      merged:
+        type: boolean
+      merged_at:
+        type: string
+        format: date-time
+  PullReview:
+    type: object
+    description: PullReview represents a pull request review
+    properties:
+      body:
+        type: string
+      comments_count:
+        type: integer
+        format: int64
+      commit_id:
+        type: string
+      dismissed:
+        type: boolean
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      official:
+        type: boolean
+      pull_request_url:
+        type: string
+      stale:
+        type: boolean
+      state:
+        ref: ReviewStateType
+      submitted_at:
+        type: string
+        format: date-time
+      team:
+        ref: Team
+      updated_at:
+        type: string
+        format: date-time
+      user:
+        ref: User
+  PullReviewComment:
+    type: object
+    description: PullReviewComment represents a comment on a pull request review
+    properties:
+      body:
+        type: string
+      commit_id:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      diff_hunk:
+        type: string
+      extra_lines_count:
+        type: integer
+        format: int64
+        description: number of additional lines after the commented line (0 = single
+          line comment)
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      original_commit_id:
+        type: string
+      original_position:
+        type: integer
+        format: uint64
+      path:
+        type: string
+      position:
+        type: integer
+        format: uint64
+      pull_request_review_id:
+        type: integer
+        format: int64
+      pull_request_url:
+        type: string
+      resolver:
+        ref: User
+      updated_at:
+        type: string
+        format: date-time
+      user:
+        ref: User
+  PullReviewRequestOptions:
+    type: object
+    description: PullReviewRequestOptions are options to add or remove pull review
+      requests
+    properties:
+      reviewers:
+        type: array
+        items:
+          type: string
+      team_reviewers:
+        type: array
+        items:
+          type: string
+  PushMirror:
+    type: object
+    description: PushMirror represents information of a push mirror
+    properties:
+      branch_filter:
+        type: string
+      created:
+        type: string
+        format: date-time
+      interval:
+        type: string
+      last_error:
+        type: string
+      last_update:
+        type: string
+        format: date-time
+      public_key:
+        type: string
+      remote_address:
+        type: string
+      remote_name:
+        type: string
+      repo_name:
+        type: string
+      sync_on_commit:
+        type: boolean
+  QuotaGroup:
+    type: object
+    description: QuotaGroup represents a quota group
+    properties:
+      name:
+        type: string
+        description: Name of the group
+      rules:
+        type: array
+        description: Rules associated with the group
+        items:
+          ref: QuotaRuleInfo
+  QuotaGroupList:
+    type: array
+    description: QuotaGroupList represents a list of quota groups
+    items:
+      ref: QuotaGroup
+  QuotaInfo:
+    type: object
+    description: QuotaInfo represents information about a user's quota
+    properties:
+      groups:
+        ref: QuotaGroupList
+      used:
+        ref: QuotaUsed
+  QuotaRuleInfo:
+    type: object
+    description: QuotaRuleInfo contains information about a quota rule
+    properties:
+      limit:
+        type: integer
+        format: int64
+        description: The limit set by the rule
+      name:
+        type: string
+        description: Name of the rule (only shown to admins)
+      subjects:
+        type: array
+        description: Subjects the rule affects
+        items:
+          type: string
+  QuotaUsed:
+    type: object
+    description: QuotaUsed represents the quota usage of a user
+    properties:
+      size:
+        ref: QuotaUsedSize
+  QuotaUsedArtifact:
+    type: object
+    description: QuotaUsedArtifact represents an artifact counting towards a user's
+      quota
+    properties:
+      html_url:
+        type: string
+        description: HTML URL to the action run containing the artifact
+      name:
+        type: string
+        description: Name of the artifact
+      size:
+        type: integer
+        format: int64
+        description: Size of the artifact (compressed)
+  QuotaUsedArtifactList:
+    type: array
+    description: QuotaUsedArtifactList represents a list of artifacts counting towards
+      a user's quota
+    items:
+      ref: QuotaUsedArtifact
+  QuotaUsedAttachment:
+    type: object
+    description: QuotaUsedAttachment represents an attachment counting towards a user's
+      quota
+    properties:
+      api_url:
+        type: string
+        description: API URL for the attachment
+      contained_in:
+        type: object
+        description: 'Context for the attachment: URLs to the containing object'
+        properties:
+          api_url:
+            type: string
+            description: API URL for the object that contains this attachment
+          html_url:
+            type: string
+            description: HTML URL for the object that contains this attachment
+      name:
+        type: string
+        description: Filename of the attachment
+      size:
+        type: integer
+        format: int64
+        description: Size of the attachment (in bytes)
+  QuotaUsedAttachmentList:
+    type: array
+    description: QuotaUsedAttachmentList represents a list of attachment counting
+      towards a user's quota
+    items:
+      ref: QuotaUsedAttachment
+  QuotaUsedPackage:
+    type: object
+    description: QuotaUsedPackage represents a package counting towards a user's quota
+    properties:
+      html_url:
+        type: string
+        description: HTML URL to the package version
+      name:
+        type: string
+        description: Name of the package
+      size:
+        type: integer
+        format: int64
+        description: Size of the package version
+      type:
+        type: string
+        description: Type of the package
+      version:
+        type: string
+        description: Version of the package
+  QuotaUsedPackageList:
+    type: array
+    description: QuotaUsedPackageList represents a list of packages counting towards
+      a user's quota
+    items:
+      ref: QuotaUsedPackage
+  QuotaUsedSize:
+    type: object
+    description: QuotaUsedSize represents the size-based quota usage of a user
+    properties:
+      assets:
+        ref: QuotaUsedSizeAssets
+      git:
+        ref: QuotaUsedSizeGit
+      repos:
+        ref: QuotaUsedSizeRepos
+  QuotaUsedSizeAssets:
+    type: object
+    description: QuotaUsedSizeAssets represents the size-based asset usage of a user
+    properties:
+      artifacts:
+        type: integer
+        format: int64
+        description: Storage size used for the user's artifacts
+      attachments:
+        ref: QuotaUsedSizeAssetsAttachments
+      packages:
+        ref: QuotaUsedSizeAssetsPackages
+  QuotaUsedSizeAssetsAttachments:
+    type: object
+    description: QuotaUsedSizeAssetsAttachments represents the size-based attachment
+      quota usage of a user
+    properties:
+      issues:
+        type: integer
+        format: int64
+        description: Storage size used for the user's issue & comment attachments
+      releases:
+        type: integer
+        format: int64
+        description: Storage size used for the user's release attachments
+  QuotaUsedSizeAssetsPackages:
+    type: object
+    description: QuotaUsedSizeAssetsPackages represents the size-based package quota
+      usage of a user
+    properties:
+      all:
+        type: integer
+        format: int64
+        description: Storage suze used for the user's packages
+  QuotaUsedSizeGit:
+    type: object
+    description: QuotaUsedSizeGit represents the size-based git (lfs) quota usage
+      of a user
+    properties:
+      LFS:
+        type: integer
+        format: int64
+        description: Storage size of the user's Git LFS objects
+  QuotaUsedSizeRepos:
+    type: object
+    description: QuotaUsedSizeRepos represents the size-based repository quota usage
+      of a user
+    properties:
+      private:
+        type: integer
+        format: int64
+        description: Storage size of the user's private repositories
+      public:
+        type: integer
+        format: int64
+        description: Storage size of the user's public repositories
+  Reaction:
+    type: object
+    description: Reaction contain one reaction
+    properties:
+      content:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      user:
+        ref: User
+  Reference:
+    type: object
+    properties:
+      object:
+        ref: GitObject
+      ref:
+        type: string
+      url:
+        type: string
+  RegisterRunnerOptions:
+    type: object
+    required:
+    - name
+    properties:
+      description:
+        type: string
+        description: Description of the runner to register.
+      ephemeral:
+        type: boolean
+        description: Register as ephemeral runner https://forgejo.org/docs/latest/admin/actions/security/#ephemeral-runner
+      name:
+        type: string
+        description: Name of the runner to register. The name of the runner does not
+          have to be unique.
+  RegisterRunnerResponse:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      token:
+        type: string
+      uuid:
+        type: string
+  RegistrationToken:
+    type: object
+    description: RegistrationToken is a string used to register a runner with a server
+    properties:
+      token:
+        type: string
+  Release:
+    type: object
+    description: Release represents a repository release
+    properties:
+      archive_download_count:
+        ref: TagArchiveDownloadCount
+      assets:
+        type: array
+        items:
+          ref: Attachment
+      author:
+        ref: User
+      body:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      draft:
+        type: boolean
+      hide_archive_links:
+        type: boolean
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      prerelease:
+        type: boolean
+      published_at:
+        type: string
+        format: date-time
+      tag_name:
+        type: string
+      tarball_url:
+        type: string
+      target_commitish:
+        type: string
+      upload_url:
+        type: string
+      url:
+        type: string
+      zipball_url:
+        type: string
+  RenameOrgOption:
+    type: object
+    description: RenameOrgOption options when renaming an organization
+    required:
+    - new_name
+    properties:
+      new_name:
+        type: string
+        description: New username for this org. This name cannot be in use yet by
+          any other user.
+  RenameUserOption:
+    type: object
+    description: RenameUserOption options when renaming a user
+    required:
+    - new_username
+    properties:
+      new_username:
+        type: string
+        description: New username for this user. This name cannot be in use yet by
+          any other user.
+  ReplaceFlagsOption:
+    type: object
+    description: ReplaceFlagsOption options when replacing the flags of a repository
+    properties:
+      flags:
+        type: array
+        items:
+          type: string
+  RepoCollaboratorPermission:
+    type: object
+    description: RepoCollaboratorPermission to get repository permission for a collaborator
+    properties:
+      permission:
+        type: string
+      role_name:
+        type: string
+      user:
+        ref: User
+  RepoCommit:
+    type: object
+    properties:
+      author:
+        ref: CommitUser
+      committer:
+        ref: CommitUser
+      message:
+        type: string
+      tree:
+        ref: CommitMeta
+      url:
+        type: string
+      verification:
+        ref: PayloadCommitVerification
+  RepoTargetOption:
+    type: object
+    required:
+    - owner
+    - name
+    properties:
+      name:
+        type: string
+        description: Name of repository
+      owner:
+        type: string
+        description: Name of user or organisation that owns the repository
+  RepoTopicOptions:
+    type: object
+    description: RepoTopicOptions a collection of repo topic names
+    properties:
+      topics:
+        type: array
+        description: list of topic names
+        items:
+          type: string
+  RepoTransfer:
+    type: object
+    description: RepoTransfer represents a pending repo transfer
+    properties:
+      doer:
+        ref: User
+      recipient:
+        ref: User
+      teams:
+        type: array
+        items:
+          ref: Team
+  Repository:
+    type: object
+    description: Repository represents a repository
+    properties:
+      allow_fast_forward_only_merge:
+        type: boolean
+      allow_merge_commits:
+        type: boolean
+      allow_rebase:
+        type: boolean
+      allow_rebase_explicit:
+        type: boolean
+      allow_rebase_update:
+        type: boolean
+      allow_squash_merge:
+        type: boolean
+      archived:
+        type: boolean
+      archived_at:
+        type: string
+        format: date-time
+      avatar_url:
+        type: string
+      clone_url:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      default_allow_maintainer_edit:
+        type: boolean
+      default_branch:
+        type: string
+      default_delete_branch_after_merge:
+        type: boolean
+      default_merge_style:
+        type: string
+      default_update_style:
+        type: string
+      description:
+        type: string
+      empty:
+        type: boolean
+      external_tracker:
+        ref: ExternalTracker
+      external_wiki:
+        ref: ExternalWiki
+      fork:
+        type: boolean
+      forks_count:
+        type: integer
+        format: int64
+      full_name:
+        type: string
+      globally_editable_wiki:
+        type: boolean
+      has_actions:
+        type: boolean
+      has_issues:
+        type: boolean
+      has_packages:
+        type: boolean
+      has_projects:
+        type: boolean
+      has_pull_requests:
+        type: boolean
+      has_releases:
+        type: boolean
+      has_wiki:
+        type: boolean
+        description: is the wiki enabled
+      has_wiki_contents:
+        type: boolean
+        description: have wiki pages ever been created
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      ignore_whitespace_conflicts:
+        type: boolean
+      internal:
+        type: boolean
+      internal_tracker:
+        ref: InternalTracker
+      language:
+        type: string
+      languages_url:
+        type: string
+      link:
+        type: string
+      mirror:
+        type: boolean
+      mirror_interval:
+        type: string
+      mirror_updated:
+        type: string
+        format: date-time
+      name:
+        type: string
+      object_format_name:
+        type: string
+        description: ObjectFormatName of the underlying git repository
+        enum:
+        - sha1
+        - sha256
+      open_issues_count:
+        type: integer
+        format: int64
+      open_pr_counter:
+        type: integer
+        format: int64
+      original_url:
+        type: string
+      owner:
+        ref: User
+      parent:
+        ref: Repository
+      permissions:
+        ref: Permission
+      private:
+        type: boolean
+      release_counter:
+        type: integer
+        format: int64
+      repo_transfer:
+        ref: RepoTransfer
+      size:
+        type: integer
+        format: int64
+      ssh_url:
+        type: string
+      stars_count:
+        type: integer
+        format: int64
+      template:
+        type: boolean
+      topics:
+        type: array
+        items:
+          type: string
+      updated_at:
+        type: string
+        format: date-time
+      url:
+        type: string
+      watchers_count:
+        type: integer
+        format: int64
+      website:
+        type: string
+      wiki_branch:
+        type: string
+      wiki_clone_url:
+        type: string
+      wiki_ssh_url:
+        type: string
+  RepositoryMeta:
+    type: object
+    description: RepositoryMeta basic repository information
+    properties:
+      full_name:
+        type: string
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      owner:
+        type: string
+  ReviewStateType:
+    type: string
+    description: ReviewStateType review state type
+  SearchResults:
+    type: object
+    description: SearchResults results of a successful search
+    properties:
+      data:
+        type: array
+        items:
+          ref: Repository
+      ok:
+        type: boolean
+  Secret:
+    type: object
+    description: Secret represents a secret
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      name:
+        type: string
+        description: the secret's name
+  ServerVersion:
+    type: object
+    description: ServerVersion wraps the version of the server
+    properties:
+      version:
+        type: string
+  SetUserQuotaGroupsOptions:
+    type: object
+    description: SetUserQuotaGroupsOptions represents the quota groups of a user
+    required:
+    - groups
+    properties:
+      groups:
+        type: array
+        description: Quota groups the user shall have
+        items:
+          type: string
+  StateType:
+    type: string
+    description: StateType issue state type
+  StopWatch:
+    type: object
+    description: StopWatch represent a running stopwatch
+    properties:
+      created:
+        type: string
+        format: date-time
+      duration:
+        type: string
+      issue_index:
+        type: integer
+        format: int64
+      issue_title:
+        type: string
+      repo_name:
+        type: string
+      repo_owner_name:
+        type: string
+      seconds:
+        type: integer
+        format: int64
+  SubmitPullReviewOptions:
+    type: object
+    description: SubmitPullReviewOptions are options to submit a pending pull review
+    properties:
+      body:
+        type: string
+      event:
+        ref: ReviewStateType
+  SyncForkInfo:
+    type: object
+    description: SyncForkInfo information about syncing a fork
+    properties:
+      allowed:
+        type: boolean
+      base_commit:
+        type: string
+      commits_behind:
+        type: integer
+        format: int64
+      fork_commit:
+        type: string
+  Tag:
+    type: object
+    description: Tag represents a repository tag
+    properties:
+      archive_download_count:
+        ref: TagArchiveDownloadCount
+      commit:
+        ref: CommitMeta
+      id:
+        type: string
+      message:
+        type: string
+      name:
+        type: string
+      tarball_url:
+        type: string
+      zipball_url:
+        type: string
+  TagArchiveDownloadCount:
+    type: object
+    description: TagArchiveDownloadCount counts how many times a archive was downloaded
+    properties:
+      tar_gz:
+        type: integer
+        format: int64
+      zip:
+        type: integer
+        format: int64
+  TagProtection:
+    type: object
+    description: TagProtection represents a tag protection
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      name_pattern:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      whitelist_teams:
+        type: array
+        items:
+          type: string
+      whitelist_usernames:
+        type: array
+        items:
+          type: string
+  Team:
+    type: object
+    description: Team represents a team in an organization
+    properties:
+      can_create_org_repo:
+        type: boolean
+      description:
+        type: string
+      id:
+        type: integer
+        format: int64
+      includes_all_repositories:
+        type: boolean
+      name:
+        type: string
+      organization:
+        ref: Organization
+      permission:
+        type: string
+        enum:
+        - none
+        - read
+        - write
+        - admin
+        - owner
+      units:
+        type: array
+        items:
+          type: string
+      units_map:
+        type: object
+  TimeStamp:
+    type: integer
+    format: int64
+    description: TimeStamp defines a timestamp
+  TimelineComment:
+    type: object
+    description: TimelineComment represents a timeline comment (comment of any type)
+      on a commit or issue
+    properties:
+      assignee:
+        ref: User
+      assignee_team:
+        ref: Team
+      body:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      dependent_issue:
+        ref: Issue
+      html_url:
+        type: string
+      id:
+        type: integer
+        format: int64
+      issue_url:
+        type: string
+      label:
+        ref: Label
+      milestone:
+        ref: Milestone
+      new_ref:
+        type: string
+      new_title:
+        type: string
+      old_milestone:
+        ref: Milestone
+      old_project_id:
+        type: integer
+        format: int64
+      old_ref:
+        type: string
+      old_title:
+        type: string
+      project_id:
+        type: integer
+        format: int64
+      pull_request_url:
+        type: string
+      ref_action:
+        type: string
+      ref_comment:
+        ref: Comment
+      ref_commit_sha:
+        type: string
+        description: commit SHA where issue/PR was referenced
+      ref_issue:
+        ref: Issue
+      removed_assignee:
+        type: boolean
+        description: whether the assignees were removed or added
+      resolve_doer:
+        ref: User
+      review_id:
+        type: integer
+        format: int64
+      tracked_time:
+        ref: TrackedTime
+      type:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+      user:
+        ref: User
+  TopicName:
+    type: object
+    description: TopicName a list of repo topic names
+    properties:
+      topics:
+        type: array
+        items:
+          type: string
+  TopicResponse:
+    type: object
+    description: TopicResponse for returning topics
+    properties:
+      created:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      repo_count:
+        type: integer
+        format: int64
+      topic_name:
+        type: string
+      updated:
+        type: string
+        format: date-time
+  TrackedTime:
+    type: object
+    description: TrackedTime worked time for an issue / pr
+    properties:
+      created:
+        type: string
+        format: date-time
+      id:
+        type: integer
+        format: int64
+      issue:
+        ref: Issue
+      issue_id:
+        type: integer
+        format: int64
+        description: deprecated (only for backwards compatibility)
+      time:
+        type: integer
+        format: int64
+        description: Time in seconds
+      user_id:
+        type: integer
+        format: int64
+        description: deprecated (only for backwards compatibility)
+      user_name:
+        type: string
+  TransferRepoOption:
+    type: object
+    description: TransferRepoOption options when transfer a repository's ownership
+    required:
+    - new_owner
+    properties:
+      new_owner:
+        type: string
+      team_ids:
+        type: array
+        description: ID of the team or teams to add to the repository. Teams can only
+          be added to organization-owned repositories.
+        items:
+          type: integer
+          format: int64
+  UpdateBranchRepoOption:
+    type: object
+    description: UpdateBranchRepoOption options when updating a branch in a repository
+    required:
+    - name
+    properties:
+      name:
+        type: string
+        description: New branch name
+  UpdateFileOptions:
+    type: object
+    description: UpdateFileOptions options for updating files
+    required:
+    - sha
+    - content
+    properties:
+      author:
+        ref: Identity
+      branch:
+        type: string
+        description: branch (optional) to base this file from. if not given, the default
+          branch is used
+      committer:
+        ref: Identity
+      content:
+        type: string
+        description: content must be base64 encoded
+      dates:
+        ref: CommitDateOptions
+      force_overwrite_new_branch:
+        type: boolean
+        description: (optional) will do a force-push if the new branch already exists
+      from_path:
+        type: string
+        description: from_path (optional) is the path of the original file which will
+          be moved/renamed to the path in the URL
+      message:
+        type: string
+        description: message (optional) for the commit of this file. if not supplied,
+          a default message will be used
+      new_branch:
+        type: string
+        description: new_branch (optional) will make a new branch from `branch` before
+          creating the file
+      sha:
+        type: string
+        description: sha is the SHA for the file that already exists
+      signoff:
+        type: boolean
+        description: Add a Signed-off-by trailer by the committer at the end of the
+          commit log message.
+  UpdateRepoAvatarOption:
+    type: object
+    description: UpdateRepoAvatarUserOption options when updating the repo avatar
+    properties:
+      image:
+        type: string
+        description: image must be base64 encoded
+  UpdateUserAvatarOption:
+    type: object
+    description: UpdateUserAvatarUserOption options when updating the user avatar
+    properties:
+      image:
+        type: string
+        description: image must be base64 encoded
+  UpdateVariableOption:
+    type: object
+    required:
+    - value
+    properties:
+      name:
+        type: string
+        description: New name for the variable. If the field is empty, the variable
+          name won't be updated. Forgejo will convert it to
+      value:
+        type: string
+        description: Value of the variable to update. Special characters will be retained.
+          Line endings will be normalized to LF to
+  User:
+    type: object
+    description: User represents a user
+    properties:
+      active:
+        type: boolean
+        description: Is user active
+      avatar_url:
+        type: string
+        description: URL to the user's avatar
+      created:
+        type: string
+        format: date-time
+      description:
+        type: string
+        description: the user's description
+      email:
+        type: string
+        format: email
+      followers_count:
+        type: integer
+        format: int64
+        description: user counts
+      following_count:
+        type: integer
+        format: int64
+      full_name:
+        type: string
+        description: the user's full name
+      html_url:
+        type: string
+        description: URL to the user's profile page
+      id:
+        type: integer
+        format: int64
+        description: the user's id
+      is_admin:
+        type: boolean
+        description: Is the user an administrator
+      language:
+        type: string
+        description: User locale
+      last_login:
+        type: string
+        format: date-time
+      location:
+        type: string
+        description: the user's location
+      login:
+        type: string
+        description: the user's username
+      login_name:
+        type: string
+        description: the user's authentication sign-in name.
+      prohibit_login:
+        type: boolean
+        description: Is user login prohibited
+      pronouns:
+        type: string
+        description: the user's pronouns
+      restricted:
+        type: boolean
+        description: Is user restricted
+      source_id:
+        type: integer
+        format: int64
+        description: The ID of the user's Authentication Source
+      starred_repos_count:
+        type: integer
+        format: int64
+      visibility:
+        type: string
+        description: 'User visibility level option: public, limited, private'
+      website:
+        type: string
+        description: the user's website
+  UserHeatmapData:
+    type: object
+    description: UserHeatmapData represents the data needed to create a heatmap
+    properties:
+      contributions:
+        type: integer
+        format: int64
+      timestamp:
+        ref: TimeStamp
+  UserSettings:
+    type: object
+    description: UserSettings represents user settings
+    properties:
+      description:
+        type: string
+      diff_view_style:
+        type: string
+      enable_repo_unit_hints:
+        type: boolean
+      full_name:
+        type: string
+      hide_activity:
+        type: boolean
+      hide_email:
+        type: boolean
+        description: Privacy
+      hide_pronouns:
+        type: boolean
+      language:
+        type: string
+      location:
+        type: string
+      pronouns:
+        type: string
+      theme:
+        type: string
+      website:
+        type: string
+  UserSettingsOptions:
+    type: object
+    description: UserSettingsOptions represents options to change user settings
+    properties:
+      description:
+        type: string
+      diff_view_style:
+        type: string
+      enable_repo_unit_hints:
+        type: boolean
+      full_name:
+        type: string
+      hide_activity:
+        type: boolean
+      hide_email:
+        type: boolean
+        description: Privacy
+      hide_pronouns:
+        type: boolean
+      language:
+        type: string
+      location:
+        type: string
+      pronouns:
+        type: string
+      theme:
+        type: string
+      website:
+        type: string
+  VerifyGPGKeyOption:
+    type: object
+    description: VerifyGPGKeyOption options verifies user GPG key
+    required:
+    - key_id
+    properties:
+      armored_signature:
+        type: string
+      key_id:
+        type: string
+        description: An Signature for a GPG key token
+  WatchInfo:
+    type: object
+    description: WatchInfo represents an API watch status of one repository
+    properties:
+      created_at:
+        type: string
+        format: date-time
+      ignored:
+        type: boolean
+      reason: {}
+      repository_url:
+        type: string
+      subscribed:
+        type: boolean
+      url:
+        type: string
+  WikiCommit:
+    type: object
+    description: WikiCommit page commit/revision
+    properties:
+      author:
+        ref: CommitUser
+      commiter:
+        ref: CommitUser
+      message:
+        type: string
+      sha:
+        type: string
+  WikiCommitList:
+    type: object
+    description: WikiCommitList commit/revision list
+    properties:
+      commits:
+        type: array
+        items:
+          ref: WikiCommit
+      count:
+        type: integer
+        format: int64
+  WikiPage:
+    type: object
+    description: WikiPage a wiki page
+    properties:
+      commit_count:
+        type: integer
+        format: int64
+      content_base64:
+        type: string
+        description: Page content, base64 encoded
+      footer:
+        type: string
+      html_url:
+        type: string
+      last_commit:
+        ref: WikiCommit
+      sidebar:
+        type: string
+      sub_url:
+        type: string
+      title:
+        type: string
+  WikiPageMetaData:
+    type: object
+    description: WikiPageMetaData wiki page meta information
+    properties:
+      html_url:
+        type: string
+      last_commit:
+        ref: WikiCommit
+      sub_url:
+        type: string
+      title:
+        type: string

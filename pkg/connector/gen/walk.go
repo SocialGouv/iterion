@@ -351,10 +351,23 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		body, encoding := w.requestBody(mapAt(op, "requestBody"))
 		out.Params = append(out.Params, body...)
 		out.HTTP.RequestBody = encoding
-	} else {
-		out.HTTP.RequestBody = w.swaggerBodyEncoding(op)
+	} else if enc := w.swaggerBodyEncoding(op); enc != "" {
+		out.HTTP.RequestBody = enc
 	}
 	out.Params = sortParams(dedupParams(out.Params))
+	// An encoding is only meaningful when there IS a body. Swagger inherits
+	// `consumes` from the root, so every operation of an API that declares one
+	// — a GET included — would otherwise carry `request_body: json`, which is
+	// noise in every file and a claim that is simply untrue.
+	//
+	// Only a VALID encoding is cleared. An unsupported one must survive
+	// exactly BECAUSE its members did not: that pair — a body iterion could
+	// not read, and therefore no parameters — is what validation turns into a
+	// coverage gap, and clearing it here would publish the operation with an
+	// empty body instead.
+	if !out.HasBodyParams() && spec.ValidBodyEncoding(out.HTTP.RequestBody) {
+		out.HTTP.RequestBody = ""
+	}
 	assignParamKeys(out.Params)
 
 	out.Results, out.Errors = w.responses(mapAt(op, "responses"))

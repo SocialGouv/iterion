@@ -1,0 +1,338 @@
+schema_version: 1
+connector: forgejo
+domain: miscellaneous
+operations:
+- id: forgejo.miscellaneous.get_actions_run
+  source_operation_id: getActionsRun
+  summary: Get a workflow run associated with a token
+  description: 'The automatic actions token must be used as the authentication mechanism
+    (<code>Authorization: Bearer $&#x7b;&#x7b; forgejo.token &#x7d;&#x7d;</code>);
+    other types of tokens cannot be used. The token is associated with the job, which
+    must be still running for the request to this endpoint to succeed.'
+  resource: miscellaneous
+  verb: get_actions_run
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /actions/run
+  results:
+  - status: 200
+    schema_ref: ActionRun
+    description: ActionRun
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_gitignore_template_info
+  source_operation_id: getGitignoreTemplateInfo
+  summary: Returns information about a gitignore template
+  resource: miscellaneous
+  verb: get_gitignore_template_info
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /gitignore/templates/{name}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the template
+  results:
+  - status: 200
+    schema_ref: GitignoreTemplateInfo
+    description: GitignoreTemplateInfo
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_label_template_info
+  source_operation_id: getLabelTemplateInfo
+  summary: Returns all labels in a template
+  resource: miscellaneous
+  verb: get_label_template_info
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /label/templates/{name}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the template
+  results:
+  - status: 200
+    schema_ref: LabelTemplate
+    array: true
+    description: LabelTemplateInfo
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_license_template_info
+  source_operation_id: getLicenseTemplateInfo
+  summary: Returns information about a license template
+  resource: miscellaneous
+  verb: get_license_template_info
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /licenses/{name}
+  params:
+  - key: name
+    name: name
+    in: path
+    type: string
+    required: true
+    description: name of the license
+  results:
+  - status: 200
+    schema_ref: LicenseTemplateInfo
+    description: LicenseTemplateInfo
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_node_info
+  source_operation_id: getNodeInfo
+  summary: Returns the nodeinfo of the Forgejo application
+  resource: miscellaneous
+  verb: get_node_info
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /nodeinfo
+  results:
+  - status: 200
+    schema_ref: NodeInfo
+    description: NodeInfo
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_signing_key
+  source_operation_id: getSigningKey
+  summary: Get default signing-key.gpg
+  resource: miscellaneous
+  verb: get_signing_key
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /signing-key.gpg
+  results:
+  - status: 200
+    description: GPG armored public key
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_sshsigning_key
+  source_operation_id: getSSHSigningKey
+  summary: Get default signing-key.ssh
+  resource: miscellaneous
+  verb: get_sshsigning_key
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /signing-key.ssh
+  results:
+  - status: 200
+    description: SSH public key in OpenSSH authorized key format
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.get_version
+  source_operation_id: getVersion
+  summary: Returns the version of the running application
+  resource: miscellaneous
+  verb: get_version
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /version
+  results:
+  - status: 200
+    schema_ref: ServerVersion
+    description: ServerVersion
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.list_gitignores_templates
+  source_operation_id: listGitignoresTemplates
+  summary: Returns a list of all gitignore templates
+  resource: miscellaneous
+  verb: list_gitignores_templates
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /gitignore/templates
+  results:
+  - status: 200
+    array: true
+    description: GitignoreTemplateList
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.list_label_templates
+  source_operation_id: listLabelTemplates
+  summary: Returns a list of all label templates
+  resource: miscellaneous
+  verb: list_label_templates
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /label/templates
+  results:
+  - status: 200
+    array: true
+    description: LabelTemplateList
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.list_license_templates
+  source_operation_id: listLicenseTemplates
+  summary: Returns a list of all license templates
+  resource: miscellaneous
+  verb: list_license_templates
+  tags:
+  - miscellaneous
+  http:
+    method: GET
+    path: /licenses
+  results:
+  - status: 200
+    schema_ref: LicensesTemplateListEntry
+    array: true
+    description: LicenseTemplateList
+  effect: read
+  deterministic: true
+- id: forgejo.miscellaneous.render_markdown
+  source_operation_id: renderMarkdown
+  summary: Render a markdown document as HTML
+  resource: miscellaneous
+  verb: render_markdown
+  tags:
+  - miscellaneous
+  http:
+    method: POST
+    path: /markdown
+    request_body: json
+  params:
+  - key: Context
+    name: Context
+    in: body
+    type: string
+    description: Context to render
+  - key: Mode
+    name: Mode
+    in: body
+    type: string
+    description: Mode to render (comment, gfm, markdown)
+  - key: Text
+    name: Text
+    in: body
+    type: string
+    description: Text markdown to render
+  - key: Wiki
+    name: Wiki
+    in: body
+    type: boolean
+    description: Is it a wiki page ?
+  results:
+  - status: 200
+    description: MarkdownRender is a rendered markdown document
+  errors:
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.miscellaneous.render_markdown_raw
+  source_operation_id: renderMarkdownRaw
+  summary: Render raw markdown as HTML
+  resource: miscellaneous
+  verb: render_markdown_raw
+  tags:
+  - miscellaneous
+  http:
+    method: POST
+    path: /markdown/raw
+    request_body: json
+  params:
+  - key: body
+    name: body
+    in: body
+    type: string
+  results:
+  - status: 200
+    description: MarkdownRender is a rendered markdown document
+  errors:
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.miscellaneous.render_markup
+  source_operation_id: renderMarkup
+  summary: Render a markup document as HTML
+  resource: miscellaneous
+  verb: render_markup
+  tags:
+  - miscellaneous
+  http:
+    method: POST
+    path: /markup
+    request_body: json
+  params:
+  - key: BranchPath
+    name: BranchPath
+    in: body
+    type: string
+    description: The current branch path where the form gets posted
+  - key: Context
+    name: Context
+    in: body
+    type: string
+    description: Context to render
+  - key: FilePath
+    name: FilePath
+    in: body
+    type: string
+    description: File path for detecting extension in file mode
+  - key: Mode
+    name: Mode
+    in: body
+    type: string
+    description: Mode to render (comment, gfm, markdown, file)
+  - key: Text
+    name: Text
+    in: body
+    type: string
+    description: Text markup to render
+  - key: Wiki
+    name: Wiki
+    in: body
+    type: boolean
+    description: Is it a wiki page ?
+  results:
+  - status: 200
+    description: MarkupRender is a rendered markup document
+  errors:
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true

@@ -1,0 +1,330 @@
+schema_version: 1
+connector: forgejo
+domain: notification
+operations:
+- id: forgejo.notification.notify_get_list
+  source_operation_id: notifyGetList
+  summary: List users's notification threads
+  resource: notification
+  verb: notify_get_list
+  tags:
+  - notification
+  http:
+    method: GET
+    path: /notifications
+  params:
+  - key: all
+    name: all
+    in: query
+    type: boolean
+    description: If true, show notifications marked as read. Default value is false
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show notifications updated before the given time. This is a
+      timestamp in RFC 3339 format
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show notifications updated after the given time. This is a timestamp
+      in RFC 3339 format
+  - key: status-types
+    name: status-types
+    in: query
+    type: array
+    items: string
+    description: 'Show notifications with the provided status types. Options are:
+      unread, read and/or pinned. Defaults to unread & pinned.'
+    style: form
+    explode: true
+  - key: subject-type
+    name: subject-type
+    in: query
+    type: array
+    items: string
+    description: filter notifications by subject type
+    style: form
+    explode: true
+  results:
+  - status: 200
+    schema_ref: NotificationThread
+    array: true
+    description: NotificationThreadList
+  effect: read
+  deterministic: true
+- id: forgejo.notification.notify_get_repo_list
+  source_operation_id: notifyGetRepoList
+  summary: List users's notification threads on a specific repo
+  resource: notification
+  verb: notify_get_repo_list
+  tags:
+  - notification
+  http:
+    method: GET
+    path: /repos/{owner}/{repo}/notifications
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: all
+    name: all
+    in: query
+    type: boolean
+    description: If true, show notifications marked as read. Default value is false
+  - key: before
+    name: before
+    in: query
+    type: string
+    format: date-time
+    description: Only show notifications updated before the given time. This is a
+      timestamp in RFC 3339 format
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: since
+    name: since
+    in: query
+    type: string
+    format: date-time
+    description: Only show notifications updated after the given time. This is a timestamp
+      in RFC 3339 format
+  - key: status-types
+    name: status-types
+    in: query
+    type: array
+    items: string
+    description: 'Show notifications with the provided status types. Options are:
+      unread, read and/or pinned. Defaults to unread & pinned'
+    style: form
+    explode: true
+  - key: subject-type
+    name: subject-type
+    in: query
+    type: array
+    items: string
+    description: filter notifications by subject type
+    style: form
+    explode: true
+  results:
+  - status: 200
+    schema_ref: NotificationThread
+    array: true
+    description: NotificationThreadList
+  effect: read
+  deterministic: true
+- id: forgejo.notification.notify_get_thread
+  source_operation_id: notifyGetThread
+  summary: Get notification thread by ID
+  resource: notification
+  verb: notify_get_thread
+  tags:
+  - notification
+  http:
+    method: GET
+    path: /notifications/threads/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of notification thread
+  results:
+  - status: 200
+    schema_ref: NotificationThread
+    description: NotificationThread
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.notification.notify_new_available
+  source_operation_id: notifyNewAvailable
+  summary: Check if unread notifications exist
+  resource: notification
+  verb: notify_new_available
+  tags:
+  - notification
+  http:
+    method: GET
+    path: /notifications/new
+  results:
+  - status: 200
+    schema_ref: NotificationCount
+    description: Number of unread notifications
+  effect: read
+  deterministic: true
+- id: forgejo.notification.notify_read_list
+  source_operation_id: notifyReadList
+  summary: Mark notification threads as read, pinned or unread
+  resource: notification
+  verb: notify_read_list
+  tags:
+  - notification
+  http:
+    method: PUT
+    path: /notifications
+  params:
+  - key: all
+    name: all
+    in: query
+    type: boolean
+    description: If true, mark all notifications on this repo. Default value is false
+  - key: last_read_at
+    name: last_read_at
+    in: query
+    type: string
+    format: date-time
+    description: Describes the last point that notifications were checked. Anything
+      updated since this time will not be updated.
+  - key: status-types
+    name: status-types
+    in: query
+    type: array
+    items: string
+    description: 'Mark notifications with the provided status types. Options are:
+      unread, read and/or pinned. Defaults to unread.'
+    style: form
+    explode: true
+  - key: to-status
+    name: to-status
+    in: query
+    type: string
+    description: Status to mark notifications as, Defaults to read.
+  results:
+  - status: 205
+    schema_ref: NotificationThread
+    array: true
+    description: NotificationThreadListWithoutPagination - Notification threads without
+      pagination headers
+  effect: update
+  deterministic: true
+- id: forgejo.notification.notify_read_repo_list
+  source_operation_id: notifyReadRepoList
+  summary: Mark notification threads as read, pinned or unread on a specific repo
+  resource: notification
+  verb: notify_read_repo_list
+  tags:
+  - notification
+  http:
+    method: PUT
+    path: /repos/{owner}/{repo}/notifications
+  params:
+  - key: owner
+    name: owner
+    in: path
+    type: string
+    required: true
+    description: owner of the repo
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo
+  - key: all
+    name: all
+    in: query
+    type: boolean
+    description: If true, mark all notifications on this repo. Default value is false
+  - key: last_read_at
+    name: last_read_at
+    in: query
+    type: string
+    format: date-time
+    description: Describes the last point that notifications were checked. Anything
+      updated since this time will not be updated.
+  - key: status-types
+    name: status-types
+    in: query
+    type: array
+    items: string
+    description: 'Mark notifications with the provided status types. Options are:
+      unread, read and/or pinned. Defaults to unread.'
+    style: form
+    explode: true
+  - key: to-status
+    name: to-status
+    in: query
+    type: string
+    description: Status to mark notifications as. Defaults to read.
+  results:
+  - status: 205
+    schema_ref: NotificationThread
+    array: true
+    description: NotificationThreadListWithoutPagination - Notification threads without
+      pagination headers
+  effect: update
+  deterministic: true
+- id: forgejo.notification.notify_read_thread
+  source_operation_id: notifyReadThread
+  summary: Mark notification thread as read by ID
+  resource: notification
+  verb: notify_read_thread
+  tags:
+  - notification
+  http:
+    method: PATCH
+    path: /notifications/threads/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of notification thread
+  - key: to-status
+    name: to-status
+    in: query
+    type: string
+    default: read
+    description: Status to mark notifications as
+  results:
+  - status: 205
+    schema_ref: NotificationThread
+    description: NotificationThread
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true

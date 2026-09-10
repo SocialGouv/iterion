@@ -1,0 +1,2868 @@
+schema_version: 1
+connector: forgejo
+domain: organization
+operations:
+- id: forgejo.organization.add_team_member
+  source_operation_id: orgAddTeamMember
+  summary: Add a team member
+  resource: organization
+  verb: add_team_member
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /teams/{id}/members/{username}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user to add
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.add_team_repository
+  source_operation_id: orgAddTeamRepository
+  summary: Add a repository to a team
+  resource: organization
+  verb: add_team_repository
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /teams/{id}/repos/{org}/{repo}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: organization that owns the repo to add
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo to add
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.block_user
+  source_operation_id: orgBlockUser
+  summary: Blocks a user from the organization
+  resource: organization
+  verb: block_user
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /orgs/{org}/block/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the org
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.organization.check_quota
+  source_operation_id: orgCheckQuota
+  summary: Check if the organization is over quota for a given subject
+  resource: organization
+  verb: check_quota
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/quota/check
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: subject
+    name: subject
+    in: query
+    type: string
+    required: true
+    description: subject of the quota
+  results:
+  - status: 200
+    description: Returns true if the action is accepted.
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: read
+  deterministic: true
+- id: forgejo.organization.conceal_member
+  source_operation_id: orgConcealMember
+  summary: Conceal a user's membership
+  resource: organization
+  verb: conceal_member
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/public_members/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.create
+  source_operation_id: orgCreate
+  summary: Create an organization
+  resource: organization
+  verb: create
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs
+    request_body: json
+  params:
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: email
+    name: email
+    in: body
+    type: string
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: location
+    name: location
+    in: body
+    type: string
+  - key: repo_admin_change_team_access
+    name: repo_admin_change_team_access
+    in: body
+    type: boolean
+  - key: username
+    name: username
+    in: body
+    type: string
+    required: true
+  - key: visibility
+    name: visibility
+    in: body
+    type: string
+    enum:
+    - public
+    - limited
+    - private
+    description: possible values are `public` (default), `limited` or `private`
+  - key: website
+    name: website
+    in: body
+    type: string
+  results:
+  - status: 201
+    schema_ref: Organization
+    description: Organization
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_hook
+  source_operation_id: orgCreateHook
+  summary: Create a hook
+  resource: organization
+  verb: create_hook
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/hooks
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: active
+    name: active
+    in: body
+    type: boolean
+    default: false
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+    required: true
+    schema_ref: CreateHookOptionConfig
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  - key: type
+    name: type
+    in: body
+    type: string
+    enum:
+    - forgejo
+    - dingtalk
+    - discord
+    - gitea
+    - gogs
+    - msteams
+    - slack
+    - telegram
+    - feishu
+    - wechatwork
+    - packagist
+    required: true
+  results:
+  - status: 201
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_label
+  source_operation_id: orgCreateLabel
+  summary: Create a label for an organization
+  resource: organization
+  verb: create_label
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/labels
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: color
+    name: color
+    in: body
+    type: string
+    required: true
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: exclusive
+    name: exclusive
+    in: body
+    type: boolean
+  - key: is_archived
+    name: is_archived
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  results:
+  - status: 201
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_org_repo
+  source_operation_id: createOrgRepo
+  summary: Create a repository in an organization
+  resource: organization
+  verb: create_org_repo
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/repos
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of organization
+  - key: auto_init
+    name: auto_init
+    in: body
+    type: boolean
+    description: Whether the repository should be auto-initialized?
+  - key: default_branch
+    name: default_branch
+    in: body
+    type: string
+    description: DefaultBranch of the repository (used when initializes and in template)
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the repository to create
+  - key: gitignores
+    name: gitignores
+    in: body
+    type: string
+    description: Gitignores to use, separated by commas
+  - key: issue_labels
+    name: issue_labels
+    in: body
+    type: string
+    description: Label-Set to use
+  - key: license
+    name: license
+    in: body
+    type: string
+    description: License to use
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the repository to create
+  - key: object_format_name
+    name: object_format_name
+    in: body
+    type: string
+    enum:
+    - sha1
+    - sha256
+    description: ObjectFormatName of the underlying git repository
+  - key: private
+    name: private
+    in: body
+    type: boolean
+    description: Whether the repository is private
+  - key: readme
+    name: readme
+    in: body
+    type: string
+    description: Readme of the repository to create
+  - key: template
+    name: template
+    in: body
+    type: boolean
+    description: Whether the repository is template
+  - key: trust_model
+    name: trust_model
+    in: body
+    type: string
+    enum:
+    - default
+    - collaborator
+    - committer
+    - collaboratorcommitter
+    description: TrustModel of the repository
+  results:
+  - status: 201
+    schema_ref: Repository
+    description: Repository
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_org_repo_deprecated
+  source_operation_id: createOrgRepoDeprecated
+  summary: Create a repository in an organization
+  resource: organization
+  verb: create_org_repo_deprecated
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /org/{org}/repos
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of organization
+  - key: auto_init
+    name: auto_init
+    in: body
+    type: boolean
+    description: Whether the repository should be auto-initialized?
+  - key: default_branch
+    name: default_branch
+    in: body
+    type: string
+    description: DefaultBranch of the repository (used when initializes and in template)
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the repository to create
+  - key: gitignores
+    name: gitignores
+    in: body
+    type: string
+    description: Gitignores to use, separated by commas
+  - key: issue_labels
+    name: issue_labels
+    in: body
+    type: string
+    description: Label-Set to use
+  - key: license
+    name: license
+    in: body
+    type: string
+    description: License to use
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the repository to create
+  - key: object_format_name
+    name: object_format_name
+    in: body
+    type: string
+    enum:
+    - sha1
+    - sha256
+    description: ObjectFormatName of the underlying git repository
+  - key: private
+    name: private
+    in: body
+    type: boolean
+    description: Whether the repository is private
+  - key: readme
+    name: readme
+    in: body
+    type: string
+    description: Readme of the repository to create
+  - key: template
+    name: template
+    in: body
+    type: boolean
+    description: Whether the repository is template
+  - key: trust_model
+    name: trust_model
+    in: body
+    type: string
+    enum:
+    - default
+    - collaborator
+    - committer
+    - collaboratorcommitter
+    description: TrustModel of the repository
+  results:
+  - status: 201
+    schema_ref: Repository
+    description: Repository
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_org_variable
+  source_operation_id: createOrgVariable
+  summary: Create a new variable in organization
+  resource: organization
+  verb: create_org_variable
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/actions/variables/{variablename}
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  - key: value
+    name: value
+    in: body
+    type: string
+    required: true
+    description: Value of the variable to create. Special characters will be retained.
+      Line endings will be normalized to LF to
+  results:
+  - status: 201
+    description: response when creating an org-level variable
+  - status: 204
+    description: response when creating an org-level variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.organization.create_team
+  source_operation_id: orgCreateTeam
+  summary: Create a team
+  resource: organization
+  verb: create_team
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/teams
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: can_create_org_repo
+    name: can_create_org_repo
+    in: body
+    type: boolean
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: includes_all_repositories
+    name: includes_all_repositories
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  - key: permission
+    name: permission
+    in: body
+    type: string
+    enum:
+    - read
+    - write
+    - admin
+  - key: units
+    name: units
+    in: body
+    type: array
+    items: string
+  - key: units_map
+    name: units_map
+    in: body
+    type: object
+  results:
+  - status: 201
+    schema_ref: Team
+    description: Team
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.organization.delete
+  source_operation_id: orgDelete
+  summary: Delete an organization
+  resource: organization
+  verb: delete
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: organization that is to be deleted
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_avatar
+  source_operation_id: orgDeleteAvatar
+  summary: Delete an organization's avatar. It will be replaced by a default one
+  resource: organization
+  verb: delete_avatar
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/avatar
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_hook
+  source_operation_id: orgDeleteHook
+  summary: Delete a hook
+  resource: organization
+  verb: delete_hook
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to delete
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_label
+  source_operation_id: orgDeleteLabel
+  summary: Delete a label
+  resource: organization
+  verb: delete_label
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/labels/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to delete
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_member
+  source_operation_id: orgDeleteMember
+  summary: Remove a member from an organization
+  resource: organization
+  verb: delete_member
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/members/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: member removed
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_org_runner
+  source_operation_id: deleteOrgRunner
+  summary: Delete a particular runner that belongs to the organization
+  resource: organization
+  verb: delete_org_runner
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/actions/runners/{runner_id}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 204
+    description: runner has been deleted
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_org_secret
+  source_operation_id: deleteOrgSecret
+  summary: Delete a secret in an organization
+  resource: organization
+  verb: delete_org_secret
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/actions/secrets/{secretname}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of organization
+  - key: secretname
+    name: secretname
+    in: path
+    type: string
+    required: true
+    description: name of the secret
+  results:
+  - status: 204
+    description: delete one secret of the organization
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_org_variable
+  source_operation_id: deleteOrgVariable
+  summary: Delete organization's variable by name
+  resource: organization
+  verb: delete_org_variable
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /orgs/{org}/actions/variables/{variablename}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  results:
+  - status: 204
+    description: response when deleting a variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.delete_team
+  source_operation_id: orgDeleteTeam
+  summary: Delete a team
+  resource: organization
+  verb: delete_team
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /teams/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team to delete
+  results:
+  - status: 204
+    description: team deleted
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.edit
+  source_operation_id: orgEdit
+  summary: Edit an organization
+  resource: organization
+  verb: edit
+  tags:
+  - organization
+  http:
+    method: PATCH
+    path: /orgs/{org}
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization to edit
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: email
+    name: email
+    in: body
+    type: string
+  - key: full_name
+    name: full_name
+    in: body
+    type: string
+  - key: location
+    name: location
+    in: body
+    type: string
+  - key: repo_admin_change_team_access
+    name: repo_admin_change_team_access
+    in: body
+    type: boolean
+  - key: visibility
+    name: visibility
+    in: body
+    type: string
+    enum:
+    - public
+    - limited
+    - private
+    description: possible values are `public`, `limited` or `private`
+  - key: website
+    name: website
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Organization
+    description: Organization
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIError is error format response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.edit_hook
+  source_operation_id: orgEditHook
+  summary: Update a hook
+  resource: organization
+  verb: edit_hook
+  tags:
+  - organization
+  http:
+    method: PATCH
+    path: /orgs/{org}/hooks/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to update
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: active
+    name: active
+    in: body
+    type: boolean
+  - key: authorization_header
+    name: authorization_header
+    in: body
+    type: string
+  - key: branch_filter
+    name: branch_filter
+    in: body
+    type: string
+  - key: config
+    name: config
+    in: body
+    type: object
+  - key: events
+    name: events
+    in: body
+    type: array
+    items: string
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.edit_label
+  source_operation_id: orgEditLabel
+  summary: Update a label
+  resource: organization
+  verb: edit_label
+  tags:
+  - organization
+  http:
+    method: PATCH
+    path: /orgs/{org}/labels/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to edit
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: color
+    name: color
+    in: body
+    type: string
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: exclusive
+    name: exclusive
+    in: body
+    type: boolean
+  - key: is_archived
+    name: is_archived
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+  results:
+  - status: 200
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.organization.edit_team
+  source_operation_id: orgEditTeam
+  summary: Edit a team
+  resource: organization
+  verb: edit_team
+  tags:
+  - organization
+  http:
+    method: PATCH
+    path: /teams/{id}
+    request_body: json
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team to edit
+  - key: can_create_org_repo
+    name: can_create_org_repo
+    in: body
+    type: boolean
+  - key: description
+    name: description
+    in: body
+    type: string
+  - key: includes_all_repositories
+    name: includes_all_repositories
+    in: body
+    type: boolean
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+  - key: permission
+    name: permission
+    in: body
+    type: string
+    enum:
+    - read
+    - write
+    - admin
+  - key: units
+    name: units
+    in: body
+    type: array
+    items: string
+  - key: units_map
+    name: units_map
+    in: body
+    type: object
+  results:
+  - status: 200
+    schema_ref: Team
+    description: Team
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.get
+  source_operation_id: orgGet
+  summary: Get an organization
+  resource: organization
+  verb: get
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization to get
+  results:
+  - status: 200
+    schema_ref: Organization
+    description: Organization
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_all
+  source_operation_id: orgGetAll
+  summary: List all organizations
+  resource: organization
+  verb: get_all
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Organization
+    array: true
+    description: OrganizationList
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_hook
+  source_operation_id: orgGetHook
+  summary: Get a hook
+  resource: organization
+  verb: get_hook
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/hooks/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the hook to get
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 200
+    schema_ref: Hook
+    description: Hook
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_label
+  source_operation_id: orgGetLabel
+  summary: Get a single label
+  resource: organization
+  verb: get_label
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/labels/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the label to get
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 200
+    schema_ref: Label
+    description: Label
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_org_runner
+  source_operation_id: getOrgRunner
+  summary: Get a particular runner that belongs to the organization
+  resource: organization
+  verb: get_org_runner
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/runners/{runner_id}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: runner_id
+    name: runner_id
+    in: path
+    type: string
+    required: true
+    description: ID of the runner
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    description: ActionRunner represents a runner
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_org_runners
+  source_operation_id: getOrgRunners
+  summary: Get the organization's runners
+  resource: organization
+  verb: get_org_runners
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/runners
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: visible
+    name: visible
+    in: query
+    type: boolean
+    description: whether to include all visible runners (true) or only those that
+      are directly owned by the organization (false)
+  results:
+  - status: 200
+    schema_ref: ActionRunner
+    array: true
+    description: ActionRunnerList is a list of Forgejo Action runners
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_org_variable
+  source_operation_id: getOrgVariable
+  summary: Get organization's variable by name
+  resource: organization
+  verb: get_org_variable
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/variables/{variablename}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  results:
+  - status: 200
+    schema_ref: ActionVariable
+    description: ActionVariable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_org_variables_list
+  source_operation_id: getOrgVariablesList
+  summary: List variables of an organization
+  resource: organization
+  verb: get_org_variables_list
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/variables
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: ActionVariable
+    array: true
+    description: VariableList
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_quota
+  source_operation_id: orgGetQuota
+  summary: Get quota information for an organization
+  resource: organization
+  verb: get_quota
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/quota
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 200
+    schema_ref: QuotaInfo
+    description: QuotaInfo
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_runner_registration_token
+  source_operation_id: orgGetRunnerRegistrationToken
+  summary: Get the organization's runner registration token
+  description: This operation has been deprecated in Forgejo 15. Use the web UI or
+    [`/orgs/{org}/actions/runners`](#/organization/registerOrgRunner) instead.
+  resource: organization
+  verb: get_runner_registration_token
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/runners/registration-token
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  results:
+  - status: 200
+    schema_ref: RegistrationToken
+    description: RegistrationToken is a string used to register a runner with a server
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_team
+  source_operation_id: orgGetTeam
+  summary: Get a team
+  resource: organization
+  verb: get_team
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team to get
+  results:
+  - status: 200
+    schema_ref: Team
+    description: Team
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.get_user_permissions
+  source_operation_id: orgGetUserPermissions
+  summary: Get user permissions in organization
+  resource: organization
+  verb: get_user_permissions
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /users/{username}/orgs/{org}/permissions
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  results:
+  - status: 200
+    schema_ref: OrganizationPermissions
+    description: OrganizationPermissions
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.is_member
+  source_operation_id: orgIsMember
+  summary: Check if a user is a member of an organization
+  resource: organization
+  verb: is_member
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/members/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: user is a member
+  errors:
+  - status: 404
+    class: not_found
+    description: user is not a member
+  effect: read
+  deterministic: true
+- id: forgejo.organization.is_public_member
+  source_operation_id: orgIsPublicMember
+  summary: Check if a user is a public member of an organization
+  resource: organization
+  verb: is_public_member
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/public_members/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: user is a public member
+  errors:
+  - status: 404
+    class: not_found
+    description: user is not a public member
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_actions_secrets
+  source_operation_id: orgListActionsSecrets
+  summary: List actions secrets of an organization
+  resource: organization
+  verb: list_actions_secrets
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/secrets
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Secret
+    array: true
+    description: SecretList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_activity_feeds
+  source_operation_id: orgListActivityFeeds
+  summary: List an organization's activity feeds
+  resource: organization
+  verb: list_activity_feeds
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/activities/feeds
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the org
+  - key: date
+    name: date
+    in: query
+    type: string
+    format: date
+    description: the date of the activities to be found
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Activity
+    array: true
+    description: ActivityFeedsList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_blocked_users
+  source_operation_id: orgListBlockedUsers
+  summary: List the organization's blocked users
+  resource: organization
+  verb: list_blocked_users
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/list_blocked
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the org
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: BlockedUser
+    array: true
+    description: BlockedUserList
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_current_user_orgs
+  source_operation_id: orgListCurrentUserOrgs
+  summary: List the current user's organizations
+  resource: organization
+  verb: list_current_user_orgs
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /user/orgs
+  params:
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Organization
+    array: true
+    description: OrganizationListWithoutPagination - Organizations without pagination
+      headers
+  errors:
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_hooks
+  source_operation_id: orgListHooks
+  summary: List an organization's webhooks
+  resource: organization
+  verb: list_hooks
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/hooks
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Hook
+    array: true
+    description: HookListWithoutPagination - Hooks without pagination headers
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_labels
+  source_operation_id: orgListLabels
+  summary: List an organization's labels
+  resource: organization
+  verb: list_labels
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/labels
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: sort
+    name: sort
+    in: query
+    type: string
+    enum:
+    - mostissues
+    - leastissues
+    - reversealphabetically
+    description: 'Specifies the sorting method: mostissues, leastissues, or reversealphabetically.'
+  results:
+  - status: 200
+    schema_ref: Label
+    array: true
+    description: LabelList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_members
+  source_operation_id: orgListMembers
+  summary: List an organization's members
+  resource: organization
+  verb: list_members
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/members
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_public_members
+  source_operation_id: orgListPublicMembers
+  summary: List an organization's public members
+  resource: organization
+  verb: list_public_members
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/public_members
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_quota_artifacts
+  source_operation_id: orgListQuotaArtifacts
+  summary: List the artifacts affecting the organization's quota
+  resource: organization
+  verb: list_quota_artifacts
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/quota/artifacts
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedArtifactList
+    description: QuotaUsedArtifactList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_quota_attachments
+  source_operation_id: orgListQuotaAttachments
+  summary: List the attachments affecting the organization's quota
+  resource: organization
+  verb: list_quota_attachments
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/quota/attachments
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedAttachmentList
+    description: QuotaUsedAttachmentList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_quota_packages
+  source_operation_id: orgListQuotaPackages
+  summary: List the packages affecting the organization's quota
+  resource: organization
+  verb: list_quota_packages
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/quota/packages
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: QuotaUsedPackageList
+    description: QuotaUsedPackageList
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_repos
+  source_operation_id: orgListRepos
+  summary: List an organization's repos
+  resource: organization
+  verb: list_repos
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/repos
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_team_activity_feeds
+  source_operation_id: orgListTeamActivityFeeds
+  summary: List a team's activity feeds
+  resource: organization
+  verb: list_team_activity_feeds
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}/activities/feeds
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: date
+    name: date
+    in: query
+    type: string
+    format: date
+    description: the date of the activities to be found
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Activity
+    array: true
+    description: ActivityFeedsList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_team_member
+  source_operation_id: orgListTeamMember
+  summary: List a particular member of team
+  resource: organization
+  verb: list_team_member
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}/members/{username}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the member to list
+  results:
+  - status: 200
+    schema_ref: User
+    description: User
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_team_members
+  source_operation_id: orgListTeamMembers
+  summary: List a team's members
+  resource: organization
+  verb: list_team_members
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}/members
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: User
+    array: true
+    description: UserList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_team_repo
+  source_operation_id: orgListTeamRepo
+  summary: List a particular repo of team
+  resource: organization
+  verb: list_team_repo
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}/repos/{org}/{repo}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: organization that owns the repo to list
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo to list
+  results:
+  - status: 200
+    schema_ref: Repository
+    description: Repository
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_team_repos
+  source_operation_id: orgListTeamRepos
+  summary: List a team's repos
+  resource: organization
+  verb: list_team_repos
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /teams/{id}/repos
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Repository
+    array: true
+    description: RepositoryList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_teams
+  source_operation_id: orgListTeams
+  summary: List an organization's teams
+  resource: organization
+  verb: list_teams
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/teams
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Team
+    array: true
+    description: TeamList
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.list_user_orgs
+  source_operation_id: orgListUserOrgs
+  summary: List a user's organizations
+  resource: organization
+  verb: list_user_orgs
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /users/{username}/orgs
+  params:
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of user
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  results:
+  - status: 200
+    schema_ref: Organization
+    array: true
+    description: OrganizationListWithoutPagination - Organizations without pagination
+      headers
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.publicize_member
+  source_operation_id: orgPublicizeMember
+  summary: Publicize a user's membership
+  resource: organization
+  verb: publicize_member
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /orgs/{org}/public_members/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: membership publicized
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.register_org_runner
+  source_operation_id: registerOrgRunner
+  summary: Register a new organization-level runner
+  resource: organization
+  verb: register_org_runner
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/actions/runners
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: description
+    name: description
+    in: body
+    type: string
+    description: Description of the runner to register.
+  - key: ephemeral
+    name: ephemeral
+    in: body
+    type: boolean
+    description: Register as ephemeral runner https://forgejo.org/docs/latest/admin/actions/security/#ephemeral-runner
+  - key: name
+    name: name
+    in: body
+    type: string
+    required: true
+    description: Name of the runner to register. The name of the runner does not have
+      to be unique.
+  results:
+  - status: 201
+    schema_ref: RegisterRunnerResponse
+    description: RegisterRunnerResponse contains the details of the just registered
+      runner.
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 401
+    class: unauthorized
+    description: APIUnauthorizedError is a unauthorized error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.organization.remove_team_member
+  source_operation_id: orgRemoveTeamMember
+  summary: Remove a team member
+  resource: organization
+  verb: remove_team_member
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /teams/{id}/members/{username}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user to remove
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.remove_team_repository
+  source_operation_id: orgRemoveTeamRepository
+  summary: Remove a repository from a team
+  description: This does not delete the repository, it only removes the repository
+    from the team.
+  resource: organization
+  verb: remove_team_repository
+  tags:
+  - organization
+  http:
+    method: DELETE
+    path: /teams/{id}/repos/{org}/{repo}
+  params:
+  - key: id
+    name: id
+    in: path
+    type: integer
+    format: int64
+    required: true
+    description: id of the team
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: organization that owns the repo to remove
+  - key: repo
+    name: repo
+    in: path
+    type: string
+    required: true
+    description: name of the repo to remove
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: delete
+  deterministic: true
+- id: forgejo.organization.rename_org
+  source_operation_id: renameOrg
+  summary: Rename an organization
+  resource: organization
+  verb: rename_org
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/rename
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: existing org name
+  - key: new_name
+    name: new_name
+    in: body
+    type: string
+    required: true
+    description: New username for this org. This name cannot be in use yet by any
+      other user.
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: create
+  deterministic: true
+- id: forgejo.organization.search_run_jobs
+  source_operation_id: orgSearchRunJobs
+  summary: Search for organization's action jobs according filter conditions
+  resource: organization
+  verb: search_run_jobs
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/actions/runners/jobs
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: labels
+    name: labels
+    in: query
+    type: string
+    description: a comma separated list of run job labels to search for
+  results:
+  - status: 200
+    schema_ref: ActionRunJob
+    array: true
+    description: RunJobList is a list of action run jobs
+  errors:
+  - status: 403
+    class: forbidden
+    description: APIForbiddenError is a forbidden error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.team_search
+  source_operation_id: teamSearch
+  summary: Search for teams within an organization
+  resource: organization
+  verb: team_search
+  tags:
+  - organization
+  http:
+    method: GET
+    path: /orgs/{org}/teams/search
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: include_desc
+    name: include_desc
+    in: query
+    type: boolean
+    description: include search within team description (defaults to true)
+  - key: limit
+    name: limit
+    in: query
+    type: integer
+    description: page size of results
+  - key: page
+    name: page
+    in: query
+    type: integer
+    description: page number of results to return (1-based)
+  - key: q
+    name: q
+    in: query
+    type: string
+    description: keywords to search
+  results:
+  - status: 200
+    description: SearchResults of a successful search
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: read
+  deterministic: true
+- id: forgejo.organization.unblock_user
+  source_operation_id: orgUnblockUser
+  summary: Unblock a user from the organization
+  resource: organization
+  verb: unblock_user
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /orgs/{org}/unblock/{username}
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the org
+  - key: username
+    name: username
+    in: path
+    type: string
+    required: true
+    description: username of the user
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  - status: 422
+    class: bad_request
+    description: APIValidationError is error format response related to input validation
+  effect: update
+  deterministic: true
+- id: forgejo.organization.update_avatar
+  source_operation_id: orgUpdateAvatar
+  summary: Update an organization's avatar
+  resource: organization
+  verb: update_avatar
+  tags:
+  - organization
+  http:
+    method: POST
+    path: /orgs/{org}/avatar
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: image
+    name: image
+    in: body
+    type: string
+    description: image must be base64 encoded
+  results:
+  - status: 204
+    description: APIEmpty is an empty response
+  errors:
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: create
+  deterministic: true
+- id: forgejo.organization.update_org_secret
+  source_operation_id: updateOrgSecret
+  summary: Create or Update a secret value in an organization
+  resource: organization
+  verb: update_org_secret
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /orgs/{org}/actions/secrets/{secretname}
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of organization
+  - key: secretname
+    name: secretname
+    in: path
+    type: string
+    required: true
+    description: name of the secret
+  - key: data
+    name: data
+    in: body
+    type: string
+    required: true
+    description: Data of the secret. Special characters will be retained. Line endings
+      will be normalized to LF to match the
+  results:
+  - status: 201
+    description: response when creating a secret
+  - status: 204
+    description: response when updating a secret
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
+- id: forgejo.organization.update_org_variable
+  source_operation_id: updateOrgVariable
+  summary: Update variable in organization
+  resource: organization
+  verb: update_org_variable
+  tags:
+  - organization
+  http:
+    method: PUT
+    path: /orgs/{org}/actions/variables/{variablename}
+    request_body: json
+  params:
+  - key: org
+    name: org
+    in: path
+    type: string
+    required: true
+    description: name of the organization
+  - key: variablename
+    name: variablename
+    in: path
+    type: string
+    required: true
+    description: name of the variable
+  - key: name
+    name: name
+    in: body
+    type: string
+    description: New name for the variable. If the field is empty, the variable name
+      won't be updated. Forgejo will convert it to
+  - key: value
+    name: value
+    in: body
+    type: string
+    required: true
+    description: Value of the variable to update. Special characters will be retained.
+      Line endings will be normalized to LF to
+  results:
+  - status: 201
+    description: response when updating an org-level variable
+  - status: 204
+    description: response when updating an org-level variable
+  errors:
+  - status: 400
+    class: bad_request
+    description: APIError is error format response
+  - status: 404
+    class: not_found
+    description: APINotFound is a not found error response
+  effect: update
+  deterministic: true
