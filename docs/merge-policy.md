@@ -51,6 +51,21 @@ green.
   > failure, and the silent one is the one this file's skips produce.)
   > Nothing in the repository can catch it — the required list lives in the
   > ruleset — so the two edits go together, by hand.
+
+  > **An advisory check that nobody reads is not a check.** `docs` is
+  > deliberately not required — blocking a hotfix on a documentation build
+  > would be the wrong trade — but the consequence is that a broken publish
+  > rides `main` in silence: the queue never looks at it, so every following
+  > merge inherits a red `main` without having caused it. Measured
+  > 2026-09-10: one wrong file extension in a doc link (`monaco.ts` for
+  > `monaco.tsx`) kept the site from building across **six consecutive
+  > commits and ~100 minutes**, found only by reading the run list by hand.
+  > `.github/workflows/docs.yml` now reports on itself — a failed publish on
+  > `main` opens ONE issue labelled `ci:docs-build` (later failures comment
+  > on it rather than pile up), and the next successful build closes it. The
+  > alert is a state, not a stream. Any other advisory job whose failure
+  > nobody would notice wants the same treatment rather than promotion to
+  > required.
 - **Three required checks run on self-hosted runners** — `test`,
   `vendor-check` and `golangci` route to the organisation's `arc-runners`
   scale set on `merge_group`, because the 20-job cap above is what makes a
