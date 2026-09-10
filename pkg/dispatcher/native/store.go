@@ -209,7 +209,7 @@ func NewStore(root string) (*Store, error) {
 		r := s.rescanner
 		s.mu.Unlock()
 		if r != nil {
-			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, r.interval)
+			s.logger.Warn("native index watcher unavailable: %v — falling back to a %s disk rescan for out-of-process issue changes", err, r.describe())
 		} else {
 			s.logger.Warn("native index watcher unavailable: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", err)
 		}
@@ -338,7 +338,7 @@ func (s *Store) watchLost(iw *indexWatcher) {
 	switch {
 	case logger == nil:
 	case r != nil:
-		logger.Warn("native index watcher: %v — falling back to a %s disk rescan for out-of-process issue changes", errWatchLost, r.interval)
+		logger.Warn("native index watcher: %v — falling back to a %s disk rescan for out-of-process issue changes", errWatchLost, r.describe())
 	default:
 		logger.Warn("native index watcher: %v, and the rescan net is disabled (ITERION_NATIVE_INDEX_RESCAN=off) — out-of-process issue changes will not be seen until restart", errWatchLost)
 	}

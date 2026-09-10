@@ -30,35 +30,43 @@ var rescanIntervalOverride atomic.Pointer[time.Duration]
 // rescanInterval resolves ITERION_NATIVE_INDEX_RESCAN when the net starts —
 // not at package init, which would read the environment before a test's
 // t.Setenv or an embedding process had set it. A Go duration or a bare
-// number of seconds; "off", or any duration or number that is zero or
-// negative ("0", "0s", "-1"), disables the net and restores the
-// historical blind-until-restart behaviour — an explicit disable in any
-// spelling is honoured, never quietly replaced by the default; an
-// unparsable value falls back to the default.
-func rescanInterval() time.Duration {
+// number of seconds; "off", or a duration or number that is zero or
+// negative ("0", "0s", "-1"), disables the net and restores the historical
+// blind-until-restart behaviour — every DISABLING spelling is honoured,
+// never quietly replaced by the default.
+//
+// Anything else — "OFF", "none", "2 s", a typo — is not a disable this can
+// recognise, and it is deliberately NOT read as one: the fallback is the
+// 2s default, because guessing "the operator meant off" would silently
+// remove the correctness net on a host that has no watch. It is also not
+// swallowed. The second return is that raw value, which the caller (which
+// owns the logger this does not) names in the line it writes when the net
+// starts — an operator who mistyped learns it from the log instead of from
+// a board that stops updating.
+func rescanInterval() (interval time.Duration, unread string) {
 	if d := rescanIntervalOverride.Load(); d != nil {
-		return *d
+		return *d, ""
 	}
 	raw := os.Getenv("ITERION_NATIVE_INDEX_RESCAN")
 	if raw == "" {
-		return defaultRescanInterval
+		return defaultRescanInterval, ""
 	}
 	if raw == "off" {
-		return 0
+		return 0, ""
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
 		if d <= 0 {
-			return 0
+			return 0, ""
 		}
-		return d
+		return d, ""
 	}
 	if n, err := strconv.Atoi(raw); err == nil {
 		if n <= 0 {
-			return 0
+			return 0, ""
 		}
-		return time.Duration(n) * time.Second
+		return time.Duration(n) * time.Second, ""
 	}
-	return defaultRescanInterval
+	return defaultRescanInterval, raw
 }
 
 // reconcileScanning and reconcileScanned are test seams, unset in
@@ -324,11 +332,11 @@ func (s *Store) rebuildAsync(what string) {
 // restart. Returns nil when the net is disabled. A rescan error is logged
 // when it changes, not on every tick.
 func startFallbackRescan(s *Store) *indexRescanner {
-	interval := rescanInterval()
+	interval, unread := rescanInterval()
 	if interval <= 0 {
 		return nil
 	}
-	r := &indexRescanner{interval: interval, stop: make(chan struct{}), done: make(chan struct{})}
+	r := &indexRescanner{interval: interval, envUnread: unread, stop: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
 		t := time.NewTicker(interval)
@@ -360,10 +368,25 @@ func startFallbackRescan(s *Store) *indexRescanner {
 
 // indexRescanner is the fallback net's goroutine handle.
 type indexRescanner struct {
-	interval  time.Duration
+	interval time.Duration
+	// envUnread is the ITERION_NATIVE_INDEX_RESCAN value the resolver
+	// could not read, "" when there was none — see describe.
+	envUnread string
 	stop      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+// describe names the cadence the net runs at, for the one line each
+// caller writes when it arms one. It also names a value the operator set
+// and this could not read: falling back to the default is the safe
+// choice, doing it in silence is not — the board would just keep
+// updating at a cadence nobody asked for.
+func (r *indexRescanner) describe() string {
+	if r.envUnread == "" {
+		return r.interval.String()
+	}
+	return fmt.Sprintf("%s (ITERION_NATIVE_INDEX_RESCAN=%q is neither a Go duration nor a number of seconds and was ignored; %q disables the net)", r.interval, r.envUnread, "off")
 }
 
 func (r *indexRescanner) Close() error {
