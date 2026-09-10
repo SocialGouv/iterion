@@ -762,28 +762,46 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the facade was refused the only credential its model could use.
 	// Unpinned or unresolvable routes keep everything (fail open toward
 	// protection: that run takes whatever the process holds).
-	// The tiers ride the SAME walk, deliberately: a tier collected outside
-	// this filter would name a credential the run holds but cannot spend,
-	// which is the misattribution the filter exists to prevent. Deduplicated
-	// because a tier is a fact about the run, not a per-slot count.
 	spend := spendableProviders(wf, modelOverrides, runFallbacks)
 	seen := map[string]bool{}
-	tiers := map[string]bool{}
 	for prov, fp := range apiKeyFPs {
 		if fp != "" && !seen[fp] && spend.allows(strings.ToLower(string(prov))) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
-			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
 	}
 	for kind, fp := range bundle.OAuthFingerprints {
 		if fp != "" && !seen[fp] && spend.allows(providerOfOAuthKind(kind)) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
-			tiers[credentialTierForSlot(bundle, res.grant, kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)] = true
 		}
 	}
 	sort.Strings(res.fingerprints)
+
+	// Which TIERS funded the run — the same spendable narrowing, but walked
+	// over the slots the bundle actually SEALED rather than over the
+	// fingerprint maps. That is the source logGrantedCredentials reads, so
+	// the field and the line an operator greps answer identically.
+	//
+	// It cannot ride the harvest above, which is keyed on a fingerprint and
+	// skips a credential that has none: setOAuthFingerprint refuses an empty
+	// stamp outright, so an unstamped forfait never even enters the map. A
+	// credential with no audit identity still PAID, and a run funded only by
+	// one reported no tier at all — an empty answer where the log line says
+	// `<unstamped>`, which is exactly the confident silence this field exists
+	// to remove. Deduplicated: a tier is a fact about the run, not a
+	// per-slot count.
+	tiers := map[string]bool{}
+	for prov := range bundle.APIKeys {
+		if spend.allows(strings.ToLower(string(prov))) {
+			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
+		}
+	}
+	for kind := range bundle.OAuthCredentials {
+		if spend.allows(providerOfOAuthKind(kind)) {
+			tiers[credentialTierForSlot(bundle, res.grant, kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)] = true
+		}
+	}
 	for tier := range tiers {
 		res.tiers = append(res.tiers, tier)
 	}
@@ -906,6 +924,12 @@ func (c credResolution) applyTo(r *store.Run) {
 	r.CredFingerprints = s.Fingerprints
 	r.CredentialTiers = s.Tiers
 	r.SkippedCredReopensAt = s.SkippedReopensAt
+	// Both stores clear this on a stamp — "a re-resolution is a fresh
+	// attempt, it counts until it proves idle". At launch the document is
+	// new and the marker is already nil, so this changes nothing today; it
+	// is here so the in-memory twin cannot answer differently from the
+	// persisted one if it is ever applied to a loaded run.
+	r.LLMIdleSince = nil
 }
 
 // spendable answers "may a run with these routes spend a credential of
