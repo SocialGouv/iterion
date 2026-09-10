@@ -1067,13 +1067,16 @@ Four properties are load-bearing:
   pending until the run really ends. The test is the run's own
   `continuation_state` — a DLQ park is final whatever its `retry_after` still
   says, and is released, as is a resumable park nothing owns.
-- **A park an OPERATOR revives raises it again.** The two releases above are
+- **A park an OPERATOR revives raises it again.** The releases above are
   correct — nothing was going to resume those runs — right up until somebody
-  does: `POST /api/admin/dlq/{seq}/replay` and `POST /api/runs/{id}/resume`
-  both wake the SAME run to go on rewriting its branch. Both re-raise the
-  warning, over that run's own resolved row and nobody else's. Without it the
+  does: an operator resume (`POST /api/runs/{id}/resume`, or answering in the
+  studio) wakes the SAME run to go on rewriting its branch, so it re-raises the
+  warning over that run's own resolved row and nobody else's. Without it the
   revived pass would run behind a green check and then keep it forever, since
-  the release at the end of it finds nothing in flight to resolve.
+  the release at the end of it finds nothing in flight to resolve. A **DLQ
+  replay** deliberately does not: it republishes the parked message verbatim
+  and the runner drops it for a DLQ-parked run without touching the doc, so a
+  warning raised there would be one nothing could ever release.
 
 The claim needs `PublicURL` configured, exactly like the gate's: without it a
 status cannot name its run, and a claim nobody can attribute could never be
