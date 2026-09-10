@@ -134,11 +134,22 @@ const (
 // tenant — the tenant-context-free lanes stay blind to team forks by
 // contract (see bot_resolver.go).
 func (s *Server) pauseNoticeRoleForRun(ctx context.Context, run *store.Run) pauseNoticeRole {
-	botID := strings.TrimSpace(run.BotID)
+	return s.handoffRoleFor(ctx, run.BotSourceTenant, run.BotID)
+}
+
+// handoffRoleFor is that same walk, keyed on the provenance the caller HAS.
+// A run supplies BotSourceTenant; a LAUNCH has no run doc yet and supplies the
+// tenant it launches under — the fix-in-flight claim next door needs exactly
+// this. Extracted rather than copied: the tier precedence (team fork before
+// baked catalog) is the part that is easy to get wrong, and two copies of it
+// would drift silently, handing a team's fixer the neutral treatment on one
+// path and the right one on the other.
+func (s *Server) handoffRoleFor(ctx context.Context, sourceTenant, bot string) pauseNoticeRole {
+	botID := strings.TrimSpace(bot)
 	if botID == "" {
 		return pauseNoticeRoleUnknown
 	}
-	if m := s.teamBotManifest(ctx, run.BotSourceTenant, botID); m != nil {
+	if m := s.teamBotManifest(ctx, sourceTenant, botID); m != nil {
 		return pauseNoticeRoleFor(m.Produces, m.Consumes)
 	}
 	entry, ok, err := s.effectiveFindByName(botID)
@@ -147,7 +158,7 @@ func (s *Server) pauseNoticeRoleForRun(ctx context.Context, run *store.Run) paus
 		// a manifest that declares no role: Warn on it (the same signal
 		// handoffConsumersFor Warns on) and fall back to the neutral notice.
 		if s.logger != nil {
-			s.logger.Warn("forge gate: pause-notice role for %s falls back to neutral, cannot read the bot catalog: %v", botID, err)
+			s.logger.Warn("forge gate: handoff role for %s falls back to neutral, cannot read the bot catalog: %v", botID, err)
 		}
 		return pauseNoticeRoleUnknown
 	}

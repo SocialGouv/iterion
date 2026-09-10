@@ -212,6 +212,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if err != nil || run == nil {
 		return nil
 	}
+	// Release the FIXER claim first, and before every stand-down below: a
+	// fixer holds no gate_context, so every early return in this function is
+	// a path on which its claim would otherwise stay pending forever. The
+	// call is a no-op for a non-terminal run and for any run that never
+	// claimed, which is nearly all of them.
+	s.clearFixInFlight(ctx, run)
+
 	// A paused run is expected to resume and post its own verdict.
 	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
 		return nil
