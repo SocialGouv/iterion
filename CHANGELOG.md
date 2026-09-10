@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.1](https://github.com/SocialGouv/iterion/compare/v3.132.0...v3.132.1) (2026-09-10)
+
+### Bug Fixes
+
+* **runtime:** a bot's devbox.json reaches the driver bots actually run on ([#1061](https://github.com/SocialGouv/iterion/issues/1061)) ([505c54c](https://github.com/SocialGouv/iterion/commit/505c54c16b60e8bfbda3e758079abbe451fb7c6e))
+
+    <details><summary>why</summary>
+
+    `devbox.json` next to a `main.bot` is the documented, durable way for a bot to declare the binaries its steps need — and until now it was declined on the kubernetes driver, which is where bots actually run in cloud. The event said so (`no host bind mount on this driver`), but only to whoever went looking: nothing failed except, later, the step that needed the tool.
+
+    </details>
+
 ## [3.132.0](https://github.com/SocialGouv/iterion/compare/v3.131.5...v3.132.0) (2026-09-10)
 
 ### Features
