@@ -248,6 +248,14 @@ func TestClearFixInFlight_ResolvesOurOwnClaim(t *testing.T) {
 		if isFixInFlight(gc.last) {
 			t.Errorf("%s: still reads as in-flight after the run ended", status)
 		}
+		// The POSTED marker, not the constant: descriptions go out through
+		// TruncateStatusDescription, and a resolved marker the claim cannot
+		// recognise reads to it as a foreign verdict — so a later fixer on
+		// that head would stand down and stay invisible. The claim's own
+		// round trip is asserted the same way in ClaimsForAFixer.
+		if !isFixDone(gc.last) {
+			t.Errorf("%s: released marker %q is not recognisable as ours", status, gc.last.Description)
+		}
 	}
 }
 
