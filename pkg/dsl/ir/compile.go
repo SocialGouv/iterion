@@ -291,23 +291,29 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// reads \" as a LITERAL quote character — the argument then carries quotes
 	// instead of being quoted by them.
 	//
-	// The check needs no knowledge of the mode: under strict escape the lexer
-	// would already have turned \" into ", so seeing the two characters at
-	// this point IS the proof that no unescaping happened.
-	//
 	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
 	//   npm error code EINVALIDPACKAGENAME
 	//   Invalid package name """ of package ""@openai/codex@0.154.0""
-	// The step was best-effort, so the bootstrap had never once run and the
-	// sandbox silently kept an older binary. An error, not a warning: the
-	// string provably cannot do what it says, and a warning scrolls past.
+	// The step is best-effort, so the bootstrap had never once run and the
+	// sandbox silently kept an older binary while the run reported success.
+	//
+	// A WARNING, not an error, and deliberately so. The tempting argument —
+	// "under strict escape the lexer would have decoded \", so seeing it here
+	// proves no unescaping happened" — is FALSE: expectString accepts a
+	// TokenString from three scanners and only scanString consults
+	// strictEscape. A backtick raw string and a `|` block scalar keep \"
+	// verbatim BY DESIGN, and \" inside a shell double-quoted region is then a
+	// correct escape (bots/wiki-gen writes JSON that way). The compiler cannot
+	// tell the three apart here, so it cannot prove the defect — only point at
+	// the shape. Refusing would break a working bundle at launch, including
+	// ones stored outside this tree.
 	if strings.Contains(blk.PostCreate, `\"`) {
-		c.errorfAt(DiagEscapedQuoteInShellString, name, "",
-			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"), which reaches the shell as a LITERAL quote "+
-				"character — the command runs with quotes inside its arguments instead of around them. Drop the quotes when the "+
-				"value has no space, use single quotes when it does, or opt the file into `## strict-escape: on`.",
+		c.warnfAt(DiagEscapedQuoteInShellString, name, "",
+			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"). In a \"…\" value the backslash is kept "+
+				"verbatim and the shell reads \\\" as a LITERAL quote character, so the command runs with quotes inside its "+
+				"arguments instead of around them — drop the quotes when the value has no space, or use single quotes when it "+
+				"does. In a backtick raw string or a `|` block scalar, \\\" is verbatim by design and this is likely correct.",
 			scope, name)
-		return nil
 	}
 
 	spec := &SandboxSpec{
