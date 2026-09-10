@@ -156,7 +156,7 @@ func (s *Server) allowedOrigins() []string {
 	// shape a browser Origin header carries (no path, no trailing slash).
 	if s.cfg.PublicURL != "" {
 		if u, err := url.Parse(s.cfg.PublicURL); err == nil && u.Scheme != "" && u.Host != "" {
-			origins = append(origins, u.Scheme+"://"+u.Host)
+			origins = append(origins, normalizeOrigin(u))
 		}
 	}
 	// A deployment can be reached on more than one public host, and PublicURL
@@ -190,6 +190,26 @@ func loadExtraAllowedOrigins(logger *iterlog.Logger) []string {
 	return valid
 }
 
+// normalizeOrigin renders u the way a browser serialises an Origin header
+// (RFC 6454): lowercase scheme and host, default port omitted.
+//
+// isAllowedOrigin matches with ==, so anything that keeps its author's
+// capitalisation ("https://Studio.Example") or an explicit default port
+// ("https://host:443") is accepted by a shape check and then never matches a
+// real request — configured, silent and inert. sameOrigin already compares
+// with EqualFold; this is the allowlist half of the same rule.
+func normalizeOrigin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Host)
+	// LastIndex is IPv6-safe here: "[fe80::443]:443" cuts at the port colon,
+	// and a bracketed host with no port cannot end in ":443".
+	if (scheme == "https" && strings.HasSuffix(host, ":443")) ||
+		(scheme == "http" && strings.HasSuffix(host, ":80")) {
+		host = host[:strings.LastIndex(host, ":")]
+	}
+	return scheme + "://" + host
+}
+
 func splitAllowedOrigins(raw string) (valid, malformed []string) {
 	for _, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)
@@ -202,11 +222,17 @@ func splitAllowedOrigins(raw string) (valid, malformed []string) {
 		// nothing ambiguous to resolve. A real path is refused — it means the
 		// author expected path-scoping the gate does not do, so silently
 		// widening the whole host would grant more than they asked for.
-		if err != nil || u.Scheme == "" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		//
+		// A '*' is refused for the same reason and it is the important one:
+		// "https://*.example.com" parses perfectly, so without this it would
+		// be accepted, never warned about, and never match — an operator
+		// believing a whole subdomain tree was allowed while every request
+		// from it is refused. The gate matches exact origins, by design.
+		if err != nil || u.Scheme == "" || u.Host == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Host, "*") {
 			malformed = append(malformed, entry)
 			continue
 		}
-		valid = append(valid, u.Scheme+"://"+u.Host)
+		valid = append(valid, normalizeOrigin(u))
 	}
 	return valid, malformed
 }
@@ -270,21 +296,31 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	// to look; before this, looking found nothing whether or not anything
 	// had been refused, which reads identically to "all good".
 	//
-	// Warn, not Debug: the refusal is final and nothing downstream retries.
+	// Info, deliberately, and NOT Warn. pkg/log dispatches its hook at warn
+	// and above, and errtrack's hook turns a warn into a Sentry BREADCRUMB on
+	// the process-wide hub — a ring of 100. The gate runs before auth, so at
+	// warn an unauthenticated caller could evict the whole breadcrumb trail
+	// that the next captured error would have carried, with about a hundred
+	// requests. Bounding the line does not bound that: it is the RECORD COUNT
+	// that evicts, not its size. Info stays below the hook threshold and above
+	// the default level (info), so the line is visible in production without
+	// letting a stranger degrade everyone's error context.
 	//
-	// Deliberately unthrottled, though the gate runs before auth so an
-	// unauthenticated caller can drive this line. Suppressing under load is
-	// the tempting fix and it is the wrong one here: a flood would then hide
-	// the single legitimate refusal this log exists to surface, which is the
-	// silence being fixed. The line is bounded instead (logSafe caps every
-	// value), and request rate belongs to the ingress, not to a log call.
+	// It is also the honest level. A refused cross-origin request is the gate
+	// working, not an anomaly; the anomaly is a LEGITIMATE client among them,
+	// which no level can distinguish on its own.
+	//
+	// Unthrottled, though. Suppressing under load is the tempting fix and it
+	// is the wrong one: a flood would then hide the single legitimate refusal
+	// this log exists to surface, which is the silence being fixed. Each line
+	// is bounded instead (logSafe), and request rate belongs to the ingress.
 	// Every value here is chosen by the caller being refused, so each goes
 	// through logSafe and none through %q: %q would ALSO escape a CRLF, which
 	// sounds like belt-and-braces but masks whether the sanitiser works — a
 	// test aimed at a %q-rendered value passes with logSafe removed. One
 	// stated mechanism, uniformly applied, is the one that stays checkable.
 	// The origin is last so a trailing value cannot be read as a further field.
-	s.logger.Warn("origin gate: refused %s %s from origin %s", logSafe(r.Method), logSafe(r.URL.Path), logSafe(r.Header.Get("Origin")))
+	s.logger.Info("origin gate: refused %s %s from origin %s", logSafe(r.Method), logSafe(r.URL.Path), logSafe(r.Header.Get("Origin")))
 	httpx.WriteJSON(w, http.StatusForbidden, map[string]string{
 		"error": "cross-origin request rejected: origin not allowed (must be same-origin, loopback, or the configured public URL)",
 	})

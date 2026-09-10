@@ -58,7 +58,8 @@ What is recognised, via `isAllowedOriginReq`
 4. the configured **`PublicURL`** — for a proxy that rewrites `Host` so (1)
    cannot match.
 5. **`ITERION_ALLOWED_ORIGINS`** — a comma-separated list of extra origins
-   (`scheme://host`, no path).
+   (`scheme://host`, no path). See the warning below: it is a **first-party**
+   trust grant, not a CORS relaxation.
 
 `sameOrigin` also refuses a plaintext `http://` Origin when `X-Forwarded-Proto`
 proves the request arrived over TLS. The check is one-sided on purpose: an
@@ -80,18 +81,32 @@ Both were true here and both were load-bearing in the original defect:
 
 ### A refusal is logged, and that is what makes the gate operable
 
-`requireSafeOrigin` writes one `WARN` per refusal naming the method, the path
-and the Origin. Nothing else records it — the 403 goes to the caller and no
+`requireSafeOrigin` logs one line per refusal naming the method, the path and
+the Origin. Nothing else records it — the 403 goes to the caller and no
 further, so before this line "nothing legitimate is being refused" and "we have
 no way to see one" produced the same evidence: an empty grep.
 
 That matters most for a client believed to send **no** Origin. The board-MCP
 HTTP transport is the shipped example: sandboxed `claude_code` and `pi` reach
 `POST /api/v1/mcp/board`, which the gate covers. Node's `fetch` sets
-`request.origin = "client"`, so undici appends no header and the call passes —
-measured on Node 24, with a control call carrying an explicit `Origin` to prove
-the observation could have seen one. An inference of that shape is worth
-re-checking against the log after any client or runtime upgrade.
+`request.origin = "client"`, so undici appends no header and the call passes.
+Measured, not inferred — on Node 24 **and** on Bun, each with a control call
+carrying an explicit `Origin` to prove the observation could have seen one, and
+`pi` is itself a `#!/usr/bin/env node` script, so both named clients are on the
+measured runtime. Worth re-checking against the log after a client upgrade
+rather than re-deriving.
+
+It logs at **`info`, deliberately not `warn`.** `pkg/log` dispatches its `Hook`
+at warn and above, and `errtrack`'s hook turns a warn into a Sentry
+**breadcrumb** on the process-wide hub — a ring of 100
+(`defaultMaxBreadcrumbs`). The gate runs *before* auth, so at warn an
+unauthenticated caller could evict the entire breadcrumb trail of the next
+captured error in about a hundred requests. Bounding the line does not bound
+that: it is the record COUNT that evicts, not its size. `info` sits below the
+hook threshold and at the default level, so the line stays visible in
+production without letting a stranger degrade everyone's error context. It is
+also the truthful level — a refused cross-origin request is the gate working;
+the anomaly is a *legitimate* client among them, which no level distinguishes.
 
 The logged values are chosen by whoever is refused, so each goes through
 `logSafe`: control characters become `.` (a raw CRLF in an Origin would
@@ -112,10 +127,36 @@ the refusals, which are the only interesting event.
 - **`ITERION_ALLOWED_ORIGINS`** widens it instead, which is the proportionate
   answer when the cause is a host the allowlist does not name.
 
-A malformed entry in `ITERION_ALLOWED_ORIGINS` is **named at startup**, not
-dropped: functionally it is identical to an absent one — the origin is refused
-either way — so a typo would otherwise leave a guard that looks configured and
-matches nothing.
+### `ITERION_ALLOWED_ORIGINS` is a first-party trust grant
+
+**Only name hosts that ARE this deployment.** The list it feeds
+(`allowedOrigins`) is not read by the CSRF gate alone — it is the one allowlist
+behind three different decisions:
+
+| read by | what naming a host grants |
+|---|---|
+| `requireSafeOrigin` | its state-changing `/api` requests stop being refused |
+| `SetWebSocketOriginCheck(s.isAllowedOrigin)` (`hub.go`) | **WebSocket upgrades**, which carry cookies and are *not* CORS-gated |
+| `reflectAllowedOrigin` | `Access-Control-Allow-Origin`, i.e. permission to **read** responses |
+
+So an entry here is much closer to "this origin is us" than to "relax CORS for
+a partner". A partner front-end does not belong in it.
+
+An entry is **normalised the way a browser serialises an `Origin`** (RFC 6454:
+lowercase scheme and host, default port omitted), because the match is `==`.
+Skip that and `https://Studio.Example` or `https://host:443` parses perfectly,
+is accepted, and then matches nothing — configured, silent and inert. A `*` is
+refused for the same reason: the gate matches exact origins, so a wildcard
+would look like a granted subdomain tree while every request from it is
+refused. Same for a malformed entry, **named at startup** rather than dropped —
+functionally it is identical to an absent one, so a typo would otherwise leave
+a guard that looks configured and matches nothing.
+
+The two switches resolve at **different moments**: `ITERION_REQUIRE_ORIGIN` is
+read per request, while the allowlist is settled once at construction. Changing
+the allowlist therefore needs a restart — invisible on k8s, where an env change
+is a rollout anyway, but worth knowing when reaching for it during an incident.
+`ITERION_REQUIRE_ORIGIN=0` is the one that takes effect on the next request.
 
 ## Session cookies carry the `__Host-` prefix
 

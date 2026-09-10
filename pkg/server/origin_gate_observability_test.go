@@ -17,7 +17,43 @@ func gateServer(t *testing.T, buf *bytes.Buffer) *Server {
 	t.Helper()
 	return &Server{
 		cfg:    Config{Port: 4123, PublicURL: "https://studio.example"},
-		logger: iterlog.New(iterlog.LevelWarn, buf),
+		logger: iterlog.New(iterlog.LevelInfo, buf),
+	}
+}
+
+// TestRefusalDoesNotFireTheLogHook is the reason the refusal logs at info.
+//
+// pkg/log dispatches its Hook at warn and above, and errtrack's hook turns a
+// warn into a Sentry breadcrumb on the process-wide hub — a ring of 100. The
+// gate runs BEFORE auth, so a warn here would let an unauthenticated caller
+// evict the entire breadcrumb trail of the next captured error in about a
+// hundred requests. Bounding the line does not bound that; it is the record
+// count that evicts.
+func TestRefusalDoesNotFireTheLogHook(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelInfo, &buf)
+
+	var hooked []string
+	logger.SetHook(func(level iterlog.Level, msg string, _ map[string]any) {
+		hooked = append(hooked, msg)
+	})
+	s := &Server{cfg: Config{Port: 4123, PublicURL: "https://studio.example"}, logger: logger}
+
+	for i := 0; i < 200; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/me/api-keys", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		if s.originGateAllows(httptest.NewRecorder(), req) {
+			t.Fatal("gate admitted a foreign origin")
+		}
+	}
+
+	if len(hooked) != 0 {
+		t.Errorf("%d refusal(s) reached the log hook — on a deployment with SENTRY_DSN set each is a breadcrumb, and 100 of them evict the trail the next error would have carried.\nfirst: %s", len(hooked), hooked[0])
+	}
+	// The line must still be emitted: not firing the hook is only acceptable
+	// because the refusal is still visible at the default level.
+	if buf.Len() == 0 {
+		t.Error("no refusal was logged at all — the fix for the hook must not reintroduce the silence")
 	}
 }
 
@@ -259,6 +295,71 @@ func TestExtraAllowedOriginsIsOffByDefault(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rec.Code)
+	}
+}
+
+// TestAllowlistEntriesAreNormalisedTheWayABrowserSerialisesAnOrigin: the
+// allowlist is matched with ==, against an Origin a browser serialises with a
+// lowercase host and no default port (RFC 6454). An entry that merely PARSES
+// is therefore not an entry that works — it is accepted, warned about by
+// nobody, and refuses every request from the host it names.
+//
+// Driven through the gate, not through the parser, and covering PublicURL as
+// well as the env var: both build an allowlist entry from a URL, so a fix in
+// one of them alone leaves the other silently inert.
+func TestAllowlistEntriesAreNormalisedTheWayABrowserSerialisesAnOrigin(t *testing.T) {
+	cases := []struct {
+		name      string
+		publicURL string
+		env       string
+		origin    string
+	}{
+		{"env entry differing only in case", "https://first.example", "https://Second.Example", "https://second.example"},
+		{"env entry with an explicit default port", "https://first.example", "https://second.example:443", "https://second.example"},
+		{"env entry with an uppercase scheme", "https://first.example", "HTTPS://second.example", "https://second.example"},
+		{"PublicURL differing only in case", "https://First.Example", "", "https://first.example"},
+		{"PublicURL with an explicit default port", "https://first.example:443", "", "https://first.example"},
+		{"http PublicURL with an explicit default port", "http://first.example:80", "", "http://first.example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ITERION_ALLOWED_ORIGINS", tc.env)
+
+			reached := false
+			guard := BrowserGuard(4123, tc.publicURL, nil,
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { reached = true }))
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/native/issues", nil)
+			req.Host = "internal-svc.cluster.local" // force the allowlist branch
+			req.Header.Set("Origin", tc.origin)
+			rec := httptest.NewRecorder()
+			guard.ServeHTTP(rec, req)
+
+			if !reached {
+				t.Errorf("origin %q was refused (%d) though the allowlist names that host — configured and inert", tc.origin, rec.Code)
+			}
+		})
+	}
+}
+
+// TestWildcardOriginIsRefusedLoudly: "https://*.example.com" parses cleanly,
+// so a shape check accepts it. The gate matches exact origins, so it would
+// then never match — an operator believing a subdomain tree was allowed while
+// every request from it is refused. It has to be named at startup.
+func TestWildcardOriginIsRefusedLoudly(t *testing.T) {
+	valid, malformed := splitAllowedOrigins("https://*.example.com")
+	if len(valid) != 0 {
+		t.Errorf("a wildcard was admitted as an origin: %v — it can never match", valid)
+	}
+	if len(malformed) != 1 {
+		t.Fatalf("malformed = %v, want the wildcard entry", malformed)
+	}
+
+	t.Setenv("ITERION_ALLOWED_ORIGINS", "https://*.example.com")
+	var buf bytes.Buffer
+	loadExtraAllowedOrigins(iterlog.New(iterlog.LevelWarn, &buf))
+	if !strings.Contains(buf.String(), "*.example.com") {
+		t.Errorf("the wildcard entry was dropped without a word:\n%s", buf.String())
 	}
 }
 
