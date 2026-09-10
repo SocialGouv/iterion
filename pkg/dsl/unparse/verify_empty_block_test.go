@@ -16,12 +16,28 @@ import (
 // anything is the compiler's call (a `recovery:` block's presence is read
 // by the verified-action checks; the others compile as their absence does).
 func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
+	for name, f := range emptyBlockCases() {
+		t.Run(name, func(t *testing.T) {
+			text := Unparse(f)
+			if err := Verify(f, text); err != nil {
+				t.Fatalf("an empty %s block does not round-trip: %v\n%s", name, err, text)
+			}
+			if again := Unparse(parser.Parse("", text).File); again != text {
+				t.Fatalf("the round-trip is not stable:\n%s\n---\n%s", text, again)
+			}
+		})
+	}
+}
+
+// emptyBlockCases is one document per block the AST can hold empty, each
+// on a document that compiles (so the guard compares programs).
+func emptyBlockCases() map[string]*ast.File {
 	doc := func(mut func(f *ast.File)) *ast.File {
 		f := promptDoc("x")
 		mut(f)
 		return f
 	}
-	cases := map[string]*ast.File{
+	return map[string]*ast.File{
 		"vars":        doc(func(f *ast.File) { f.Vars = &ast.VarsBlock{} }),
 		"presets":     doc(func(f *ast.File) { f.Presets = &ast.PresetsBlock{} }),
 		"attachments": doc(func(f *ast.File) { f.Attachments = &ast.AttachmentsBlock{} }),
@@ -50,14 +66,26 @@ func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
 		"workflow resources":   doc(func(f *ast.File) { f.Workflows[0].Resources = &ast.ResourcesBlock{} }),
 		"workflow compaction":  doc(func(f *ast.File) { f.Workflows[0].Compaction = &ast.CompactionBlock{} }),
 	}
-	for name, f := range cases {
+}
+
+// The JSON transport carries every empty block the text carries: a studio
+// open → save of an unrelated field must not delete a bare `resources:`
+// (or any other empty header) from the file, so what the transport hands
+// back writes exactly what the document wrote.
+func TestEmptyBlocksSurviveTheJSONTransport(t *testing.T) {
+	for name, f := range emptyBlockCases() {
 		t.Run(name, func(t *testing.T) {
-			text := Unparse(f)
-			if err := Verify(f, text); err != nil {
-				t.Fatalf("an empty %s block does not round-trip: %v\n%s", name, err, text)
+			want := Unparse(f)
+			data, err := ast.MarshalFile(f)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if again := Unparse(parser.Parse("", text).File); again != text {
-				t.Fatalf("the round-trip is not stable:\n%s\n---\n%s", text, again)
+			back, err := ast.UnmarshalFile(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Unparse(back); got != want {
+				t.Fatalf("the transport dropped or changed the empty %s block:\n%s\n--- after the transport ---\n%s", name, want, got)
 			}
 		})
 	}

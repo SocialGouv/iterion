@@ -184,7 +184,7 @@ func (d toolDiag) routeConsequence() string {
 func (d toolDiag) hint(name string) string {
 	h := toolHint(name)
 	if d.blocking {
-		return h + " If the name really is an MCP server's tool, spell it `mcp.<server>.<tool>` — or declare the server (a top-level `mcp_server:`, or an `mcp:` block on the workflow or the node), which softens this to a warning"
+		return h + " If the name really is an MCP server's tool, spell it `mcp.<server>.<tool>` — or show the server exists (a top-level `mcp_server:`, or an `mcp:` block on the workflow or the node that names, disables, inherits or autoloads servers; an empty block shows nothing), which softens this to a warning"
 	}
 	return h + " Reported as a warning, not an error: a bare name also resolves onto an MCP tool when it is unique across the connected servers, and the ambient catalog (a project .mcp.json, an enabled plugin) is merged after compilation — name it `mcp.<server>.<tool>` to be explicit"
 }
