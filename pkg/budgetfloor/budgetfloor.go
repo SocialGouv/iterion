@@ -97,11 +97,18 @@ func (r Reserve) WindowPercent(w Window) int {
 }
 
 // Countable reports whether the reserve holds anything a per-repo share can
-// be computed against. A window percentage is NOT countable: slicing a live
-// five-hour window between repositories would need real-time arbitration
-// across replicas, and a share of it computed locally would be a number two
-// pods disagree about.
-func (r Reserve) Countable() bool { return r.MonthlyUSD > 0 || r.ConcurrentRuns > 0 }
+// actually be resolved against — which means MonthlyUSD alone, because
+// MonthlyUSD is the only axis RepoCap can express a repository ceiling on.
+//
+// The other two are not "smaller" answers, they are undefined ones. Slicing a
+// live five-hour window between repositories would need real-time arbitration
+// across replicas, and a share computed locally is a number two pods disagree
+// about. A share of a concurrency reserve is not a monthly ceiling at all —
+// counting it as countable would let Validate accept the pair and RepoCap
+// then resolve it to (0, 0), which reads as UNLIMITED downstream: the silent
+// zero Validate's own message says it refuses, arriving in the more dangerous
+// shape.
+func (r Reserve) Countable() bool { return r.MonthlyUSD > 0 }
 
 func (r Reserve) Validate() error {
 	for _, f := range []struct {
@@ -166,9 +173,10 @@ type RepoQuota struct {
 	RunsPerMonth int `bson:"runs_per_month,omitempty" json:"runs_per_month,omitempty"`
 	// ReserveSharePercent expresses the cap as a share of a workload's
 	// reservation instead of an absolute. Resolved against that reservation's
-	// COUNTABLE axes; a window-only reserve cannot serve it (see
-	// Reserve.Countable) and Validate refuses the pair rather than silently
-	// resolving to zero — which would read as "this repo may spend nothing".
+	// MonthlyUSD, the only axis a repository ceiling can be expressed on (see
+	// Reserve.Countable); a reserve holding none of it cannot serve a share,
+	// and Validate refuses the pair rather than silently resolving to zero —
+	// which RepoCap's caller would read as "unlimited", not as "nothing".
 	ReserveSharePercent int `bson:"reserve_share_percent,omitempty" json:"reserve_share_percent,omitempty"`
 	// ShareOfBot names which reservation ReserveSharePercent slices.
 	ShareOfBot string `bson:"share_of_bot,omitempty" json:"share_of_bot,omitempty"`
@@ -256,10 +264,13 @@ func (p Policy) Validate() error {
 			}
 			if !res.Reserve.Countable() {
 				// Refused rather than resolved to zero: a share of a window
-				// reserve is not a small number, it is an undefined one.
-				return fmt.Errorf("budgetfloor: repository %q takes %d%% of %q's reservation, but that reservation holds only window percentages — "+
-					"a share of a live provider window cannot be computed without real-time arbitration between replicas. "+
-					"Give %q a monthly_usd or concurrent_runs reserve, or cap the repository with monthly_usd / runs_per_month directly",
+				// (or of a slot count) is not a small number, it is an
+				// undefined one — and a zero here would read as UNLIMITED at
+				// the gate, not as "nothing".
+				return fmt.Errorf("budgetfloor: repository %q takes %d%% of %q's reservation, but that reservation holds no monthly_usd — "+
+					"only a dollar reserve can be sliced into a repository ceiling (a share of a live provider window, or of a concurrency slot, "+
+					"is not a monthly amount any replica could compute on its own). "+
+					"Give %q a monthly_usd reserve, or cap the repository with monthly_usd / runs_per_month directly",
 					repo, q.ReserveSharePercent, q.ShareOfBot, q.ShareOfBot)
 			}
 		}
