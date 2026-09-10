@@ -155,6 +155,7 @@ function ReviewMergeCardTurn({
     if (!forceRetry) return;
     switch (forceRetry.kind) {
       case "reply":
+        if (reply.trim().length === 0) return;
         return sendReply(true);
       case "merge":
         return merge(forceRetry.action, true);
@@ -279,7 +280,9 @@ function ReviewMergeCardTurn({
         <Button
           size="sm"
           variant="primary"
-          disabled={busy}
+          disabled={
+            busy || (forceRetry.kind === "reply" && reply.trim().length === 0)
+          }
           onClick={() => void retryWithForce()}
         >
           Resume with updated workflow (force)

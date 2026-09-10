@@ -168,4 +168,34 @@ describe("ReviewMergeCard — pipeline board handoff", () => {
       force: true,
     });
   });
+
+  it("does not force an emptied review reply", async () => {
+    apiMocks.resumeRun.mockRejectedValueOnce(
+      new ApiError(
+        400,
+        "API error 400: resume rejected",
+        ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+      ),
+    );
+    render(
+      <ReviewMergeCard
+        runId="run-guided"
+        message={guidedMessage()}
+        sourceOverride={null}
+        onResumed={vi.fn()}
+      />,
+    );
+
+    const reply = screen.getByPlaceholderText(/Reply to the reviewer/i);
+    fireEvent.change(reply, { target: { value: "Initial review feedback" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send reply" }));
+    const force = await screen.findByRole("button", {
+      name: "Resume with updated workflow (force)",
+    });
+    fireEvent.change(reply, { target: { value: "" } });
+
+    expect(force.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(force);
+    expect(apiMocks.resumeRun).toHaveBeenCalledTimes(1);
+  });
 });
