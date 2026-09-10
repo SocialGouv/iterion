@@ -39,22 +39,25 @@ list, with the two paths that still launch outside it.
    run consumes one slot at this point.
 
 Steps 3 and 5 are additionally **lowered by any capacity reservation that
-does not name this launch's bot** — the floor described below. A
-reservation never creates a limit that is not configured, so a deployment
-with no concurrency or cost cap is unaffected by one.
+does not name this launch's bot** — the floor described below — and refuse
+outright when those reserves take the whole cap (see [When the reserves
+swallow the whole cap](#when-the-reserves-swallow-the-whole-cap), which is
+the case a lowered ceiling cannot express). A reservation never creates a
+limit that is not configured, so a deployment with no concurrency or cost cap
+is unaffected by one.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
-boundary. The one nuance: when `AllowRun` errors at step 5 the launch
+boundary. The one nuance: when `AllowRun` errors at step 6 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
 ## Which surfaces are gated
 
 Every launch a cloud instance performs passes `gateLaunch` with the
-identity of whoever is launching, meters one monthly run at step 5, and
+identity of whoever is launching, meters one monthly run at step 6, and
 hands the slot back when the run service then refuses the launch (a
 sealing failure, a queue outage, a bot that does not compile — no run
 exists, so nothing was consumed):
@@ -169,7 +172,7 @@ to a UI-driven launch.
 
 | Counter | When it bumps | Where |
 |---|---|---|
-| `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
+| `org_usage.runs` | At launch admission (step 6 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
 | `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
 | `webhook_deliveries.count` | At webhook admission (after auth + rate) | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
