@@ -369,7 +369,13 @@ the hours this one spent.
   caps, the shared-credential audience, and the **team lifecycle**
   (`iterion remote teams update|status|delete|add-member` — rename, suspend,
   delete an empty team, and place an account that already exists instead of
-  emailing it an invitation). Plus its original subject: plugging tracker
+  emailing it an invitation). Read *Moving a repo to another team* before
+  splitting a tenant: the provisioner rebuilds the managed forge secret and its
+  `forge_token` binding on the target, and **nothing else keyed on `Team.ID`
+  follows** — an operator secret, a `tracker_token` binding, a config-share, a
+  schedule, `sync_issues_enabled`. The launch that needed one fails mute, since
+  a missing binding reads exactly like a feature nobody configured. Plus its
+  original subject: plugging tracker
   tickets (Jira Cloud/DC, GitHub/GitLab issues) into a Revi review so it
   verifies the PR delivers what the ticket asks: the team wiring (team
   secret → `tracker_token` binding with `allowed_hosts` → per-repo
