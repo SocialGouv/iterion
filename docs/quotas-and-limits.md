@@ -5,8 +5,10 @@ set on a paying org, or debugging "why did this run get denied". Both
 the operator-set platform defaults and the per-org overrides documented
 here come from real fields on real records — not aspirational settings.
 
-Iterion enforces five distinct limits at run launch and one at the
-webhook intake. They live behind a single decision function
+Iterion enforces six distinct limits at run launch and one at the
+webhook intake — and, since #950, **reserves** capacity for named
+workloads, which is the one thing on this page that is not a ceiling
+(see [Budget floors](#budget-floors--capacity-reserved-for-a-workload)). They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
 called by every code path that creates a run on a cloud instance: the
 HTTP launch and resume, the inbound webhooks, the retry sweeper's
@@ -20,17 +22,26 @@ list, with the two paths that still launch outside it.
 
 1. **Org status** — team `EffectiveStatus()` ∈ {`active`}. Suspended
    and read-only orgs short-circuit here.
-2. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
+2. **Per-repository quota** — when the launch names a repository and a
+   quota covers it, its month-to-date consumption (read off
+   `pkg/credusage`'s repository dimension) must be under the ceiling. See
+   [Budget floors](#budget-floors--capacity-reserved-for-a-workload).
+3. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
    ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
    `queued` or `running`.
-3. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
+4. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
    `perMin/60` per second, burst = `perMin`.
-4. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
+5. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
    read from the Mongo `org_usage` counter.
-5. **Monthly run quota** — `AllowRun()` atomically increments the
+6. **Monthly run quota** — `AllowRun()` atomically increments the
    counter and reports `ok=false` if the new total would exceed
    `MonthlyRunQuota`. This is also the **metering** step — a successful
    run consumes one slot at this point.
+
+Steps 3 and 5 are additionally **lowered by any capacity reservation that
+does not name this launch's bot** — the floor described below. A
+reservation never creates a limit that is not configured, so a deployment
+with no concurrency or cost cap is unaffected by one.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
@@ -101,6 +112,7 @@ existing deployments.
 | Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
+| Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
 
 `Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
