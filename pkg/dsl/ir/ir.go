@@ -5,6 +5,7 @@
 package ir
 
 import (
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -768,6 +769,97 @@ func NodePromptRefs(node Node) []string {
 			refs = append(refs, n.Instructions)
 		}
 	}
+	return refs
+}
+
+// NodeArtifactRefs returns every logical artifact name that can feed a node,
+// either directly from its body/prompts or through an incoming edge mapping.
+// Runtime callers that know which incoming edges fired should use
+// NodeArtifactRefsForEdges to exclude unselected alternatives.
+func NodeArtifactRefs(w *Workflow, nodeID string) []string {
+	return NodeArtifactRefsForEdges(w, nodeID, nil)
+}
+
+// NodeArtifactRefsForEdges is NodeArtifactRefs with an optional incoming-edge
+// predicate. A nil predicate includes all incoming mappings.
+func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*Edge) bool) []string {
+	if w == nil || nodeID == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	addArtifactRef := func(ref *Ref) {
+		if ref == nil || ref.Kind != RefArtifacts {
+			return
+		}
+		if len(ref.Path) > 0 {
+			seen[ref.Path[0]] = struct{}{}
+			return
+		}
+		// Expressions may index the namespace dynamically (`artifacts[name]`)
+		// or consume it wholesale. The exact key is then a runtime value, so
+		// conservatively bind the produced artifact revisions that are present
+		// when the node executes. artifactContractFor applies that presence
+		// filter; enumerating names here keeps the immutable contract complete.
+		for _, producer := range w.Nodes {
+			if name := NodePublish(producer); name != "" {
+				seen[name] = struct{}{}
+			}
+		}
+	}
+	// Artifact dependency discovery needs reference ownership, not source
+	// positions. The compiler supplies span maps for diagnostics; nil maps keep
+	// this runtime-facing helper independent of parser metadata.
+	for _, rc := range collectAllRefs(w, nil, nil) {
+		if rc.NodeID != nodeID || rc.EdgeTo != "" {
+			continue
+		}
+		addArtifactRef(rc.Ref)
+	}
+	// These runtime-rendered fields deliberately sit outside collectAllRefs'
+	// compiler diagnostics today, but they consume the same artifact values
+	// and therefore belong in the producer's durable dependency contract.
+	addArtifactRefs := func(refs []*Ref) {
+		for _, ref := range refs {
+			addArtifactRef(ref)
+		}
+	}
+	addImageArtifactRefs := func(fields *LLMFields) {
+		if fields == nil {
+			return
+		}
+		for _, image := range fields.Images {
+			refs, err := ParseRefs(image)
+			if err == nil {
+				addArtifactRefs(refs)
+			}
+		}
+	}
+	if node, ok := w.Nodes[nodeID].(LLMNode); ok {
+		addImageArtifactRefs(node.GetLLMFields())
+	} else if node, ok := w.Nodes[nodeID].(*RouterNode); ok {
+		addImageArtifactRefs(&node.LLMFields)
+	}
+	switch node := w.Nodes[nodeID].(type) {
+	case *ToolNode:
+		addArtifactRefs(node.PostcondRefs)
+	case *HumanNode:
+		addArtifactRefs(node.ReviewURLRefs)
+	}
+	for _, edge := range w.Edges {
+		if edge == nil || edge.To != nodeID || (includeIncoming != nil && !includeIncoming(edge)) {
+			continue
+		}
+		for _, mapping := range edge.With {
+			for _, ref := range mapping.Refs {
+				addArtifactRef(ref)
+			}
+		}
+	}
+	refs := make([]string, 0, len(seen))
+	for ref := range seen {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
 	return refs
 }
 

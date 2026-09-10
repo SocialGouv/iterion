@@ -141,3 +141,14 @@ func TestEnsureSchema_RunTurnsTTLDisabled(t *testing.T) {
 		t.Errorf("run_turns_ttl present with EventsTTLDays=0; TTL should be disabled")
 	}
 }
+
+func TestEnsureSchema_RetryCircuitsAlwaysExpire(t *testing.T) {
+	s := newTTLTestStore(t, 0)
+	got, ok := ttlSeconds(t, s.retryCircuits, "retry_circuit_updated_at_ttl")
+	if !ok {
+		t.Fatal("retry_circuits has no inactivity TTL")
+	}
+	if want := int32(30 * 24 * 60 * 60); got != want {
+		t.Fatalf("retry circuit TTL = %d, want %d", got, want)
+	}
+}

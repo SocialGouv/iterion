@@ -5,10 +5,45 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+type correctingExecutor struct {
+	*stubExecutor
+	correct func(map[string]any, error) (map[string]any, error)
+	calls   int
+}
+
+type usageCorrectingExecutor struct {
+	*stubExecutor
+	correct func(context.Context, map[string]any, error) (map[string]any, OutputCorrectionUsage, error)
+	calls   int
+}
+
+// runStoreOnly mirrors decorators that embed the base RunStore interface: the
+// concrete store may support granular correction writes, but the decorator
+// intentionally does not expose that optional capability.
+type runStoreOnly struct{ store.RunStore }
+
+func (e *usageCorrectingExecutor) CorrectOutputWithUsage(ctx context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, OutputCorrectionUsage, error) {
+	e.calls++
+	if e.correct == nil {
+		return output, OutputCorrectionUsage{}, validationErr
+	}
+	return e.correct(ctx, output, validationErr)
+}
+
+func (e *correctingExecutor) CorrectOutput(_ context.Context, _ ir.Node, output map[string]any, validationErr error) (map[string]any, error) {
+	e.calls++
+	if e.correct == nil {
+		return output, validationErr
+	}
+	return e.correct(output, validationErr)
+}
 
 // validationWorkflow builds a simple workflow: agent -> done
 // where the agent declares an output schema.
@@ -41,6 +76,24 @@ func validationWorkflow() *ir.Workflow {
 	}
 }
 
+func TestOutputCorrectionBudgetReadsEnvironmentDefault(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, "0")
+	eng := New(validationWorkflow(), tmpStore(t), newStubExecutor())
+	if eng.outputCorrectionBudget != 0 {
+		t.Fatalf("environment budget = %d, want 0", eng.outputCorrectionBudget)
+	}
+	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
+	eng = New(validationWorkflow(), tmpStore(t), newStubExecutor())
+	if eng.outputCorrectionBudget != 0 {
+		t.Fatalf("spaced environment budget = %d, want 0", eng.outputCorrectionBudget)
+	}
+	t.Setenv(EnvOutputCorrectionBudget, "not-a-number")
+	eng = New(validationWorkflow(), tmpStore(t), newStubExecutor())
+	if eng.outputCorrectionBudget != 2 {
+		t.Fatalf("invalid environment budget = %d, want fallback 2", eng.outputCorrectionBudget)
+	}
+}
+
 func TestSchemaValidation_CatchesBadOutput(t *testing.T) {
 	wf := validationWorkflow()
 
@@ -69,6 +122,565 @@ func TestSchemaValidation_CatchesBadOutput(t *testing.T) {
 	if rtErr.NodeID != "my_agent" {
 		t.Errorf("expected nodeID %q, got %q", "my_agent", rtErr.NodeID)
 	}
+}
+
+func TestSchemaValidation_BoundedCorrectionPersistsSuccess(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "not-a-number"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correct", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, err := st.LoadRun(context.Background(), "run-val-correct")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	ep, ok := run.OutputCorrections["my_agent"]
+	if !ok || ep.Status != correctionStatusSucceeded || ep.Attempts != 1 {
+		t.Fatalf("correction episode = %#v, want succeeded/1", ep)
+	}
+}
+
+func TestSchemaValidation_StoreWithoutCorrectionCapabilityKeepsTypedFailure(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	base := tmpStore(t)
+	if _, err := base.CreateRun(context.Background(), "run-val-base-store", "validation", nil); err != nil {
+		t.Fatal(err)
+	}
+	eng := New(validationWorkflow(), runStoreOnly{RunStore: base}, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	rs := eng.newRunState("run-val-base-store", nil)
+	_, err := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", eng.workflow.Nodes["my_agent"], map[string]any{
+		"summary": "invalid", "score": "not-a-number",
+	})
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeSchemaValidation {
+		t.Fatalf("error = %v, want typed schema validation", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("corrector calls = %d, want 0 without durable ledger capability", exec.calls)
+	}
+}
+
+func TestSchemaValidation_UnchangedCorrectionStopsImmediately(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "not-a-number"}, nil
+	})
+	exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
+		return output, nil
+	}
+
+	st := tmpStore(t)
+	err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5)).Run(context.Background(), "run-val-unchanged", nil)
+	if err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-unchanged")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	ep := run.OutputCorrections["my_agent"]
+	if ep.Status != correctionStatusUnchanged || ep.Attempts != 1 {
+		t.Fatalf("correction episode = %#v, want unchanged/1", ep)
+	}
+}
+
+func TestSchemaValidation_PreseededTerminalEpisodeIsNotReinvoked(t *testing.T) {
+	for _, status := range []string{correctionStatusUnchanged, correctionStatusExhausted} {
+		t.Run(status, func(t *testing.T) {
+			exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+			exec.correct = func(output map[string]any, _ error) (map[string]any, error) {
+				return map[string]any{"summary": "would be repaired", "score": 1}, nil
+			}
+			st := tmpStore(t)
+			if _, err := st.CreateRun(context.Background(), "run-val-preseed", "validation_test", nil); err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			run, err := st.LoadRun(context.Background(), "run-val-preseed")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+				"my_agent": {
+					EpisodeID:        "episode-1",
+					NodeID:           "my_agent",
+					Budget:           5,
+					Attempts:         1,
+					Status:           status,
+					InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
+				},
+			}
+			if err := st.SaveRun(context.Background(), run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5))
+			rs := &runState{ctx: context.Background(), runID: "run-val-preseed"}
+			// A changed replay payload is still the same durable invocation and
+			// must not reset either terminal correction budget.
+			_, validationErr := eng.correctAndValidateNodeOutput(context.Background(), rs, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "different", "score": "still-bad"})
+			if validationErr == nil || exec.calls != 0 {
+				t.Fatalf("preseeded %s episode invoked corrector: calls=%d err=%v", status, exec.calls, validationErr)
+			}
+		})
+	}
+}
+
+func TestSchemaValidation_UsageOnlyCorrectorIsReachable(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 9}, nil
+	})
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, OutputCorrectionUsage{Tokens: 5}, nil
+	}
+
+	st := tmpStore(t)
+	if err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-usage-only", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("usage correction calls = %d, want 1", exec.calls)
+	}
+	events, err := st.LoadEvents(context.Background(), "run-val-usage-only")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type == store.EventNodeFinished && evt.NodeID == "my_agent" {
+			if got, _ := extractUsage(evt.Data); got != 14 {
+				t.Fatalf("node_finished tokens = %d, want original 9 + correction 5", got)
+			}
+			return
+		}
+	}
+	t.Fatal("my_agent node_finished event not found")
+}
+
+func TestSchemaValidation_CorrectionStopsAtProspectiveSpendLimit(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 50}, nil
+	})
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "changed but invalid", "score": "still-bad"}, OutputCorrectionUsage{Tokens: 100}, nil
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 100, CapImposed: true}
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correction-budget", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want 1 after prospective spend crossed the cap", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-budget")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 150 {
+		t.Fatalf("charged correction spend = %+v, want 150 tokens", run.Checkpoint)
+	}
+}
+
+func TestSchemaValidation_CorrectionDoesNotStartAfterOriginalSpendLimit(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 150}, nil
+	})
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "corrected", "score": 1}, OutputCorrectionUsage{Tokens: 100}, nil
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 100, CapImposed: true}
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-correction-original-spend", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 after original output exhausted the cap", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-original-spend")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 150 {
+		t.Fatalf("charged original spend = %+v, want 150 tokens", run.Checkpoint)
+	}
+	if episode := run.OutputCorrections["my_agent"]; episode.Status != correctionStatusSpendBlocked || episode.Attempts != 0 {
+		t.Fatalf("correction episode = %+v, want spend_blocked before attempt 1", episode)
+	}
+}
+
+func TestSchemaValidation_RaisedRunBudgetReopensSpendBlockedEpisode(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-raised-spend", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(_ context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		return map[string]any{"summary": "fixed", "score": 1}, OutputCorrectionUsage{Tokens: 5}, nil
+	}
+	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	invalid := map[string]any{"summary": "bad", "score": "x", "_tokens": 100}
+	lowBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 100}, nil)}
+	if _, err := eng.correctAndValidateNodeOutput(ctx, lowBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
+	}
+	if exec.calls != 0 {
+		t.Fatalf("correction calls = %d, want 0 while spend is blocked", exec.calls)
+	}
+
+	highBudget := &runState{ctx: ctx, runID: "run-val-raised-spend", budget: newSharedBudget(&ir.Budget{MaxTokens: 1000}, nil)}
+	out, err := eng.correctAndValidateNodeOutput(ctx, highBudget, "my_agent", validationWorkflow().Nodes["my_agent"], invalid)
+	if err != nil || exec.calls != 1 || out["score"] != 1 {
+		t.Fatalf("raised spend result = (%+v, %v), calls=%d", out, err, exec.calls)
+	}
+	persisted, err := st.LoadRun(ctx, "run-val-raised-spend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode := persisted.OutputCorrections["my_agent"]; episode.Status != correctionStatusSucceeded || episode.Attempts != 1 {
+		t.Fatalf("reopened correction episode = %+v, want succeeded/1", episode)
+	}
+}
+
+func TestSchemaValidation_RaisedBudgetReopensExhaustedEpisode(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-raised-correction", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.LoadRun(ctx, "run-val-raised-correction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.OutputCorrections = map[string]store.OutputCorrectionEpisode{
+		"my_agent": {
+			EpisodeID: "my_agent", NodeID: "my_agent", Budget: 1, Attempts: 1,
+			Status: correctionStatusExhausted, InputFingerprint: correctionFingerprint(map[string]any{"summary": "bad", "score": "x"}),
+		},
+	}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "fixed", "score": 1}, nil
+	}
+	eng := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	out, validationErr := eng.correctAndValidateNodeOutput(ctx, &runState{ctx: ctx, runID: run.ID}, "my_agent", validationWorkflow().Nodes["my_agent"], map[string]any{"summary": "bad", "score": "x"})
+	if validationErr != nil || exec.calls != 1 || out["score"] != 1 {
+		t.Fatalf("raised budget result = (%+v, %v), calls=%d", out, validationErr, exec.calls)
+	}
+	persisted, err := st.LoadRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode := persisted.OutputCorrections["my_agent"]
+	if episode.Budget != 2 || episode.Attempts != 2 || episode.Status != correctionStatusSucceeded {
+		t.Fatalf("raised correction episode = %+v, want succeeded 2/2", episode)
+	}
+}
+
+func TestSchemaValidation_UnchangedSemanticPayloadChargesFailedCorrection(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 9}, nil
+	})
+	exec.correct = func(_ context.Context, output map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		// Runtime metadata changes, but the invalid semantic payload does not.
+		return map[string]any{"summary": output["summary"], "score": output["score"]}, OutputCorrectionUsage{Tokens: 5}, nil
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 1000}
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(5)).Run(context.Background(), "run-val-semantic-unchanged", nil)
+	if err == nil {
+		t.Fatal("expected schema validation failure")
+	}
+	if exec.calls != 1 {
+		t.Fatalf("correction calls = %d, want no-progress stop after 1", exec.calls)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-semantic-unchanged")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if run.Checkpoint == nil || run.Checkpoint.BudgetTokensUsed != 14 {
+		t.Fatalf("failed correction usage = %#v, want 14 tokens", run.Checkpoint)
+	}
+	if ep := run.OutputCorrections["my_agent"]; ep.Status != correctionStatusUnchanged || ep.Attempts != 1 {
+		t.Fatalf("correction episode = %#v, want unchanged/1", ep)
+	}
+}
+
+func TestSchemaValidation_CorrectionHonorsRemainingDuration(t *testing.T) {
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad"}, nil
+	})
+	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		<-ctx.Done()
+		return nil, OutputCorrectionUsage{Tokens: 3}, ctx.Err()
+	}
+	wf := validationWorkflow()
+	wf.Budget = &ir.Budget{MaxDuration: "30ms"}
+	started := time.Now()
+	err := New(wf, tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-duration", nil)
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("Run error = %v, want ErrBudgetExceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("correction ignored max_duration: elapsed %v", elapsed)
+	}
+}
+
+func TestSchemaValidation_DurationInterruptedCorrectionResumesUnusedAttempt(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	if _, err := st.CreateRun(ctx, "run-val-duration-resume", "validation_test", nil); err != nil {
+		t.Fatal(err)
+	}
+	wf := validationWorkflow()
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.correct = func(ctx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		if exec.calls == 1 {
+			<-ctx.Done()
+			return nil, OutputCorrectionUsage{}, ctx.Err()
+		}
+		return map[string]any{"summary": "repaired", "score": 7}, OutputCorrectionUsage{}, nil
+	}
+	eng := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
+	invalid := map[string]any{"summary": "invalid", "score": "not-an-int"}
+
+	shortBudget := &runState{
+		ctx: ctx, runID: "run-val-duration-resume",
+		budget: newSharedBudget(&ir.Budget{MaxDuration: "20ms"}, nil),
+	}
+	if _, err := eng.correctAndValidateNodeOutput(ctx, shortBudget, "my_agent", wf.Nodes["my_agent"], invalid); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("first correction error = %v, want ErrBudgetExceeded", err)
+	}
+	run, err := st.LoadRun(ctx, "run-val-duration-resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode := run.OutputCorrections["my_agent"]
+	if episode.Status != correctionStatusActive || episode.Attempts != 1 {
+		t.Fatalf("interrupted episode = %+v, want active with one unused attempt", episode)
+	}
+
+	longBudget := &runState{
+		ctx: ctx, runID: "run-val-duration-resume",
+		budget: newSharedBudget(&ir.Budget{MaxDuration: "1s"}, nil),
+	}
+	out, err := eng.correctAndValidateNodeOutput(ctx, longBudget, "my_agent", wf.Nodes["my_agent"], invalid)
+	if err != nil || out["score"] != 7 || exec.calls != 2 {
+		t.Fatalf("resumed correction = (%+v, %v), calls=%d", out, err, exec.calls)
+	}
+}
+
+func TestSchemaValidation_CancellationDuringCorrectionCancelsRun(t *testing.T) {
+	st := tmpStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := &usageCorrectingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "invalid", "score": "not-an-int"}, nil
+	})
+	exec.correct = func(correctionCtx context.Context, _ map[string]any, _ error) (map[string]any, OutputCorrectionUsage, error) {
+		cancel()
+		<-correctionCtx.Done()
+		return nil, OutputCorrectionUsage{Tokens: 3}, correctionCtx.Err()
+	}
+
+	err := New(
+		validationWorkflow(),
+		st,
+		exec,
+		WithOutputValidation(true),
+		WithOutputCorrectionBudget(2),
+		WithWorkDir(t.TempDir()),
+	).Run(ctx, "run-val-correction-cancel", nil)
+	if !errors.Is(err, ErrRunCancelled) {
+		t.Fatalf("Run error = %v, want ErrRunCancelled", err)
+	}
+	run, loadErr := st.LoadRun(context.Background(), "run-val-correction-cancel")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Status != store.RunStatusCancelled || run.FailureCode != store.FailureCancelled {
+		t.Fatalf("cancelled run = status %s, failure code %s", run.Status, run.FailureCode)
+	}
+	episode := run.OutputCorrections["my_agent"]
+	if episode.Status != correctionStatusActive || episode.Attempts != 1 {
+		t.Fatalf("cancelled correction episode = %+v, want active with one consumed attempt", episode)
+	}
+}
+
+func TestCorrectionInvocationIdentitySeparatesLoopsAndBranches(t *testing.T) {
+	wf := validationWorkflow()
+	wf.Loops = map[string]*ir.Loop{
+		"repair": {Name: "repair", Body: map[string]bool{"my_agent": true}},
+	}
+	eng := New(wf, nil, newStubExecutor())
+	firstKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{"repair": 1}}, "my_agent")
+	secondKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{"repair": 2}}, "my_agent")
+	branchKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{"repair": 1}, branchLocal: true, correctionScope: "branch-b"}, "my_agent")
+	if firstKey == secondKey || firstKey == branchKey || secondKey == branchKey {
+		t.Fatalf("invocation keys are not distinct: first=%q second=%q branch=%q", firstKey, secondKey, branchKey)
+	}
+	if strings.Contains(firstKey, ".") || strings.Contains(firstKey, "$") {
+		t.Fatalf("ledger key %q is unsafe for Mongo field paths", firstKey)
+	}
+}
+
+func TestCorrectionInvocationIdentityIncludesEnclosingFanOutIteration(t *testing.T) {
+	eng := New(validationWorkflow(), nil, newStubExecutor())
+	firstKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:           true,
+		correctionScope:       "branch_dispatch_terminal",
+		enclosingLoopCounters: map[string]int{"outer": 1},
+	}, "terminal_branch_node")
+	secondKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:           true,
+		correctionScope:       "branch_dispatch_terminal",
+		enclosingLoopCounters: map[string]int{"outer": 2},
+	}, "terminal_branch_node")
+	rootKey, _ := eng.correctionInvocationIdentity(&runState{
+		branchLocal:     true,
+		correctionScope: "branch_dispatch_terminal",
+	}, "terminal_branch_node")
+	if firstKey == secondKey {
+		t.Fatalf("looped fan-out invocations share correction key %q", firstKey)
+	}
+	if rootKey == firstKey || rootKey == secondKey {
+		t.Fatalf("root and looped fan-out correction keys collide: root=%q first=%q second=%q", rootKey, firstKey, secondKey)
+	}
+}
+
+func TestSchemaValidation_CorrectionBudgetIsPerForeachItem(t *testing.T) {
+	wf := foreachWorkflow()
+	wf.Schemas = validationWorkflow().Schemas
+	wf.Nodes["proc"].(*ir.ToolNode).OutputSchema = "MySchema"
+
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+			map[string]any{"id": "c"},
+		}}, nil
+	})
+	exec.on("proc", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "invalid", "score": "not-an-int"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+
+	st := tmpStore(t)
+	err := New(wf, st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-foreach", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.calls != 3 {
+		t.Fatalf("correction calls = %d, want one per foreach item", exec.calls)
+	}
+
+	run, err := st.LoadRun(context.Background(), "run-val-foreach")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if len(run.OutputCorrections) != 3 {
+		t.Fatalf("correction episodes = %d, want 3: %#v", len(run.OutputCorrections), run.OutputCorrections)
+	}
+	for _, episode := range run.OutputCorrections {
+		if episode.NodeID != "proc" || episode.Status != correctionStatusSucceeded || episode.Attempts != 1 {
+			t.Fatalf("correction episode = %#v, want proc succeeded/1", episode)
+		}
+		if !strings.Contains(episode.InvocationID, "foreach/scan=") {
+			t.Fatalf("invocation identity %q does not contain foreach index", episode.InvocationID)
+		}
+	}
+}
+
+func TestCorrectionInvocationIdentityIncludesForeachBodyNodes(t *testing.T) {
+	wf := validationWorkflow()
+	wf.Nodes["foreach_start"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_start"}}
+	wf.Nodes["foreach_middle"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_middle"}}
+	wf.Nodes["foreach_end"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "foreach_end"}}
+	wf.Edges = []*ir.Edge{
+		{From: "foreach_start", To: "foreach_middle"},
+		{From: "foreach_middle", To: "foreach_end"},
+		{From: "foreach_end", To: "foreach_start", ForeachName: "scan"},
+		{From: "foreach_end", To: "done"},
+	}
+	wf.Foreaches = map[string]*ir.Foreach{"scan": {Name: "scan"}}
+
+	eng := New(wf, nil, newStubExecutor())
+	firstKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 0}}, "foreach_middle")
+	secondKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 1}}, "foreach_middle")
+	outsideKey, _ := eng.correctionInvocationIdentity(&runState{loopCounters: map[string]int{foreachCounterKey("scan"): 1}}, "done")
+	if firstKey == secondKey {
+		t.Fatalf("foreach body invocation keys are not distinct: first=%q second=%q", firstKey, secondKey)
+	}
+	if outsideKey != "done" {
+		t.Fatalf("outside node ledger key = %q, want historical root key", outsideKey)
+	}
+}
+
+func TestDefaultOutputCorrectionBudgetTrimsWhitespace(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, " 0 ")
+	if got := defaultOutputCorrectionBudget(); got != 0 {
+		t.Fatalf("defaultOutputCorrectionBudget = %d, want 0", got)
+	}
+}
+
+func TestSchemaValidation_CorrectionCarriesUsageMetadata(t *testing.T) {
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "initial", "score": "bad", "_tokens": 9, "_cost_usd": 1.25, "_backend": "test"}, nil
+	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"summary": "repaired", "score": 7}, nil
+	}
+	st := tmpStore(t)
+	if err := New(validationWorkflow(), st, exec, WithOutputValidation(true), WithOutputCorrectionBudget(2)).Run(context.Background(), "run-val-meta", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events, err := st.LoadEvents(context.Background(), "run-val-meta")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "my_agent" {
+			continue
+		}
+		if got, _ := extractUsage(evt.Data); got != 9 {
+			t.Fatalf("node_finished _tokens = %#v, want 9", evt.Data["_tokens"])
+		}
+		payload, _ := evt.Data["output"].(map[string]any)
+		if got, _ := payload["_backend"].(string); got != "test" {
+			t.Fatalf("node_finished output._backend = %#v, want test", payload["_backend"])
+		}
+		return
+	}
+	t.Fatal("my_agent node_finished event not found")
 }
 
 func TestSchemaValidation_DisabledByDefault(t *testing.T) {
@@ -181,20 +793,25 @@ func TestSchemaValidation_InBranch(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	exec := newStubExecutor()
+	exec := &correctingExecutor{stubExecutor: newStubExecutor()}
 	exec.on("branch_a", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"result": "ok"}, nil
 	})
 	exec.on("branch_b", func(_ map[string]any) (map[string]any, error) {
-		// Return wrong type — should cause branch to fail.
+		// Return wrong type — the branch-local correction path repairs it.
 		return map[string]any{"result": 42}, nil
 	})
+	exec.correct = func(_ map[string]any, _ error) (map[string]any, error) {
+		return map[string]any{"result": "repaired"}, nil
+	}
 
-	eng := New(wf, tmpStore(t), exec, WithOutputValidation(true))
+	eng := New(wf, tmpStore(t), exec, WithOutputValidation(true), WithOutputCorrectionBudget(2))
 	err := eng.Run(context.Background(), "run-val-branch", nil)
-	// With best_effort, the run should succeed but branch_b should have failed.
 	if err != nil {
-		t.Fatalf("expected success with best_effort, got: %v", err)
+		t.Fatalf("expected branch correction success, got: %v", err)
+	}
+	if exec.calls != 1 {
+		t.Fatalf("branch correction calls = %d, want 1", exec.calls)
 	}
 }
 

@@ -134,7 +134,7 @@ func TestApplyDecisionDedupsMonitors(t *testing.T) {
 	c := newBareCoordinator(t, Spec{Monitors: []Monitor{{TextContains: "impossible"}}}, &stubEval{}, nil)
 	m := Monitor{EventType: "tool_error", ToolName: "Bash"}
 	for i := 0; i < 5; i++ {
-		c.applyDecision(&Decision{Watch: []Monitor{m, {TextContains: "impossible"}}})
+		c.applyDecision(&Decision{Watch: []Monitor{m, {TextContains: "impossible"}}}, "test-trigger")
 	}
 	if got := len(c.monitors); got != 2 {
 		t.Fatalf("monitors grew to %d; want 2 (1 seed + 1 registered, deduped)", got)

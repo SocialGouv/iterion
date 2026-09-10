@@ -95,7 +95,7 @@ func (e *Engine) execReviewGate(ctx context.Context, rs *runState, nodeID string
 // resumeReviewGate handles resuming a paused review gate. The answers carry a
 // __review_action that decides whether to continue the dialogue (reply),
 // squash-merge (approve_merge / force_merge), or request changes.
-func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.Checkpoint, hn *ir.HumanNode, answers map[string]any) error {
+func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.Checkpoint, hn *ir.HumanNode, answers map[string]any, preparedArtifacts *resumeArtifactState) error {
 	runID := r.ID
 	nodeID := cp.NodeID
 	action := reviewActionOf(answers)
@@ -116,17 +116,23 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 	if err := e.claimForResume(ctx, r, cp, store.RunStatusPausedWaitingHuman); err != nil {
 		return err
 	}
+	// A review interaction may itself be resumed against edited source. Keep
+	// rewind auto-targeting and any forced artifact migration acknowledgement
+	// aligned with every other resume path before the gate can re-pause.
+	e.restampWorkflowSource(ctx, r)
 
 	outputs := copyOutputs(cp.Outputs)
 	if outputs == nil {
 		outputs = make(map[string]map[string]any)
 	}
-	artifactVersions := cp.ArtifactVersions
+	artifactVersions := cloneMap(cp.ArtifactVersions)
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)
 	}
 
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions)
+	preparedArtifacts = cloneResumeArtifactState(preparedArtifacts)
+	artifactRevisions := preparedArtifacts.revisions
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, preparedArtifacts.owners, preparedArtifacts.artifacts)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -253,10 +259,14 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 		version := rs.artifactVersions[nodeID]
 		if werr := e.store.WriteArtifact(ctx, &store.Artifact{
 			RunID: rs.runID, NodeID: nodeID, Version: version, Data: verdict,
+			Contract: e.artifactContractFor(nodeID, hn, version, rs),
 		}); werr != nil {
 			return "", fmt.Errorf("runtime: review gate %q: write artifact: %w", nodeID, werr)
 		}
 		rs.artifactVersions[nodeID] = version + 1
+		rs.artifacts[pub] = verdict
+		rs.artifactOwners[pub] = nodeID
+		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		if err := e.emit(ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub, "version": version,
 		}); err != nil && e.logger != nil {

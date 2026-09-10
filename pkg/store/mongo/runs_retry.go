@@ -62,9 +62,10 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 	})
 	update := bson.M{
 		"$set": bson.M{
-			retryPath("retry_after"): at.UTC(),
-			retryPath("reason"):      reason,
-			retryPath("code"):        code,
+			retryPath("retry_after"):  at.UTC(),
+			retryPath("scheduled_at"): now,
+			retryPath("reason"):       reason,
+			retryPath("code"):         code,
 			// Arming IS the promotion: continuation_state must only say
 			// retry_armed once a retry actually exists (the block point
 			// stamps unknown), and this write is the one that creates it.
@@ -99,6 +100,34 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 		attempt = updated.RetryState.Attempts
 	}
 	return true, attempt, nil
+}
+
+// DelayRunRetry moves an existing intent behind a shared circuit without
+// charging a new attempt. The exact retry_after CAS means a stale sweeper can
+// neither overwrite a newer arm nor resurrect an operator-resumed run.
+func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusFailedResumable),
+		retryPath("retry_after"): expectedAfter.UTC(),
+	})
+	// Runs armed by versions predating ScheduledAt need a fixed anchor on the
+	// first deferral. Use the CAS-protected old retry_after as the best durable
+	// origin and preserve it on every later delay.
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		retryPath("retry_after"): delayedUntil.UTC(),
+		retryPath("scheduled_at"): bson.M{"$ifNull": bson.A{
+			"$" + retryPath("scheduled_at"), expectedAfter.UTC(),
+		}},
+		retryPath("claimed_at"): "$$REMOVE",
+		"updated_at":            now,
+	}}}}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // ClaimRunRetry leases an armed retry, conditioning on the retry_after value

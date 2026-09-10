@@ -94,6 +94,39 @@ export interface AdmissionDecision {
   workflow_revision?: string;
   checked_at: string;
 }
+export interface OutputCorrectionEpisode {
+  episode_id?: string;
+  invocation_id?: string;
+  node_id?: string;
+  budget?: number;
+  attempts?: number;
+  status?: string;
+  input_fingerprint?: string;
+  last_output_fingerprint?: string;
+  last_violation_fingerprint?: string;
+  last_error?: string;
+  started_at?: string;
+  updated_at?: string;
+}
+
+export interface WatcherCursor {
+  watcher_id?: string;
+  last_progress_fingerprint?: string;
+  last_progress_at?: string;
+  last_evaluation_at?: string;
+  last_action_fingerprint?: string;
+  last_action?: string;
+  last_trigger_fingerprint?: string;
+  next_evaluation_at?: string;
+  consecutive_no_progress?: number;
+  progress_sequence?: number;
+  intervention_sequence?: number;
+  pending_intervention_id?: string;
+  pending_intervention_trigger?: string;
+  pending_intervention_sequence?: number;
+  updated_at?: string;
+}
+
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
@@ -302,6 +335,8 @@ export interface RunHeader {
   id: string;
   execution_context?: ExecutionContext;
   admission?: AdmissionDecision;
+  output_corrections?: Record<string, OutputCorrectionEpisode>;
+  watcher_cursors?: Record<string, WatcherCursor>;
   // Deterministic, human-friendly run label. Empty for legacy runs
   // persisted before this field existed; UI falls back to workflow_name.
   name?: string;
@@ -613,6 +648,30 @@ export interface ArtifactSummary {
   written_at: string;
 }
 
+export interface ArtifactDependency {
+  logical_ref: string;
+  node_id?: string;
+  version: number;
+  required?: boolean;
+}
+
+export interface ArtifactContract {
+  logical_ref: string;
+  producer_node: string;
+  producer_revision?: string;
+  version: number;
+  schema?: string;
+  // Fingerprint of the resolved schema DEFINITION. `schema` alone is a
+  // label — editing a schema's fields keeps the name. Absent on artifacts
+  // written before this field existed.
+  schema_hash?: string;
+  dependencies?: ArtifactDependency[];
+  // Reserved, mirroring store.ArtifactContract: nothing writes `mutable` and
+  // nothing reads either field yet. Don't render one as a decision.
+  mutable?: boolean;
+  effects?: string[];
+}
+
 export interface Artifact {
   run_id: string;
   node_id: string;
@@ -621,6 +680,7 @@ export interface Artifact {
   // Labels categorise the artifact (e.g. "plan", "verdict"). Mirror of
   // store.Artifact.Labels. Empty/absent on legacy artifacts.
   labels?: string[];
+  contract?: ArtifactContract;
   written_at: string;
 }
 

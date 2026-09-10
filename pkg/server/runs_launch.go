@@ -34,6 +34,11 @@ const tracerName = "github.com/SocialGouv/iterion/pkg/server"
 // but never require clients to parse it.
 const workflowSourceChangedErrorCode = "workflow_source_changed"
 
+const (
+	artifactContractIncompatibleErrorCode = "artifact_contract_incompatible"
+	artifactContractUnavailableErrorCode  = "artifact_contract_unavailable"
+)
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -743,6 +748,20 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
 			"error":      fmt.Sprintf("resume: %v", err),
 			"error_code": workflowSourceChangedErrorCode,
+		})
+		return
+	}
+	if errors.Is(err, runtime.ErrArtifactContractUnavailable) {
+		s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
+			"error":      fmt.Sprintf("resume: %v", err),
+			"error_code": artifactContractUnavailableErrorCode,
+		})
+		return
+	}
+	if errors.Is(err, runtime.ErrArtifactContractIncompatible) {
+		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
+			"error":      fmt.Sprintf("resume: %v", err),
+			"error_code": artifactContractIncompatibleErrorCode,
 		})
 		return
 	}

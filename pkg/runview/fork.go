@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -110,10 +111,31 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("create child run: %w", err)
 	}
+	// From this point on, every error must undo the provisional child. Fork's
+	// public contract is atomic: callers receive no child id on failure, so a
+	// running run or linked worktree left behind would be unreachable garbage.
+	// DeleteRun is deliberately called at the store layer because this is an
+	// internal rollback of a not-yet-published run, not an operator deletion.
+	forkComplete := false
+	defer func() {
+		if forkComplete {
+			return
+		}
+		cleanupCtx := context.WithoutCancel(ctx)
+		if child.Worktree && child.WorkDir != "" && child.RepoRoot != "" {
+			wtCtx, cancel := context.WithTimeout(cleanupCtx, 30*time.Second)
+			cmd := exec.CommandContext(wtCtx, "git", "-C", child.RepoRoot, "worktree", "remove", "--force", child.WorkDir)
+			cmd.Env = gitlib.SanitizeEnv(os.Environ())
+			_, _ = cmd.CombinedOutput()
+			cancel()
+		}
+		_ = s.store.DeleteRun(cleanupCtx, child.ID)
+	}()
 	// Mirror the parent's launch-time metadata so resume can pick up
 	// the workflow source + bundle without re-supplying.
 	child.FilePath = parent.FilePath
 	child.WorkflowHash = parent.WorkflowHash
+	child.ArtifactCompatibilityRevision = parent.ArtifactCompatibilityRevision
 	child.Preset = parent.Preset
 	child.BundleHash = parent.BundleHash
 	child.BundlePath = parent.BundlePath
@@ -199,14 +221,21 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// Synthetic checkpoint anchoring the engine at NodeID. The engine's
 	// resumeFromFailure path re-executes NodeID first, then walks
 	// downstream.
+	artifactRevisionsKnown := parent.Checkpoint != nil && parent.Checkpoint.ArtifactRevisionsKnown
+	artifactsKnown := parent.Checkpoint != nil && parent.Checkpoint.ArtifactsKnown
 	child.Checkpoint = &store.Checkpoint{
-		NodeID:           spec.NodeID,
-		Outputs:          copyOutputs(parent.Checkpoint),
-		LoopCounters:     copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
-		ArtifactVersions: copyArtifactVersions(parent.Checkpoint),
-		Vars:             copyVars(parent.Checkpoint),
-		BackendName:      turn.Backend,
-		BackendSessionID: turn.SessionID,
+		NodeID:                 spec.NodeID,
+		Outputs:                copyOutputs(parent.Checkpoint),
+		LoopCounters:           copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
+		ArtifactVersions:       copyArtifactVersions(parent.Checkpoint),
+		Artifacts:              copyArtifacts(parent.Checkpoint),
+		ArtifactOwners:         copyArtifactOwners(parent.Checkpoint),
+		ArtifactsKnown:         artifactsKnown,
+		ArtifactRevisions:      copyArtifactRevisions(parent.Checkpoint),
+		ArtifactRevisionsKnown: artifactRevisionsKnown,
+		Vars:                   copyVars(parent.Checkpoint),
+		BackendName:            turn.Backend,
+		BackendSessionID:       turn.SessionID,
 	}
 	// Claw rehydration: when the turn checkpoint has a MessagesRef
 	// (i.e. the parent was running on the claw backend), load the
@@ -221,9 +250,31 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		}
 		child.Checkpoint.BackendConversation = msgBytes
 	}
-	// Drop the forked node's existing output so re-execution starts
-	// fresh (preserves topological ordering for downstream refs).
-	delete(child.Checkpoint.Outputs, spec.NodeID)
+	// Drop the forked node's existing output and every logical binding that
+	// may have come from it so re-execution starts fresh. Besides explicit
+	// owners/revisions, compatibility checkpoints can contain an ownerless
+	// artifact whose value equals the anchor output. That equality may be
+	// ambiguous when another node returned the same value, but retaining it is
+	// unsafe: the checkpoint would make stale anchor work authoritative and a
+	// later resume could assign it to the peer. Invalidate conservatively.
+	invalidateForkAnchorArtifacts(child.Checkpoint, spec.NodeID)
+	runtime.CompactCheckpointArtifactValues(child.Checkpoint)
+	// Provenance is useful only while it remains resolvable in the child's
+	// run namespace. Copy every retained exact revision and its transitive
+	// contract dependencies before the child is parked for resume.
+	exactArtifacts, inferredArtifacts := forkArtifactRevisions(child.Checkpoint)
+	if err := copyForkArtifacts(ctx, s.store, parent.ID, child.ID, exactArtifacts, inferredArtifacts); err != nil {
+		return nil, fmt.Errorf("copy retained artifacts: %w", err)
+	}
+	// WriteArtifact maintains the child run's artifact index and advances its
+	// CAS version. Refresh both fields before the full-document save so the
+	// fork cannot overwrite that index or conflict with its own artifact copy.
+	persistedChild, err := s.store.LoadRun(ctx, child.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reload child after copying retained artifacts: %w", err)
+	}
+	child.CASVersion = persistedChild.CASVersion
+	child.ArtifactIndex = maps.Clone(persistedChild.ArtifactIndex)
 	// Park the child as "cancelled" so the existing resumeFromFailure
 	// dispatch picks it up unchanged. Caller posts /resume separately.
 	child.Status = store.RunStatusCancelled
@@ -235,11 +286,48 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err := s.store.SaveCheckpoint(ctx, child.ID, child.Checkpoint); err != nil {
 		return nil, fmt.Errorf("save child checkpoint: %w", err)
 	}
+	forkComplete = true
 	return &ForkResult{
 		NewRunID:    child.ID,
 		ParentRunID: parent.ID,
 		ForkAnchor:  child.ForkAnchor,
 	}, nil
+}
+
+func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {
+	if cp == nil {
+		return
+	}
+	anchorOutput, hasAnchorOutput := cp.Outputs[nodeID]
+	for logicalRef, owner := range cp.ArtifactOwners {
+		if owner != nodeID {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	for logicalRef, revision := range cp.ArtifactRevisions {
+		if revision.NodeID != nodeID {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	for logicalRef, value := range cp.Artifacts {
+		owner := cp.ArtifactOwners[logicalRef]
+		revision, exact := cp.ArtifactRevisions[logicalRef]
+		ownedByAnchor := owner == nodeID || (exact && revision.NodeID == nodeID)
+		ownerlessAnchorValue := owner == "" && !exact && hasAnchorOutput && runtime.ArtifactValuesEqual(value, anchorOutput)
+		if !ownedByAnchor && !ownerlessAnchorValue {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	delete(cp.Outputs, nodeID)
 }
 
 // forkWorktree materialises the child run's worktree. With
@@ -311,6 +399,181 @@ func copyArtifactVersions(cp *store.Checkpoint) map[string]int {
 		return out
 	}
 	return map[string]int{}
+}
+
+func copyArtifacts(cp *store.Checkpoint) map[string]map[string]any {
+	if cp == nil {
+		return map[string]map[string]any{}
+	}
+	out := make(map[string]map[string]any, len(cp.Artifacts))
+	for k, v := range cp.Artifacts {
+		out[k] = maps.Clone(v)
+	}
+	return out
+}
+
+func copyArtifactOwners(cp *store.Checkpoint) map[string]string {
+	if cp == nil {
+		return map[string]string{}
+	}
+	owners := maps.Clone(cp.ArtifactOwners)
+	if owners == nil {
+		owners = make(map[string]string)
+	}
+	for name, revision := range cp.ArtifactRevisions {
+		if _, present := cp.Artifacts[name]; present && owners[name] == "" {
+			owners[name] = revision.NodeID
+		}
+	}
+	return owners
+}
+
+func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisionRef {
+	if cp == nil {
+		return map[string]store.ArtifactRevisionRef{}
+	}
+	if out := maps.Clone(cp.ArtifactRevisions); out != nil {
+		return out
+	}
+	return map[string]store.ArtifactRevisionRef{}
+}
+
+// forkArtifactRevisions returns every retained physical revision. Verified
+// logical provenance is copied fail-closed; explicitly unverified bindings and
+// checkpoint-output/allocator compatibility roots are copied best-effort.
+func forkArtifactRevisions(cp *store.Checkpoint) (exact, inferred []store.ArtifactRevisionRef) {
+	if cp == nil {
+		return nil, nil
+	}
+	represented := make(map[string]bool, len(cp.ArtifactRevisions))
+	for logicalRef, revision := range cp.ArtifactRevisions {
+		if revision.ContractLogicalRef == "" {
+			revision.ContractLogicalRef = logicalRef
+		}
+		represented[revision.NodeID] = true
+		if revision.Unverified {
+			inferred = append(inferred, revision)
+			continue
+		}
+		exact = append(exact, revision)
+	}
+	if cp.ArtifactRevisionsKnown {
+		return exact, inferred
+	}
+	for nodeID := range cp.Outputs {
+		if represented[nodeID] || cp.ArtifactVersions[nodeID] <= 0 {
+			continue
+		}
+		inferred = append(inferred, store.ArtifactRevisionRef{NodeID: nodeID, Version: cp.ArtifactVersions[nodeID] - 1})
+	}
+	return exact, inferred
+}
+
+var errInferredForkArtifactUnavailable = errors.New("inferred fork artifact unavailable")
+
+func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID, childRunID string, exact, inferred []store.ArtifactRevisionRef) error {
+	if runStore == nil || len(exact)+len(inferred) == 0 {
+		return nil
+	}
+	type revisionKey struct {
+		nodeID  string
+		version int
+	}
+	seen := make(map[revisionKey]bool)
+	artifacts := make(map[revisionKey]*store.Artifact)
+	logicalProducers := make(map[string]string, len(exact)+len(inferred))
+	for _, revision := range append(append([]store.ArtifactRevisionRef(nil), exact...), inferred...) {
+		if revision.ContractLogicalRef != "" && revision.NodeID != "" {
+			logicalProducers[revision.ContractLogicalRef] = revision.NodeID
+		}
+	}
+	var collectOne func(revisionKey, bool) error
+	collectOne = func(key revisionKey, optionalRoot bool) error {
+		if key.nodeID == "" {
+			return errors.New("artifact revision has no producer node")
+		}
+		if seen[key] {
+			return nil
+		}
+		seen[key] = true
+		artifact, err := runStore.LoadArtifact(ctx, parentRunID, key.nodeID, key.version)
+		if err != nil {
+			if optionalRoot {
+				delete(seen, key)
+				return fmt.Errorf("%w: %s/%d: %v", errInferredForkArtifactUnavailable, key.nodeID, key.version, err)
+			}
+			return fmt.Errorf("load %s/%d from parent: %w", key.nodeID, key.version, err)
+		}
+		if artifact == nil || artifact.RunID != parentRunID || artifact.NodeID != key.nodeID || artifact.Version != key.version {
+			if optionalRoot {
+				delete(seen, key)
+				return fmt.Errorf("%w: %s/%d has mismatched persisted identity", errInferredForkArtifactUnavailable, key.nodeID, key.version)
+			}
+			return fmt.Errorf("parent artifact %s/%d has mismatched persisted identity", key.nodeID, key.version)
+		}
+		if artifact.Contract != nil {
+			if artifact.Contract.LogicalRef != "" {
+				logicalProducers[artifact.Contract.LogicalRef] = key.nodeID
+			}
+			for _, dependency := range artifact.Contract.Dependencies {
+				if !dependency.Required || dependency.LogicalRef == "" {
+					continue
+				}
+				depNode := dependency.NodeID
+				if depNode == "" {
+					depNode = logicalProducers[dependency.LogicalRef]
+				}
+				if depNode == "" {
+					return fmt.Errorf("artifact %s/%d requires logical artifact %q whose producer is absent from the retained checkpoint", key.nodeID, key.version, dependency.LogicalRef)
+				}
+				if err := collectOne(revisionKey{nodeID: depNode, version: dependency.Version}, false); err != nil {
+					return err
+				}
+			}
+		}
+		artifacts[key] = artifact
+		return nil
+	}
+	keys := make([]revisionKey, 0, len(exact)+len(inferred))
+	for _, revision := range exact {
+		keys = append(keys, revisionKey{nodeID: revision.NodeID, version: revision.Version})
+	}
+	for _, key := range keys {
+		if err := collectOne(key, false); err != nil {
+			return err
+		}
+	}
+	for _, revision := range inferred {
+		key := revisionKey{nodeID: revision.NodeID, version: revision.Version}
+		if err := collectOne(key, true); err != nil {
+			// Checkpoint outputs are the compatibility authority for inferred
+			// legacy roots. A missing old blob therefore omits only the copy;
+			// exact roots and dependencies discovered from a loaded contract
+			// remain fail-closed above and inside collectOne.
+			if errors.Is(err, errInferredForkArtifactUnavailable) {
+				continue
+			}
+			return err
+		}
+	}
+	keys = keys[:0]
+	for key := range artifacts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].nodeID != keys[j].nodeID {
+			return keys[i].nodeID < keys[j].nodeID
+		}
+		return keys[i].version < keys[j].version
+	})
+	for _, key := range keys {
+		clone := *artifacts[key]
+		clone.RunID = childRunID
+		if err := runStore.WriteArtifact(ctx, &clone); err != nil {
+			return fmt.Errorf("write %s/%d to child: %w", key.nodeID, key.version, err)
+		}
+	}
+	return nil
 }
 
 func copyVars(cp *store.Checkpoint) map[string]any {

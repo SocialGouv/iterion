@@ -35,6 +35,30 @@
         ],
         "type": "object"
       },
+      "ArtifactRevisionRef": {
+        "properties": {
+          "contract_logical_ref": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "unverified": {
+            "type": "boolean"
+          },
+          "value_from_revision": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "version"
+        ],
+        "type": "object"
+      },
       "AuthMeResponse": {
         "properties": {
           "access_token": {
@@ -277,6 +301,18 @@
       },
       "BranchCheckpoint": {
         "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
           "artifact_versions": {
             "additionalProperties": {
               "type": "integer"
@@ -375,11 +411,36 @@
       },
       "Checkpoint": {
         "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "artifact_revisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ArtifactRevisionRef"
+            },
+            "type": "object"
+          },
+          "artifact_revisions_known": {
+            "type": "boolean"
+          },
           "artifact_versions": {
             "additionalProperties": {
               "type": "integer"
             },
             "type": "object"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "artifacts_known": {
+            "type": "boolean"
           },
           "backend_conversation": {
             "format": "byte",
@@ -1482,6 +1543,56 @@
         ],
         "type": "object"
       },
+      "OutputCorrectionEpisode": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "budget": {
+            "type": "integer"
+          },
+          "episode_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string"
+          },
+          "invocation_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_output_fingerprint": {
+            "type": "string"
+          },
+          "last_violation_fingerprint": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "retired_reason": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ParallelCheckpoint": {
         "properties": {
           "artifact_allocations": {
@@ -2150,6 +2261,18 @@
           "outcome_seq": {
             "type": "integer"
           },
+          "output_correction_history": {
+            "items": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "array"
+          },
+          "output_corrections": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutputCorrectionEpisode"
+            },
+            "type": "object"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -2196,6 +2319,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "watcher_cursors": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WatcherCursor"
+            },
+            "type": "object"
           },
           "work_dir": {
             "type": "string"
@@ -2535,6 +2664,57 @@
           "status",
           "is_super_admin"
         ],
+        "type": "object"
+      },
+      "WatcherCursor": {
+        "properties": {
+          "consecutive_no_progress": {
+            "type": "integer"
+          },
+          "intervention_sequence": {
+            "type": "integer"
+          },
+          "last_action": {
+            "type": "string"
+          },
+          "last_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_progress_fingerprint": {
+            "type": "string"
+          },
+          "last_trigger_fingerprint": {
+            "type": "string"
+          },
+          "next_evaluation_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pending_intervention_id": {
+            "type": "string"
+          },
+          "pending_intervention_sequence": {
+            "type": "integer"
+          },
+          "pending_intervention_trigger": {
+            "type": "string"
+          },
+          "progress_sequence": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "watcher_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "WireEdge": {

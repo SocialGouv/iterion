@@ -608,7 +608,11 @@ func TestRaiseBudget_DeadlineExpiryIsJudgedOnTheRaisedCap(t *testing.T) {
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
-		Budget:  &ir.Budget{MaxDuration: "300ms"},
+		// Under -race, engine startup plus the first checkpoint can exceed a
+		// few hundred milliseconds before "slow" even starts. Keep the cap
+		// short enough to exercise the real deadline while ensuring the
+		// executor has posted its raise before that deadline is judged.
+		Budget: &ir.Budget{MaxDuration: "2s"},
 	}
 
 	ch := make(chan *OverrideMsg, 2)

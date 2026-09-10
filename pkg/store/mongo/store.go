@@ -49,6 +49,7 @@ const (
 	colRunNotes       = "run_notes"
 	colRunTurns       = "run_turns"
 	colRunTags        = "run_tags"
+	colRetryCircuits  = "retry_circuits"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -113,6 +114,7 @@ type Store struct {
 	runNotes           *mongo.Collection
 	runTurns           *mongo.Collection
 	runTags            *mongo.Collection
+	retryCircuits      *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -221,6 +223,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runNotes:           db.Collection(colRunNotes),
 		runTurns:           db.Collection(colRunTurns),
 		runTags:            db.Collection(colRunTags),
+		retryCircuits:      db.Collection(colRetryCircuits),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -462,6 +465,26 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_tags index: %w", err)
+	}
+
+	// retry_circuits: one tenant-scoped document per workflow/revision key.
+	// The unique key makes concurrent runner pods converge on one durable
+	// breaker rather than keeping independent in-memory counters.
+	retryCircuitIdx := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("tenant_retry_circuit_unique"),
+		},
+		{
+			// A circuit is ephemeral coordination state keyed by workflow hash.
+			// Reclaim inactive revisions well after the maximum normal cooldown.
+			Keys:    bson.D{{Key: "updated_at", Value: 1}},
+			Options: options.Index().SetName("retry_circuit_updated_at_ttl").SetExpireAfterSeconds(30 * 24 * 60 * 60),
+		},
+	}
+	_, err = s.retryCircuits.Indexes().CreateMany(ctx, retryCircuitIdx)
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure retry_circuits index: %w", err)
 	}
 
 	return nil

@@ -398,11 +398,15 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
-	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
-	return runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force)
+	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
+		return err
+	}
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	return err
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -497,6 +501,22 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
+	}
+	inProcessResume := s.publisher == nil && !detachedEnabled()
+	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
+	if inProcessResume {
+		// This exact workflow is handed to an engine in this process. Emit any
+		// report-mode violation here, then let that engine reuse the verdict and
+		// the immutable bodies loaded by the exact-availability guard.
+		// Queued/detached engines repeat the emitting pass at their own boundary.
+		validateArtifacts = runtime.ValidateResumeArtifacts
+	}
+	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force)
+	if err != nil {
+		return nil, err
+	}
+	if !inProcessResume {
+		artifactPreflight = nil
 	}
 
 	// The budget a resume executes against composes, per field, the ask
@@ -609,7 +629,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{
+			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
+			artifactResumePreflight: artifactPreflight,
+		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -731,6 +754,7 @@ func (s *Service) spawnRun(
 	}
 
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
+	opts = consumeArtifactResumePreflight(opts, &ex)
 	// Subbot nodes need a host-supplied runner (the bare engine can't compile
 	// a child .bot — import cycle with runview). Wired on BOTH the launch and
 	// resume paths; without it, in-process studio runs of subbot-bearing bots
@@ -944,6 +968,9 @@ type launchExtras struct {
 	// executionContext is the resolved, versioned launch contract persisted
 	// by the engine before the first node executes.
 	executionContext *store.ExecutionContext
+	// artifactResumePreflight is confined to a synchronous same-process resume.
+	// It must never cross a detached process or queue boundary.
+	artifactResumePreflight *runtime.ArtifactResumePreflight
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -1065,6 +1092,20 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if fin.autoMerge {
 		opts = append(opts, runtime.WithAutoMerge(true))
 	}
+	return opts
+}
+
+// consumeArtifactResumePreflight transfers the same-process resume snapshot
+// into the engine option and clears launchExtras before spawnRun captures it in
+// the execution goroutine. Without the clear, the service would retain every
+// validation-only artifact body until the resumed run finished even after the
+// engine consumed its one-shot copy.
+func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtras) []runtime.EngineOption {
+	if ex == nil || ex.artifactResumePreflight == nil {
+		return opts
+	}
+	opts = append(opts, runtime.WithArtifactResumePreflight(ex.artifactResumePreflight))
+	ex.artifactResumePreflight = nil
 	return opts
 }
 

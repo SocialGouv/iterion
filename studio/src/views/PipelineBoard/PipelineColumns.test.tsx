@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import type { PipelineBoard, PipelineBoardCard } from "@/api/pipelineBoards";
+import { ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE } from "@/api/runs/lifecycle";
 
 // PipelineColumns imports markPipelineTaskReady for the button-driven ready
 // toggles, plus the delete/reset ticket actions and the run controls
@@ -160,6 +162,24 @@ describe("resumePipelineRun", () => {
     await resumePipelineRun("r1", vi.fn().mockResolvedValue(false));
 
     expect(resumeRunMock).toHaveBeenCalledOnce();
+  });
+
+  it("offers the same explicit retry for an incompatible artifact contract", async () => {
+    resumeRunMock
+      .mockRejectedValueOnce(
+        new ApiError(
+          400,
+          "API error 400: resume rejected",
+          ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+        ),
+      )
+      .mockResolvedValueOnce({ run_id: "r1", status: "running" });
+    const confirmUpdatedWorkflow = vi.fn().mockResolvedValue(true);
+
+    await resumePipelineRun("r1", confirmUpdatedWorkflow);
+
+    expect(confirmUpdatedWorkflow).toHaveBeenCalledOnce();
+    expect(resumeRunMock).toHaveBeenNthCalledWith(2, "r1", { force: true });
   });
 
   it("does not hide unrelated resume errors", async () => {

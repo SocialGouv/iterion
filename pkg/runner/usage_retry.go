@@ -11,6 +11,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -45,6 +46,10 @@ const (
 	// enough that a wedged store cannot hold the delivery past its ack
 	// deadline.
 	usageRetryStoreTimeout = 10 * time.Second
+	// The shared circuit is advisory to the mandatory per-run arm. Give it a
+	// smaller slice so a slow circuit collection cannot consume the entire
+	// detached store budget and make ScheduleRunRetry inherit an expired ctx.
+	retryCircuitStoreTimeout = 2 * time.Second
 	// usageWindowBlindWait is the fallback when the provider told us a
 	// window is exhausted but nothing in the text parses as a reset time.
 	// Deliberately bounded and short-ish: one wasted pod an hour beats
@@ -135,6 +140,26 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, sk
 		at = ceiling
 	}
 	return at.UTC(), source, true
+}
+
+// usageWindowCircuitAt moves a per-run retry behind an open shared circuit
+// without discarding the policy guarantees already applied by
+// usageWindowRetryAt. A shared OpenUntil is deliberately jittered again:
+// otherwise every run participating in the circuit wakes at the same instant.
+// The max-wait ceiling remains authoritative even when the deployment-level
+// circuit cooldown is longer than the run's resolved retry policy.
+func usageWindowCircuitAt(at time.Time, state *store.RetryCircuitState, pol retrypolicy.Policy, now time.Time) (time.Time, bool) {
+	if state == nil || state.OpenUntil == nil || !state.OpenUntil.After(at) {
+		return at, false
+	}
+	at = state.OpenUntil.UTC()
+	if j := pol.JitterDuration(); j > 0 {
+		at = at.Add(rand.N(j))
+	}
+	if ceiling := now.UTC().Add(pol.MaxWaitDuration()); at.After(ceiling) {
+		at = ceiling
+	}
+	return at.UTC(), true
 }
 
 // reservesLastAttempt reports that the arming about to happen is the LAST one
@@ -323,12 +348,29 @@ func (r *Runner) armUsageWindowRetry(
 	if runMeta.RetryState != nil {
 		attemptsSpent = runMeta.RetryState.Attempts
 	}
-	at, source, ok := usageWindowRetryAt(execErr, pol, time.Now().UTC(), skipped, attemptsSpent)
+	decisionNow := time.Now().UTC()
+	at, source, ok := usageWindowRetryAt(execErr, pol, decisionNow, skipped, attemptsSpent)
 	if !ok {
 		return usageRetryNotApplicable
 	}
 	if r.cfg.Metrics != nil {
 		r.cfg.Metrics.RunsUsageWindowBlocked.Inc()
+	}
+	// Coordinate the retry wave across runner replicas. The per-run retry
+	// ledger remains authoritative for the attempt bound; the shared circuit
+	// only moves the next wake-up out of a provider-wide failure storm.
+	if key := retrycoord.Key(runMeta); key != "" {
+		circuitCtx, circuitCancel := context.WithTimeout(ctx, retryCircuitStoreTimeout)
+		circuitState, circuitErr := retrycoord.RecordFailure(circuitCtx, r.cfg.Store, key, runID, decisionNow, retrycoord.FromEnv())
+		circuitCancel()
+		if circuitErr != nil {
+			// A circuit-store outage must not drop a durable per-run retry. The
+			// existing ScheduleRunRetry below still provides the safe fallback.
+			logger.Warn("runner: run %s: retry circuit update failed (%v) — scheduling per-run retry", runID, circuitErr)
+		} else if coordinatedAt, delayed := usageWindowCircuitAt(at, circuitState, pol, decisionNow); delayed {
+			at = coordinatedAt
+			source += "+circuit_open"
+		}
 	}
 
 	scheduled, attempt, err := retryStore.ScheduleRunRetry(ctx, runID, at, "usage_window", string(runtime.ErrCodeUsageLimitBlocked), pol.MaxAttempts)

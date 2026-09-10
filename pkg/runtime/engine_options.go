@@ -407,6 +407,25 @@ func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
 }
 
+// WithArtifactContractsPrevalidated avoids re-running the contract-only gate
+// when an in-process launch authority has just validated the same immutable
+// artifact set synchronously. Under enforce, exact checkpoint bodies are still
+// loaded and identity-checked by Resume because they are required to rebuild
+// execution state; legacy/report retain their compatibility behavior. Do not
+// carry this option across a process or queue boundary.
+func WithArtifactContractsPrevalidated(prevalidated bool) EngineOption {
+	return func(e *Engine) { e.artifactContractsChecked = prevalidated }
+}
+
+// WithArtifactResumePreflight reuses the immutable artifact bodies loaded by
+// ValidateResumeArtifacts at the immediately preceding same-process resume
+// boundary. Resume accepts the snapshot only while the artifact-relevant run
+// state, exact workflow pointer, revision and force decision still match;
+// otherwise it falls back to a fresh authoritative validation.
+func WithArtifactResumePreflight(preflight *ArtifactResumePreflight) EngineOption {
+	return func(e *Engine) { e.artifactResumePreflight = preflight }
+}
+
 // WithWorkDir sets the working directory used for backend subprocesses and
 // for resolving the `${PROJECT_DIR}` placeholder in workflow var defaults.
 // When unset, defaults to os.Getwd() at Run() time. With worktree: auto on
@@ -452,6 +471,19 @@ func WithContributions(c *Contributions) EngineOption {
 // does not conform to its schema will cause the run to fail immediately.
 func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
+}
+
+// WithOutputCorrectionBudget bounds the number of optional correction calls
+// made after a schema-invalid node output. A zero budget disables correction;
+// negative values are treated as zero. The budget is per node episode and is
+// persisted on the run so a resume cannot reset the bound.
+func WithOutputCorrectionBudget(budget int) EngineOption {
+	return func(e *Engine) {
+		if budget < 0 {
+			budget = 0
+		}
+		e.outputCorrectionBudget = budget
+	}
 }
 
 // WithPauseSignal wires an external pause request channel into the

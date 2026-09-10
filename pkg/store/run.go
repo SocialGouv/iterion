@@ -420,6 +420,10 @@ type RunRetryState struct {
 	// resume. Nil = nothing armed (never armed, already claimed, or
 	// deliberately abandoned).
 	RetryAfter *time.Time `json:"retry_after,omitempty" bson:"retry_after,omitempty"`
+	// ScheduledAt anchors max_wait across circuit deferrals. ScheduleRunRetry
+	// resets it for each paid attempt; DelayRunRetry deliberately preserves it
+	// so a repeatedly extended shared circuit cannot postpone one run forever.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty" bson:"scheduled_at,omitempty"`
 	// Reason names the failure class that armed this retry
 	// ("usage_window").
 	Reason string `json:"reason,omitempty" bson:"reason,omitempty"`
@@ -434,6 +438,65 @@ type RunRetryState struct {
 	LastError string `json:"last_error,omitempty" bson:"last_error,omitempty"`
 	// ClaimedAt stamps when a sweeper last took the retry.
 	ClaimedAt *time.Time `json:"claimed_at,omitempty" bson:"claimed_at,omitempty"`
+}
+
+// OutputCorrectionEpisode is the durable ledger for bounded schema-output
+// correction.  An episode belongs to one node execution and survives a
+// process restart/resume, so a watcher cannot accidentally turn an invalid
+// output into an unbounded model-correction loop.
+//
+// Attempts is the number of correction calls already made.  The fingerprints
+// make the no-progress guard explicit: if the same invalid payload produces
+// the same violation twice, the runtime stops immediately even when budget
+// remains. Status is one of active, succeeded, exhausted, unchanged or
+// spend_blocked. A spend-blocked episode is reconsidered after an operator
+// raises the run budget; it does not consume another correction attempt by
+// itself.
+type OutputCorrectionEpisode struct {
+	EpisodeID                string     `json:"episode_id,omitempty" bson:"episode_id,omitempty"`
+	InvocationID             string     `json:"invocation_id,omitempty" bson:"invocation_id,omitempty"`
+	NodeID                   string     `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Budget                   int        `json:"budget,omitempty" bson:"budget,omitempty"`
+	Attempts                 int        `json:"attempts,omitempty" bson:"attempts,omitempty"`
+	Status                   string     `json:"status,omitempty" bson:"status,omitempty"`
+	InputFingerprint         string     `json:"input_fingerprint,omitempty" bson:"input_fingerprint,omitempty"`
+	LastOutputFingerprint    string     `json:"last_output_fingerprint,omitempty" bson:"last_output_fingerprint,omitempty"`
+	LastViolationFingerprint string     `json:"last_violation_fingerprint,omitempty" bson:"last_violation_fingerprint,omitempty"`
+	LastError                string     `json:"last_error,omitempty" bson:"last_error,omitempty"`
+	StartedAt                time.Time  `json:"started_at,omitempty" bson:"started_at,omitempty"`
+	UpdatedAt                time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+	RetiredAt                *time.Time `json:"retired_at,omitempty" bson:"retired_at,omitempty"`
+	RetiredReason            string     `json:"retired_reason,omitempty" bson:"retired_reason,omitempty"`
+}
+
+// WatcherCursor is the durable anti-loop cursor for a supervisor/watch
+// instance. It records the last progress sample and evaluation/action window
+// so a watcher restart cannot immediately re-evaluate the same unchanged
+// evidence and enqueue the same correction again.
+type WatcherCursor struct {
+	WatcherID               string     `json:"watcher_id,omitempty" bson:"watcher_id,omitempty"`
+	LastProgressFingerprint string     `json:"last_progress_fingerprint,omitempty" bson:"last_progress_fingerprint,omitempty"`
+	LastProgressAt          time.Time  `json:"last_progress_at,omitempty" bson:"last_progress_at,omitempty"`
+	LastEvaluationAt        *time.Time `json:"last_evaluation_at,omitempty" bson:"last_evaluation_at,omitempty"`
+	LastAction              string     `json:"last_action,omitempty" bson:"last_action,omitempty"`
+	LastTriggerFingerprint  string     `json:"last_trigger_fingerprint,omitempty" bson:"last_trigger_fingerprint,omitempty"`
+	NextEvaluationAt        *time.Time `json:"next_evaluation_at,omitempty" bson:"next_evaluation_at,omitempty"`
+	ConsecutiveNoProgress   int        `json:"consecutive_no_progress,omitempty" bson:"consecutive_no_progress,omitempty"`
+	// ProgressSequence advances on each semantic transition in the observed
+	// event stream. Replayed copies of one event retain the sequence, while an
+	// A-B-A recurrence gets a fresh trigger identity even though A's payload is
+	// byte-for-byte identical.
+	ProgressSequence int `json:"progress_sequence,omitempty" bson:"progress_sequence,omitempty"`
+	// InterventionSequence advances only after a steering message is accepted.
+	InterventionSequence int `json:"intervention_sequence,omitempty" bson:"intervention_sequence,omitempty"`
+	// PendingIntervention* reserves the exact delivery identity before the
+	// message is inserted. If the process dies after insertion but before the
+	// cursor is finalized, the next coordinator reuses the same ID and the
+	// inbox's insert-once contract turns the replay into a no-op.
+	PendingInterventionID       string    `json:"pending_intervention_id,omitempty" bson:"pending_intervention_id,omitempty"`
+	PendingInterventionTrigger  string    `json:"pending_intervention_trigger,omitempty" bson:"pending_intervention_trigger,omitempty"`
+	PendingInterventionSequence int       `json:"pending_intervention_sequence,omitempty" bson:"pending_intervention_sequence,omitempty"`
+	UpdatedAt                   time.Time `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
 }
 
 // RunCredStamp is what one credential resolution leaves on the run
@@ -520,7 +583,13 @@ type Run struct {
 
 	WorkflowName string `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash string `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .bot source at run start
-	FilePath     string `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .bot source path captured at launch (resume without re-supplying file)
+	// ArtifactCompatibilityRevision records the workflow revision for which an
+	// operator explicitly accepted the source-derived portions of every
+	// retained artifact contract with --force. Artifact bodies remain immutable;
+	// this run-level acknowledgement keeps a later ordinary/automatic resume
+	// from demanding the same force flag again after WorkflowHash is restamped.
+	ArtifactCompatibilityRevision string `json:"artifact_compatibility_revision,omitempty" bson:"artifact_compatibility_revision,omitempty"`
+	FilePath                      string `json:"file_path,omitempty" bson:"file_path,omitempty"` // absolute .bot source path captured at launch (resume without re-supplying file)
 	// WorkflowSource is the .bot text as it was AT LAUNCH. WorkflowHash
 	// answers "did the source change since?"; this answers "which node
 	// changed", which is what `iterion rewind --auto` needs to target the
@@ -612,6 +681,20 @@ type Run struct {
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`
+	// OutputCorrections is the durable, per-node ledger for bounded invalid
+	// output correction. Nil/empty means no correction was attempted. Legacy
+	// runs keep their existing fail-fast behaviour unless their executor opts
+	// into correction through the runtime option.
+	OutputCorrections map[string]OutputCorrectionEpisode `json:"output_corrections,omitempty" bson:"output_corrections,omitempty"`
+	// OutputCorrectionHistory retains terminal and in-flight correction
+	// ledgers invalidated by an explicit rewind. The live map can then start a
+	// fresh bounded episode without erasing the audit record of paid calls.
+	OutputCorrectionHistory []OutputCorrectionEpisode `json:"output_correction_history,omitempty" bson:"output_correction_history,omitempty"`
+	// WatcherCursors is keyed by supervisor/watch identity. It is deliberately
+	// separate from run events: a watcher may restart without replaying the
+	// entire event stream, while its cooldown and last-action proof remain
+	// durable.
+	WatcherCursors map[string]WatcherCursor `json:"watcher_cursors,omitempty" bson:"watcher_cursors,omitempty"`
 	// DeletedAt is the Mongo-side durable tombstone (the filesystem
 	// twin is the .deleted marker file): DeleteRun strips the run's
 	// data and leaves a skeleton doc carrying this stamp, so a late
@@ -1263,6 +1346,33 @@ type Checkpoint struct {
 	// zero the resume must not read as a price.
 	LoopBudgetMarksV int            `json:"loop_budget_marks_v,omitempty" bson:"loop_budget_marks_v,omitempty"`
 	ArtifactVersions map[string]int `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	// Artifacts stores the non-reconstructible values in the exact logical
+	// publish-name snapshot. ArtifactOwners carries the complete logical catalog;
+	// when a value equals its owner's Output it is omitted here to avoid embedding
+	// large bodies twice in Mongo's run document. A verified historical alias can
+	// also be omitted when its revision sets ValueFromRevision; unverified and
+	// ownerless values remain explicit here.
+	Artifacts map[string]map[string]any `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	// ArtifactOwners is the complete logical snapshot catalog and keeps the
+	// producing node even when the value is compacted out of Artifacts or no
+	// verified physical revision can be claimed. Rewind and fork use it to prune
+	// fallback values without turning ownership into provenance.
+	ArtifactOwners map[string]string `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"`
+	// ArtifactsKnown distinguishes an intentionally empty current logical catalog
+	// from a checkpoint written before Artifacts/ArtifactOwners were persisted.
+	// Older checkpoints continue to rebuild best-effort values from Outputs.
+	ArtifactsKnown bool `json:"artifacts_known,omitempty" bson:"artifacts_known,omitempty"`
+	// ArtifactRevisions binds each logical publish name to its selected physical
+	// artifact identity. Unless Unverified is set, that is the exact body exposed
+	// through {{artifacts.<name>}}. Version counters alone cannot recover this
+	// when several nodes share a publish name or parallel branches allocate
+	// different versions.
+	ArtifactRevisions map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	// ArtifactRevisionsKnown distinguishes a current checkpoint whose exposed
+	// artifact set is intentionally empty (for example after rewind) from a
+	// legacy checkpoint that predates ArtifactRevisions and may use the run's
+	// ArtifactIndex as a compatibility fallback.
+	ArtifactRevisionsKnown bool `json:"artifact_revisions_known,omitempty" bson:"artifact_revisions_known,omitempty"`
 	// SelectedIncoming records, per destination node, the incoming edges
 	// that routing actually selected for the current visit of that node.
 	// buildNodeInputRS applies with-mappings only from those edges so an
@@ -1388,21 +1498,23 @@ type ParallelCheckpoint struct {
 // values produced inside the branch; the immutable parent snapshot is rebuilt
 // by the router when the invocation resumes.
 type BranchCheckpoint struct {
-	BranchID           string                        `json:"branch_id" bson:"branch_id"`
-	StartNodeID        string                        `json:"start_node_id" bson:"start_node_id"`
-	CurrentNodeID      string                        `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
-	Outputs            map[string]map[string]any     `json:"outputs,omitempty" bson:"outputs,omitempty"`
-	Artifacts          map[string]map[string]any     `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
-	ArtifactVersions   map[string]int                `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
-	LoopCounters       map[string]int                `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
-	LoopPreviousOutput map[string]map[string]any     `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
-	LoopCurrentOutput  map[string]map[string]any     `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
-	LoopBudgetMarks    map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
-	SelectedIncoming   map[string][]IncomingEdge     `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
-	JoinNodeID         string                        `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
-	TerminalNodeID     string                        `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
-	Completed          bool                          `json:"completed,omitempty" bson:"completed,omitempty"`
-	TerminatedAtDone   bool                          `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	BranchID           string                         `json:"branch_id" bson:"branch_id"`
+	StartNodeID        string                         `json:"start_node_id" bson:"start_node_id"`
+	CurrentNodeID      string                         `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
+	Outputs            map[string]map[string]any      `json:"outputs,omitempty" bson:"outputs,omitempty"`
+	Artifacts          map[string]map[string]any      `json:"artifacts,omitempty" bson:"artifacts,omitempty"`             // expanded for V1 mixed-version readers
+	ArtifactOwners     map[string]string              `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"` // complete logical catalog
+	ArtifactVersions   map[string]int                 `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
+	ArtifactRevisions  map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
+	LoopCounters       map[string]int                 `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
+	LoopPreviousOutput map[string]map[string]any      `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]any      `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
+	LoopBudgetMarks    map[string]map[string]float64  `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	SelectedIncoming   map[string][]IncomingEdge      `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	JoinNodeID         string                         `json:"join_node_id,omitempty" bson:"join_node_id,omitempty"`
+	TerminalNodeID     string                         `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
+	Completed          bool                           `json:"completed,omitempty" bson:"completed,omitempty"`
+	TerminatedAtDone   bool                           `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
 	// CostUSD is this branch's cumulative LLM spend for the current
 	// invocation. The daily spend cap records per-branch spend under a
 	// monotonic-max ledger key, so a resumed branch must restart its
@@ -1445,8 +1557,78 @@ type Artifact struct {
 	// can group artifacts by label. Sourced from the node's DSL
 	// `artifact_labels:` plus a shape heuristic (pkg/artifactlabels). Empty
 	// on legacy artifacts written before this field existed.
-	Labels    []string  `json:"labels,omitempty" bson:"labels,omitempty"`
-	WrittenAt time.Time `json:"written_at" bson:"written_at"`
+	Labels []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	// Contract binds this output to its logical reference, producer revision,
+	// schema and dependencies. Nil is the legacy artifact shape and remains
+	// readable during the rollout.
+	Contract  *ArtifactContract `json:"contract,omitempty" bson:"contract,omitempty"`
+	WrittenAt time.Time         `json:"written_at" bson:"written_at"`
+}
+
+// ArtifactDependency records the artifact revision consumed while producing
+// an output. A resume must not silently feed an incompatible or missing
+// revision to a downstream node.
+type ArtifactDependency struct {
+	LogicalRef string `json:"logical_ref" bson:"logical_ref"`
+	NodeID     string `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Version    int    `json:"version" bson:"version"`
+	Required   bool   `json:"required,omitempty" bson:"required,omitempty"`
+}
+
+// ArtifactRevisionRef identifies one persisted artifact revision. Checkpoints
+// store it by the alias visible to the workflow. ContractLogicalRef preserves
+// the immutable name in the artifact body when a forced source migration
+// exposes that same physical revision through a renamed alias.
+type ArtifactRevisionRef struct {
+	NodeID             string `json:"node_id" bson:"node_id"`
+	Version            int    `json:"version" bson:"version"`
+	ContractLogicalRef string `json:"contract_logical_ref,omitempty" bson:"contract_logical_ref,omitempty"`
+	// ValueFromRevision means the logical value body is intentionally omitted
+	// from Checkpoint.Artifacts and must be restored from this immutable
+	// revision. It is used for historical aliases whose value differs from the
+	// producer's latest checkpoint output, avoiding a second large body in the
+	// Mongo run document.
+	ValueFromRevision bool `json:"value_from_revision,omitempty" bson:"value_from_revision,omitempty"`
+	// Unverified keeps the producer binding needed to preserve and invalidate
+	// the logical checkpoint value after report mode could not read the
+	// physical body. It must not be emitted as a verified dependency; a later
+	// successful load clears the marker.
+	Unverified bool `json:"unverified,omitempty" bson:"unverified,omitempty"`
+}
+
+// ArtifactContract is the durable restart contract for one logical output.
+// runtime.ValidateArtifactContracts is what reads it, before a resume or a
+// rewind may mutate the run.
+type ArtifactContract struct {
+	LogicalRef       string `json:"logical_ref" bson:"logical_ref"`
+	ProducerNode     string `json:"producer_node" bson:"producer_node"`
+	ProducerRevision string `json:"producer_revision,omitempty" bson:"producer_revision,omitempty"`
+	Version          int    `json:"version" bson:"version"`
+	Schema           string `json:"schema,omitempty" bson:"schema,omitempty"`
+	// SchemaHash fingerprints the resolved schema DEFINITION. Schema alone is
+	// a label: editing a schema's fields — the change that actually
+	// invalidates a persisted artifact, because a downstream node reads
+	// `outputs.x.field` — keeps the name, while renaming an unchanged schema
+	// changes no shape at all. Empty on artifacts written before this field
+	// existed and on nodes with no declared output schema; the name
+	// comparison stays the fallback for both.
+	SchemaHash   string               `json:"schema_hash,omitempty" bson:"schema_hash,omitempty"`
+	Dependencies []ArtifactDependency `json:"dependencies,omitempty" bson:"dependencies,omitempty"`
+
+	// Mutable and Effects are RESERVED: they are persisted and exposed, and
+	// nothing writes Mutable or reads either one today. Said plainly so the
+	// next reader does not take a value here for a decision the engine makes
+	// — an earlier comment claimed Effects' vocabulary was "understood",
+	// which would have made a stale `["persist"]` look load-bearing.
+	//
+	// Mutable is intended to mark an output a re-execution may legitimately
+	// replace; Effects to describe the publishing policy ("persist" for a
+	// store write, "external" for an output whose production also touched
+	// something outside the run). Effects is metadata for admission, never a
+	// request to replay an external side effect. Give either one a reader
+	// before giving it a meaning.
+	Mutable bool     `json:"mutable,omitempty" bson:"mutable,omitempty"`
+	Effects []string `json:"effects,omitempty" bson:"effects,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

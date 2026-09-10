@@ -1,5 +1,5 @@
 import { resumeRun } from "@/api/runs";
-import { errorMessage } from "@/lib/errorHints";
+import { isForceResumeRequiredError } from "@/api/runs/lifecycle";
 
 // Operator-paused runs normally resume against the source they started with.
 // If that source has changed, make the potentially surprising force-resume an
@@ -11,7 +11,7 @@ export async function resumePipelineRun(
   try {
     await resumeRun(runId, {});
   } catch (error) {
-    if (!/source has changed/i.test(errorMessage(error))) throw error;
+    if (!isForceResumeRequiredError(error)) throw error;
     if (!(await confirmUpdatedWorkflow())) return;
     await resumeRun(runId, { force: true });
   }

@@ -51,6 +51,7 @@ type fakeRetryStore struct {
 	rearmed   map[string]time.Time
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
 	armOK     bool
+	circuit   *store.RetryCircuitState
 }
 
 func newFakeRetryStore() *fakeRetryStore {
@@ -91,6 +92,13 @@ func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at ti
 	return true, 2, nil
 }
 
+func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rearmed[runID] = delayedUntil
+	return true, nil
+}
+
 func (f *fakeRetryStore) ClearRunRetry(_ context.Context, runID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -102,6 +110,18 @@ func (f *fakeRetryStore) AbandonRunRetry(_ context.Context, runID, reason string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.abandoned[runID] = reason
+	return nil
+}
+
+func (f *fakeRetryStore) RecordRetryFailure(_ context.Context, _, _ string, _ time.Time, _ int, _ time.Duration) (*store.RetryCircuitState, error) {
+	return f.circuit, nil
+}
+
+func (f *fakeRetryStore) RetryCircuitOpen(_ context.Context, _ string, _ time.Time) (*store.RetryCircuitState, error) {
+	return f.circuit, nil
+}
+
+func (f *fakeRetryStore) RecordRetrySuccess(_ context.Context, _ string, _ time.Time) error {
 	return nil
 }
 
@@ -178,6 +198,56 @@ func TestSweepDueRetries_ResumesAClaimedRun(t *testing.T) {
 	// run fails for any unrelated reason.
 	if len(st.cleared) != 1 || st.cleared[0] != "run-a" {
 		t.Errorf("cleared = %v, want [run-a] after a successful resume", st.cleared)
+	}
+}
+
+func TestSweepDueRetries_OpenCircuitDelaysWithoutSpendingAttempt(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-circuit"] = true
+	now := time.Now().UTC()
+	openUntil := now.Add(20 * time.Minute)
+	st.circuit = &store.RetryCircuitState{Key: "workflow:rev-1", OpenUntil: &openUntil}
+	st.loadRun["run-circuit"] = &store.Run{
+		ID:           "run-circuit",
+		Status:       store.RunStatusFailedResumable,
+		WorkflowHash: "rev-1",
+		RetryPolicy:  &store.RunRetryPolicy{MaxWait: "1h", Jitter: "0s"},
+	}
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-circuit", at)}}, resumer, time.Now().UTC())
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("Resume called %d times while circuit is open", len(resumer.calls))
+	}
+	if got := st.rearmed["run-circuit"]; !got.Equal(openUntil) {
+		t.Fatalf("delayed retry = %v, want circuit open_until %v", got, openUntil)
+	}
+	if _, charged := st.armBudget["run-circuit"]; charged {
+		t.Fatal("circuit delay called ScheduleRunRetry and consumed another attempt")
+	}
+}
+
+func TestCircuitRetryDelaySpreadsRunsAndHonorsOriginalHorizon(t *testing.T) {
+	now := time.Now().UTC()
+	scheduledAt := now.Add(-10 * time.Minute)
+	dueAt := now.Add(-time.Minute)
+	openUntil := now.Add(20 * time.Minute)
+	ref := dueRef("spread", dueAt)
+	ref.RetryState.ScheduledAt = &scheduledAt
+	run := &store.Run{RetryPolicy: &store.RunRetryPolicy{MaxWait: "1h", Jitter: "5m"}}
+	delayed, ok := circuitRetryDelayAt(ref, run, &store.RetryCircuitState{OpenUntil: &openUntil}, now)
+	if !ok || delayed.Before(openUntil) || delayed.After(openUntil.Add(5*time.Minute)) {
+		t.Fatalf("jittered delay = %v, ok=%t; want [%v,%v]", delayed, ok, openUntil, openUntil.Add(5*time.Minute))
+	}
+
+	expiredAnchor := now.Add(-2 * time.Hour)
+	ref.RetryState.ScheduledAt = &expiredAnchor
+	run.RetryPolicy.Jitter = "0s"
+	if delayed, ok := circuitRetryDelayAt(ref, run, &store.RetryCircuitState{OpenUntil: &openUntil}, now); ok || !delayed.IsZero() {
+		t.Fatalf("expired max_wait horizon delayed retry to %v", delayed)
 	}
 }
 

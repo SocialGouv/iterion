@@ -1028,6 +1028,48 @@ func (s *FilesystemRunStore) SetRunLLMIdle(_ context.Context, runID string, idle
 	return s.writeRun(r)
 }
 
+// SetWatcherCursor updates one durable supervisor cursor under the store
+// mutex, without replacing status/checkpoint fields owned by the engine.
+func (s *FilesystemRunStore) SetWatcherCursor(_ context.Context, runID, watcherID string, cursor WatcherCursor) error {
+	if watcherID == "" {
+		return fmt.Errorf("store: watcher cursor id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.WatcherCursors == nil {
+		r.WatcherCursors = make(map[string]WatcherCursor)
+	}
+	r.WatcherCursors[watcherID] = cursor
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// SetRunOutputCorrection updates one node's correction episode under the
+// filesystem store mutex. It is intentionally granular: a correction call
+// must not replace a run document that an operator or runner concurrently
+// transitioned.
+func (s *FilesystemRunStore) SetRunOutputCorrection(_ context.Context, runID, ledgerKey string, episode OutputCorrectionEpisode) error {
+	if ledgerKey == "" {
+		return fmt.Errorf("store: output correction ledger key is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return err
+	}
+	if r.OutputCorrections == nil {
+		r.OutputCorrections = make(map[string]OutputCorrectionEpisode)
+	}
+	r.OutputCorrections[ledgerKey] = episode
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // SetRunBudgetOverrides persists the operator's launch-time budget ask
 // (see RunStore). Load-modify-save under the store mutex, like
 // SetRunBudgetSnapshot below, so a status transition racing this write

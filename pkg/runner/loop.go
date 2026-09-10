@@ -52,6 +52,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -2429,6 +2430,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	} else {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
+	if runErr == nil {
+		r.resetRetryCircuitAfterSuccessfulExecution(ctx, msg.RunID)
+	}
 
 	// Persist the run's git metadata (commits + modified files vs the
 	// baseline) BEFORE the deferred `os.RemoveAll(repoDir)` wipes the clone.
@@ -2487,6 +2491,30 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		r.deleteRunSecrets(msg)
 	}
 	return runErr
+}
+
+// resetRetryCircuitAfterSuccessfulExecution closes the shared workflow
+// breaker only when durable run state proves execution reached its terminal
+// success. Some successful Engine.Resume calls deliberately re-pause a review
+// dialogue and return nil; those are not provider-recovery evidence.
+func (r *Runner) resetRetryCircuitAfterSuccessfulExecution(ctx context.Context, runID string) {
+	resetCtx, resetCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer resetCancel()
+	runMeta, loadErr := r.cfg.Store.LoadRun(resetCtx, runID)
+	if loadErr != nil {
+		if r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s: retry circuit reset skipped, cannot read run metadata: %v", runID, loadErr)
+		}
+		return
+	}
+	if runMeta == nil || runMeta.Status != store.RunStatusFinished {
+		return
+	}
+	if key := retrycoord.Key(runMeta); key != "" {
+		if resetErr := retrycoord.RecordSuccess(resetCtx, r.cfg.Store, key, time.Now().UTC()); resetErr != nil && r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s: retry circuit reset failed: %v", runID, resetErr)
+		}
+	}
 }
 
 // loadWorkflow decodes the AST for a run and compiles it to IR. The IR

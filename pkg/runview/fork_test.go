@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -32,9 +34,21 @@ func TestFork_HappyPath(t *testing.T) {
 		t.Fatalf("load parent: %v", err)
 	}
 	parent.Checkpoint = &store.Checkpoint{
-		NodeID: "step2",
+		NodeID:           "step2",
+		ArtifactVersions: map[string]int{"source": 1, "step1": 1, "legacy": 1},
+		Artifacts: map[string]map[string]any{
+			"analysis": {"value": "alpha"},
+			"draft":    {"value": "stale-anchor-value"},
+		},
+		ArtifactOwners: map[string]string{"analysis": "step1", "draft": "step2"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"analysis": {NodeID: "step1", Version: 0},
+			"draft":    {NodeID: "step2", Version: 0, Unverified: true},
+		},
 		Outputs: map[string]map[string]any{
-			"step1": {"value": "alpha"},
+			"step1":  {"value": "alpha"},
+			"legacy": {"value": "old-checkpoint"},
 		},
 		Vars: map[string]any{"workflow_var": "v"},
 	}
@@ -57,6 +71,25 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if err := st.SaveRun(context.Background(), parent); err != nil {
 		t.Fatalf("save parent: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "source", Version: 0, Data: map[string]any{"seed": true},
+	}); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "step1", Version: 0, Data: map[string]any{"value": "alpha"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "analysis", ProducerNode: "step1", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "source", NodeID: "source", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatalf("write parent artifact: %v", err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: parentID, NodeID: "legacy", Version: 0, Data: map[string]any{"value": "old-checkpoint"},
+	}); err != nil {
+		t.Fatalf("write legacy parent artifact: %v", err)
 	}
 	// Write a turn checkpoint that the Fork resolver picks up.
 	turnCP := &store.TurnCheckpoint{
@@ -159,6 +192,415 @@ func TestFork_HappyPath(t *testing.T) {
 	// step1's upstream output is preserved.
 	if v := child.Checkpoint.Outputs["step1"]["value"]; v != "alpha" {
 		t.Errorf("child upstream output step1.value = %v, want alpha", v)
+	}
+	if _, present := child.Checkpoint.Artifacts["draft"]; present {
+		t.Fatalf("child retained the anchor's stale logical artifact: %+v", child.Checkpoint.Artifacts)
+	}
+	if child.Checkpoint.ArtifactOwners["analysis"] != "step1" {
+		t.Fatalf("child lost upstream artifact ownership: %+v", child.Checkpoint.ArtifactOwners)
+	}
+	for _, revision := range []store.ArtifactRevisionRef{{NodeID: "step1", Version: 0}, {NodeID: "source", Version: 0}, {NodeID: "legacy", Version: 0}} {
+		artifact, err := st.LoadArtifact(context.Background(), child.ID, revision.NodeID, revision.Version)
+		if err != nil {
+			t.Fatalf("load copied child artifact %s/%d: %v", revision.NodeID, revision.Version, err)
+		}
+		if artifact.RunID != child.ID {
+			t.Fatalf("copied artifact run id = %q, want %q", artifact.RunID, child.ID)
+		}
+	}
+}
+
+type forkSharedPublisherExecutor struct {
+	t *testing.T
+}
+
+func (e forkSharedPublisherExecutor) Execute(_ context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+	plan, _ := input["plan"].(map[string]any)
+	if plan["value"] != "seed" {
+		e.t.Errorf("fork input plan = %+v, want retained seed artifact", input["plan"])
+	}
+	retained, _ := input["retained"].(map[string]any)
+	if retained["value"] != "published" {
+		e.t.Errorf("fork input retained = %+v, want authoritative published value", input["retained"])
+	}
+	return map[string]any{"value": "refined"}, nil
+}
+
+func TestForkRebuildsArtifactFromRetainedSharedPublisher(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := st.CreateRun(ctx, "fork-shared-publisher-parent", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.WorkDir = t.TempDir()
+	parent.Status = store.RunStatusCancelled
+	parent.Checkpoint = &store.Checkpoint{
+		NodeID: "later",
+		Outputs: map[string]map[string]any{
+			"seed":   {"value": "seed"},
+			"refine": {"value": "old-refined"},
+			"writer": {"value": "new-unpublished"},
+		},
+		Artifacts: map[string]map[string]any{
+			"plan":     {"value": "old-refined"},
+			"retained": {"value": "published"},
+		},
+		ArtifactOwners: map[string]string{"plan": "refine", "retained": "writer"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":     {NodeID: "refine", Version: 0},
+			"retained": {NodeID: "writer", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+		ArtifactVersions:       map[string]int{"seed": 1, "refine": 1, "writer": 1},
+	}
+	if err := st.SaveRun(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parent.ID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "published"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{
+		RunID: parent.ID, NodeID: "refine", TurnIndex: 0, Backend: "claw", Messages: json.RawMessage(`[]`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := svc.Fork(ctx, ForkSpec{RunID: parent.ID, NodeID: "refine", TurnIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := st.LoadRun(ctx, fork.NewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !child.Checkpoint.ArtifactsKnown {
+		t.Fatal("fork discarded the authority of surviving logical artifacts")
+	}
+	wf := &ir.Workflow{
+		Name: "wf", Entry: "seed",
+		Nodes: map[string]ir.Node{
+			"seed":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "seed"}, Publish: "plan"},
+			"refine": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "refine"}, Publish: "plan"},
+			"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "seed", To: "refine", With: []*ir.DataMapping{
+				{
+					Key: "plan", Raw: "{{artifacts.plan.value}}",
+					Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan", "value"}, Raw: "{{artifacts.plan.value}}"}},
+				},
+				{
+					Key: "retained", Raw: "{{artifacts.retained}}",
+					Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"retained"}, Raw: "{{artifacts.retained}}"}},
+				},
+			}},
+			{From: "refine", To: "done"},
+		},
+	}
+	if err := runtime.New(wf, st, forkSharedPublisherExecutor{t},
+		runtime.WithWorkDir(parent.WorkDir), runtime.WithSandboxOverride("none"),
+	).Resume(ctx, child.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInvalidateForkAnchorArtifactsDropsAmbiguousLegacyBinding(t *testing.T) {
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"anchor": {"value": int64(7)},
+			"peer":   {"value": int64(7)},
+		},
+		Artifacts: map[string]map[string]any{
+			"ownerless":  {"value": float64(7)},
+			"retained":   {"value": "different"},
+			"exact-peer": {"value": float64(7)},
+		},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"exact-peer":      {NodeID: "peer", Version: 0},
+			"anchor-revision": {NodeID: "anchor", Version: 0},
+		},
+	}
+
+	invalidateForkAnchorArtifacts(cp, "anchor")
+
+	if _, present := cp.Outputs["anchor"]; present {
+		t.Fatal("fork retained the anchor output")
+	}
+	if _, present := cp.Artifacts["ownerless"]; present {
+		t.Fatalf("fork retained an ownerless artifact matching the anchor output: %+v", cp.Artifacts)
+	}
+	if got := cp.Artifacts["retained"]["value"]; got != "different" {
+		t.Fatalf("fork removed unrelated ownerless artifact: %+v", cp.Artifacts)
+	}
+	if got := cp.Artifacts["exact-peer"]["value"]; got != float64(7) {
+		t.Fatalf("fork removed an exact peer artifact with the same value: %+v", cp.Artifacts)
+	}
+	if _, present := cp.ArtifactRevisions["anchor-revision"]; present {
+		t.Fatalf("fork retained an anchor revision from a checkpoint without logical values: %+v", cp.ArtifactRevisions)
+	}
+}
+
+type recordingArtifactStore struct {
+	store.RunStore
+	childRunID string
+	writes     []store.ArtifactRevisionRef
+}
+
+func (s *recordingArtifactStore) WriteArtifact(ctx context.Context, artifact *store.Artifact) error {
+	if artifact.RunID == s.childRunID {
+		s.writes = append(s.writes, store.ArtifactRevisionRef{NodeID: artifact.NodeID, Version: artifact.Version})
+	}
+	return s.RunStore.WriteArtifact(ctx, artifact)
+}
+
+func TestCopyForkArtifactsWritesEachNodeInVersionOrder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-order-parent", "fork-order-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []*store.Artifact{
+		{RunID: parentID, NodeID: "a", Version: 0, Data: map[string]any{"version": 0}},
+		{RunID: parentID, NodeID: "a", Version: 1, Data: map[string]any{"version": 1}},
+		{
+			RunID: parentID, NodeID: "z", Version: 0, Data: map[string]any{"version": 0},
+			Contract: &store.ArtifactContract{
+				LogicalRef: "z", ProducerNode: "z", Version: 0,
+				Dependencies: []store.ArtifactDependency{{LogicalRef: "a", NodeID: "a", Version: 0, Required: true}},
+			},
+		},
+	} {
+		if err := st.WriteArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recording := &recordingArtifactStore{RunStore: st, childRunID: childID}
+	if err := copyForkArtifacts(ctx, recording, parentID, childID, []store.ArtifactRevisionRef{
+		{NodeID: "a", Version: 1},
+		{NodeID: "z", Version: 0},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []store.ArtifactRevisionRef{{NodeID: "a", Version: 0}, {NodeID: "a", Version: 1}, {NodeID: "z", Version: 0}}
+	if len(recording.writes) != len(want) {
+		t.Fatalf("copy order = %+v, want %+v", recording.writes, want)
+	}
+	for i := range want {
+		if recording.writes[i] != want[i] {
+			t.Fatalf("copy order = %+v, want %+v", recording.writes, want)
+		}
+	}
+}
+
+func TestCopyForkArtifactsResolvesLogicalOnlyDependency(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-logical-parent", "fork-logical-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "planner", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "planner", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "writer", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "report", ProducerNode: "writer", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "plan", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"plan":   {NodeID: "planner", Version: 0},
+		"report": {NodeID: "writer", Version: 0},
+	}}
+	exact, inferred := forkArtifactRevisions(cp)
+	if err := copyForkArtifacts(ctx, st, parentID, childID, exact, inferred); err != nil {
+		t.Fatalf("logical-only dependency was not resolved: %v", err)
+	}
+	if _, err := st.LoadArtifact(ctx, childID, "planner", 0); err != nil {
+		t.Fatalf("dependency was not copied to child: %v", err)
+	}
+}
+
+func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-optional-parent", "fork-optional-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	missing := []store.ArtifactRevisionRef{{NodeID: "legacy", Version: 0}}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, nil, missing); err != nil {
+		t.Fatalf("inferred legacy root should fall back to checkpoint outputs: %v", err)
+	}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, missing, nil); err == nil {
+		t.Fatal("exact checkpoint revision unexpectedly became optional")
+	}
+}
+
+func TestForkTreatsUnverifiedProducerBindingAsOptional(t *testing.T) {
+	cp := &store.Checkpoint{
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":   {NodeID: "planner", Version: 2, Unverified: true},
+			"report": {NodeID: "writer", Version: 1},
+		},
+	}
+	exact, inferred := forkArtifactRevisions(cp)
+	if len(exact) != 1 || exact[0].NodeID != "writer" {
+		t.Fatalf("verified fork roots = %+v", exact)
+	}
+	if len(inferred) != 1 || inferred[0].NodeID != "planner" || !inferred[0].Unverified {
+		t.Fatalf("optional unverified fork roots = %+v", inferred)
+	}
+}
+
+func TestForkArtifactCopyFailureRollsBackProvisionalChild(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID = "fork-copy-failure-parent"
+	parent, err := st.CreateRun(ctx, parentID, "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.Status = store.RunStatusCancelled
+	parent.Checkpoint = &store.Checkpoint{
+		NodeID:  "retry",
+		Outputs: map[string]map[string]any{"producer": {"ok": true}},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "producer", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	if err := st.SaveRun(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{RunID: parent.ID, NodeID: "retry", Backend: "claw"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Fork(ctx, ForkSpec{RunID: parent.ID, NodeID: "retry", TurnIndex: 0}); err == nil {
+		t.Fatal("fork unexpectedly succeeded without its exact retained artifact")
+	}
+	runIDs, err := st.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runIDs) != 1 || runIDs[0] != parent.ID {
+		t.Fatalf("failed fork left a visible provisional child: %v", runIDs)
+	}
+}
+
+func TestCopyForkArtifactsDoesNotCacheFailedOptionalRoot(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID, childID = "fork-optional-dependency-parent", "fork-optional-dependency-child"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, childID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parentID, NodeID: "consumer", Version: 0, Data: map[string]any{"value": "derived"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "consumer", ProducerNode: "consumer", Version: 0,
+			Dependencies: []store.ArtifactDependency{{LogicalRef: "missing", NodeID: "missing", Version: 0, Required: true}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inferred := []store.ArtifactRevisionRef{
+		{NodeID: "missing", Version: 0},
+		{NodeID: "consumer", Version: 0},
+	}
+	if err := copyForkArtifacts(ctx, st, parentID, childID, nil, inferred); err == nil {
+		t.Fatal("consumer was copied after its previously skipped required dependency remained unavailable")
+	}
+	if _, err := st.LoadArtifact(ctx, childID, "consumer", 0); err == nil {
+		t.Fatal("consumer artifact was written despite its missing required dependency")
+	}
+}
+
+func TestForkBeforeFirstCheckpointKeepsLegacyArtifactStateUnknown(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parentID = "fork-before-first-checkpoint"
+	if _, err := st.CreateRun(ctx, parentID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{
+		RunID: parentID, NodeID: "first", TurnIndex: 0, Backend: "claude_code", WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Fork(ctx, ForkSpec{RunID: parentID, NodeID: "first", TurnIndex: 0})
+	if err != nil {
+		t.Fatalf("Fork before first completed node: %v", err)
+	}
+	child, err := st.LoadRun(ctx, result.NewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Checkpoint == nil {
+		t.Fatal("fork did not create its synthetic checkpoint")
+	}
+	if child.Checkpoint.ArtifactRevisionsKnown {
+		t.Fatal("fork invented authoritative artifact provenance without a parent checkpoint")
 	}
 }
 

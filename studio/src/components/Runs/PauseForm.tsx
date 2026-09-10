@@ -1,7 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
 
-import { isWorkflowSourceChangedError, resumeRun } from "@/api/runs";
+import { isForceResumeRequiredError, resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
 import {
   askUserAllowsFreeText,
@@ -134,7 +134,7 @@ export default function PauseForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (isWorkflowSourceChangedError(e)) setForceRetry({ kind: "form" });
+      if (isForceResumeRequiredError(e)) setForceRetry({ kind: "form" });
     } finally {
       setBusy(false);
     }
@@ -158,7 +158,7 @@ export default function PauseForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (isWorkflowSourceChangedError(e)) {
+      if (isForceResumeRequiredError(e)) {
         setForceRetry({ kind: "decision", decision });
       }
     } finally {

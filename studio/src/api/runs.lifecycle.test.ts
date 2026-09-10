@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./client";
 import {
+  ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+  isForceResumeRequiredError,
   isWorkflowSourceChangedError,
   mergeActionReady,
   resumeRun,
@@ -65,6 +67,21 @@ describe("resume error contract", () => {
     expect(
       isWorkflowSourceChangedError(
         new ApiError(502, "API error 502: upstream source has changed"),
+      ),
+    ).toBe(false);
+  });
+
+  it("classifies artifact contract refusals as requiring explicit force", () => {
+    const err = new ApiError(
+      400,
+      "API error 400: resume rejected",
+      ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE,
+    );
+    expect(isForceResumeRequiredError(err)).toBe(true);
+    expect(isWorkflowSourceChangedError(err)).toBe(false);
+    expect(
+      isForceResumeRequiredError(
+        new ApiError(400, "API error 400: resume rejected", "another_error"),
       ),
     ).toBe(false);
   });

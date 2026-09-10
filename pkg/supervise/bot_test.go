@@ -42,16 +42,18 @@ func TestBuildSystemPrompt(t *testing.T) {
 func TestBuildUserPrompt(t *testing.T) {
 	t.Run("full input", func(t *testing.T) {
 		in := EvalInput{
-			ActiveNode:   "implement",
-			WakeReason:   "monitor matched: #4 tool_error",
-			RecentEvents: []string{"#1 node_started node=implement", "#2 tool_called"},
-			Monitors:     []Monitor{{EventType: "tool_error", ToolName: "Bash"}},
-			Last:         &Decision{Intervene: true, Message: "re-run the tests", Reason: "flaky"},
+			ActiveNode:            "implement",
+			WakeReason:            "monitor matched: #4 tool_error",
+			RecentEvents:          []string{"#1 node_started node=implement", "#2 tool_called"},
+			Monitors:              []Monitor{{EventType: "tool_error", ToolName: "Bash"}},
+			Last:                  &Decision{Intervene: true, Message: "re-run the tests", Reason: "flaky"},
+			ConsecutiveNoProgress: 2,
 		}
 		got := buildUserPrompt(in)
 		for _, want := range []string{
 			"Wake reason: monitor matched: #4 tool_error",
 			"Supervised node: implement",
+			"Repeated unchanged evidence: 2 consecutive event(s)",
 			`Currently watching: [{"event_type":"tool_error","tool_name":"Bash"}]`,
 			`Your previous action: intervene=true message="re-run the tests" reason="flaky"`,
 			"Do NOT repeat a steering message you already sent",
