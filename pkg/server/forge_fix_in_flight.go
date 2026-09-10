@@ -181,7 +181,7 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	// resume keeps the claim.
 	if run.Status == store.RunStatusFailedResumable &&
 		run.FailureCode != store.FailureDLQParked &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		fixParkWillResume(run) {
 		return
 	}
 	prURL := runInputString(run, "pr_url")
@@ -249,6 +249,40 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 		s.logger.Info("forge fix: run %s is %s — released %s on %s@%s",
 			run.ID, run.Status, fixInFlightContext, repo, shortSHA(sha))
 	}
+}
+
+// fixParkWillResume reports whether something will pick a parked fixer back up
+// on its own — the half of the stand-down above that decides whether "the fix
+// run is done" would be a lie.
+//
+// It reads the CONTINUATION, not the failure code, because a code list is
+// wrong in both directions. Too narrow: a plain execution failure parks as
+// failed_resumable with no RetryState at all, is Nak'd (pkg/runner/loop.go),
+// and a fresh pod picks the SAME run back up — a usage-window-only predicate
+// posts the all-clear over that whole second pass, which is the drain/sandbox
+// class this very branch was reported on. Too wide: an interrupted run on its
+// LAST permitted delivery "Naks into nothing", so an interrupted-means-resume
+// rule would leave a dead run's claim pending forever. `ContinuationState` is
+// the repo's own answer to exactly that question — the runner promotes it at
+// the actual Nak, and outcome_router / stuckcard / boarddispatch already gate
+// on this same pair.
+//
+// The UNKNOWN continuation (empty — the type's doc says never treat it as
+// final) does clear here, deliberately: no outcome event ever observes a
+// nak-parked run (outcomeSideEffectsFire is false for every nak action), so
+// the only reader is the 60s sweep, racing a promote the runner writes
+// immediately. The residual is a promote whose store write failed — a warn in
+// the runner log — and a false all-clear on a run that is genuinely dead is
+// the one this file cannot leave standing.
+//
+// RetryAfter stays as the compatibility fallback: a row parked before the
+// typed bookkeeping carries the armed retry and no continuation.
+func fixParkWillResume(run *store.Run) bool {
+	switch run.ContinuationState {
+	case store.ContinuationRedeliveryPending, store.ContinuationRetryArmed:
+		return true
+	}
+	return run.RetryState != nil && run.RetryState.RetryAfter != nil
 }
 
 // fixRoleTTL bounds how long a manifest classification is reused. Short enough

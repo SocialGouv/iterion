@@ -231,6 +231,63 @@ func TestClearFixInFlight_ResolvesAParkedRunNothingWillResume(t *testing.T) {
 	}
 }
 
+// R5fda5a — the armed retry is only ONE of the parks that auto-resume, and it
+// was the only one the guard knew. A drain (a rolling deploy interrupting a
+// run mid-flight), a sandbox setup timeout and a capacity park all land on
+// failed_resumable with NO RetryAfter ever written: the runner Naks, a fresh
+// pod picks the SAME run back up, and nothing re-claims on the way. The clear
+// posted "pushing is safe again" over that whole second pass — the false
+// all-clear this file calls worse than silence, on the paths that produce it
+// most often.
+//
+// The continuation is the repo's own answer to "does anything own this run's
+// future", promoted by the runner at the actual Nak.
+func TestClearFixInFlight_SilentOnAParkAContinuationWillResume(t *testing.T) {
+	for name, state := range map[string]store.ContinuationState{
+		// A drain / sandbox-timeout / capacity park: Nak'd, redelivered,
+		// no RetryState anywhere in the picture.
+		"queue redelivery": store.ContinuationRedeliveryPending,
+		// A quota park, now stated typed rather than inferred from RetryAfter.
+		"armed retry": store.ContinuationRetryArmed,
+	} {
+		gc := &listingGateClient{statuses: []forge.CommitStatus{
+			{Context: fixInFlightContext, State: forge.CommitStatePending,
+				Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+		}}
+		s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+		run.ContinuationState = state
+		run.RetryState = nil // the whole point: nothing armed, and it still resumes
+
+		s.clearFixInFlight(context.Background(), run)
+
+		if gc.setCalls != 0 {
+			t.Errorf("%s: announced the fixer done (%d posts) — the same run resumes and keeps rewriting the branch behind a green check", name, gc.setCalls)
+		}
+	}
+}
+
+// ...and the other side of that predicate: an interrupted run on its LAST
+// permitted delivery "Naks into nothing" — the runner leaves the continuation
+// unknown on purpose, because nobody owns its future. A rule keyed on the
+// failure code (interrupted ⇒ will resume) would strand that dead run's claim
+// pending forever. Unknown clears.
+func TestClearFixInFlight_ResolvesAParkNothingOwns(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.FailureCode = store.FailureInterrupted
+	run.ContinuationState = "" // Nak'd into nothing: unknown, and nothing wakes it
+	run.RetryState = nil
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a run nothing will resume leaves its claim pending forever", gc.setCalls)
+	}
+}
+
 // While the run is alive the claim is exactly right, and clearing it would
 // re-open the window it exists to close.
 func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
