@@ -263,30 +263,51 @@ func findRepoQuota(in []budgetfloor.RepoQuota, repo string) budgetfloor.RepoQuot
 	return budgetfloor.RepoQuota{}
 }
 
+// The four helpers below all build a NEW slice rather than editing `in` in
+// place, which is what actually makes applyFloorEdit the pure function its
+// doc comment claims — and that purity is load-bearing, not tidiness: the
+// CAS retry replays the SAME edit onto a freshly read document, and an
+// in-place `in[:0]` filter or an `in[i] = res` write would have left the
+// caller's policy silently rewritten under it. Nothing relies on that today
+// only because every attempt re-fetches; the next caller that holds a policy
+// across the call is the one who would find out.
+
 // upsertReservation replaces the entry for a bot, or appends it — so
 // `reserve` twice for one bot is an edit, not the duplicate Validate refuses.
 func upsertReservation(in []budgetfloor.Reservation, res budgetfloor.Reservation) []budgetfloor.Reservation {
-	for i := range in {
-		if strings.TrimSpace(in[i].BotID) == res.BotID {
-			in[i] = res
-			return in
+	out := make([]budgetfloor.Reservation, 0, len(in)+1)
+	replaced := false
+	for _, r := range in {
+		if strings.TrimSpace(r.BotID) == res.BotID {
+			out, replaced = append(out, res), true
+			continue
 		}
+		out = append(out, r)
 	}
-	return append(in, res)
+	if !replaced {
+		out = append(out, res)
+	}
+	return out
 }
 
 func upsertRepoQuota(in []budgetfloor.RepoQuota, q budgetfloor.RepoQuota) []budgetfloor.RepoQuota {
-	for i := range in {
-		if strings.TrimSpace(in[i].Repo) == q.Repo {
-			in[i] = q
-			return in
+	out := make([]budgetfloor.RepoQuota, 0, len(in)+1)
+	replaced := false
+	for _, cur := range in {
+		if strings.TrimSpace(cur.Repo) == q.Repo {
+			out, replaced = append(out, q), true
+			continue
 		}
+		out = append(out, cur)
 	}
-	return append(in, q)
+	if !replaced {
+		out = append(out, q)
+	}
+	return out
 }
 
 func dropReservation(in []budgetfloor.Reservation, bot string) []budgetfloor.Reservation {
-	out := in[:0]
+	out := make([]budgetfloor.Reservation, 0, len(in))
 	for _, r := range in {
 		// Trimmed like every other lookup: `rm --bot review-pr` must remove an
 		// entry stored as " review-pr " rather than silently no-op on it.
@@ -298,7 +319,7 @@ func dropReservation(in []budgetfloor.Reservation, bot string) []budgetfloor.Res
 }
 
 func dropRepoQuota(in []budgetfloor.RepoQuota, repo string) []budgetfloor.RepoQuota {
-	out := in[:0]
+	out := make([]budgetfloor.RepoQuota, 0, len(in))
 	for _, q := range in {
 		if strings.TrimSpace(q.Repo) != repo {
 			out = append(out, q)

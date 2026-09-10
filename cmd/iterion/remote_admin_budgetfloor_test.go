@@ -212,3 +212,70 @@ func TestApplyFloorEdit_EditsOneAxisAndLeavesTheRest(t *testing.T) {
 		}
 	})
 }
+
+// applyFloorEdit's doc calls it a pure function of the policy it is applied
+// to, and the CAS retry is what makes that load-bearing: on a 409 the SAME
+// edit is replayed onto a freshly read document, and it is only the same edit
+// if applying it left nothing behind in the first one.
+//
+// The helpers used to filter and overwrite in place (`in[:0]`, `in[i] = res`),
+// which rewrites the CALLER's slice through the shared backing array. Nothing
+// broke only because every retry re-fetches; a caller that holds a policy
+// across the call would have found its reservations quietly replaced.
+func TestApplyFloorEdit_DoesNotMutateThePolicyItIsGiven(t *testing.T) {
+	edits := []struct {
+		name string
+		bot  string
+		repo string
+		e    floorEdit
+	}{
+		{"rm a reservation", "review-pr", "", floorEdit{action: "rm", named: map[string]bool{"bot": true}}},
+		{"rm a repo quota", "", "o/a", floorEdit{action: "rm", named: map[string]bool{"repo": true}}},
+		{"overwrite a reservation axis", "review-pr", "", floorEdit{action: "reserve", named: map[string]bool{"bot": true, "five-hour": true}}},
+		{"overwrite a repo quota axis", "", "o/a", floorEdit{action: "quota", named: map[string]bool{"repo": true, "monthly-usd": true}}},
+	}
+	for _, tc := range edits {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := budgetfloor.Policy{
+				Reservations: []budgetfloor.Reservation{
+					{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}},
+					{BotID: "feature-dev", Reserve: budgetfloor.Reserve{FiveHourPercent: 10}},
+				},
+				RepoQuotas: []budgetfloor.RepoQuota{
+					{Repo: "o/a", MonthlyUSD: 10},
+					{Repo: "o/b", MonthlyUSD: 20},
+				},
+			}
+			// The comparison is against what the caller HAD, captured by value
+			// before the call — an entry that moved or vanished in `stored`
+			// itself is the corruption, whatever the return value looks like.
+			wantRes := append([]budgetfloor.Reservation(nil), stored.Reservations...)
+			wantQuotas := append([]budgetfloor.RepoQuota(nil), stored.RepoQuotas...)
+
+			remoteFloorBot, remoteFloorRepo = tc.bot, tc.repo
+			remoteFloorFiveHour, remoteFloorUSD = 40, 99
+			t.Cleanup(func() {
+				remoteFloorBot, remoteFloorRepo = "", ""
+				remoteFloorFiveHour, remoteFloorUSD = 0, 0
+			})
+			if _, err := applyFloorEdit(stored, tc.e); err != nil {
+				t.Fatalf("applyFloorEdit: %v", err)
+			}
+
+			if len(stored.Reservations) != len(wantRes) || len(stored.RepoQuotas) != len(wantQuotas) {
+				t.Fatalf("the input policy changed shape: %d/%d reservations/quotas, want %d/%d",
+					len(stored.Reservations), len(stored.RepoQuotas), len(wantRes), len(wantQuotas))
+			}
+			for i := range wantRes {
+				if stored.Reservations[i] != wantRes[i] {
+					t.Errorf("input reservation %d became %+v, want the untouched %+v", i, stored.Reservations[i], wantRes[i])
+				}
+			}
+			for i := range wantQuotas {
+				if stored.RepoQuotas[i] != wantQuotas[i] {
+					t.Errorf("input quota %d became %+v, want the untouched %+v", i, stored.RepoQuotas[i], wantQuotas[i])
+				}
+			}
+		})
+	}
+}
