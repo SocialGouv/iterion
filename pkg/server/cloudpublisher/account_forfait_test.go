@@ -42,7 +42,7 @@ func TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow(t *testing.T) {
 	}
 
 	for pass := range 3 {
-		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload"))
+		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload"))
 		if !until.IsZero() {
 			t.Fatalf("pass %d: an empty answer says nothing is closed", pass)
 		}
@@ -56,7 +56,7 @@ func TestNewAccountMeterConvergesWhenTheProviderReportsNoWindow(t *testing.T) {
 	// again rather than assumed answered forever.
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
 	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
-	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
+	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload")); probes != 2 {
 		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
 	}
 }
@@ -88,7 +88,7 @@ func TestNewAccountMeterConvergesWhenTheProviderCannotBeReached(t *testing.T) {
 	}
 
 	for pass := range 3 {
-		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload"))
+		until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload"))
 		// The documented posture on an unavailable provider: fail OPEN. The
 		// fix must stop the re-probing without turning an outage into a wall.
 		if !until.IsZero() {
@@ -103,7 +103,7 @@ func TestNewAccountMeterConvergesWhenTheProviderCannotBeReached(t *testing.T) {
 	// the account is asked again rather than assumed unreachable forever.
 	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), rec.Fingerprint)
 	f.pub.rememberProbeWithoutReading(key, time.Now().Add(-2*time.Hour))
-	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("payload")); probes != 2 {
+	if _, _ = f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("payload")); probes != 2 {
 		t.Fatalf("provider probes=%d, want the account re-asked once the memo aged out", probes)
 	}
 }
@@ -131,7 +131,7 @@ func TestNewAccountMeterChecksProviderBeforeFirstAdmission(t *testing.T) {
 	}
 	// The first run holds the donor's capacity lease. Check the same account
 	// independently of pool availability: its learned refusal must be reused.
-	if until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, rec, []byte("unused because a fresh reading exists")); until.IsZero() {
+	if until, _ := f.pub.forfaitWindowClosed(t.Context(), usagecap.TenantScope(poolTeam), owner, "", rec, []byte("unused because a fresh reading exists")); until.IsZero() {
 		t.Fatal("second admission forgot the account's provider refusal")
 	}
 	if probes != 1 {

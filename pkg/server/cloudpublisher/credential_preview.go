@@ -652,7 +652,10 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		}
 		c.Windows = append(c.Windows, w)
 	}
-	until, why := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt)
+	// The RAW bot id, the budget floor's key (previewBotID is the audience's
+	// folded spelling): the launch judges these readings against the cap the
+	// OTHER workloads' reservations leave this bot.
+	until, why := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt, x.out.Context.BotID)
 	if !until.IsZero() {
 		c.State = "blocked"
 		c.Reason = why
@@ -662,7 +665,7 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 	// The same decision the launch makes, read through one predicate: a
 	// preview that announced a probe the launch then skipped would be
 	// telling the operator about work that never happens.
-	if oauth && x.p.usageProbe != nil && (x.p.initialProbeWanted(key, fp, readings, x.out.ObservedAt) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt)) {
+	if oauth && x.p.usageProbe != nil && (x.p.initialProbeWanted(key, fp, readings, x.out.ObservedAt) || x.p.staleReadingsSuggestClosed(ctx, readings, x.out.ObservedAt, x.out.Context.BotID)) {
 		c.State = "probe_required"
 		c.Reason = "Launch will probe this new or stale account; its availability is unknown until then."
 		return false
