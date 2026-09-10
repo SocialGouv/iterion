@@ -269,11 +269,36 @@ definitive for that attempt, so it has to be visible.
 iterion remote usage --by-credential
 # GET /api/teams/{id}/credentials/usage
 
+# A past month, on either route
+iterion remote usage --by-credential --month 2026-08
+iterion remote api GET "/api/admin/credentials/usage?month=2026-08"
+
 # The platform tier across every tenant it served (super-admin)
 iterion remote api GET /api/admin/credentials/usage
 # ?tier=team|pool|platform — or ?fingerprint=<fp> for one credential,
 # whose rows live under each tenant that drew on it.
 ```
+
+**The admin route answers for ONE tier, and the default is `platform`.** A
+team forfait's spend is metered on a `team` row and is therefore absent from
+the unfiltered listing — by design, since no tenant view can show the
+platform tier and that is the question this route exists for. Every response
+now carries a `scope` object naming what was applied (`tier`, `fingerprint`,
+`repo`, `team_id`), because a listing that does not say what it left out
+reads as "everything", and a credential missing from "everything" reads as a
+credential that spent nothing:
+
+```json
+{ "month": "2026-09", "scope": { "tier": "platform" }, "credentials": [ … ] }
+```
+
+Both routes take `?month=YYYY-MM`, and **refuse a value they cannot parse**
+(400) rather than fall back to the current month — the response is labelled
+with a month, so serving another one under that label is a wrong answer, not
+a partial one. Two readings of this endpoint made without either property
+were what opened #1087 against a counter that was recording normally: a
+`?month=` the server ignored returned the current month twice, and the
+platform-tier default hid the team row the run had actually charged.
 
 Metering is best effort throughout, like the org bucket: a missing counter,
 an unattributable route or a store failure leave the observation on the
