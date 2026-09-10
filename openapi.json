@@ -43,6 +43,12 @@
           "node_id": {
             "type": "string"
           },
+          "unverified": {
+            "type": "boolean"
+          },
+          "value_from_revision": {
+            "type": "boolean"
+          },
           "version": {
             "type": "integer"
           }
@@ -295,6 +301,12 @@
       },
       "BranchCheckpoint": {
         "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "artifact_revisions": {
             "additionalProperties": {
               "$ref": "#/components/schemas/ArtifactRevisionRef"
@@ -399,6 +411,12 @@
       },
       "Checkpoint": {
         "properties": {
+          "artifact_owners": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "artifact_revisions": {
             "additionalProperties": {
               "$ref": "#/components/schemas/ArtifactRevisionRef"
@@ -413,6 +431,16 @@
               "type": "integer"
             },
             "type": "object"
+          },
+          "artifacts": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "artifacts_known": {
+            "type": "boolean"
           },
           "backend_conversation": {
             "format": "byte",

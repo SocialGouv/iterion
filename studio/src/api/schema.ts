@@ -5631,6 +5631,8 @@ export interface components {
         ArtifactRevisionRef: {
             contract_logical_ref?: string;
             node_id: string;
+            unverified?: boolean;
+            value_from_revision?: boolean;
             version: number;
         };
         AuthMeResponse: {
@@ -5703,6 +5705,9 @@ export interface components {
             prefix: string;
         };
         BranchCheckpoint: {
+            artifact_owners?: {
+                [key: string]: string;
+            };
             artifact_revisions?: {
                 [key: string]: components["schemas"]["ArtifactRevisionRef"];
             };
@@ -5754,6 +5759,9 @@ export interface components {
             terminated_at_done?: boolean;
         };
         Checkpoint: {
+            artifact_owners?: {
+                [key: string]: string;
+            };
             artifact_revisions?: {
                 [key: string]: components["schemas"]["ArtifactRevisionRef"];
             };
@@ -5761,6 +5769,12 @@ export interface components {
             artifact_versions: {
                 [key: string]: number;
             };
+            artifacts?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            artifacts_known?: boolean;
             /** Format: byte */
             backend_conversation?: string;
             backend_name?: string;
