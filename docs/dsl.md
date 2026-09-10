@@ -838,10 +838,18 @@ A declined source is **reported, not dropped** — the
 with the config and the reason it declined
 (`skipped_configs` / `skipped_reasons`), and the run logs it. Without
 that, the only trace of the decision would be a binary missing later,
-which reads as an agent bug. The same channel reports the other decline:
-a **bot's** `devbox.json` on a driver with no host bind mounts, where its
-bundle cannot reach the container at all
+which reads as an agent bug. The same channel reports what remains
+declinable on the bot's side: a `devbox.json` that cannot be read, or one
+too large to carry into a sandbox with no bundle mount
 ([sandbox.md](sandbox.md#best-effort-never-silent)).
+
+A bot's `devbox.json` is honoured on **every** driver, including the ones
+whose workspace is a copy inside a pod. There the bundle cannot be *read*
+from in-container, so its config is *carried* there: the install prologue
+writes it out before running `devbox install`. That matters because the
+pod driver is where bots actually run — declining there (as iterion did
+until 2026-09-10) made the documented way for a bot to declare its
+binaries work on a laptop and go silently inert in production.
 
 The override does **not** travel onto the cloud queue: what a cloud runner
 needs is the *workflow's* declaration, which rides the `.bot` itself. So a

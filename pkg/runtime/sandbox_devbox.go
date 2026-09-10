@@ -103,12 +103,16 @@ type devboxSkip struct {
 // the log line cannot drift apart.
 const (
 	devboxSkipRepoOff = "repo_devbox off"
-	// devboxSkipNoBundleMount: the bot's bundle is a host bind mount and
-	// this driver has no host filesystem to honour it (the pod backend).
-	// The staged copy the install prologue would run reads from a path
-	// the container never had, so the source cannot be installed at all.
-	devboxSkipNoBundleMount = "no host bind mount on this driver"
 )
+
+// A driver with no host bind mount used to be a decline of its own — the
+// bot's bundle could not be READ from inside the container, so the staged
+// copy the prologue runs would have named a path that never existed. It is
+// no longer a reason to decline anything: the config is CARRIED into the
+// sandbox by the prologue instead (see devboxProject.inline), which is
+// what makes a bot's declared toolchain reach the cloud driver, where bots
+// actually run. What remains declinable there is a config that cannot be
+// read or is too large to carry, and each says so in its own words.
 
 // devboxProject is one resolved devbox source: where its config lives
 // inside the container and how it got there.
@@ -127,7 +131,25 @@ type devboxProject struct {
 	// stageFrom, when non-empty, is a read-only in-container directory the
 	// config is copied out of into dir before installing.
 	stageFrom string
+
+	// inline, when non-empty, is the config's CONTENT keyed by file name,
+	// materialised into dir by the prologue itself. It is what makes a
+	// bot's declared toolchain reach a driver whose workspace is a COPY
+	// inside a pod: there is no bundle to read from in there, and the
+	// files are small enough to travel in the snippet that installs them.
+	//
+	// Mutually exclusive with stageFrom — a bind-mounted bundle is read
+	// straight from the mount, which keeps the spec small and needs no
+	// size ceiling.
+	inline map[string]string
 }
+
+// maxInlineDevboxBytes bounds what a config may carry into the prologue.
+// The snippet becomes part of the container's post-create command, so an
+// unbounded config would push it past what a driver can hand over. Well
+// above any real pair: a devbox.json is hundreds of bytes and even a
+// many-package devbox.lock stays in the low hundreds of KiB.
+const maxInlineDevboxBytes = 512 * 1024
 
 // applyDevboxProvisioning wires every devbox source this run carries into
 // the sandbox spec. A bot needing `crane` and a repo pinning its own
@@ -276,24 +298,42 @@ func resolveDevboxProjects(
 		})
 	}
 	if cfg := devboxConfigIn(p.BundleHostDir, "bundle", logger); cfg != "" {
-		if bundleContainerPath == "" {
-			// The bundle reaches the container as a host bind mount and
-			// this driver has none, so the staged copy the install
-			// prologue runs would read a path the container never had.
-			// The snippet fails soft, so the run would proceed on
-			// whatever the image happens to bake — a bot's declared
-			// toolchain silently absent. Decline it and say so.
-			if logger != nil {
-				logger.Warn("runtime: sandbox devbox: the bot's %s (%s) is NOT installed for this run — %s, so the bundle it lives in cannot be read from inside the sandbox; the packages it declares are unavailable and the run proceeds on what the image ships",
-					devboxConfigName, cfg, devboxSkipNoBundleMount)
-			}
-			skipped = append(skipped, devboxSkip{label: "bot", config: cfg, reason: devboxSkipNoBundleMount})
-		} else {
+		switch {
+		case bundleContainerPath != "":
 			out = append(out, devboxProject{
 				label:      "bot",
 				hostConfig: cfg,
 				dir:        botDevboxDir,
 				stageFrom:  bundleContainerPath,
+			})
+		default:
+			// No bundle mount — a driver whose workspace is a COPY inside
+			// a pod. The bundle cannot be READ from in there, but its
+			// config can be CARRIED there: the files are small, and the
+			// prologue that installs them can write them first.
+			//
+			// Declining instead (what this did until 2026-09-10) makes
+			// `devbox.json` — the documented, durable way for a bot to
+			// declare the binaries its steps need — silently inert on the
+			// cloud driver, which is where bots actually run. The result
+			// is a bot whose tools are present locally and absent in
+			// production, with nothing failing except the step that needed
+			// them.
+			inline, err := readInlineDevbox(p.BundleHostDir)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox devbox: the bot's %s (%s) is NOT installed for this run — %v; the packages it declares are unavailable and the run proceeds on what the image ships",
+						devboxConfigName, cfg, err)
+				}
+				skipped = append(skipped, devboxSkip{
+					label: "bot", config: cfg, reason: err.Error()})
+				break
+			}
+			out = append(out, devboxProject{
+				label:      "bot",
+				hostConfig: cfg,
+				dir:        botDevboxDir,
+				inline:     inline,
 			})
 		}
 	}
@@ -312,6 +352,44 @@ func resolveDevboxProjects(
 		kept = append(kept, pr)
 	}
 	return kept, skipped
+}
+
+// readInlineDevbox reads the config pair a bundle ships, for a driver that
+// cannot mount the bundle. devbox.json is required — it is what declared
+// the source in the first place; devbox.lock is optional, and a bundle
+// shipping none installs unlocked exactly as a staged copy would.
+//
+// An unreadable or oversized config is an ERROR, never a quiet empty map:
+// the caller reports it as a declined source, which is the difference
+// between a decision an operator can see and a binary missing later for
+// no stated reason.
+func readInlineDevbox(bundleDir string) (map[string]string, error) {
+	cfg, err := os.ReadFile(filepath.Join(bundleDir, devboxConfigName))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the bundle's %s: %w",
+			devboxConfigName, err)
+	}
+	files := map[string]string{devboxConfigName: string(cfg)}
+	total := len(cfg)
+
+	// A missing lock is the normal unlocked case; anything else is a lock
+	// that EXISTS and could not be read, which must not pass for absent.
+	lock, err := os.ReadFile(filepath.Join(bundleDir, devboxLockName))
+	switch {
+	case err == nil:
+		files[devboxLockName] = string(lock)
+		total += len(lock)
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("cannot read the bundle's %s: %w",
+			devboxLockName, err)
+	}
+
+	if total > maxInlineDevboxBytes {
+		return nil, fmt.Errorf(
+			"the bundle's %s pair is %d bytes, over the %d-byte ceiling for carrying it into a sandbox with no bundle mount",
+			devboxConfigName, total, maxInlineDevboxBytes)
+	}
+	return files, nil
 }
 
 // devboxConfigIn returns the host path of dir's devbox.json, or "" when
@@ -427,6 +505,35 @@ func devboxInstallSnippet(projects []devboxProject) string {
 		fail := shellquote.Quote(fmt.Sprintf(
 			"iterion: devbox install failed for the %s %s (%s) — the packages it declares are NOT on PATH for this run",
 			pr.label, devboxConfigName, pr.dir))
+		if len(pr.inline) > 0 {
+			// The config travels IN the snippet, because this driver has
+			// no bundle to read it from. Written with a single-quoted
+			// `printf %s` argument rather than a here-document: a
+			// here-document ends at a line equal to its delimiter, and
+			// the content is operator-authored, so no delimiter can be
+			// proven safe. Quoting has no such escape hatch to miss.
+			var w strings.Builder
+			fmt.Fprintf(&w, "mkdir -p %s", dir)
+			// Deterministic order: the snippet is part of the spec, and a
+			// spec that differs run to run for the same inputs defeats
+			// every hash and cache downstream of it.
+			names := make([]string, 0, len(pr.inline))
+			for name := range pr.inline {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			for _, name := range names {
+				// `printf '%s' <content>`, never `printf <content>`: the
+				// first argument is a FORMAT, so a config carrying a `%`
+				// would be rewritten by printf itself.
+				fmt.Fprintf(&w, " && printf %%s %s > %s/%s",
+					shellquote.Quote(pr.inline[name]),
+					dir, shellquote.Quote(name))
+			}
+			fmt.Fprintf(&w, " && devbox install -c %s", dir)
+			fmt.Fprintf(&b, "  { %s; } || echo %s >&2\n", w.String(), fail)
+			continue
+		}
 		if pr.stageFrom == "" {
 			fmt.Fprintf(&b, "  devbox install -c %s || echo %s >&2\n", dir, fail)
 			continue
