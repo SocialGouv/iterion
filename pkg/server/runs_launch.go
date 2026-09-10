@@ -583,20 +583,20 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// an option: it costs a connection read, which a suspended tenant must
 		// not be able to drive.
 		//
-		// Only the repo half is re-run: gateLaunch's monthly arm METERS, and
-		// this launch already charged its run slot up there — a denial here
-		// hands it back through the deferred rollback, like every refusal
-		// before the run service is called. Without that, a CI loop against a
-		// repository sitting at its quota would spend the ORG's monthly run
-		// quota on launches that never happened, turning a repo-scoped refusal
-		// into a tenant-wide one.
+		// Without this the quota bound every automated lane and the resume of
+		// a run, but not the surface an operator or a CI loop drives
+		// directly: the one place a repository could spend past its ceiling
+		// all month. It sits AHEAD of the reachability probe and the
+		// managed-secret mint, so an over-quota repository costs neither a
+		// forge round trip nor a minted credential.
 		//
-		// Without it the quota bound every automated lane and the resume of a
-		// run, but not the surface an operator or a CI loop drives directly:
-		// the one place a repository could spend past its ceiling all month.
-		// And it sits AHEAD of the reachability probe and the managed-secret
-		// mint, so a repository that is over its quota costs neither a forge
-		// round trip nor a minted credential.
+		// Only the repo half of the gate is re-run: its monthly arm METERS,
+		// and this launch already charged its run slot up there — so the
+		// denial hands that slot back, through the deferred rollback every
+		// refusal before the run service call takes. Without it a CI loop
+		// against a repository at its ceiling would spend the ORG's monthly
+		// run quota on launches that never happened, turning a repo-scoped
+		// refusal into a tenant-wide one.
 		if d := s.gateRepoQuota(r.Context(), s.budgetFloorPolicy(r.Context()),
 			launchSubject{Repo: repoProjectPath}, time.Now().UTC()); d != nil {
 			s.writeLaunchDenial(w, r, d)
