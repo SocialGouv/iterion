@@ -355,6 +355,18 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 	// Slots held for OTHER workloads are not available to this one. The
 	// reserved bot itself faces the plain team cap, so a reservation never
 	// costs its holder a slot.
+	//
+	// The rule this implements is deliberately the CONSERVATIVE one, because
+	// the count below is per TENANT and not per bot: unreserved work may not
+	// push the tenant's TOTAL past `cap - held`. That guarantees the reserved
+	// workload always finds its slots free, and it over-refuses in one case —
+	// while the holder is spending its own reserve, an unreserved launch is
+	// denied even though the fleet is under its cap (cap 3, reserve 2, the
+	// reviewer running 2: the third slot stays unused). Erring that way keeps
+	// the operator's concurrency cap inviolate; the other way overcommits it.
+	// Counting the reserved bots' OWN active runs (and subtracting only the
+	// unused part of each reserve) is the exact rule, and it needs a per-bot
+	// active count the run store does not expose today.
 	if held := floor.OtherReservedSlots(subj.BotID); held > 0 {
 		if held >= maxActive {
 			// Every slot is held elsewhere. The `active >= maxActive` test

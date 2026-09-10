@@ -423,6 +423,16 @@ key) comes off the org's cost cap, and `--concurrent-runs` off the team's
 concurrency cap — the dial that keeps the reviewer answering a PR while a
 campaign runs. Any subset may be set.
 
+`--concurrent-runs` is enforced **conservatively**, and the difference is
+worth knowing before you set it: the gate counts a tenant's active runs, not
+each bot's, so what it enforces is *"unreserved work may not push the TOTAL
+past cap − reserved"*. The reserved workload therefore always finds its slots
+free, and one case over-refuses — while the holder is spending its own
+reserve, an unreserved launch is denied although the fleet is under its cap
+(cap 3, reserve 2, the reviewer running 2: the third slot stays unused until
+one of them ends). Reserve the smallest number that keeps the reviewer moving;
+a large slot reserve quiets everything else while the holder runs.
+
 ### Composition: protected from the others, never from itself
 
 A workload's ceiling is the deployment cap **minus the reserves of every

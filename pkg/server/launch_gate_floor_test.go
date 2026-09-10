@@ -153,6 +153,25 @@ func TestGateLaunch_ConcurrencyReserve(t *testing.T) {
 		}
 	})
 
+	t.Run("the guarantee it makes, and the case it over-refuses", func(t *testing.T) {
+		// The count is per TENANT, not per bot, so the rule enforced is
+		// "unreserved work may not push the TOTAL past cap - reserved". What
+		// it guarantees: the holder always finds its slots. What it costs:
+		// while the holder spends its own reserve, an unreserved launch is
+		// refused although the fleet is under its cap. Pinned deliberately —
+		// the alternative (approximating the holder's usage) overcommits the
+		// operator's cap, and the exact rule needs a per-bot active count the
+		// store does not expose. If that count ever lands, this is the test
+		// that should change.
+		s, ctx := newServer(t, 2) // both active runs are the reviewer's
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the holder was refused with a free slot: %+v", d)
+		}
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"}); d == nil {
+			t.Error("an unreserved bot was admitted past the conservative ceiling — the reserved slots would then not be guaranteed free")
+		}
+	})
+
 	t.Run("reserves that take every slot refuse instead of waiting on a finish", func(t *testing.T) {
 		// 2 slots, both held for the reviewer, and NOTHING running: the
 		// ordinary bot must be refused, and told what to change.
