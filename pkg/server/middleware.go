@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -384,9 +383,8 @@ func (s *Server) originGateAllows(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.HasPrefix(r.URL.Path, "/api/") || !isStateChangingMethod(r.Method) {
 		return true
 	}
-	if os.Getenv("ITERION_REQUIRE_ORIGIN") == "0" {
-		return true
-	}
+	// ITERION_REQUIRE_ORIGIN is read inside requireSafeOrigin, so the switch
+	// covers the ~70 handlers that call it directly as well as this gate.
 	return s.requireSafeOrigin(w, r)
 }
 

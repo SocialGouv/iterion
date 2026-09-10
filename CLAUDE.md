@@ -308,7 +308,20 @@ the hours this one spent.
   conditional (a browser DISCARDS one whose terms are unmet, so emitting it on
   a plaintext studio locks everyone out), the measured CSP (`script-src
   'self'` holds; `style-src` needs `'unsafe-inline'` for the CSS-in-JS), why
-  HSTS is the ingress's job, and the no-CDN rule for the SPA.
+  HSTS is the ingress's job, and the no-CDN rule for the SPA. Read it also
+  when a client is being **refused and you cannot see why**: the gate logs one
+  **`INFO`** per refusal naming method/path/Origin — grep at `info`, not
+  `warn`, or you reproduce the very false negative the line exists to kill
+  ("nothing is being wrongly refused" and "we cannot see one" were the same
+  empty grep). `warn` is deliberately NOT used: it would ride errtrack's hook
+  into Sentry's 100-entry breadcrumb ring, and the gate runs before auth, so a
+  stranger could evict everyone's error context. Also
+  `ITERION_ALLOWED_ORIGINS`, which names extra hosts so a multi-host mount
+  stops depending on the ingress forwarding `Host` unchanged — the
+  proportionate widening next to `ITERION_REQUIRE_ORIGIN=0`, which switches the
+  gate off. It is a **first-party** trust grant, though: the same list also
+  governs WebSocket upgrades and ACAO reflection, so a partner origin does not
+  belong in it.
 - [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
   (incl. natives) on a cloud instance WITHOUT an image rollout: the
   platform bot-override tier (`iterion remote admin bots push bots/<slug>`,

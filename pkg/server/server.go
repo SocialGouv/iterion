@@ -71,8 +71,12 @@ type Server struct {
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
-	currentProjectID  string
-	cfg               Config
+	currentProjectID string
+	cfg              Config
+	// extraOrigins are the ITERION_ALLOWED_ORIGINS entries, resolved once at
+	// construction. Kept beside cfg rather than in it because they come from
+	// the environment, not from a caller's Config.
+	extraOrigins      []string
 	logger            *iterlog.Logger
 	mux               *recordingMux // records routes → GET /api/openapi.json
 	handler           http.Handler  // mux wrapped with auth middleware
@@ -567,6 +571,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	s := &Server{
 		cfg:                 cfg,
+		extraOrigins:        loadExtraAllowedOrigins(logger),
 		logger:              logger,
 		mux:                 newRecordingMux(),
 		addrReady:           make(chan struct{}),
