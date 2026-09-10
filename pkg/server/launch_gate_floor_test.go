@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +145,26 @@ func TestGateLaunch_ConcurrencyReserve(t *testing.T) {
 			t.Fatalf("refused on a team with NO concurrency cap: %+v — the reservation invented one", d)
 		}
 	})
+
+	t.Run("reserves that take every slot refuse instead of waiting on a finish", func(t *testing.T) {
+		// 2 slots, both held for the reviewer, and NOTHING running: the
+		// ordinary bot must be refused, and told what to change.
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.cfg.Store = fakeActiveStore{active: 0}
+		withFloor(t, s, policy)
+		ctx := seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 2})
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil || d.reason != denyConcurrencyCap {
+			t.Fatalf("denial = %+v, want %s with every slot reserved", d, denyConcurrencyCap)
+		}
+		if !strings.Contains(d.detail, "reserved for other workloads") {
+			t.Errorf("detail = %q, want it to name the reservation — no finishing run ever frees a reserved slot", d.detail)
+		}
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the holder was refused its own slots: %+v", d)
+		}
+	})
 }
 
 // The monthly-dollar reserve: real money on a metered key, and the same
@@ -192,6 +213,38 @@ func TestGateLaunch_MonthlyUSDReserve(t *testing.T) {
 		}
 		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"}); d != nil {
 			t.Fatalf("refused on an org with NO cost cap: %+v — the reservation invented one", d)
+		}
+	})
+
+	// The inversion this axis is one keystroke from: orgusage gates on
+	// `maxCostMillis > 0` in BOTH twins, so subtracting a reserve down to zero
+	// does not hold unreserved work off — it turns the cost cap OFF for the
+	// rest of the month, for exactly the workloads the reserve exists to hold
+	// back. Spending NOTHING yet is what makes the test sharp: only a real
+	// denial can refuse here.
+	t.Run("a reserve that swallows the cost cap denies instead of unlimiting", func(t *testing.T) {
+		s := newOrgTestServer(t)
+		s.orgUsage = orgusage.NewMemoryCounter()
+		withFloor(t, s, policy) // $30 held for review-pr
+		ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 30})
+		_, d := s.gateLaunch(ctx, launchSubject{BotID: "feature-dev"})
+		if d == nil || d.reason != denyMonthlyCostCap {
+			t.Fatalf("denial = %+v, want %s — the whole $30 cap is reserved for the reviewer", d, denyMonthlyCostCap)
+		}
+		if d.resetAt.IsZero() {
+			t.Error("no reset instant on a monthly denial")
+		}
+		// The refusal happens BEFORE AllowRun, so it consumes no run slot.
+		u, err := s.orgUsage.Usage(context.Background(), "t1", time.Now().UTC())
+		if err != nil {
+			t.Fatalf("usage: %v", err)
+		}
+		if u.Runs != 0 {
+			t.Errorf("the denied launch metered %d run(s) — a run that never started consumes no monthly slot", u.Runs)
+		}
+		// And the holder still reaches its own band.
+		if _, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr"}); d != nil {
+			t.Fatalf("the reserved bot was refused inside its own reservation: %+v", d)
 		}
 	})
 }

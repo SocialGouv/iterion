@@ -345,7 +345,19 @@ func (s *Server) gateConcurrency(ctx context.Context, t identity.Team, floor bud
 	// reserved bot itself faces the plain team cap, so a reservation never
 	// costs its holder a slot.
 	if held := floor.OtherReservedSlots(subj.BotID); held > 0 {
-		maxActive = max(maxActive-held, 0)
+		if held >= maxActive {
+			// Every slot is held elsewhere. The `active >= maxActive` test
+			// below would refuse this launch too (0 >= 0), but it would say
+			// "retry when one finishes" about a wait that no finishing run
+			// ever ends — the operator's move is the reservation, not time.
+			return &launchDenial{
+				status:     http.StatusTooManyRequests,
+				reason:     denyConcurrencyCap,
+				detail:     fmt.Sprintf("all %d concurrency slots are reserved for other workloads", maxActive),
+				retryAfter: 30 * time.Second,
+			}
+		}
+		maxActive -= held
 	}
 	counter, ok := s.cfg.Store.(activeRunCounter)
 	if !ok {
@@ -413,7 +425,21 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	// carry, and the one that keeps an uncapped deployment uncapped.
 	if capUSD > 0 {
 		if held := floor.OtherReservedUSD(subj.BotID); held > 0 {
-			capUSD = max(capUSD-held, 0)
+			if held >= capUSD {
+				// Nothing left for unreserved work — and that is a DENIAL,
+				// not a zero ceiling: orgusage gates on `maxCostMillis > 0`
+				// in both twins, so a cap lowered to 0 would stop enforcing
+				// the cost cap for the rest of the month on exactly the
+				// workloads the reserve holds back. Refused before AllowRun,
+				// so the launch consumes no run slot either.
+				return nil, &launchDenial{
+					status:  http.StatusPaymentRequired,
+					reason:  denyMonthlyCostCap,
+					detail:  fmt.Sprintf("the monthly LLM cost cap ($%.2f) is entirely reserved for other workloads", capUSD),
+					resetAt: nextMonthStart(now),
+				}
+			}
+			capUSD -= held
 		}
 	}
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
