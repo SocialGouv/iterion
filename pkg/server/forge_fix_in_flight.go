@@ -64,6 +64,23 @@ func isFixInFlight(st forge.CommitStatus) bool {
 		strings.TrimSpace(st.Description) == fixInFlightDescription
 }
 
+// isFixResolved reports whether a status is this server's own RESOLVED claim —
+// the success it posts when a fixer ends. It exists so the next fixer can
+// claim over it: several runs share one head sha by construction (the auto-fix
+// lane launches on the reviewer's head, and a second `/billy` on a pass that
+// pushed nothing lands on the same revision), and a resolved marker is not a
+// foreign verdict to be respected — it is our own, and it is stale.
+//
+// Without this a second fixer reads "the fix run is done — pushing is safe
+// again", takes it for someone else's status, and stays silent for its whole
+// pass: the feature switching itself off in the repeated-pass case it was
+// written for. Same re-claim rule the gate lane keeps for its own synthetic
+// statuses (isSyntheticGateInterruption).
+func isFixResolved(st forge.CommitStatus) bool {
+	return st.State == forge.CommitStateSuccess &&
+		strings.TrimSpace(st.Description) == fixDoneDescription
+}
+
 // markFixInFlight claims the fixer context on the revision a freshly launched
 // fixer run is about to rewrite.
 //
