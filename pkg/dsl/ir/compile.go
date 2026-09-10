@@ -281,23 +281,26 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// reads \" as a LITERAL quote character — the argument then carries quotes
 	// instead of being quoted by them.
 	//
-	// The check needs no knowledge of the mode: under strict escape the lexer
-	// would already have turned \" into ", so seeing the two characters at
-	// this point IS the proof that no unescaping happened.
-	//
 	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
 	//   npm error code EINVALIDPACKAGENAME
 	//   Invalid package name """ of package ""@openai/codex@0.154.0""
 	// The step was best-effort, so the bootstrap had never once run and the
 	// sandbox silently kept an older binary. An error, not a warning: the
 	// string provably cannot do what it says, and a warning scrolls past.
-	if strings.Contains(blk.PostCreate, `\"`) {
+	//
+	// Unlike the mode / host_state checks above this one does NOT drop the
+	// spec: the block is otherwise fully valid, and every surface that renders
+	// a result carrying errors without refusing it (the cost preview, the
+	// studio's DSL endpoint) would then read a workflow that pinned
+	// `sandbox: image:` as having pinned nothing.
+	if shellHasLiteralEscapedQuote(blk.PostCreate) {
 		c.errorfAt(DiagEscapedQuoteInShellString, name, "",
-			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"), which reaches the shell as a LITERAL quote "+
-				"character — the command runs with quotes inside its arguments instead of around them. Drop the quotes when the "+
-				"value has no space, use single quotes when it does, or opt the file into `## strict-escape: on`.",
+			"%s %q: sandbox.post_create carries a backslash-escaped quote (\\\") where the shell is NOT inside a \"…\" region, "+
+				"so the shell reads it as a LITERAL quote character and the command runs with quotes inside its arguments "+
+				"instead of around them. Write the shell quoting you mean — in a backtick raw string, `--prefix \"$dir\"` needs "+
+				"no backslash at all; in a `\"…\"` DSL string, single-quote what has no expansion to make, or add "+
+				"`## strict-escape: on` at the top of the file so \\\" is decoded into \" before the shell sees it.",
 			scope, name)
-		return nil
 	}
 
 	spec := &SandboxSpec{
@@ -355,6 +358,93 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		return nil
 	}
 	return spec
+}
+
+// shellHasLiteralEscapedQuote reports whether cmd carries a `\"` that the
+// shell reads in an UNQUOTED context — where the backslash escapes the quote,
+// so the command receives a literal `"` character glued into a word instead of
+// quoting anything. That is the C142 defect: `--prefix \"$pfx\"` hands npm the
+// package name `"@openai/codex@0.154.0"`, quotes included.
+//
+// Keying on the two characters alone would be wrong, and that is the whole
+// reason this walks the shell's own quoting state:
+//   - `\"` INSIDE a shell `"…"` region is a legitimate nested quote —
+//     `printf '%s' "{\"a\":1}"` is correct, working shell;
+//   - a DSL raw string (backticks) and a block scalar (`|`) never process
+//     escapes in EITHER escape mode, so a `\"` reaching here from one of them
+//     is verbatim by design and proves nothing about the escape mode. Only
+//     `scanString` consults `strictEscape`, and `expectString` accepts a
+//     TokenString from all three paths.
+//
+// It fails OPEN. On a construct it does not model — command substitution, a
+// here-document — it returns false rather than guess. A missed diagnostic
+// costs an author one bad bootstrap; a false one refuses the whole workflow.
+func shellHasLiteralEscapedQuote(cmd string) bool {
+	const (
+		unquoted = iota
+		inSingle // '…': nothing is special, not even a backslash
+		inDouble // "…": a backslash is special only before $ ` " \ and newline
+	)
+	state := unquoted
+
+	for i := 0; i < len(cmd); i++ {
+		switch state {
+		case inSingle:
+			if cmd[i] == '\'' {
+				state = unquoted
+			}
+
+		case inDouble:
+			switch cmd[i] {
+			case '\\':
+				if i+1 < len(cmd) && strings.IndexByte("$`\"\\\n", cmd[i+1]) >= 0 {
+					i++ // the pair is one unit — and a `\"` here is the legitimate form
+				}
+			case '`':
+				return false // command substitution: unmodelled
+			case '$':
+				if i+1 < len(cmd) && cmd[i+1] == '(' {
+					return false // command substitution: unmodelled
+				}
+			case '"':
+				state = unquoted
+			}
+
+		default: // unquoted
+			switch cmd[i] {
+			case '\\':
+				if i+1 < len(cmd) && cmd[i+1] == '"' {
+					return true
+				}
+				i++ // whatever it escapes (`\\"` included), it is one unit
+			case '\'':
+				state = inSingle
+			case '"':
+				state = inDouble
+			case '`':
+				return false // command substitution: unmodelled
+			case '$':
+				if i+1 < len(cmd) && cmd[i+1] == '(' {
+					return false // command substitution: unmodelled
+				}
+			case '<':
+				if i+1 < len(cmd) && cmd[i+1] == '<' {
+					return false // here-document: unmodelled
+				}
+			case '#':
+				// A `#` opens a comment only at the start of a word; a
+				// multi-line block-scalar post_create is where this happens.
+				if i == 0 || strings.IndexByte(" \t\n;&|(", cmd[i-1]) >= 0 {
+					nl := strings.IndexByte(cmd[i:], '\n')
+					if nl < 0 {
+						return false
+					}
+					i += nl
+				}
+			}
+		}
+	}
+	return false
 }
 
 // validateNodeNames enforces two cross-kind invariants on the AST node

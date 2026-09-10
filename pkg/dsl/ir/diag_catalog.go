@@ -128,11 +128,11 @@ var Catalog = map[DiagCode]DiagInfo{
 
 	DiagInvalidWorkspaceCheckpoint: {"Invalid workspace_checkpoint value", "Use `on` or `off`, or drop the field to inherit. The default is `on`, so a typo keeps pushing the run's tree to the repository it was pointed at."},
 
-	DiagEscapedQuoteInShellString: {"Escaped quote in a shell string", "Remove the backslash-escaped quotes: `\\\"` reaches the shell as a literal quote character. Leave a space-free value unquoted, wrap a value with spaces in single quotes, or add `## strict-escape: on` at the top of the file so `\\\"` is decoded before the shell sees it."},
-
 	DiagEmptySchema: {"Node references an empty schema", "Give the schema at least one field, or point the node at another schema; an empty schema is a declaration the studio has not filled in yet, not a contract."},
 
 	DiagEmptyGroupUse: {"Use of an empty group", "Give the group at least one node, or drop the `use`; an empty group is a declaration the studio has not filled in yet — or a body that landed at the wrong indentation after a blank line."},
+
+	DiagEscapedQuoteInShellString: {"Escaped quote in an unquoted shell context", "Write the shell quoting you mean: in a backtick raw string `--prefix \"$dir\"` needs no backslash at all; in a `\"…\"` DSL string, single-quote what has no expansion to make, or add `## strict-escape: on` at the top of the file so `\\\"` is decoded into `\"` before the shell sees it. A `\\\"` INSIDE a shell `\"…\"` region is a legitimate nested quote and is not reported."},
 
 	// Verified actions (ADR-044).
 	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},

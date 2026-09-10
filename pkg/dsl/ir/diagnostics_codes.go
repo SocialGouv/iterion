@@ -98,13 +98,15 @@ const (
 
 	DiagInvalidWorkspaceCheckpoint DiagCode = "C139" // workspace_checkpoint: value not one of on|off (error)
 
-	// A shell-bound DSL string carrying a backslash-escaped quote. Legacy
-	// escape mode keeps \X verbatim, so \" reaches the shell as a literal
-	// quote character and the argument is malformed rather than quoted.
-	DiagEscapedQuoteInShellString DiagCode = "C142" // \" in sandbox.post_create (error)
-	DiagEmptySchema               DiagCode = "C140" // a node's input/output references a schema with no field (warning)
+	DiagEmptySchema DiagCode = "C140" // a node's input/output references a schema with no field (warning)
 
 	DiagEmptyGroupUse DiagCode = "C141" // a `use` instantiates a group that declares no node (warning)
+
+	// A shell-bound DSL string carrying a backslash-escaped quote where the
+	// shell is not inside a "…" region: the backslash escapes the quote, so
+	// the shell reads a literal quote character and the argument is malformed
+	// rather than quoted.
+	DiagEscapedQuoteInShellString DiagCode = "C142" // \" in unquoted shell context in sandbox.post_create (error)
 
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
