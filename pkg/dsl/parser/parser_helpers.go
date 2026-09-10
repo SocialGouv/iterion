@@ -99,9 +99,17 @@ func (p *parser) parseStringList() []string {
 }
 
 // parseToolList parses a bracketed list of tool references that may contain
-// dotted qualified names (e.g. [git_diff, mcp.claude_code.delegate]).
+// dotted qualified names (e.g. [git_diff, mcp.claude_code.delegate]). A
+// quoted element is the literal name — the form a name that is not an
+// identifier (a kebab-case label from the studio canvas, `"review-ledger"`)
+// has to take, and the form the unparser writes for it; without it the
+// element was dropped in silence and such a document could never be saved.
 func (p *parser) parseToolList() []string {
 	return p.parseBracketList(func() (string, bool) {
+		if p.peek().Type == TokenString {
+			v := p.next().Value
+			return v, v != ""
+		}
 		name := p.parseToolRef()
 		return name, name != ""
 	})

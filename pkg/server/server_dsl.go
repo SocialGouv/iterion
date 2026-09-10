@@ -127,6 +127,10 @@ func (s *Server) handleUnparse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	source := unparse.Unparse(f)
+	if err := unparse.Verify(f, source); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "the document cannot be rendered as .bot source without changing it: %v", err)
+		return
+	}
 	writeJSON(w, unparseResponse{Source: source})
 }
 

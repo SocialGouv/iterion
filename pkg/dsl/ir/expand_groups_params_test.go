@@ -2,8 +2,6 @@ package ir
 
 import (
 	"testing"
-
-	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
 // cascadeGroupSrc binds `a` to text that itself reads like a reference to
@@ -35,25 +33,25 @@ workflow w:
 // group node `name`, reading the AST the compiler instantiated (the
 // substitution's own output, independent of any downstream diagnostic the
 // residual text may raise).
+// expandedCommand reads the expanded tool from the COMPILED workflow: the
+// compiler does not touch the caller's file, so the expansion is only
+// observable in its output.
 func expandedCommand(t *testing.T, src, name string) string {
 	t.Helper()
 	file := parseFile(t, src)
-	Compile(file)
-	for _, tl := range file.Tools {
-		if tl.Name == name {
-			return tl.Command
-		}
+	cr := Compile(file)
+	if cr.Workflow == nil {
+		t.Fatalf("compile failed: %v", cr.Diagnostics)
 	}
-	t.Fatalf("expanded tool %q not found; tools=%v", name, toolNames(file))
-	return ""
-}
-
-func toolNames(file *ast.File) []string {
+	if tn, ok := cr.Workflow.Nodes[name].(*ToolNode); ok {
+		return tn.Command
+	}
 	var names []string
-	for _, tl := range file.Tools {
-		names = append(names, tl.Name)
+	for id := range cr.Workflow.Nodes {
+		names = append(names, id)
 	}
-	return names
+	t.Fatalf("expanded tool %q not found; nodes=%v", name, names)
+	return ""
 }
 
 // TestGroupParamSubstitutionIsSinglePass asserts a bound value is never

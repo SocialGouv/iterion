@@ -41,6 +41,9 @@ workflow minimal:
 // prompt-include base directory resolves to filepath.Dir(botPath).
 func compileAt(t *testing.T, botPath, src string) *CompileResult {
 	t.Helper()
+	if err := os.WriteFile(botPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	res := parser.Parse(botPath, src)
 	for _, d := range res.Diagnostics {
 		if d.Severity == parser.SeverityError {

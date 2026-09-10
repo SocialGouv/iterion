@@ -54,6 +54,17 @@ func (c *compiler) compileSupervisors() []*Supervisor {
 		}
 		seen[decl.Name] = true
 
+		// A bare `supervisor NAME:` — the shape the studio saves the moment
+		// a supervisor is created — is not an inert placeholder: an empty
+		// `watches:` means the WHOLE run, with the default model, cooldown
+		// and evaluation budget, so the placeholder would spawn a live LLM
+		// supervisor on every launch. Say so and arm nothing.
+		if len(decl.Watches) == 0 && decl.Model == "" && decl.System == "" && decl.Cooldown == "" && decl.MaxEvals == 0 && len(decl.Monitors) == 0 {
+			c.warnf(DiagMalformedSupervisor,
+				"supervisor %q is empty: not armed — give it `watches:` and `system:`, or remove it", decl.Name)
+			continue
+		}
+
 		sup := &Supervisor{
 			Name:     decl.Name,
 			Watches:  decl.Watches,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -412,7 +411,7 @@ func (c *compiler) validateNodeNames() {
 // In V1, exactly one workflow per file is supported.
 func Compile(file *ast.File) *CompileResult {
 	c := &compiler{
-		file:    file,
+		file:    detachForCompile(file),
 		nodes:   make(map[string]Node),
 		schemas: make(map[string]*Schema),
 		prompts: make(map[string]*Prompt),
@@ -424,6 +423,33 @@ func Compile(file *ast.File) *CompileResult {
 		Workflow:    w,
 		Diagnostics: c.diags,
 	}
+}
+
+// detachForCompile returns a copy of the file whose declaration lists and
+// workflows the compiler may extend without touching the caller's object:
+// group expansion appends the expanded nodes and edges, and a caller that
+// compiles a file and then serialises it, or compiles it again, must see the
+// program it wrote — not one with every `use` expanded twice. The
+// declarations themselves are shared (never mutated), so spans stay
+// attached; only the slices and the workflow structs are copied.
+func detachForCompile(f *ast.File) *ast.File {
+	if f == nil {
+		return nil
+	}
+	cp := *f
+	cp.Agents = append([]*ast.AgentDecl(nil), f.Agents...)
+	cp.Judges = append([]*ast.JudgeDecl(nil), f.Judges...)
+	cp.Routers = append([]*ast.RouterDecl(nil), f.Routers...)
+	cp.Humans = append([]*ast.HumanDecl(nil), f.Humans...)
+	cp.Tools = append([]*ast.ToolNodeDecl(nil), f.Tools...)
+	cp.Computes = append([]*ast.ComputeDecl(nil), f.Computes...)
+	cp.Workflows = make([]*ast.WorkflowDecl, 0, len(f.Workflows))
+	for _, w := range f.Workflows {
+		wc := *w
+		wc.Edges = append([]*ast.Edge(nil), w.Edges...)
+		cp.Workflows = append(cp.Workflows, &wc)
+	}
+	return &cp
 }
 
 func (c *compiler) compile() *Workflow {
@@ -491,8 +517,12 @@ func (c *compiler) compile() *Workflow {
 
 	wf := c.file.Workflows[0]
 
-	// Validate entry node.
-	if _, ok := c.nodes[wf.Entry]; !ok {
+	// Validate entry node. A workflow with no entry at all (the bare
+	// `workflow w:` the studio saves before a node exists) is told so,
+	// not sent looking for a node named "".
+	if wf.Entry == "" {
+		c.errorf(DiagMissingEntry, "workflow %q declares no entry node", wf.Name)
+	} else if _, ok := c.nodes[wf.Entry]; !ok {
 		c.errorf(DiagMissingEntry, "entry node %q not found", wf.Entry)
 	}
 
@@ -754,6 +784,7 @@ func (c *compiler) canAutoResolveBackend() bool {
 
 func (c *compiler) compilePrompts() {
 	seen := make(map[string]bool, len(c.file.Prompts))
+	budget := &includeBudget{} // one per file: a budget per prompt multiplies by the prompt count
 	for _, p := range c.file.Prompts {
 		if seen[p.Name] {
 			// Mirror compileSchemas: a second `prompt foo:` used to
@@ -769,10 +800,25 @@ func (c *compiler) compilePrompts() {
 		// of the resolved prompt (auditable, no runtime file reads).
 		// Resolve relative to the directory of the file that declares the
 		// prompt, carried on the declaration's span: the .bot source, or
-		// the bundle's prompts/ for a merged prompts/*.md. A prompt with no
-		// span would resolve against the process working directory — on a
-		// server, nobody's — so every constructor stamps one.
-		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		// the bundle's prompts/ for a merged prompts/*.md. A prompt whose
+		// recorded source is not a file on this host — none at all (the
+		// JSON transport), or a synthetic name such as "<inline>" — has
+		// nothing to resolve against: its marker is refused, never looked
+		// up in the process working directory, which filepath.Dir of a
+		// synthetic name would be — on a runner, the pod's own.
+		body := p.Body
+		var incErrs []error
+		if HasPromptInclude(body) {
+			if dir, err := promptSourceDir(p.Span.Start.File); err != nil {
+				incErrs = []error{fmt.Errorf("an {{include}} cannot be resolved: %v", err)}
+				// One error per cause: the marker is not a template
+				// reference, and left in the body it would be reported a
+				// second time as one.
+				body = promptIncludeRe.ReplaceAllString(body, "")
+			} else {
+				body, incErrs = expandPromptIncludes(body, dir, budget)
+			}
+		}
 		for _, e := range incErrs {
 			c.errorfAtSpan(DiagBadPromptInclude, p.Span, "prompt %q: %v", p.Name, e)
 		}
@@ -2059,8 +2105,16 @@ func (c *compiler) validateSchemaRef(node, prop, ref string) {
 	if ref == "" {
 		return
 	}
-	if _, ok := c.schemas[ref]; !ok {
+	s, ok := c.schemas[ref]
+	if !ok {
 		c.errorfAt(DiagUnknownSchema, node, "", "node %q property %q references unknown schema %q", node, prop, ref)
+		return
+	}
+	if len(s.Fields) == 0 {
+		// An empty schema is a legal declaration (the studio creates one
+		// before it has a field), not a legal contract for a node: a model
+		// asked for an object with no properties has nothing to fill.
+		c.warnfAt(DiagEmptySchema, node, "", "node %q property %q references schema %q, which has no field — the node's %s will always be empty", node, prop, ref, prop)
 	}
 }
 

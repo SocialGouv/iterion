@@ -68,7 +68,9 @@ without re-minting (org scope is path-based).
 ## The launch → follow → inspect recipe
 
 ```sh
-# Launch a local .bot file (its source is uploaded inline) and tail it:
+# Launch a local .bot file (its source is uploaded inline) and tail it.
+# Only the .bot travels: a prompt `{{include "x.md"}}` has no file to resolve
+# from on the server and is refused at publish — launch such a bot as a bundle.
 iterion remote runs launch ./review.bot --var repo=org/app --follow
 
 # Or launch a catalog bot by id:

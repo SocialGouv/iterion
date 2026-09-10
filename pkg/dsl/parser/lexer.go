@@ -178,9 +178,12 @@ func (l *Lexer) handleLineStart() {
 	// swallowed as inline whitespace by scanToken, parsing the line at
 	// top-level with a cascade of misleading "unexpected token" errors
 	// on later lines. Surface the cause directly. Permitted in block-
-	// scalar mode (heredocs preserve tab content verbatim) and in
-	// prompt body lines (handled below the dispatch).
-	if !l.blockScalarMode && !l.promptMode && l.pos < len(l.src) && l.src[l.pos] == '\t' {
+	// scalar mode (heredocs preserve tab content verbatim), in prompt
+	// body lines (handled below the dispatch), and on the line that OPENS
+	// a prompt body: tab-indented code pasted as a prompt's first line is
+	// content, as it is on every later line, and prompt mode is only armed
+	// at the INDENT below — so that line has to be told apart here.
+	if !l.blockScalarMode && !l.promptMode && !l.promptBodyOpensHere(spaces) && l.pos < len(l.src) && l.src[l.pos] == '\t' {
 		l.emitError(DiagBadIndentation, "tabs are not allowed for indentation; use spaces", startLine, spaces+1)
 		// Consume the rest of the line so we don't loop on the same tab.
 		for l.pos < len(l.src) && l.src[l.pos] != '\n' {

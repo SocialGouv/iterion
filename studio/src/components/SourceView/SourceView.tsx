@@ -26,8 +26,11 @@ export default function SourceView() {
         const result = await api.unparse(document);
         setSource(result);
         setParseError(null);
-      } catch {
-        // silently ignore unparse errors during sync
+      } catch (err) {
+        // The server refuses to render a document the .bot syntax cannot
+        // express as the same program (422) and says which declaration
+        // it is; keep the last good source and show why it stopped.
+        setParseError(err instanceof Error ? err.message : "The document cannot be rendered as .bot source");
       }
     }, 500);
     return () => clearTimeout(debounceRef.current);
