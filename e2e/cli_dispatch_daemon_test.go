@@ -106,7 +106,13 @@ func waitHealthy(t *testing.T, base string, done <-chan error) {
 // Content-Type text/plain makes it a CORS "simple request": no preflight, and
 // the JSON decoders never inspect Content-Type.
 func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
-	t.Parallel()
+	// Deliberately NOT t.Parallel(). TestDispatchDaemonBootsServesAndStopsOnSignal
+	// exercises the daemon's SIGTERM path by signalling the TEST PROCESS
+	// (syscall.Kill(syscall.Getpid(), …)) — the daemon-SIGTERM aliasing this
+	// file's header already warns about. A parallel daemon here catches that
+	// signal too and exits cleanly mid-test, which reads as
+	// "daemon exited before serving: <nil>". Running in the sequential phase
+	// means this finishes before the parallel batch resumes.
 	dir := t.TempDir()
 	cfgPath := writeDispatchConfig(t, dir)
 	port := reserveLoopbackPort(t)
