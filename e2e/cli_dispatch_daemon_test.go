@@ -160,6 +160,28 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	if got := post("/api/v1/native/issues", "", `{"title":"no-origin"}`); got == http.StatusForbidden {
 		t.Error("POST with no Origin was refused; that is the CLI/script caller")
 	}
+
+	// Stop the daemon. RunDispatch has no cancellation seam — it serves until
+	// a signal — so leaving it running holds its inotify watches, its port and
+	// its store open for the REST of the package. Not hypothetical: it
+	// exhausted the runner's file descriptors in the merge queue
+	// ("couldn't initialize inotify: too many open files"), which the sibling
+	// test hit and which ejected the PR.
+	//
+	// Signalling the process is safe HERE precisely because this test is
+	// sequential: the parallel tests are still paused, so no other daemon
+	// exists to catch it. Same reason this must not become t.Parallel().
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("signal daemon: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunDispatch returned %v on SIGTERM, want a clean exit", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("RunDispatch did not return within 30s of SIGTERM")
+	}
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
