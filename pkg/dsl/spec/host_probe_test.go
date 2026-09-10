@@ -73,12 +73,15 @@ func e012Hint(t *testing.T, doc string) string {
 // property of THIS host draws exactly that one.
 func TestTheEnclosingKindRemedyNamesTheHostTheBlockIsIn(t *testing.T) {
 	// A (block, host) pair with no qualifying name skips its assertion, so
-	// the count is pinned: a registry change that removes the last candidate
-	// of several pairs would otherwise turn the guard into a quiet no-op.
+	// the count is pinned to what the registry yields today: a registry
+	// change that removes a candidate turns the guard red rather than quiet.
+	// A legitimate change (a host gaining or losing a property) updates the
+	// number here, on purpose, with the review that made it.
+	const expectedAssertions = 32
 	asserted := 0
 	defer func() {
-		if asserted < 12 {
-			t.Errorf("only %d host assertions ran — the probes have gone quiet, check hostProbes and borrowed()", asserted)
+		if asserted != expectedAssertions {
+			t.Errorf("%d host assertions ran, %d expected — a probe went quiet (or the registry changed: update the count with the change)", asserted, expectedAssertions)
 		}
 	}()
 	for kind, byHost := range hostProbes {
