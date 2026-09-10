@@ -94,21 +94,11 @@ function StackRow({ label, items, reverse = false }: {
 
 export default function StackCompatibility() {
   return (
-    <section
-      id="stack"
-      className="ch-stack ch-container"
-      aria-labelledby="ch-stack-heading"
-    >
-      <h2 id="ch-stack-heading" className="ch-eyebrow ch-stack-heading">YOUR STACK. ALREADY INVITED.</h2>
-      <div className="ch-stack-rows">
-        <StackRow label="Models & inference" items={models} />
-        <StackRow label="Tools & infrastructure" items={tools} reverse />
-        <StackRow label="Toolchains via Devbox" items={languages} />
-      </div>
-      <div className="ch-devbox-support">
+    <div id="stack" className="ch-compatibility">
+      <section className="ch-devbox-support" aria-labelledby="ch-devbox-heading">
         <div className="ch-devbox-overview">
           <p className="ch-runtime-label"><Box size={18} aria-hidden="true" /> DEVBOX, FIRST-CLASS.</p>
-          <h3>Your bot’s tools. Your repo’s versions.</h3>
+          <h2 id="ch-devbox-heading">Your bot’s tools. Your repo’s versions.</h2>
           <p>Give your agents the runtimes, compilers and CLIs your project needs. Pin their versions per bot and per repository, alongside your code.</p>
           <ul className="ch-devbox-tools" aria-label="Toolchain components"><li>Runtimes</li><li>Build tools</li><li>Package managers</li><li>Test runners</li></ul>
         </div>
@@ -120,14 +110,22 @@ export default function StackCompatibility() {
           <div className="ch-devbox-usage"><FileCode2 size={19} aria-hidden="true" /><p><strong>From agent commands to build & test.</strong><span>Use the configured tools across your workflow: scripted steps, application builds, test suites and the commands your agents run.</span></p></div>
         </div>
         <div className="ch-devbox-footer"><span><Pin size={13} aria-hidden="true" /> Pinned versions. Committed lockfiles.</span><a href={`${DOCS}sandbox.html#devbox-tools-devbox-json`} target="_blank" rel="noreferrer">Explore the Devbox integration <ArrowUpRight size={13} aria-hidden="true" /></a></div>
-      </div>
-      <div className="ch-sovereign-note">
-        <ShieldCheck size={20} strokeWidth={1.5} aria-hidden="true" />
-        <p>
-          <strong>Bring any sovereign model through an OpenAI-compatible API.</strong>
-          <span> Choose your hosting, run on your own infrastructure, and keep control of where your models run.</span>
-        </p>
-      </div>
-    </section>
+      </section>
+      <section className="ch-stack" aria-labelledby="ch-stack-heading">
+        <h2 id="ch-stack-heading" className="ch-eyebrow ch-stack-heading">YOUR STACK. ALREADY INVITED.</h2>
+        <div className="ch-stack-rows">
+          <StackRow label="Models & inference" items={models} />
+          <StackRow label="Tools & infrastructure" items={tools} reverse />
+          <StackRow label="Toolchains via Devbox" items={languages} />
+        </div>
+        <div className="ch-sovereign-note">
+          <ShieldCheck size={20} strokeWidth={1.5} aria-hidden="true" />
+          <p>
+            <strong>Bring any sovereign model through an OpenAI-compatible API.</strong>
+            <span> Choose your hosting, run on your own infrastructure, and keep control of where your models run.</span>
+          </p>
+        </div>
+      </section>
+    </div>
   );
 }

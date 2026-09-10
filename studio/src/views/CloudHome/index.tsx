@@ -126,9 +126,9 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
           <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description">Linux runs apps. Kubernetes orchestrates containers.<br /><strong>Iterion orchestrates agents.</strong></p><div className="ch-hero-ctas"><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
           <HeroVisual />
         </section>
-        <StackCompatibility />
         <div className="ch-container"><MissionExamples /><UseCases />
           <PlatformFeatures />
+          <StackCompatibility />
           <section className="ch-final-cta" aria-labelledby="ch-deployment-heading">
             <p className="ch-eyebrow">DEPLOYMENT OPTIONS</p>
             <h2 id="ch-deployment-heading">Cloud, local or <span className="ch-no-wrap">self-hosted.</span></h2>
