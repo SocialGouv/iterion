@@ -145,6 +145,20 @@ func TestValidate_RefusesAShareOfAWindowOnlyReserve(t *testing.T) {
 		}
 	}
 
+	// A CONCURRENCY-only reserve is the same refusal for the same reason:
+	// RepoCap resolves a share off MonthlyUSD alone, so accepting the pair
+	// would compute a share of 0, skip it, and hand back (0, 0) — which the
+	// launch gate reads as UNLIMITED, not as "this repo may spend nothing".
+	// The dangerous shape of the very failure this refusal exists for.
+	slots := Policy{
+		Reservations: []Reservation{{BotID: "review-pr", Reserve: Reserve{ConcurrentRuns: 2}}},
+		RepoQuotas:   []RepoQuota{{Repo: "o/r", ReserveSharePercent: 50, ShareOfBot: "review-pr"}},
+	}
+	if err := slots.Validate(); err == nil {
+		usd, runs := slots.RepoCap("o/r")
+		t.Fatalf("accepted a repository share of a concurrency-only reserve; it resolves to $%.2f / %d runs — unlimited", usd, runs)
+	}
+
 	// The same share against a countable reserve is fine, and resolves.
 	p.Reservations[0].Reserve.MonthlyUSD = 400
 	if err := p.Validate(); err != nil {
