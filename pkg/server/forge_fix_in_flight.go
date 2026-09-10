@@ -43,7 +43,41 @@ import (
 // existed and what was already missed: a status sits in the checks list the
 // forge renders next to the merge button, which is where someone about to
 // write is looking.
-const fixInFlightContext = "iterion/fix-in-flight"
+//
+// ONE CONTEXT PER RUN, and that is load-bearing rather than cosmetic. Several
+// fixers genuinely share one head sha: each `/billy` comment carries its own
+// idempotency key (`comment:<id>`), the auto-fix lane launches on the
+// reviewer's own head, the merge-queue auto-heal launches on the dequeued
+// head, and overlap=supersede — the only thing that would cancel the older run
+// — is per-bot AND off unless a webhook sets it. On ONE shared row those runs
+// cannot all be represented: whichever of them holds the row resolves it when
+// IT ends, posting "pushing is safe again" over a sibling that is still
+// rewriting the branch. That is the false all-clear this file calls worse than
+// the silence it replaces, produced by the feature itself. Standing the second
+// run down instead only moves the hole: the row then goes green when the FIRST
+// run ends, with the second still working.
+//
+// A row per run is the shape where "green ⟺ that run is done" is decidable
+// from the row alone, with no cross-run lookup and no state the forge would
+// have to hold for us — and the aggregate a reader actually wants, "is any
+// fixer working here", is then just "is any of these rows still pending",
+// which is how the checks list reads anyway. The cost is one row per fixer run
+// on a given revision (in practice one, occasionally two), against a green
+// check that lies.
+const fixInFlightContextPrefix = "iterion/fix-in-flight"
+
+// fixInFlightContextFor is the context ONE run claims. The run id is spelled
+// out in full, never abbreviated: run ids are UUIDv7, whose leading hex digits
+// are the high bits of a millisecond timestamp, so any short prefix is SHARED
+// by every run launched in the same ~65s window — precisely the concurrent
+// fixers this per-run context exists to keep apart.
+func fixInFlightContextFor(runID string) string {
+	id := strings.TrimSpace(runID)
+	if id == "" {
+		return ""
+	}
+	return fixInFlightContextPrefix + "/" + id
+}
 
 // fixInFlightDescription is the claim's identity as well as its text: the
 // predicate below matches on it, so it must stay stable and distinct from
@@ -102,41 +136,43 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 		// and would sit pending forever. Better to say nothing.
 		return
 	}
+	ctxName := fixInFlightContextFor(runID)
+	if ctxName == "" {
+		return
+	}
 	gc, repo, ok := s.fixStatusClientFor(ctx, teamID, prURL)
 	if !ok {
 		return
 	}
 	// Read before write, and only over NOTHING or over our own claim. A
 	// verdict some other tool posted on this context is not ours to blank.
-	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, fixInFlightContext)
+	// The context is this run's own, so in practice the read finds nothing —
+	// but the discipline costs one list call the clear pays anyway, and it is
+	// what keeps a foreign writer's verdict from being silently replaced.
+	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, ctxName)
 	if err != nil || !readable {
 		return
 	}
 	// Ours to write over: nothing, a live claim, or a RESOLVED one. That last
-	// case is not cosmetic — after a first pass terminates the clear leaves
-	// `done` on this sha, and a second `/billy` on an UNCHANGED head (a first
-	// pass that banked instead of pushing: the 2026-09-09 incident itself) read
-	// its predecessor's marker as a foreign verdict and posted nothing. The
-	// second pass was then as invisible as before this change, in the very lane
-	// it was written for. `done` means no fixer is working — which the launch
-	// below is about to make false, whoever posted it.
+	// case is not cosmetic — a run whose claim was released on a park nothing
+	// owned (a DLQ park, an unknown continuation) can still be resumed by an
+	// operator, and the resumed pass must be able to raise the warning again
+	// rather than stay invisible behind its own `done` marker.
 	if cur.State != "" && !isFixInFlight(cur) && !isFixDone(cur) {
 		return
 	}
-	// AND never take over ANOTHER run's live claim — the same ownership test
-	// the clear applies, on the site it was first forgotten. Several runs share
-	// one head sha, so a second fixer launching on a head a first already
-	// claimed would replace the target URL with its own; from then on the claim
-	// is the newcomer's, and whichever run ends FIRST posts the all-clear over
-	// the other's live rewrite. Standing down instead leaves the warning up and
-	// attributed to the run that raised it, which is what a reader about to
-	// push needs — the warning is true whichever fixer is working.
+	// AND never take over a live claim that speaks for a DIFFERENT run. On a
+	// per-run context that can only happen if something else writes here under
+	// our description; the test is kept because the alternative — blanking a
+	// warning that is true — is the failure this file exists to prevent, and
+	// because it is what makes the invariant "a pending row names a run that is
+	// still working" hold for every row, not merely by construction.
 	if isFixInFlight(cur) && !gateStatusSpeaksFor(cur, runURL) {
 		return
 	}
 	st := forge.CommitStatus{
 		State:       forge.CommitStatePending,
-		Context:     fixInFlightContext,
+		Context:     ctxName,
 		Description: forge.TruncateStatusDescription(fixInFlightDescription),
 		TargetURL:   runURL,
 	}
@@ -146,7 +182,7 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	}
 	if s.logger != nil {
 		s.logger.Info("forge fix: run %s claimed %s on %s@%s — a push while it works collides with its push-back",
-			runID, fixInFlightContext, repo, shortSHA(sha))
+			runID, ctxName, repo, shortSHA(sha))
 	}
 }
 
@@ -214,30 +250,35 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if runURL == "" {
 		return
 	}
+	// And our own run's CONTEXT. This is what makes the release safe under
+	// concurrency: the row this resolves names one run, so a sibling fixer
+	// still rewriting the branch keeps its own pending row and its warning
+	// stands. The reviewer's own reconcile pass — terminal, on the very same
+	// head sha the auto-fix lane launched the fixer from — reads a context that
+	// is not the fixer's and finds nothing to resolve.
+	ctxName := fixInFlightContextFor(run.ID)
+	if ctxName == "" {
+		return
+	}
 	gc, repo, ok := s.fixStatusClientFor(ctx, run.TenantID, prURL)
 	if !ok {
 		return
 	}
-	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, fixInFlightContext)
+	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, ctxName)
 	if err != nil || !readable || !isFixInFlight(cur) {
 		return
 	}
-	// AND this run's own claim, not merely "a claim shaped like ours". Several
-	// runs share ONE head sha by construction: the auto-fix lane launches the
-	// fixer on the reviewer's own head_sha, and consecutive fixer passes reuse
-	// it too. The sweeper re-offers every terminal run for the full lookback,
-	// so without this test the reviewer's own reconcile pass — terminal, same
-	// sha — reads the live fixer's claim, matches the description, and posts
-	// "done" while the branch is still being rewritten. A false all-clear is
-	// worse than the silence this replaces, and it would defeat the feature in
-	// the exact lane it was written for. Ownership is the target URL, the same
-	// test the gate lane uses.
+	// AND this run's own claim, not merely "a claim shaped like ours".
+	// Redundant with the per-run context and kept anyway: ownership by target
+	// URL is what the gate lane next door tests, and the two markers must not
+	// diverge on the one question — whose claim is this — that decides whether
+	// a green check is a lie.
 	if !gateStatusSpeaksFor(cur, runURL) {
 		return
 	}
 	st := forge.CommitStatus{
 		State:       forge.CommitStateSuccess,
-		Context:     fixInFlightContext,
+		Context:     ctxName,
 		Description: forge.TruncateStatusDescription(fixDoneDescription),
 		TargetURL:   cur.TargetURL,
 	}
@@ -247,7 +288,7 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	}
 	if s.logger != nil {
 		s.logger.Info("forge fix: run %s is %s — released %s on %s@%s",
-			run.ID, run.Status, fixInFlightContext, repo, shortSHA(sha))
+			run.ID, run.Status, ctxName, repo, shortSHA(sha))
 	}
 }
 

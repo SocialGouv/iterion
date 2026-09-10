@@ -21,6 +21,48 @@ func fixLaunchFixture(t *testing.T, gc forgeGateClient) *Server {
 	return s
 }
 
+// statusBoardClient is listingGateClient with a MEMORY: what it is told is
+// what it reads back, per context, like the forge. The fixed-list fake proves
+// one call in isolation; a lifecycle spanning several runs and both lanes —
+// two claims, then one clear — is only meaningful if the second read sees the
+// first write.
+type statusBoardClient struct {
+	listingGateClient
+}
+
+func (f *statusBoardClient) SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error {
+	if err := f.listingGateClient.SetCommitStatus(ctx, repo, sha, st); err != nil {
+		return err
+	}
+	for i, cur := range f.statuses {
+		if cur.Context == st.Context {
+			f.statuses[i] = st
+			return nil
+		}
+	}
+	f.statuses = append(f.statuses, st)
+	return nil
+}
+
+func (f *statusBoardClient) stateOf(ctxName string) forge.CommitState {
+	for _, st := range f.statuses {
+		if st.Context == ctxName {
+			return st.State
+		}
+	}
+	return ""
+}
+
+func (f *statusBoardClient) countState(want forge.CommitState) int {
+	n := 0
+	for _, st := range f.statuses {
+		if st.State == want {
+			n++
+		}
+	}
+	return n
+}
+
 // fixLaunchVars is a fixer-shaped launch: a pull request and the revision it
 // is about to rewrite. Deliberately carries a gate_context too — a fixer
 // launched through a repo that pins one must still not write there.
@@ -74,8 +116,26 @@ func TestMarkFixInFlight_NeverWritesOnTheGateContext(t *testing.T) {
 	if gc.last.Context == vars["gate_context"] {
 		t.Fatalf("the fixer claimed %q, the repo's REQUIRED gate — a reviewer verdict there would be blanked to running", gc.last.Context)
 	}
-	if gc.last.Context != fixInFlightContext {
-		t.Errorf("context = %q, want %q", gc.last.Context, fixInFlightContext)
+	if gc.last.Context != fixInFlightContextFor("run-77") {
+		t.Errorf("context = %q, want %q", gc.last.Context, fixInFlightContextFor("run-77"))
+	}
+}
+
+// The context names the RUN in full. A prefix would be tempting — the studio
+// shows runs by their first hex digits — and would be exactly wrong here: run
+// ids are UUIDv7, whose leading digits are the high bits of a millisecond
+// timestamp, so every run launched within the same ~65s window shares them.
+// Two fixers launched seconds apart is the concurrency this per-run context
+// exists to keep apart, so an abbreviated context would collapse precisely the
+// case it is for.
+func TestFixInFlightContextFor_NamesTheRunInFull(t *testing.T) {
+	a := "019f8384-1000-7000-8000-aaaaaaaaaaaa"
+	b := "019f8384-1000-7000-8000-bbbbbbbbbbbb" // same ms-timestamp prefix
+	if fixInFlightContextFor(a) == fixInFlightContextFor(b) {
+		t.Fatalf("two runs from the same time window share context %q — one would resolve the other's warning", fixInFlightContextFor(a))
+	}
+	if fixInFlightContextFor("") != "" {
+		t.Errorf("a run with no id got context %q, want none — an unattributable claim can never be resolved", fixInFlightContextFor(""))
 	}
 }
 
@@ -121,7 +181,7 @@ func TestMarkFixInFlight_NeedsAPRAndARevision(t *testing.T) {
 func TestMarkFixInFlight_NeverOverwritesAForeignStatus(t *testing.T) {
 	for _, st := range []forge.CommitState{forge.CommitStateSuccess, forge.CommitStateFailure, forge.CommitStatePending} {
 		gc := &listingGateClient{statuses: []forge.CommitStatus{
-			{Context: fixInFlightContext, State: st, Description: "something another tool posted"},
+			{Context: fixInFlightContextFor("run-77"), State: st, Description: "something another tool posted"},
 		}}
 		s := fixLaunchFixture(t, gc)
 
@@ -172,7 +232,7 @@ func fixRunFixture(t *testing.T, gc forgeGateClient, status store.RunStatus) (*S
 func TestClearFixInFlight_ResolvesOurOwnClaim(t *testing.T) {
 	for _, status := range []store.RunStatus{store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled} {
 		gc := &listingGateClient{statuses: []forge.CommitStatus{
-			{Context: fixInFlightContext, State: forge.CommitStatePending, Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+			{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending, Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 		}}
 		s, run := fixRunFixture(t, gc, status)
 
@@ -200,7 +260,7 @@ func TestClearFixInFlight_ResolvesOurOwnClaim(t *testing.T) {
 // An armed retry is not an ending. Same call as the gate lane next door.
 func TestClearFixInFlight_SilentOnAParkedRunWithAnArmedRetry(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
@@ -218,7 +278,7 @@ func TestClearFixInFlight_SilentOnAParkedRunWithAnArmedRetry(t *testing.T) {
 // claim must not outlive it. The two halves of the same predicate.
 func TestClearFixInFlight_ResolvesAParkedRunNothingWillResume(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
@@ -251,7 +311,7 @@ func TestClearFixInFlight_SilentOnAParkAContinuationWillResume(t *testing.T) {
 		"armed retry": store.ContinuationRetryArmed,
 	} {
 		gc := &listingGateClient{statuses: []forge.CommitStatus{
-			{Context: fixInFlightContext, State: forge.CommitStatePending,
+			{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 				Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 		}}
 		s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
@@ -273,7 +333,7 @@ func TestClearFixInFlight_SilentOnAParkAContinuationWillResume(t *testing.T) {
 // pending forever. Unknown clears.
 func TestClearFixInFlight_ResolvesAParkNothingOwns(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
@@ -293,7 +353,7 @@ func TestClearFixInFlight_ResolvesAParkNothingOwns(t *testing.T) {
 func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
 	for _, status := range []store.RunStatus{store.RunStatusRunning, store.RunStatusQueued, store.RunStatusPausedWaitingHuman} {
 		gc := &listingGateClient{statuses: []forge.CommitStatus{
-			{Context: fixInFlightContext, State: forge.CommitStatePending, Description: fixInFlightDescription},
+			{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending, Description: fixInFlightDescription},
 		}}
 		s, run := fixRunFixture(t, gc, status)
 
@@ -305,23 +365,16 @@ func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
 	}
 }
 
-// R65a408 — THE one the first draft of this file could not see. Its
-// "foreign status" case used a different DESCRIPTION, so it only ever proved
-// that another tool's verdict survives. It never proved that another RUN's
-// claim does, and that is the case production actually produces:
-//
-// the auto-fix lane launches the fixer on the REVIEWER's own head_sha, and two
-// consecutive fixer passes reuse it as well. The sweeper re-offers every
-// terminal run for the whole lookback — so the reviewer's own reconcile pass,
-// terminal and on the same sha, would read the LIVE fixer's claim, match the
-// description, and post "the fix run is done" while the branch is still being
-// rewritten. A false all-clear, in the exact lane this feature exists for.
-//
-// Ownership is the target URL, never the shape of the text.
+// R65a408 — the second half of ownership, kept after the context became
+// per-run. Its "foreign status" sibling uses a different DESCRIPTION, so it
+// only ever proves another TOOL's verdict survives; this one proves another
+// RUN's claim does. Ownership is the target URL, never the shape of the text —
+// the same test the gate lane applies, so the two markers cannot diverge on the
+// one question that decides whether a green check is a lie.
 func TestClearFixInFlight_LeavesAnotherRunsClaimAlone(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
 		// Byte-identical to what this run would post — except whose it is.
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription,
 			TargetURL:   "https://iterion.test/runs/some-other-run"},
 	}}
@@ -342,7 +395,7 @@ func TestClearFixInFlight_LeavesAnotherRunsClaimAlone(t *testing.T) {
 // a guard placed after the round trip would still cost it.
 func TestClearFixInFlight_NoForgeTrafficForANonFixer(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending, Description: fixInFlightDescription},
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending, Description: fixInFlightDescription},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFinished)
 	run.BotID = "review-pr" // a reviewer: it never claimed, so it owes no clear
@@ -361,7 +414,7 @@ func TestClearFixInFlight_NoForgeTrafficForANonFixer(t *testing.T) {
 // on this context survives the run ending.
 func TestClearFixInFlight_LeavesAForeignStatusAlone(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStateFailure, Description: "another tool's verdict"},
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStateFailure, Description: "another tool's verdict"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFinished)
 
@@ -380,7 +433,7 @@ func TestClearFixInFlight_LeavesAForeignStatusAlone(t *testing.T) {
 // that lane in a comment while omitting the branch.
 func TestClearFixInFlight_ResolvesADLQParkDespiteAStaleRetry(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
@@ -395,14 +448,13 @@ func TestClearFixInFlight_ResolvesADLQParkDespiteAStaleRetry(t *testing.T) {
 	}
 }
 
-// R22fa34 — the CLAIM had the defect the clear was fixed for: it overwrote any
-// marker of the right shape without asking whose it was. Two fixers share one
-// head sha by construction, so the newcomer would take the claim over, and
-// whichever run ended first would post the all-clear over the other's live
-// rewrite. The class, fixed at both sites rather than one.
+// R22fa34 — the CLAIM keeps the same ownership test as the clear: a live
+// warning that speaks for another run is never blanked, whatever it is written
+// on. Symmetry between the two sites is the point — a marker one lane will
+// write over and the other will not is how a claim ends up unresolvable.
 func TestMarkFixInFlight_NeverTakesOverAnotherRunsClaim(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription,
 			TargetURL:   "https://iterion.test/runs/an-earlier-fixer"},
 	}}
@@ -419,7 +471,7 @@ func TestMarkFixInFlight_NeverTakesOverAnotherRunsClaim(t *testing.T) {
 // locked out by the status it posted itself.
 func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
 			Description: fixInFlightDescription,
 			TargetURL:   "https://iterion.test/runs/run-77"},
 	}}
@@ -432,26 +484,64 @@ func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
 	}
 }
 
-// Rfa3481 — after a first pass terminates, the clear leaves `done` on that sha.
-// A second `/billy` on an UNCHANGED head — a first pass that BANKED instead of
-// pushing, which is the 2026-09-09 incident itself — read its predecessor's
-// marker as a foreign verdict and posted nothing. The second pass was then as
-// invisible as before this change, in the very lane it was written for.
+// Rfa3481 — a RESOLVED marker is claimable over. Since the context became
+// per-run, the case that reaches this branch is a run whose claim was released
+// on a park nothing owned (a DLQ park, an unknown continuation) and which an
+// operator then resumed: the resumed pass would otherwise stay invisible behind
+// its own `done` marker — as invisible as before this change, in the very lane
+// it was written for. `done` means no fixer is working, which a launch is about
+// to make false.
 func TestMarkFixInFlight_ClaimsOverAResolvedMarker(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStateSuccess,
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStateSuccess,
 			Description: fixDoneDescription,
-			TargetURL:   "https://iterion.test/runs/the-previous-pass"},
+			TargetURL:   "https://iterion.test/runs/run-77"},
 	}}
 	s := fixLaunchFixture(t, gc)
 
 	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
 
 	if gc.setCalls != 1 {
-		t.Fatalf("posted %d, want 1 — a second pass on an unchanged head stays invisible behind its predecessor's done marker", gc.setCalls)
+		t.Fatalf("posted %d, want 1 — a resumed pass stays invisible behind the done marker its own park left", gc.setCalls)
 	}
 	if !isFixInFlight(gc.last) {
 		t.Errorf("claim = %q, want the in-flight marker", gc.last.Description)
+	}
+}
+
+// THE lifecycle the shared context could not express, end to end on one head
+// sha. Two fixers there is not exotic: each `/billy` comment carries its own
+// idempotency key, the auto-fix lane launches on the reviewer's own head, the
+// merge-queue auto-heal on the dequeued one — and overlap=supersede, the only
+// thing that would cancel the older run, is per-bot AND off unless a webhook
+// sets it.
+//
+// On one shared row the claimant's terminal clear posted "pushing is safe
+// again" while its sibling was still rewriting the branch: a green check on the
+// exact collision this feature exists to warn about. Standing the second run
+// down only moved the hole to the other end. A row per run is what makes both
+// halves true at once.
+func TestFixInFlight_ConcurrentFixersOnOneHead(t *testing.T) {
+	gc := &statusBoardClient{}
+	s := fixLaunchFixture(t, gc)
+	ctx := context.Background()
+
+	// Both fixers launch on the same revision.
+	s.markFixInFlight(ctx, "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+	s.markFixInFlight(ctx, "team1", "", "branch-improve-loop", fixLaunchVars(), "run-88")
+	if n := gc.countState(forge.CommitStatePending); n != 2 {
+		t.Fatalf("%d live warnings for 2 live fixers — a run nobody can see is the whole defect", n)
+	}
+
+	// The FIRST one ends. Its own row resolves; the other's warning must stand.
+	sc, first := fixRunFixture(t, gc, store.RunStatusFinished)
+	sc.clearFixInFlight(ctx, first)
+
+	if got := gc.stateOf(fixInFlightContextFor("run-88")); got != forge.CommitStatePending {
+		t.Fatalf("the second fixer's warning is %q, want pending — a reader about to push is told the branch is free while it is still being rewritten", got)
+	}
+	if got := gc.stateOf(fixInFlightContextFor("run-77")); got != forge.CommitStateSuccess {
+		t.Errorf("the finished fixer's own row is %q, want success — its claim would sit pending forever", got)
 	}
 }
 
