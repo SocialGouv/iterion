@@ -46,7 +46,7 @@ const tools: StackItem[] = [
 ];
 
 // Examples of project toolchains, provisioned through Devbox when needed.
-// Native script-step interpreters are called out separately below.
+// These are toolchain examples, not native script-language integrations.
 const languages: StackItem[] = [
   { name: "JavaScript", mark: "JS" },
   { name: "TypeScript", mark: "TS" },
@@ -103,25 +103,23 @@ export default function StackCompatibility() {
       <div className="ch-stack-rows">
         <StackRow label="Models & inference" items={models} />
         <StackRow label="Tools & infrastructure" items={tools} reverse />
-        <StackRow label="Languages & runtimes" items={languages} />
+        <StackRow label="Toolchains via Devbox" items={languages} />
       </div>
-      <div className="ch-runtime-support">
-        <div className="ch-native-scripts">
-          <p className="ch-runtime-label"><FileCode2 size={17} aria-hidden="true" /> NATIVE WORKFLOW SCRIPTS</p>
-          <h3>Code where it counts.</h3>
-          <p>Write script steps directly in your bots, using Node.js, Python or sh/Bash. Pin the interpreters with Devbox when you need a specific version.</p>
-          <a href={`${DOCS}dsl.html#tool`} target="_blank" rel="noreferrer">Explore script steps <ArrowUpRight size={13} aria-hidden="true" /></a>
-        </div>
-        <div className="ch-devbox-support">
+      <div className="ch-devbox-support">
+        <div className="ch-devbox-overview">
           <p className="ch-runtime-label"><Box size={18} aria-hidden="true" /> DEVBOX, FIRST-CLASS.</p>
           <h3>Your bot’s tools. Your repo’s versions.</h3>
-          <p>Bring the languages, build tools and CLIs your work needs. Pin them per bot and per project with Devbox.</p>
+          <p>Give your agents the runtimes, compilers and CLIs your project needs. Pin their versions per bot and per repository, alongside your code.</p>
+          <ul className="ch-devbox-tools" aria-label="Toolchain components"><li>Runtimes</li><li>Build tools</li><li>Package managers</li><li>Test runners</li></ul>
+        </div>
+        <div className="ch-devbox-config">
           <dl className="ch-devbox-scopes">
             <div><dt>Per bot</dt><dd>Package its own toolchain with <code>devbox.json</code> and <code>devbox.lock</code>.</dd></div>
             <div><dt>Per project / repo</dt><dd>Pick up the repository’s Devbox config and lockfile. Its versions take precedence.</dd></div>
           </dl>
-          <div className="ch-devbox-footer"><span><Pin size={13} aria-hidden="true" /> Versioned tools, alongside your code.</span><a href={`${DOCS}sandbox.html#devbox-tools-devbox-json`} target="_blank" rel="noreferrer">How it works <ArrowUpRight size={13} aria-hidden="true" /></a></div>
+          <div className="ch-devbox-usage"><FileCode2 size={19} aria-hidden="true" /><p><strong>From agent commands to build & test.</strong><span>Use the configured tools across your workflow: scripted steps, application builds, test suites and the commands your agents run.</span></p></div>
         </div>
+        <div className="ch-devbox-footer"><span><Pin size={13} aria-hidden="true" /> Pinned versions. Committed lockfiles.</span><a href={`${DOCS}sandbox.html#devbox-tools-devbox-json`} target="_blank" rel="noreferrer">Explore the Devbox integration <ArrowUpRight size={13} aria-hidden="true" /></a></div>
       </div>
       <div className="ch-sovereign-note">
         <ShieldCheck size={20} strokeWidth={1.5} aria-hidden="true" />
