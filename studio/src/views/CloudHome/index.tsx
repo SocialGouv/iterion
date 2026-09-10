@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, ArrowUpRight, Check, ChevronRight, Clock3, Code2, GitBranch, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Sun, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, ChevronRight, Clock3, Code2, GitBranch, GitPullRequest, ListChecks, Menu, Moon, ShieldCheck, Star, Sun, X } from "lucide-react";
 import { GitHubLogoIcon } from "@radix-ui/react-icons";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { useThemeStore } from "@/store/theme";
@@ -13,6 +13,17 @@ const DOCS = "https://socialgouv.github.io/iterion/";
 
 function Brand() {
   return <Link href="/" className="ch-brand" aria-label="Iterion Cloud home"><BrandMark className="ch-brand-mark" /><span>iterion<span className="ch-cloud-label">cloud</span></span></Link>;
+}
+
+function GitHubStar() {
+  return (
+    <div className="ch-star-invite">
+      <span>Like what we’re building?</span>
+      <a href={GITHUB} target="_blank" rel="noreferrer" className="ch-star-link">
+        <Star size={15} aria-hidden="true" /> Star on GitHub <ArrowUpRight size={13} aria-hidden="true" />
+      </a>
+    </div>
+  );
 }
 
 function HeroVisual() {
@@ -111,7 +122,7 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
       </header>
       <main id="ch-main">
         <section className="ch-hero ch-container" aria-labelledby="ch-title">
-          <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description">Linux runs apps. Kubernetes orchestrates containers.<br /><strong>Iterion orchestrates agents.</strong></p><div className="ch-hero-ctas"><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div></div>
+          <div className="ch-hero-copy"><a className="ch-open-source" href={GITHUB} target="_blank" rel="noreferrer"><span className="ch-open-dot" /> OPEN SOURCE. OPEN POSSIBILITIES. <ChevronRight size={13} /></a><h1 id="ch-title">Your agents called.<br /><span>They need an<br />orchestrator.</span></h1><p className="ch-hero-description">Linux runs apps. Kubernetes orchestrates containers.<br /><strong>Iterion orchestrates agents.</strong></p><div className="ch-hero-ctas"><Link href="/login" className="ch-button ch-button-primary">Open Iterion Cloud <ArrowUpRight size={17} /></Link><a href="#workflows" className="ch-button ch-button-text"><ArrowRight size={15} /> Explore use cases</a></div><div className="ch-hero-footnote"><span><Check size={13} /> Git native</span><span><Check size={13} /> Model agnostic</span><span><Check size={13} /> MIT licensed</span></div><GitHubStar /></div>
           <HeroVisual />
         </section>
         <StackCompatibility />
