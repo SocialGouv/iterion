@@ -205,6 +205,14 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		// writer most needs warning about. The command and auto-fix lanes stamp
 		// the same var at their own launch; the heal's own idempotency key is
 		// already keyed on this sha.
+		//
+		// It arms the GATE lane for this launch too, and deliberately: on a
+		// repo that pins gate_context, markGateInFlight and the dead-run
+		// repair also stood down here for want of the revision, so a heal
+		// alone among the three fixer lanes could die leaving the required
+		// check on a stale green. Claiming (never over a verdict) and, if the
+		// heal dies without answering, a synthetic failure is what the other
+		// two lanes already do — the heal was the odd one out.
 		healVars["head_sha"] = p.HeadSHA
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
