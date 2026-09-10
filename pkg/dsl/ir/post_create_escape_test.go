@@ -20,9 +20,16 @@ import (
 //	Invalid package name """ of package ""@openai/codex@0.154.0""
 //
 // It had never run once, and the sandbox silently kept an older binary — the
-// no-op-confirmed-as-success class. Hence an error rather than a warning: the
-// string provably cannot do what it says, and a warning scrolls past in a
-// validate run that already prints other warnings.
+// no-op-confirmed-as-success class.
+//
+// A WARNING, not an error. The tempting argument — "under strict escape the
+// lexer would have decoded \", so seeing it here proves no unescaping
+// happened" — is false: expectString accepts a TokenString from three
+// scanners and only scanString consults strictEscape. A backtick raw string
+// and a `|` block scalar keep \" verbatim BY DESIGN, where it can be a
+// perfectly correct shell escape inside a double-quoted region. Refusing
+// would break a working bundle at launch, including ones stored outside this
+// tree (Revi R1d1a9f).
 func compileSrc(t *testing.T, src string) *CompileResult {
 	t.Helper()
 	pr := parser.Parse("test.bot", src)
@@ -68,13 +75,20 @@ func TestPostCreateRefusesAnEscapedQuote(t *testing.T) {
 		t.Fatalf("no %s diagnostic: an escaped quote in post_create compiles clean, so the next author writes it again. Got %+v",
 			DiagEscapedQuoteInShellString, cr.Diagnostics)
 	}
-	if d.Severity != SeverityError {
-		t.Errorf("severity = %v, want error — a warning scrolls past a validate run that already prints other warnings", d.Severity)
+	if d.Severity != SeverityWarning {
+		t.Errorf("severity = %v, want warning — the same shape is legitimate in a backtick or block-scalar value, "+
+			"so the compiler cannot prove a defect here and must not refuse the workflow", d.Severity)
+	}
+	if cr.HasErrors() {
+		t.Errorf("the workflow was REFUSED: %+v — a warning must leave it compiling", cr.Diagnostics)
+	}
+	if cr.Workflow == nil || cr.Workflow.Sandbox == nil {
+		t.Fatal("the SandboxSpec was dropped — a warning must not cost the block, or a consumer reads the workflow as having no sandbox at all")
 	}
 	// The message has to name the fix, not just the sin: an author who reads
 	// "escaped quote" without "drop them / use single quotes" reaches for a
 	// third quoting layer, which is how this class propagates.
-	for _, want := range []string{"literal quote", "single quotes", "strict-escape"} {
+	for _, want := range []string{"literal quote", "single quotes", "backtick"} {
 		if !strings.Contains(strings.ToLower(d.Message), want) {
 			t.Errorf("message does not mention %q, so it names the defect without naming the way out: %s", want, d.Message)
 		}
@@ -112,5 +126,29 @@ func TestPostCreateWithoutQuotesIsUntouched(t *testing.T) {
 	cr := compileSrc(t, src)
 	if d := diagFor(cr, DiagEscapedQuoteInShellString); d != nil {
 		t.Errorf("a post_create with no escaped quote was refused: %s", d.Message)
+	}
+}
+
+// TestPostCreateBacktickValueKeepsCompiling is the false positive Revi named
+// (R1d1a9f): a backtick raw string never goes through escape processing in
+// EITHER mode, so a \" inside it is verbatim by design — and inside a shell
+// double-quoted region it is the correct way to write a literal quote.
+// bots/wiki-gen already writes JSON that way. The warning may still fire (the
+// compiler cannot tell the string kinds apart at this point), but the
+// workflow MUST still compile and keep its sandbox.
+func TestPostCreateBacktickValueKeepsCompiling(t *testing.T) {
+	src := strings.Replace(escapeBotShell, "%s",
+		"`printf '{\"k\":1}' > /tmp/c.json && echo \"done\"`", 1)
+
+	cr := compileSrc(t, src)
+	if cr.HasErrors() {
+		t.Errorf("a backtick post_create carrying \\\" was refused: %+v — that shape is correct shell today, "+
+			"and refusing it breaks a working bundle at launch", cr.Diagnostics)
+	}
+	if cr.Workflow == nil || cr.Workflow.Sandbox == nil {
+		t.Fatal("the SandboxSpec was dropped on a legitimate value")
+	}
+	if !strings.Contains(cr.Workflow.Sandbox.PostCreate, "/tmp/c.json") {
+		t.Errorf("post_create did not survive: %q", cr.Workflow.Sandbox.PostCreate)
 	}
 }
