@@ -162,14 +162,20 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if req.Path != "" && !strings.Contains(req.Path, "://") {
 		if abs, perr := s.safePath(req.Path); perr == nil {
 			if parent := bundle.DirForMainBot(abs); parent != "" {
-				b, oerr := bundle.OpenDir(parent)
-				if oerr != nil {
-					httpError(w, http.StatusUnprocessableEntity, "bundle at %s: %v", parent, oerr)
-					return
-				}
-				if merr := runview.MergeBundlePrompts(f, b); merr != nil {
-					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
-					return
+				// A sibling manifest.yaml that does not OPEN must not blind
+				// the editor: DirForMainBot fires on its mere presence and
+				// LoadManifest is a strict unmarshal, so a half-typed one —
+				// a normal state in a studio that edits manifests too —
+				// would answer 422 for the whole request and useAutoValidation
+				// would keep the stale diagnostics on screen. Fall through to
+				// the document alone, the way openBundleOrFile does on the CLI
+				// side. A prompts merge that genuinely fails stays an error:
+				// the bundle opened, so its prompts/*.md are in scope.
+				if b, oerr := bundle.OpenDir(parent); oerr == nil {
+					if merr := runview.MergeBundlePrompts(f, b); merr != nil {
+						httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
+						return
+					}
 				}
 			}
 		}
