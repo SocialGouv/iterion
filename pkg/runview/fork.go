@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"time"
 
@@ -222,11 +223,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// resumeFromFailure path re-executes NodeID first, then walks
 	// downstream.
 	artifactRevisionsKnown := parent.Checkpoint != nil && parent.Checkpoint.ArtifactRevisionsKnown
+	artifactsKnown := parent.Checkpoint != nil && parent.Checkpoint.ArtifactsKnown
 	child.Checkpoint = &store.Checkpoint{
 		NodeID:                 spec.NodeID,
 		Outputs:                copyOutputs(parent.Checkpoint),
 		LoopCounters:           copyLoopCounters(parent.Checkpoint, spec.NodeID, turn.LoopIter),
 		ArtifactVersions:       copyArtifactVersions(parent.Checkpoint),
+		Artifacts:              copyArtifacts(parent.Checkpoint),
+		ArtifactOwners:         copyArtifactOwners(parent.Checkpoint),
+		ArtifactsKnown:         artifactsKnown,
 		ArtifactRevisions:      copyArtifactRevisions(parent.Checkpoint),
 		ArtifactRevisionsKnown: artifactRevisionsKnown,
 		Vars:                   copyVars(parent.Checkpoint),
@@ -246,14 +251,15 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		}
 		child.Checkpoint.BackendConversation = msgBytes
 	}
-	// Drop the forked node's existing output so re-execution starts
-	// fresh (preserves topological ordering for downstream refs).
-	delete(child.Checkpoint.Outputs, spec.NodeID)
-	for logicalRef, revision := range child.Checkpoint.ArtifactRevisions {
-		if revision.NodeID == spec.NodeID {
-			delete(child.Checkpoint.ArtifactRevisions, logicalRef)
-		}
-	}
+	// Drop the forked node's existing output and every logical binding that
+	// may have come from it so re-execution starts fresh. Besides explicit
+	// owners/revisions, compatibility checkpoints can contain an ownerless
+	// artifact whose value equals the anchor output. That equality may be
+	// ambiguous when another node returned the same value, but retaining it is
+	// unsafe: the checkpoint would make stale anchor work authoritative and a
+	// later resume could assign it to the peer. Invalidate conservatively.
+	invalidateForkAnchorArtifacts(child.Checkpoint, spec.NodeID)
+	runtime.CompactCheckpointArtifactValues(child.Checkpoint)
 	// Provenance is useful only while it remains resolvable in the child's
 	// run namespace. Copy every retained exact revision and its transitive
 	// contract dependencies before the child is parked for resume.
@@ -287,6 +293,42 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		ParentRunID: parent.ID,
 		ForkAnchor:  child.ForkAnchor,
 	}, nil
+}
+
+func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {
+	if cp == nil {
+		return
+	}
+	anchorOutput, hasAnchorOutput := cp.Outputs[nodeID]
+	for logicalRef, owner := range cp.ArtifactOwners {
+		if owner != nodeID {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	for logicalRef, revision := range cp.ArtifactRevisions {
+		if revision.NodeID != nodeID {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	for logicalRef, value := range cp.Artifacts {
+		owner := cp.ArtifactOwners[logicalRef]
+		revision, exact := cp.ArtifactRevisions[logicalRef]
+		ownedByAnchor := owner == nodeID || (exact && revision.NodeID == nodeID)
+		ownerlessAnchorValue := owner == "" && !exact && hasAnchorOutput && reflect.DeepEqual(value, anchorOutput)
+		if !ownedByAnchor && !ownerlessAnchorValue {
+			continue
+		}
+		delete(cp.Artifacts, logicalRef)
+		delete(cp.ArtifactOwners, logicalRef)
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	delete(cp.Outputs, nodeID)
 }
 
 // forkWorktree materialises the child run's worktree. With
@@ -360,6 +402,33 @@ func copyArtifactVersions(cp *store.Checkpoint) map[string]int {
 	return map[string]int{}
 }
 
+func copyArtifacts(cp *store.Checkpoint) map[string]map[string]any {
+	if cp == nil {
+		return map[string]map[string]any{}
+	}
+	out := make(map[string]map[string]any, len(cp.Artifacts))
+	for k, v := range cp.Artifacts {
+		out[k] = maps.Clone(v)
+	}
+	return out
+}
+
+func copyArtifactOwners(cp *store.Checkpoint) map[string]string {
+	if cp == nil {
+		return map[string]string{}
+	}
+	owners := maps.Clone(cp.ArtifactOwners)
+	if owners == nil {
+		owners = make(map[string]string)
+	}
+	for name, revision := range cp.ArtifactRevisions {
+		if _, present := cp.Artifacts[name]; present && owners[name] == "" {
+			owners[name] = revision.NodeID
+		}
+	}
+	return owners
+}
+
 func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisionRef {
 	if cp == nil {
 		return map[string]store.ArtifactRevisionRef{}
@@ -370,9 +439,9 @@ func copyArtifactRevisions(cp *store.Checkpoint) map[string]store.ArtifactRevisi
 	return map[string]store.ArtifactRevisionRef{}
 }
 
-// forkArtifactRevisions returns every retained physical revision. Exact
-// logical provenance wins when present; checkpoint outputs plus the allocator
-// cursor supply a compatibility root for producers saved by older binaries.
+// forkArtifactRevisions returns every retained physical revision. Verified
+// logical provenance is copied fail-closed; explicitly unverified bindings and
+// checkpoint-output/allocator compatibility roots are copied best-effort.
 func forkArtifactRevisions(cp *store.Checkpoint) (exact, inferred []store.ArtifactRevisionRef) {
 	if cp == nil {
 		return nil, nil
@@ -382,11 +451,15 @@ func forkArtifactRevisions(cp *store.Checkpoint) (exact, inferred []store.Artifa
 		if revision.ContractLogicalRef == "" {
 			revision.ContractLogicalRef = logicalRef
 		}
-		exact = append(exact, revision)
 		represented[revision.NodeID] = true
+		if revision.Unverified {
+			inferred = append(inferred, revision)
+			continue
+		}
+		exact = append(exact, revision)
 	}
 	if cp.ArtifactRevisionsKnown {
-		return exact, nil
+		return exact, inferred
 	}
 	for nodeID := range cp.Outputs {
 		if represented[nodeID] || cp.ArtifactVersions[nodeID] <= 0 {

@@ -359,6 +359,10 @@ type runState struct {
 	// collection consults both to mirror the scope used to build node input.
 	inheritedOutputs map[string]map[string]any
 	artifacts        map[string]map[string]any // publish name → output
+	// artifactOwners tracks logical value ownership independently from exact
+	// physical provenance. Report/legacy fallbacks need this so rewind/fork can
+	// invalidate stale values without emitting an unverified dependency.
+	artifactOwners map[string]string
 	// artifactRevisions is the physical producer/version of the value in
 	// artifacts. It must travel with that value through branches and checkpoints:
 	// publish names are not unique and version counters are allocator cursors.
@@ -750,6 +754,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		runInputs:          inputs,
 		outputs:            make(map[string]map[string]any),
 		artifacts:          make(map[string]map[string]any),
+		artifactOwners:     make(map[string]string),
 		artifactRevisions:  make(map[string]store.ArtifactRevisionRef),
 		loopCounters:       make(map[string]int),
 		loopPreviousOutput: make(map[string]map[string]any),

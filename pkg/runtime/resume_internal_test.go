@@ -393,6 +393,51 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 	}
 }
 
+func TestRestampWorkflowSource_PreservesFreshExecutionContext(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	stale := &store.Run{
+		ID: "run-restamp-context", Status: store.RunStatusRunning,
+		WorkflowSource: "old source", WorkflowHash: "hash-old",
+		ExecutionContext: &store.ExecutionContext{
+			Version: 1, Policy: store.ContextPolicyEnforce,
+			Workflow:      store.WorkflowContext{WorkflowRevision: "hash-old"},
+			LaunchSurface: "stale-surface",
+		},
+	}
+	if err := st.SaveRun(ctx, stale); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	entry, err := st.LoadRun(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.LoadRun(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.ExecutionContext = fresh.ExecutionContext.Clone()
+	fresh.ExecutionContext.LaunchSurface = "fresh-surface"
+	fresh.ExecutionContext.BusinessStores = []store.ContextRef{{ID: "fresh", Kind: "database"}}
+	if err := st.SaveRun(ctx, fresh); err != nil {
+		t.Fatalf("concurrent context update: %v", err)
+	}
+
+	e := &Engine{store: st, workflowSource: "new source", workflowHash: "hash-new", forceResume: true}
+	e.restampWorkflowSource(ctx, entry)
+
+	got, err := st.LoadRun(ctx, stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExecutionContext.LaunchSurface != "fresh-surface" || len(got.ExecutionContext.BusinessStores) != 1 {
+		t.Fatalf("fresh execution context was overwritten: %+v", got.ExecutionContext)
+	}
+	if got.ExecutionContext.Workflow.WorkflowRevision != "hash-new" {
+		t.Fatalf("workflow revision = %q, want hash-new", got.ExecutionContext.Workflow.WorkflowRevision)
+	}
+}
+
 // The pause pointer is consumed by the resume that uses it: right
 // after resumeFromPause's claim, a checkpoint write clearing the
 // interaction evidence must land — since the checkpoint survives the

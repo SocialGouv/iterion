@@ -163,6 +163,13 @@ parent's).
   "loop_previous_output": {},
   "loop_current_output": {},
   "artifact_versions": { "inspect": 3 },
+  "artifacts": {}, // inspection equals outputs.inspect, so its body is omitted
+  "artifact_owners": { "inspection": "inspect" },
+  "artifacts_known": true,
+  "artifact_revisions": {
+    "inspection": { "node_id": "inspect", "version": 2 }
+  },
+  "artifact_revisions_known": true,
   "selected_incoming": {
     "gate": [{ "from": "validate", "to": "gate" }]
   },
@@ -196,6 +203,26 @@ parent's).
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
 budget fields prevent resume from granting a fresh allowance.
+The union of `artifact_owners` and `artifacts` is the authoritative logical
+publish-name snapshot. `artifact_owners` is the complete catalog: when a
+logical value is identical to its producer's `outputs` entry, the body is
+omitted from `artifacts` and reconstructed from that owner on resume. This
+keeps large published outputs from appearing twice in Mongo's size-limited run
+document. Historical aliases whose value differs from the producer's newest
+output stay behind their immutable revision with `value_from_revision: true`;
+unverified revisions and ownerless values remain explicit in `artifacts`.
+`artifact_owners` also keeps invalidation ownership when report mode cannot
+verify a blob; `artifact_revisions` independently records physical provenance.
+The corresponding `*_known` markers distinguish an intentionally empty current
+snapshot from a checkpoint written by an older binary, which is rebuilt
+conservatively from outputs without inventing provenance.
+Parallel branch checkpoints keep their `artifacts` bodies expanded for V1
+mixed-version compatibility. Older runners do not understand
+`artifact_owners`, so compacting a completed branch would make its published
+values disappear when that runner resumes it.
+An artifact revision marked `"unverified": true` retains only its producer
+binding after report mode could not read the physical body. It is excluded
+from newly written dependency contracts until a later resume verifies it.
 `backend_session_fingerprint` is the provider fingerprint of
 `backend_session_id`, checkpointed beside it because the id alone is not
 usable: a `session: fork` resume drops a session whose parent provider it

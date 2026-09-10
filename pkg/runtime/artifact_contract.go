@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -19,8 +20,16 @@ var (
 	ErrArtifactContractIncompatible = errors.New("artifact contract incompatible")
 	// ErrArtifactContractUnavailable means validation could not read the
 	// durable evidence. It is an infrastructure error, not a source mismatch.
-	ErrArtifactContractUnavailable = errors.New("artifact contract validation unavailable")
+	ErrArtifactContractUnavailable     = errors.New("artifact contract validation unavailable")
+	artifactContractReportWriteTimeout = 5 * time.Second
 )
+
+func artifactContractPolicy(run *store.Run) store.ContextPolicy {
+	if run != nil && run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
+		return run.ExecutionContext.Policy
+	}
+	return store.ContextPolicyLegacy
+}
 
 // artifactContractFor derives the immutable portion of an artifact contract
 // from the compiled workflow. It deliberately does not infer external side
@@ -48,7 +57,7 @@ func (e *Engine) artifactContractFor(nodeID string, node ir.Node, version int, r
 			continue
 		}
 		revision, present := rs.artifactRevisions[consumedRef]
-		if !present || revision.NodeID == "" {
+		if !present || revision.NodeID == "" || revision.Unverified {
 			continue
 		}
 		logicalRef := consumedRef
@@ -156,7 +165,7 @@ func (e *Engine) consumedArtifactRefs(nodeID string, rs *runState) []string {
 // are accepted; report/legacy context policies record the mismatch through
 // the caller while enforce refuses it nondestructively.
 func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, true)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, true, nil)
 }
 
 // ValidateArtifactContractsPreflight applies the synchronous compatibility
@@ -164,7 +173,7 @@ func ValidateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 // queued handoff: Engine.Resume repeats the authoritative check and emits the
 // single event for that execution attempt.
 func ValidateArtifactContractsPreflight(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false, nil)
 }
 
 // ValidateArtifactContractsExcept applies the resume/rewind contract guard
@@ -172,21 +181,20 @@ func ValidateArtifactContractsPreflight(ctx context.Context, s store.RunStore, r
 // It is used by rewind after it has computed the exact downstream set: an
 // obsolete artifact must not prevent the operation that removes it.
 func ValidateArtifactContractsExcept(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool) error {
-	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes, true)
+	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, ignoredNodes, true, nil)
 }
 
 // ValidateCheckpointArtifactAvailability verifies that every exact physical
-// revision named by the checkpoint can still be read. Unlike contract-policy
-// validation, this is an execution prerequisite for every policy: the engine
-// rebuilds {{artifacts.*}} from these immutable bodies before claiming a
-// resume, and a preflight must make the same check before callers consume
-// staged inputs.
+// revision named by an enforce-policy checkpoint can still be read. Legacy
+// keeps checkpoint Outputs authoritative without touching the artifact store;
+// report may observe an unavailable body but must not turn that observation
+// into a resume refusal.
 func ValidateCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run) error {
 	_, err := loadCheckpointArtifactAvailability(ctx, s, run, nil)
 	return err
 }
 
-// ValidateCheckpointArtifactAvailabilityExcept applies the unconditional
+// ValidateCheckpointArtifactAvailabilityExcept applies the enforce-policy
 // physical-availability guard while excluding producers a rewind is about to
 // invalidate. Only revisions that survive the mutation need to remain
 // executable.
@@ -200,6 +208,9 @@ func ValidateCheckpointArtifactAvailabilityExcept(ctx context.Context, s store.R
 // instead of issuing a second pre-claim S3 GET for the same immutable data.
 func loadCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, run *store.Run, ignoredNodes map[string]bool) (map[artifactRevisionKey]*store.Artifact, error) {
 	if run == nil || run.Checkpoint == nil || s == nil {
+		return nil, nil
+	}
+	if artifactContractPolicy(run) != store.ContextPolicyEnforce {
 		return nil, nil
 	}
 	revisions := make(map[artifactRevisionKey]string)
@@ -254,14 +265,11 @@ func loadCheckpointArtifactAvailability(ctx context.Context, s store.RunStore, r
 	return loaded, nil
 }
 
-func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool, emitReport bool) error {
+func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool, ignoredNodes map[string]bool, emitReport bool, preloaded map[artifactRevisionKey]*store.Artifact) error {
 	if run == nil || s == nil || wf == nil {
 		return nil
 	}
-	policy := store.ContextPolicyLegacy
-	if run.ExecutionContext != nil && run.ExecutionContext.Policy != "" {
-		policy = run.ExecutionContext.Policy
-	}
+	policy := artifactContractPolicy(run)
 	// Legacy cannot produce a refusal or report event. Avoid N full artifact
 	// reads (S3 GETs for the cloud store) on the default compatibility path.
 	if policy == store.ContextPolicyLegacy {
@@ -310,7 +318,11 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			return nil
 		}
 		visited[key] = true
-		artifact, err := s.LoadArtifact(ctx, run.ID, nodeID, version)
+		artifact, loaded := preloaded[artifactRevisionKey{nodeID: nodeID, version: version}]
+		var err error
+		if !loaded {
+			artifact, err = s.LoadArtifact(ctx, run.ID, nodeID, version)
+		}
 		if err != nil {
 			msg := fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err)
 			if policy == store.ContextPolicyEnforce {
@@ -415,7 +427,9 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 	}
 	if policy == store.ContextPolicyReport {
 		if emitReport {
-			_, _ = s.AppendEvent(context.WithoutCancel(ctx), run.ID, store.Event{
+			eventCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), artifactContractReportWriteTimeout)
+			defer cancel()
+			_, _ = s.AppendEvent(eventCtx, run.ID, store.Event{
 				Type:  store.EventArtifactContractViolation,
 				RunID: run.ID,
 				Data: map[string]any{

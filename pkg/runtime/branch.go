@@ -23,6 +23,7 @@ type branchResult struct {
 	startNodeID       string
 	outputs           map[string]map[string]any
 	artifacts         map[string]map[string]any // publish name → output
+	artifactOwners    map[string]string
 	artifactRevisions map[string]store.ArtifactRevisionRef
 	artifactVersions  map[string]int
 	joinNodeID        string // the join node this branch converged to (empty if terminal)
@@ -61,6 +62,17 @@ func mergeArtifactRevisions(base, overlay map[string]store.ArtifactRevisionRef) 
 	}
 	for name, revision := range overlay {
 		merged[name] = revision
+	}
+	return merged
+}
+
+func mergeArtifactOwners(base, overlay map[string]string) map[string]string {
+	merged := cloneMap(base)
+	if merged == nil {
+		merged = make(map[string]string)
+	}
+	for name, owner := range overlay {
+		merged[name] = owner
 	}
 	return merged
 }
@@ -332,6 +344,7 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		branchID:          branchID,
 		outputs:           make(map[string]map[string]any),
 		artifacts:         make(map[string]map[string]any),
+		artifactOwners:    make(map[string]string),
 		artifactRevisions: make(map[string]store.ArtifactRevisionRef),
 		artifactVersions:  branchArtifactVersions,
 		selectedIncoming:  make(map[string][]store.IncomingEdge),
@@ -339,10 +352,21 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 	if cp != nil {
 		result.outputs = copyOutputs(cp.Outputs)
 		result.artifacts = copyOutputs(cp.Artifacts)
+		result.artifactOwners = cloneMap(cp.ArtifactOwners)
+		if result.artifactOwners == nil {
+			result.artifactOwners = make(map[string]string)
+		}
 		result.artifactRevisions = cloneMap(cp.ArtifactRevisions)
 		if result.artifactRevisions == nil {
 			result.artifactRevisions = make(map[string]store.ArtifactRevisionRef)
 		}
+		hydrateArtifactState(result.artifacts, result.artifactOwners, result.artifactRevisions, result.outputs)
+		for name, revision := range result.artifactRevisions {
+			if _, present := result.artifacts[name]; present && result.artifactOwners[name] == "" {
+				result.artifactOwners[name] = revision.NodeID
+			}
+		}
+		inferArtifactOwners(result.artifacts, result.outputs, result.artifactOwners)
 		if cp.ArtifactVersions != nil {
 			result.artifactVersions = cloneMap(cp.ArtifactVersions)
 		}
@@ -359,8 +383,12 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.inheritedOutputs = mergeOutputs(parent.inheritedOutputs, parent.outputs)
 	local.outputs = result.outputs
 	local.artifacts = mergeOutputs(parent.artifacts, result.artifacts)
+	local.artifactOwners = mergeArtifactOwners(parent.artifactOwners, result.artifactOwners)
 	local.artifactRevisions = mergeArtifactRevisions(parent.artifactRevisions, result.artifactRevisions)
 	for name := range result.artifacts {
+		if _, owned := result.artifactOwners[name]; !owned {
+			delete(local.artifactOwners, name)
+		}
 		if _, exact := result.artifactRevisions[name]; !exact {
 			// A legacy branch checkpoint may carry the authoritative value but
 			// no physical revision. Never pair that value with provenance
@@ -394,14 +422,26 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 }
 
 func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID string, completed bool) *store.BranchCheckpoint {
+	_, artifactOwners, artifactRevisions := snapshotArtifactState(result.artifacts, result.artifactOwners, result.artifactRevisions, result.outputs)
+	// Branch bodies stay expanded, so they never need the trunk-only external
+	// value marker even when the result was hydrated from one.
+	for name, revision := range artifactRevisions {
+		revision.ValueFromRevision = false
+		artifactRevisions[name] = revision
+	}
 	return &store.BranchCheckpoint{
-		BranchID:           result.branchID,
-		StartNodeID:        result.startNodeID,
-		CurrentNodeID:      currentNodeID,
-		Outputs:            copyOutputs(result.outputs),
+		BranchID:      result.branchID,
+		StartNodeID:   result.startNodeID,
+		CurrentNodeID: currentNodeID,
+		Outputs:       copyOutputs(result.outputs),
+		// Branch values intentionally remain expanded while RunFormatVersion 1
+		// readers may still resume this checkpoint. Older readers ignore
+		// ArtifactOwners and cannot hydrate sparse completed branches, which
+		// would make their published values disappear at convergence.
 		Artifacts:          copyOutputs(result.artifacts),
+		ArtifactOwners:     artifactOwners,
 		ArtifactVersions:   cloneMap(result.artifactVersions),
-		ArtifactRevisions:  cloneMap(result.artifactRevisions),
+		ArtifactRevisions:  artifactRevisions,
 		LoopCounters:       cloneMap(rs.loopCounters),
 		LoopPreviousOutput: copyOutputs(rs.loopPreviousOutput),
 		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
@@ -974,7 +1014,9 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	}
 	result.artifactVersions[currentNodeID] = version + 1
 	result.artifacts[pub] = output
+	result.artifactOwners[pub] = currentNodeID
 	branchRS.artifacts[pub] = output
+	branchRS.artifactOwners[pub] = currentNodeID
 	revision := store.ArtifactRevisionRef{NodeID: currentNodeID, Version: version, ContractLogicalRef: pub}
 	result.artifactRevisions[pub] = revision
 	branchRS.artifactRevisions[pub] = revision

@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"math"
+	"reflect"
+	"sort"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -21,6 +24,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 // second time only to overwrite the copy immediately.
 func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoint {
 	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
+	artifactValues, artifactOwners, artifactRevisions := snapshotArtifactState(rs.artifacts, rs.artifactOwners, rs.artifactRevisions, rs.outputs)
 	cp := &store.Checkpoint{
 		NodeID:                 nodeID,
 		Outputs:                rs.outputs,
@@ -31,7 +35,10 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		LoopBudgetMarks:        snapshotLoopBudgetMarks(rs),
 		LoopBudgetMarksV:       loopBudgetMarksVersion,
 		ArtifactVersions:       rs.artifactVersions,
-		ArtifactRevisions:      cloneMap(rs.artifactRevisions),
+		Artifacts:              artifactValues,
+		ArtifactOwners:         artifactOwners,
+		ArtifactsKnown:         true,
+		ArtifactRevisions:      artifactRevisions,
 		ArtifactRevisionsKnown: true,
 		SelectedIncoming:       cloneIncoming(rs.selectedIncoming),
 		Vars:                   rs.vars,
@@ -50,6 +57,222 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}
 	return cp
+}
+
+// snapshotArtifactState persists the logical catalog without duplicating the
+// common case where a published artifact is byte-for-byte the producer's
+// checkpoint output. ArtifactOwners is the catalog in that sparse shape;
+// Artifacts stores only values that cannot be reconstructed from either the
+// owner's output or a verified immutable revision. Ownerless and unverified
+// values remain inline.
+func snapshotArtifactState(artifacts map[string]map[string]any, owners map[string]string, revisions map[string]store.ArtifactRevisionRef, outputs map[string]map[string]any) (map[string]map[string]any, map[string]string, map[string]store.ArtifactRevisionRef) {
+	values := make(map[string]map[string]any)
+	snapshotOwners := make(map[string]string, len(artifacts))
+	snapshotRevisions := cloneMap(revisions)
+	if snapshotRevisions == nil {
+		snapshotRevisions = make(map[string]store.ArtifactRevisionRef)
+	}
+	// Preserve owner-only entries when compacting an already sparse checkpoint.
+	for name, owner := range owners {
+		if owner != "" {
+			snapshotOwners[name] = owner
+		}
+	}
+	for name := range artifacts {
+		owner := snapshotOwners[name]
+		if owner == "" {
+			if revision, ok := revisions[name]; ok && revision.NodeID != "" {
+				owner = revision.NodeID
+				snapshotOwners[name] = owner
+			}
+		}
+		if output, present := outputs[owner]; owner != "" && present && artifactValuesEqual(artifacts[name], output) {
+			if revision, exact := snapshotRevisions[name]; exact {
+				revision.ValueFromRevision = false
+				snapshotRevisions[name] = revision
+			}
+			continue
+		}
+		if revision, exact := snapshotRevisions[name]; exact && revision.NodeID != "" && !revision.Unverified {
+			revision.ValueFromRevision = true
+			snapshotRevisions[name] = revision
+			continue
+		}
+		if revision, exact := snapshotRevisions[name]; exact {
+			revision.ValueFromRevision = false
+			snapshotRevisions[name] = revision
+		}
+		values[name] = deepCopyAnyMap(artifacts[name])
+	}
+	return values, snapshotOwners, snapshotRevisions
+}
+
+// artifactValuesEqual compares JSON-shaped values across the filesystem and
+// Mongo decode contracts. BSON turns integral interface values into int64,
+// while artifact JSON turns them into float64; reflect.DeepEqual would treat
+// those equivalent numbers as different and defeat checkpoint compaction.
+func artifactValuesEqual(left, right any) bool {
+	switch l := left.(type) {
+	case map[string]any:
+		r, ok := right.(map[string]any)
+		if !ok || len(l) != len(r) {
+			return false
+		}
+		for key, value := range l {
+			other, present := r[key]
+			if !present || !artifactValuesEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		r, ok := right.([]any)
+		if !ok || len(l) != len(r) {
+			return false
+		}
+		for i := range l {
+			if !artifactValuesEqual(l[i], r[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if equal, numeric := equivalentJSONNumbers(left, right); numeric {
+		return equal
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func equivalentJSONNumbers(left, right any) (equal, numeric bool) {
+	lv := reflect.ValueOf(left)
+	rv := reflect.ValueOf(right)
+	if !lv.IsValid() || !rv.IsValid() || !isNumericKind(lv.Kind()) || !isNumericKind(rv.Kind()) {
+		return false, false
+	}
+	switch {
+	case isSignedKind(lv.Kind()):
+		return signedNumberEquals(lv.Int(), rv), true
+	case isUnsignedKind(lv.Kind()):
+		return unsignedNumberEquals(lv.Uint(), rv), true
+	default:
+		return floatNumberEquals(lv.Float(), rv), true
+	}
+}
+
+func isNumericKind(kind reflect.Kind) bool {
+	return isSignedKind(kind) || isUnsignedKind(kind) || kind == reflect.Float32 || kind == reflect.Float64
+}
+
+func isSignedKind(kind reflect.Kind) bool {
+	return kind >= reflect.Int && kind <= reflect.Int64
+}
+
+func isUnsignedKind(kind reflect.Kind) bool {
+	return kind >= reflect.Uint && kind <= reflect.Uintptr
+}
+
+func signedNumberEquals(left int64, right reflect.Value) bool {
+	if isSignedKind(right.Kind()) {
+		return left == right.Int()
+	}
+	if isUnsignedKind(right.Kind()) {
+		return left >= 0 && uint64(left) == right.Uint()
+	}
+	return integralFloatEqualsSigned(right.Float(), left)
+}
+
+func unsignedNumberEquals(left uint64, right reflect.Value) bool {
+	if isSignedKind(right.Kind()) {
+		return right.Int() >= 0 && left == uint64(right.Int())
+	}
+	if isUnsignedKind(right.Kind()) {
+		return left == right.Uint()
+	}
+	return integralFloatEqualsUnsigned(right.Float(), left)
+}
+
+func floatNumberEquals(left float64, right reflect.Value) bool {
+	if isSignedKind(right.Kind()) {
+		return integralFloatEqualsSigned(left, right.Int())
+	}
+	if isUnsignedKind(right.Kind()) {
+		return integralFloatEqualsUnsigned(left, right.Uint())
+	}
+	return left == right.Float()
+}
+
+func integralFloatEqualsSigned(value float64, integer int64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Trunc(value) == value &&
+		value >= float64(math.MinInt64) && value < -float64(math.MinInt64) && int64(value) == integer
+}
+
+func integralFloatEqualsUnsigned(value float64, integer uint64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Trunc(value) == value &&
+		value >= 0 && value < 2*float64(uint64(1)<<63) && uint64(value) == integer
+}
+
+// hydrateArtifactState expands the sparse checkpoint representation for the
+// runtime. Only names explicitly catalogued in ArtifactOwners are rebuilt;
+// an exact revision without a logical value is not enough to substitute the
+// producer's newest output for an older immutable alias.
+func hydrateArtifactState(artifacts map[string]map[string]any, owners map[string]string, revisions map[string]store.ArtifactRevisionRef, outputs map[string]map[string]any) {
+	for name, owner := range owners {
+		if _, present := artifacts[name]; present {
+			continue
+		}
+		if revision, exact := revisions[name]; exact && revision.ValueFromRevision {
+			continue
+		}
+		if output, present := outputs[owner]; present {
+			artifacts[name] = deepCopyAnyMap(output)
+		}
+	}
+}
+
+// CompactCheckpointArtifactValues applies the canonical sparse logical
+// snapshot to the trunk of checkpoints assembled by runview (fork/rewind)
+// rather than the engine's normal checkpoint builder. Branch values stay
+// expanded while V1 readers remain supported: older runners cannot hydrate a
+// sparse BranchCheckpoint from ArtifactOwners.
+func CompactCheckpointArtifactValues(cp *store.Checkpoint) {
+	if cp == nil {
+		return
+	}
+	cp.Artifacts, cp.ArtifactOwners, cp.ArtifactRevisions = snapshotArtifactState(
+		cp.Artifacts, cp.ArtifactOwners, cp.ArtifactRevisions, cp.Outputs,
+	)
+}
+
+// inferArtifactOwners recovers ownership for transitional checkpoints that
+// persisted logical artifact values before they persisted ArtifactOwners.
+// Only a unique value match is accepted: identical outputs from multiple
+// nodes do not provide enough evidence to assign an owner safely.
+func inferArtifactOwners(artifacts, outputs map[string]map[string]any, owners map[string]string) {
+	nodeIDs := make([]string, 0, len(outputs))
+	for nodeID := range outputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for name, artifact := range artifacts {
+		if owners[name] != "" {
+			continue
+		}
+		match := ""
+		matches := 0
+		for _, nodeID := range nodeIDs {
+			if !artifactValuesEqual(artifact, outputs[nodeID]) {
+				continue
+			}
+			matches++
+			if matches > 1 {
+				break
+			}
+			match = nodeID
+		}
+		if matches == 1 {
+			owners[name] = match
+		}
+	}
 }
 
 // cloneMap returns a shallow copy of m (nil in → nil out).

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -434,13 +435,21 @@ func TestRewind_RejectsUnreadableRetainedExactArtifactBeforeMutation(t *testing.
 		},
 	}
 	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.WriteArtifact(context.Background(), &store.Artifact{
 		RunID: runID, NodeID: "plan", Version: 0, Data: map[string]any{"value": "plan"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	svc.store = rewindArtifactReadErrorStore{RunStore: st, nodeID: "plan"}
-	_, err := svc.Rewind(context.Background(), RewindSpec{
+	_, err = svc.Rewind(context.Background(), RewindSpec{
 		RunID: runID, NodeID: "implement", KeepFiles: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "artifact backend unavailable") {
@@ -459,10 +468,12 @@ func TestRewind_InvalidatesArtifactRevisionWithoutCurrentOutput(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:                 "verify",
 		Outputs:                outputsOf("survey", "plan", "implement"),
+		Artifacts:              map[string]map[string]any{"verdict": {"value": "stale verdict"}},
+		ArtifactsKnown:         true,
 		ArtifactVersions:       map[string]int{"verify": 1},
 		ArtifactRevisionsKnown: true,
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
-			"verdict": {NodeID: "verify", Version: 0},
+			"verdict": {NodeID: "verify", Version: 0, Unverified: true},
 		},
 	}
 	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
@@ -483,12 +494,108 @@ func TestRewind_InvalidatesArtifactRevisionWithoutCurrentOutput(t *testing.T) {
 	if _, present := persisted.Checkpoint.ArtifactRevisions["verdict"]; present {
 		t.Fatalf("invalidated revision survived without a current output: %+v", persisted.Checkpoint.ArtifactRevisions)
 	}
+	if _, present := persisted.Checkpoint.Artifacts["verdict"]; present {
+		t.Fatalf("invalidated logical artifact survived rewind: %+v", persisted.Checkpoint.Artifacts)
+	}
 	latest, err := st.LoadLatestArtifact(context.Background(), runID, "verify")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if latest == nil || !isRewoundArtifact(latest) {
 		t.Fatalf("invalidated artifact was not superseded: %+v", latest)
+	}
+}
+
+func TestApplyRewindRebuildsRetainedLegacyArtifactSnapshot(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"upstream": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "upstream"}, Publish: "plan"},
+		"retry":    &ir.ToolNode{BaseNode: ir.BaseNode{ID: "retry"}},
+	}}
+	cp := &store.Checkpoint{
+		NodeID: "retry",
+		Outputs: map[string]map[string]any{
+			"upstream": {"value": "retained"},
+			"retry":    {"value": "dropped"},
+		},
+	}
+	applyRewind(cp, wf, "retry", []string{"retry"}, []string{"retry"})
+	if !cp.ArtifactsKnown {
+		t.Fatal("rewind did not make the reconstructed legacy snapshot authoritative")
+	}
+	if got := cp.Artifacts["plan"]["value"]; got != "retained" {
+		t.Fatalf("retained legacy artifact = %v", got)
+	}
+	if owner := cp.ArtifactOwners["plan"]; owner != "upstream" {
+		t.Fatalf("retained legacy artifact owner = %q", owner)
+	}
+}
+
+func TestApplyRewindRestoresRetainedSharedPublisher(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"seed":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "seed"}, Publish: "plan"},
+		"refine": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "refine"}, Publish: "plan"},
+	}}
+	cp := &store.Checkpoint{
+		NodeID: "later",
+		Outputs: map[string]map[string]any{
+			"seed":   {"value": "seed-value"},
+			"refine": {"value": "refined-value"},
+		},
+		Artifacts:              map[string]map[string]any{"plan": {"value": "refined-value"}},
+		ArtifactOwners:         map[string]string{"plan": "refine"},
+		ArtifactsKnown:         true,
+		ArtifactRevisions:      map[string]store.ArtifactRevisionRef{"plan": {NodeID: "refine", Version: 0}},
+		ArtifactRevisionsKnown: true,
+	}
+	applyRewind(cp, wf, "refine", []string{"refine"}, []string{"refine"})
+	if got := cp.Artifacts["plan"]["value"]; got != "seed-value" {
+		t.Fatalf("restored shared artifact = %v; artifacts=%+v outputs=%+v", got, cp.Artifacts, cp.Outputs)
+	}
+	if owner := cp.ArtifactOwners["plan"]; owner != "seed" {
+		t.Fatalf("restored shared artifact owner = %q", owner)
+	}
+	if _, exact := cp.ArtifactRevisions["plan"]; exact {
+		t.Fatalf("restored shared artifact acquired false provenance: %+v", cp.ArtifactRevisions)
+	}
+}
+
+func TestApplyRewindDropsUnownedTransitionalArtifact(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"worker": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "worker"}, Publish: "plan"},
+	}}
+	cp := &store.Checkpoint{
+		NodeID:                 "later",
+		Outputs:                map[string]map[string]any{"worker": {"value": "stale"}},
+		Artifacts:              map[string]map[string]any{"plan": {"value": "stale"}},
+		ArtifactsKnown:         true,
+		ArtifactRevisionsKnown: true,
+	}
+	applyRewind(cp, wf, "worker", []string{"worker"}, []string{"worker"})
+	if _, present := cp.Artifacts["plan"]; present {
+		t.Fatalf("invalidated transitional artifact survived: %+v", cp.Artifacts)
+	}
+}
+
+func TestApplyRewindDoesNotBindLatestOutputToOlderAlias(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new"},
+		"retry":  &ir.ToolNode{BaseNode: ir.BaseNode{ID: "retry"}},
+	}}
+	cp := &store.Checkpoint{
+		NodeID:                 "retry",
+		Outputs:                map[string]map[string]any{"writer": {"value": "new-body"}},
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"old": {NodeID: "writer", Version: 0},
+			"new": {NodeID: "writer", Version: 1},
+		},
+	}
+	applyRewind(cp, wf, "retry", nil, []string{"retry"})
+	if old, present := cp.Artifacts["old"]; present && old["value"] == "new-body" {
+		t.Fatalf("older alias received latest output: artifacts=%+v revisions=%+v", cp.Artifacts, cp.ArtifactRevisions)
+	}
+	if got := cp.Artifacts["new"]["value"]; got != "new-body" {
+		t.Fatalf("newest alias lost output: %v", got)
 	}
 }
 
@@ -1335,5 +1442,28 @@ func TestRewind_RefusesIncompatibleSurvivingArtifact(t *testing.T) {
 	if run.Status != store.RunStatusFailedResumable {
 		t.Errorf("status = %q after a refused rewind, want the untouched %q",
 			run.Status, store.RunStatusFailedResumable)
+	}
+}
+
+func TestApplyRewindDropsAmbiguousOwnerlessRenamedArtifact(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"seed":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "seed"}},
+		"worker": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "worker"}, Publish: "renamed"},
+	}}
+	cp := &store.Checkpoint{
+		NodeID: "later",
+		Outputs: map[string]map[string]any{
+			"seed":   {"value": "stale"},
+			"worker": {"value": "stale"},
+		},
+		Artifacts:              map[string]map[string]any{"old": {"value": "stale"}},
+		ArtifactsKnown:         true,
+		ArtifactRevisionsKnown: true,
+	}
+
+	applyRewind(cp, wf, "worker", []string{"worker"}, []string{"worker"})
+
+	if _, retained := cp.Artifacts["old"]; retained {
+		t.Fatal("ambiguous ownerless artifact from invalidated output was retained")
 	}
 }

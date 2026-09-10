@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -120,7 +121,9 @@ type RewindSpec struct {
 	// an edited edge or shared prompt has no obvious answer at all.
 	//
 	// Requires the run to carry Run.WorkflowSource (captured at launch).
-	// An explicit NodeID always wins.
+	// An explicit NodeID always wins. Auto implicitly acknowledges
+	// source-derived contract differences for this rewind because detecting a
+	// source edit is its purpose; the subsequent resume still requires Force.
 	Auto bool
 	// Force acknowledges that retained artifacts may have source-derived
 	// contract metadata from the workflow revision being repaired. Persisted
@@ -398,7 +401,7 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if err := runtime.ValidateCheckpointArtifactAvailabilityExcept(ctx, s.store, &validationRun, ignoredArtifacts); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, &validationRun, wf, currentRevision, spec.Force, ignoredArtifacts); err != nil {
+	if err := runtime.ValidateArtifactContractsExcept(ctx, s.store, &validationRun, wf, currentRevision, spec.Force || autoTargeted, ignoredArtifacts); err != nil {
 		return nil, err
 	}
 
@@ -459,7 +462,8 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// without those refs (ADR-089).
 	dropSessionRefs, dropPauseRef := collectDroppedSessionRefs(cp, dropped, invalidated)
 
-	applyRewind(cp, pivot, dropped, invalidated)
+	applyRewind(cp, wf, pivot, dropped, invalidated)
+	runtime.CompactCheckpointArtifactValues(cp)
 	for _, ts := range tombstones {
 		// The engine writes a node's next artifact at
 		// ArtifactVersions[node] and then increments
@@ -630,26 +634,186 @@ func retireOutputCorrections(run *store.Run, invalidated []string, retiredAt tim
 //     what the re-execution should rebuild from. Downstream keys are
 //     cleared with the dropped nodes. A graph edit that invalidates the
 //     pivot's identities is handled at resolve time (untracked fallback).
-func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []string) {
+func applyRewind(cp *store.Checkpoint, wf *ir.Workflow, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
 	// From this point the checkpoint's (possibly empty) revision map is an
 	// explicit post-rewind snapshot. Do not let a later resume resurrect
 	// invalidated producers through the run-level ArtifactIndex fallback.
-	cp.ArtifactRevisionsKnown = true
 	if cp.ArtifactVersions == nil {
 		cp.ArtifactVersions = map[string]int{}
 	}
 	for _, id := range dropped {
-		delete(cp.Outputs, id)
 		delete(cp.SelectedIncoming, id)
+	}
+	if !cp.ArtifactsKnown {
+		cp.Artifacts = make(map[string]map[string]any)
+		cp.ArtifactOwners = make(map[string]string)
+		nodeIDs := make([]string, 0, len(cp.Outputs))
+		for id := range cp.Outputs {
+			nodeIDs = append(nodeIDs, id)
+		}
+		sort.Strings(nodeIDs)
+		for _, id := range nodeIDs {
+			if node, present := wf.Nodes[id]; present {
+				if logicalRef := ir.NodePublish(node); logicalRef != "" {
+					cp.Artifacts[logicalRef] = cp.Outputs[id]
+					cp.ArtifactOwners[logicalRef] = id
+				}
+			}
+		}
+		newestRevision := make(map[string]int)
+		for _, revision := range cp.ArtifactRevisions {
+			if version, present := newestRevision[revision.NodeID]; !present || revision.Version > version {
+				newestRevision[revision.NodeID] = revision.Version
+			}
+		}
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			// Outputs contains only the producer's newest value. Older logical
+			// aliases require their immutable body and cannot safely be rebuilt
+			// from that value during a legacy rewind.
+			if revision.Version != newestRevision[revision.NodeID] {
+				continue
+			}
+			if output, present := cp.Outputs[revision.NodeID]; present {
+				cp.Artifacts[logicalRef] = output
+				cp.ArtifactOwners[logicalRef] = revision.NodeID
+				revision.Unverified = true
+				cp.ArtifactRevisions[logicalRef] = revision
+			}
+		}
+	} else {
+		if cp.Artifacts == nil {
+			cp.Artifacts = make(map[string]map[string]any)
+		}
+		if cp.ArtifactOwners == nil {
+			cp.ArtifactOwners = make(map[string]string)
+		}
+		for logicalRef, revision := range cp.ArtifactRevisions {
+			if _, present := cp.Artifacts[logicalRef]; present && cp.ArtifactOwners[logicalRef] == "" {
+				cp.ArtifactOwners[logicalRef] = revision.NodeID
+			}
+		}
+		nodeIDs := make([]string, 0, len(cp.Outputs))
+		for id := range cp.Outputs {
+			nodeIDs = append(nodeIDs, id)
+		}
+		sort.Strings(nodeIDs)
+		publisherOwners := make(map[string]string)
+		ambiguousPublishers := make(map[string]bool)
+		for _, id := range nodeIDs {
+			if node, present := wf.Nodes[id]; present {
+				logicalRef := ir.NodePublish(node)
+				if logicalRef == "" {
+					continue
+				}
+				if publisherOwners[logicalRef] != "" {
+					ambiguousPublishers[logicalRef] = true
+					continue
+				}
+				publisherOwners[logicalRef] = id
+			}
+		}
+		for logicalRef, owner := range publisherOwners {
+			if _, exposed := cp.Artifacts[logicalRef]; exposed && cp.ArtifactOwners[logicalRef] == "" && !ambiguousPublishers[logicalRef] {
+				cp.ArtifactOwners[logicalRef] = owner
+			}
+		}
+		// A short-lived checkpoint format persisted artifact values before it
+		// persisted ownership. Recover only unique value matches while all node
+		// outputs are still present, so invalidation cannot retain a stale value.
+		for logicalRef, artifact := range cp.Artifacts {
+			if cp.ArtifactOwners[logicalRef] != "" {
+				continue
+			}
+			owner := ""
+			matches := 0
+			for id, output := range cp.Outputs {
+				if !reflect.DeepEqual(artifact, output) {
+					continue
+				}
+				matches++
+				if matches > 1 {
+					break
+				}
+				owner = id
+			}
+			if matches == 1 {
+				cp.ArtifactOwners[logicalRef] = owner
+			}
+		}
+	}
+	invalidatedNodes := make(map[string]bool, len(invalidated))
+	for _, id := range invalidated {
+		invalidatedNodes[id] = true
+	}
+	removedLogicalRefs := make(map[string]bool)
+	// If a compatibility checkpoint has neither ownership nor exact revision
+	// metadata, duplicate output values make ownership inference ambiguous. A
+	// value that could have come from an invalidated node must be discarded:
+	// keeping it would let resume re-attribute stale work to a retained node.
+	for logicalRef, artifact := range cp.Artifacts {
+		if cp.ArtifactOwners[logicalRef] != "" {
+			continue
+		}
+		if _, exact := cp.ArtifactRevisions[logicalRef]; exact {
+			continue
+		}
+		for _, id := range invalidated {
+			output, present := cp.Outputs[id]
+			if !present || !reflect.DeepEqual(artifact, output) {
+				continue
+			}
+			delete(cp.Artifacts, logicalRef)
+			delete(cp.ArtifactOwners, logicalRef)
+			delete(cp.ArtifactRevisions, logicalRef)
+			removedLogicalRefs[logicalRef] = true
+			break
+		}
+	}
+	for logicalRef, owner := range cp.ArtifactOwners {
+		if invalidatedNodes[owner] {
+			delete(cp.Artifacts, logicalRef)
+			delete(cp.ArtifactOwners, logicalRef)
+			removedLogicalRefs[logicalRef] = true
+		}
 	}
 	for _, id := range invalidated {
 		for logicalRef, revision := range cp.ArtifactRevisions {
 			if revision.NodeID == id {
+				delete(cp.Artifacts, logicalRef)
+				delete(cp.ArtifactOwners, logicalRef)
 				delete(cp.ArtifactRevisions, logicalRef)
+				removedLogicalRefs[logicalRef] = true
 			}
 		}
 	}
+	for _, id := range dropped {
+		delete(cp.Outputs, id)
+	}
+	// If the invalidated node shadowed another retained publisher of the same
+	// logical artifact, expose the surviving upstream value for the replay.
+	// Its physical revision is unknown because the checkpoint stores only the
+	// selected binding, so ownership is restored without inventing provenance.
+	retainedNodeIDs := make([]string, 0, len(cp.Outputs))
+	for id := range cp.Outputs {
+		retainedNodeIDs = append(retainedNodeIDs, id)
+	}
+	sort.Strings(retainedNodeIDs)
+	for _, id := range retainedNodeIDs {
+		node, present := wf.Nodes[id]
+		if !present {
+			continue
+		}
+		logicalRef := ir.NodePublish(node)
+		if logicalRef == "" || !removedLogicalRefs[logicalRef] {
+			continue
+		}
+		cp.Artifacts[logicalRef] = cp.Outputs[id]
+		cp.ArtifactOwners[logicalRef] = id
+		delete(cp.ArtifactRevisions, logicalRef)
+	}
+	cp.ArtifactRevisionsKnown = true
+	cp.ArtifactsKnown = true
 	// Recovery budgets clear over the UNFILTERED set: a node that failed
 	// has attempts recorded and no output, so keying this on `dropped`
 	// would leave the budget of the very node that failed untouched.

@@ -36,6 +36,20 @@ type cursorLoadFailureStore struct {
 	failLoads int
 }
 
+type cursorMissingRunStore struct {
+	store.RunStore
+	loads int
+}
+
+func (s *cursorMissingRunStore) LoadRun(context.Context, string) (*store.Run, error) {
+	s.loads++
+	return nil, store.ErrRunNotFound
+}
+
+func (s *cursorMissingRunStore) SetWatcherCursor(context.Context, string, string, store.WatcherCursor) error {
+	return nil
+}
+
 func (s *cursorLoadFailureStore) LoadRun(ctx context.Context, runID string) (*store.Run, error) {
 	if s.failLoads > 0 {
 		s.failLoads--
@@ -156,6 +170,33 @@ func TestCoordinatorWaitsForFreshRunBeforeRestoringCursor(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cursor restoration did not observe the newly created run")
+	}
+}
+
+func TestCoordinatorStopsWaitingWhenFreshRunNeverAppears(t *testing.T) {
+	oldPoll, oldMaxPoll, oldWait := cursorInitialRunPoll, cursorInitialRunMaxPoll, cursorInitialRunWait
+	cursorInitialRunPoll = 5 * time.Millisecond
+	cursorInitialRunMaxPoll = 10 * time.Millisecond
+	cursorInitialRunWait = 35 * time.Millisecond
+	t.Cleanup(func() {
+		cursorInitialRunPoll, cursorInitialRunMaxPoll, cursorInitialRunWait = oldPoll, oldMaxPoll, oldWait
+	})
+
+	missing := &cursorMissingRunStore{}
+	c := New(NewEventHub(), &StoreInjector{Store: missing}, "never-created", Spec{Name: "watch"}, &stubEval{}, nil)
+	c.ctx = context.Background()
+	started := time.Now()
+	if c.restoreCursor() {
+		t.Fatal("cursor restoration succeeded for a run that never appeared")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cursor restoration exceeded its bounded wait: %s", elapsed)
+	}
+	if c.cursorReady {
+		t.Fatal("cursor remained ready after the initial-run deadline")
+	}
+	if missing.loads < 2 || missing.loads > 8 {
+		t.Fatalf("cursor store loads = %d, want bounded backoff polling", missing.loads)
 	}
 }
 

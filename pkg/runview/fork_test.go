@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -34,8 +36,15 @@ func TestFork_HappyPath(t *testing.T) {
 	parent.Checkpoint = &store.Checkpoint{
 		NodeID:           "step2",
 		ArtifactVersions: map[string]int{"source": 1, "step1": 1, "legacy": 1},
+		Artifacts: map[string]map[string]any{
+			"analysis": {"value": "alpha"},
+			"draft":    {"value": "stale-anchor-value"},
+		},
+		ArtifactOwners: map[string]string{"analysis": "step1", "draft": "step2"},
+		ArtifactsKnown: true,
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
 			"analysis": {NodeID: "step1", Version: 0},
+			"draft":    {NodeID: "step2", Version: 0, Unverified: true},
 		},
 		Outputs: map[string]map[string]any{
 			"step1":  {"value": "alpha"},
@@ -184,6 +193,12 @@ func TestFork_HappyPath(t *testing.T) {
 	if v := child.Checkpoint.Outputs["step1"]["value"]; v != "alpha" {
 		t.Errorf("child upstream output step1.value = %v, want alpha", v)
 	}
+	if _, present := child.Checkpoint.Artifacts["draft"]; present {
+		t.Fatalf("child retained the anchor's stale logical artifact: %+v", child.Checkpoint.Artifacts)
+	}
+	if child.Checkpoint.ArtifactOwners["analysis"] != "step1" {
+		t.Fatalf("child lost upstream artifact ownership: %+v", child.Checkpoint.ArtifactOwners)
+	}
 	for _, revision := range []store.ArtifactRevisionRef{{NodeID: "step1", Version: 0}, {NodeID: "source", Version: 0}, {NodeID: "legacy", Version: 0}} {
 		artifact, err := st.LoadArtifact(context.Background(), child.ID, revision.NodeID, revision.Version)
 		if err != nil {
@@ -192,6 +207,148 @@ func TestFork_HappyPath(t *testing.T) {
 		if artifact.RunID != child.ID {
 			t.Fatalf("copied artifact run id = %q, want %q", artifact.RunID, child.ID)
 		}
+	}
+}
+
+type forkSharedPublisherExecutor struct {
+	t *testing.T
+}
+
+func (e forkSharedPublisherExecutor) Execute(_ context.Context, _ ir.Node, input map[string]any) (map[string]any, error) {
+	plan, _ := input["plan"].(map[string]any)
+	if plan["value"] != "seed" {
+		e.t.Errorf("fork input plan = %+v, want retained seed artifact", input["plan"])
+	}
+	retained, _ := input["retained"].(map[string]any)
+	if retained["value"] != "published" {
+		e.t.Errorf("fork input retained = %+v, want authoritative published value", input["retained"])
+	}
+	return map[string]any{"value": "refined"}, nil
+}
+
+func TestForkRebuildsArtifactFromRetainedSharedPublisher(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := st.CreateRun(ctx, "fork-shared-publisher-parent", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.WorkDir = t.TempDir()
+	parent.Status = store.RunStatusCancelled
+	parent.Checkpoint = &store.Checkpoint{
+		NodeID: "later",
+		Outputs: map[string]map[string]any{
+			"seed":   {"value": "seed"},
+			"refine": {"value": "old-refined"},
+			"writer": {"value": "new-unpublished"},
+		},
+		Artifacts: map[string]map[string]any{
+			"plan":     {"value": "old-refined"},
+			"retained": {"value": "published"},
+		},
+		ArtifactOwners: map[string]string{"plan": "refine", "retained": "writer"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":     {NodeID: "refine", Version: 0},
+			"retained": {NodeID: "writer", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+		ArtifactVersions:       map[string]int{"seed": 1, "refine": 1, "writer": 1},
+	}
+	if err := st.SaveRun(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: parent.ID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "published"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteTurn(ctx, &store.TurnCheckpoint{
+		RunID: parent.ID, NodeID: "refine", TurnIndex: 0, Backend: "claw", Messages: json.RawMessage(`[]`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := svc.Fork(ctx, ForkSpec{RunID: parent.ID, NodeID: "refine", TurnIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := st.LoadRun(ctx, fork.NewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !child.Checkpoint.ArtifactsKnown {
+		t.Fatal("fork discarded the authority of surviving logical artifacts")
+	}
+	wf := &ir.Workflow{
+		Name: "wf", Entry: "seed",
+		Nodes: map[string]ir.Node{
+			"seed":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "seed"}, Publish: "plan"},
+			"refine": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "refine"}, Publish: "plan"},
+			"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "seed", To: "refine", With: []*ir.DataMapping{
+				{
+					Key: "plan", Raw: "{{artifacts.plan.value}}",
+					Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan", "value"}, Raw: "{{artifacts.plan.value}}"}},
+				},
+				{
+					Key: "retained", Raw: "{{artifacts.retained}}",
+					Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"retained"}, Raw: "{{artifacts.retained}}"}},
+				},
+			}},
+			{From: "refine", To: "done"},
+		},
+	}
+	if err := runtime.New(wf, st, forkSharedPublisherExecutor{t},
+		runtime.WithWorkDir(parent.WorkDir), runtime.WithSandboxOverride("none"),
+	).Resume(ctx, child.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInvalidateForkAnchorArtifactsDropsAmbiguousLegacyBinding(t *testing.T) {
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"anchor": {"value": "same"},
+			"peer":   {"value": "same"},
+		},
+		Artifacts: map[string]map[string]any{
+			"ownerless":  {"value": "same"},
+			"retained":   {"value": "different"},
+			"exact-peer": {"value": "same"},
+		},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"exact-peer":      {NodeID: "peer", Version: 0},
+			"anchor-revision": {NodeID: "anchor", Version: 0},
+		},
+	}
+
+	invalidateForkAnchorArtifacts(cp, "anchor")
+
+	if _, present := cp.Outputs["anchor"]; present {
+		t.Fatal("fork retained the anchor output")
+	}
+	if _, present := cp.Artifacts["ownerless"]; present {
+		t.Fatalf("fork retained an ownerless artifact matching the anchor output: %+v", cp.Artifacts)
+	}
+	if got := cp.Artifacts["retained"]["value"]; got != "different" {
+		t.Fatalf("fork removed unrelated ownerless artifact: %+v", cp.Artifacts)
+	}
+	if got := cp.Artifacts["exact-peer"]["value"]; got != "same" {
+		t.Fatalf("fork removed an exact peer artifact with the same value: %+v", cp.Artifacts)
+	}
+	if _, present := cp.ArtifactRevisions["anchor-revision"]; present {
+		t.Fatalf("fork retained an anchor revision from a checkpoint without logical values: %+v", cp.ArtifactRevisions)
 	}
 }
 
@@ -314,6 +471,23 @@ func TestCopyForkArtifactsTreatsOnlyInferredRootsAsOptional(t *testing.T) {
 	}
 	if err := copyForkArtifacts(ctx, st, parentID, childID, missing, nil); err == nil {
 		t.Fatal("exact checkpoint revision unexpectedly became optional")
+	}
+}
+
+func TestForkTreatsUnverifiedProducerBindingAsOptional(t *testing.T) {
+	cp := &store.Checkpoint{
+		ArtifactRevisionsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":   {NodeID: "planner", Version: 2, Unverified: true},
+			"report": {NodeID: "writer", Version: 1},
+		},
+	}
+	exact, inferred := forkArtifactRevisions(cp)
+	if len(exact) != 1 || exact[0].NodeID != "writer" {
+		t.Fatalf("verified fork roots = %+v", exact)
+	}
+	if len(inferred) != 1 || inferred[0].NodeID != "planner" || !inferred[0].Unverified {
+		t.Fatalf("optional unverified fork roots = %+v", inferred)
 	}
 }
 

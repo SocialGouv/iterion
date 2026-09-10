@@ -373,7 +373,7 @@ workflow preflight:
 	}
 }
 
-func TestPreflightResumeRejectsUnreadableExactArtifactForLegacyPolicy(t *testing.T) {
+func TestPreflightResumeRejectsUnreadableExactArtifactForEnforcePolicy(t *testing.T) {
 	dir := t.TempDir()
 	botPath := filepath.Join(dir, "preflight-artifact.bot")
 	const src = `prompt ask_ok:
@@ -399,6 +399,7 @@ workflow preflight_artifact:
 		t.Fatal(err)
 	}
 	run.Status = store.RunStatusPausedWaitingHuman
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
 	run.Checkpoint = &store.Checkpoint{
 		NodeID: "gate",
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{

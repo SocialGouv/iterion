@@ -208,10 +208,20 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	cp := &store.Checkpoint{
-		NodeID:                 "dispatch",
-		InteractionID:          "interaction-1",
-		FiredEvents:            map[string]map[string]any{"ready": {"value": "ok"}},
-		ArtifactRevisions:      map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 2}},
+		NodeID:        "dispatch",
+		InteractionID: "interaction-1",
+		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
+		Artifacts: map[string]map[string]any{
+			"plan":    {"title": "ship"},
+			"pending": {"title": "fallback"},
+		},
+		ArtifactOwners: map[string]string{"plan": "planner", "pending": "planner", "historic": "planner"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":     {NodeID: "planner", Version: 2},
+			"pending":  {NodeID: "planner", Version: 1, Unverified: true},
+			"historic": {NodeID: "planner", Version: 0, ValueFromRevision: true},
+		},
 		ArtifactRevisionsKnown: true,
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
@@ -229,6 +239,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					CurrentNodeID:      "gate",
 					Outputs:            map[string]map[string]any{"work": {"result": "ok"}},
 					Artifacts:          map[string]map[string]any{"report": {"path": "report.md"}},
+					ArtifactOwners:     map[string]string{"report": "work"},
 					ArtifactVersions:   map[string]int{"work": 2},
 					ArtifactRevisions:  map[string]store.ArtifactRevisionRef{"report": {NodeID: "work", Version: 1}},
 					LoopCounters:       map[string]int{"retry": 1},
@@ -264,6 +275,18 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	if !r.Checkpoint.ArtifactRevisionsKnown {
 		t.Fatal("artifact revision authority marker was lost in store round-trip")
 	}
+	if !r.Checkpoint.ArtifactsKnown || r.Checkpoint.Artifacts["plan"]["title"] != "ship" {
+		t.Fatalf("artifact logical snapshot was lost in store round-trip: %+v", r.Checkpoint.Artifacts)
+	}
+	if r.Checkpoint.ArtifactOwners["plan"] != "planner" {
+		t.Fatalf("artifact logical owner was lost in store round-trip: %+v", r.Checkpoint.ArtifactOwners)
+	}
+	if !r.Checkpoint.ArtifactRevisions["pending"].Unverified {
+		t.Fatalf("unverified artifact binding marker was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
+	if !r.Checkpoint.ArtifactRevisions["historic"].ValueFromRevision {
+		t.Fatalf("historical artifact value reference was lost in store round-trip: %+v", r.Checkpoint.ArtifactRevisions)
+	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]
 	if got.InvocationKey != "dispatch@outer=2" || got.PendingNodeID != "gate" || got.NextArtifactVersion["gate"] != 4 {
@@ -274,6 +297,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if revision := branch.ArtifactRevisions["report"]; revision.NodeID != "work" || revision.Version != 1 {
 		t.Fatalf("branch artifact revision after round-trip = %+v", revision)
+	}
+	if branch.ArtifactOwners["report"] != "work" {
+		t.Fatalf("branch artifact owner after round-trip = %+v", branch.ArtifactOwners)
 	}
 	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
 		t.Fatalf("branch nested state after round-trip = %+v", branch)

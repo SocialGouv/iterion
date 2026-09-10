@@ -109,8 +109,14 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					convergenceNodeID, name)
 			}
 			rs.artifacts[name] = output
+			if owner := r.artifactOwners[name]; owner != "" {
+				rs.artifactOwners[name] = owner
+			} else {
+				delete(rs.artifactOwners, name)
+			}
 			if revision, ok := r.artifactRevisions[name]; ok {
 				rs.artifactRevisions[name] = revision
+				rs.artifactOwners[name] = revision.NodeID
 			} else {
 				delete(rs.artifactRevisions, name)
 			}
@@ -166,8 +172,14 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 		}
 		for name, output := range r.artifacts {
 			rs.artifacts[name] = output
+			if owner := r.artifactOwners[name]; owner != "" {
+				rs.artifactOwners[name] = owner
+			} else {
+				delete(rs.artifactOwners, name)
+			}
 			if revision, ok := r.artifactRevisions[name]; ok {
 				rs.artifactRevisions[name] = revision
+				rs.artifactOwners[name] = revision.NodeID
 			} else {
 				delete(rs.artifactRevisions, name)
 			}

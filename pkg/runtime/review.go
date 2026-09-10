@@ -132,7 +132,7 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 
 	preparedArtifacts = cloneResumeArtifactState(preparedArtifacts)
 	artifactRevisions := preparedArtifacts.revisions
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, preparedArtifacts.artifacts)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, preparedArtifacts.owners, preparedArtifacts.artifacts)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -265,6 +265,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = verdict
+		rs.artifactOwners[pub] = nodeID
 		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		if err := e.emit(ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub, "version": version,

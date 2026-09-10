@@ -90,16 +90,15 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		return err
 	}
 	// Engine.Resume is also a public execution boundary (the CLI calls it
-	// directly), so it must enforce the same policy-independent physical guard
-	// as runview's synchronous preflight. This includes exact revisions held by
-	// in-flight parallel branches, which prepareResumeArtifacts does not fold
-	// into the trunk artifact namespace.
+	// directly), so it repeats the policy-aware physical guard used by
+	// runview's synchronous preflight. Enforce checks every exact revision,
+	// including in-flight parallel branches; report/legacy remain non-blocking.
 	checkpointArtifacts, err := loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
 	if err != nil {
 		return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 	}
 	if !e.artifactContractsChecked {
-		if err := ValidateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume); err != nil {
+		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.
 			if errors.Is(err, ErrArtifactContractUnavailable) {
 				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
@@ -207,7 +206,13 @@ func shortWorkflowHash(hash string) string {
 
 // rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.
 func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]map[string]any {
+	artifacts, _ := e.rebuildArtifactsAndOwners(outputs)
+	return artifacts
+}
+
+func (e *Engine) rebuildArtifactsAndOwners(outputs map[string]map[string]any) (map[string]map[string]any, map[string]string) {
 	artifacts := make(map[string]map[string]any)
+	owners := make(map[string]string)
 	nodeIDs := make([]string, 0, len(outputs))
 	for nodeID := range outputs {
 		nodeIDs = append(nodeIDs, nodeID)
@@ -218,10 +223,11 @@ func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]
 		if n, ok := e.workflow.Nodes[nodeID]; ok {
 			if pub := nodePublish(n); pub != "" {
 				artifacts[pub] = output
+				owners[pub] = nodeID
 			}
 		}
 	}
-	return artifacts
+	return artifacts, owners
 }
 
 // rebuildArtifactRevisions restores the logical-to-physical mapping persisted
@@ -299,7 +305,9 @@ func (e *Engine) rebuildArtifactRevisions(outputs map[string]map[string]any, ver
 
 type resumeArtifactState struct {
 	artifacts map[string]map[string]any
+	owners    map[string]string
 	revisions map[string]store.ArtifactRevisionRef
+	parallel  *store.ParallelCheckpoint
 }
 
 type artifactRevisionKey struct {
@@ -308,10 +316,10 @@ type artifactRevisionKey struct {
 }
 
 // prepareResumeArtifacts builds the one immutable artifact snapshot used by a
-// complete resume attempt. Exact checkpoint provenance is fail-closed. Legacy
-// inferred provenance is best-effort: checkpoint outputs remain authoritative
-// when an old fork has no copied blobs, and the speculative revision is
-// removed so newly published contracts cannot point at a nonexistent body.
+// complete resume attempt. Exact checkpoint provenance is fail-closed under
+// enforce. Legacy keeps checkpoint outputs authoritative and reads only
+// explicitly referenced historical bodies, best-effort; report falls back to
+// checkpoint values when an observational read fails.
 func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *store.Checkpoint) (*resumeArtifactState, error) {
 	return e.prepareResumeArtifactsWithLoaded(ctx, r, cp, nil)
 }
@@ -319,27 +327,264 @@ func (e *Engine) prepareResumeArtifacts(ctx context.Context, r *store.Run, cp *s
 func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.Run, cp *store.Checkpoint, preloaded map[artifactRevisionKey]*store.Artifact) (*resumeArtifactState, error) {
 	state := &resumeArtifactState{
 		artifacts: make(map[string]map[string]any),
+		owners:    make(map[string]string),
 		revisions: make(map[string]store.ArtifactRevisionRef),
 	}
 	if cp == nil {
 		return state, nil
 	}
+	state.parallel = cloneParallelCheckpoint(cp.Parallel)
 	outputs := copyOutputs(cp.Outputs)
-	state.artifacts = e.rebuildArtifacts(outputs)
+	if cp.ArtifactsKnown {
+		state.artifacts = copyOutputs(cp.Artifacts)
+		state.owners = cloneMap(cp.ArtifactOwners)
+		if state.owners == nil {
+			state.owners = make(map[string]string)
+		}
+		hydrateArtifactState(state.artifacts, state.owners, cp.ArtifactRevisions, outputs)
+		for name, revision := range cp.ArtifactRevisions {
+			if _, present := state.artifacts[name]; present && state.owners[name] == "" {
+				state.owners[name] = revision.NodeID
+			}
+		}
+		inferArtifactOwners(state.artifacts, outputs, state.owners)
+	} else {
+		state.artifacts, state.owners = e.rebuildArtifactsAndOwners(outputs)
+	}
 	versionsForInference := cp.ArtifactVersions
 	if cp.ArtifactRevisionsKnown {
 		versionsForInference = nil
 	}
 	state.revisions = e.rebuildArtifactRevisions(outputs, versionsForInference, cp.ArtifactRevisions)
+	if cp.ArtifactsKnown {
+		// Checkpoints written during the compatibility window can have an exact
+		// logical value and owner but no physical revision. Forced publish:
+		// renames must still expose that retained value under the new name. Use
+		// the immutable checkpoint snapshot as the source so alias swaps cannot
+		// feed values assigned earlier in this loop back into one another.
+		checkpointArtifacts := copyOutputs(state.artifacts)
+		checkpointOwners := cloneMap(state.owners)
+		ownerNames := make(map[string][]string)
+		ownersWithRevision := make(map[string]bool)
+		for name, owner := range checkpointOwners {
+			if _, present := checkpointArtifacts[name]; owner != "" && present {
+				ownerNames[owner] = append(ownerNames[owner], name)
+			}
+		}
+		for _, revision := range cp.ArtifactRevisions {
+			ownersWithRevision[revision.NodeID] = true
+		}
+		nodeIDs := make([]string, 0, len(outputs))
+		for nodeID := range outputs {
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+		sort.Strings(nodeIDs)
+		synthesizedTargets := make(map[string]bool)
+		for _, nodeID := range nodeIDs {
+			if ownersWithRevision[nodeID] {
+				continue
+			}
+			node, present := e.workflow.Nodes[nodeID]
+			if !present || nodePublish(node) == "" {
+				continue
+			}
+			target := nodePublish(node)
+			names := ownerNames[nodeID]
+			sort.Strings(names)
+			source := ""
+			for _, name := range names {
+				if name == target {
+					source = name
+					break
+				}
+			}
+			if source == "" && len(names) == 1 {
+				source = names[0]
+			}
+			if source == "" {
+				// Successive forced renames leave equivalent owner-only aliases
+				// behind. The producer output identifies which retained binding
+				// is current even when more than one historical name remains.
+				for _, name := range names {
+					if artifactValuesEqual(checkpointArtifacts[name], outputs[nodeID]) {
+						source = name
+						break
+					}
+				}
+			}
+			if source == "" {
+				// A forced edit may add publish: to an already completed node,
+				// and a fork may remove the selected producer while retaining an
+				// earlier publisher. In both cases there is no historical owner
+				// alias to copy, but the retained node output is the only value
+				// this newly exposed name can have. Keep it owner-only: an output
+				// cannot prove that a physical artifact revision was written.
+				if len(names) == 0 {
+					_, exposed := state.artifacts[target]
+					canClaimTarget := !exposed || synthesizedTargets[target]
+					if exposed && !synthesizedTargets[target] {
+						existingOwner := checkpointOwners[target]
+						existingNode, ownerStillPresent := e.workflow.Nodes[existingOwner]
+						canClaimTarget = existingOwner != "" && existingOwner != nodeID &&
+							(!ownerStillPresent || nodePublish(existingNode) != target)
+					}
+					if canClaimTarget {
+						state.artifacts[target] = outputs[nodeID]
+						state.owners[target] = nodeID
+						synthesizedTargets[target] = true
+					}
+				}
+				continue
+			}
+			if existingOwner := checkpointOwners[target]; existingOwner != "" && existingOwner != nodeID {
+				if existingNode, exists := e.workflow.Nodes[existingOwner]; exists && nodePublish(existingNode) == target {
+					continue
+				}
+			}
+			if value, present := checkpointArtifacts[source]; present {
+				state.artifacts[target] = value
+				state.owners[target] = nodeID
+			}
+		}
+		// A mixed-provenance alias swap can move an owner-only value onto an
+		// old exact alias. Once that current publisher owns the name, the old
+		// producer's revision must not overwrite it during exact restoration.
+		for name, revision := range state.revisions {
+			owner := state.owners[name]
+			if owner == "" || owner == revision.NodeID {
+				continue
+			}
+			if ownerNode, exists := e.workflow.Nodes[owner]; exists && nodePublish(ownerNode) == name {
+				delete(state.revisions, name)
+			}
+		}
+
+		// A forced source edit can expose an existing immutable revision under a
+		// new alias. Carry its checkpointed logical value with the revision; do
+		// not substitute the producer's latest output, which may now belong to
+		// an invocation that no longer publishes anything.
+		checkpointNames := make([]string, 0, len(cp.ArtifactRevisions))
+		for name := range cp.ArtifactRevisions {
+			checkpointNames = append(checkpointNames, name)
+		}
+		sort.Strings(checkpointNames)
+		for name, revision := range state.revisions {
+			bound := false
+			candidates := make([]string, 0, len(checkpointNames)+1)
+			candidates = append(candidates, name)
+			for _, checkpointName := range checkpointNames {
+				if checkpointName != name {
+					candidates = append(candidates, checkpointName)
+				}
+			}
+			for _, checkpointName := range candidates {
+				checkpointRevision := cp.ArtifactRevisions[checkpointName]
+				if checkpointRevision.NodeID != revision.NodeID || checkpointRevision.Version != revision.Version {
+					continue
+				}
+				if value, present := checkpointArtifacts[checkpointName]; present {
+					state.artifacts[name] = value
+					state.owners[name] = revision.NodeID
+					bound = true
+					break
+				}
+			}
+			if !bound {
+				delete(state.artifacts, name)
+				delete(state.owners, name)
+			}
+		}
+	}
 
 	required := make(map[artifactRevisionKey]bool, len(cp.ArtifactRevisions))
+	checkpointOutputVersion := make(map[string]int, len(cp.ArtifactRevisions))
+	checkpointOutputVersionKnown := make(map[string]bool, len(cp.ArtifactRevisions))
 	for _, revision := range cp.ArtifactRevisions {
 		required[artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}] = true
+		if !checkpointOutputVersionKnown[revision.NodeID] || revision.Version > checkpointOutputVersion[revision.NodeID] {
+			checkpointOutputVersion[revision.NodeID] = revision.Version
+			checkpointOutputVersionKnown[revision.NodeID] = true
+		}
 	}
+	bindCheckpointOutput := func(name string, revision store.ArtifactRevisionRef) bool {
+		// Outputs has one value per producer, so it can represent only that
+		// producer's newest exact revision. An older retained alias needs its
+		// immutable body; substituting the newest output would attach false
+		// provenance to the value.
+		if !checkpointOutputVersionKnown[revision.NodeID] || checkpointOutputVersion[revision.NodeID] != revision.Version {
+			return false
+		}
+		output, ok := outputs[revision.NodeID]
+		if !ok {
+			return false
+		}
+		state.artifacts[name] = output
+		state.owners[name] = revision.NodeID
+		return true
+	}
+	clearProvisionalBinding := func(name string) {
+		delete(state.artifacts, name)
+		delete(state.owners, name)
+	}
+	policy := artifactContractPolicy(r)
 	loaded := make(map[artifactRevisionKey]*store.Artifact, len(preloaded))
 	for key, artifact := range preloaded {
 		loaded[key] = artifact
 	}
+	if err := e.prepareResumeParallelArtifacts(ctx, r.ID, policy, state.parallel, loaded); err != nil {
+		return nil, err
+	}
+	if policy == store.ContextPolicyLegacy {
+		// The common legacy path performs no artifact-store reads. A compacted
+		// historical value is the exception: its marker says the immutable
+		// revision is the body, so load it best-effort. Failure remains
+		// non-blocking and drops only that alias, matching pre-snapshot legacy
+		// behavior rather than turning compatibility mode into an availability
+		// gate. Older checkpoints fall back to Outputs but cannot prove which
+		// invocation supplied an exact revision.
+		for name, revision := range state.revisions {
+			key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+			if !required[key] {
+				delete(state.revisions, name)
+				continue
+			}
+			if cp.ArtifactsKnown && revision.ValueFromRevision {
+				var artifact *store.Artifact
+				var loadErr error
+				if e.store != nil {
+					artifact, loadErr = e.store.LoadArtifact(ctx, r.ID, revision.NodeID, revision.Version)
+				}
+				if loadErr != nil || artifact == nil || artifact.RunID != r.ID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				state.artifacts[name] = artifact.Data
+				state.owners[name] = revision.NodeID
+				revision.ValueFromRevision = false
+				if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
+					revision.ContractLogicalRef = artifact.Contract.LogicalRef
+				}
+				state.revisions[name] = revision
+				continue
+			}
+			if !cp.ArtifactsKnown {
+				if bindCheckpointOutput(name, revision) {
+					revision.Unverified = true
+					state.revisions[name] = revision
+				} else {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+				}
+				continue
+			}
+			if _, present := state.artifacts[name]; !present {
+				delete(state.revisions, name)
+			}
+		}
+		return state, nil
+	}
+	strictAvailability := policy == store.ContextPolicyEnforce
 	names := make([]string, 0, len(state.revisions))
 	for name := range state.revisions {
 		names = append(names, name)
@@ -361,21 +606,41 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 			var loadErr error
 			artifact, loadErr = e.store.LoadArtifact(ctx, r.ID, revision.NodeID, revision.Version)
 			if loadErr != nil {
-				if required[key] {
+				if strictAvailability && required[key] {
 					return nil, fmt.Errorf("%w: load artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version, loadErr)
 				}
-				// A pre-provenance checkpoint (notably a fork created by an old
-				// server) may have outputs and allocator cursors but no blobs in
-				// its own namespace. Keep the checkpoint value, but do not invent
-				// a physical dependency that future validation could never load.
-				delete(state.revisions, name)
+				// Report mode observes missing bodies through contract telemetry
+				// but remains non-blocking. A current checkpoint already supplies
+				// the exact logical value; older checkpoints use the recorded
+				// producer's output as a one-time compatibility fallback. The next
+				// checkpoint persists that logical binding with explicitly
+				// unverified provenance.
+				if revision.ValueFromRevision {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				if !cp.ArtifactsKnown && !bindCheckpointOutput(name, revision) {
+					clearProvisionalBinding(name)
+				}
+				revision.Unverified = true
+				state.revisions[name] = revision
 				continue
 			}
 			if artifact == nil || artifact.RunID != r.ID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
-				if required[key] {
+				if strictAvailability && required[key] {
 					return nil, fmt.Errorf("%w: artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, name, revision.NodeID, revision.Version)
 				}
-				delete(state.revisions, name)
+				if revision.ValueFromRevision {
+					clearProvisionalBinding(name)
+					delete(state.revisions, name)
+					continue
+				}
+				if !cp.ArtifactsKnown && !bindCheckpointOutput(name, revision) {
+					clearProvisionalBinding(name)
+				}
+				revision.Unverified = true
+				state.revisions[name] = revision
 				continue
 			}
 			loaded[key] = artifact
@@ -384,6 +649,10 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 		// migration) restore their immutable artifact body. Inferred legacy
 		// revisions were discarded above, leaving Outputs authoritative.
 		state.artifacts[name] = artifact.Data
+		state.owners[name] = revision.NodeID
+		revision.Unverified = false
+		revision.ValueFromRevision = false
+		state.revisions[name] = revision
 		if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
 			revision.ContractLogicalRef = artifact.Contract.LogicalRef
 			state.revisions[name] = revision
@@ -392,16 +661,91 @@ func (e *Engine) prepareResumeArtifactsWithLoaded(ctx context.Context, r *store.
 	return state, nil
 }
 
+func (e *Engine) prepareResumeParallelArtifacts(ctx context.Context, runID string, policy store.ContextPolicy, parallel *store.ParallelCheckpoint, loaded map[artifactRevisionKey]*store.Artifact) error {
+	if parallel == nil || policy == store.ContextPolicyLegacy {
+		return nil
+	}
+	strict := policy == store.ContextPolicyEnforce
+	branchIDs := make([]string, 0, len(parallel.Branches))
+	for branchID := range parallel.Branches {
+		branchIDs = append(branchIDs, branchID)
+	}
+	sort.Strings(branchIDs)
+	for _, branchID := range branchIDs {
+		branch := parallel.Branches[branchID]
+		if branch == nil {
+			continue
+		}
+		if branch.ArtifactOwners == nil {
+			branch.ArtifactOwners = make(map[string]string)
+		}
+		names := make([]string, 0, len(branch.ArtifactRevisions))
+		for name := range branch.ArtifactRevisions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			revision := branch.ArtifactRevisions[name]
+			key := artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}
+			artifact, ok := loaded[key]
+			if !ok {
+				var err error
+				artifact, err = e.store.LoadArtifact(ctx, runID, revision.NodeID, revision.Version)
+				if err != nil {
+					if strict {
+						return fmt.Errorf("%w: load branch %q artifact %q from %s/%d: %v", ErrArtifactContractUnavailable, branchID, name, revision.NodeID, revision.Version, err)
+					}
+					revision.Unverified = true
+					branch.ArtifactRevisions[name] = revision
+					branch.ArtifactOwners[name] = revision.NodeID
+					continue
+				}
+				if artifact == nil || artifact.RunID != runID || artifact.NodeID != revision.NodeID || artifact.Version != revision.Version {
+					if strict {
+						return fmt.Errorf("%w: branch %q artifact %q has mismatched persisted identity for %s/%d", ErrArtifactContractUnavailable, branchID, name, revision.NodeID, revision.Version)
+					}
+					revision.Unverified = true
+					branch.ArtifactRevisions[name] = revision
+					branch.ArtifactOwners[name] = revision.NodeID
+					continue
+				}
+				loaded[key] = artifact
+			}
+			branch.Artifacts[name] = artifact.Data
+			branch.ArtifactOwners[name] = revision.NodeID
+			revision.Unverified = false
+			if artifact.Contract != nil && artifact.Contract.LogicalRef != "" {
+				revision.ContractLogicalRef = artifact.Contract.LogicalRef
+			}
+			branch.ArtifactRevisions[name] = revision
+		}
+	}
+	return nil
+}
+
+func checkpointWithPreparedParallel(cp *store.Checkpoint, state *resumeArtifactState) *store.Checkpoint {
+	if cp == nil || state == nil || state.parallel == nil {
+		return cp
+	}
+	prepared := *cp
+	prepared.Parallel = cloneParallelCheckpoint(state.parallel)
+	CompactCheckpointArtifactValues(&prepared)
+	return &prepared
+}
+
 func cloneResumeArtifactState(state *resumeArtifactState) *resumeArtifactState {
 	if state == nil {
 		return &resumeArtifactState{
 			artifacts: make(map[string]map[string]any),
+			owners:    make(map[string]string),
 			revisions: make(map[string]store.ArtifactRevisionRef),
 		}
 	}
 	return &resumeArtifactState{
 		artifacts: cloneMap(state.artifacts),
+		owners:    cloneMap(state.owners),
 		revisions: cloneMap(state.revisions),
+		parallel:  cloneParallelCheckpoint(state.parallel),
 	}
 }
 
@@ -457,6 +801,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
 	}
+	cp = checkpointWithPreparedParallel(cp, artifactState)
 	humanNodeID := cp.NodeID
 	if cp.Parallel != nil && cp.Parallel.PendingBranchID != "" && cp.Parallel.PendingNodeID != "" {
 		return e.resumeParallelPause(ctx, r, cp, answers, artifactState)
@@ -545,9 +890,13 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	artifactState = cloneResumeArtifactState(artifactState)
 	artifactRevisions := artifactState.revisions
 	artifacts := artifactState.artifacts
+	artifactOwners := artifactState.owners
 	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, artifactVersions, outputs, artifacts, artifactRevisions, cp.SelectedIncoming)
 	if err != nil {
 		return err
+	}
+	if pub := nodePublish(e.workflow.Nodes[humanNodeID]); pub != "" {
+		artifactOwners[pub] = humanNodeID
 	}
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
@@ -571,7 +920,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// `rewind --auto` re-report edits that already ran — the same
 	// monotonically-growing pivot the failure path restamps to avoid.
 	e.restampWorkflowSource(ctx, r)
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifacts)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifactOwners, artifacts)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -701,7 +1050,7 @@ func (e *Engine) resumeFromRecoveryPause(ctx context.Context, r *store.Run, cp *
 	artifactState = cloneResumeArtifactState(artifactState)
 	artifactRevisions := artifactState.revisions
 	e.restampWorkflowSource(ctx, r)
-	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifactState.artifacts)
+	rs, sandboxCleanup, rbErr := e.resumeRebuildState(ctx, r, cp, outputs, artifactVersions, artifactRevisions, artifactState.owners, artifactState.artifacts)
 	if rbErr != nil {
 		return rbErr
 	}
@@ -764,7 +1113,7 @@ func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *stor
 	}
 	artifactState = cloneResumeArtifactState(artifactState)
 	artifactRevisions := artifactState.revisions
-	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions, artifactRevisions, artifactState.artifacts)
+	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions, artifactRevisions, artifactState.owners, artifactState.artifacts)
 	if err != nil {
 		return err
 	}
@@ -973,7 +1322,7 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 // On a sandbox-start failure it persists failed_resumable (PRESERVING the
 // rich checkpoint so the next resume doesn't restart from entry) and
 // returns the error with a nil runState and a no-op cleanup.
-func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int, artifactRevisions map[string]store.ArtifactRevisionRef, artifacts map[string]map[string]any) (*runState, func(), error) {
+func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int, artifactRevisions map[string]store.ArtifactRevisionRef, artifactOwners map[string]string, artifacts map[string]map[string]any) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
 
@@ -1048,6 +1397,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	rs.outputs = outputs
 	rs.artifactRevisions = artifactRevisions
+	rs.artifactOwners = artifactOwners
 	rs.artifacts = artifacts
 	rs.loopCounters = loopCounters
 	rs.roundRobinCounters = roundRobinCounters
@@ -1232,6 +1582,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run, prepared .
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
 	}
+	cp = checkpointWithPreparedParallel(cp, artifactState)
 	restartNodeID := e.workflow.Entry
 	if cp != nil {
 		restartNodeID = cp.NodeID
@@ -1379,6 +1730,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint, arti
 	}
 	artifactState = cloneResumeArtifactState(artifactState)
 	rs.artifactRevisions = artifactState.revisions
+	rs.artifactOwners = artifactState.owners
 	rs.artifacts = artifactState.artifacts
 	// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
 	// mutate loopCounters/roundRobinCounters and artifactVersions in
@@ -1586,6 +1938,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactOwners[pub] = nodeID
 		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
@@ -2257,6 +2610,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
+		rs.artifactOwners[pub] = nodeID
 		rs.artifactRevisions[pub] = store.ArtifactRevisionRef{NodeID: nodeID, Version: version, ContractLogicalRef: pub}
 		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
@@ -2653,10 +3007,6 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		// for advancing the run-level revision.
 		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
-		if r.ExecutionContext != nil {
-			r.ExecutionContext = r.ExecutionContext.Clone()
-			r.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
-		}
 	}
 	// Re-read before writing. BOTH call sites run AFTER the resume CAS
 	// flipped the run to `running` — and the claim helpers mutate their
@@ -2680,7 +3030,15 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	fresh.WorkflowSource = r.WorkflowSource
 	fresh.WorkflowHash = r.WorkflowHash
 	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
-	fresh.ExecutionContext = r.ExecutionContext.Clone()
+	// Preserve every execution-context field from the freshly loaded record.
+	// A resume-side authority may have updated that context after the entry
+	// snapshot was read. A forced source migration owns only the workflow
+	// revision, so patch that one field instead of replacing the whole context
+	// with the stale entry copy.
+	if recordArtifactCompatibility && fresh.ExecutionContext != nil {
+		fresh.ExecutionContext = fresh.ExecutionContext.Clone()
+		fresh.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
+	}
 	if err := e.store.SaveRun(ctx, fresh); err != nil && e.logger != nil {
 		e.logger.Warn("resume: re-stamp workflow source for %s: %v", r.ID, err)
 	}

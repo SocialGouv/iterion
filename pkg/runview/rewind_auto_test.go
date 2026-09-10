@@ -138,6 +138,46 @@ func TestRewindAuto_TargetsEditedNode(t *testing.T) {
 	}
 }
 
+func TestRewindAutoAcknowledgesRetainedSourceDerivedArtifactMetadata(t *testing.T) {
+	svc, botPath, runID := seedAutoRun(t, "verify", "survey", "plan", "implement", "verify")
+	st := svc.RunStore()
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPublish := strings.Replace(run.WorkflowSource,
+		"agent survey:\n  model: \"claude-opus-4-7\"\n  output: note",
+		"agent survey:\n  model: \"claude-opus-4-7\"\n  output: note\n  publish: survey_result", 1)
+	if err := os.WriteFile(botPath, []byte(withPublish), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowSource = withPublish
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	run.ArtifactIndex = map[string]int{"survey": 0}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteArtifact(context.Background(), &store.Artifact{
+		RunID: runID, NodeID: "survey", Version: 0,
+		Data: map[string]any{"value": "survey"},
+		Contract: &store.ArtifactContract{
+			LogicalRef: "survey_result", ProducerNode: "survey",
+			ProducerRevision: "revision-before-edit", Version: 0,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	editBot(t, botPath, "agent implement:\n  model: \"claude-opus-4-7\"", "agent implement:\n  model: \"claude-opus-5\"")
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, Auto: true})
+	if err != nil {
+		t.Fatalf("Rewind --auto rejected retained metadata from the source it detected: %v", err)
+	}
+	if result.NodeID != "implement" {
+		t.Fatalf("auto pivot = %q, want implement", result.NodeID)
+	}
+}
+
 // TestRewindAuto_SharedPromptTargetsReferencingNode: editing a prompt
 // body must blame the node that references it, not the prompt.
 func TestRewindAuto_SharedPromptTargetsReferencingNode(t *testing.T) {

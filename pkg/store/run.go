@@ -1346,10 +1346,27 @@ type Checkpoint struct {
 	// zero the resume must not read as a price.
 	LoopBudgetMarksV int            `json:"loop_budget_marks_v,omitempty" bson:"loop_budget_marks_v,omitempty"`
 	ArtifactVersions map[string]int `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
-	// ArtifactRevisions binds each logical publish name to the exact physical
-	// artifact currently exposed through {{artifacts.<name>}}. Version counters
-	// alone cannot recover this when several nodes share a publish name or when
-	// parallel branches allocate different versions.
+	// Artifacts stores the non-reconstructible values in the exact logical
+	// publish-name snapshot. ArtifactOwners carries the complete logical catalog;
+	// when a value equals its owner's Output it is omitted here to avoid embedding
+	// large bodies twice in Mongo's run document. A verified historical alias can
+	// also be omitted when its revision sets ValueFromRevision; unverified and
+	// ownerless values remain explicit here.
+	Artifacts map[string]map[string]any `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	// ArtifactOwners is the complete logical snapshot catalog and keeps the
+	// producing node even when the value is compacted out of Artifacts or no
+	// verified physical revision can be claimed. Rewind and fork use it to prune
+	// fallback values without turning ownership into provenance.
+	ArtifactOwners map[string]string `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"`
+	// ArtifactsKnown distinguishes an intentionally empty current logical catalog
+	// from a checkpoint written before Artifacts/ArtifactOwners were persisted.
+	// Older checkpoints continue to rebuild best-effort values from Outputs.
+	ArtifactsKnown bool `json:"artifacts_known,omitempty" bson:"artifacts_known,omitempty"`
+	// ArtifactRevisions binds each logical publish name to its selected physical
+	// artifact identity. Unless Unverified is set, that is the exact body exposed
+	// through {{artifacts.<name>}}. Version counters alone cannot recover this
+	// when several nodes share a publish name or parallel branches allocate
+	// different versions.
 	ArtifactRevisions map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
 	// ArtifactRevisionsKnown distinguishes a current checkpoint whose exposed
 	// artifact set is intentionally empty (for example after rewind) from a
@@ -1485,7 +1502,8 @@ type BranchCheckpoint struct {
 	StartNodeID        string                         `json:"start_node_id" bson:"start_node_id"`
 	CurrentNodeID      string                         `json:"current_node_id,omitempty" bson:"current_node_id,omitempty"`
 	Outputs            map[string]map[string]any      `json:"outputs,omitempty" bson:"outputs,omitempty"`
-	Artifacts          map[string]map[string]any      `json:"artifacts,omitempty" bson:"artifacts,omitempty"`
+	Artifacts          map[string]map[string]any      `json:"artifacts,omitempty" bson:"artifacts,omitempty"`             // expanded for V1 mixed-version readers
+	ArtifactOwners     map[string]string              `json:"artifact_owners,omitempty" bson:"artifact_owners,omitempty"` // complete logical catalog
 	ArtifactVersions   map[string]int                 `json:"artifact_versions,omitempty" bson:"artifact_versions,omitempty"`
 	ArtifactRevisions  map[string]ArtifactRevisionRef `json:"artifact_revisions,omitempty" bson:"artifact_revisions,omitempty"`
 	LoopCounters       map[string]int                 `json:"loop_counters,omitempty" bson:"loop_counters,omitempty"`
@@ -1565,6 +1583,17 @@ type ArtifactRevisionRef struct {
 	NodeID             string `json:"node_id" bson:"node_id"`
 	Version            int    `json:"version" bson:"version"`
 	ContractLogicalRef string `json:"contract_logical_ref,omitempty" bson:"contract_logical_ref,omitempty"`
+	// ValueFromRevision means the logical value body is intentionally omitted
+	// from Checkpoint.Artifacts and must be restored from this immutable
+	// revision. It is used for historical aliases whose value differs from the
+	// producer's latest checkpoint output, avoiding a second large body in the
+	// Mongo run document.
+	ValueFromRevision bool `json:"value_from_revision,omitempty" bson:"value_from_revision,omitempty"`
+	// Unverified keeps the producer binding needed to preserve and invalidate
+	// the logical checkpoint value after report mode could not read the
+	// physical body. It must not be emitted as a verified dependency; a later
+	// successful load clears the marker.
+	Unverified bool `json:"unverified,omitempty" bson:"unverified,omitempty"`
 }
 
 // ArtifactContract is the durable restart contract for one logical output.

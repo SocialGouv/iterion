@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestValidateArtifactContractsRefusesIncompatibleRevisionInEnforce(t *testing.T) {
@@ -155,6 +157,17 @@ func (artifactReadErrorStore) LoadArtifact(context.Context, string, string, int)
 	return nil, errors.New("blob unavailable")
 }
 
+type artifactBlockingEventStore struct {
+	store.RunStore
+	sawDeadline bool
+}
+
+func (s *artifactBlockingEventStore) AppendEvent(ctx context.Context, _ string, _ store.Event) (*store.Event, error) {
+	_, s.sawDeadline = ctx.Deadline()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type artifactNodeReadErrorStore struct {
 	store.RunStore
 	nodeID string
@@ -175,7 +188,10 @@ func TestValidateArtifactContractsFailsClosedOnUnreadableEnforcedArtifact(t *tes
 		t.Fatal(err)
 	}
 	run.ArtifactIndex = map[string]int{"writer": 0}
-	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
 	err = ValidateArtifactContracts(ctx, artifactReadErrorStore{base}, run, &ir.Workflow{}, "rev", false)
 	if err == nil || !strings.Contains(err.Error(), "blob unavailable") {
 		t.Fatalf("unreadable enforced artifact error = %v", err)
@@ -204,6 +220,24 @@ func TestArtifactContractRecordsConsumedArtifactVersion(t *testing.T) {
 	dep := contract.Dependencies[0]
 	if dep.LogicalRef != "plan" || dep.NodeID != "planner" || dep.Version != 1 || !dep.Required {
 		t.Fatalf("dependency = %+v", dep)
+	}
+}
+
+func TestArtifactContractDoesNotClaimUnverifiedConsumedRevision(t *testing.T) {
+	consumer := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "writer"}, Publish: "report",
+		CommandRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{"writer": consumer}}}
+	rs := &runState{
+		artifacts: map[string]map[string]any{"plan": {"ok": true}},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "planner", Version: 1, Unverified: true},
+		},
+	}
+	contract := eng.artifactContractFor("writer", consumer, 0, rs)
+	if contract == nil || len(contract.Dependencies) != 0 {
+		t.Fatalf("unverified artifact became a durable dependency: %+v", contract)
 	}
 }
 
@@ -239,7 +273,7 @@ func TestArtifactContractConservativelyTracksDynamicArtifactIndex(t *testing.T) 
 	}
 }
 
-func TestValidateCheckpointArtifactAvailabilityIgnoresPolicy(t *testing.T) {
+func TestValidateCheckpointArtifactAvailabilityOnlyEnforcesEnforcePolicy(t *testing.T) {
 	ctx := context.Background()
 	base := tmpStore(t)
 	run, err := base.CreateRun(ctx, "artifact-availability", "wf", nil)
@@ -249,10 +283,378 @@ func TestValidateCheckpointArtifactAvailabilityIgnoresPolicy(t *testing.T) {
 	run.Checkpoint = &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
 		"plan": {NodeID: "planner", Version: 0},
 	}}
-	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyLegacy}
+	for _, policy := range []store.ContextPolicy{store.ContextPolicyLegacy, store.ContextPolicyReport} {
+		run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: policy}
+		if err := ValidateCheckpointArtifactAvailability(ctx, artifactReadErrorStore{base}, run); err != nil {
+			t.Fatalf("%s policy refused unavailable observational artifact: %v", policy, err)
+		}
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
 	err = ValidateCheckpointArtifactAvailability(ctx, artifactReadErrorStore{base}, run)
 	if err == nil || !errors.Is(err, ErrArtifactContractUnavailable) || !strings.Contains(err.Error(), "blob unavailable") {
-		t.Fatalf("legacy-policy availability error = %v", err)
+		t.Fatalf("enforce-policy availability error = %v", err)
+	}
+}
+
+func TestPrepareResumeArtifactsFallsBackToCheckpointOutsideEnforce(t *testing.T) {
+	for _, policy := range []store.ContextPolicy{store.ContextPolicyLegacy, store.ContextPolicyReport} {
+		t.Run(string(policy), func(t *testing.T) {
+			base := tmpStore(t)
+			run := &store.Run{ID: "artifact-fallback", ExecutionContext: &store.ExecutionContext{Version: 1, Policy: policy}}
+			cp := &store.Checkpoint{
+				Outputs:        map[string]map[string]any{"writer": {"value": "checkpoint"}},
+				Artifacts:      map[string]map[string]any{"plan": {"value": "checkpoint"}},
+				ArtifactsKnown: true,
+				ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"plan": {NodeID: "writer", Version: 0},
+				},
+				ArtifactRevisionsKnown: true,
+			}
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{
+				"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "plan"},
+			}}
+			eng := New(wf, artifactReadErrorStore{base}, newStubExecutor())
+			state, err := eng.prepareResumeArtifacts(context.Background(), run, cp)
+			if err != nil {
+				t.Fatalf("prepare %s resume artifacts: %v", policy, err)
+			}
+			if got := state.artifacts["plan"]["value"]; got != "checkpoint" {
+				t.Fatalf("%s fallback artifact value = %v, want checkpoint", policy, got)
+			}
+			if policy == store.ContextPolicyReport && !state.revisions["plan"].Unverified {
+				t.Fatalf("report fallback claimed verified provenance: %+v", state.revisions)
+			}
+		})
+	}
+}
+
+func TestPrepareLegacyResumeUsesCheckpointProducerWithoutArtifactRead(t *testing.T) {
+	base := tmpStore(t)
+	reads := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 0}
+	run := &store.Run{
+		ID:               "artifact-legacy-shared-publish",
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyLegacy},
+	}
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"a": {"value": "checkpoint-selected"},
+			"z": {"value": "stale-alphabetical-winner"},
+		},
+		Artifacts:      map[string]map[string]any{"plan": {"value": "checkpoint-selected"}},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "a", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "plan"},
+		"z": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "z"}, Publish: "plan"},
+	}}
+	eng := New(wf, reads, newStubExecutor())
+	state, err := eng.prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["plan"]["value"]; got != "checkpoint-selected" {
+		t.Fatalf("legacy shared-publish value = %v, want checkpoint producer output", got)
+	}
+	if got := state.revisions["plan"]; got.NodeID != "a" || got.Version != 0 {
+		t.Fatalf("legacy shared-publish provenance = %+v", got)
+	}
+	if reads.loads != 0 {
+		t.Fatalf("legacy resume artifact reads = %d, want zero", reads.loads)
+	}
+}
+
+func TestPrepareLegacyOldCheckpointRetainsOwnershipWithoutVerifiedProvenance(t *testing.T) {
+	base := tmpStore(t)
+	reads := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 0}
+	run := &store.Run{
+		ID:               "artifact-legacy-alias-versions",
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyLegacy},
+	}
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{"writer": {"value": "latest"}},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"old": {NodeID: "writer", Version: 0},
+			"new": {NodeID: "writer", Version: 1},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new"},
+	}}
+	state, err := New(wf, reads, newStubExecutor()).prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := state.artifacts["old"]; present {
+		t.Fatalf("older alias received the latest checkpoint output: %+v", state.artifacts)
+	}
+	if _, present := state.revisions["old"]; present {
+		t.Fatalf("older unloaded alias retained false provenance: %+v", state.revisions)
+	}
+	if got := state.artifacts["new"]["value"]; got != "latest" {
+		t.Fatalf("latest alias value = %v", got)
+	}
+	if _, present := state.revisions["old"]; present {
+		t.Fatalf("older alias retained an unsupported output binding: %+v", state.revisions)
+	}
+	if revision := state.revisions["new"]; revision.NodeID != "writer" || !revision.Unverified {
+		t.Fatalf("latest fallback lost unverified ownership: %+v", revision)
+	}
+	if owner := state.owners["new"]; owner != "writer" {
+		t.Fatalf("latest fallback owner = %q", owner)
+	}
+	if reads.loads != 0 {
+		t.Fatalf("legacy resume artifact reads = %d, want zero", reads.loads)
+	}
+}
+
+func TestPrepareOldCheckpointDropsWrongProvisionalProducer(t *testing.T) {
+	for _, policy := range []store.ContextPolicy{store.ContextPolicyLegacy, store.ContextPolicyReport} {
+		t.Run(string(policy), func(t *testing.T) {
+			base := tmpStore(t)
+			run := &store.Run{
+				ID:               "artifact-old-checkpoint-wrong-producer",
+				ExecutionContext: &store.ExecutionContext{Version: 1, Policy: policy},
+			}
+			cp := &store.Checkpoint{
+				Outputs: map[string]map[string]any{
+					"a": {"value": "a-latest"},
+					"b": {"value": "wrong-provisional"},
+				},
+				ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"old": {NodeID: "a", Version: 0},
+					"new": {NodeID: "a", Version: 1},
+				},
+				ArtifactRevisionsKnown: true,
+			}
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{
+				"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "new"},
+				"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "old"},
+			}}
+			state, err := New(wf, artifactReadErrorStore{base}, newStubExecutor()).prepareResumeArtifacts(
+				context.Background(), run, cp,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, present := state.artifacts["old"]; present {
+				t.Fatalf("%s resume retained a value from the wrong producer: artifacts=%+v owners=%+v", policy, state.artifacts, state.owners)
+			}
+			if _, present := state.owners["old"]; present {
+				t.Fatalf("%s resume retained the wrong provisional owner: %+v", policy, state.owners)
+			}
+			if policy == store.ContextPolicyLegacy {
+				if _, present := state.revisions["old"]; present {
+					t.Fatalf("legacy resume retained an unreconstructable revision: %+v", state.revisions)
+				}
+			} else if revision := state.revisions["old"]; !revision.Unverified {
+				t.Fatalf("report resume claimed verified provenance: %+v", revision)
+			}
+		})
+	}
+}
+
+func TestPrepareLegacyResumeDoesNotBindRetainedRevisionToNewUnpublishedOutput(t *testing.T) {
+	base := tmpStore(t)
+	reads := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 0}
+	run := &store.Run{
+		ID:               "artifact-legacy-forced-unpublish",
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyLegacy},
+	}
+	cp := &store.Checkpoint{
+		Outputs:        map[string]map[string]any{"writer": {"value": "new-unpublished-output"}},
+		Artifacts:      map[string]map[string]any{"plan": {"value": "retained-published-output"}},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}},
+	}}
+	state, err := New(wf, reads, newStubExecutor()).prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["plan"]["value"]; got != "retained-published-output" {
+		t.Fatalf("retained revision was rebound to a later unpublished output: %v", got)
+	}
+	if got := state.revisions["plan"]; got.NodeID != "writer" || got.Version != 0 {
+		t.Fatalf("retained snapshot lost its exact provenance: %+v", got)
+	}
+	if reads.loads != 0 {
+		t.Fatalf("legacy resume artifact reads = %d, want zero", reads.loads)
+	}
+}
+
+func TestPrepareReportFallbackUsesCheckpointProducer(t *testing.T) {
+	base := tmpStore(t)
+	run := &store.Run{
+		ID:               "artifact-report-shared-publish",
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport},
+	}
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"a": {"value": "checkpoint-selected"},
+			"z": {"value": "stale-alphabetical-winner"},
+		},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "a", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "plan"},
+		"z": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "z"}, Publish: "plan"},
+	}}
+	state, err := New(wf, artifactReadErrorStore{base}, newStubExecutor()).prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["plan"]["value"]; got != "checkpoint-selected" {
+		t.Fatalf("report shared-publish fallback = %v, want checkpoint producer output", got)
+	}
+	if revision := state.revisions["plan"]; !revision.Unverified || revision.NodeID != "a" {
+		t.Fatalf("report fallback lost its explicitly unverified producer binding: %+v", revision)
+	}
+	eng := New(wf, artifactReadErrorStore{base}, newStubExecutor())
+	rs := eng.newRunState(run.ID, nil)
+	eng.restoreCheckpointState(rs, cp, state)
+	next := buildCheckpoint(rs, "retry")
+	if !next.ArtifactsKnown || next.ArtifactOwners["plan"] != "a" {
+		t.Fatalf("report fallback was not persisted as an authoritative logical snapshot: artifacts=%+v owners=%+v", next.Artifacts, next.ArtifactOwners)
+	}
+	second, err := eng.prepareResumeArtifacts(context.Background(), run, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.artifacts["plan"]["value"]; got != "checkpoint-selected" {
+		t.Fatalf("second report resume changed shared-publish fallback to %v", got)
+	}
+}
+
+func TestPrepareReportResumeReverifiesRecoveredArtifactBinding(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-report-recovered"
+	if _, err := base.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "persisted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &store.Run{
+		ID:               runID,
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport},
+	}
+	cp := &store.Checkpoint{
+		Outputs:        map[string]map[string]any{"writer": {"value": "checkpoint-fallback"}},
+		Artifacts:      map[string]map[string]any{"plan": {"value": "checkpoint-fallback"}},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0, Unverified: true},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "plan"},
+	}}
+	state, err := New(wf, base, newStubExecutor()).prepareResumeArtifacts(ctx, run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.revisions["plan"].Unverified {
+		t.Fatalf("recovered artifact remained unverified: %+v", state.revisions["plan"])
+	}
+	if got := state.artifacts["plan"]["value"]; got != "persisted" {
+		t.Fatalf("recovered persisted body = %v", got)
+	}
+}
+
+func TestPrepareReportResumeMarksUnavailableParallelBindingUnverified(t *testing.T) {
+	base := tmpStore(t)
+	run := &store.Run{
+		ID:               "artifact-report-parallel-unavailable",
+		ExecutionContext: &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport},
+	}
+	cp := &store.Checkpoint{
+		Parallel: &store.ParallelCheckpoint{Branches: map[string]*store.BranchCheckpoint{
+			"branch-a": {
+				BranchID:  "branch-a",
+				Artifacts: map[string]map[string]any{"plan": {"value": "checkpoint-fallback"}},
+				ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"plan": {NodeID: "worker", Version: 0},
+				},
+			},
+		}},
+	}
+	state, err := New(&ir.Workflow{}, artifactReadErrorStore{base}, newStubExecutor()).prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := state.parallel.Branches["branch-a"]
+	if revision := branch.ArtifactRevisions["plan"]; !revision.Unverified || revision.NodeID != "worker" {
+		t.Fatalf("parallel report fallback claimed verified provenance: %+v", revision)
+	}
+	if branch.ArtifactOwners["plan"] != "worker" || branch.Artifacts["plan"]["value"] != "checkpoint-fallback" {
+		t.Fatalf("parallel report fallback lost value ownership: owners=%+v artifacts=%+v", branch.ArtifactOwners, branch.Artifacts)
+	}
+	prepared := checkpointWithPreparedParallel(cp, state)
+	parent := New(&ir.Workflow{}, base, newStubExecutor()).newRunState(run.ID, nil)
+	result := initBranchResult(parent, "branch-a", prepared.Parallel.Branches["branch-a"])
+	local := newBranchRunState(parent, prepared.Parallel.Branches["branch-a"], result)
+	consumer := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "consumer"}, Publish: "report",
+		CommandRefs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}
+	eng := &Engine{workflow: &ir.Workflow{Nodes: map[string]ir.Node{"consumer": consumer}}}
+	if contract := eng.artifactContractFor("consumer", consumer, 0, local); len(contract.Dependencies) != 0 {
+		t.Fatalf("parallel unavailable binding became a durable dependency: %+v", contract.Dependencies)
+	}
+}
+
+func TestArtifactContractReportEventWriteIsBounded(t *testing.T) {
+	oldTimeout := artifactContractReportWriteTimeout
+	artifactContractReportWriteTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { artifactContractReportWriteTimeout = oldTimeout })
+
+	ctx := context.Background()
+	base := tmpStore(t)
+	run, err := base.CreateRun(ctx, "artifact-report-timeout", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyReport}
+	run.ArtifactIndex = map[string]int{"writer": 0}
+	if err := base.WriteArtifact(ctx, &store.Artifact{
+		RunID: run.ID, NodeID: "writer", Version: 0, Data: map[string]any{"ok": true},
+		Contract: &store.ArtifactContract{LogicalRef: "old", ProducerNode: "writer", Version: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocking := &artifactBlockingEventStore{RunStore: base}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "new"},
+	}}
+	started := time.Now()
+	if err := ValidateArtifactContracts(ctx, blocking, run, wf, "", false); err != nil {
+		t.Fatalf("report validation: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("report event write remained blocked for %s", elapsed)
+	}
+	if !blocking.sawDeadline {
+		t.Fatal("report event write context had no deadline")
 	}
 }
 
@@ -274,6 +676,7 @@ func TestValidateCheckpointArtifactAvailabilityExceptSkipsInvalidatedProducer(t 
 		"kept":    {NodeID: "retained", Version: 0},
 		"removed": {NodeID: "invalidated", Version: 0},
 	}}
+	run.ExecutionContext = &store.ExecutionContext{Version: 1, Policy: store.ContextPolicyEnforce}
 	s := artifactNodeReadErrorStore{RunStore: base, nodeID: "invalidated"}
 	if err := ValidateCheckpointArtifactAvailability(ctx, s, run); err == nil {
 		t.Fatal("unreadable invalidated producer was unexpectedly available")
@@ -291,6 +694,10 @@ func TestResumeRejectsUnavailableExactParallelArtifactBeforeClaim(t *testing.T) 
 		t.Fatal(err)
 	}
 	run.Status = store.RunStatusFailedResumable
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
 	run.Checkpoint = &store.Checkpoint{
 		NodeID: "router",
 		Parallel: &store.ParallelCheckpoint{
@@ -700,6 +1107,44 @@ func TestRebuildArtifactRevisionsRebindsSwappedPublishAliases(t *testing.T) {
 	}
 }
 
+func TestPrepareLegacyResumeSwapsAliasValuesWithTheirRevisions(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "second"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "first"},
+	}}
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"a": {"producer": "new-a"},
+			"b": {"producer": "new-b"},
+		},
+		Artifacts: map[string]map[string]any{
+			"first":  {"producer": "a"},
+			"second": {"producer": "b"},
+		},
+		ArtifactOwners: map[string]string{"first": "a", "second": "b"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"first":  {NodeID: "a", Version: 1},
+			"second": {NodeID: "b", Version: 2},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	run := &store.Run{ID: "artifact-swapped-values", ExecutionContext: &store.ExecutionContext{Policy: store.ContextPolicyLegacy}}
+	state, err := New(wf, nil, newStubExecutor()).prepareResumeArtifacts(context.Background(), run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["first"]["producer"]; got != "b" {
+		t.Fatalf("first alias kept the previous producer's value: %v", got)
+	}
+	if got := state.artifacts["second"]["producer"]; got != "a" {
+		t.Fatalf("second alias kept the previous producer's value: %v", got)
+	}
+	if state.owners["first"] != "b" || state.owners["second"] != "a" {
+		t.Fatalf("swapped alias owners = %+v", state.owners)
+	}
+}
+
 func TestRebuildArtifactRevisionsRestoredAliasUsesLatestProducerRevision(t *testing.T) {
 	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
 		"producer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "producer"}, Publish: "original"},
@@ -752,7 +1197,15 @@ func TestResumeUsesPreclaimArtifactSnapshotWithoutSecondRead(t *testing.T) {
 	ctx := context.Background()
 	base := tmpStore(t)
 	const runID = "artifact-resume-one-read"
-	if _, err := base.CreateRun(ctx, runID, "artifact_resume", nil); err != nil {
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := base.SaveRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
 	if err := base.WriteArtifact(ctx, &store.Artifact{
@@ -919,7 +1372,10 @@ func TestForcedPublishRenameRecordsCanonicalDependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp := &store.Checkpoint{
-		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"value": "latest-output"}},
+		NodeID:           "resume",
+		Outputs:          map[string]map[string]any{"writer": {"value": "latest-output"}},
+		Artifacts:        map[string]map[string]any{"old-name": {"value": "old"}},
+		ArtifactsKnown:   true,
 		ArtifactVersions: map[string]int{"writer": 1},
 		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
 			"old-name": {NodeID: "writer", Version: 0, ContractLogicalRef: "old-name"},
@@ -1056,6 +1512,9 @@ func TestPrepareResumeArtifactsKeepsLegacyParallelCheckpointValue(t *testing.T) 
 	if got := second.artifacts["result"]["item"]; got != "checkpoint-branch" {
 		t.Fatalf("second resume replaced legacy checkpoint value: %v", got)
 	}
+	if owner := next.ArtifactOwners["result"]; owner != "worker" {
+		t.Fatalf("legacy fallback owner was not persisted: %q", owner)
+	}
 }
 
 func TestLegacyBranchArtifactDoesNotBorrowTrunkProvenance(t *testing.T) {
@@ -1082,6 +1541,319 @@ func TestLegacyBranchArtifactDoesNotBorrowTrunkProvenance(t *testing.T) {
 	contract := eng.artifactContractFor("consumer", consumer, 0, local)
 	if len(contract.Dependencies) != 0 {
 		t.Fatalf("legacy branch value borrowed trunk provenance: %+v", contract.Dependencies)
+	}
+}
+
+func TestLegacyCheckpointOwnerRebindsAfterPublishRename(t *testing.T) {
+	ctx := context.Background()
+	run := &store.Run{ID: "artifact-owner-rename"}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "old"},
+	}}
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	legacy := &store.Checkpoint{
+		NodeID:           "retry",
+		Outputs:          map[string]map[string]any{"writer": {"value": "retained"}},
+		ArtifactVersions: map[string]int{"writer": 1},
+	}
+	state, err := eng.prepareResumeArtifacts(ctx, run, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := eng.newRunState(run.ID, nil)
+	eng.restoreCheckpointState(rs, legacy, state)
+	cp := buildCheckpoint(rs, "retry")
+	wf.Nodes["writer"].(*ir.ToolNode).Publish = "renamed"
+
+	next, err := eng.prepareResumeArtifacts(ctx, run, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := next.artifacts["renamed"]["value"]; got != "retained" {
+		t.Fatalf("renamed artifact = %v; artifacts=%+v owners=%+v", got, next.artifacts, next.owners)
+	}
+	if owner := next.owners["renamed"]; owner != "writer" {
+		t.Fatalf("renamed artifact owner = %q", owner)
+	}
+}
+
+func TestLegacyCheckpointOwnerSurvivesRepeatedPublishRenames(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "original"},
+	}}
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	run := &store.Run{ID: "artifact-repeated-owner-rename"}
+	cp := &store.Checkpoint{
+		NodeID:                 "retry",
+		Outputs:                map[string]map[string]any{"writer": {"value": "retained"}},
+		ArtifactRevisionsKnown: true,
+	}
+	for _, name := range []string{"original", "renamed", "final"} {
+		wf.Nodes["writer"].(*ir.ToolNode).Publish = name
+		state, err := eng.prepareResumeArtifacts(context.Background(), run, cp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := state.artifacts[name]["value"]; got != "retained" {
+			t.Fatalf("artifact after rename to %q = %v; artifacts=%+v owners=%+v", name, got, state.artifacts, state.owners)
+		}
+		rs := eng.newRunState(run.ID, nil)
+		eng.restoreCheckpointState(rs, cp, state)
+		cp = buildCheckpoint(rs, "retry")
+	}
+}
+
+func TestPrepareResumeArtifactsSwapsMixedProvenanceAliases(t *testing.T) {
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"a": {"value": "a"},
+			"b": {"value": "b"},
+		},
+		Artifacts:      map[string]map[string]any{"first": {"value": "a"}, "second": {"value": "b"}},
+		ArtifactOwners: map[string]string{"first": "a", "second": "b"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"second": {NodeID: "b", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "second"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "first"},
+	}}
+	state, err := New(wf, tmpStore(t), newStubExecutor()).prepareResumeArtifacts(
+		context.Background(), &store.Run{ID: "artifact-mixed-alias-swap"}, cp,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.artifacts["first"]["value"] != "b" || state.artifacts["second"]["value"] != "a" {
+		t.Fatalf("mixed-provenance alias swap = artifacts %+v, owners %+v, revisions %+v", state.artifacts, state.owners, state.revisions)
+	}
+	if _, stale := state.revisions["second"]; stale {
+		t.Fatalf("owner-only alias retained the old producer's exact revision: %+v", state.revisions)
+	}
+}
+
+func TestPrepareResumeArtifactsRestoresNewPublishFromRetainedOutput(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"writer": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}},
+	}}
+	eng := New(wf, tmpStore(t), newStubExecutor(), WithForceResume(true))
+	rs := eng.newRunState("artifact-publish-added", nil)
+	rs.outputs["writer"] = map[string]any{"value": "retained"}
+	cp := buildCheckpoint(rs, "later")
+	wf.Nodes["writer"].(*ir.ToolNode).Publish = "plan"
+
+	state, err := eng.prepareResumeArtifacts(context.Background(), &store.Run{ID: rs.runID}, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["plan"]["value"]; got != "retained" {
+		t.Fatalf("new publish alias value = %v; artifacts=%+v outputs=%+v", got, state.artifacts, cp.Outputs)
+	}
+	if owner := state.owners["plan"]; owner != "writer" {
+		t.Fatalf("new publish alias owner = %q", owner)
+	}
+	if _, exact := state.revisions["plan"]; exact {
+		t.Fatalf("new publish alias acquired false physical provenance: %+v", state.revisions)
+	}
+}
+
+func TestPrepareResumeArtifactsTransfersPublishFromRetiredOwner(t *testing.T) {
+	cp := &store.Checkpoint{
+		Outputs: map[string]map[string]any{
+			"a": {"value": "new-owner"},
+			"b": {"value": "retired-owner"},
+		},
+		Artifacts:      map[string]map[string]any{"plan": {"value": "retired-owner"}},
+		ArtifactOwners: map[string]string{"plan": "b"},
+		ArtifactsKnown: true,
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "b", Version: 0},
+		},
+		ArtifactRevisionsKnown: true,
+	}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "plan"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}},
+	}}
+	state, err := New(wf, tmpStore(t), newStubExecutor()).prepareResumeArtifacts(
+		context.Background(), &store.Run{ID: "artifact-publish-transfer"}, cp,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["plan"]["value"]; got != "new-owner" {
+		t.Fatalf("transferred publish value = %v; artifacts=%+v owners=%+v", got, state.artifacts, state.owners)
+	}
+	if owner := state.owners["plan"]; owner != "a" {
+		t.Fatalf("transferred publish owner = %q", owner)
+	}
+	if _, exact := state.revisions["plan"]; exact {
+		t.Fatalf("transferred publish acquired stale physical provenance: %+v", state.revisions)
+	}
+}
+
+func TestBuildCheckpointDoesNotDuplicateOwnedOutputBodies(t *testing.T) {
+	eng := New(&ir.Workflow{}, nil, newStubExecutor())
+	rs := eng.newRunState("artifact-large-checkpoint", nil)
+	body := strings.Repeat("x", 9<<20)
+	rs.outputs["producer"] = map[string]any{"data": body, "exit_code": int64(0)}
+	rs.artifacts["published"] = map[string]any{"data": body, "exit_code": float64(0)}
+	rs.artifactOwners["published"] = "producer"
+	rs.artifactRevisions["published"] = store.ArtifactRevisionRef{NodeID: "producer", Version: 0}
+
+	cp := buildCheckpoint(rs, "next")
+	if _, duplicated := cp.Artifacts["published"]; duplicated {
+		t.Fatal("checkpoint duplicated a logical artifact already present as its owner's output")
+	}
+	if owner := cp.ArtifactOwners["published"]; owner != "producer" {
+		t.Fatalf("compacted checkpoint lost logical owner: %q", owner)
+	}
+	encoded, err := bson.Marshal(bson.M{"checkpoint": cp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 16<<20 {
+		t.Fatalf("compacted checkpoint is %d BSON bytes, exceeds Mongo's 16 MiB document limit", len(encoded))
+	}
+	state, err := eng.prepareResumeArtifacts(context.Background(), &store.Run{ID: rs.runID}, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["published"]["data"]; got != body {
+		t.Fatal("resume did not hydrate the compacted logical artifact")
+	}
+}
+
+func TestBuildCheckpointReferencesLargeHistoricalArtifactBody(t *testing.T) {
+	ctx := context.Background()
+	st := tmpStore(t)
+	eng := New(&ir.Workflow{}, st, newStubExecutor())
+	rs := eng.newRunState("artifact-large-history", nil)
+	oldBody := strings.Repeat("o", 9<<20)
+	currentBody := strings.Repeat("n", 9<<20)
+	rs.outputs["producer"] = map[string]any{"data": currentBody}
+	rs.artifacts["old-name"] = map[string]any{"data": oldBody}
+	rs.artifactOwners["old-name"] = "producer"
+	rs.artifactRevisions["old-name"] = store.ArtifactRevisionRef{NodeID: "producer", Version: 0}
+	rs.artifactVersions["producer"] = 2
+	if err := st.WriteArtifact(ctx, &store.Artifact{
+		RunID: rs.runID, NodeID: "producer", Version: 0,
+		Data: map[string]any{"data": oldBody},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := buildCheckpoint(rs, "next")
+	if _, embedded := cp.Artifacts["old-name"]; embedded {
+		t.Fatal("checkpoint embedded a large historical body already held by an immutable revision")
+	}
+	if revision := cp.ArtifactRevisions["old-name"]; !revision.ValueFromRevision {
+		t.Fatalf("historical body has no durable value reference: %+v", revision)
+	}
+	encoded, err := bson.Marshal(bson.M{"checkpoint": cp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 16<<20 {
+		t.Fatalf("checkpoint with historical body reference is %d BSON bytes, exceeds Mongo's 16 MiB document limit", len(encoded))
+	}
+	state, err := eng.prepareResumeArtifacts(ctx, &store.Run{
+		ID: rs.runID, ExecutionContext: &store.ExecutionContext{Policy: store.ContextPolicyLegacy},
+	}, cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.artifacts["old-name"]["data"]; got != oldBody {
+		t.Fatal("legacy resume did not restore the referenced historical body")
+	}
+}
+
+func TestReferencedHistoricalArtifactUnavailableDoesNotBlockCompatibilityPolicies(t *testing.T) {
+	for _, policy := range []store.ContextPolicy{store.ContextPolicyLegacy, store.ContextPolicyReport} {
+		t.Run(string(policy), func(t *testing.T) {
+			base := tmpStore(t)
+			cp := &store.Checkpoint{
+				Outputs:        map[string]map[string]any{"producer": {"value": "current"}},
+				Artifacts:      map[string]map[string]any{},
+				ArtifactOwners: map[string]string{"old-name": "producer"},
+				ArtifactsKnown: true,
+				ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+					"old-name": {NodeID: "producer", Version: 0, ValueFromRevision: true},
+				},
+				ArtifactRevisionsKnown: true,
+			}
+			state, err := New(&ir.Workflow{}, artifactReadErrorStore{base}, newStubExecutor()).prepareResumeArtifacts(
+				context.Background(),
+				&store.Run{ID: "unavailable-history", ExecutionContext: &store.ExecutionContext{Policy: policy}},
+				cp,
+			)
+			if err != nil {
+				t.Fatalf("compatibility policy became an availability gate: %v", err)
+			}
+			if _, retained := state.artifacts["old-name"]; retained {
+				t.Fatalf("unavailable historical alias retained a fabricated value: %+v", state.artifacts)
+			}
+		})
+	}
+}
+
+func TestBranchCheckpointPreservesExpandedArtifactForV1Readers(t *testing.T) {
+	result := &branchResult{
+		branchID:          "branch",
+		outputs:           map[string]map[string]any{"worker": {"value": "published"}},
+		artifacts:         map[string]map[string]any{"plan": {"value": "published"}},
+		artifactOwners:    map[string]string{"plan": "worker"},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{"plan": {NodeID: "worker", Version: 0}},
+	}
+	cp := branchCheckpointFromState(&runState{}, result, "next", false)
+	if got := cp.Artifacts["plan"]["value"]; got != "published" {
+		t.Fatalf("branch checkpoint omitted the expanded V1-compatible artifact: %+v", cp.Artifacts)
+	}
+	if owner := cp.ArtifactOwners["plan"]; owner != "worker" {
+		t.Fatalf("branch checkpoint lost logical owner: %q", owner)
+	}
+	restored := initBranchResult(&runState{}, "branch", cp)
+	if got := restored.artifacts["plan"]["value"]; got != "published" {
+		t.Fatalf("branch resume did not hydrate compacted artifact: %+v", restored.artifacts)
+	}
+	expanded := *cp
+	expanded.Artifacts = map[string]map[string]any{"plan": {"value": "published"}}
+	prepared := checkpointWithPreparedParallel(
+		&store.Checkpoint{},
+		&resumeArtifactState{parallel: &store.ParallelCheckpoint{Branches: map[string]*store.BranchCheckpoint{"branch": &expanded}}},
+	)
+	if got := prepared.Parallel.Branches["branch"].Artifacts["plan"]["value"]; got != "published" {
+		t.Fatalf("prepared parallel checkpoint dropped the V1-compatible branch body: %+v", prepared.Parallel.Branches["branch"].Artifacts)
+	}
+}
+
+func TestLegacyCompletedBranchRecoversArtifactOwner(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-old-branch-owner", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"worker": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "worker"}, Publish: "plan"},
+	}}, s, newStubExecutor())
+	rs := eng.newRunState(run.ID, nil)
+	rs.ctx = ctx
+	branch := &store.BranchCheckpoint{
+		Outputs:   map[string]map[string]any{"worker": {"value": "stale"}},
+		Artifacts: map[string]map[string]any{"plan": {"value": "stale"}},
+		Completed: true,
+	}
+	result := initBranchResult(rs, "branch", branch)
+	if _, err := eng.processConvergenceTerminal(rs, []*branchResult{result}, ir.AwaitWaitAll); err != nil {
+		t.Fatal(err)
+	}
+	cp := buildCheckpoint(rs, "later")
+	if owner := cp.ArtifactOwners["plan"]; owner != "worker" {
+		t.Fatalf("legacy branch artifact owner = %q; artifacts=%+v outputs=%+v", owner, cp.Artifacts, cp.Outputs)
 	}
 }
 

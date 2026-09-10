@@ -409,9 +409,10 @@ func WithForceResume(force bool) EngineOption {
 
 // WithArtifactContractsPrevalidated avoids re-running the contract-only gate
 // when an in-process launch authority has just validated the same immutable
-// artifact set synchronously. Exact checkpoint bodies are still loaded and
-// identity-checked by Resume because they are required to rebuild execution
-// state. Do not carry this option across a process or queue boundary.
+// artifact set synchronously. Under enforce, exact checkpoint bodies are still
+// loaded and identity-checked by Resume because they are required to rebuild
+// execution state; legacy/report retain their compatibility behavior. Do not
+// carry this option across a process or queue boundary.
 func WithArtifactContractsPrevalidated(prevalidated bool) EngineOption {
 	return func(e *Engine) { e.artifactContractsChecked = prevalidated }
 }
