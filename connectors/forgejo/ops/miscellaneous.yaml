@@ -275,6 +275,7 @@ operations:
   - key: body
     name: body
     in: body
+    whole_body: true
     type: string
   results:
   - status: 200

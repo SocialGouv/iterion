@@ -125,9 +125,40 @@ type HTTPBinding struct {
 	// same field set means different bytes as JSON, as form-urlencoded and
 	// as multipart.
 	RequestBody BodyEncoding `yaml:"request_body,omitempty" json:"request_body,omitempty"`
+	// ContentType is the media type the vendor actually named, when it is not
+	// the canonical one for RequestBody.
+	//
+	// It exists because the ENCODING and the MEDIA TYPE are different facts,
+	// and collapsing them sends the wrong header. `application/json-patch+json`
+	// and `application/vnd.api+json` are JSON on the wire — the encoding is
+	// right — but they are not `application/json`, and a vendor that declares
+	// one of them refuses the other outright. Sending the canonical type meant
+	// an operation that the description says exists, that iterion can encode
+	// correctly, and that the vendor rejects at the header.
+	//
+	// Empty means the canonical type for the encoding, which is the common
+	// case and keeps every existing package unchanged.
+	ContentType string `yaml:"content_type,omitempty" json:"content_type,omitempty"`
 	// Accept overrides the response media type when the vendor answers
 	// something other than JSON.
 	Accept string `yaml:"accept,omitempty" json:"accept,omitempty"`
+}
+
+// RequestContentType is the header value to send: the vendor's own media type
+// when it named a specific one, else the canonical type for the encoding.
+func (h HTTPBinding) RequestContentType() string {
+	if h.ContentType != "" {
+		return h.ContentType
+	}
+	switch h.RequestBody {
+	case BodyJSON:
+		return "application/json"
+	case BodyForm:
+		return "application/x-www-form-urlencoded"
+	}
+	// Multipart's header carries the generated boundary, so it is never
+	// derived from the encoding alone — the body builder produces it.
+	return ""
 }
 
 // BodyEncoding is the wire encoding of a request body. Only the three iterion
@@ -219,6 +250,19 @@ type Param struct {
 	// the connection, not here — but some APIs take one as an argument
 	// (Slack's Web API declares `token` as an ordinary header parameter).
 	Secret bool `yaml:"secret,omitempty" json:"secret,omitempty"`
+
+	// WholeBody marks a body parameter that IS the request body rather than a
+	// member of it — a vendor whose endpoint takes a bare array, or a scalar.
+	//
+	// Without it the generator invented a member called `body` and the builder
+	// wrapped the value in an object, so an endpoint expecting `[1,2]`
+	// received `{"body":[1,2]}`. The parameter still needs a NAME, because a
+	// `.bot` has to address it; what the marker changes is that the name never
+	// reaches the wire.
+	//
+	// Exclusive with ordinary body members: a request body is one shape or the
+	// other, and Validate refuses a mixture.
+	WholeBody bool `yaml:"whole_body,omitempty" json:"whole_body,omitempty"`
 }
 
 // ExplodeOrDefault resolves Explode against the style's own default, so an

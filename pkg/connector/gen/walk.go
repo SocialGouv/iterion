@@ -43,6 +43,12 @@ type walker struct {
 	// defaultSecurity is the description's root-level `security`, applied to
 	// every operation that declares none of its own.
 	defaultSecurity []spec.SecurityRequirement
+	// lastBodyMediaType carries the vendor's own media type out of
+	// requestBody, when it differs from the canonical one for the encoding.
+	// A field rather than a fifth return value: the walk is single-threaded
+	// and one operation's body is read exactly once, immediately before it is
+	// consumed.
+	lastBodyMediaType string
 }
 
 func (w *walker) run() error {
@@ -391,6 +397,7 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		}
 		out.Params = append(out.Params, body...)
 		out.HTTP.RequestBody = encoding
+		out.HTTP.ContentType = w.lastBodyMediaType
 	} else if enc := w.swaggerBodyEncoding(op); enc != "" {
 		out.HTTP.RequestBody = enc
 	}
@@ -412,6 +419,25 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 
 	out.Results, out.Errors = w.responses(mapAt(op, "responses"))
 	out.Security, out.Anonymous = w.security(op)
+	// A FILE parameter is not something iterion can send yet. The multipart
+	// writer produces a text field, so an upload arrived as a part containing
+	// whatever string the argument held — a pathname, or base64 text — with no
+	// filename and no file content. The vendor then rejects it, or worse
+	// creates a corrupt attachment.
+	//
+	// Refused rather than published, by the rule this package already applies
+	// to every other shape it cannot encode: an operation that LOOKS executable
+	// and would send the wrong bytes is the failure the coverage gap exists to
+	// prevent. Publishing it because "most of it works" is the façade.
+	//
+	// Supporting it needs an authorized file-input model — which paths a
+	// workflow may read, and how that survives a sandbox — and that is a
+	// decision, not an oversight.
+	for _, p := range out.Params {
+		if p.Type == "file" {
+			dropped = append(dropped, "the file parameter "+p.Name+" (iterion cannot yet send a file part)")
+		}
+	}
 	return out, dropped
 }
 
@@ -592,7 +618,7 @@ func (w *walker) scalarParam(pm map[string]any, in spec.ParamIn) spec.Param {
 	if p.Type == "" {
 		p.Type = "string"
 	}
-	p.Style, p.Explode = serialization(pm, in, p.Type)
+	p.Style, p.Explode = w.serialization(pm, in, p.Type)
 	return p
 }
 
@@ -606,7 +632,7 @@ func (w *walker) scalarParam(pm map[string]any, in spec.ParamIn) spec.Param {
 //
 // A scalar gets no style: there is nothing to serialize, and recording one
 // would add bytes to every parameter of every package for no meaning.
-func serialization(pm map[string]any, in spec.ParamIn, typ string) (spec.ParamStyle, *bool) {
+func (w *walker) serialization(pm map[string]any, in spec.ParamIn, typ string) (spec.ParamStyle, *bool) {
 	if typ != "array" && typ != "object" {
 		return "", nil
 	}
@@ -635,6 +661,15 @@ func serialization(pm map[string]any, in spec.ParamIn, typ string) (spec.ParamSt
 		// leaving it unset would silently comma-join. Named as unsupported so
 		// the operation becomes a coverage gap rather than a wrong request.
 		return spec.ParamStyle("tsv"), boolPtr(false)
+	}
+	// Nothing was said, so the FORMAT's own default applies — and the two
+	// formats disagree. Swagger 2's default collectionFormat is `csv`;
+	// OpenAPI 3's default explode for a form parameter is `true`, i.e.
+	// repeated pairs. Applying the OpenAPI default to a Swagger parameter
+	// sent `labels=a&labels=b` where the vendor documented `labels=a,b`, and
+	// a vendor that reads only the first pair then acts on half the list.
+	if w.format == FormatSwagger2 {
+		return defaultStyleFor(in), boolPtr(false)
 	}
 	return defaultStyleFor(in), nil
 }
@@ -669,9 +704,25 @@ func (w *walker) bodyParams(schema map[string]any) []spec.Param {
 	}
 	props := mapAt(resolved, "properties")
 	if len(props) == 0 {
-		p := spec.Param{Name: "body", In: spec.InBody, Type: str(resolved, "type"), SchemaRef: refName}
+		// The body has no members to flatten: it IS a value — a bare array, a
+		// scalar, or an object the description does not describe. Marked as
+		// such so the builder sends the value itself. Without the marker the
+		// invented `body` name reached the wire and an endpoint expecting
+		// `[1,2]` received `{"body":[1,2]}`.
+		p := spec.Param{
+			Name: "body", In: spec.InBody, Type: str(resolved, "type"),
+			SchemaRef: refName, WholeBody: true,
+		}
 		if p.Type == "" {
 			p.Type = "object"
+		}
+		if items := mapAt(resolved, "items"); len(items) > 0 {
+			if ref := str(items, "$ref"); ref != "" {
+				p.SchemaRef = schemaNameFromRef(ref)
+				p.Items = "object"
+			} else if t := str(items, "type"); t != "" {
+				p.Items = t
+			}
 		}
 		return []spec.Param{p}
 	}
@@ -765,10 +816,33 @@ func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding
 		// Every media type this body offers is one iterion cannot build.
 		return nil, spec.BodyEncoding(unsupportedBodyMarker(content)), ""
 	}
+	// The vendor's OWN media type is remembered when it is not the canonical
+	// one for the encoding. `application/json-patch+json` is JSON on the wire,
+	// so the encoding is right, but it is not `application/json` — and a
+	// vendor that declares one refuses the other at the header, which made an
+	// operation iterion encodes perfectly fail before it was read.
+	w.lastBodyMediaType = ""
+	if chosen != canonicalMediaType(encoding) {
+		w.lastBodyMediaType = chosen
+	}
 	// `required: true` on the body itself is NOT propagated onto its members:
 	// it says the envelope must be sent, while which members are mandatory is
 	// the schema's own `required` list, which bodyParams already read.
 	return w.bodyParams(mapAt(mapAt(content, chosen), "schema")), encoding, ""
+}
+
+// canonicalMediaType is the type an encoding implies, so only a DIVERGENCE is
+// recorded and every existing package stays byte-identical.
+func canonicalMediaType(e spec.BodyEncoding) string {
+	switch e {
+	case spec.BodyJSON:
+		return "application/json"
+	case spec.BodyForm:
+		return "application/x-www-form-urlencoded"
+	case spec.BodyMultipart:
+		return "multipart/form-data"
+	}
+	return ""
 }
 
 // unsupportedBodyMarker names the media types a body offered, so the skip

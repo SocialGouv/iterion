@@ -1644,6 +1644,7 @@ operations:
   - key: body
     name: body
     in: body
+    whole_body: true
     type: object
     schema_ref: CreatePullReviewCommentOptions
   results:
@@ -1785,68 +1786,6 @@ operations:
   - status: 422
     class: bad_request
     description: APIValidationError is error format response related to input validation
-  effect: create
-  deterministic: true
-- id: forgejo.repository.create_release_attachment
-  source_operation_id: repoCreateReleaseAttachment
-  summary: Create a release attachment
-  resource: repository
-  verb: create_release_attachment
-  tags:
-  - repository
-  http:
-    method: POST
-    path: /repos/{owner}/{repo}/releases/{id}/assets
-    request_body: multipart
-  params:
-  - key: id
-    name: id
-    in: path
-    type: integer
-    format: int64
-    required: true
-    description: id of the release
-  - key: owner
-    name: owner
-    in: path
-    type: string
-    required: true
-    description: owner of the repo
-  - key: repo
-    name: repo
-    in: path
-    type: string
-    required: true
-    description: name of the repo
-  - key: name
-    name: name
-    in: query
-    type: string
-    description: name of the attachment
-  - key: attachment
-    name: attachment
-    in: body
-    type: file
-    description: attachment to upload (this parameter is incompatible with `external_url`)
-  - key: external_url
-    name: external_url
-    in: body
-    type: string
-    description: url to external asset (this parameter is incompatible with `attachment`)
-  results:
-  - status: 201
-    schema_ref: Attachment
-    description: Attachment
-  errors:
-  - status: 400
-    class: bad_request
-    description: APIError is error format response
-  - status: 404
-    class: not_found
-    description: APINotFound is a not found error response
-  - status: 413
-    class: bad_request
-    description: QuotaExceeded
   effect: create
   deterministic: true
 - id: forgejo.repository.create_repo_variable

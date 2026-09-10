@@ -227,7 +227,15 @@ func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[st
 		if p.In != spec.InPath {
 			continue
 		}
-		raw := scalarString(p.Default)
+		// Serialized per the parameter's STYLE, like every other location.
+		// This used to be a bare scalarString, so a path array declared
+		// `simple` (the OpenAPI default for a path parameter, and the only
+		// style a path segment can carry) was rendered as escaped JSON —
+		// `%5B%22a%22%2C%22b%22%5D` where the vendor wanted `a,b`.
+		raw, err := pathValue(op, p)
+		if err != nil {
+			return nil, err
+		}
 		decoded = strings.ReplaceAll(decoded, "{"+p.Name+"}", raw)
 		escaped = strings.ReplaceAll(escaped, "{"+p.Name+"}", url.PathEscape(raw))
 	}
@@ -242,12 +250,49 @@ func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[st
 	return u, nil
 }
 
+// pathValue renders one path parameter into the single segment a path can
+// hold.
+//
+// A path segment is ONE string, so a style that would produce several values
+// has nowhere to put them — which is exactly why `simple` is the OpenAPI
+// default here and why an array joins on commas. An object is refused rather
+// than encoded: OpenAPI's `simple` object form (`k=v,k=v`) is ambiguous with a
+// value that contains a comma, and no vendor iterion has met uses it.
+func pathValue(op spec.Operation, p spec.Param) (string, error) {
+	if _, isObj := p.Default.(map[string]any); isObj {
+		return "", &Error{
+			Class:   spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: path parameter %s was given an object, which a path segment cannot carry unambiguously", op.ID, p.Key),
+		}
+	}
+	styled := p
+	if styled.Style == "" {
+		styled.Style = spec.StyleSimple
+	}
+	values, err := serializeValue(op, styled, p.Default)
+	if err != nil {
+		return "", err
+	}
+	// serializeValue may return several values for an exploded style; a path
+	// cannot express that, so it is joined the way `simple` does.
+	return strings.Join(values, ","), nil
+}
+
 // buildQuery places the query parameters, honouring each one's serialization.
 func buildQuery(op spec.Operation, byKey map[string]spec.Param) (url.Values, error) {
 	out := url.Values{}
 	for _, key := range sortedKeys(byKey) {
 		p := byKey[key]
 		if p.In != spec.InQuery {
+			continue
+		}
+		// An OBJECT in the query is the one shape that produces several
+		// DIFFERENT keys, so it cannot go through serializeValue's
+		// one-name-many-values contract.
+		if obj, isObj := p.Default.(map[string]any); isObj {
+			if err := addDeepObject(out, op, p, obj); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		values, err := serializeValue(op, p, p.Default)
@@ -259,6 +304,52 @@ func buildQuery(op spec.Operation, byKey map[string]spec.Param) (url.Values, err
 		}
 	}
 	return out, nil
+}
+
+// addDeepObject expands an object parameter into `name[member]=value` pairs.
+//
+// This shape used to fall out of serializeValue's non-list branch as a single
+// scalar, so `filter={"name":"Ada"}` reached the vendor — a JSON document in a
+// query value, which no `deepObject` endpoint parses. The request looked
+// entirely well-formed and matched nothing.
+//
+// An object with any OTHER style is refused rather than guessed at, for the
+// same reason the unknown-style branch refuses: a guess here is a wrong
+// request that looks right.
+func addDeepObject(out url.Values, op spec.Operation, p spec.Param, obj map[string]any) error {
+	if p.Style != spec.StyleDeepObject {
+		return &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: parameter %s was given an object, but declares style %q — only deepObject expands an object into query members",
+				op.ID, p.Key, orDefaultStyle(p.Style)),
+		}
+	}
+	for _, k := range sortedKeys(obj) {
+		v := obj[k]
+		if _, nested := v.(map[string]any); nested {
+			// OpenAPI leaves nested deepObject undefined and vendors disagree,
+			// so it is refused instead of encoded one plausible way.
+			return &Error{
+				Class:   spec.ErrBadRequest,
+				Message: fmt.Sprintf("operation %s: parameter %s has a nested object at %q, which deepObject does not define", op.ID, p.Key, k),
+			}
+		}
+		if items, isList := listOf(v); isList {
+			for _, it := range items {
+				out.Add(p.Name+"["+k+"]", scalarString(it))
+			}
+			continue
+		}
+		out.Add(p.Name+"["+k+"]", scalarString(v))
+	}
+	return nil
+}
+
+func orDefaultStyle(s spec.ParamStyle) spec.ParamStyle {
+	if s == "" {
+		return spec.StyleForm
+	}
+	return s
 }
 
 // serializeValue renders one value per its style — the difference between
@@ -327,6 +418,19 @@ func buildBody(op spec.Operation, byKey map[string]spec.Param) (io.Reader, strin
 	}
 	switch op.HTTP.RequestBody {
 	case spec.BodyJSON:
+		// A WHOLE-BODY parameter is the body, not a member of it. Wrapping it
+		// sent `{"body":[1,2]}` to an endpoint documented as taking `[1,2]`,
+		// which the vendor rejects or — worse — accepts as an empty request.
+		for _, p := range members {
+			if !p.WholeBody {
+				continue
+			}
+			raw, err := json.Marshal(p.Default)
+			if err != nil {
+				return nil, "", fmt.Errorf("exec: operation %q: encode body: %w", op.ID, err)
+			}
+			return newBody(raw), op.HTTP.RequestContentType(), nil
+		}
 		payload := map[string]any{}
 		for _, p := range members {
 			assignBodyMember(payload, p)
@@ -335,7 +439,7 @@ func buildBody(op spec.Operation, byKey map[string]spec.Param) (io.Reader, strin
 		if err != nil {
 			return nil, "", fmt.Errorf("exec: operation %q: encode JSON body: %w", op.ID, err)
 		}
-		return newBody(raw), "application/json", nil
+		return newBody(raw), op.HTTP.RequestContentType(), nil
 
 	case spec.BodyForm:
 		form := url.Values{}
@@ -349,13 +453,27 @@ func buildBody(op spec.Operation, byKey map[string]spec.Param) (io.Reader, strin
 				form.Add(p.Name, v)
 			}
 		}
-		return newBody([]byte(form.Encode())), "application/x-www-form-urlencoded", nil
+		return newBody([]byte(form.Encode())), op.HTTP.RequestContentType(), nil
 
 	case spec.BodyMultipart:
 		var buf bytes.Buffer
 		w := multipart.NewWriter(&buf)
 		for _, key := range sortedKeys(members) {
 			p := members[key]
+			if p.Type == "file" {
+				// Generation refuses these now, so reaching here means an
+				// older package or a hand-written one. Refused at the point of
+				// USE as well, because the alternative is what this used to
+				// do: write the argument as a TEXT field — a part containing a
+				// pathname or base64 text, with no filename and no file
+				// content — which the vendor either rejects or turns into a
+				// corrupt attachment.
+				return nil, "", &Error{
+					Class: spec.ErrBadRequest,
+					Message: fmt.Sprintf("operation %s: parameter %s is a file, and this build cannot send a file part; "+
+						"regenerate the package to have the operation reported as a coverage gap", op.ID, p.Key),
+				}
+			}
 			values, err := serializeValue(op, p, p.Default)
 			if err != nil {
 				return nil, "", err

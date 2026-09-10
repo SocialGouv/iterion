@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // OpsFile is one ops/<domain>.yaml: a slice of a connector's operations,
@@ -173,6 +175,14 @@ func (p *Package) Validate() error {
 	}
 	if c.BaseURL.Default == "" && !c.BaseURL.OperatorSupplied {
 		return fmt.Errorf("connector %q: no default base url and not operator-supplied — no call could be addressed", c.ID)
+	}
+	// The CONNECTOR-WIDE outcome predicate, which is the one most packages
+	// actually carry: an API that reports failure inside a 200 does it
+	// everywhere, so it is declared once here and overridden per operation.
+	// Checked with the per-operation ones below, since either can be the
+	// unparsable one.
+	if err := validateOutcome("connector "+c.ID, c.Outcome); err != nil {
+		return err
 	}
 	// Every security requirement must name a scheme the package declares.
 	// Otherwise a binding is accepted at launch and the operation fails
@@ -391,8 +401,52 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 			return fmt.Errorf("operation %q: idempotency_key_param %q names no parameter", op.ID, op.IdempotencyKeyParam)
 		}
 	}
+	// A request body is ONE shape or the other: a value, or a set of members.
+	// A mixture has no encoding — the builder would have to pick, and either
+	// choice silently discards the rest.
+	whole, memberCount := 0, 0
+	for _, prm := range op.Params {
+		if prm.In != InBody {
+			continue
+		}
+		if prm.WholeBody {
+			whole++
+		} else {
+			memberCount++
+		}
+	}
+	if whole > 1 {
+		return fmt.Errorf("operation %q: two parameters both claim to BE the request body", op.ID)
+	}
+	if whole == 1 && memberCount > 0 {
+		return fmt.Errorf("operation %q: one parameter is the whole request body and %d others are members of it — a body is one shape or the other", op.ID, memberCount)
+	}
 	if err := op.validatePagination(); err != nil {
 		return err
+	}
+	if err := validateOutcome(op.ID, op.Outcome); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateOutcome parses the outcome predicate at VALIDATION time.
+//
+// It is the one execution-bearing field that was admitted unread. A predicate
+// that does not parse fails at evaluation — which happens AFTER the request
+// was sent, so an unparsable `success_when` on a mutating operation performs
+// the mutation and then reports that iterion cannot tell whether it worked.
+// The expression language is total and has no I/O, so parsing it here costs
+// nothing and moves the discovery to where it is free.
+//
+// Only the SHAPE is checked. Whether the predicate is *right* about a vendor
+// is not a question a parser can answer.
+func validateOutcome(opID string, policy *OutcomePolicy) error {
+	if policy == nil || strings.TrimSpace(policy.SuccessWhen) == "" {
+		return nil
+	}
+	if _, err := expr.Parse(policy.SuccessWhen); err != nil {
+		return fmt.Errorf("operation %q: success_when %q does not parse: %w", opID, policy.SuccessWhen, err)
 	}
 	return nil
 }

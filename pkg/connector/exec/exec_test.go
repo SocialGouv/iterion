@@ -60,7 +60,11 @@ func probe(base string) *spec.Package {
 						{Key: "page", Name: "page", In: spec.InQuery, Type: "integer"},
 						{Key: "limit", Name: "limit", In: spec.InQuery, Type: "integer"},
 					},
-					Results: []spec.ResultCase{{Status: 200}},
+					// Array: true because every handler in this file answers a
+					// bare `[...]` — the declaration has to match what the
+					// fixture actually serves, or the package validates a
+					// shape no test exercises.
+					Results: []spec.ResultCase{{Status: 200, Array: true}},
 					Pagination: &spec.Pagination{
 						Style: spec.PageNumber, PageParam: "page", SizeParam: "limit",
 						DefaultSize: 2, MaxPages: 3,
@@ -221,6 +225,215 @@ func TestQuerySerializationReachesTheWire(t *testing.T) {
 	}
 	if !strings.Contains(raw, "state=open") {
 		t.Errorf("query = %q, want state=open", raw)
+	}
+}
+
+// TestSerializationIsHonouredAtEVERYLocation, not only in the query.
+//
+// Three shapes reached the wire ignoring what the package declared, each
+// producing a well-formed request the vendor cannot parse — the worst kind,
+// because it looks correct in a log.
+func TestSerializationIsHonouredAtEveryLocation(t *testing.T) {
+	t.Run("a path array joins on commas instead of becoming JSON", func(t *testing.T) {
+		var path string
+		e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+			path = r.URL.Path
+			_, _ = w.Write([]byte(`{}`))
+		})
+		defer done()
+
+		// A path parameter's OpenAPI default style is `simple`, and a path
+		// segment can hold nothing else. The templating bypassed styles
+		// entirely, so this arrived as escaped JSON.
+		op := opOf(t, pkg, "probe.issue.get")
+		for i := range op.Params {
+			if op.Params[i].Key == "index" {
+				op.Params[i].Type = "array"
+				op.Params[i].Items = "string"
+			}
+		}
+		_, err := e.Call(context.Background(), pkg, op,
+			map[string]any{"owner": "acme", "repo": "widgets", "index": []any{"a", "b"}}, creds())
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if !strings.HasSuffix(path, "/a,b") {
+			t.Errorf("path = %q, want it to end in the comma-joined segment `a,b`", path)
+		}
+	})
+
+	t.Run("deepObject expands into query members", func(t *testing.T) {
+		var raw string
+		e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+			raw = r.URL.RawQuery
+			_, _ = w.Write([]byte(`[]`))
+		})
+		defer done()
+
+		op := opOf(t, pkg, "probe.issue.list")
+		op.Params = append(op.Params, spec.Param{
+			Key: "filter", Name: "filter", In: spec.InQuery, Type: "object",
+			Style: spec.StyleDeepObject,
+		})
+		_, err := e.Call(context.Background(), pkg, op, map[string]any{
+			"owner": "acme", "repo": "widgets",
+			"filter": map[string]any{"name": "Ada", "age": 36},
+		}, creds())
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		// The defect sent `filter={"name":"Ada"}` — a JSON document in a query
+		// value, which no deepObject endpoint parses.
+		if !strings.Contains(raw, "filter%5Bname%5D=Ada") {
+			t.Errorf("query = %q, want filter[name]=Ada", raw)
+		}
+		if strings.Contains(raw, "%7B") {
+			t.Errorf("query = %q — a JSON object reached the wire", raw)
+		}
+	})
+
+	t.Run("an object without deepObject is refused, not guessed", func(t *testing.T) {
+		e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("the vendor must not be reached")
+			_, _ = w.Write([]byte(`[]`))
+		})
+		defer done()
+
+		op := opOf(t, pkg, "probe.issue.list")
+		op.Params = append(op.Params, spec.Param{
+			Key: "filter", Name: "filter", In: spec.InQuery, Type: "object",
+			Style: spec.StyleForm,
+		})
+		res, err := e.Call(context.Background(), pkg, op, map[string]any{
+			"owner": "acme", "repo": "widgets", "filter": map[string]any{"name": "Ada"},
+		}, creds())
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if res.OK() {
+			t.Fatal("an object under a style that cannot express one must be refused")
+		}
+	})
+}
+
+// TestAWholeBodyParameterISTheBody, not a member of it.
+//
+// A vendor whose endpoint takes a bare array or a scalar has no body MEMBERS
+// to flatten, and the generator used to invent one called `body`. The builder
+// then wrapped the value in an object, so an endpoint documented as taking
+// `[1,2]` received `{"body":[1,2]}` — which the vendor rejects, or accepts as
+// an empty request.
+func TestAWholeBodyParameterIsTheBody(t *testing.T) {
+	var got string
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := readAll(r)
+		got = string(b)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.comment")
+	op.Params = []spec.Param{
+		{Key: "owner", Name: "owner", In: spec.InPath, Type: "string", Required: true},
+		{Key: "repo", Name: "repo", In: spec.InPath, Type: "string", Required: true},
+		{Key: "index", Name: "index", In: spec.InPath, Type: "integer", Required: true},
+		{Key: "body", Name: "body", In: spec.InBody, Type: "array", Items: "integer", Required: true, WholeBody: true},
+	}
+	_, err := e.Call(context.Background(), pkg, op, map[string]any{
+		"owner": "acme", "repo": "widgets", "index": 1,
+		"body": []any{1, 2},
+	}, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got != "[1,2]" {
+		t.Errorf("the vendor received %s, want the value itself", got)
+	}
+}
+
+// TestABodyCannotBeBothShapes: a value and a set of members have no combined
+// encoding, so the builder would have to pick — and either choice silently
+// discards the rest.
+func TestABodyCannotBeBothShapes(t *testing.T) {
+	pkg := probe("https://probe.example")
+	op, _ := pkg.Operation("probe.issue.comment")
+	op.Params = append(op.Params, spec.Param{
+		Key: "whole", Name: "whole", In: spec.InBody, Type: "array", WholeBody: true,
+	})
+	pkg.Ops[0].Operations[2] = op
+	if err := pkg.Validate(); err == nil {
+		t.Fatal("a body that is both a value and a set of members must be refused")
+	} else if !strings.Contains(err.Error(), "one shape or the other") {
+		t.Errorf("refusal = %v, want it to name the incoherence", err)
+	}
+}
+
+// TestAFileParameterIsRefusedAtTheCALLSite. Generation refuses these now, so
+// reaching the builder means an older package or a hand-written one. It used
+// to write the argument as a TEXT field — a part holding a pathname or base64
+// text, with no filename and no content — which the vendor rejects, or turns
+// into a corrupt attachment.
+func TestAFileParameterIsRefusedAtTheCallSite(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the vendor must not be reached")
+		w.WriteHeader(201)
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.comment")
+	op.HTTP.RequestBody = spec.BodyMultipart
+	op.Params = []spec.Param{
+		{Key: "owner", Name: "owner", In: spec.InPath, Type: "string", Required: true},
+		{Key: "repo", Name: "repo", In: spec.InPath, Type: "string", Required: true},
+		{Key: "index", Name: "index", In: spec.InPath, Type: "integer", Required: true},
+		{Key: "attachment", Name: "attachment", In: spec.InBody, Type: "file", Required: true},
+	}
+	res, err := e.Call(context.Background(), pkg, op, map[string]any{
+		"owner": "acme", "repo": "widgets", "index": 1, "attachment": "/etc/passwd",
+	}, creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("a file parameter must be refused, not written as a text field")
+	}
+	if !strings.Contains(res.Err.Error(), "file part") {
+		t.Errorf("refusal = %v, want it to name what iterion cannot send", res.Err)
+	}
+}
+
+// TestTheVendorsOwnMediaTypeIsSENT. `application/json-patch+json` is JSON on
+// the wire, so the ENCODING is right — but it is not `application/json`, and a
+// vendor declaring one refuses the other at the header. Sending the canonical
+// type made an operation the description says exists, that iterion encodes
+// correctly, fail before its body was read.
+func TestTheVendorsOwnMediaTypeIsSent(t *testing.T) {
+	var got string
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Content-Type")
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.comment")
+	op.HTTP.ContentType = "application/json-patch+json"
+	_, err := e.Call(context.Background(), pkg, op, fullParams("probe.issue.comment"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got != "application/json-patch+json" {
+		t.Errorf("Content-Type = %q, want the vendor's own media type", got)
+	}
+
+	// The falsifier: with none declared, the canonical type is still sent.
+	op.HTTP.ContentType = ""
+	if _, err := e.Call(context.Background(), pkg, op, fullParams("probe.issue.comment"), creds()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got != "application/json" {
+		t.Errorf("Content-Type = %q, want the canonical type when none is declared", got)
 	}
 }
 

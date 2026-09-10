@@ -228,6 +228,7 @@ operations:
   - key: body
     name: body
     in: body
+    whole_body: true
     type: object
     schema_ref: ForgeLike
   results:
