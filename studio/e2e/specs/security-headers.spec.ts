@@ -16,6 +16,16 @@ const CDN_HOSTS = /cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com/;
 function watch(page: import("@playwright/test").Page) {
   const violations: string[] = [];
   const offOrigin: string[] = [];
+  const errors: string[] = [];
+
+  // A worker that fails to load reports NEITHER a CSP violation NOR an
+  // off-origin request — it throws inside the worker. This spec was green on
+  // a build whose editor worker was dead (no diff, no suggestions, no link
+  // detection), so the page's own error channel is watched too.
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(`console: ${m.text()}`);
+  });
 
   // securitypolicyviolation fires in the page for every blocked resource.
   // Registered via addInitScript so it is armed before the first byte runs.
@@ -35,6 +45,7 @@ function watch(page: import("@playwright/test").Page) {
 
   return {
     offOrigin,
+    errors,
     async drain() {
       const inPage = await page.evaluate(
         () => (window as unknown as { __cspViolations?: string[] }).__cspViolations ?? [],
@@ -85,6 +96,7 @@ test("the app boots under the CSP with no violation and no CDN request", async (
 
   expect(await w.drain(), "CSP violations while booting the SPA").toEqual([]);
   expect(w.offOrigin, "the SPA fetched from a third-party CDN").toEqual([]);
+  expect(w.errors, "the SPA logged errors while booting").toEqual([]);
 });
 
 test("Monaco loads self-hosted, under the CSP, with its workers", async ({ page }) => {
@@ -108,4 +120,7 @@ test("Monaco loads self-hosted, under the CSP, with its workers", async ({ page 
     w.offOrigin,
     "Monaco was fetched from a CDN — loader.config({ monaco }) is not in effect",
   ).toEqual([]);
+  // The oracle for the workers. A `data:`-inlined or 404ing worker surfaces
+  // here as "Failed to load worker script for label: …" and nowhere else.
+  expect(w.errors, "the editor logged errors (a worker failing to load?)").toEqual([]);
 });
