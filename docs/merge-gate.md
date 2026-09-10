@@ -1063,11 +1063,17 @@ Four properties are load-bearing:
 - **A park something will resume keeps its warning.** `failed_resumable` is a
   terminal status but not always an ending: a quota park arms a retry, and a
   drain, a sandbox setup timeout or a capacity park are Nak'd and redelivered
-  to a fresh pod. Those runs go on rewriting the branch, and nothing re-claims
-  on the way (the claim is posted at launch; a resume does not pass through
-  it), so the row stays pending until the run really ends. The test is the
-  run's own `continuation_state` — a DLQ park is final whatever its
-  `retry_after` still says, and is released.
+  to a fresh pod. Those runs go on rewriting the branch, so the row stays
+  pending until the run really ends. The test is the run's own
+  `continuation_state` — a DLQ park is final whatever its `retry_after` still
+  says, and is released, as is a resumable park nothing owns.
+- **A park an OPERATOR revives raises it again.** The two releases above are
+  correct — nothing was going to resume those runs — right up until somebody
+  does: `POST /api/admin/dlq/{seq}/replay` and `POST /api/runs/{id}/resume`
+  both wake the SAME run to go on rewriting its branch. Both re-raise the
+  warning, over that run's own resolved row and nobody else's. Without it the
+  revived pass would run behind a green check and then keep it forever, since
+  the release at the end of it finds nothing in flight to resolve.
 
 The claim needs `PublicURL` configured, exactly like the gate's: without it a
 status cannot name its run, and a claim nobody can attribute could never be
