@@ -211,6 +211,18 @@ func TestPostCreateEscapeCheckReadsShellQuoting(t *testing.T) {
 			fires: true,
 			why:   "the defect after the $'…' is only reachable if the region was closed at the right quote",
 		},
+		{
+			name:  "escaped quote inside a shell comment",
+			value: "`" + "# a note about \\\"quotes\\\"\necho ok" + "`",
+			fires: false,
+			why:   "a `#` at the start of a word runs to end of line, and nothing in a comment reaches the shell as an argument",
+		},
+		{
+			name:  "a real defect on the line after a comment",
+			value: "`" + "# install the pinned CLI\nnpm i --prefix \\\"$p\\\" pkg" + "`",
+			fires: true,
+			why:   "comment skipping must stop at the newline; swallowing the rest would hide every defect below the first comment",
+		},
 	}
 
 	for _, tc := range cases {
