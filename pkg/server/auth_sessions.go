@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -93,6 +94,34 @@ func (s *Server) setAuthCookies(w http.ResponseWriter, access string, accessExp 
 			SameSite: http.SameSiteLaxMode,
 			Expires:  refreshExp,
 		})
+		// RELEASE N ONLY — remove in N+1, together with the legacy READ in
+		// sessionCookie.
+		//
+		// The refresh cookie has an OUT-OF-PROCESS consumer: the desktop app
+		// harvests the rotated token from Set-Cookie, and it is a separately
+		// installed binary (.deb / AppImage / macOS) that updates on its own
+		// schedule, against a server that may already have flipped. A desktop
+		// built before this branch matches only the bare name, so it harvests
+		// "", keeps the previous token and replays it — which the server reads
+		// as theft and answers by revoking EVERY session that user holds.
+		//
+		// Giving the read a two-release migration and the write none would
+		// have left exactly that hole for anyone who updates the server first,
+		// which is the normal order. So the legacy name is written alongside
+		// for one release. It carries the same value, and reads prefer the
+		// prefixed one, so a tossed bare cookie still cannot win.
+		if s.usesHostPrefix() && os.Getenv("ITERION_LEGACY_REFRESH_COOKIE") != "0" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     refreshCookieName,
+				Value:    refresh,
+				Path:     "/api/auth",
+				Domain:   s.cfg.CookieDomain,
+				HttpOnly: true,
+				Secure:   s.cfg.CookieSecure,
+				SameSite: http.SameSiteLaxMode,
+				Expires:  refreshExp,
+			})
+		}
 	}
 }
 

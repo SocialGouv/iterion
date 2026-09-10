@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pat"
@@ -43,7 +44,16 @@ func newSweepServer(t *testing.T, opts ...func(*Config)) *Server {
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
+	// A REAL native tracker store, so /api/v1/native/* and the board-MCP
+	// transport are actually registered. Without it the OPTIONS assertions
+	// below would pass for the trivial reason that nothing matches those
+	// paths — the "test that proves nothing" shape this file exists to refuse.
+	nativeStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native store: %v", err)
+	}
 	cfg := Config{
+		NativeTrackerStore:      nativeStore,
 		WorkDir:                 t.TempDir(),
 		Bind:                    "127.0.0.1",
 		SkipProjectRegistration: true,
@@ -330,6 +340,18 @@ func TestOptionsReachesOnlyThePreflightResponder(t *testing.T) {
 		"/api/v1/dispatcher/refresh",
 		"/api/v1/mcp/board",
 	}
+	// Prove the sub-trees are really mounted: a 405/404 on the POST would mean
+	// the OPTIONS assertions below are vacuous.
+	for _, p := range []string{"/api/v1/native/issues", "/api/v1/mcp/board"} {
+		probe := httptest.NewRequest(http.MethodPost, p, strings.NewReader("{}"))
+		probe.Host = sweepHost
+		pw := httptest.NewRecorder()
+		srv.handler.ServeHTTP(pw, probe)
+		if pw.Code == http.StatusNotFound || pw.Code == http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s -> %d: the sub-tree is not registered on this server, so the OPTIONS assertions would prove nothing", p, pw.Code)
+		}
+	}
+
 	for _, p := range paths {
 		r := httptest.NewRequest(http.MethodOptions, p, nil)
 		r.Host = sweepHost

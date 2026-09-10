@@ -130,9 +130,25 @@ SSO flow onto the attacker's account. They accept **no** legacy fallback: a
 flow interrupted by the deploy is a re-login, a defeated CSRF guard is an
 account takeover.
 
-**Migration:** the current build reads both names for the refresh cookie and
-writes only the prefixed one. Drop the bare-name read once the longest refresh
-TTL has elapsed since the deploy.
+**Migration — one release, and it is two-sided.** The refresh cookie has an
+**out-of-process consumer**: the desktop app harvests the rotated token from
+`Set-Cookie`, and it is a separately installed binary (`.deb` / AppImage /
+macOS) that updates on its own schedule. A desktop built before this change
+matches only the bare name, so against a server that writes only the prefixed
+one it harvests `""`, keeps the previous token and replays it — which the
+server reads as theft and answers by revoking **every session that user
+holds**.
+
+So for this release the refresh cookie is **written under both names** (same
+value; reads still prefer the prefixed one, so a tossed bare cookie cannot
+win), and read under both. In the next release, drop both halves together:
+the legacy write in `setAuthCookies` and the legacy read in `sessionCookie`.
+`ITERION_LEGACY_REFRESH_COOKIE=0` ends the write early for a deployment with
+no desktop clients.
+
+The access cookie takes no such migration in either direction — it has no
+out-of-process consumer, and accepting a legacy one reopens the fixation
+window described above.
 
 ### The daemon has its own mux
 

@@ -63,7 +63,19 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"frame-src 'self' blob: https: http:; " +
 	"frame-ancestors 'self'; " +
 	"base-uri 'self'; " +
-	"form-action 'self'; " +
+	// form-action admits http(s) for the same reason as frame-src, and for a
+	// concrete shipped flow: creating a GitHub App has no API, so the studio
+	// builds a form whose action is the forge's own /settings/apps/new and
+	// submits it (CreateGitHubAppCard, RegisterOAuthAppForm). `form-action
+	// 'self'` refuses that cross-origin POST — and does NOT fall back to
+	// default-src — while `form.submit()` throws nothing, so the card sticks
+	// in its busy state with only a console violation and forge onboarding
+	// breaks with no in-product error.
+	//
+	// It does not widen the exfiltration surface much: putting a form on the
+	// page at all needs script execution (script-src 'self'), and an XHR to
+	// anywhere is connect-src's business, still 'self'.
+	"form-action 'self' https: http:; " +
 	"object-src 'none'"
 
 // BrowserGuard wraps a handler with the browser-facing protections the studio

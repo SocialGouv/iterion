@@ -124,3 +124,42 @@ test("Monaco loads self-hosted, under the CSP, with its workers", async ({ page 
   // here as "Failed to load worker script for label: …" and nowhere else.
   expect(w.errors, "the editor logged errors (a worker failing to load?)").toEqual([]);
 });
+
+// Creating a GitHub App has no API: the studio builds a form whose action is
+// the forge's own /settings/apps/new and submits it programmatically
+// (CreateGitHubAppCard, RegisterOAuthAppForm). `form-action 'self'` refuses
+// that cross-origin POST — and does NOT fall back to default-src — while
+// form.submit() throws nothing, so the card sticks in its busy state with only
+// a console violation and forge onboarding breaks silently. Revi caught it on
+// the CSP; nothing else here would have.
+//
+// Submitted into a hidden iframe so the test page is not navigated away, and
+// at a port that need not answer: a form-action refusal happens BEFORE the
+// request leaves.
+test("the CSP admits a cross-origin form submission (GitHub App manifest flow)", async ({
+  page,
+}) => {
+  const w = watch(page);
+  await page.goto("/");
+
+  await page.evaluate(() => {
+    const frame = document.createElement("iframe");
+    frame.name = "csp-probe";
+    frame.style.display = "none";
+    document.body.appendChild(frame);
+
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "http://127.0.0.1:4898/settings/apps/new";
+    form.target = "csp-probe";
+    document.body.appendChild(form);
+    form.submit();
+  });
+  await page.waitForTimeout(500);
+
+  const violations = await w.drain();
+  expect(
+    violations.filter((v) => v.startsWith("form-action")),
+    "the CSP refused a cross-origin form POST — GitHub App creation would hang with no error",
+  ).toEqual([]);
+});

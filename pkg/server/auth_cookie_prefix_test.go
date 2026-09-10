@@ -38,13 +38,38 @@ func TestHostPrefixOnProductionCookieShape(t *testing.T) {
 		}
 	}
 
-	// The bare names must NOT also be set: two live session cookies is the
-	// ambiguity the prefix exists to remove.
+	// The bare ACCESS name must NOT also be set: two live access cookies is
+	// the ambiguity the prefix exists to remove, and the read refuses the bare
+	// one anyway.
 	for _, c := range cookies {
-		if c.Name == authCookieName || c.Name == refreshCookieName {
+		if c.Name == authCookieName {
 			t.Errorf("bare %q written alongside the prefixed cookie", c.Name)
 		}
 	}
+	// The bare REFRESH name IS written, for one release, and deliberately:
+	// see setAuthCookies. Its consumer is out-of-process — a desktop binary
+	// that updates on its own schedule — so flipping the write name with no
+	// migration would make an older desktop replay a rotated token and get
+	// every session of that user revoked.
+	legacy := findCookie(t, cookies, refreshCookieName)
+	if legacy.Value != "refresh-token" {
+		t.Errorf("legacy refresh cookie value = %q; it must carry the SAME token, or an old desktop harvests a stale one", legacy.Value)
+	}
+}
+
+// TestLegacyRefreshCookieCanBeTurnedOff pins the switch that ends the
+// migration: release N+1 drops this write, and an operator can do it early.
+func TestLegacyRefreshCookieCanBeTurnedOff(t *testing.T) {
+	s := newAuthCookieServer(true, "")
+	t.Setenv("ITERION_LEGACY_REFRESH_COOKIE", "0")
+	w := httptest.NewRecorder()
+	s.setAuthCookies(w, "a", time.Now().Add(time.Minute), "r", time.Now().Add(time.Hour))
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			t.Fatalf("legacy refresh cookie still written with the switch off")
+		}
+	}
+	findCookie(t, w.Result().Cookies(), hostCookiePrefix+refreshCookieName)
 }
 
 // TestHostPrefixWithheldWhenItsTermsCannotBeMet locks the conditional. On a
