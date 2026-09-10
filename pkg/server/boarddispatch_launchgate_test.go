@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -144,6 +145,45 @@ func TestProcessBoardCard_AdmittedLaunchIsMetered(t *testing.T) {
 			t.Errorf("monthly runs = %d after an accepted launch, want 1", u.Runs)
 		}
 	})
+}
+
+// TestProcessBoardCard_CarriesTheCardsBotToTheGate: the card names the bot,
+// so the gate must be told — a reserved workload judged as ordinary work
+// faces the ceiling its OWN reservation lowered, and the reservation refuses
+// the very run it exists to protect. That is the one mistake the explicit
+// subject parameter exists to make visible, and passing the zero value at a
+// site that knows the answer reintroduces it in silence.
+func TestProcessBoardCard_CarriesTheCardsBotToTheGate(t *testing.T) {
+	pub := &countingPublisher{}
+	// 2 slots, 1 held for `probe` itself, 1 already running: an ordinary bot
+	// stops here, `probe` still has the team's own cap of 2.
+	s, rs := newGatedBoardServer(t, gateSpec{id: "t1", maxConcurrentRuns: 2}, pub)
+	s.cfg.Store = fakeActiveStore{RunStore: rs, active: 1}
+	withFloor(t, s, budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+		{BotID: "probe", Reserve: budgetfloor.Reserve{ConcurrentRuns: 1}},
+	}})
+	pub.onLaunch = func(runID string) { finishRunAs(t, rs, runID, store.RunStatusFinished) }
+
+	if err := s.processBoardCard(boundedCtx(t), "t1", native.Issue{ID: "native:1", Bot: "probe", State: native.StateReady}); err != nil {
+		t.Fatalf("processBoardCard = %v, want nil — the card's bot holds a slot of its own", err)
+	}
+	if got := pub.count(); got != 1 {
+		t.Fatalf("the run service was asked %d time(s), want 1", got)
+	}
+	// And the reservation still holds the slot back from everything else.
+	other := &countingPublisher{}
+	s2, rs2 := newGatedBoardServer(t, gateSpec{id: "t1", maxConcurrentRuns: 2}, other)
+	s2.cfg.Store = fakeActiveStore{RunStore: rs2, active: 1}
+	withFloor(t, s2, budgetfloor.Policy{Reservations: []budgetfloor.Reservation{
+		{BotID: "review-pr", Reserve: budgetfloor.Reserve{ConcurrentRuns: 1}},
+	}})
+	err := s2.processBoardCard(boundedCtx(t), "t1", native.Issue{ID: "native:2", Bot: "probe", State: native.StateReady})
+	if !errors.Is(err, errCardLaunchRefused) {
+		t.Fatalf("processBoardCard = %v, want errCardLaunchRefused — the free slot is reserved for review-pr", err)
+	}
+	if got := other.count(); got != 0 {
+		t.Errorf("the run service was asked %d time(s) for a card with no slot, want 0", got)
+	}
 }
 
 // boundedCtx keeps a launch that WAS admitted from polling a run nobody
