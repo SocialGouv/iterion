@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // Platform runtime-settings families beyond the usage caps: bot_roles and
@@ -112,7 +114,68 @@ func (s *Server) handleAdminGetBudgetFloor(w http.ResponseWriter, r *http.Reques
 		// The reserved bot ids, sorted — what an operator scans for before
 		// asking why a bot is being held back.
 		"reserved_bots": pol.Bots(),
+		// Written back on every read AND on the PUT (which ends here), because
+		// the default axis is the one that can be inert.
+		"warnings": s.budgetFloorWarnings(r.Context(), pol),
 	})
+}
+
+// budgetFloorWarnings names the reservations this deployment will not act on.
+//
+// The window axis is the DEFAULT and the only one whose reserve is silently
+// inert: capPolicyFor lowers a window only where usagecap already enforces
+// one, deliberately — a floor may not invent a ceiling, nor re-arm a guard the
+// kill switch disarmed. Correct, and invisible: an operator reserving 20% of
+// the five-hour window on a deployment that never set ITERION_USAGE_CAP_* (or
+// whose mode is `off`) stores a reservation that changes nothing, and the
+// feature exists precisely because nothing being held is hard to notice.
+//
+// So it is said at the surface where the reserve is written. Advisory only —
+// the write is already stored and stays valid the moment a cap is set, and
+// refusing it would forbid the legitimate order "configure the floor, then arm
+// the cap".
+//
+// Degraded reads are silent: an unreadable settings record means the warning
+// cannot be computed, never that the cap is absent.
+func (s *Server) budgetFloorWarnings(ctx context.Context, pol budgetfloor.Policy) []string {
+	windows := []budgetfloor.Window{budgetfloor.WindowFiveHour, budgetfloor.WindowWeek}
+	var wanted []budgetfloor.Window
+	for _, w := range windows {
+		if pol.OtherReserved("", w) > 0 {
+			// "" is reserved by nobody, so this reads the total held on the
+			// window — the same call the walk makes for an unnamed bot.
+			wanted = append(wanted, w)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	envPol, err := usagecap.FromEnv()
+	if err != nil {
+		return nil
+	}
+	eff := envPol
+	if s.usageCapSettings != nil {
+		rec, err := s.usageCapSettings.GetSettings(ctx)
+		if err != nil {
+			return nil
+		}
+		eff = rec.Apply(envPol)
+	}
+	var out []string
+	for _, w := range wanted {
+		wp := eff.FiveHour
+		if w == budgetfloor.WindowWeek {
+			wp = eff.Week
+		}
+		if wp.Enabled() {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"the %s reserve holds nothing: this deployment enforces no %s usage cap (set ITERION_USAGE_CAP_* or `iterion remote admin caps set`, strictly below the provider's own wall — a reserve lowers that cap, it cannot create one)",
+			w, w))
+	}
+	return out
 }
 
 // handleAdminPutBudgetFloor REPLACES the policy, unlike its merge-semantics

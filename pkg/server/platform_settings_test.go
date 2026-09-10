@@ -280,6 +280,95 @@ func TestAdminBotVars_ConcurrentPutIsA409NotALostKey(t *testing.T) {
 // the reservation the first admin just wrote, silently, and a capacity
 // reservation vanishing unnoticed is the failure the whole family exists to
 // prevent.
+// The default axis is the one that can hold nothing: capPolicyFor lowers a
+// window only where usagecap already enforces one, so on a deployment that set
+// no cap — or whose kill switch disarmed it — a window reserve is stored and
+// inert. Correct (a floor may not invent a ceiling) and, until this, silent:
+// the operator's whole reason for reserving is that "nothing was held" is hard
+// to notice.
+func TestAdminBudgetFloor_WarnsWhenTheWindowItReservesIsNotCapped(t *testing.T) {
+	get := func(t *testing.T, s *Server) []string {
+		t.Helper()
+		admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+		r := httptest.NewRequest("GET", "/api/admin/settings/budget-floor", nil).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminGetBudgetFloor(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Warnings []string `json:"warnings"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body.Warnings
+	}
+	newSrv := func(t *testing.T, res []budgetfloor.Reservation) *Server {
+		t.Helper()
+		st := platformcfg.NewMemoryStore[budgetfloor.Policy]()
+		if len(res) > 0 {
+			if err := st.Put(context.Background(), budgetfloor.Policy{Reservations: res}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return New(Config{SkipProjectRegistration: true, BudgetFloorSettings: st},
+			iterlog.New(iterlog.LevelError, nil))
+	}
+	fiveHourReserve := []budgetfloor.Reservation{
+		{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}},
+	}
+
+	t.Run("no cap configured: the reserve is named as holding nothing", func(t *testing.T) {
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "")
+		t.Setenv("ITERION_USAGE_CAP_WEEK_PCT", "")
+		warns := get(t, newSrv(t, fiveHourReserve))
+		if len(warns) != 1 || !strings.Contains(warns[0], "five_hour") {
+			t.Fatalf("warnings = %v, want one naming the five_hour window", warns)
+		}
+		if !strings.Contains(warns[0], "ITERION_USAGE_CAP") {
+			t.Errorf("warning = %q, want it to name the way out", warns[0])
+		}
+	})
+
+	t.Run("the kill switch counts as no cap", func(t *testing.T) {
+		// A percentage with mode `off` is a guard the operator DISARMED, and
+		// a reserve may not re-arm it — so it holds nothing and says so.
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "80")
+		t.Setenv("ITERION_USAGE_CAP", "off")
+		if warns := get(t, newSrv(t, fiveHourReserve)); len(warns) != 1 {
+			t.Fatalf("warnings = %v, want one — the kill switch left the reserve inert", warns)
+		}
+	})
+
+	t.Run("a cap that is enforced warns about nothing", func(t *testing.T) {
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "80")
+		if warns := get(t, newSrv(t, fiveHourReserve)); len(warns) != 0 {
+			t.Fatalf("warnings = %v on an enforced cap, want none", warns)
+		}
+	})
+
+	t.Run("only the reserved window is reported", func(t *testing.T) {
+		// A deployment capping neither window still hears about only the one
+		// an operator actually reserved — a warning about a window nobody
+		// named is noise that teaches people to skip the field.
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "")
+		t.Setenv("ITERION_USAGE_CAP_WEEK_PCT", "")
+		warns := get(t, newSrv(t, fiveHourReserve))
+		for _, w := range warns {
+			if strings.Contains(w, "week") {
+				t.Fatalf("warned about the week window, which nothing reserves: %v", warns)
+			}
+		}
+		// And a policy reserving nothing on a window says nothing at all.
+		if warns := get(t, newSrv(t, []budgetfloor.Reservation{
+			{BotID: "review-pr", Reserve: budgetfloor.Reserve{ConcurrentRuns: 2}},
+		})); len(warns) != 0 {
+			t.Fatalf("warnings = %v for a slot-only reserve, want none — it is enforced elsewhere", warns)
+		}
+	})
+}
+
 func TestAdminBudgetFloor_ConcurrentPutIsA409NotALostReservation(t *testing.T) {
 	st := platformcfg.NewMemoryStore[budgetfloor.Policy]()
 	auditStore := audit.NewMemoryStore()

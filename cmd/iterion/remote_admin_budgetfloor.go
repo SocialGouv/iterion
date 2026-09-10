@@ -122,12 +122,22 @@ reserve there holds back a figure that is an estimate — the window is what
 actually runs out. --monthly-usd and --concurrent-runs are available for the
 cases where they ARE the honest answer: a metered key, and responsiveness.
 
-Composition: a workload's ceiling is the deployment cap minus the reserves of
-every OTHER workload. With review-pr at 20 and feature-dev at 10 under an 80%
-cap, ordinary work stops at 50, review-pr may reach 70, feature-dev 60.
+Composition: a workload's ceiling is the cap minus the reserves of every OTHER
+workload. With review-pr at 20 and feature-dev at 10 under an 80% cap,
+ordinary work stops at 50, review-pr may reach 70, feature-dev 60.
+
+Which cap: the one already enforcing that axis. Only the window's is
+deployment-wide, so --monthly-usd (the launching org's cost cap) and
+--concurrent-runs (the launching team's) are held in EACH tenant — $50
+reserved is $50 held in every org, not $50 between them, and a tenant whose
+own cap is below the reserve has nothing left for unreserved work. Size those
+two against the smallest cap on the deployment.
 
 A reservation never lets its holder past the deployment's own caps, and never
-creates a cap that was not configured.
+creates a cap that was not configured. So --five-hour / --week hold nothing
+until the deployment enforces a usage cap (ITERION_USAGE_CAP_*, or
+` + "`iterion remote admin caps set`" + `) strictly below the provider's own wall: the
+response's `+ "`warnings`" + ` names any reserved window this deployment does not cap.
 
 ` + "`reserve`" + ` and ` + "`quota`" + ` EDIT one entry: an axis you do not name keeps the
 value it has, so adding --concurrent-runs to a bot that already holds a window

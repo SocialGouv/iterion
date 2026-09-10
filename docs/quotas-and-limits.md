@@ -429,6 +429,17 @@ reserve simply lowers the ceiling that skip is judged against, per bot.
                      stops       stops        stops       wall
 ```
 
+**The window reserve needs a window cap to lower.** It subtracts from the
+operator's own usage cap and never creates one — a floor may hold work back, it
+may not invent a ceiling, nor re-arm a guard the `ITERION_USAGE_CAP` kill
+switch disarmed. So a deployment that set no `ITERION_USAGE_CAP_*` (see
+[usage-caps.md](usage-caps.md)) stores a window reservation that holds nothing:
+the 80% in the diagram is the cap, and without one there is no band to divide.
+`budget-floor` says so in a `warnings` field, on the read **and** on the write
+that sets the reserve — the order "configure the floor, then arm the cap" is
+legitimate, so it is a warning and not a refusal. The cap has to sit strictly
+below the provider's own wall for any of this to have room.
+
 Two other axes are available where they are the honest answer, each enforced
 at the gate that already caps it: `--monthly-usd` (real money on a metered
 key) comes off the org's cost cap, and `--concurrent-runs` off the team's
