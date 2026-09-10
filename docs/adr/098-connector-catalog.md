@@ -667,47 +667,73 @@ where the secret bytes are still identifiable, over raw and URL-escaped forms.
 Every fix above was **falsified before being trusted**: the change was reverted
 and the test watched to fail on the reviewer's exact reported output.
 
+### Fixed in a second pass (F3, F5, F7, F12, F14, F15, F19)
+
+Seven of the tracked findings turned out to be DEFECTS rather than design
+lots, and were closed the same way as the first batch — falsified before being
+trusted.
+
+**F5 was the one that mattered most**, because it made a headline claim false:
+`ITERION_LLM_CLASSIFIER_MODEL` chained an LLM classifier over the shared
+tool-node policy check that every recipe passes, so a deployment setting it put
+a model call in front of every action node, on the path documented as having
+none. Closed with `PolicyContext.Deterministic`, derived from the node inside
+that single check and honoured by the classifier falling through to its
+deterministic base — the operator's own allow/deny rules still apply in full.
+**The behavioural test this ADR owed since round one is now written**, and
+deliberately runs with the classifier ENABLED: testing the default
+configuration would have passed throughout, since it is off by default.
+
+**F3** — a name granted retry safety. `getOrCreateLease` snake-cases to
+`get_or_create_lease`, matched the `get_` prefix, and a POST that allocates a
+lease was classified read, hence blindly repeatable. Effects now come from HTTP
+semantics alone. Measured on the shipped Forgejo package: the heuristic never
+fired once (261 GET→read, 102 POST→create, 85 DELETE→delete, 58 PUT/PATCH→
+update). It bought nothing and risked everything.
+
+**F7** — an unknown grant defeated the scheme conjunction: the escape accepted
+any requirement holding a term with a matching scheme, so `A AND B` admitted a
+connection holding only A. Now one shared definition (`spec.SatisfiableBy`)
+used by both the executor and the connection layer, since two copies would
+drift into a silent authorisation difference.
+
+**F12** — four silent corruptions of an argument's value: an embedded
+reference JSON-quoted (`hello "Alice"`), a large integer losing digits to
+float64, an empty string read as absent, and a wrong-typed value sent
+unchanged. All four now reach the vendor as written, or are refused.
+
+**F14** — what could not be derived was erased and reported as nothing: a
+required parameter in an unbuildable location, a request body whose `$ref` is
+undefined. Both now route through the skip mechanism with a reason, and a
+failed generation returns its report instead of a nil one.
+
+**F15** — regeneration was not idempotent: `gen` wrote the MERGED package, so
+the next `validate` looked up pre-rename ids and failed on thirteen unmatched
+entries. The overlay is now checked against a separate copy and the pure
+package is written.
+
+**F19** — every document is version-probed and carries a connector-identity
+check, not just `connector.yaml`.
+
 ### Tracked, not yet fixed
 
-These are real and reproduced; they are execution-profile completeness rather
-than safety, and each one is a lot of its own.
+What remains is execution-profile completeness and two design lots — not
+safety, and each one is its own piece of work.
 
-- **F3** — the generator infers `EffectRead` from a derived verb prefix, so a
-  POST named `getOrCreateLease` is classified as a safe repeat. Effects must
-  come from HTTP semantics, with an overlay correction required to call a POST
-  read-only.
-- **F5** — `ITERION_LLM_CLASSIFIER_MODEL` still chains an LLM classifier over
-  the shared tool-node policy check, so a deployment setting it puts a model in
-  front of every action. The promised behavioural test (zero model requests
-  with the variable SET) is still unwritten, and until it exists the
-  no-LLM claim is a claim.
-- **F7** — generation silently drops security schemes it cannot resolve, and
-  execution accepts any matching term when scopes are unknown, defeating
-  `SatisfiedBy`'s conjunction refusal. Needs an explicit "scopes unknown" state
-  distinct from "no scopes".
 - **F9/F10/F11** — the body model cannot express a root array (it invents a
   `body` member), vendor `+json` media types collapse to `json`, multipart file
   parts are written as text fields, and `deepObject` / path-array styles are not
   serialized as declared. Each publishes an operation as executable that sends
   the wrong bytes; the honest interim is to REFUSE these shapes at generation.
-- **F12** — parameter coercion parses every value as JSON first, so
-  `9007199254740993` loses precision, `hello {{input.who}}` becomes `hello
-  "Alice"`, and an empty string is dropped. Whole-value references should
-  resolve as typed values and strings interpolate as text.
-- **F14** — generation erases what it cannot derive (unresolved body refs,
-  unsupported parameters) and reports zero skips, and `Validate` does not check
-  outcome expressions. Derivation errors should propagate rather than vanish.
-- **F15** — `connectors gen` writes the MERGED package and `validate` applies
-  the overlay again over already-renamed ids, so regenerating Forgejo and
-  re-validating fails on thirteen missing operations. The generated half must
-  be persisted unmerged.
-- **F16** — the ADR rejects runner-side agent execution on a pod-isolation
-  premise that is false for Kubernetes sibling sandboxes and for the supported
-  noop / runner-as-sandbox profiles. **The rejection stands on other grounds
-  but its stated reason is wrong and must be rewritten** in terms of isolation
-  capability per deployment profile, not process class.
-- **F19** — the version probe guards `connector.yaml` only; ops and schema
-  documents are decoded without a version or identity check.
+- **F13 (part)** — response-schema validation. A 2xx whose body does not match
+  the declared schema is accepted as data. The status and redirect halves are
+  fixed; this one needs the schema validator the package does not have yet.
+- **F14 (part)** — `Validate` still does not check outcome expressions, so an
+  unparsable `success_when` is discovered after the POST returned.
+- **F16** — the ADR's stated REASON for rejecting runner-side execution was
+  wrong and has been corrected in place. What is still owed is the positive
+  rule: credential-execution eligibility stated per deployment profile, in
+  terms of isolation capability rather than process class.
 - **F20** — no per-request accounting contract: a paginated action makes twenty
   billable calls that contribute nothing to the run's budget and leave no record
   linking quota, vendor request id and credential.
@@ -717,19 +743,22 @@ than safety, and each one is a lot of its own.
 
 ### What is still only prose
 
-The reviewer's most valuable output. Of the round-one controls this ADR records
-as adopted, these exist **in the plan only** — they were adopted into lots not
-yet built, which is honest, but nothing in this document should be read as
-describing shipped behaviour:
+The reviewer's most valuable output: a table separating what this ADR *claims*
+from what the code *does*. It is kept here, and kept CURRENT, because the
+failure it names is the one this document is most prone to — a control adopted
+into the plan reading, months later, as a control that ships.
+
+Its state after `pkg/connection` and the two fix passes:
 
 | Control | State |
 |---|---|
-| Tenant-carrying connector grant | Prose only — no grant, no production `ResolveAction` |
-| Guarded dialer on every connector path | Only for CLI spec fetching; execution accepts any non-nil client |
-| Execution-only credential capability | Not implemented; the executor takes a plaintext `Credential` |
-| Fenced refresh claim | Not implemented — `pkg/forge/refresh.go` still scans without a claim |
+| Tenant-carrying connector grant | **Shipped.** Every `connection.Store` read takes the tenant as a positional argument; another tenant's record is `ErrNotFound` |
+| Execution-only credential capability | **Shipped, structurally.** `openCredential` is unexported and its one caller is the resolver, inside a call |
+| Zero-LLM action policy | **Shipped**, with the behavioural test that runs with the classifier ENABLED (F5) |
+| Guarded dialer on every connector path | **Local path shipped** (`connection.LocalHTTPClient` is `httpdial.SafeClient`). The executor still accepts any non-nil client, so a future wiring could hand it an unguarded one |
+| Fenced refresh claim | Not implemented — `pkg/forge/refresh.go` still scans without a claim, and no connector refresh worker exists yet |
 | Immutable retained packages / `ConnectorRefs` | Not implemented; queue versions remain 14/10 |
-| Zero-LLM action policy | Not implemented (F5) |
+| A cloud (Mongo) `connection.Store` | **Not implemented.** The interface and its conformance suite exist and the memory/file twins pass it; until the Mongo one lands, connectors are LOCAL-ONLY — a cloud hole by this repository's own doctrine, not a limitation |
 
 Round-one dispositions the reviewer judged wrong, and which are accepted as
 wrong: **F4's ordering** (building the node path through generic retry recovery
