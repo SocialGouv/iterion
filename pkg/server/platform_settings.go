@@ -150,6 +150,10 @@ func (s *Server) budgetFloorWarnings(ctx context.Context, pol budgetfloor.Policy
 	if len(wanted) == 0 {
 		return nil
 	}
+	// The same env-then-record resolution the usage-caps view answers with
+	// (usageCapsViewNow), re-derived rather than shared because that one
+	// builds a whole HTTP view off an *http.Request. If the two ever
+	// disagree, this warning is the one that is wrong.
 	envPol, err := usagecap.FromEnv()
 	if err != nil {
 		return nil
