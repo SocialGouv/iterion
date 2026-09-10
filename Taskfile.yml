@@ -1113,13 +1113,38 @@ tasks:
 
   # --- Docker image plumbing (plan §F T-39) -----------------------
   docker:pin-llm-clis:
-    desc: Refresh docker/llm-clis/package.json to the latest stable claude-code + codex versions
+    desc: Refresh every pinned CLI in docker/llm-clis/package.json to its latest stable version
     cmds:
       - |
-        CLAUDE_VERSION=$(npm view @anthropic-ai/claude-code version)
-        CODEX_VERSION=$(npm view @openai/codex version)
-        echo "claude=$CLAUDE_VERSION codex=$CODEX_VERSION"
-        printf '{\n  "name": "iterion-llm-clis",\n  "private": true,\n  "description": "Pinned npm dependencies for the LLM CLIs baked into the iterion container image. Refresh via `task docker:pin-llm-clis` (T-39).",\n  "dependencies": {\n    "@anthropic-ai/claude-code": "%s",\n    "@openai/codex": "%s"\n  }\n}\n' "$CLAUDE_VERSION" "$CODEX_VERSION" > docker/llm-clis/package.json
+        # Edits the file IN PLACE, one dependency at a time. It used to reprint
+        # a hardcoded template naming two CLIs; a third was pinned later and the
+        # template was never updated, so the documented refresh path silently
+        # DELETED @earendil-works/pi-coding-agent. Reading the file instead of
+        # restating its contents removes that drift entirely.
+        python3 - <<'PY'
+        import json, subprocess, sys
+
+        path = "docker/llm-clis/package.json"
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+
+        deps = doc.get("dependencies") or {}
+        if not deps:
+            sys.exit("%s declares no dependencies — refusing to rewrite it" % path)
+
+        for name in sorted(deps):
+            out = subprocess.run(["npm", "view", name, "version"],
+                                 capture_output=True, text=True)
+            version = out.stdout.strip()
+            if out.returncode != 0 or not version:
+                sys.exit("npm view %s failed: %s" % (name, out.stderr.strip() or "no version"))
+            print("%s %s -> %s" % (name, deps[name], version))
+            deps[name] = version
+
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        PY
         echo "Updated docker/llm-clis/package.json — review and commit."
 
   docker:build:

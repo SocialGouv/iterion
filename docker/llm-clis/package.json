@@ -5,6 +5,6 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.175",
     "@earendil-works/pi-coding-agent": "0.84.3",
-    "@openai/codex": "0.139.0"
+    "@openai/codex": "0.154.0"
   }
 }
