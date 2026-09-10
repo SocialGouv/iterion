@@ -108,7 +108,7 @@ export default function StackCompatibility() {
       <div className="ch-runtime-support">
         <div className="ch-native-scripts">
           <p className="ch-runtime-label"><FileCode2 size={17} aria-hidden="true" /> NATIVE WORKFLOW SCRIPTS</p>
-          <h3>JavaScript. Python. Shell.</h3>
+          <h3>Code where it counts.</h3>
           <p>Write script steps directly in your bots, using Node.js, Python or sh/Bash. Pin the interpreters with Devbox when you need a specific version.</p>
           <a href={`${DOCS}dsl.html#tool`} target="_blank" rel="noreferrer">Explore script steps <ArrowUpRight size={13} aria-hidden="true" /></a>
         </div>
