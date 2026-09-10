@@ -102,9 +102,11 @@ func isFixInFlight(st forge.CommitStatus) bool {
 		strings.TrimSpace(st.Description) == fixInFlightDescription
 }
 
-// isFixDone recognises this server's own RESOLVED marker. A later fixer on the
-// same head must be able to write over it — it says no fixer is working, and a
-// launch is about to make that false.
+// isFixDone recognises this server's own RESOLVED marker, so the claim can
+// write over it: since the context names the run, the only launch that ever
+// meets one is that same run coming back — an operator resuming a park whose
+// claim was released — and it must be able to raise the warning again instead
+// of reading its own `done` as a foreign verdict and standing down.
 func isFixDone(st forge.CommitStatus) bool {
 	return st.State == forge.CommitStateSuccess &&
 		strings.TrimSpace(st.Description) == fixDoneDescription
