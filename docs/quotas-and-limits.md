@@ -450,14 +450,29 @@ a large slot reserve quiets everything else while the holder runs.
 
 ### Composition: protected from the others, never from itself
 
-A workload's ceiling is the deployment cap **minus the reserves of every
-OTHER workload**. With `review-pr` at 20 and `feature-dev` at 10 under an 80%
-cap: ordinary work stops at 50, `review-pr` may reach 70, `feature-dev` 60.
+A workload's ceiling is the cap **minus the reserves of every OTHER
+workload**. With `review-pr` at 20 and `feature-dev` at 10 under an 80% cap:
+ordinary work stops at 50, `review-pr` may reach 70, `feature-dev` 60.
 
 Summing *every* reservation instead would refuse a workload on its own band —
 the reservation would make its holder stop **earlier** than before it existed,
 the exact opposite of a floor, and green under any test that only checks
 unreserved work.
+
+**Which cap — and read this before setting the two countable axes on a
+multi-tenant deployment.** The cap subtracted from is the one that already
+enforces the axis, and only the window's is deployment-wide. So a
+`--five-hour` / `--week` reserve is held **once for the fleet**, while
+`--monthly-usd` (the launching org's cost cap) and `--concurrent-runs` (the
+launching team's) are applied to **each tenant's cap independently**: reserve
+`--monthly-usd 50` on a deployment with twenty orgs and every one of them
+holds $50 back from its own cap, not $50 between them. There is no fleet-wide
+dollar or slot cap to subtract from, so this is the only available reading —
+but it makes those two a decision about every tenant, and the corollary is the
+next section: a tenant whose own cap is at or below the reserve has nothing
+left for unreserved work and is refused there for the rest of the month, even
+if it never runs the reserved bot. Size them against the **smallest** cap on
+the deployment.
 
 ### Two things a reservation can never do
 

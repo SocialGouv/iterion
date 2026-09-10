@@ -48,11 +48,34 @@
 //
 // # Composition
 //
-// A workload's ceiling is the deployment cap MINUS the reserves of every
-// OTHER workload. With reserves A=20 and B=10 under a cap of 80: ordinary
-// work stops at 50, A may reach 70, B may reach 60. Each workload is
-// protected from all the others and from none of itself — which is what makes
-// two reservations compose instead of one silently voiding the other.
+// A workload's ceiling is the cap MINUS the reserves of every OTHER workload.
+// With reserves A=20 and B=10 under a cap of 80: ordinary work stops at 50, A
+// may reach 70, B may reach 60. Each workload is protected from all the others
+// and from none of itself — which is what makes two reservations compose
+// instead of one silently voiding the other.
+//
+// # Which cap, and what that means on N tenants
+//
+// The cap subtracted from is always the one that ALREADY enforces that axis,
+// and only one of the three is deployment-wide. The window is the
+// deployment's own (pkg/usagecap), so a window reserve is held once for the
+// whole fleet — which is why it is the default, and why it is the axis that
+// matches the shared-credential starvation above. MonthlyUSD comes off the
+// LAUNCHING ORG's cost cap (pkg/orgusage) and ConcurrentRuns off the
+// LAUNCHING TEAM's, so those two are applied to each tenant's cap
+// INDEPENDENTLY: reserve $50 across twenty orgs and every one of them holds
+// $50 back from its own cap, not $50 between them.
+//
+// That is the only implementable reading — there is no fleet-wide dollar or
+// slot cap to subtract from — and on the single-shared-credential deployment
+// this was measured on it is the intended one. But it makes a dollar or slot
+// reserve a decision about EVERY tenant, with one corollary to size against: a
+// tenant whose own cap is at or below the reserve has nothing left for
+// unreserved work and is denied for the rest of the month, including a tenant
+// that never runs the reserved bot. That refusal is the coherent answer for
+// the axis (the alternative hands the holder's whole band to the work it is
+// held from — see "when the reserves swallow the cap" on each gate), so set
+// these two against the SMALLEST cap on the deployment, not the largest.
 //
 // The package is a LEAF (stdlib only) so the gates that consult it —
 // cloudpublisher's credential walk, the launch gate — can import it without
