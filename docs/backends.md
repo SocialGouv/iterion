@@ -201,7 +201,7 @@ Known hints:
 chain. The chain is the declarative generalisation of the
 `RESCUE_PROVIDER` escape hatch:
 
-```yaml
+```iter fragment
 agent reviewer:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai},anthropic"   # z.ai first, Anthropic on hard failure
@@ -256,7 +256,7 @@ A provider-specific model can be pinned per chain element with a
 `provider:model` token, so a fall-through swaps **both** the credential
 hint and the wire model:
 
-```yaml
+```iter fragment
 agent reviewer:
   backend: "claude_code"
   provider: "zai:glm-5.2,anthropic:claude-opus-4-8"   # glm-5.2 on z.ai, claude-opus-4-8 on Anthropic
@@ -286,7 +286,7 @@ credential — for the case the `provider:` chain cannot serve: a CLI
 backend whose subscription forfait has shut, continuing on a metered API
 through `claw`. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md).
 
-```yaml
+```iter fragment
 agent implement:
   backend: "claude_code"          # forfait
   model: "claude-opus-5"
@@ -370,7 +370,10 @@ values keep the cooldown enabled.
 Two route properties extend the chain beyond backend switches
 ([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)):
 
-```yaml
+```iter fragment
+vars:
+  plan_review_policy: string = "on"   # a route's when: may only read a DECLARED var (C173)
+
 judge plan_review:
   backend: "claw"
   model: "openai/gpt-5.6-sol"
@@ -770,7 +773,7 @@ node. It lifts the sandbox to `danger-full-access` (unrestricted network +
 out-of-workspace writes) — the same posture as `codex exec -s
 danger-full-access`. It is **off by default and opt-in per node** in the workflow:
 
-```
+```iter fragment
 agent make_cover:
   backend: "codex"
   full_access: true    # codex sandbox -> danger-full-access (needed for imagegen / network)
@@ -792,7 +795,7 @@ A codex node can receive **input images** for image-to-image via the node-level
 node's `input`/`vars`/etc. and forwarded to the codex CLI as `-i`. Empty results
 (e.g. an optional reference that doesn't apply this run) are dropped.
 
-```
+```iter fragment
 agent keyframe:
   backend: "codex"
   full_access: true
@@ -877,7 +880,7 @@ xAI is a first-class claw provider. Set `XAI_API_KEY` (or store a BYOK
 key under provider `xai` in cloud mode) and point a node at a Grok
 model:
 
-```yaml
+```iter fragment
 agent planner:
   backend: "claw"
   model: "xai/grok-3"
@@ -988,11 +991,14 @@ new plumbing.
 is a multi-provider agent harness. It is the backend to reach for when you
 need **a model the other backends cannot run**.
 
-```yaml
+```iter fragment
+prompt task:
+  Review the diff for correctness and say what must change.
+
 agent review:
   backend: "pi"
   model: "openai/gpt-5.5"   # or cerebras/…, groq/…, zai/…, github-copilot/…
-  system: "…the task…"
+  system: task              # a prompt declaration, never an inline string
 ```
 
 **Install:** `npm install -g @earendil-works/pi-coding-agent` (Node ≥ 22.19)
@@ -1197,11 +1203,14 @@ Moonshot's **`kimi-code`** takes the prompt as `-p <prompt>`
 kimi -p <prompt> --output-format {text,stream-json} [-m <alias>]
 ```
 
-```yaml
+```iter fragment
+prompt task:
+  Implement the feature described in the issue and run the tests.
+
 agent implement:
   backend: "kimi"
   model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
-  system: "…the task…"
+  system: task
   permission: deny                   # supported on host runs
 ```
 
@@ -1217,12 +1226,15 @@ grok -p <prompt> --output-format json \
      [-m <model>] [--rules <system>] [--reasoning-effort <level>]
 ```
 
-```yaml
+```iter fragment
+prompt task:
+  Implement the feature described in the issue and run the tests.
+
 agent implement:
   backend: "grok"
   model: "grok-4.5"          # or grok-4.5-build, grok-3, …
   # model: "xai/grok-4.5"    # also fine — the xai/ prefix is stripped
-  system: "…the task…"       # delivered as --rules (appended to Grok's native prompt)
+  system: task               # delivered as --rules (appended to Grok's native prompt)
   reasoning_effort: high     # optional; mapped to --reasoning-effort
 ```
 

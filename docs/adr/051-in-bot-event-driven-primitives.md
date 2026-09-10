@@ -43,10 +43,10 @@ wrong for in-run coordination).
 
 ### `emit` node
 
-```
+```iter fragment
 emit ping:
   event: "ready"
-  with: { value: "{{outputs.producer.n}}" }
+  with { value: "{{outputs.producer.n}}" }
 ```
 
 Publishes a **sticky** event named `ready` into the run registry with an
@@ -57,7 +57,7 @@ order-fragile). Non-mutating, no LLM, no shell.
 
 ### `wait` node
 
-```
+```iter fragment
 wait for_ready:
   event: "ready"
   timeout: "30s"          ## MANDATORY — the bornage

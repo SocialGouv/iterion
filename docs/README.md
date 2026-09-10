@@ -24,6 +24,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [dsl.md](dsl.md) | Language guide and map of every declaration, node family, edge form, and workflow control. |
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar derived from the parser surface. |
+| [references/dsl-properties.md](references/dsl-properties.md) | Every kind's properties, value shapes and meaning — generated from the parser's registry (`task dsl:gen`), held to the parser by a conformance test. |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF counterpart. |
 | [grammar/V1_SCOPE.md](grammar/V1_SCOPE.md) | Living boundary of the additively evolved V1 grammar and AST. |
 | [references/diagnostics.md](references/diagnostics.md) | Authoritative sparse catalogue: DSL C001–C199 plus async C240–C242, and bundle checks C200–C234. |

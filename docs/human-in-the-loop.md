@@ -18,7 +18,7 @@ emits `human_input_requested`, writes the question to
 `paused_waiting_human` — a durable, resumable checkpoint (see
 [resume.md](resume.md)).
 
-```
+```iter fragment
 human approval:
   instructions: approval_instructions   # a prompt: block, shown as markdown
   output: approval_decision             # the schema → drives the form widgets
@@ -56,7 +56,7 @@ map on the interaction. The studio renders it read-only above the form,
 under **"What you're reviewing"** — on the run console, the pipeline
 board, and the kanban card alike.
 
-```
+```iter fragment
 agent draft_plan:
   output: plan_out
 
@@ -82,7 +82,7 @@ two things: the reading order (the author's field order wins over
 alphabetical), and the type when the shape is ambiguous — `json` for a
 payload that arrived as a JSON string, `file` for a bare path.
 
-```
+```iter fragment
 schema review_context:
   plan: string
   findings: json

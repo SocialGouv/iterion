@@ -116,10 +116,11 @@ already used by `secrets:` and `attachments:`, parsed from `parseLLMProp`'s
 `case TokenIdent:` arm following the tool node's `recovery:` precedent — no
 lexer, token-table or `isKeywordToken` change:
 
-```
+```iter fragment
 agent implement:
   backend: "claude_code"
   model: "claude-opus-5"
+  tools: [read_file, bash]   # explicit: a claw⇄CLI crossing with no list is refused (C176)
   fallbacks:
     api:
       backend: "claw"

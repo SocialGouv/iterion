@@ -63,7 +63,7 @@ func (p *parser) parseMCPServerProp(md *ast.MCPServerDecl, propTok Token) {
 	case TokenAuth:
 		md.Auth = p.parseMCPAuthBlock(propTok)
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown mcp_server property '"+propTok.Value+"'")
+		p.unknownProperty("mcp_server", propTok, propTok.Value)
 		p.skipToNewline()
 	}
 	p.skipNewlines()
@@ -100,7 +100,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 			break
 		}
 		if t.Type != TokenIdent {
-			p.addError(DiagUnknownProperty, t, "unknown auth property '"+t.Value+"'")
+			p.unknownProperty("auth", t, t.Value)
 			p.next()
 			p.skipToNewline()
 			continue
@@ -121,7 +121,7 @@ func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
 		case "scopes":
 			auth.Scopes = p.parseStringList()
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown auth property '"+propTok.Value+"'")
+			p.unknownProperty("auth", propTok, propTok.Value)
 			p.skipToNewline()
 		}
 		p.skipNewlines()
@@ -145,7 +145,8 @@ func (p *parser) parseMCPTransport() ast.MCPTransport {
 	}
 }
 
-func (p *parser) parseMCPConfigBlock() *ast.MCPConfigDecl {
+func (p *parser) parseMCPConfigBlock(host string) *ast.MCPConfigDecl {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "mcp"
 	cfg := &ast.MCPConfigDecl{Span: ast.Span{Start: p.pos(start)}}
 	switch p.parseBlockBody() {
@@ -184,7 +185,7 @@ func (p *parser) parseMCPConfigProp(cfg *ast.MCPConfigDecl, propTok Token) {
 		p.expect(TokenColon)
 		cfg.Disable = p.parseIdentList()
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown mcp property '"+propTok.Value+"'")
+		p.unknownProperty("mcp", propTok, propTok.Value)
 		p.skipToNewline()
 	}
 	p.skipNewlines()

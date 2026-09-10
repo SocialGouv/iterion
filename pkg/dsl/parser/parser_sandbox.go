@@ -25,7 +25,8 @@ import (
 // presence of body fields when not declared explicitly: the parser
 // sets Mode="inline" so the IR compiler routes it through the
 // driver-spec converter rather than the devcontainer.json reader.
-func (p *parser) parseSandboxBlock() *ast.SandboxBlock {
+func (p *parser) parseSandboxBlock(host string) *ast.SandboxBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "sandbox"
 	colon, _ := p.expect(TokenColon)
 
@@ -111,7 +112,7 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 		// `image:` (enforced at IR compile time, not the parser).
 		sb.Build = p.parseSandboxBuildBody(propTok, colon)
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown sandbox property '"+name+"'")
+		p.unknownProperty("sandbox", propTok, name)
 		p.skipToNewline()
 	}
 	p.skipNewlines()
@@ -156,7 +157,7 @@ func (p *parser) parseSandboxBuildBody(startTok, colon Token) *ast.SandboxBuildB
 		case "args":
 			bb.Args = p.parseStringMapBlock()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown sandbox.build property '"+name+"'")
+			p.unknownProperty("sandbox.build", t, name)
 			p.skipToNewline()
 		}
 		p.skipNewlines()
@@ -211,7 +212,7 @@ func (p *parser) parseSandboxNetworkBody(startTok, colon Token) *ast.SandboxNetw
 		case "rules":
 			nb.Rules = p.parseStringOrIdentList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown sandbox.network property '"+name+"'")
+			p.unknownProperty("sandbox.network", t, name)
 			p.skipToNewline()
 		}
 		p.skipNewlines()

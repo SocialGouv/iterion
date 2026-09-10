@@ -418,7 +418,7 @@ node picks where its LLM call runs:
 **comma-separated, ordered chain** declares fallbacks that the runtime
 walks transparently when a provider fails *beyond its retry budget*:
 
-```yaml
+```iter fragment
 agent reviewer:
   backend: "claude_code"
   provider: "zai,anthropic"        # try z.ai; on hard failure, fall through to Anthropic

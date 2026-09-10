@@ -4,7 +4,7 @@
 
 Source files end in `.bot`; deterministic bundles end in `.botz`.
 
-This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth.
+This page is the language guide. For exact accepted syntax use the [readable grammar](references/dsl-grammar.md), the [property reference](references/dsl-properties.md) (every kind's properties, generated from the parser's own registry), the [formal EBNF](grammar/iterion_v1.ebnf), and the [diagnostic catalogue](references/diagnostics.md). The parser, IR compiler, and validators under [`pkg/dsl/`](../pkg/dsl/) remain the implementation source of truth; an unknown property (E012) names the closest accepted one and the block it belongs to, from that same registry.
 
 A `.bot` file travels through a fixed pipeline before it runs:
 
@@ -962,6 +962,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), C244 (bounded iteration crossing a parallel-branch boundary), and C245 (trunk-only human mode in a parallel branch); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
+- [Property reference](references/dsl-properties.md) (generated)
 - [Formal EBNF](grammar/iterion_v1.ebnf)
 - [Router semantics](routers.md)
 - [Composition, iteration, resources, and sub-bots](groups-iteration-subbots.md)

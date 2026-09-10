@@ -2,6 +2,7 @@ package parser
 
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
 // ParseResult is the output of Parse.
@@ -25,6 +26,11 @@ type parser struct {
 	lex   *Lexer
 	file  string
 	diags []Diagnostic
+	// blockHost is the kind whose body the block being parsed sits in — what
+	// an "outdent it" remedy must name when the block has several possible
+	// hosts (an mcp: block under a workflow is not an agent's). Set by
+	// enterBlock, "" at the top level.
+	blockHost string
 }
 
 // ---- helpers ----
@@ -498,4 +504,47 @@ func (p *parser) parseDeclHeader(kind string) (start Token, name string, ok bool
 		return start, name, false
 	}
 	return start, name, true
+}
+
+// unknownProperty reports a property the kind does not accept, with the
+// remedy the registry can name (spec.UnknownPropertyHint): the closest
+// accepted names, the block or the enclosing kind the name belongs to, and
+// the kind's own list — so the author does not have to open the reference.
+// kind is the registry's name for the kind, which is also the word the
+// message uses; the conformance test in pkg/dsl/spec holds the two sets of
+// names together.
+func (p *parser) unknownProperty(kind string, t Token, name string) {
+	p.addErrorHint(DiagUnknownProperty, t, "unknown "+kind+" property '"+name+"'", spec.UnknownPropertyHintIn(kind, p.blockHost, name))
+}
+
+// skipIndentedBlock drops the indented block that follows a refused header,
+// so its lines are not reported one by one as strays of the parent.
+func (p *parser) skipIndentedBlock() {
+	if p.peek().Type != TokenIndent {
+		return
+	}
+	depth := 0
+	for {
+		switch p.next().Type {
+		case TokenIndent:
+			depth++
+		case TokenDedent:
+			depth--
+			if depth == 0 {
+				return
+			}
+		case TokenEOF:
+			return
+		}
+	}
+}
+
+// enterBlock records the kind whose body the block about to be parsed sits
+// in, for the remedy an unknown property carries, and returns the restore
+// for the caller to defer: blocks nest (a network: inside a sandbox: inside
+// a workflow), so the previous host comes back when the inner block ends.
+func (p *parser) enterBlock(host string) func() {
+	prev := p.blockHost
+	p.blockHost = host
+	return func() { p.blockHost = prev }
 }
