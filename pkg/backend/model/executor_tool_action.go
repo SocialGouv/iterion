@@ -241,10 +241,25 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 
 	out := make(map[string]any, len(node.Params))
 	for _, p := range node.Params {
-		// Rendered with the SCRIPT renderer, not the shell one: nothing here
-		// reaches a shell, and shell-escaping would wrap every value in
-		// quotes that would then travel to the vendor verbatim.
-		rendered := resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
+		// TWO renderings, because a parameter's value is one of two different
+		// things and treating them alike corrupts one of them.
+		//
+		// When the whole value IS a reference (`index: "{{outputs.pick.n}}"`),
+		// the author means the VALUE, so it is rendered as a JSON literal and
+		// decoded back to its type below — that is what lets a template, which
+		// is always text, deliver an integer to an integer field.
+		//
+		// When the reference is EMBEDDED in text (`body: "hello {{input.who}}"`),
+		// the author means string interpolation. Rendering that as a JSON
+		// literal produced `hello "Alice"` — quotes and all — and sent it to
+		// the vendor, because the surrounding text makes the result un-decodable
+		// so nothing downstream could undo it.
+		rendered := ""
+		if isWholeValueRef(p.Value, p.Refs) {
+			rendered = resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
+		} else {
+			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, rawTemplateValue, true)
+		}
 		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
 		// the whole point, since a secret must not sit in a command line or
 		// in a log. Every other recipe materialises it before use; this one
@@ -269,31 +284,90 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 	return out, nil
 }
 
+// isWholeValueRef reports whether the parameter's value is exactly ONE
+// reference and nothing else — the case where the author means the referenced
+// value rather than a string containing it.
+func isWholeValueRef(value string, refs []*ir.Ref) bool {
+	if len(refs) != 1 {
+		return false
+	}
+	return strings.TrimSpace(value) == strings.TrimSpace(refs[0].Raw)
+}
+
 // coerceParam converts a rendered template into the declared type.
 //
-// resolveScriptTemplate produces JSON literals, so a string arrives quoted, a
-// number bare and an object as JSON text. Parsing that back is what lets a
+// A whole-value reference arrives as a JSON literal — a string quoted, a
+// number bare, an object as JSON text — so parsing it back is what lets a
 // `.bot` write `index: "{{outputs.pick.issue}}"` and have an integer reach an
-// integer field.
+// integer field. Interpolated text arrives as text.
 func coerceParam(decl spec.Param, rendered string) (any, error) {
 	trimmed := strings.TrimSpace(rendered)
-	if trimmed == "" || trimmed == "null" {
+	// Only the JSON null LITERAL means absent. An empty rendering used to
+	// mean it too, which silently dropped an author's deliberate `body: ""`
+	// — an empty string is a value, and for several vendors it is the one
+	// that clears a field.
+	if trimmed == "null" {
 		return nil, nil
 	}
-	// A JSON literal (the common case: the renderer quotes strings) decodes
-	// straight to the right Go type.
+	if rendered == "" {
+		return "", nil
+	}
+	// UseNumber keeps an integer EXACT. Decoding into `any` gives float64,
+	// whose 53-bit mantissa silently rewrites a large id:
+	// 9007199254740993 came back as 9007199254740992, which addresses a
+	// different resource and looks perfectly plausible in a log.
+	dec := json.NewDecoder(strings.NewReader(trimmed))
+	dec.UseNumber()
 	var decoded any
-	if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+	if err := dec.Decode(&decoded); err == nil && !dec.More() {
 		return coerceDecoded(decl, decoded)
 	}
 	// Bare text the renderer left alone (an author who wrote a literal).
 	return coerceDecoded(decl, trimmed)
 }
 
+// coerceDecoded converts a decoded value to the type the OPERATION declares,
+// and REFUSES what cannot be converted.
+//
+// Refusing matters as much as converting. This used to fall through and send
+// the value unchanged whenever the type did not match a case — so `1.5` reached
+// a parameter declared `integer`, `123` reached one declared `boolean`, and an
+// array reached a scalar. The vendor then answered 400 (at best) or coerced it
+// silently in a way the workflow never sees, on a path whose whole promise is
+// that the request is what was declared.
 func coerceDecoded(decl spec.Param, v any) (any, error) {
 	switch decl.Type {
-	case "integer", "number":
+	case "integer":
 		switch t := v.(type) {
+		case json.Number:
+			// Kept as json.Number so an id beyond float64's 53-bit mantissa
+			// survives to the wire exactly as written.
+			if _, err := t.Int64(); err != nil {
+				return nil, fmt.Errorf("%s is not an integer, and the operation declares one", t.String())
+			}
+			return t, nil
+		case int, int64:
+			return t, nil
+		case float64:
+			if t != float64(int64(t)) {
+				return nil, fmt.Errorf("%v is not an integer, and the operation declares one", t)
+			}
+			return int64(t), nil
+		case string:
+			n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%q is not an integer, and the operation declares one", t)
+			}
+			return n, nil
+		}
+		return nil, typeMismatch(decl, v)
+	case "number":
+		switch t := v.(type) {
+		case json.Number:
+			if _, err := t.Float64(); err != nil {
+				return nil, fmt.Errorf("%s is not a number, and the operation declares one", t.String())
+			}
+			return t, nil
 		case float64, int, int64:
 			return t, nil
 		case string:
@@ -302,6 +376,7 @@ func coerceDecoded(decl spec.Param, v any) (any, error) {
 			}
 			return nil, fmt.Errorf("%q is not a number, and the operation declares %s", t, decl.Type)
 		}
+		return nil, typeMismatch(decl, v)
 	case "boolean":
 		switch t := v.(type) {
 		case bool:
@@ -312,18 +387,54 @@ func coerceDecoded(decl spec.Param, v any) (any, error) {
 			}
 			return nil, fmt.Errorf("%q is not a boolean, and the operation declares one", t)
 		}
+		return nil, typeMismatch(decl, v)
 	case "string":
-		if s, ok := v.(string); ok {
-			return s, nil
+		switch t := v.(type) {
+		case string:
+			return t, nil
+		case json.Number:
+			return t.String(), nil
+		case bool:
+			return strconv.FormatBool(t), nil
+		case float64:
+			return strconv.FormatFloat(t, 'f', -1, 64), nil
 		}
-		// A number or a bool used where a string is wanted is unambiguous.
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("value cannot be rendered as a string")
+		// A structure where a string is wanted is not a rendering question.
+		return nil, typeMismatch(decl, v)
+	case "array":
+		if _, ok := v.([]any); ok {
+			return v, nil
 		}
-		return strings.Trim(string(raw), `"`), nil
+		return nil, typeMismatch(decl, v)
 	}
 	return v, nil
+}
+
+// typeMismatch says what was given and what was wanted, in the vocabulary the
+// author used — the declared type is what they can act on.
+func typeMismatch(decl spec.Param, v any) error {
+	return fmt.Errorf("%s is not a %s, and the operation declares %s for %q",
+		describeJSONValue(v), decl.Type, decl.Type, decl.Key)
+}
+
+// describeJSONValue names a value's SHAPE rather than printing it, because
+// the value may be a secret and this text reaches the run's events.
+func describeJSONValue(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "a boolean"
+	case json.Number, float64, int, int64:
+		return "a number"
+	case string:
+		return "a string"
+	case []any:
+		return "an array"
+	case map[string]any:
+		return "an object"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 // actionToolName is the virtual tool name an action node reports to the

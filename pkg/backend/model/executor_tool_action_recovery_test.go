@@ -6,6 +6,7 @@ package model_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -537,5 +538,142 @@ func TestAnOrdinaryFailureStillRetries(t *testing.T) {
 	}
 	if got := recovery.Classify(err); got == runtime.ErrCodeAmbiguousEffect {
 		t.Errorf("classified as %q; a 503 is a transient failure, not an undecided one", got)
+	}
+}
+
+// TestParameterValuesReachTheVendorINTACT covers the four corruptions the
+// second review reproduced. Each is silent — the call succeeds and carries
+// something other than what the author wrote — which is why the SERVER is the
+// oracle in every case.
+func TestParameterValuesReachTheVendorIntact(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared string
+		value    string
+		input    map[string]any
+		want     string // the exact JSON the vendor must receive for `body`
+	}{
+		{
+			// A reference EMBEDDED in text is string interpolation. Rendering
+			// it as a JSON literal produced `hello "Alice"` — quotes and all —
+			// and the surrounding text made the result un-decodable, so
+			// nothing downstream could undo it.
+			name: "an embedded reference interpolates as text", declared: "string",
+			value: "hello {{input.who}}",
+			input: map[string]any{"who": "Alice"},
+			want:  `"hello Alice"`,
+		},
+		{
+			// The whole-value case must still deliver the TYPE, which is what
+			// lets a template — always text — reach an integer field.
+			name: "a whole-value reference keeps its type", declared: "integer",
+			value: "{{input.n}}",
+			input: map[string]any{"n": 42},
+			want:  `42`,
+		},
+		{
+			// float64's 53-bit mantissa silently rewrote a large id to an
+			// adjacent one, which addresses a different resource and looks
+			// entirely plausible in a log.
+			name: "a large integer keeps every digit", declared: "integer",
+			value: "9007199254740993",
+			want:  `9007199254740993`,
+		},
+		{
+			// An empty rendering used to mean "absent", dropping an author's
+			// deliberate empty string — which for several vendors is the value
+			// that CLEARS a field.
+			name: "an empty string is a value, not an absence", declared: "string",
+			value: "",
+			want:  `""`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				var payload map[string]json.RawMessage
+				_ = json.Unmarshal(b, &payload)
+				got = string(payload["body"])
+				w.WriteHeader(201)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			pkg, op := mutatingPackage(srv.URL)
+			op.Params[0].Type = tc.declared
+			pkg.Ops[0].Operations[0] = op
+
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "n"}, Action: "probe.issue.comment", Connection: "main",
+				Params: []ir.ActionParam{{Key: "body", Value: tc.value, Refs: refsOf(tc.value)}},
+			}
+			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+			if _, err := e.Execute(context.Background(), node, tc.input); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("the vendor received %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAValueOfTheWrongTYPEIsRefused. Coercion used to fall through and send
+// the value unchanged whenever the type matched no case, so `1.5` reached a
+// parameter declared `integer`. The vendor then answers 400, or coerces it
+// silently in a way the workflow never sees — on a path whose whole promise is
+// that the request is what was declared.
+func TestAValueOfTheWrongTypeIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, declared, value string }{
+		{"a fraction where an integer is declared", "integer", "1.5"},
+		{"a number where a boolean is declared", "boolean", "123"},
+		{"an array where a scalar is declared", "boolean", "[1,2]"},
+		{"an object where a string is declared", "string", `{"a":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("the vendor must not be reached with a value the operation does not declare")
+			}))
+			defer srv.Close()
+
+			pkg, op := mutatingPackage(srv.URL)
+			op.Params[0].Type = tc.declared
+			pkg.Ops[0].Operations[0] = op
+
+			node := &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "n"}, Action: "probe.issue.comment", Connection: "main",
+				Params: []ir.ActionParam{{Key: "body", Value: tc.value}},
+			}
+			e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+				model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+			if _, err := e.Execute(context.Background(), node, nil); err == nil {
+				t.Fatal("the node must refuse a value of the wrong type")
+			}
+		})
+	}
+}
+
+// refsOf builds the parsed refs a compiled node would carry, so these tests
+// exercise the shape the compiler produces rather than a hand-made one.
+func refsOf(value string) []*ir.Ref {
+	var out []*ir.Ref
+	rest := value
+	for {
+		i := strings.Index(rest, "{{")
+		if i < 0 {
+			return out
+		}
+		j := strings.Index(rest[i:], "}}")
+		if j < 0 {
+			return out
+		}
+		raw := rest[i : i+j+2]
+		inner := strings.TrimSpace(raw[2 : len(raw)-2])
+		if path, ok := strings.CutPrefix(inner, "input."); ok {
+			out = append(out, &ir.Ref{Kind: ir.RefInput, Path: strings.Split(path, "."), Raw: raw})
+		}
+		rest = rest[i+j+2:]
 	}
 }
