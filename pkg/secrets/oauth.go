@@ -948,17 +948,6 @@ func NewMongoOAuthStore(db *mongo.Database) *MongoOAuthStore {
 	return &MongoOAuthStore{coll: db.Collection(OAuthCollectionName)}
 }
 
-// isIndexMissing reports the one DropOne outcome that is not a failure: the
-// index is already gone. Mongo answers IndexNotFound (27); the driver may
-// also surface it as a plain message on older servers, so both are read.
-func isIndexMissing(err error) bool {
-	var ce mongo.CommandError
-	if errors.As(err, &ce) && ce.Code == 27 {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "index not found")
-}
-
 func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
 	// Records written before ranks existed carry no `rank` field, and Mongo
 	// does not match a missing field against 0 — so Get(primary) would stop
@@ -974,9 +963,14 @@ func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
 	// The old (user_id, kind) unique index IS the ceiling this change
 	// removes: it has to go, not gain a sibling, or a second credential for
 	// one kind is still refused. An absent index is the steady state after
-	// the first pass, so only an unexpected failure propagates.
+	// the first pass, so only an unexpected failure propagates —
+	// mongoutil.IsIndexNotFound, never a code-27-only predicate: on a FRESH
+	// database the collection does not exist yet (the backfill above is not
+	// an upsert, so it creates nothing) and Mongo answers the missing
+	// COLLECTION (26), not the missing index (27). That exact regression
+	// already cost one server boot; the shared helper documents it.
 	if err := s.coll.Indexes().DropOne(ctx, "user_kind_unique"); err != nil &&
-		!isIndexMissing(err) {
+		!mongoutil.IsIndexNotFound(err) {
 		return fmt.Errorf("secrets: drop legacy oauth index: %w", err)
 	}
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
