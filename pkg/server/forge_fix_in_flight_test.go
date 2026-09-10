@@ -155,6 +155,11 @@ func fixRunFixture(t *testing.T, gc forgeGateClient, status store.RunStatus) (*S
 	// sweep has no ambient one), so the fixture must carry the tenant the
 	// harness registered its connection under — as a real run always does.
 	run.TenantID = "team1"
+	// And its BotID, which CreateRun's third argument does NOT set: the role
+	// is derived from it, so leaving it empty makes every role read `unknown`
+	// and every "must not touch" assertion below pass without exercising
+	// anything. Measured: three of them did exactly that.
+	run.BotID = "branch-improve-loop"
 	run.Status = status
 	return s, run
 }
@@ -198,6 +203,58 @@ func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
 		if gc.setCalls != 0 {
 			t.Errorf("%s: released the claim on a run still in flight", status)
 		}
+	}
+}
+
+// R65a408 — THE one the first draft of this file could not see. Its
+// "foreign status" case used a different DESCRIPTION, so it only ever proved
+// that another tool's verdict survives. It never proved that another RUN's
+// claim does, and that is the case production actually produces:
+//
+// the auto-fix lane launches the fixer on the REVIEWER's own head_sha, and two
+// consecutive fixer passes reuse it as well. The sweeper re-offers every
+// terminal run for the whole lookback — so the reviewer's own reconcile pass,
+// terminal and on the same sha, would read the LIVE fixer's claim, match the
+// description, and post "the fix run is done" while the branch is still being
+// rewritten. A false all-clear, in the exact lane this feature exists for.
+//
+// Ownership is the target URL, never the shape of the text.
+func TestClearFixInFlight_LeavesAnotherRunsClaimAlone(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		// Byte-identical to what this run would post — except whose it is.
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/some-other-run"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFinished)
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 0 {
+		t.Fatalf("resolved a claim posted by ANOTHER run (%d posts) — a live fixer would be announced done while it is still rewriting the branch", gc.setCalls)
+	}
+}
+
+// R4e92c6 — `pr_url` + `head_sha` are set on EVERY forge-launched run, so
+// without a role check before the network the clear pays a live
+// ListCommitStatuses for reviewers, branchers, implementers and docs-amenders
+// too — on every sweep pass, for the whole lookback, on a path that used to
+// exit on a local field read. The assertion is on the READ, not on the write:
+// a guard placed after the round trip would still cost it.
+func TestClearFixInFlight_NoForgeTrafficForANonFixer(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending, Description: fixInFlightDescription},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFinished)
+	run.BotID = "review-pr" // a reviewer: it never claimed, so it owes no clear
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.listCalls != 0 {
+		t.Errorf("read the forge %d time(s) for a non-fixer — this path must cost no network at all", gc.listCalls)
+	}
+	if gc.setCalls != 0 {
+		t.Errorf("a non-fixer posted %d status(es)", gc.setCalls)
 	}
 }
 

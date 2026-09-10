@@ -122,11 +122,12 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	}
 }
 
-// clearFixInFlight resolves this server's fixer claim once the run is terminal.
+// clearFixInFlight resolves THIS RUN's fixer claim once the run is terminal.
 //
-// Idempotent and narrow: it only ever replaces OUR OWN pending marker, so a
-// double fire (the outcome event and the sweep both offering the same run)
-// costs one read, and a status somebody else owns is never touched.
+// Idempotent and narrow: it only ever replaces the marker this very run
+// posted, so a double fire (the outcome event and the sweep both offering the
+// same run) costs one read, and neither another tool's status nor another
+// RUN's claim is ever touched.
 func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if s == nil || run == nil || s.forgeConnections == nil || !run.Status.IsTerminal() {
 		return
@@ -136,12 +137,50 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	if prURL == "" || sha == "" {
 		return
 	}
+	// ROLE BEFORE THE NETWORK. `pr_url` + `head_sha` are set on every
+	// forge-launched run — reviewer, brancher, implementer, docs-amender — so
+	// without this the clear would pay a live ListCommitStatuses round trip for
+	// each of them, on every sweep pass, for the whole lookback: a path that
+	// used to exit on a local field read with zero forge traffic. Only a fixer
+	// can ever have claimed, so only a fixer has anything to resolve.
+	// Same provenance the CLAIM used, or as close as the run doc allows: the
+	// claim resolves under the launching team, and a run records the tier its
+	// bot came from. An empty BotSourceTenant (not recorded) falls back to the
+	// run's own tenant rather than to none, so a team-forked fixer resolves on
+	// both sides instead of claiming under one lookup and being unresolvable
+	// under a stricter one.
+	sourceTenant := run.BotSourceTenant
+	if strings.TrimSpace(sourceTenant) == "" {
+		sourceTenant = run.TenantID
+	}
+	if s.handoffRoleFor(ctx, sourceTenant, run.BotID) != pauseNoticeRoleFixer {
+		return
+	}
+	// Our own run's URL, resolved before the read: without it there is nothing
+	// to test ownership against and the claim must be left alone.
+	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), run.ID)
+	if runURL == "" {
+		return
+	}
 	gc, repo, ok := s.fixStatusClientFor(ctx, run.TenantID, prURL)
 	if !ok {
 		return
 	}
 	cur, readable, err := gateStatusOn(ctx, gc, repo, sha, fixInFlightContext)
 	if err != nil || !readable || !isFixInFlight(cur) {
+		return
+	}
+	// AND this run's own claim, not merely "a claim shaped like ours". Several
+	// runs share ONE head sha by construction: the auto-fix lane launches the
+	// fixer on the reviewer's own head_sha, and consecutive fixer passes reuse
+	// it too. The sweeper re-offers every terminal run for the full lookback,
+	// so without this test the reviewer's own reconcile pass — terminal, same
+	// sha — reads the live fixer's claim, matches the description, and posts
+	// "done" while the branch is still being rewritten. A false all-clear is
+	// worse than the silence this replaces, and it would defeat the feature in
+	// the exact lane it was written for. Ownership is the target URL, the same
+	// test the gate lane uses.
+	if !gateStatusSpeaksFor(cur, runURL) {
 		return
 	}
 	st := forge.CommitStatus{
