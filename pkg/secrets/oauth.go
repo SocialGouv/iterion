@@ -948,15 +948,27 @@ func NewMongoOAuthStore(db *mongo.Database) *MongoOAuthStore {
 	return &MongoOAuthStore{coll: db.Collection(OAuthCollectionName)}
 }
 
-// isIndexMissing reports the one DropOne outcome that is not a failure: the
-// index is already gone. Mongo answers IndexNotFound (27); the driver may
-// also surface it as a plain message on older servers, so both are read.
+// isIndexMissing reports the DropOne outcomes that are not failures. Both
+// mean the same thing: there is no legacy index here to remove.
+//
+//   - IndexNotFound (27) — the collection exists and the index is already
+//     gone, which is the steady state after the first pass;
+//   - NamespaceNotFound (26) — the COLLECTION does not exist yet, i.e. every
+//     brand-new deployment. Without this arm EnsureSchema fails on a fresh
+//     database: an install with nothing to migrate refused by the migration.
+//
+// The second arm is invisible to `task check`, which skips every Mongo-gated
+// suite; the mongo-conformance harness is what surfaces it.
+//
+// The driver may also surface either as a plain message on older servers, so
+// the text is read as a fallback.
 func isIndexMissing(err error) bool {
 	var ce mongo.CommandError
-	if errors.As(err, &ce) && ce.Code == 27 {
+	if errors.As(err, &ce) && (ce.Code == 27 || ce.Code == 26) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "index not found")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "index not found") || strings.Contains(msg, "ns not found")
 }
 
 func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
