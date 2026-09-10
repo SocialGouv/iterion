@@ -359,10 +359,16 @@ func TestClearFixInFlight_ResolvesAParkNothingOwns(t *testing.T) {
 
 // While the run is alive the claim is exactly right, and clearing it would
 // re-open the window it exists to close.
+//
+// The fixture's marker carries this run's OWN target URL — without it the test
+// passed for the wrong reason: the ownership test at the far end of the
+// function refuses an empty target, so deleting the liveness guard entirely
+// left the suite green. This is the only test covering that guard.
 func TestClearFixInFlight_SilentWhileTheRunIsAlive(t *testing.T) {
 	for _, status := range []store.RunStatus{store.RunStatusRunning, store.RunStatusQueued, store.RunStatusPausedWaitingHuman} {
 		gc := &listingGateClient{statuses: []forge.CommitStatus{
-			{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending, Description: fixInFlightDescription},
+			{Context: fixInFlightContextFor("run-77"), State: forge.CommitStatePending,
+				Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 		}}
 		s, run := fixRunFixture(t, gc, status)
 
