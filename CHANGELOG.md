@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.7](https://github.com/SocialGouv/iterion/compare/v3.132.6...v3.132.7) (2026-09-10)
+
+### Bug Fixes
+
+* **forge:** a fixer rewriting a branch says so, instead of being discovered at push time ([#1064](https://github.com/SocialGouv/iterion/issues/1064)) ([40a0ba7](https://github.com/SocialGouv/iterion/commit/40a0ba732c18ba2440072d987b297a6df2595b63))
+
+    <details><summary>why</summary>
+
+    A FIXER run holds no required check. markGateInFlight claims `gate_context`, and a fixer has none — it answers a review rather than gating the merge — so for the tens of minutes it works, NOTHING on the pull request says it is there. The only signal that ever existed is a comment, and only in one case: a quota park, whose pause notice already tells the reader not to push. A fixer that is simply working is silent.
+
+    </details>
+
 ## [3.132.6](https://github.com/SocialGouv/iterion/compare/v3.132.5...v3.132.6) (2026-09-10)
 
 ### Bug Fixes
