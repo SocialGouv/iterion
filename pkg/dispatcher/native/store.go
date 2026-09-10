@@ -187,8 +187,9 @@ func NewStore(root string) (*Store, error) {
 	}
 	s.seq = maxSeq + 1
 
-	// Populate the index from disk. Corrupt files are skipped (a
-	// warning would be nice but the store doesn't carry a logger).
+	// Populate the index from disk. A file that cannot be read is skipped
+	// and said so — the store carries a logger from its construction above,
+	// which is what the note that used to sit here said it did not.
 	if err := s.populateIndex(); err != nil {
 		return nil, err
 	}
@@ -246,10 +247,15 @@ func (s *Store) Close() error {
 	}
 	// Snapshot under the lock — a watch lost mid-life swaps these from the
 	// watcher goroutine — and close outside it: closing the watcher waits
-	// for its loop, which may itself be waiting for the store mutex. The
-	// closed flag stops a loss detected after this point from arming a
-	// net; one that was armed between the snapshot and the watcher's exit
-	// is picked up by the second look.
+	// for its loop, which may itself be waiting for the store mutex.
+	//
+	// Setting closed and taking the snapshot in ONE critical section is
+	// what makes the hand-over safe, and watchLost reads both in one of
+	// its own: it either finished arming its net before this snapshot (so
+	// the snapshot has it) or is refused after (so there is nothing to
+	// find). The second look further down is therefore belt and braces
+	// today, kept because it costs one mutex and because it is what a
+	// future change that splits this critical section would need.
 	s.mu.Lock()
 	s.closed = true
 	rescanner, watcher := s.rescanner, s.watcher
