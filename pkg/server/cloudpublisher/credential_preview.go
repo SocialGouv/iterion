@@ -655,7 +655,7 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 	// The RAW bot id, the budget floor's key (previewBotID is the audience's
 	// folded spelling): the launch judges these readings against the cap the
 	// OTHER workloads' reservations leave this bot.
-	until, why := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt, x.out.Context.BotID)
+	until, why, _ := x.p.evaluateCredentialWindows(ctx, readings, x.out.ObservedAt, x.out.Context.BotID)
 	if !until.IsZero() {
 		c.State = "blocked"
 		c.Reason = why
