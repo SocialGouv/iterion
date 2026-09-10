@@ -4549,11 +4549,15 @@ workflow sec_audit_source:
     ## the run proceed, because deepsec is off by default and the rest of
     ## the audit does not need codex at all.
     ##
-    ## No backslash-escaped quotes: a `"…"` string is lexed in legacy escape
-    ## mode, which keeps \X verbatim, so the backslash reaches the shell and
-    ## \" becomes a LITERAL quote character (C142). Nothing here needs
-    ## quoting — no value has a space — and the message uses single quotes.
-    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! $pfx/bin/codex --version 2>/dev/null | grep -q $want; then npm install -g --prefix $pfx @openai/codex@$want >/dev/null 2>&1 || echo 'iterion: could not install @openai/codex — deepsec falls back to the codex bundled in the image, which may be too old for the model requested' >&2; fi"
+    ## A BACKTICK raw string, so the shell quoting below is the shell's own
+    ## and needs no backslashes. In a `"…"` string every \X survives the
+    ## lexer verbatim, so the \" this command used to carry reached the
+    ## shell as a LITERAL quote character (C142) and npm was handed a
+    ## package name with the quotes inside it. Dropping the quotes instead
+    ## would only trade that for word-splitting the day $HOME holds a space:
+    ## "$pfx" is quoted because it is a path, and the message is
+    ## double-quoted because it has spaces AND has to expand $want.
+    post_create: `set -u; want=0.154.0; pfx="$HOME/.npm-global"; if ! "$pfx/bin/codex" --version 2>/dev/null | grep -q "$want"; then npm install -g --prefix "$pfx" "@openai/codex@$want" >/dev/null 2>&1 || echo "iterion: could not install @openai/codex@$want — deepsec falls back to the codex bundled in the image, which may be too old for the model requested" >&2; fi`
 
   ## An audit READS the repository it is pointed at. The mid-run workspace
   ## checkpoint would `git add -A` the pod's tree — this bot's own
