@@ -86,11 +86,16 @@ func TestPostCreateRefusesAnEscapedQuote(t *testing.T) {
 }
 
 func TestPostCreateAcceptsTheFormThatWorks(t *testing.T) {
-	// Same command, corrected: nothing here has a space, and the one message
-	// that does is in single quotes. Verified in a real sandbox on 2026-09-10 —
-	// NPM_RC=0 and `codex-cli 0.154.0`, where the escaped form died.
+	// Same command, corrected the way bots/sec-audit-source now ships it: a
+	// BACKTICK raw string, where the shell's own quotes need no backslash.
+	//
+	// Deliberately not the quote-free variant. Dropping the quotes also clears
+	// C142, but it word-splits the day $HOME holds a space — and measured with
+	// one, `$pfx/bin/codex` splits, the version probe cannot run, so the `!` is
+	// true and npm reinstalls on every container start. The gate must accept
+	// the form that is right, not merely the form that is quiet.
 	src := strings.Replace(escapeBotShell, "%s",
-		`"pfx=$HOME/.npm-global; npm install -g --prefix $pfx @openai/codex@0.154.0 || echo 'install failed' >&2"`, 1)
+		"`"+`pfx="$HOME/.npm-global"; npm install -g --prefix "$pfx" "@openai/codex@0.154.0" || echo 'install failed' >&2`+"`", 1)
 
 	cr := compileSrc(t, src)
 	if d := diagFor(cr, DiagEscapedQuoteInShellString); d != nil {
