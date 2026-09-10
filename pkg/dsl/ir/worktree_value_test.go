@@ -39,9 +39,14 @@ func TestWorktreeValueIsCheckedAtCompile(t *testing.T) {
 			t.Errorf("%q: mode %q, errors %v (want %q, none)", src, mode, errs, want)
 		}
 	}
-	_, errs := compile("  worktree: ATUO\n")
+	mode, errs := compile("  worktree: ATUO\n")
 	if len(errs) != 1 || !strings.HasPrefix(errs[0], "C142: ") || !strings.Contains(errs[0], `invalid worktree "ATUO"`) {
 		t.Fatalf("want one C142 naming the value as written, got %v", errs)
+	}
+	// The refused value reaches the IR as the default: a surface that ran
+	// the workflow despite the error would isolate it, never run it in place.
+	if mode != "auto" {
+		t.Fatalf("a refused worktree value reached the IR as %q, want the default auto", mode)
 	}
 	// The diagnostic is positioned (the workflow's span): `iterion validate`
 	// prints a file:line for it, not a bare code.

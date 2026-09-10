@@ -803,17 +803,20 @@ func defaultWorktreeMode(raw string) string {
 // (the workflow's span — the declaration keeps no per-property position).
 // The runtime compares the canonical value to `auto` and nothing else, so a
 // mistyped auto ran the workflow in place, in the operator's own checkout,
-// with every commit landing there, without a word.
+// with every commit landing there, without a word. A refused value reaches
+// the IR as the DEFAULT, auto: every launch surface refuses a workflow with
+// an error, and one that did not would then isolate the run rather than
+// run it in place — the hazard the check exists to close, closed twice.
 func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
 	mode := defaultWorktreeMode(raw)
 	switch mode {
 	case "auto", "none":
-	default:
-		c.errorfAtSpan(DiagInvalidWorktree, at,
-			"workflow %q has invalid worktree %q; valid values are auto, none",
-			workflow, raw)
+		return mode
 	}
-	return mode
+	c.errorfAtSpan(DiagInvalidWorktree, at,
+		"workflow %q has invalid worktree %q; valid values are auto, none",
+		workflow, raw)
+	return "auto"
 }
 
 // canAutoResolveBackend reports whether the detect package can pick a
