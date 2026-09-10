@@ -144,6 +144,10 @@ operations:
   # A GET, so the derivation already reads it as a read; what the overlay adds
   # is the pagination and the pin, since `search` is a name a later endpoint
   # could plausibly derive too.
+  #
+  # The only paginated operation here that does NOT answer a bare array: this
+  # one wraps it in `{ok, data}`, so the walk has to be told where the items
+  # live. Validation refuses the omission rather than walking empty pages.
   forgejo.repository.search:
     id: forgejo.repository.search
     mcp: true
@@ -151,6 +155,7 @@ operations:
       style: page_number
       page_param: page
       size_param: limit
+      items_field: data
       default_size: 50
       max_pages: 10
 

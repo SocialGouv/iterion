@@ -494,6 +494,82 @@ func TestPaginationWalksAndSaysWhenItStopped(t *testing.T) {
 	}
 }
 
+// TestAMissingCollectionIsAnErrorNotAnEmptyWalk covers the failure that makes
+// pagination dangerous rather than merely wrong.
+//
+// The vendor answers an ENVELOPE (`{"ok": true, "data": [...]}`) where the
+// package expects the body to be the array. Extracting nothing then looks
+// exactly like a short page, which is how every style signals the end — so the
+// walk used to return zero items and report the collection COMPLETE. A
+// workflow reading that concludes the repository has no issues.
+//
+// This is the shipped Forgejo `repository.search` shape, not an invention.
+func TestAMissingCollectionIsAnErrorNotAnEmptyWalk(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok": true, "data": [{"n": 1}, {"n": 2}]}`))
+	})
+	defer done()
+
+	// The fixture's list operation declares no items_field, so the envelope
+	// hides the array from it.
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, opOf(t, pkg, "probe.issue.list"),
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err == nil {
+		t.Fatalf("a body carrying no array at the declared address must be an error, got items=%d complete=%v", len(items), complete)
+	}
+	if complete {
+		t.Error("a walk that could not find its collection must never report complete")
+	}
+	// The diagnostic has to name the fix, since the reader's next question is
+	// always \"where should it have looked?\".
+	if !strings.Contains(err.Error(), "items_field") {
+		t.Errorf("error must point at items_field, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "data") {
+		t.Errorf("error must list the body's keys so the field is visible, got: %v", err)
+	}
+
+	// Naming the field makes the same response walk correctly — proof the
+	// refusal is about the address, not about envelopes as such.
+	op := opOf(t, pkg, "probe.issue.list")
+	withField := *op.Pagination
+	withField.ItemsField = "data"
+	op.Pagination = &withField
+	items, complete, _, err = e.CallPaged(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err != nil {
+		t.Fatalf("with items_field set: %v", err)
+	}
+	// The handler serves a full page (2 = the declared size) every time, so
+	// the walk runs to its ceiling of 3 and honestly reports it stopped there.
+	if len(items) != 6 || complete {
+		t.Errorf("items = %d complete = %v, want 6 and false (3 full pages, stopped at MaxPages)", len(items), complete)
+	}
+}
+
+// TestAnEmptyPageIsStillAnEndedWalk guards the other side of the distinction
+// above: an HONEST empty collection must keep ending the walk quietly. A guard
+// that turned every empty result into an error would be worse than the defect
+// it replaced.
+func TestAnEmptyPageIsStillAnEndedWalk(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	})
+	defer done()
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, opOf(t, pkg, "probe.issue.list"),
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err != nil {
+		t.Fatalf("an empty array is a valid empty collection: %v", err)
+	}
+	if !complete {
+		t.Error("an empty collection is a complete one")
+	}
+	if len(items) != 0 {
+		t.Errorf("items = %d, want 0", len(items))
+	}
+}
+
 // TestAnExplicitPageMeansOnePage pins the semantics of an author paging by
 // hand: they asked for page 7, so page 7 is what happens. Walking on from
 // there would silently return three pages where one was requested.

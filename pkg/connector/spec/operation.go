@@ -461,6 +461,10 @@ const (
 	// PageOffset walks offset/limit.
 	PageOffset PaginationStyle = "offset"
 	// PageLink follows an RFC 5988 `Link: rel="next"` header.
+	//
+	// Declared but NOT yet walkable: the executor has no arm for it, so
+	// ValidPaginationStyle refuses it and a package naming it fails
+	// validation rather than failing at its first call in production.
 	PageLink PaginationStyle = "link_header"
 )
 
@@ -498,6 +502,18 @@ func (op Operation) HasBodyParams() bool {
 func ValidBodyEncoding(e BodyEncoding) bool {
 	switch e {
 	case BodyJSON, BodyForm, BodyMultipart:
+		return true
+	}
+	return false
+}
+
+// ValidPaginationStyle reports whether s is one the executor can walk. A style
+// it cannot walk is refused at validation rather than at the first call: the
+// executor's own default arm returns an error, and discovering it there means
+// discovering it in production.
+func ValidPaginationStyle(s PaginationStyle) bool {
+	switch s {
+	case PageNumber, PageCursor, PageOffset:
 		return true
 	}
 	return false

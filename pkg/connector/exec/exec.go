@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -235,7 +237,11 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if callErr != nil || !res.OK() {
 			return nil, false, res, callErr
 		}
-		return pageItems(res.Data, ""), true, res, nil
+		// No pagination declared: the operation was never promised to be a
+		// collection, so a non-array body is an ordinary single result rather
+		// than a defect. Its items are simply empty.
+		got, _ := pageItems(res.Data, "")
+		return got, true, res, nil
 	}
 
 	p := op.Pagination
@@ -257,7 +263,10 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if callErr != nil || !res.OK() {
 			return nil, false, res, callErr
 		}
-		batch := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, p.ItemsField)
+		if !found {
+			return nil, false, res, errNoCollection(op, p.ItemsField, res.Data)
+		}
 		return batch, p.DefaultSize > 0 && len(batch) < p.DefaultSize, res, nil
 	}
 
@@ -295,7 +304,13 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 			return items, false, res, nil
 		}
 		last = res
-		batch := pageItems(res.Data, p.ItemsField)
+		batch, found := pageItems(res.Data, p.ItemsField)
+		if !found {
+			// Refused rather than treated as the end of the collection: the
+			// items gathered so far are returned with the error, so a caller
+			// that logs both can see how far the walk got.
+			return items, false, last, errNoCollection(op, p.ItemsField, res.Data)
+		}
 		items = append(items, batch...)
 
 		// A short page ends the walk on every style: it is the one signal
@@ -352,17 +367,69 @@ func keyForWireName(op spec.Operation, wire string) string {
 
 // pageItems extracts a page's collection: the named field, or the body itself
 // when it is already an array.
-func pageItems(data any, field string) []any {
+//
+// The second result separates "this page carried no items" from "there is no
+// collection at this address". Both used to be an empty slice, and the walk
+// reads an empty page as the end of the collection — so a package pointing at
+// the wrong field, or a vendor wrapping its array in an envelope, made
+// CallPaged return zero items and report the walk COMPLETE. That is the exact
+// silent truncation the Complete flag exists to prevent, arriving through the
+// extraction rather than through the bound.
+func pageItems(data any, field string) ([]any, bool) {
+	target := data
 	if field != "" {
-		if arr, ok := descend(data, field).([]any); ok {
-			return arr
+		target = descend(data, field)
+	}
+	switch v := target.(type) {
+	case []any:
+		return v, true
+	case nil:
+		// An absent or null field is a miss when a field was named. A vendor
+		// answering a bare `null` body for an empty collection is answering
+		// honestly, so an unnamed field accepts it.
+		return nil, field == ""
+	default:
+		return nil, false
+	}
+}
+
+// errNoCollection reports a response whose declared collection is not where
+// the package says it is. It names both addresses because the fix is always in
+// one of them: the operation's items_field, or the vendor's shape.
+func errNoCollection(op spec.Operation, field string, data any) error {
+	at := "the response body"
+	if field != "" {
+		at = "field " + strconv.Quote(field)
+	}
+	return fmt.Errorf("exec: operation %q is declared paginated, but %s carries no array (got %s); "+
+		"set items_field on the operation to the field that does", op.ID, at, jsonShape(data))
+}
+
+// jsonShape names a decoded body's shape for a diagnostic, listing an object's
+// keys so the reader can see the field they should have named.
+func jsonShape(data any) string {
+	switch v := data.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
 		}
-		return nil
+		sort.Strings(keys)
+		if len(keys) > 8 {
+			keys = append(keys[:8], "…")
+		}
+		return "an object with keys [" + strings.Join(keys, " ") + "]"
+	case nil:
+		return "null"
+	case string:
+		return "a string"
+	case bool:
+		return "a boolean"
+	case float64:
+		return "a number"
+	default:
+		return fmt.Sprintf("%T", data)
 	}
-	if arr, ok := data.([]any); ok {
-		return arr
-	}
-	return nil
 }
 
 func stringField(data any, field string) string {

@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 )
@@ -390,7 +391,57 @@ func (op Operation) ValidateStandalone(connector string, schemas map[string]Sche
 			return fmt.Errorf("operation %q: idempotency_key_param %q names no parameter", op.ID, op.IdempotencyKeyParam)
 		}
 	}
+	if err := op.validatePagination(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validatePagination refuses a declared walk that cannot find its collection.
+//
+// The check is possible because the generator already recorded the shape:
+// ResultCase.Array says whether the success body IS the array. When it is not
+// and no items_field names where the array lives, the walk would extract
+// nothing from every page — and an empty page is how every style signals the
+// end, so the run would receive an empty collection reported as COMPLETE. The
+// package has the facts to refuse that here, which is the only place it costs
+// nothing.
+func (op Operation) validatePagination() error {
+	p := op.Pagination
+	if p == nil {
+		return nil
+	}
+	if !ValidPaginationStyle(p.Style) {
+		return fmt.Errorf("operation %q: pagination style %q is not one iterion can walk (want page_number|cursor|offset|link_header)", op.ID, p.Style)
+	}
+	if p.Style == PageCursor && p.CursorField == "" {
+		return fmt.Errorf("operation %q: cursor pagination declares no cursor_field, so the walk could never advance past page one", op.ID)
+	}
+	if p.ItemsField != "" {
+		return nil
+	}
+	// No items_field: every success case must BE the array.
+	for _, r := range op.Results {
+		if r.Status < 200 || r.Status > 299 || r.Pending {
+			continue
+		}
+		if r.SchemaRef == "" && r.Status == http.StatusNoContent {
+			continue
+		}
+		if !r.Array {
+			return fmt.Errorf("operation %q: declares pagination but its %d response (%s) is not an array and no items_field names the collection — the walk would read every page as empty and report the result complete",
+				op.ID, r.Status, resultShapeName(r))
+		}
+	}
+	return nil
+}
+
+// resultShapeName describes a result for the diagnostic above.
+func resultShapeName(r ResultCase) string {
+	if r.SchemaRef == "" {
+		return "an empty body"
+	}
+	return "schema " + r.SchemaRef
 }
 
 // pathPlaceholders extracts the `{name}` templates of a path.

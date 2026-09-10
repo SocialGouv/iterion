@@ -48,6 +48,42 @@ func TestValidPackagePasses(t *testing.T) {
 	}
 }
 
+// TestAWellFormedPaginationPasses is the other half of the refusals below: a
+// guard that only ever says no would be satisfied by refusing everything.
+func TestAWellFormedPaginationPasses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*spec.Package)
+	}{
+		{"a bare array needs no items_field", func(p *spec.Package) {
+			p.Ops[0].Operations[0].Results[0].Array = true
+			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+				Style: spec.PageNumber, PageParam: "page", SizeParam: "limit", DefaultSize: 50,
+			}
+		}},
+		{"an envelope named by items_field", func(p *spec.Package) {
+			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+				Style: spec.PageNumber, PageParam: "page", SizeParam: "limit",
+				ItemsField: "data", DefaultSize: 50,
+			}
+		}},
+		{"a cursor walk that names its cursor", func(p *spec.Package) {
+			p.Ops[0].Operations[0].Results[0].Array = true
+			p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+				Style: spec.PageCursor, CursorParam: "after", CursorField: "next",
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := validPackage()
+			tc.set(p)
+			if err := p.Validate(); err != nil {
+				t.Fatalf("must validate: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidateRefusals covers every way a package can be internally
 // incoherent. Each case states what the refusal PREVENTS, because a
 // validation nobody can explain gets deleted the first time it is
@@ -165,6 +201,45 @@ func TestValidateRefusals(t *testing.T) {
 				p.Ops[0].Operations[0].Effect = ""
 			},
 			wantMsg: "missing effect",
+		},
+		{
+			// Prevents THE dangerous pagination defect: the success body is an
+			// object, no items_field names the array inside it, so the walk
+			// extracts nothing from every page — and an empty page is how the
+			// walk knows the collection ended. The caller receives zero items
+			// and the word "complete". This is the shipped Forgejo
+			// repository.search shape.
+			name: "paginated over a non-array response with no items_field",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageNumber, PageParam: "page", SizeParam: "limit", DefaultSize: 50,
+				}
+			},
+			wantMsg: "is not an array and no items_field",
+		},
+		{
+			// Prevents: a cursor walk that can never advance, silently
+			// returning page one as the whole collection.
+			name: "cursor pagination with no cursor_field",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{
+					Style: spec.PageCursor, CursorParam: "after",
+				}
+			},
+			wantMsg: "no cursor_field",
+		},
+		{
+			// Prevents: a style the executor has no arm for reaching
+			// production, where it fails at the first call instead of at
+			// validation. link_header is declared in the model but not yet
+			// walkable.
+			name: "a pagination style the executor cannot walk",
+			mutate: func(p *spec.Package) {
+				p.Ops[0].Operations[0].Results[0].Array = true
+				p.Ops[0].Operations[0].Pagination = &spec.Pagination{Style: spec.PageLink}
+			},
+			wantMsg: "not one iterion can walk",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
