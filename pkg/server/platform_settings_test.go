@@ -367,6 +367,54 @@ func TestAdminBudgetFloor_WarnsWhenTheWindowItReservesIsNotCapped(t *testing.T) 
 			t.Fatalf("warnings = %v for a slot-only reserve, want none — it is enforced elsewhere", warns)
 		}
 	})
+
+	// The opposite misconfiguration, and the worse one: the reserves take the
+	// deployment's whole cap. Unreserved work then gets no lowered ceiling but
+	// an outright refusal of the credential (the heldOut path), which is a
+	// fleet-wide outage for every bot the policy does not name.
+	//
+	// Policy.Validate passes it — it knows the 100% window, never THIS
+	// deployment's cap — so nothing between the operator and production said
+	// so, while the milder "holds nothing" case above was already reported.
+	t.Run("reserves that swallow the whole cap are named too", func(t *testing.T) {
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "50")
+		warns := get(t, newSrv(t, []budgetfloor.Reservation{
+			{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 30}},
+			{BotID: "feature-dev", Reserve: budgetfloor.Reserve{FiveHourPercent: 25}},
+		}))
+		if len(warns) != 1 {
+			t.Fatalf("warnings = %v, want one — 55%% reserved of a 50%% cap leaves unreserved work nothing", warns)
+		}
+		for _, want := range []string{"five_hour", "55%", "50%", "refused"} {
+			if !strings.Contains(warns[0], want) {
+				t.Errorf("warning = %q, want it to contain %q", warns[0], want)
+			}
+		}
+		// It must not double up with the inert warning: they are the two ends
+		// of one axis, and an operator hearing both would trust neither.
+		if strings.Contains(warns[0], "holds nothing") {
+			t.Errorf("warning = %q says both that nothing is held and that everything is", warns[0])
+		}
+	})
+
+	t.Run("a reserve exactly at the cap is swallowed, one below is not", func(t *testing.T) {
+		// The boundary WindowCeiling draws: `reserved >= capPct` is heldOut,
+		// so equality is the refusing side. A warning drawing it one point
+		// off would clear precisely the policy that refuses everything.
+		t.Setenv("ITERION_USAGE_CAP_5H_PCT", "50")
+		at := get(t, newSrv(t, []budgetfloor.Reservation{
+			{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 50}},
+		}))
+		if len(at) != 1 {
+			t.Errorf("warnings = %v at reserve == cap, want one: WindowCeiling holds it out at equality", at)
+		}
+		below := get(t, newSrv(t, []budgetfloor.Reservation{
+			{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 49}},
+		}))
+		if len(below) != 0 {
+			t.Errorf("warnings = %v one point below the cap, want none — 1%% is a thin band, not an absent one", below)
+		}
+	})
 }
 
 func TestAdminBudgetFloor_ConcurrentPutIsA409NotALostReservation(t *testing.T) {

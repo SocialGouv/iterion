@@ -120,20 +120,33 @@ func (s *Server) handleAdminGetBudgetFloor(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// budgetFloorWarnings names the reservations this deployment will not act on.
+// budgetFloorWarnings names the two ways a window reserve does something other
+// than what its author read into it. Both are invisible from the stored
+// document, because both depend on a cap that lives in a DIFFERENT settings
+// family, and the window axis is the default — so this is the axis an
+// operator is most likely to get wrong without hearing about it.
 //
-// The window axis is the DEFAULT and the only one whose reserve is silently
-// inert: capPolicyFor lowers a window only where usagecap already enforces
-// one, deliberately — a floor may not invent a ceiling, nor re-arm a guard the
-// kill switch disarmed. Correct, and invisible: an operator reserving 20% of
-// the five-hour window on a deployment that never set ITERION_USAGE_CAP_* (or
-// whose mode is `off`) stores a reservation that changes nothing, and the
-// feature exists precisely because nothing being held is hard to notice.
+//   - It holds NOTHING. capPolicyFor lowers a window only where usagecap
+//     already enforces one, deliberately — a floor may not invent a ceiling,
+//     nor re-arm a guard the kill switch disarmed. So a 20% reserve on a
+//     deployment that never set ITERION_USAGE_CAP_* (or whose mode is `off`)
+//     stores fine and changes nothing.
+//   - It holds EVERYTHING. Reserves summing to the deployment's own cap leave
+//     unreserved work no band at all, and that is not a lowered ceiling but an
+//     outright refusal of every launch the reservations do not name (the
+//     heldOut path). Policy.Validate cannot catch it: it knows the 100%
+//     window, never this deployment's cap — which is also why the two can
+//     drift apart later, when an admin lowers the cap under reserves that were
+//     already written.
 //
-// So it is said at the surface where the reserve is written. Advisory only —
-// the write is already stored and stays valid the moment a cap is set, and
-// refusing it would forbid the legitimate order "configure the floor, then arm
-// the cap".
+// The second is the more dangerous of the two and was the silent one: the
+// inert case does nothing, this one refuses everything. It is reported here
+// because this is where both become knowable at once — the reserve and the
+// cap in the same call.
+//
+// Advisory only. The write is already stored and both shapes are legitimate
+// in transit: refusing them would forbid "configure the floor, then arm the
+// cap", and equally "hold the whole window for now, widen the cap next".
 //
 // Degraded reads are silent: an unreadable settings record means the warning
 // cannot be computed, never that the cap is absent.
@@ -172,12 +185,22 @@ func (s *Server) budgetFloorWarnings(ctx context.Context, pol budgetfloor.Policy
 		if w == budgetfloor.WindowWeek {
 			wp = eff.Week
 		}
-		if wp.Enabled() {
-			continue
+		held := pol.OtherReserved("", w)
+		switch {
+		case !wp.Enabled():
+			out = append(out, fmt.Sprintf(
+				"the %s reserve holds nothing: this deployment enforces no %s usage cap (set ITERION_USAGE_CAP_* or `iterion remote admin caps set`, strictly below the provider's own wall — a reserve lowers that cap, it cannot create one)",
+				w, w))
+		case float64(held) >= wp.MaxPercent:
+			// The same comparison WindowCeiling makes, so the warning and the
+			// walk cannot disagree about which side of the line a policy sits
+			// on. Said in terms of the consequence, not the arithmetic: what
+			// the operator needs to know is that unreserved work no longer
+			// launches on this window at all.
+			out = append(out, fmt.Sprintf(
+				"the %s reserves hold %d%% of a %.0f%% cap, which leaves unreserved work no band at all: every bot no reservation names is refused this credential outright, not merely sooner (lower the reserves, or raise the %s usage cap above them)",
+				w, held, wp.MaxPercent, w))
 		}
-		out = append(out, fmt.Sprintf(
-			"the %s reserve holds nothing: this deployment enforces no %s usage cap (set ITERION_USAGE_CAP_* or `iterion remote admin caps set`, strictly below the provider's own wall — a reserve lowers that cap, it cannot create one)",
-			w, w))
 	}
 	return out
 }
