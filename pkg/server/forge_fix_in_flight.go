@@ -106,6 +106,17 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	if cur.State != "" && !isFixInFlight(cur) {
 		return
 	}
+	// AND never take over ANOTHER run's live claim — the same ownership test
+	// the clear applies, on the site it was first forgotten. Several runs share
+	// one head sha, so a second fixer launching on a head a first already
+	// claimed would replace the target URL with its own; from then on the claim
+	// is the newcomer's, and whichever run ends FIRST posts the all-clear over
+	// the other's live rewrite. Standing down instead leaves the warning up and
+	// attributed to the run that raised it, which is what a reader about to
+	// push needs — the warning is true whichever fixer is working.
+	if isFixInFlight(cur) && !gateStatusSpeaksFor(cur, runURL) {
+		return
+	}
 	st := forge.CommitStatus{
 		State:       forge.CommitStatePending,
 		Context:     fixInFlightContext,
@@ -142,12 +153,17 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	// the false all-clear this file calls worse than the silence it replaces,
 	// in the very lane (a quota park) the change was written for.
 	//
-	// The same predicate, the same call as the gate lane next door: a resumable
-	// failure is only dead when nothing will actually resume it
-	// (forge_gate_reconcile.go, "A resumable failure is only 'not dead' when
-	// something will actually resume it"). Two lanes reading one state must not
-	// disagree about whether it is an ending.
+	// The gate lane's predicate, INCLUDING its DLQ exception — the first draft
+	// of this comment claimed parity it did not have, which is worse than
+	// having neither. A DLQ park is FINAL for automation whatever RetryState
+	// still says: a retry_after can survive on such a doc (the usage-window
+	// park that preceded an operator resume, when the clear on resume did not
+	// land), and standing down on it would leave the claim pending for a run
+	// nothing will ever wake. So the exception is tested FIRST, exactly as
+	// forge_gate_reconcile.go does, and only a park something will actually
+	// resume keeps the claim.
 	if run.Status == store.RunStatusFailedResumable &&
+		run.FailureCode != store.FailureDLQParked &&
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
 		return
 	}

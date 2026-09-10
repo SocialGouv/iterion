@@ -314,3 +314,63 @@ func TestClearFixInFlight_LeavesAForeignStatusAlone(t *testing.T) {
 		t.Fatalf("overwrote a status this server does not own (%d posts)", gc.setCalls)
 	}
 }
+
+// Rbb856d — a DLQ park is FINAL for automation whatever RetryState still says:
+// a retry_after can survive on such a doc (the usage-window park that preceded
+// an operator resume, when the clear on resume did not land). Standing down on
+// it would leave the claim pending for a run nothing will ever wake. The gate
+// lane tests this exception FIRST; the first draft here claimed parity with
+// that lane in a comment while omitting the branch.
+func TestClearFixInFlight_ResolvesADLQParkDespiteAStaleRetry(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	at := time.Now().UTC().Add(time.Hour)
+	run.RetryState = &store.RunRetryState{RetryAfter: &at} // stale, survived the park
+	run.FailureCode = store.FailureDLQParked
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a DLQ-parked run is never resumed, so its claim would sit pending forever", gc.setCalls)
+	}
+}
+
+// R22fa34 — the CLAIM had the defect the clear was fixed for: it overwrote any
+// marker of the right shape without asking whose it was. Two fixers share one
+// head sha by construction, so the newcomer would take the claim over, and
+// whichever run ended first would post the all-clear over the other's live
+// rewrite. The class, fixed at both sites rather than one.
+func TestMarkFixInFlight_NeverTakesOverAnotherRunsClaim(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/an-earlier-fixer"},
+	}}
+	s := fixLaunchFixture(t, gc)
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+
+	if gc.setCalls != 0 {
+		t.Fatalf("took over a live claim posted by another run (%d posts) — whichever run ends first would then announce the other done", gc.setCalls)
+	}
+}
+
+// ...but its OWN marker is re-claimable: a relaunch of the same run must not be
+// locked out by the status it posted itself.
+func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/run-77"},
+	}}
+	s := fixLaunchFixture(t, gc)
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — a run must be able to refresh its own claim", gc.setCalls)
+	}
+}
