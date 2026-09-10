@@ -1,6 +1,8 @@
 package native
 
 import (
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,5 +138,36 @@ func TestRescanInterval_HonoursEveryZeroSpelling(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	if _, r, _ := s.watchState(); r == nil || r.interval != 1500*time.Millisecond {
 		t.Fatalf("1500ms not honoured: %+v", r)
+	}
+}
+
+// A value the resolver cannot read is not a disable and is not swallowed:
+// the net falls back to the default (guessing "they meant off" would
+// remove the correctness net on a host that has no watch), and the line
+// the store writes when it arms the net names the value it ignored — the
+// only way an operator who mistyped finds out before the board stops
+// updating.
+func TestRescanInterval_NamesTheValueItCouldNotRead(t *testing.T) {
+	refuseWatch(t)
+	for _, raw := range []string{"2 s", "OFF", "none", "later"} {
+		t.Setenv("ITERION_NATIVE_INDEX_RESCAN", raw)
+		s, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		_, r, _ := s.watchState()
+		if r == nil {
+			_ = s.Close()
+			t.Fatalf("ITERION_NATIVE_INDEX_RESCAN=%q disabled the net; only a disabling spelling may do that", raw)
+		}
+		if r.interval != defaultRescanInterval {
+			_ = s.Close()
+			t.Fatalf("ITERION_NATIVE_INDEX_RESCAN=%q armed a %s net, want the %s default", raw, r.interval, defaultRescanInterval)
+		}
+		if got := r.describe(); !strings.Contains(got, strconv.Quote(raw)) {
+			_ = s.Close()
+			t.Fatalf("the store armed the net without naming the value it ignored: %q does not mention %q", got, raw)
+		}
+		_ = s.Close()
 	}
 }
