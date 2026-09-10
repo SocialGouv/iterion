@@ -1,0 +1,205 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
+	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/spf13/cobra"
+)
+
+// remote admin budget-floor — capacity RESERVED for a workload, and the
+// per-repository ceilings inside the shared budget. The one budget surface
+// that is not a cap: everything else here answers "how far may this go",
+// this answers "how much is held for this whatever else runs".
+
+var (
+	remoteFloorBot        string
+	remoteFloorFiveHour   int
+	remoteFloorWeek       int
+	remoteFloorUSD        float64
+	remoteFloorSlots      int
+	remoteFloorNote       string
+	remoteFloorRepo       string
+	remoteFloorRepoRuns   int
+	remoteFloorRepoShare  int
+	remoteFloorShareOfBot string
+)
+
+const budgetFloorPath = "/api/admin/settings/budget-floor"
+
+// fetchFloorPolicy reads the stored policy so `reserve` / `quota` / `rm` can
+// edit ONE entry without the operator restating the rest. The PUT replaces
+// the document, so the read-modify-write has to happen somewhere; doing it
+// here keeps the API honest (a reservation set is read as a whole) and the
+// CLI ergonomic.
+func fetchFloorPolicy(cmd *cobra.Command, c *cli.RemoteClient) (budgetfloor.Policy, error) {
+	raw, err := c.Call(cmd.Context(), "GET", budgetFloorPath, nil, nil)
+	if err != nil {
+		return budgetfloor.Policy{}, err
+	}
+	var envelope struct {
+		Stored budgetfloor.Policy `json:"stored"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return budgetfloor.Policy{}, fmt.Errorf("decode the stored policy: %w", err)
+		}
+	}
+	return envelope.Stored, nil
+}
+
+func putFloorPolicy(cmd *cobra.Command, c *cli.RemoteClient, p *cli.Printer, pol budgetfloor.Policy) error {
+	// Validated locally FIRST: the same refusal the server would give, but
+	// naming the flag the operator typed rather than a JSON field.
+	if err := pol.Validate(); err != nil {
+		return err
+	}
+	body, err := json.Marshal(pol)
+	if err != nil {
+		return err
+	}
+	return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", budgetFloorPath, body)
+}
+
+var remoteAdminBudgetFloorCmd = &cobra.Command{
+	Use:   "budget-floor [reserve|quota|rm]",
+	Short: "Reserve capacity for a workload, and cap a repository inside the shared budget",
+	Long: `Show the reservations, or change one.
+
+Every other budget dial in iterion is a CEILING. This is the floor: a band
+of the shared budget held for a named bot, so a reviewer is not starved by
+the campaign bots it shares a subscription with.
+
+  iterion remote admin budget-floor
+  iterion remote admin budget-floor reserve --bot review-pr --five-hour 20
+  iterion remote admin budget-floor quota --repo owner/repo --monthly-usd 50
+  iterion remote admin budget-floor rm --bot review-pr
+  iterion remote admin budget-floor rm --repo owner/repo
+
+The DEFAULT axis is --five-hour / --week, points of the provider's own usage
+window. On a subscription the provider bills nothing per call, so a dollar
+reserve there holds back a figure that is an estimate — the window is what
+actually runs out. --monthly-usd and --concurrent-runs are available for the
+cases where they ARE the honest answer: a metered key, and responsiveness.
+
+Composition: a workload's ceiling is the deployment cap minus the reserves of
+every OTHER workload. With review-pr at 20 and feature-dev at 10 under an 80%
+cap, ordinary work stops at 50, review-pr may reach 70, feature-dev 60.
+
+A reservation never lets its holder past the deployment's own caps, and never
+creates a cap that was not configured.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, budgetFloorPath)
+		}
+		pol, err := fetchFloorPolicy(cmd, c)
+		if err != nil {
+			return err
+		}
+		switch args[0] {
+		case "reserve":
+			bot := strings.TrimSpace(remoteFloorBot)
+			if bot == "" {
+				return fmt.Errorf("--bot is required (the workload the reservation protects)")
+			}
+			res := budgetfloor.Reservation{BotID: bot, Note: strings.TrimSpace(remoteFloorNote), Reserve: budgetfloor.Reserve{
+				FiveHourPercent: remoteFloorFiveHour,
+				WeekPercent:     remoteFloorWeek,
+				MonthlyUSD:      remoteFloorUSD,
+				ConcurrentRuns:  remoteFloorSlots,
+			}}
+			if res.Reserve.Empty() {
+				return fmt.Errorf("reserve nothing? name at least one axis: --five-hour, --week, --monthly-usd or --concurrent-runs (use `rm --bot %s` to remove the reservation)", bot)
+			}
+			pol.Reservations = upsertReservation(pol.Reservations, res)
+		case "quota":
+			repo := strings.TrimSpace(remoteFloorRepo)
+			if repo == "" {
+				return fmt.Errorf("--repo is required (the forge slug, e.g. owner/repo)")
+			}
+			q := budgetfloor.RepoQuota{
+				Repo: repo, MonthlyUSD: remoteFloorUSD, RunsPerMonth: remoteFloorRepoRuns,
+				ReserveSharePercent: remoteFloorRepoShare, ShareOfBot: strings.TrimSpace(remoteFloorShareOfBot),
+			}
+			if q.Empty() {
+				return fmt.Errorf("cap nothing? name at least one of --monthly-usd, --runs-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
+			}
+			pol.RepoQuotas = upsertRepoQuota(pol.RepoQuotas, q)
+		case "rm":
+			bot, repo := strings.TrimSpace(remoteFloorBot), strings.TrimSpace(remoteFloorRepo)
+			if bot == "" && repo == "" {
+				return fmt.Errorf("name what to remove: --bot <id> or --repo <slug>")
+			}
+			if bot != "" {
+				pol.Reservations = dropReservation(pol.Reservations, bot)
+			}
+			if repo != "" {
+				pol.RepoQuotas = dropRepoQuota(pol.RepoQuotas, repo)
+			}
+		default:
+			return fmt.Errorf("unknown budget-floor action %q (want reserve|quota|rm)", args[0])
+		}
+		return putFloorPolicy(cmd, c, p, pol)
+	}),
+}
+
+// upsertReservation replaces the entry for a bot, or appends it — so
+// `reserve` twice for one bot is an edit, not the duplicate Validate refuses.
+func upsertReservation(in []budgetfloor.Reservation, res budgetfloor.Reservation) []budgetfloor.Reservation {
+	for i := range in {
+		if in[i].BotID == res.BotID {
+			in[i] = res
+			return in
+		}
+	}
+	return append(in, res)
+}
+
+func upsertRepoQuota(in []budgetfloor.RepoQuota, q budgetfloor.RepoQuota) []budgetfloor.RepoQuota {
+	for i := range in {
+		if in[i].Repo == q.Repo {
+			in[i] = q
+			return in
+		}
+	}
+	return append(in, q)
+}
+
+func dropReservation(in []budgetfloor.Reservation, bot string) []budgetfloor.Reservation {
+	out := in[:0]
+	for _, r := range in {
+		if r.BotID != bot {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func dropRepoQuota(in []budgetfloor.RepoQuota, repo string) []budgetfloor.RepoQuota {
+	out := in[:0]
+	for _, q := range in {
+		if q.Repo != repo {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+func init() {
+	f := remoteAdminBudgetFloorCmd.Flags()
+	f.StringVar(&remoteFloorBot, "bot", "", "The workload a reservation protects (bot id)")
+	f.IntVar(&remoteFloorFiveHour, "five-hour", 0, "Points of the provider's 5h window held for this bot (the default axis)")
+	f.IntVar(&remoteFloorWeek, "week", 0, "Points of the provider's weekly window held for this bot")
+	f.Float64Var(&remoteFloorUSD, "monthly-usd", 0, "Dollars of the monthly cost cap held for this bot (or, with `quota`, the repository's ceiling)")
+	f.IntVar(&remoteFloorSlots, "concurrent-runs", 0, "Concurrency slots held for this bot")
+	f.StringVar(&remoteFloorNote, "note", "", "Why this reservation exists, shown wherever it is cited")
+	f.StringVar(&remoteFloorRepo, "repo", "", "Forge slug of the repository to cap (owner/repo)")
+	f.IntVar(&remoteFloorRepoRuns, "runs-per-month", 0, "Cap the repository on attempts instead of amount")
+	f.IntVar(&remoteFloorRepoShare, "reserve-share", 0, "Cap the repository at N% of a reservation (needs --share-of-bot)")
+	f.StringVar(&remoteFloorShareOfBot, "share-of-bot", "", "Which reservation --reserve-share slices")
+	remoteAdminCmd.AddCommand(remoteAdminBudgetFloorCmd)
+}

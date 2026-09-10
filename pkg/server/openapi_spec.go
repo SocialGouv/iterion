@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -108,6 +109,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		RunnerPoolsSettings:         platformcfg.NewMemoryStore[platformcfg.RunnerPools](),
 		SandboxSettings:             platformcfg.NewMemoryStore[platformcfg.Sandbox](),
 		BotVarsSettings:             platformcfg.NewMemoryStore[platformcfg.BotVars](),
+		BudgetFloorSettings:         platformcfg.NewMemoryStore[budgetfloor.Policy](),
 		PlatformCredentialsSettings: platformcfg.NewMemoryStore[platformcfg.PlatformCredentials](),
 		Store:                       runStore,
 		ModelPrefs:                  modelprefs.NewMemStore(),
