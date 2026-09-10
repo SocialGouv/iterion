@@ -42,7 +42,10 @@ automated lane does at the gate. `POST /api/runs` is the exception in
 placement, not in effect: it learns its repository from a connection read that
 must sit behind the suspend check, so it re-runs step 2 — that step alone,
 since step 6 has already metered — once `repoProjectPath` resolves, before the
-forge reachability probe and the managed-secret mint.
+forge reachability probe and the managed-secret mint. The super-admin
+exemption below travels with it: it lives inside the repo check rather than
+only in the gate's prologue, so the one surface that re-runs a step on its own
+cannot answer a super-admin differently from the five that do not.
 
 Steps 3 and 5 are additionally **lowered by any capacity reservation that
 does not name this launch's bot** — the floor described below — and refuse
