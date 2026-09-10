@@ -136,8 +136,11 @@ two against the smallest cap on the deployment.
 A reservation never lets its holder past the deployment's own caps, and never
 creates a cap that was not configured. So --five-hour / --week hold nothing
 until the deployment enforces a usage cap (ITERION_USAGE_CAP_*, or
-` + "`iterion remote admin caps set`" + `) strictly below the provider's own wall: the
-response's ` + "`warnings`" + ` names any reserved window this deployment does not cap.
+` + "`iterion remote admin caps set`" + `) strictly below the provider's own wall. The
+response's ` + "`warnings`" + ` names both ways that goes wrong: a reserved window this
+deployment does not cap (the reserve holds nothing), and one whose reserves have
+taken the cap whole (unreserved bots are refused the credential outright, not
+merely sooner).
 
 ` + "`reserve`" + ` and ` + "`quota`" + ` EDIT one entry: an axis you do not name keeps the
 value it has, so adding --concurrent-runs to a bot that already holds a window

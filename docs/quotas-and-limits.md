@@ -520,7 +520,14 @@ the credential** for the unreserved bot and falls through to the next tier,
 saying so in the skip log (*"the five_hour window is entirely reserved for
 other workloads"*); the org's monthly cost cap does the same on its own axis,
 denying with `monthly_cost_cap_exceeded`. `Policy.Validate` cannot catch this
-at write time — it knows the 100% window, never the deployment's own cap.
+at write time — it knows the 100% window, never the deployment's own cap — so
+it is **not refused, it is reported**: `budget-floor` returns it in the
+response's `warnings`, beside the opposite shape (a reserved window this
+deployment does not cap at all). Both are advisory, because both are
+legitimate in transit — "hold the whole window now, widen the cap next" is an
+order to do things in. The window is also the axis this can reach *without
+anyone touching the floor*: lowering the usage cap under reserves that were
+already written produces it, and the next read of the settings says so.
 
 ### The per-repo quota
 
