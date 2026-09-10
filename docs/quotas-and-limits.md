@@ -530,22 +530,34 @@ protects. Every automated surface names its bot — the webhook launches, the
 trigger spine, the cloud scheduler, the board dispatcher, the retry sweeper —
 and so does `POST /api/runs` (from the request's `bot_id`).
 
-Three cases legitimately carry no subject, and are judged as ordinary,
-uncapped work:
+A resume names its bot too — `POST /api/runs/{id}/resume` and the WS answer
+that resumes a run both read it off the RUN, which is the only place it is
+written. The run is loaded *before* the gate but its error is answered
+*after*, so an unreadable run costs the subject and never the admission: the
+lookup is not tenant-filtered, and answering its 404 first would turn the
+suspend check into a run-existence probe.
 
-- **`POST /api/runs/{id}/resume`** and the WS answer that resumes a run: a
-  resume learns its bot from the RUN, and loading that run before the gate
-  would turn the suspend check into a run-existence probe. A reserved bot
-  resumed *by hand* therefore faces the ceiling its own reserve lowered; the
-  automated resume (the retry sweeper) reads the run doc anyway and does pass
-  the subject.
+Two cases legitimately carry no bot, and are judged as ordinary, uncapped
+work:
+
 - **`POST /api/v1/triggers/emit`**: one event fanning out to 0..N launches,
   each gated with its own subject. This pre-check bounds the event, not any of
   them.
 - A **plain `.bot` upload**, which names no bot at all.
 
-No surface passes a repository except the automated ones: an operator-initiated
-launch is not the fan-out the per-repo quota exists to bound.
+**The repository is passed wherever one exists**, the automated lanes and the
+hand-driven ones alike — a quota with a bypass on the door an operator or a CI
+loop uses is not a quota. On `POST /api/runs` it is resolved a few checks
+*after* the admission, because naming the repository costs a connection read
+and that must sit behind the suspend check, not in front of it; the repo half
+of the gate is re-run on the line that resolves it, ahead of the forge
+reachability probe and the managed-secret mint, so an over-quota repository
+costs neither. Only the repo half — the monthly arm meters, and the launch has
+already charged its run slot by then.
+
+The one surface that knows a repository and deliberately passes none is the
+**board dispatcher**: a card carries a clone URL, and this quota keys on the
+forge slug the meter writes, never on a second identity derived from a URL.
 
 ## Reading usage
 
