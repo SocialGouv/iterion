@@ -467,7 +467,10 @@ func TestMarkFixInFlight_TakesOverAClaimWhoseRunIsOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner.Status = store.RunStatusFailedResumable
+	// GENUINELY over — not a resumable park, which comes back and whose claim
+	// must NOT be stolen. The first draft of this test used failed_resumable
+	// and so encoded the very confusion Rd033da names.
+	owner.Status = store.RunStatusFailed
 	if err := st.SaveRun(context.Background(), owner); err != nil {
 		t.Fatal(err)
 	}
@@ -510,5 +513,77 @@ func TestMarkFixInFlight_LeavesAClaimWhoseRunIsAlive(t *testing.T) {
 
 	if gc.setCalls != 0 {
 		t.Fatalf("took over a claim whose run is still rewriting the branch (%d posts)", gc.setCalls)
+	}
+}
+
+// Rd033da — the takeover asked store.IsTerminal() while the clear kept the
+// claim through every resumable park. IsTerminal() INCLUDES failed_resumable,
+// so the two predicates contradicted each other: a fixer parked on a usage
+// window — which does come back — had its LIVE claim taken over, and whichever
+// run ended first posted the all-clear over the other's rewrite.
+//
+// One definition, both sites. This pins the agreement itself.
+func TestFixRunIsOver_AgreesWithWhatKeepsTheClaim(t *testing.T) {
+	mk := func(st store.RunStatus, code store.FailureCode) *store.Run {
+		return &store.Run{Status: st, FailureCode: code}
+	}
+	cases := []struct {
+		name string
+		run  *store.Run
+		over bool
+	}{
+		{"finished", mk(store.RunStatusFinished, ""), true},
+		{"failed", mk(store.RunStatusFailed, ""), true},
+		{"cancelled", mk(store.RunStatusCancelled, ""), true},
+		{"running", mk(store.RunStatusRunning, ""), false},
+		// The one that mattered: a park the runner or the retry sweeper brings
+		// back is NOT over, whatever IsTerminal() says.
+		{"resumable park (comes back)", mk(store.RunStatusFailedResumable, ""), false},
+		{"DLQ park (exhausted)", mk(store.RunStatusFailedResumable, store.FailureDLQParked), true},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := fixRunIsOver(c.run); got != c.over {
+			t.Errorf("%s: over=%v want %v", c.name, got, c.over)
+		}
+	}
+}
+
+// And the agreement is exercised through the SITES, not only the predicate: a
+// fixer parked on a usage window keeps its claim AND is not taken over.
+func TestFixInFlight_AResumableParkIsNeitherClearedNorStolen(t *testing.T) {
+	// clear side
+	gcClear := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s1, run := fixRunFixture(t, gcClear, store.RunStatusFailedResumable)
+	s1.clearFixInFlight(context.Background(), run)
+	if gcClear.setCalls != 0 {
+		t.Errorf("clear released a parked fixer's claim (%d posts)", gcClear.setCalls)
+	}
+
+	// takeover side, same park
+	gcMark := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/parked-fixer"},
+	}}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2 := fixLaunchFixture(t, gcMark)
+	s2.cfg.Store = st
+	owner, err := st.CreateRun(context.Background(), "parked-fixer", "branch-improve-loop", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Status = store.RunStatusFailedResumable
+	if err := st.SaveRun(context.Background(), owner); err != nil {
+		t.Fatal(err)
+	}
+	s2.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+	if gcMark.setCalls != 0 {
+		t.Errorf("a new fixer stole a parked fixer's live claim (%d posts) — it comes back and keeps rewriting", gcMark.setCalls)
 	}
 }

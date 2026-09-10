@@ -150,6 +150,29 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	}
 }
 
+// fixRunIsOver is THE definition of "this fixer will not come back", and it
+// exists because two sites need it and a second copy drifted immediately: the
+// clear kept the claim through every resumable park, while the staleness test
+// next door asked store.IsTerminal() — which INCLUDES failed_resumable. The two
+// contradicted each other, so a fixer parked on a usage window (which does come
+// back) had its live claim taken over, and whichever run ended first posted the
+// all-clear over the other's rewrite.
+//
+// An armed RetryAfter is only one of the ways a run returns: the runner turns a
+// rolling-deploy drain, a sandbox phase timeout and a capacity refusal into
+// failed_resumable plus a JetStream nak, with no RetryAfter ever written. So
+// resumable means NOT over — except a DLQ park, whose deliveries the queue has
+// exhausted and which no automation wakes.
+func fixRunIsOver(run *store.Run) bool {
+	if run == nil || !run.Status.IsTerminal() {
+		return false
+	}
+	if run.Status == store.RunStatusFailedResumable {
+		return run.FailureCode == store.FailureDLQParked
+	}
+	return true
+}
+
 // clearFixInFlight resolves THIS RUN's fixer claim once the run is terminal.
 //
 // Idempotent and narrow: it only ever replaces the marker this very run
@@ -157,7 +180,7 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 // same run) costs one read, and neither another tool's status nor another
 // RUN's claim is ever touched.
 func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
-	if s == nil || run == nil || s.forgeConnections == nil || !run.Status.IsTerminal() {
+	if s == nil || run == nil || s.forgeConnections == nil || !fixRunIsOver(run) {
 		return
 	}
 	// AN ARMED RETRY IS NOT AN ENDING. IsTerminal() includes failed_resumable,
@@ -179,24 +202,6 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	// nothing will ever wake. So the exception is tested FIRST, exactly as
 	// forge_gate_reconcile.go does, and only a park something will actually
 	// resume keeps the claim.
-	// AND AN ARMED RetryAfter IS ONLY ONE OF THE WAYS A RUN COMES BACK. The
-	// runner turns ErrRunInterrupted (a rolling deploy draining a run
-	// mid-flight), sandbox.ErrPhaseTimeout and sandbox.ErrCapacity into
-	// failed_resumable plus a JetStream nak: a fresh pod picks the SAME run up
-	// with no RetryAfter ever written — the only site that arms one is the
-	// usage-window park. Keying on RetryAfter therefore announced "pushing is
-	// safe again" on every DRAINED fixer, which is the commonest interruption
-	// there is.
-	//
-	// So the test is inverted: failed_resumable KEEPS the claim, and only the
-	// DLQ park releases it — a park whose deliveries the queue has exhausted
-	// and that no automation will ever wake. The conservative direction is the
-	// safe one: a claim left standing is advisory noise on a context nothing
-	// gates, while a false all-clear is the harm this file exists to prevent.
-	if run.Status == store.RunStatusFailedResumable &&
-		run.FailureCode != store.FailureDLQParked {
-		return
-	}
 	prURL := runInputString(run, "pr_url")
 	sha := runInputString(run, "head_sha")
 	if prURL == "" || sha == "" {
@@ -297,7 +302,9 @@ func (s *Server) fixClaimIsStale(ctx context.Context, cur forge.CommitStatus) bo
 	if err != nil || run == nil {
 		return false
 	}
-	return run.Status.IsTerminal()
+	// The SAME definition the clear uses. Two answers to "is this run over?"
+	// is how the contradiction above was built.
+	return fixRunIsOver(run)
 }
 
 // fixRoleTTL bounds how long a manifest classification is reused. Short enough
