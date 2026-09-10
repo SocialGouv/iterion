@@ -1386,20 +1386,24 @@ type BudgetFloorSource interface {
 // becoming a way to overspend the provider window it is meant to share.
 //
 // The arithmetic itself is budgetfloor.WindowCeiling's, not a second copy of
-// it here, and it carries the two guards the safety argument rests on:
+// it here, and three guards carry the safety argument:
 //
-//   - a window with no cap (MaxPercent 0, "not enforced") is returned
-//     untouched. Subtracting a reserve from zero would hand back a negative
-//     ceiling, and usagecap reads any positive MaxPercent as enforcement — so
-//     a deployment that never configured a usage cap would ACQUIRE one, and
-//     start refusing runs, merely because somebody wrote a reservation. A
-//     floor may hold work back; it may not invent a ceiling.
+//   - a window that cannot block is returned untouched. The test is
+//     usagecap's own Enabled(), not MaxPercent: a percentage with mode `off`
+//     is a guard the operator DISARMED (what the ITERION_USAGE_CAP kill
+//     switch leaves over a stored percentage), and lowering it would let a
+//     reservation re-arm it. A floor may hold work back; it may not invent a
+//     ceiling, nor rebuild one somebody switched off.
 //   - a window whose cap the OTHER reserves swallow whole cannot be expressed
 //     as a lowered ceiling at all: MaxPercent 0 means "unenforced" to
 //     usagecap, so clamping there would hand the credential to precisely the
-//     workloads the reserve holds off. That case comes back as a non-empty
-//     `reserved` reason instead, and the caller refuses the credential for
-//     this bot rather than judging it against a policy that cannot block.
+//     workloads the reserve holds off. It comes back as `heldOut` instead,
+//     and the caller refuses the credential for this bot rather than judging
+//     it against a policy that cannot block.
+//   - the deployment's own cap is returned ALONGSIDE the lowered one, because
+//     the difference decides whether a refusal was the credential's fault or
+//     the reserve's — and that decides whether the walk's restore step may
+//     hand it back.
 //
 // A bot the policy does not name gets the full subtraction, including the
 // empty bot id: a plain .bot launch belongs to no workload, and treating
