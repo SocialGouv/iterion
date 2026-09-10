@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -118,14 +119,68 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	port := reserveLoopbackPort(t)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	// Absorb SIGTERM for this test's lifetime. Registered FIRST so its cleanup
+	// runs LAST (t.Cleanup is LIFO), i.e. after the daemon is already down.
+	//
+	// This is what removes the CLASS rather than the instance. The stop below
+	// signals the process, and each previous round of this test tried to prove
+	// by reasoning that the signal could never land after RunDispatch had
+	// unregistered its own handler — first by checking a channel waitHealthy
+	// drains, then by checking one closed a moment too late. With an absorber
+	// registered, a SIGTERM nothing else is listening for is swallowed instead
+	// of killing the test binary, so the check below no longer has to be
+	// perfect in order to be safe.
+	absorb := make(chan os.Signal, 1)
+	signal.Notify(absorb, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(absorb) })
+
 	done := make(chan error, 1)
+	// Closed, not a value on `done`: waitHealthy receives from `done` on its
+	// own failure path, and `done` is written exactly once, so a check against
+	// it reads empty forever afterwards.
+	exited := make(chan struct{})
 	go func() {
-		done <- cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
+		err := cli.RunDispatch(&cli.Printer{W: io.Discard, Format: cli.OutputJSON}, cli.DispatchOptions{
 			ConfigPath: cfgPath,
 			StoreDir:   filepath.Join(dir, "store"),
 			Port:       port,
 		})
+		// Close BEFORE publishing. waitHealthy fails the test the instant it
+		// reads `done`, which runs the cleanup below — so anything able to
+		// observe `done` must already be able to observe `exited`. Publishing
+		// first left a window in which the cleanup read "still running".
+		close(exited)
+		done <- err
 	}()
+	// Registered BEFORE the first assertion, not after the last one. Every
+	// t.Fatalf between here and the end — waitHealthy timing out, the post
+	// helper hitting a transport error under CI load — would otherwise skip
+	// the stop and re-leak the daemon, and it would do so exactly on runs
+	// that are already failing, where the descriptor cascade then buries the
+	// original failure under every later test in the package.
+	t.Cleanup(func() {
+		select {
+		case <-exited:
+			// Already returned — it never started (bind race, bad config), or
+			// a sibling's signal reached it. There is nothing to stop, and
+			// signalling now would be worse than doing nothing: RunDispatch
+			// registers its handler with signal.NotifyContext + defer cancel,
+			// so once it returns nothing catches SIGTERM and the default
+			// disposition kills the whole test binary — turning one readable
+			// failure into "signal: terminated" for the entire package.
+			return
+		default:
+		}
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+			t.Errorf("signal daemon: %v", err)
+			return
+		}
+		select {
+		case <-exited:
+		case <-time.After(30 * time.Second):
+			t.Error("RunDispatch did not return within 30s of SIGTERM — the daemon is still holding its watches")
+		}
+	})
 	waitHealthy(t, base, done)
 
 	post := func(path, origin, body string) int {
@@ -160,6 +215,7 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 	if got := post("/api/v1/native/issues", "", `{"title":"no-origin"}`); got == http.StatusForbidden {
 		t.Error("POST with no Origin was refused; that is the CLI/script caller")
 	}
+
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {

@@ -273,3 +273,66 @@ func clearAuthCookiesCase(t *testing.T, secure bool, domain string) {
 		}
 	}
 }
+
+// TestLegacyRefreshCookieHalvesLiveAndDieTogether is the guard on the SECOND
+// half of the cookie migration.
+//
+// The legacy refresh cookie has two halves — the WRITE in setAuthCookies and
+// the READ in sessionCookie(acceptLegacy=true) — and removing one without the
+// other is the mistake worth preventing, because each way round fails
+// differently and neither is loud:
+//
+//   - write removed, read kept: an older desktop harvests nothing, keeps the
+//     previous token and replays it, and the server revokes every session that
+//     user holds. That is the outage this dual-write exists to prevent.
+//   - read removed, write kept: the bare cookie is still set on every browser
+//     but no longer accepted, so it is pure fixation surface for no benefit.
+//
+// Asserted behaviourally rather than by grepping the source, so it holds
+// however the removal is spelled: does the server WRITE the legacy name, and
+// does it ACCEPT one? Those two answers must agree.
+//
+// This pins that the two halves move TOGETHER; it says nothing about whether
+// the moment is safe, and a compliant simultaneous deletion passes it. The two
+// conditions that decide the moment — the refresh TTL for the read, and a soak
+// with ITERION_LEGACY_REFRESH_COOKIE=0 for the write, whose desktop consumer no
+// TTL bounds — live in docs/browser-security.md. Delete this test with them.
+func TestLegacyRefreshCookieHalvesLiveAndDieTogether(t *testing.T) {
+	// The kill switch is a RUNTIME override and orthogonal to the pairing this
+	// test pins; neutralise any inherited value so the assertion is about the
+	// code, not the environment it happens to run in.
+	t.Setenv("ITERION_LEGACY_REFRESH_COOKIE", "")
+	s := newAuthCookieServer(true, "") // the shape that carries the prefix
+	if !s.usesHostPrefix() {
+		t.Fatal("test precondition: this server should be writing the __Host- prefix")
+	}
+
+	w := httptest.NewRecorder()
+	s.setAuthCookies(w, "access", time.Now().Add(time.Minute), "refresh", time.Now().Add(time.Hour))
+	writesLegacy := false
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			writesLegacy = true
+		}
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "legacy-token"})
+	acceptsLegacy := s.refreshTokenFromRequest(r) == "legacy-token"
+
+	switch {
+	case writesLegacy && !acceptsLegacy:
+		// The READ went first. The cookie is still set on every browser and
+		// nothing accepts it: a stale name, and a desktop presenting it just
+		// gets a 401. Dead surface, not a session massacre.
+		t.Fatal("the legacy refresh cookie is still WRITTEN but no longer ACCEPTED: " +
+			"it is set on every browser and nothing reads it — dead surface, drop the write too")
+	case !writesLegacy && acceptsLegacy:
+		// The WRITE went first, and this is the dangerous order: an older
+		// desktop harvests nothing, keeps its previous token and replays it,
+		// which the server reads as theft.
+		t.Fatal("the legacy refresh cookie is no longer WRITTEN but is still ACCEPTED: " +
+			"an older desktop harvests nothing, replays its previous token, and gets every session of that user revoked — " +
+			"restore the write and soak with ITERION_LEGACY_REFRESH_COOKIE=0 first")
+	}
+}
