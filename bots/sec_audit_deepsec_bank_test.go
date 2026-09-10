@@ -42,6 +42,16 @@ func bankScript(t *testing.T) string {
 		if end < 0 {
 			t.Fatal("unterminated python3 -c body in the banking command")
 		}
+		// The body lives inside a '…' shell string, so ONE apostrophe closes it
+		// early and silently truncates the python — the trap the deepsec scanner
+		// node documents ("a stray apostrophe silently breaks shell parsing
+		// (exit 2) while iterion validate still passes"). A truncated body does
+		// fail the tests below, but as an unexplained non-zero exit; anything
+		// trailing the closing quote names the real cause instead.
+		if rest := strings.TrimSpace(blk[start+end+1:]); rest != "" {
+			t.Fatalf("the python body is cut short by a stray apostrophe — the shell string ends early and %q trails it. "+
+				"Keep the banking body apostrophe-free (write \"cannot\", never \"can't\").", firstLine(rest))
+		}
 		return blk[start : start+end]
 	}
 	t.Fatal("no bank_deepsec_findings command found — the findings no longer leave the pod")
