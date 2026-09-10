@@ -197,6 +197,15 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		healIdem := healIdempotencyKey(cfg, p)
 		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		// The revision this heal is about, and the one thing the fix-in-flight
+		// claim cannot do without: it returns silently on an empty head_sha, so
+		// without the stamp the auto-heal Billy stays exactly as invisible on
+		// the pull request as it was before that claim existed — in the lane
+		// that FORCE-pushes the branch, and therefore the one a concurrent
+		// writer most needs warning about. The command and auto-fix lanes stamp
+		// the same var at their own launch; the heal's own idempotency key is
+		// already keyed on this sha.
+		healVars["head_sha"] = p.HeadSHA
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}

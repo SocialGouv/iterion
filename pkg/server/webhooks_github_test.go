@@ -320,6 +320,13 @@ func TestGitHubWebhook_DequeuedPRAutoHeals(t *testing.T) {
 	if !strings.Contains(gotVars["scope_notes"], "ejected from the merge queue") || !strings.Contains(gotVars["scope_notes"], "MERGE_CONFLICT") {
 		t.Fatalf("heal mission must state the queue-eject reason: %q", gotVars["scope_notes"])
 	}
+	// R2a98ba — the revision, without which the fix-in-flight claim returns
+	// silently and this lane's Billy is invisible on the PR for its whole run:
+	// the one lane that FORCE-pushes the branch, and so the one a concurrent
+	// writer most needs warning about.
+	if gotVars["head_sha"] != "aaa111" {
+		t.Fatalf("heal launched with head_sha=%q, want the dequeued head — the fix-in-flight claim declines an empty one, silently", gotVars["head_sha"])
+	}
 }
 
 // TestGitHubWebhook_DequeuedNonHealableReasonIgnored: a dequeue for a
