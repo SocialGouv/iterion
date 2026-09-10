@@ -103,10 +103,11 @@ func isFixInFlight(st forge.CommitStatus) bool {
 }
 
 // isFixDone recognises this server's own RESOLVED marker, so the claim can
-// write over it: since the context names the run, the only launch that ever
-// meets one is that same run coming back — an operator resuming a park whose
-// claim was released — and it must be able to raise the warning again instead
-// of reading its own `done` as a foreign verdict and standing down.
+// write over it. Since the context names the run, the only caller that ever
+// meets one is reclaimFixInFlight — that same run coming back, replayed off
+// the DLQ or resumed by an operator — and it must be able to raise the warning
+// again instead of reading its own `done` as a foreign verdict and standing
+// down for the whole second pass.
 func isFixDone(st forge.CommitStatus) bool {
 	return st.State == forge.CommitStateSuccess &&
 		strings.TrimSpace(st.Description) == fixDoneDescription
@@ -189,6 +190,43 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 		s.logger.Info("forge fix: run %s claimed %s on %s@%s — a push while it works collides with its push-back",
 			runID, ctxName, repo, shortSHA(sha))
 	}
+}
+
+// reclaimFixInFlight re-raises a fixer's warning when a run that was already
+// released comes back to life.
+//
+// The stand-down in the clear keeps the claim for a park the PLATFORM will
+// resume by itself. Two revivals are not that: a DLQ replay and an operator
+// resume both act on a run the clear has already announced done — and both
+// wake the SAME run id, which then goes on rewriting the branch and pushing
+// back. Without this the row stays `success` for that entire second pass, and
+// then forever: the clear at the end of it reads a status that is no longer
+// in-flight and does nothing. A green check over a live rewrite is the failure
+// this file exists to prevent, arrived at from the other direction.
+//
+// It is markFixInFlight, fed from the run doc instead of from launch vars —
+// including its read-before-write, which is what lets a claim be raised over
+// this run's OWN resolved marker without touching anyone else's. The
+// provenance mirrors the CLEAR's rather than the launch's (the run's tenant,
+// and the tier its bot came from), because those two must agree about what
+// this run is: a reclaim the clear could not later resolve would strand.
+func (s *Server) reclaimFixInFlight(ctx context.Context, run *store.Run) {
+	if s == nil || run == nil {
+		return
+	}
+	prURL := runInputString(run, "pr_url")
+	sha := runInputString(run, "head_sha")
+	if prURL == "" || sha == "" {
+		// The local field read that excludes almost every run before any
+		// catalog walk or forge traffic — the same first guard as the clear.
+		return
+	}
+	sourceTenant := run.BotSourceTenant
+	if strings.TrimSpace(sourceTenant) == "" {
+		sourceTenant = run.TenantID
+	}
+	s.markFixInFlight(ctx, run.TenantID, sourceTenant, run.BotID,
+		map[string]string{"pr_url": prURL, "head_sha": sha}, run.ID)
 }
 
 // clearFixInFlight resolves THIS RUN's fixer claim once the run is terminal.

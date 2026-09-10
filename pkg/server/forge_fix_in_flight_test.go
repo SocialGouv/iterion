@@ -436,6 +436,67 @@ func TestReconcileGate_ReleasesTheFixerClaimBeforeStandingDown(t *testing.T) {
 	}
 }
 
+// THE OTHER DIRECTION of the false all-clear. The stand-down keeps the claim
+// for a park the platform will resume by itself; two revivals are NOT that. A
+// DLQ park is final for automation, and a resumable park nothing owned is
+// dead — so both are released — and yet a DLQ replay and an operator resume
+// each wake THAT SAME RUN, which goes on rewriting its branch and pushing
+// back. Nothing else re-raises the warning: the claim is otherwise posted only
+// at a webhook launch. Without the reclaim the row reads "pushing is safe
+// again" for the whole second pass, and then forever — the clear at the end of
+// it sees a status that is no longer in-flight and does nothing.
+func TestReclaimFixInFlight_RaisesTheWarningOverItsOwnReleasedMarker(t *testing.T) {
+	gc := &statusBoardClient{}
+	gc.statuses = []forge.CommitStatus{
+		// What the clear left when the run parked with nothing owning it.
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStateSuccess,
+			Description: fixDoneDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+
+	s.reclaimFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — the replayed pass rewrites the branch behind a green check", gc.setCalls)
+	}
+	if !isFixInFlight(gc.last) {
+		t.Errorf("posted %q, want the in-flight warning", gc.last.Description)
+	}
+	if got := gc.stateOf(fixInFlightContextFor("run-77")); got != forge.CommitStatePending {
+		t.Errorf("row is %q, want pending", got)
+	}
+}
+
+// ...and it stays as narrow as the claim it reuses: a run that never claimed
+// (no PR, no revision — nearly every run there is) costs no catalog walk and
+// no forge traffic on a path an operator is waiting on.
+func TestReclaimFixInFlight_SilentForARunThatNeverClaimed(t *testing.T) {
+	gc := &listingGateClient{}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.Inputs = map[string]any{} // no pr_url, no head_sha
+
+	s.reclaimFixInFlight(context.Background(), run)
+
+	if gc.listCalls != 0 || gc.setCalls != 0 {
+		t.Errorf("read the forge %d time(s) and posted %d for a run with no pull request", gc.listCalls, gc.setCalls)
+	}
+}
+
+// A REVIEWER resumed on the same pull request must raise nothing: it never
+// claimed the fixer context, and a warning saying its branch is being
+// rewritten would be false.
+func TestReclaimFixInFlight_SilentForANonFixer(t *testing.T) {
+	gc := &listingGateClient{}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.BotID = "review-pr"
+
+	s.reclaimFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 0 {
+		t.Errorf("a reviewer raised the fixer warning (%d posts)", gc.setCalls)
+	}
+}
+
 // R4e92c6 — `pr_url` + `head_sha` are set on EVERY forge-launched run, so
 // without a role check before the network the clear pays a live
 // ListCommitStatuses for reviewers, branchers, implementers and docs-amenders

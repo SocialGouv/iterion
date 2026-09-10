@@ -731,6 +731,13 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "resume failed")
 		return
 	}
+	// A resumed FIXER is rewriting the branch again, and the clear may already
+	// have announced it done — a park nothing owned releases the claim, and
+	// this is the operator picking that run back up. Nothing else re-raises
+	// the warning: the claim is otherwise posted only at a webhook launch.
+	// No-op for every run that never claimed, which is nearly all of them.
+	s.reclaimFixInFlight(ctx, runMeta)
+
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
 }
