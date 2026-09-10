@@ -275,6 +275,35 @@ var inlineWorkspaceTypes = map[string]bool{
 	"text/plain":      true,
 }
 
+// inlineArtifactTypes is the same judgement as inlineWorkspaceTypes for the
+// artifact endpoint, which additionally promises to preview the textual and
+// document types a run produces. Kept beside its sibling on purpose: the two
+// endpoints serve the same untrusted bytes (files an agent wrote) and the
+// rule that keeps them from executing must be readable as ONE rule.
+//
+// An allow-list, not a deny-list, and for the reason spelled out above: a
+// prefix rule like "image/*" admits image/svg+xml, which is an image that
+// executes script.
+var inlineArtifactTypes = func() map[string]bool {
+	m := map[string]bool{
+		"text/markdown":    true,
+		"application/json": true,
+		"application/pdf":  true,
+		"text/csv":         true,
+	}
+	for k, v := range inlineWorkspaceTypes {
+		m[k] = v
+	}
+	return m
+}()
+
+// inlineSafeArtifactType reports whether a content type may be rendered by the
+// browser rather than downloaded. `ct` may carry parameters ("; charset=utf-8").
+func inlineSafeArtifactType(ct string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	return inlineArtifactTypes[base]
+}
+
 // setWorkspaceFileHeaders writes the content type and disposition shared
 // by the live-file and snapshot-object paths.
 func setWorkspaceFileHeaders(w http.ResponseWriter, r *http.Request, relPath string) {

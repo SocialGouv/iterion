@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"os"
-	"strings"
 )
 
 // contentSecurityPolicy is the studio's CSP. It is enforceable as written
@@ -26,8 +25,11 @@ import (
 //   - font-src 'self' — Geist ships as @fontsource, self-hosted on purpose.
 //   - connect-src 'self' — apiBase() is a relative path and the WS URL is
 //     built from location.host, so every call is same-origin.
-//   - img-src adds data: and blob: — artifact and attachment previews render
-//     from object URLs.
+//   - img-src and media-src add blob: — artifact and attachment previews are
+//     fetched by the SPA and rendered from object URLs, images through <img>
+//     and audio/video through <audio>/<video>. media-src does NOT inherit
+//     img-src; omitting it silently sent media to default-src and blocked
+//     every preview.
 //   - worker-src adds blob: — Monaco's language services are emitted by the
 //     bundler and started from our own origin, but a module-worker shim may
 //     go through a blob URL.
@@ -39,6 +41,7 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"script-src 'self'; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob:; " +
+	"media-src 'self' blob:; " +
 	"font-src 'self'; " +
 	"connect-src 'self'; " +
 	"worker-src 'self' blob:; " +
@@ -72,13 +75,18 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.Set("X-Frame-Options", "SAMEORIGIN")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-		// The CSP governs documents and the subresources they load. Skipping
-		// /api/ keeps a large constant off every JSON response on a hot path
-		// that renders nothing — except the endpoints that DO serve markup,
-		// which set their own policy anyway.
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			h.Set("Content-Security-Policy", contentSecurityPolicy)
-		}
+		// The policy ships on EVERY response, /api/ included. Skipping /api/
+		// to keep a constant off the JSON hot path was a false economy: the
+		// endpoint serving the least trustworthy markup in the product is
+		// under /api/ — run artifacts, i.e. files an agent wrote — and it is
+		// a document navigation, which the SPA's own policy does not govern.
+		// A JSON response carrying an inert header costs less than reasoning,
+		// per endpoint, about whether this one renders.
+		//
+		// A handler that needs a different policy still wins: this runs before
+		// it, and its own Set replaces the value (the run preview swaps in a
+		// sandbox policy).
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

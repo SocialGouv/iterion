@@ -3,8 +3,12 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // cspDirective returns the source list of one directive, or "" when the policy
@@ -129,24 +133,161 @@ func TestSecurityHeadersKillSwitch(t *testing.T) {
 	}
 }
 
+// newPreviewCSPServer is the sweep server with a real run store and the
+// dev-mode identity: the preview endpoint is authenticated, and these tests
+// are about the response HEADERS, not the auth gate (which security.origin-gate
+// and the auth tests already pin).
+func newPreviewCSPServer(t *testing.T) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	return newSweepServer(t, func(c *Config) {
+		c.DisableAuth = true
+		c.WorkDir = dir
+		c.StoreDir = filepath.Join(dir, ".iterion")
+	})
+}
+
 // TestRunPreviewKeepsItsOwnCSP guards the override contract: the preview
-// endpoint serves attacker-influenced run output and replaces the studio policy
-// with a stricter sandbox one. The middleware must not win over it.
+// endpoint serves attacker-influenced run output and replaces the studio
+// policy with a sandbox one. The middleware runs first and must not win.
+//
+// It drives the endpoint through the composed handler. An earlier version
+// compared the studio policy against a `const previewCSP` it declared itself
+// and asserted that literal contained "sandbox" — coupled to nothing, and
+// proven tautological by an adversarial review that deleted the production
+// `Set` and watched the test still pass.
 func TestRunPreviewKeepsItsOwnCSP(t *testing.T) {
-	srv := newSweepServer(t)
+	srv := newPreviewCSPServer(t)
+
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	srv.handler.ServeHTTP(w, r)
 	studioCSP := w.Header().Get("Content-Security-Policy")
+	if studioCSP == "" {
+		t.Fatal("no CSP on the studio document")
+	}
 
-	// The preview handler sets its policy with Set, which replaces whatever the
-	// middleware wrote. Assert the two policies are actually different, so a
-	// future edit that makes the preview inherit the studio policy is visible.
-	const previewCSP = "sandbox allow-scripts allow-forms allow-same-origin; frame-ancestors 'self'"
-	if studioCSP == previewCSP {
-		t.Fatal("the studio policy equals the preview sandbox policy; the preview override is no longer distinguishable")
+	// The override is written on the SUCCESS path only, so the test has to
+	// reach it: a real run in the store and a real upstream to proxy. An
+	// earlier attempt asserted against an error response and read back the
+	// studio policy — the handler had returned long before its own Set.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><body>dev server</body></html>"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	seedRun(t, srv, "preview-csp-run", "wf", store.RunStatusFinished)
+
+	pr := httptest.NewRequest(http.MethodGet, "/api/runs/preview-csp-run/preview?target="+url.QueryEscape(upstream.URL+"/"), nil)
+	pw := httptest.NewRecorder()
+	srv.handler.ServeHTTP(pw, pr)
+	if pw.Code != http.StatusOK {
+		t.Fatalf("preview did not reach its success path: status %d, body %s", pw.Code, pw.Body.String())
+	}
+
+	previewCSP := pw.Header().Get("Content-Security-Policy")
+	if previewCSP == studioCSP {
+		t.Fatalf("the preview response carries the STUDIO policy (%q); its own override is gone", previewCSP)
 	}
 	if !strings.Contains(previewCSP, "sandbox") {
-		t.Fatal("preview policy no longer sandboxes")
+		t.Fatalf("preview policy no longer sandboxes: %q", previewCSP)
+	}
+}
+
+// TestPreviewProxyCannotOverrideOurSecurityHeaders pins the strip list. The
+// proxy Adds upstream headers, and the upstream is attacker-influenced (a run
+// picks the target), so a hostile second value arrives beside ours and the
+// browser resolves the pair in the sender's favour.
+//
+// Found by adversarial review: an upstream returning `Permissions-Policy:
+// camera=*` re-enabled the camera against our `camera=()`, and `Referrer-Policy:
+// unsafe-url` leaked the full preview URL to a third party.
+func TestPreviewProxyCannotOverrideOurSecurityHeaders(t *testing.T) {
+	srv := newPreviewCSPServer(t)
+
+	hostile := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Permissions-Policy", "camera=*")
+		w.Header().Set("Referrer-Policy", "unsafe-url")
+		w.Header().Set("X-Content-Type-Options", "MANGLED")
+		_, _ = w.Write([]byte("hi"))
+	}))
+	t.Cleanup(hostile.Close)
+
+	seedRun(t, srv, "preview-hdr-run", "wf", store.RunStatusFinished)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/runs/preview-hdr-run/preview?target="+url.QueryEscape(hostile.URL+"/"), nil)
+	w := httptest.NewRecorder()
+	srv.handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview did not reach its success path: status %d, body %s", w.Code, w.Body.String())
+	}
+
+	// Exactly one value each, and it must be ours.
+	for header, want := range map[string]string{
+		"Permissions-Policy":     "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+		"Referrer-Policy":        "strict-origin-when-cross-origin",
+		"X-Content-Type-Options": "nosniff",
+	} {
+		got := w.Header().Values(header)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("%s = %q; want exactly [%q] — the upstream's value survived", header, got, want)
+		}
+	}
+}
+
+// TestArtifactFilesRefuseToBecomeDocuments pins the rule that a run artifact —
+// bytes an agent wrote — cannot execute on the studio's origin.
+//
+// Found by adversarial review, which navigated a real browser to a seeded
+// `report.html` artifact, ran its inline script on the studio origin and read
+// the operator's local secrets index from it. The review-scope endpoint next
+// door had refused exactly this since it was written; the artifact endpoint,
+// sharing its content-type helper but not its discipline, had not.
+func TestArtifactFilesRefuseToBecomeDocuments(t *testing.T) {
+	scriptBearing := []string{
+		"text/html; charset=utf-8",
+		"image/svg+xml",
+		"application/xhtml+xml",
+		"text/xml",
+	}
+	for _, ct := range scriptBearing {
+		if inlineSafeArtifactType(ct) {
+			t.Errorf("%q would be served inline — it can execute script on the studio origin", ct)
+		}
+	}
+	// …while the types the endpoint promises to preview still are.
+	for _, ct := range []string{
+		"text/markdown; charset=utf-8",
+		"application/json",
+		"text/plain; charset=utf-8",
+		"image/png",
+		"video/mp4",
+		"application/pdf",
+	} {
+		if !inlineSafeArtifactType(ct) {
+			t.Errorf("%q is no longer previewable inline; the studio's artifact preview regressed", ct)
+		}
+	}
+}
+
+// TestEveryResponseCarriesACSP is the other half of the artifact finding: the
+// policy used to be skipped for /api/, which is precisely where the untrusted
+// markup lives. A CSP-less response there is the hole, whatever the
+// disposition says.
+func TestEveryResponseCarriesACSP(t *testing.T) {
+	srv := newSweepServer(t)
+	for _, path := range []string{
+		"/",
+		"/api/runs",
+		"/api/runs/x/artifact-files/report.html",
+		"/healthz",
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		srv.handler.ServeHTTP(w, r)
+		if got := w.Header().Get("Content-Security-Policy"); got == "" {
+			t.Errorf("%s: no Content-Security-Policy (status %d)", path, w.Code)
+		}
 	}
 }
