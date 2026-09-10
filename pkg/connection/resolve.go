@@ -150,32 +150,16 @@ func (r *Resolver) checkUsable(conn Connection, op spec.Operation) error {
 		}
 		return nil
 	}
-	if ok, missing := op.SatisfiedBy(conn.SchemeID, scopesRequiredOf(op, conn.SchemeID)); !ok {
+	// spec.SatisfiableBy is the ONE definition of "could this scheme do it if
+	// its own scopes were granted", shared with the executor's pre-call check.
+	// Two copies of that reasoning would drift, and the drift would be a
+	// silent authorisation difference between the layer that hands over a
+	// credential and the layer that spends it.
+	if ok, missing := op.SatisfiableBy(conn.SchemeID); !ok {
 		return fmt.Errorf("connection %q cannot perform %q (its granted scopes are unknown, so only the scheme was checked): %s",
 			conn.Alias, op.ID, strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-// scopesRequiredOf collects every scope the operation asks of one scheme.
-//
-// Used to answer "could this scheme satisfy the operation AT ALL", for a
-// connection whose actual grant nobody stated. Handing SatisfiedBy exactly
-// what it would need keeps its conjunction rule — a requirement naming a
-// second scheme still fails — while removing the scope question it cannot
-// answer. This is deliberately NOT the same as passing every scope the vendor
-// defines, which would also satisfy a requirement this scheme has no business
-// meeting.
-func scopesRequiredOf(op spec.Operation, schemeID string) []string {
-	var out []string
-	for _, req := range op.Security {
-		for _, term := range req.Terms {
-			if term.SchemeID == schemeID {
-				out = append(out, term.Scopes...)
-			}
-		}
-	}
-	return out
 }
 
 // suggestAlias names the aliases the tenant does have for this connector. A

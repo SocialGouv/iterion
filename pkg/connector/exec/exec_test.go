@@ -508,6 +508,57 @@ func TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT(t *testing.T) {
 
 // TestPendingIsNotSuccess pins the 202 distinction: a workflow that reads
 // "accepted" as "done" acts on work that has not happened.
+// TestAnUnknownGrantDoesNotDefeatTheSchemeCONJUNCTION.
+//
+// An unstated grant must not be enforced as "no scopes" — most providers never
+// enumerate what a PAT carries, so that would refuse every token-backed
+// connection. But the escape used to accept ANY requirement holding a term
+// with a matching scheme, which defeats the conjunction rule outright: a
+// requirement of `A AND B` contains a term naming A, so a connection holding
+// only A was authorised for an operation needing both.
+func TestAnUnknownGrantDoesNotDefeatTheSchemeConjunction(t *testing.T) {
+	reached := false
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.get")
+	// The operation needs BOTH schemes at once.
+	op.Security = []spec.SecurityRequirement{{Terms: []spec.SecurityTerm{
+		{SchemeID: "token"},
+		{SchemeID: "second"},
+	}}}
+
+	// A credential holding only "token", with an UNKNOWN grant.
+	res, err := e.Call(context.Background(), pkg, op, fullParams("probe.issue.get"),
+		exec.Credential{SchemeID: "token", Value: "s3cret"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("a connection holding one of two required schemes must be refused")
+	}
+	if reached {
+		t.Error("the vendor was reached by a call iterion should have refused locally")
+	}
+
+	// The falsifier: with a single-scheme requirement, the same unknown grant
+	// still works — the escape it exists for is intact.
+	op.Security = []spec.SecurityRequirement{{Terms: []spec.SecurityTerm{
+		{SchemeID: "token", Scopes: []string{"read:issue"}},
+	}}}
+	res, err = e.Call(context.Background(), pkg, op, fullParams("probe.issue.get"),
+		exec.Credential{SchemeID: "token", Value: "s3cret"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.OK() {
+		t.Errorf("an unstated grant must not refuse a single-scheme requirement: %v", res.Err)
+	}
+}
+
 // TestACredentialNeverAppearsInAnError.
 //
 // A transport failure's text is Go's *url.Error, which prints the FULL request

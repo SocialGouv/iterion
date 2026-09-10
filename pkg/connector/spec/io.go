@@ -130,9 +130,15 @@ func read(dir string) (*Package, error) {
 	p := &Package{Connector: c, Schemas: map[string]Schema{}}
 
 	if sb, err := os.ReadFile(filepath.Join(dir, SchemasFile)); err == nil {
+		if err := checkDocVersion(SchemasFile, sb); err != nil {
+			return nil, err
+		}
 		var sf schemasDoc
 		if err := yaml.UnmarshalStrict(sb, &sf); err != nil {
 			return nil, fmt.Errorf("spec: parse %s: %w", SchemasFile, err)
+		}
+		if err := checkDocConnector(SchemasFile, sf.Connector, c.ID); err != nil {
+			return nil, err
 		}
 		p.Schemas = sf.Schemas
 	} else if !os.IsNotExist(err) {
@@ -157,13 +163,54 @@ func read(dir string) (*Package, error) {
 		if err != nil {
 			return nil, fmt.Errorf("spec: read %s/%s: %w", OpsDir, name, err)
 		}
+		where := OpsDir + "/" + name
+		if err := checkDocVersion(where, ob); err != nil {
+			return nil, err
+		}
 		var f OpsFile
 		if err := yaml.UnmarshalStrict(ob, &f); err != nil {
-			return nil, fmt.Errorf("spec: parse %s/%s: %w", OpsDir, name, err)
+			return nil, fmt.Errorf("spec: parse %s: %w", where, err)
+		}
+		if err := checkDocConnector(where, f.Connector, c.ID); err != nil {
+			return nil, err
 		}
 		p.Ops = append(p.Ops, f)
 	}
 	return p, nil
+}
+
+// checkDocVersion runs the tolerant version pre-pass on EVERY document, not
+// only connector.yaml.
+//
+// A package is distributed as several files and they travel together, so a
+// version guard on one of them guards nothing: a decoder ignores fields it
+// does not know, which means an ops file written by a newer iterion loads as
+// this version with whatever it added silently absent. The failure would not
+// be a parse error — it would be an operation that runs and does something
+// other than what its author described. A queue-schema rollout cannot cover
+// this either: a connector package is distributed independently of the engine.
+func checkDocVersion(where string, body []byte) error {
+	var probe versionProbe
+	if err := yaml.Unmarshal(body, &probe); err != nil {
+		return fmt.Errorf("spec: %s is not valid YAML: %w", where, err)
+	}
+	if probe.SchemaVersion > SchemaVersion {
+		return fmt.Errorf("spec: %s declares schema_version %d, newer than supported %d (upgrade iterion)", where, probe.SchemaVersion, SchemaVersion)
+	}
+	return nil
+}
+
+// checkDocConnector refuses a document that belongs to another package.
+//
+// Each file carries the connector it is part of, and nothing read it. A
+// mis-copied ops file would contribute its operations to the wrong package —
+// caught downstream by the id-prefix check, but reported as a dozen malformed
+// operations rather than as the one fact that explains them.
+func checkDocConnector(where, got, want string) error {
+	if got == "" || got == want {
+		return nil
+	}
+	return fmt.Errorf("spec: %s says it belongs to connector %q, but this package is %q", where, got, want)
 }
 
 // Size reports a package's on-disk byte total, split by part. The split is

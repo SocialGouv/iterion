@@ -275,7 +275,24 @@ func (w *walker) readPaths() error {
 			if !ok {
 				continue
 			}
-			generated := w.operation(path, method, op, shared)
+			generated, dropped := w.operation(path, method, op, shared)
+			// A REQUIRED parameter that could not be derived makes the
+			// operation uncallable, and Validate cannot see it: what it
+			// checks is the operation as DERIVED, which is coherent — it is
+			// simply missing an input the vendor demands. So the skip is
+			// decided here, where the loss is still known.
+			if len(dropped) > 0 {
+				w.usedIDs[generated.ID] = false
+				delete(w.usedIDs, generated.ID)
+				w.skipped = append(w.skipped, Skip{
+					Path:              path,
+					Method:            strings.ToUpper(method),
+					SourceOperationID: generated.SourceOperationID,
+					Reason: "a required parameter could not be derived (" + strings.Join(dropped, ", ") +
+						") — publishing it would offer an operation no call can satisfy",
+				})
+				continue
+			}
 			// Validated ONE AT A TIME, here, rather than only as a package at
 			// the end. A vendor description of any size carries a few
 			// malformed operations — GitLab's declares a path parameter
@@ -304,7 +321,11 @@ func (w *walker) readPaths() error {
 	return nil
 }
 
-func (w *walker) operation(path, method string, op map[string]any, shared []any) spec.Operation {
+// operation derives one operation, and reports the REQUIRED parameters it had
+// to drop. A non-empty second result means the operation cannot be called as
+// derived, so the caller skips it rather than publishing a façade.
+func (w *walker) operation(path, method string, op map[string]any, shared []any) (spec.Operation, []string) {
+	var dropped []string
 	tags := strSlice(op, "tags")
 	sourceID := str(op, "operationId")
 	resource, verb := deriveName(tags, sourceID, method, path)
@@ -339,7 +360,19 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		if !ok {
 			continue
 		}
-		out.Params = append(out.Params, w.params(pm)...)
+		got := w.params(pm)
+		if len(got) == 0 && boolAt(pm, "required") {
+			// A REQUIRED parameter was dropped — an unresolvable `$ref`, or a
+			// location iterion cannot build (a cookie). Recorded here so the
+			// caller can skip the whole operation.
+			//
+			// Erasing it published an operation that cannot be called, with
+			// ZERO skips reported: exactly the invisible gap the skip
+			// mechanism exists to make impossible. A dropped OPTIONAL
+			// parameter only narrows the operation, so it still ships.
+			dropped = append(dropped, paramLabel(pm))
+		}
+		out.Params = append(out.Params, got...)
 	}
 	// The body encoding. Swagger 2 states it as the operation's `consumes`
 	// (inherited from the root) and carries body members either as one
@@ -348,7 +381,14 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 	// the executor needs to know which bytes to build, not which format said
 	// so.
 	if w.format == FormatOpenAPI3 {
-		body, encoding := w.requestBody(mapAt(op, "requestBody"))
+		body, encoding, undeclared := w.requestBody(mapAt(op, "requestBody"))
+		if undeclared != "" {
+			// A body iterion could not derive at all. Joins the same drop list
+			// as a missing required parameter, since the consequence is the
+			// same: an operation that would be published looking callable and
+			// would send nothing where the vendor demands a payload.
+			dropped = append(dropped, undeclared)
+		}
 		out.Params = append(out.Params, body...)
 		out.HTTP.RequestBody = encoding
 	} else if enc := w.swaggerBodyEncoding(op); enc != "" {
@@ -372,7 +412,23 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 
 	out.Results, out.Errors = w.responses(mapAt(op, "responses"))
 	out.Security, out.Anonymous = w.security(op)
-	return out
+	return out, dropped
+}
+
+// paramLabel names a parameter for a skip reason. A `$ref` that did not
+// resolve has no name of its own, so the reference is what identifies it —
+// and it is also what the reader has to go and look at.
+func paramLabel(pm map[string]any) string {
+	if n := str(pm, "name"); n != "" {
+		if in := str(pm, "in"); in != "" {
+			return n + " (in: " + in + ")"
+		}
+		return n
+	}
+	if ref := str(pm, "$ref"); ref != "" {
+		return ref
+	}
+	return "an unnamed parameter"
 }
 
 // security reads an operation's own requirements. An EMPTY `security: []` is
@@ -668,18 +724,25 @@ func (w *walker) bodyParams(schema map[string]any) []spec.Param {
 // operation has no body", which is a callable operation, while an unsupported
 // encoding must make the operation a COVERAGE GAP — an operation that looks
 // executable but would drop its payload is the failure this package refuses.
-func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding) {
+func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding, string) {
 	if len(rb) == 0 {
-		return nil, ""
+		return nil, "", ""
 	}
 	if ref := str(rb, "$ref"); ref != "" {
-		if r := w.resolveRef(ref); r != nil {
-			rb = r
+		r := w.resolveRef(ref)
+		if r == nil {
+			// An unresolvable reference used to leave `rb` as the bare
+			// `{$ref: …}` map, whose `content` is empty — so the operation was
+			// published as one with NO BODY, which is a perfectly callable
+			// shape. A POST that requires a payload became a POST that sends
+			// none, and reported no gap.
+			return nil, "", "its request body is $ref " + ref + ", which the description does not define"
 		}
+		rb = r
 	}
 	content := mapAt(rb, "content")
 	if len(content) == 0 {
-		return nil, ""
+		return nil, "", ""
 	}
 	// Sorted so a description offering several media types always resolves to
 	// the same one; JSON is preferred where offered because it is the shape
@@ -700,12 +763,12 @@ func (w *walker) requestBody(rb map[string]any) ([]spec.Param, spec.BodyEncoding
 	}
 	if encoding == "" {
 		// Every media type this body offers is one iterion cannot build.
-		return nil, spec.BodyEncoding(unsupportedBodyMarker(content))
+		return nil, spec.BodyEncoding(unsupportedBodyMarker(content)), ""
 	}
 	// `required: true` on the body itself is NOT propagated onto its members:
 	// it says the envelope must be sent, while which members are mandatory is
 	// the schema's own `required` list, which bodyParams already read.
-	return w.bodyParams(mapAt(mapAt(content, chosen), "schema")), encoding
+	return w.bodyParams(mapAt(mapAt(content, chosen), "schema")), encoding, ""
 }
 
 // unsupportedBodyMarker names the media types a body offered, so the skip

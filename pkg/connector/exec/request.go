@@ -94,13 +94,19 @@ func (e *Executor) checkAuthorized(pkg *spec.Package, op spec.Operation, cred Cr
 	// scope list, so enforcing scopes against an empty one would make every
 	// token-backed connection unusable — the check only bites when the
 	// provider actually said what it granted.
+	//
+	// But leaving the scopes unjudged must not leave the SCHEME unjudged too.
+	// This used to accept any requirement holding a term with a matching
+	// scheme, which defeats SatisfiedBy's conjunction rule outright: a
+	// requirement of `A AND B` contains a term naming A, so a connection
+	// holding only A passed. SatisfiableBy asks the narrower question —
+	// "could this scheme do it if its own scopes were granted" — and keeps
+	// the conjunction.
 	if len(cred.Scopes) == 0 {
-		for _, r := range reqs {
-			for _, t := range r.Terms {
-				if t.SchemeID == cred.SchemeID {
-					return nil
-				}
-			}
+		if ok, why := probe.SatisfiableBy(cred.SchemeID); ok {
+			return nil
+		} else if len(why) > 0 {
+			missing = why
 		}
 	}
 	return &Error{

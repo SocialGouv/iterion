@@ -53,6 +53,18 @@ func (cc *ClassifierChecker) CheckContext(pctx PolicyContext) error {
 		}
 		return nil
 	}
+	// A call that must be decided WITHOUT a model goes straight to the
+	// deterministic base. The operator's allow/deny rules still apply in
+	// full — what is skipped is the model, not the policy.
+	//
+	// This is the ONE place the rule lives, so a second classifier wired
+	// later inherits it by construction rather than by being remembered.
+	if pctx.Deterministic {
+		if cc.Base != nil {
+			return cc.Base.CheckContext(pctx)
+		}
+		return nil
+	}
 
 	args, decodeErr := decodeArgs(pctx.Input)
 	if decodeErr != nil && cc.Logger != nil {

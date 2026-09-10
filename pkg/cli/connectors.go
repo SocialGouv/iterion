@@ -78,23 +78,55 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		return err
 	}
 
-	// The overlay is read BEFORE the ops are overwritten and applied to the
-	// fresh package, so a regeneration that moved a derived id fails here —
-	// loudly, naming the id — instead of writing a package whose corrections
-	// silently stopped applying.
+	// The overlay is checked against a SEPARATE copy of the fresh package,
+	// never against the one about to be written.
+	//
+	// Applying it to `pkg` and then writing that is what made regeneration
+	// non-idempotent: the merged operations landed in ops/ with their overlay
+	// ids already applied, and the next `validate` — which loads ops/ and
+	// applies the overlay again — looked up the ORIGINAL ids, found none of
+	// them, and failed on thirteen "unmatched" entries. It also broke the
+	// contract the package's two halves rest on: ops/ is a pure derivation of
+	// the vendor's description, regenerable to the same bytes, and an overlay
+	// baked into it is neither.
+	//
+	// The check itself is worth keeping, which is why it happens at all: a
+	// regeneration that moved a derived id must fail here, naming the id,
+	// rather than write a package whose corrections silently stopped applying.
 	var ov *overlay.Overlay
+	// merged is the package AS A LAUNCH WOULD SEE IT — generated plus overlay.
+	// Kept apart from `pkg` (what gets written) so the completeness report at
+	// the end judges what will actually run, rather than announcing a package
+	// incomplete because its authored half has not been merged into the half
+	// that must never carry it.
+	merged := pkg
 	if opts.KeepOverlay {
 		ov, err = overlay.Load(opts.Out)
 		if err != nil {
 			return err
 		}
 		if ov != nil {
-			if err := overlay.Apply(pkg, ov); err != nil {
+			probe, _, gerr := gen.Generate(data, gen.Options{
+				ConnectorID:             opts.ID,
+				Version:                 opts.Version,
+				SpecURL:                 source,
+				SpecLicense:             opts.License,
+				Redistributable:         opts.Redistributable,
+				OperatorSuppliedBaseURL: opts.OperatorSuppliedBaseURL,
+				GeneratedBy:             "iterion " + appinfo.Version,
+			})
+			if gerr != nil {
+				return gerr
+			}
+			if err := overlay.Apply(probe, ov); err != nil {
 				return fmt.Errorf("the existing overlay no longer applies to the regenerated package: %w", err)
 			}
+			merged = probe
 		}
 	}
 
+	// The PURE package: what ops/ must hold for the two halves to stay
+	// separable.
 	if err := writePackage(opts.Out, pkg); err != nil {
 		return err
 	}
@@ -122,7 +154,10 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 			fmt.Fprintf(out, "  %-6s %s (%s)\n      %s\n", s.Method, s.Path, orNone(s.SourceOperationID), s.Reason)
 		}
 	}
-	if err := pkg.Validate(); err != nil {
+	// Judged on the MERGED package: what a launch will load is the generated
+	// half plus the overlay, so validating the written half alone would report
+	// every complete package as incomplete.
+	if err := merged.Validate(); err != nil {
 		fmt.Fprintf(out, "\nthe package is not complete yet — %v\n", err)
 		fmt.Fprintf(out, "write %s to supply it; the generated half is what a vendor's description could state.\n", filepath.Join(opts.Out, overlay.File))
 	}

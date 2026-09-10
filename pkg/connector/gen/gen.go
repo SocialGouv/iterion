@@ -131,7 +131,12 @@ func Generate(data []byte, opts Options) (*spec.Package, *Report, error) {
 
 	w := &walker{doc: doc, format: format, opts: opts, schemas: map[string]spec.Schema{}}
 	if err := w.run(); err != nil {
-		return nil, nil, err
+		// The REPORT travels with the failure. This used to return a nil one,
+		// so an operator whose description yielded nothing was told "N were
+		// skipped as malformed" and never which N, nor why — the moment the
+		// per-operation reasons are worth the most is the moment they were
+		// being discarded.
+		return nil, &Report{Skipped: w.skipped}, err
 	}
 
 	pkg := &spec.Package{

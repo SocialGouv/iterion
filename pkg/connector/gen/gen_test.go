@@ -280,11 +280,24 @@ func TestOperationParameterOverridesThePathItem(t *testing.T) {
 	}
 }
 
-// TestSearchUnderPostIsARead pins the one correction the verb makes to the
-// method. Vendors route search through POST when the query outgrows a URL;
-// classifying those as `create` would deny them the retry a read is entitled
-// to.
-func TestSearchUnderPostIsARead(t *testing.T) {
+// TestTheEFFECTComesFromTheMETHODAloneNeverTheNAME.
+//
+// This test asserted the opposite until an adversarial review broke it, and
+// the reversal is the point worth keeping: a POST whose verb began with
+// `get`/`search`/`check` used to be classified as a read, so that a vendor
+// routing search through POST kept the retry a read is entitled to.
+//
+// That is unsound for the reason every text-matching guard is unsound — the
+// adversary is arbitrary text. `getOrCreateLease` snake-cases to
+// `get_or_create_lease`, matches the `get_` prefix, and a POST that ALLOCATES
+// A LEASE became an operation iterion would blindly retry after a lost
+// answer. Widening the pattern does not converge: the next vendor writes
+// `lookupOrProvision`.
+//
+// So the derivation reads HTTP semantics and nothing else, and a genuine
+// POST-search is stated in the overlay's `effect:` — one authored line, versus
+// a silent duplicate.
+func TestTheEffectComesFromTheMethodAloneNeverTheName(t *testing.T) {
 	pkg := generate(t, swagger2Fixture)
 	op, ok := pkg.Operation("probe.issue.search_issues")
 	if !ok {
@@ -293,11 +306,9 @@ func TestSearchUnderPostIsARead(t *testing.T) {
 	if op.HTTP.Method != "POST" {
 		t.Fatalf("fixture changed: method = %s", op.HTTP.Method)
 	}
-	if op.Effect != spec.EffectRead {
-		t.Errorf("effect = %q, want read — a POST that searches must stay retryable", op.Effect)
-	}
-	if op.Effect.Mutating() {
-		t.Error("a search must not read as mutating")
+	// Named like a read, POSTed like a mutation: the method wins.
+	if op.Effect != spec.EffectCreate {
+		t.Errorf("effect = %q, want create — a name must not grant retry safety", op.Effect)
 	}
 
 	create, _ := pkg.Operation("probe.issue.create_issue")
@@ -306,6 +317,16 @@ func TestSearchUnderPostIsARead(t *testing.T) {
 	}
 	if !create.Effect.Mutating() {
 		t.Error("a create must read as mutating")
+	}
+
+	// The falsifier: a GET is still a read, so the change did not simply mark
+	// everything as mutating.
+	get, ok := pkg.Operation("probe.issue.list_issues")
+	if !ok {
+		t.Fatal("list_issues missing")
+	}
+	if get.Effect != spec.EffectRead || get.Effect.Mutating() {
+		t.Errorf("GET effect = %q, want read", get.Effect)
 	}
 }
 
@@ -546,4 +567,86 @@ func findParam(op spec.Operation, name string) (spec.Param, bool) {
 		}
 	}
 	return spec.Param{}, false
+}
+
+// TestWhatCannotBeDerivedIsREPORTEDNotErased covers the gap that made a
+// package's coverage claim untrustworthy.
+//
+// The generator dropped what it could not express — a parameter in a location
+// it cannot build, a request body whose `$ref` the description never defines —
+// and published the operation anyway with ZERO skips reported. Both produce an
+// operation that looks perfectly callable and cannot be called: one is missing
+// an input the vendor requires, the other sends no payload where a payload is
+// mandatory. An invisible hole is precisely what the skip mechanism exists to
+// make impossible, so silence there defeated it.
+func TestWhatCannotBeDerivedIsReportedNotErased(t *testing.T) {
+	t.Run("a required parameter in a location iterion cannot build", func(t *testing.T) {
+		const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/thing": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Needs a cookie",
+        "parameters": [{"name": "session", "in": "cookie", "required": true, "type": "string"}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+		_, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+		// Nothing could be derived, so the generation fails — but it must fail
+		// having COUNTED the loss, not silently.
+		if err == nil {
+			t.Fatal("a description whose only operation is underivable must fail")
+		}
+		if len(report.Skipped) != 1 {
+			t.Fatalf("report.Skipped = %+v, want the operation counted as a gap", report.Skipped)
+		}
+		if !strings.Contains(report.Skipped[0].Reason, "session") {
+			t.Errorf("the reason must name the parameter that was lost: %q", report.Skipped[0].Reason)
+		}
+	})
+
+	t.Run("a request body whose $ref is not defined", func(t *testing.T) {
+		const body = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "servers": [{"url": "https://probe.example"}],
+  "components": {"securitySchemes": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}}},
+  "paths": {
+    "/good": {
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Fine",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/thing": {
+      "post": {
+        "tags": ["thing"], "operationId": "thingMakeThing", "summary": "Needs a body",
+        "requestBody": {"$ref": "#/components/requestBodies/NeverDefined"},
+        "responses": {"201": {"description": "created"}}
+      }
+    }
+  }
+}`
+		pkg, report, err := gen.Generate([]byte(body), gen.Options{ConnectorID: "probe"})
+		if err != nil {
+			t.Fatalf("the sound operation must survive: %v", err)
+		}
+		if _, ok := pkg.Operation("probe.thing.make_thing"); ok {
+			t.Error("an operation whose body could not be derived must not be published — it would send no payload at all")
+		}
+		if _, ok := pkg.Operation("probe.thing.get_thing"); !ok {
+			t.Error("the sound operation was lost with the unsound one")
+		}
+		if len(report.Skipped) != 1 {
+			t.Fatalf("report.Skipped = %+v, want the body-less operation counted", report.Skipped)
+		}
+		if !strings.Contains(report.Skipped[0].Reason, "NeverDefined") {
+			t.Errorf("the reason must name the reference that could not be resolved: %q", report.Skipped[0].Reason)
+		}
+	})
 }

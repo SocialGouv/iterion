@@ -317,6 +317,81 @@ func TestVersionIsReadBeforeTheStrictParse(t *testing.T) {
 	}
 }
 
+// TestEVERYDocumentIsVersionGuarded, not only connector.yaml.
+//
+// A package is several files that travel together, so a version guard on one
+// of them guards nothing. A decoder ignores what it does not know, so an ops
+// file written by a newer iterion loads as this version with whatever it added
+// silently absent — and the failure is not a parse error but an operation that
+// runs and does something other than what its author described. A connector
+// package is distributed independently of the engine, so no queue-schema
+// rollout covers this.
+func TestEveryDocumentIsVersionGuarded(t *testing.T) {
+	for _, tc := range []struct{ name, file, body string }{
+		{
+			name: "schemas.yaml",
+			file: spec.SchemasFile,
+			body: "schema_version: 99\nconnector: probe\nschemas: {}\n",
+		},
+		{
+			name: "an ops file",
+			file: filepath.Join(spec.OpsDir, "issue.yaml"),
+			body: "schema_version: 99\nconnector: probe\ndomain: issue\noperations: []\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writePackageDir(t)
+			path := filepath.Join(dir, tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := spec.Load(dir)
+			if err == nil {
+				t.Fatal("a document from a newer schema must be refused")
+			}
+			if !strings.Contains(err.Error(), "upgrade iterion") {
+				t.Errorf("refusal = %v, want it to name the version", err)
+			}
+		})
+	}
+}
+
+// TestADocumentBelongingToAnotherPackageIsRefused. Each file names the
+// connector it is part of, and nothing read it: a mis-copied ops file
+// contributed its operations to the wrong package, reported downstream as a
+// dozen malformed operations rather than as the one fact explaining them.
+func TestADocumentBelongingToAnotherPackageIsRefused(t *testing.T) {
+	dir := writePackageDir(t)
+	path := filepath.Join(dir, spec.OpsDir, "issue.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "schema_version: 1\nconnector: somethingelse\ndomain: issue\noperations: []\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := spec.Load(dir)
+	if err == nil {
+		t.Fatal("an ops file naming another connector must be refused")
+	}
+	if !strings.Contains(err.Error(), "somethingelse") {
+		t.Errorf("refusal = %v, want it to name the foreign connector", err)
+	}
+}
+
+// writePackageDir writes the reference package to a temp dir and returns it.
+func writePackageDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := spec.Write(dir, validPackage()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return dir
+}
+
 // TestRoundTrip pins that what Write produces, Load reads back identically —
 // the property a three-tier distribution depends on, since a package travels
 // through disk on its way to every runner.

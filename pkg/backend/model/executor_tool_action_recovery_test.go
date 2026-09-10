@@ -14,8 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -278,6 +281,97 @@ func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) 
 	}
 	if !touched {
 		t.Error("the well-formed case never reached the vendor — the guard is refusing everything")
+	}
+}
+
+// countingClassifier records every model consultation. A classifier is the
+// only component on the tool-policy path that calls an LLM, so counting its
+// invocations counts the model requests.
+type countingClassifier struct{ calls int }
+
+func (c *countingClassifier) Classify(context.Context, string, map[string]any) (permissions.Decision, error) {
+	c.calls++
+	return permissions.DecisionAllow, nil
+}
+
+// TestNoModelIsConsultedForAnActionEvenWithTheClassifierENABLED is the
+// acceptance test for the recipe's central promise, and it is deliberately
+// BEHAVIOURAL rather than a reading of the default configuration.
+//
+// `action:` is documented as the recipe with no model in the path. Two things
+// could put one there, and only one of them was closed: the compiler refuses a
+// recovery ladder and a postcondition (C261/C262, enforced at runtime since
+// the round-two fixes). The other was `ITERION_LLM_CLASSIFIER_MODEL`, which
+// chains an LLM classifier over the SHARED tool-node policy check that every
+// recipe goes through — so a deployment setting it put a model call in front
+// of every action node, with nothing announcing it.
+//
+// Testing the default configuration would have passed throughout: the
+// classifier is off by default. The claim is only worth something when the
+// classifier is ON, which is why this test enables it.
+func TestNoModelIsConsultedForAnActionEvenWithTheClassifierEnabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id": 1}`))
+	}))
+	defer srv.Close()
+	pkg, op := mutatingPackage(srv.URL)
+
+	counter := &countingClassifier{}
+	policy := &tool.ClassifierChecker{Classifier: counter}
+
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment", Connection: "main",
+		Params: []ir.ActionParam{{Key: "body", Value: "ship it"}},
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithToolPolicy(policy),
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if counter.calls != 0 {
+		t.Errorf("the classifier was consulted %d time(s); an action node is certified to involve NO model, and the classifier is one", counter.calls)
+	}
+
+	// The falsifier: the same policy on an ordinary command node DOES consult
+	// it. Without this, a broken classifier would satisfy the assertion above
+	// and prove nothing.
+	shell := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "sh"}, Command: "true"}
+	e2 := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{}, model.WithToolPolicy(policy))
+	_, _ = e2.Execute(context.Background(), shell, nil)
+	if counter.calls == 0 {
+		t.Error("the classifier was never consulted at all — the assertion above proves nothing about action nodes")
+	}
+}
+
+// TestTheOperatorsOwnRulesStillApplyToAnAction is the other half: what the
+// action path skips is the MODEL, not the policy. An operator who denied a
+// connector must still see it denied.
+func TestTheOperatorsOwnRulesStillApplyToAnAction(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the vendor must not be reached by a denied node")
+	}))
+	defer srv.Close()
+	pkg, op := mutatingPackage(srv.URL)
+
+	// A classifier that would ALLOW, over a deterministic base that denies.
+	// The base must win: skipping the model must not skip the rules.
+	policy := &tool.ClassifierChecker{
+		Classifier: &countingClassifier{},
+		Base:       tool.DenyAllPolicy(),
+	}
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment", Connection: "main",
+		Params: []ir.ActionParam{{Key: "body", Value: "x"}},
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithToolPolicy(policy),
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	if _, err := e.Execute(context.Background(), node, nil); err == nil {
+		t.Fatal("a denied connector action must not execute")
 	}
 }
 

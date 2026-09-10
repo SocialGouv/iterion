@@ -431,6 +431,35 @@ func (op Operation) SatisfiedBy(schemeID string, grantedScopes []string) (bool, 
 	return false, closest
 }
 
+// SatisfiableBy answers the question an UNKNOWN grant leaves open: could this
+// scheme perform the operation, if every scope it is asked for were granted?
+//
+// It exists because "the provider never said what this token carries" is a
+// third state, and both collapses are wrong. Read as "no scopes", an unstated
+// grant refuses every PAT-backed connection — most providers never enumerate a
+// token's scopes. Read as "all scopes", it authorises whatever is asked.
+//
+// So the SCOPES are left unjudged while the SCHEME conjunction is still
+// enforced: a requirement naming two distinct schemes cannot be met by a
+// connection holding one, however generous we are about scopes. Skipping that
+// too — accepting any requirement with a matching term — is how a connection
+// authorised for A alone performed an operation requiring A AND B.
+//
+// One definition, because two callers ask it: the executor before a call, and
+// the connection layer before handing over a credential. A second copy would
+// drift, and the drift would be a silent authorisation difference.
+func (op Operation) SatisfiableBy(schemeID string) (bool, []string) {
+	var required []string
+	for _, req := range op.Security {
+		for _, term := range req.Terms {
+			if term.SchemeID == schemeID {
+				required = append(required, term.Scopes...)
+			}
+		}
+	}
+	return op.SatisfiedBy(schemeID, required)
+}
+
 // Effect is what an operation does to the remote system.
 type Effect string
 

@@ -452,6 +452,11 @@ func (e *ClawExecutor) checkToolNodePolicy(ctx context.Context, node *ir.ToolNod
 		NodeKind: ir.NodeTool.String(),
 		ToolName: toolName,
 		Vars:     e.vars,
+		// Derived from the NODE rather than passed by each call site: this
+		// function is the single check every recipe goes through, so reading
+		// the property here is what makes a future recipe inherit the rule
+		// instead of having to remember it.
+		Deterministic: node.Action != "",
 	}
 	if err := e.toolPolicy.CheckContext(pctx); err != nil {
 		if e.hooks.OnToolCall != nil {

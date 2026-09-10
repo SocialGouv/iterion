@@ -211,7 +211,28 @@ func lastLiteralSegment(path string) string {
 // calling those "create" would deny them the retry a read is entitled to —
 // the whole reason Effect is a declared field rather than a lookup on the
 // method at call time.
-func effectFor(method, verb string) spec.Effect {
+// effectFor derives what an operation does to the remote system, from HTTP
+// SEMANTICS alone.
+//
+// The effect decides retry safety: a read may always be repeated, a mutation
+// whose answer was lost is `unknown_outcome`. So a wrong "this is a read" is
+// not a cosmetic misfiling — it licenses the duplicate the whole class exists
+// to prevent.
+//
+// The derivation used to read the operation's NAME as well, treating a POST
+// whose verb began with `get`/`search`/`check`/… as a read. That is unsound
+// for the reason every text-matching guard is unsound: the adversary is
+// arbitrary text. `getOrCreateLease` snake-cases to `get_or_create_lease`,
+// matches the `get_` prefix, and a POST that allocates a lease became an
+// operation iterion would blindly retry. Widening the pattern does not
+// converge — the next vendor writes `lookupOrProvision`.
+//
+// So names decide nothing here. A POST is a create, and a genuine POST-search
+// (a common shape: GitHub search, GraphQL, Elasticsearch) is stated in the
+// overlay's `effect:`, which exists for facts a description cannot express.
+// The cost of that is one authored line per such operation; the cost of the
+// heuristic was a silent duplicate.
+func effectFor(method, _ string) spec.Effect {
 	switch strings.ToLower(method) {
 	case "get", "head", "options":
 		return spec.EffectRead
@@ -220,25 +241,13 @@ func effectFor(method, verb string) spec.Effect {
 	case "put", "patch":
 		return spec.EffectUpdate
 	case "post":
-		if isReadVerb(verb) {
-			return spec.EffectRead
-		}
 		return spec.EffectCreate
 	}
-	return spec.EffectRead
-}
-
-// isReadVerb recognises the verbs that name a read even under POST. It is a
-// deliberately SHORT list of prefixes: a wrong "this is a read" grants a
-// blind retry to something that mutates, so the derivation stays timid and
-// the overlay states the rest.
-func isReadVerb(verb string) bool {
-	for _, p := range []string{"search", "list", "get", "find", "query", "check", "read", "lookup"} {
-		if verb == p || strings.HasPrefix(verb, p+"_") {
-			return true
-		}
-	}
-	return false
+	// An unrecognised method assumes the MUTATING reading, which is the
+	// conservative one: treating an unknown verb as a read would grant it
+	// blind retries, and this default is reached exactly when iterion knows
+	// least about what the call does.
+	return spec.EffectCreate
 }
 
 // snake converts camelCase, PascalCase, kebab-case, dotted and spaced names
