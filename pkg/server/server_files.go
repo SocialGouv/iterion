@@ -319,7 +319,10 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	// sounds like belt-and-braces but masks whether the sanitiser works — a
 	// test aimed at a %q-rendered value passes with logSafe removed. One
 	// stated mechanism, uniformly applied, is the one that stays checkable.
-	// The origin is last so a trailing value cannot be read as a further field.
+	// Field forging is logSafe's job too, not the field order's: putting the
+	// origin last protects only the origin, while the path sits in the middle
+	// and can impersonate the field after it. logSafe neutralises the
+	// separator for every value, which is what actually holds.
 	s.logger.Info("origin gate: refused %s %s from origin %s", logSafe(r.Method), logSafe(r.URL.Path), logSafe(r.Header.Get("Origin")))
 	httpx.WriteJSON(w, http.StatusForbidden, map[string]string{
 		"error": "cross-origin request rejected: origin not allowed (must be same-origin, loopback, or the configured public URL)",
@@ -345,7 +348,14 @@ func logSafe(v string) string {
 	}
 	b := []byte(v)
 	for i, c := range b {
-		if c < 0x20 || c == 0x7f {
+		// The space goes too, and it is not decoration: the refusal line is
+		// space-delimited and r.URL.Path is the DECODED path, so a request to
+		// "/api/x%20from%20origin%20https://studio.example" would otherwise
+		// log a second, fabricated "from origin" field. Neutralising CR/LF
+		// only stops a value becoming another RECORD; a value can equally
+		// impersonate the next FIELD of its own line, which is what a grep
+		// over this log actually reads.
+		if c < 0x20 || c == 0x7f || c == ' ' {
 			b[i] = '.'
 		}
 	}

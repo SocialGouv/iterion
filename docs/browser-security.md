@@ -109,9 +109,14 @@ also the truthful level — a refused cross-origin request is the gate working;
 the anomaly is a *legitimate* client among them, which no level distinguishes.
 
 The logged values are chosen by whoever is refused, so each goes through
-`logSafe`: control characters become `.` (a raw CRLF in an Origin would
-otherwise append log records of the attacker's choosing — including a plausible
-`origin gate: admitted` one) and the value is truncated. Deliberately not `%q`:
+`logSafe`: control characters **and spaces** become `.`, and the value is
+truncated. Both halves matter and the second is the easy one to miss. A raw
+CRLF appends log records of the attacker's choosing (a plausible `origin gate:
+admitted` one); a raw SPACE forges a field on the line that is already there —
+`URL.Path` is the decoded path, so `/api/x%20from%20origin%20https://our.host`
+would log a second `from origin` field and hand a grep over this log the hits
+its target chose. Putting the origin last protects only the origin; the path
+sits in the middle. Deliberately not `%q`:
 its escaping would *also* neutralise a CRLF, which masks whether the sanitiser
 still works — a test aimed at a `%q`-rendered value passes with `logSafe`
 removed, which is how the first version of that test shipped green and inert.

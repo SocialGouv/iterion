@@ -166,6 +166,13 @@ func TestRefusalLogCannotForgeARecord(t *testing.T) {
 		mutate func(*http.Request)
 	}{
 		{"crafted path", func(r *http.Request) { r.URL.Path = "/api/x\r\n" + forged }},
+		// A value does not need a newline to lie. The line is space-delimited
+		// and URL.Path is the DECODED path, so "%20from%20origin%20…" arrives
+		// here as spaces and can impersonate the field that follows it —
+		// which is what a grep over this log actually reads.
+		{"crafted path forging the next FIELD", func(r *http.Request) {
+			r.URL.Path = "/api/x from origin https://studio.example"
+		}},
 		// Set the header map directly: net/http's own parser rejects this on
 		// a real wire, and leaning on that would test net/http, not us.
 		{"crafted origin", func(r *http.Request) {
@@ -200,6 +207,12 @@ func TestRefusalLogCannotForgeARecord(t *testing.T) {
 				if strings.HasPrefix(line, forged) {
 					t.Errorf("a value became a record of its own:\n%s", logged)
 				}
+			}
+			// Exactly one "from origin" field: a second one means the caller
+			// chose what a grep over this log attributes to them, and can
+			// steer an operator into allow-listing a host that never asked.
+			if n := strings.Count(logged, "from origin"); n != 1 {
+				t.Errorf("the line carries %d %q fields, want 1 — a value impersonated the next field:\n%s", n, "from origin", logged)
 			}
 		})
 	}
@@ -300,6 +313,44 @@ func TestExtraAllowedOriginsAdmitsASecondPublicHost(t *testing.T) {
 			}
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestExtraAllowedOriginsReachesTheGateOnTheCloudServerToo pins the OTHER
+// construction site.
+//
+// Every other test here builds through BrowserGuard — the `iterion dispatch`
+// surface. The deployment the variable exists for is the studio/cloud server
+// built by New, and with only the BrowserGuard cases, deleting
+// `extraOrigins: loadExtraAllowedOrigins(logger)` from New leaves the whole
+// suite green while the second public host silently goes back to depending on
+// the ingress forwarding Host unchanged. Two constructors, two pins: this is
+// the same green-but-inert shape as testing splitAllowedOrigins alone, left
+// open one constructor over.
+func TestExtraAllowedOriginsReachesTheGateOnTheCloudServerToo(t *testing.T) {
+	t.Setenv("ITERION_ALLOWED_ORIGINS", "https://second.example")
+
+	s := New(Config{Port: 4123, PublicURL: "https://first.example"}, iterlog.New(iterlog.LevelInfo, &bytes.Buffer{}))
+
+	cases := []struct {
+		name      string
+		origin    string
+		wantAllow bool
+	}{
+		{"the host named by the env", "https://second.example", true},
+		{"PublicURL still admitted", "https://first.example", true},
+		{"a host named by nobody", "https://evil.example", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/me/api-keys", nil)
+			req.Host = "internal-svc.cluster.local" // force the allowlist branch
+			req.Header.Set("Origin", tc.origin)
+
+			if got := s.originGateAllows(httptest.NewRecorder(), req); got != tc.wantAllow {
+				t.Errorf("gate allowed = %v, want %v for origin %q — ITERION_ALLOWED_ORIGINS does not reach the gate on the server built by New", got, tc.wantAllow, tc.origin)
 			}
 		})
 	}
