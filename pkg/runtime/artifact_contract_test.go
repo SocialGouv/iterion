@@ -1312,6 +1312,106 @@ func TestReportResumeSharesArtifactContractAndReconstructionReads(t *testing.T) 
 	}
 }
 
+func TestResumePreflightDoesNotRetainDependencyOnlyArtifactBodies(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-dependency-not-retained"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyReport,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	for _, artifact := range []*store.Artifact{
+		{
+			RunID: runID, NodeID: "dependency", Version: 0, Data: map[string]any{"value": "large dependency body"},
+			Contract: &store.ArtifactContract{LogicalRef: "dependency", ProducerNode: "dependency", Version: 0},
+		},
+		{
+			RunID: runID, NodeID: "writer", Version: 0, Data: map[string]any{"value": "checkpoint body"},
+			Contract: &store.ArtifactContract{
+				LogicalRef: "plan", ProducerNode: "writer", Version: 0,
+				Dependencies: []store.ArtifactDependency{{LogicalRef: "dependency", NodeID: "dependency", Version: 0, Required: true}},
+			},
+		},
+	} {
+		if err := base.WriteArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Checkpoint = &store.Checkpoint{ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+		"plan": {NodeID: "writer", Version: 0, ContractLogicalRef: "plan"},
+	}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"dependency": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "dependency"}, Publish: "dependency"},
+		"writer":     &ir.ToolNode{BaseNode: ir.BaseNode{ID: "writer"}, Publish: "plan"},
+	}}
+	counting := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 2}
+	preflight, err := ValidateResumeArtifacts(ctx, counting, run, wf, "", false)
+	if err != nil {
+		t.Fatalf("artifact preflight: %v", err)
+	}
+	if counting.loads != 2 {
+		t.Fatalf("artifact loads = %d, want checkpoint plus dependency validation", counting.loads)
+	}
+	if len(preflight.artifacts) != 1 {
+		t.Fatalf("retained artifact bodies = %d, want checkpoint body only", len(preflight.artifacts))
+	}
+	if _, retained := preflight.artifacts[artifactRevisionKey{nodeID: "dependency", version: 0}]; retained {
+		t.Fatal("dependency-only artifact body was retained in the resume preflight")
+	}
+}
+
+func TestResumePreflightDeduplicatesIndexFallbackValidationReads(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-index-validation-deduplicated"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyReport,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	for _, artifact := range []*store.Artifact{
+		{
+			RunID: runID, NodeID: "a", Version: 0, Data: map[string]any{"value": "a"},
+			Contract: &store.ArtifactContract{LogicalRef: "a", ProducerNode: "a", Version: 0},
+		},
+		{
+			RunID: runID, NodeID: "b", Version: 0, Data: map[string]any{"value": "b"},
+			Contract: &store.ArtifactContract{
+				LogicalRef: "b", ProducerNode: "b", Version: 0,
+				Dependencies: []store.ArtifactDependency{{LogicalRef: "a", NodeID: "a", Version: 0, Required: true}},
+			},
+		},
+	} {
+		if err := base.WriteArtifact(ctx, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.ArtifactIndex = map[string]int{"a": 0, "b": 0}
+	run.Checkpoint = &store.Checkpoint{}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "a"}, Publish: "a"},
+		"b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "b"}, Publish: "b"},
+	}}
+	counting := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 2}
+	preflight, err := ValidateResumeArtifacts(ctx, counting, run, wf, "", false)
+	if err != nil {
+		t.Fatalf("artifact preflight: %v", err)
+	}
+	if counting.loads != 2 {
+		t.Fatalf("artifact loads = %d, want one physical read per indexed revision", counting.loads)
+	}
+	if len(preflight.artifacts) != 0 {
+		t.Fatalf("retained artifact bodies = %d, want none without exact checkpoint revisions", len(preflight.artifacts))
+	}
+}
+
 func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 	ctx := context.Background()
 	base := tmpStore(t)

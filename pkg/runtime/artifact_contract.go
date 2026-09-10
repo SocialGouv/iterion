@@ -398,12 +398,43 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			persistedProducers[key] = revision.NodeID
 		}
 	}
+	// Only checkpoint revisions can be consumed by resume reconstruction.
+	// Dependency-only bodies still need to be inspected for contract integrity,
+	// but retaining them in an in-process preflight needlessly pins potentially
+	// large payloads until the engine handoff completes.
+	reconstructable := make(map[artifactRevisionKey]bool)
+	if run.Checkpoint != nil {
+		addReconstructable := func(revisions map[string]store.ArtifactRevisionRef) {
+			for _, revision := range revisions {
+				if revision.NodeID != "" && !ignoredNodes[revision.NodeID] {
+					reconstructable[artifactRevisionKey{nodeID: revision.NodeID, version: revision.Version}] = true
+				}
+			}
+		}
+		addReconstructable(run.Checkpoint.ArtifactRevisions)
+		if run.Checkpoint.Parallel != nil {
+			for _, branch := range run.Checkpoint.Parallel.Branches {
+				if branch != nil {
+					addReconstructable(branch.ArtifactRevisions)
+				}
+			}
+		}
+	}
 	type validationKey struct {
 		logicalRef string
 		nodeID     string
 		version    int
 	}
+	type validationLoad struct {
+		artifact *store.Artifact
+		err      error
+	}
 	visited := make(map[validationKey]bool)
+	// Keep only identity and contract metadata for validation-only revisions.
+	// This deduplicates physical reads when the same revision is reached under
+	// multiple logical references without retaining its payload in the resume
+	// preflight or across recursive validation frames.
+	validationLoads := make(map[artifactRevisionKey]validationLoad)
 	var validateRevision func(artifactValidationRevision) error
 	validateRevision = func(revision artifactValidationRevision) error {
 		nodeID, version := revision.NodeID, revision.Version
@@ -419,13 +450,25 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 			return nil
 		}
 		visited[key] = true
-		artifact, loaded := preloaded[artifactRevisionKey{nodeID: nodeID, version: version}]
+		physicalKey := artifactRevisionKey{nodeID: nodeID, version: version}
+		artifact, loaded := preloaded[physicalKey]
 		var err error
 		if !loaded {
-			artifact, err = s.LoadArtifact(ctx, run.ID, nodeID, version)
-			if err == nil && artifact != nil && preloaded != nil &&
-				artifact.RunID == run.ID && artifact.NodeID == nodeID && artifact.Version == version {
-				preloaded[artifactRevisionKey{nodeID: nodeID, version: version}] = artifact
+			if cached, ok := validationLoads[physicalKey]; ok {
+				artifact, err = cached.artifact, cached.err
+			} else {
+				artifact, err = s.LoadArtifact(ctx, run.ID, nodeID, version)
+				if err == nil && artifact != nil {
+					if preloaded != nil && reconstructable[physicalKey] &&
+						artifact.RunID == run.ID && artifact.NodeID == nodeID && artifact.Version == version {
+						preloaded[physicalKey] = artifact
+					}
+					artifact = &store.Artifact{
+						RunID: artifact.RunID, NodeID: artifact.NodeID, Version: artifact.Version,
+						Contract: artifact.Contract,
+					}
+				}
+				validationLoads[physicalKey] = validationLoad{artifact: artifact, err: err}
 			}
 		}
 		if err != nil {
