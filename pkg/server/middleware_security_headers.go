@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"os"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // contentSecurityPolicy is the studio's CSP. It is enforceable as written
@@ -91,8 +93,18 @@ const contentSecurityPolicy = "default-src 'self'; " +
 //
 // port and publicURL feed the same allowlist Server uses, so a caller cannot
 // drift from it: the predicate is Server.originGateAllows itself.
-func BrowserGuard(port int, publicURL string, next http.Handler) http.Handler {
-	s := &Server{cfg: Config{Port: port, PublicURL: publicURL}}
+//
+// logger may be nil, but passing one is what makes a refusal visible here at
+// all: this surface builds no Server through New, so it gets neither the
+// startup validation nor a request log of its own. On the dispatch daemon a
+// refusal is the more interesting event of the two — it means a page the
+// operator had open tried to drive the board on their own machine.
+func BrowserGuard(port int, publicURL string, logger *iterlog.Logger, next http.Handler) http.Handler {
+	s := &Server{
+		cfg:          Config{Port: port, PublicURL: publicURL},
+		extraOrigins: loadExtraAllowedOrigins(logger),
+		logger:       logger,
+	}
 	return securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.originGateAllows(w, r) {
 			return

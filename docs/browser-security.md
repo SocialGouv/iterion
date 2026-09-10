@@ -57,6 +57,8 @@ What is recognised, via `isAllowedOriginReq`
 3. the desktop **wails** origins,
 4. the configured **`PublicURL`** — for a proxy that rewrites `Host` so (1)
    cannot match.
+5. **`ITERION_ALLOWED_ORIGINS`** — a comma-separated list of extra origins
+   (`scheme://host`, no path).
 
 `sameOrigin` also refuses a plaintext `http://` Origin when `X-Forwarded-Proto`
 proves the request arrived over TLS. The check is one-sided on purpose: an
@@ -76,10 +78,44 @@ Both were true here and both were load-bearing in the original defect:
   *reading* the response. The request still executes; CSRF is about the side
   effect.
 
-### `ITERION_REQUIRE_ORIGIN=0`
+### A refusal is logged, and that is what makes the gate operable
 
-Disables the gate, for a rollback without a redeploy. It is also what the sweep
-test toggles to prove the 403s come from the gate and not from something else.
+`requireSafeOrigin` writes one `WARN` per refusal naming the method, the path
+and the Origin. Nothing else records it — the 403 goes to the caller and no
+further, so before this line "nothing legitimate is being refused" and "we have
+no way to see one" produced the same evidence: an empty grep.
+
+That matters most for a client believed to send **no** Origin. The board-MCP
+HTTP transport is the shipped example: sandboxed `claude_code` and `pi` reach
+`POST /api/v1/mcp/board`, which the gate covers. Node's `fetch` sets
+`request.origin = "client"`, so undici appends no header and the call passes —
+measured on Node 24, with a control call carrying an explicit `Origin` to prove
+the observation could have seen one. An inference of that shape is worth
+re-checking against the log after any client or runtime upgrade.
+
+The logged values are chosen by whoever is refused, so each goes through
+`logSafe`: control characters become `.` (a raw CRLF in an Origin would
+otherwise append log records of the attacker's choosing — including a plausible
+`origin gate: admitted` one) and the value is truncated. Deliberately not `%q`:
+its escaping would *also* neutralise a CRLF, which masks whether the sanitiser
+still works — a test aimed at a `%q`-rendered value passes with `logSafe`
+removed, which is how the first version of that test shipped green and inert.
+
+Admitted requests log nothing. A gate that narrated every request would bury
+the refusals, which are the only interesting event.
+
+### Two switches for a rollback without a redeploy
+
+- **`ITERION_REQUIRE_ORIGIN=0`** disables the gate entirely. It is also what
+  the sweep test toggles to prove the 403s come from the gate and not from
+  something else.
+- **`ITERION_ALLOWED_ORIGINS`** widens it instead, which is the proportionate
+  answer when the cause is a host the allowlist does not name.
+
+A malformed entry in `ITERION_ALLOWED_ORIGINS` is **named at startup**, not
+dropped: functionally it is identical to an absent one — the origin is refused
+either way — so a typo would otherwise leave a guard that looks configured and
+matches nothing.
 
 ## Session cookies carry the `__Host-` prefix
 

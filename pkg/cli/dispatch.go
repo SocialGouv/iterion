@@ -204,7 +204,7 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 			// accepted a cross-origin POST from any page the operator had
 			// open. Binding loopback does not help — the browser is on the
 			// host.
-			Handler:           server.BrowserGuard(port, "", mux),
+			Handler:           server.BrowserGuard(port, "", logger, mux),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		if p.Format == OutputHuman {
