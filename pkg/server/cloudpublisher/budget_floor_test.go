@@ -144,6 +144,26 @@ func TestBudgetFloor_AReserveThatSwallowsTheCapHoldsOthersOffInsteadOfUncappingT
 	}
 }
 
+// A reserve holds a band of a provider WINDOW, so it can only hold back a
+// credential whose window this deployment actually meters. An OpenAI key has
+// no window ledger here (usageBackendForProvider maps it to ""), and refusing
+// it because the ANTHROPIC five-hour band is reserved would apply an
+// arithmetic that does not describe it — and would strand a run whose only
+// other credential was never in the reserve's scope.
+func TestBudgetFloor_AnUnmeteredProviderIsNeverHeldBack(t *testing.T) {
+	p, _, scope := floorPublisher(t, 0.05, 50,
+		budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 50}})
+	openai := secrets.ApiKey{Provider: secrets.ProviderOpenAI, Name: "metered", Fingerprint: "fp-openai"}
+	if !p.apiKeyUsable(context.Background(), scope, "run", "feature-dev", nil)(openai) {
+		t.Fatal("an OpenAI key was refused by a reserve on the Anthropic five-hour window")
+	}
+	// A key with no fingerprint names a slot, not an account: same rule.
+	unstamped := secrets.ApiKey{Provider: secrets.ProviderAnthropic, Name: "unstamped"}
+	if !p.apiKeyUsable(context.Background(), scope, "run", "feature-dev", nil)(unstamped) {
+		t.Fatal("a key with no fingerprint was refused — nothing meters it, so nothing can hold it back")
+	}
+}
+
 // Two reservations must compose rather than one voiding the other, and the
 // arithmetic has to survive the trip through usagecap's policy.
 func TestBudgetFloor_TwoReservationsCompose(t *testing.T) {

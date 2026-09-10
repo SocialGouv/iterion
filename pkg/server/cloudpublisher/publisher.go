@@ -1388,8 +1388,48 @@ func (p *Publisher) capPolicyFor(ctx context.Context, botID string) (pol usageca
 //
 // botID names the workload the credential would serve, so a reservation can
 // hold a band of the window back from everyone else (capPolicyFor).
+//
+// Two distinct reasons, deliberately answered in this order: what the
+// CREDENTIAL's own evidence says first, and only then what the deployment's
+// reservations hold back from this bot. Evidence wins when both apply, so a
+// skip reports the provider's real reopening instant rather than a synthesised
+// one — and refusedByEvidence stays callable on its own by the pin warning,
+// which asks "is this KEY dead?", a question a reservation does not answer.
 func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope string, fingerprint, label, botID string) (time.Time, string) {
-	if p.usageCaps == nil || fingerprint == "" || backend == "" {
+	if !p.meteredWindow(backend, fingerprint) {
+		return time.Time{}, ""
+	}
+	if until, why := p.refusedByEvidence(ctx, backend, scope, fingerprint, label, botID); !until.IsZero() {
+		return until, why
+	}
+	if _, reserved := p.capPolicyFor(ctx, botID); reserved != "" {
+		// This bot is allowed no share of the window at all, so no reading
+		// can make the credential usable for it: refuse it and let the walk
+		// fall through to the next tier. Bounded by the trust window like
+		// every other synthesised refusal, so an edited reservation is picked
+		// up without a restart and the run's own retry lands after the same
+		// delay.
+		return time.Now().Add(p.trust.Normalized().MaxAge), reserved
+	}
+	return time.Time{}, ""
+}
+
+// meteredWindow reports whether this credential has a window ledger at all.
+// A provider iterion does not meter is never skipped — not on evidence (there
+// is none to read) and not on a reservation either, since a reserve holds a
+// band of a provider WINDOW and holding back a share of a window nobody
+// measures would refuse a credential on an arithmetic that does not apply to
+// it.
+func (p *Publisher) meteredWindow(backend, fingerprint string) bool {
+	return p.usageCaps != nil && backend != "" && fingerprint != ""
+}
+
+// refusedByEvidence is the credential's OWN answer: a fresh provider refusal
+// against this fingerprint, or the operator's usage cap reached over these
+// same readings. It knows the bot only to judge against that bot's lowered
+// ceiling — it never refuses on the reservation itself (refusedUntil does).
+func (p *Publisher) refusedByEvidence(ctx context.Context, backend string, scope string, fingerprint, label, botID string) (time.Time, string) {
+	if !p.meteredWindow(backend, fingerprint) {
 		return time.Time{}, ""
 	}
 	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
@@ -1428,16 +1468,7 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		// A blocked window with no reset instant is trusted for the
 		// reading's own staleness bound, the same synthesis the refusal
 		// branch above applies: bounded, self-healing, and symmetric.
-		pol, reserved := p.capPolicyFor(ctx, botID)
-		if reserved != "" {
-			// This bot is allowed no share of the window at all, so no
-			// reading can make the credential usable for it — refuse it here
-			// and let the walk fall through to the next tier. Bounded by the
-			// trust window like every other synthesised refusal: an operator
-			// who edits the reservation is picked up without a restart, and
-			// the run's own retry lands after the same delay.
-			return now.Add(trust.MaxAge), reserved
-		}
+		pol, _ := p.capPolicyFor(ctx, botID)
 		if d := usagecap.Preflight(readings, pol, now, trust); d.Blocked {
 			reopen := d.ResetsAt
 			if reopen.IsZero() {
@@ -1478,7 +1509,11 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 		if backend == "" {
 			continue
 		}
-		until, why := p.refusedUntil(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov), botID)
+		// The credential's own evidence ONLY: a key the deployment's
+		// reservations hold back from this bot is not a DEAD key, the pin
+		// overrides that policy as it overrides the evidence, and warning
+		// "expect a park" about it would promise a wall the run never meets.
+		until, why := p.refusedByEvidence(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov), botID)
 		if until.IsZero() {
 			continue
 		}
