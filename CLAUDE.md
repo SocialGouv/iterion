@@ -1560,6 +1560,17 @@ the resulting tools on `PATH` for every node of the run. The same applies
 to a `devbox.json` at the root of the TARGET repo: iterion loads that one
 too, so a bot inherits the toolchain the repo itself declares.
 
+**On every driver, the pod backend included.** A bundle reaches a
+container as a host bind mount and the kubernetes driver has none, so
+there the config is not read from in-container — it is CARRIED there,
+written out by the install prologue before `devbox install` runs. Worth
+knowing because it was a decline until 2026-09-10, and that shape is the
+one to watch for in its whole class: the feature worked on a laptop and
+was inert on the driver bots actually run on, with nothing failing except
+the step that needed the tool. Ceiling: the config+lock pair must stay
+under 512 KiB, and a pair over it is declined by name, never installed
+from a directory it never reached.
+
 This is the supported way, and the alternatives are all worse:
 
 - **Curling a binary in `post_create`** — unpinned, undeclared, and

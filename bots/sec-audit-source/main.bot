@@ -2617,6 +2617,18 @@ fi
 # bash -c single-quoted string, so a stray apostrophe silently breaks shell
 # parsing (exit 2) while iterion validate still passes.
 CLAUDE_BIN="$(command -v claude 2>/dev/null)"
+# Same idea on the codex side: deepsec resolves its own bundled codex,
+# which trails the models it is asked for. CODEX_REAL_BIN is on its env
+# allowlist, so it is the supported way to hand it another one -- the
+# pinned install from the image, or the npm bootstrap in the sandbox
+# block when the image predates it. Only set when that binary exists, so
+# an image without it keeps deepsec on its bundled fallback rather than
+# pointing at a path nothing populated.
+for _cb in "$HOME/.npm-global/bin/codex" /usr/local/bin/codex; do
+  if [ -x "$_cb" ]; then CODEX_REAL_BIN="$_cb"; export CODEX_REAL_BIN; break; fi
+done
+echo "[codex] CODEX_REAL_BIN=${CODEX_REAL_BIN:-unset} version=$( "${CODEX_REAL_BIN:-codex}" --version 2>/dev/null | head -1 )" >>"$LOG_DIR/env.log"
+unset _cb
 # timeout bounds a network HANG: a mid-process connection loss leaves the
 # claude-agent-sdk waiting on a dead socket (it does NOT self-recover) and
 # would stall the whole node until the run timeout. 2400s is ~2x a legit
@@ -4518,6 +4530,25 @@ workflow sec_audit_source:
   ## (isolation, claude CLI, host-state mounts) is the platform default.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
+    ## codex at a version deepsec can actually drive. The image ships one
+    ## bundled with deepsec itself, and it trails: measured 2026-09-10,
+    ## codex-cli 0.145.0 in the image against a model gated at >= 0.153,
+    ## which fails as "Model metadata not found" and falls back — an
+    ## audit that runs on a model nobody chose.
+    ##
+    ## devbox is the declared way to add a binary, and it stays the first
+    ## choice; nixpkgs simply trails npm here (0.149 vs 0.154 the same
+    ## day). So devbox supplies the toolchain it HAS, and npm supplies
+    ## this one — the image already ships Node, so nothing is installed
+    ## to get npm itself.
+    ##
+    ## --prefix is not optional: the global prefix is root-owned and the
+    ## sandbox runs unprivileged, so a bare `npm install -g` dies on
+    ## EACCES. Idempotent, and best-effort like every other bootstrap
+    ## step: a failure prints what is consequently unavailable and lets
+    ## the run proceed, because deepsec is off by default and the rest of
+    ## the audit does not need codex at all.
+    post_create: "set -u; want=0.154.0; pfx=$HOME/.npm-global; if ! \"$pfx/bin/codex\" --version 2>/dev/null | grep -q \"$want\"; then npm install -g --prefix \"$pfx\" \"@openai/codex@$want\" >/dev/null 2>&1 || echo \"iterion: could not install @openai/codex@$want — deepsec falls back to the codex bundled in the image, which may be too old for the model requested\" >&2; fi"
 
   ## An audit READS the repository it is pointed at. The mid-run workspace
   ## checkpoint would `git add -A` the pod's tree — this bot's own

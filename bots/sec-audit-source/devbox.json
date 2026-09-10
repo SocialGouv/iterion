@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
   "packages": [
-    "gosec@latest",
-    "gitleaks@latest",
-    "semgrep@latest",
-    "trivy@latest",
-    "ripgrep@latest"
+    "gosec@2.28.0",
+    "gitleaks@8.30.1",
+    "semgrep@1.172.0",
+    "trivy@0.74.0",
+    "ripgrep@15.2.0"
   ],
   "env": {
     "DEVBOX_NO_PROMPT": "true"

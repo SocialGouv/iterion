@@ -193,7 +193,7 @@ promise made on it must go with it. On the pod backend:
 |---|---|---|
 | `ITERION_ARTIFACT_FILES_DIR` (where an in-sandbox tool drops files for the artifact-files panel) | set, bind-mounted | **absent** — a tool falls back to a temp dir |
 | Attachments path handed to nodes | the container path | the host path, which fails loudly rather than resolving to an empty mount point |
-| The bot's bundle `devbox.json` | provisioned | declined and reported (see [devbox provisioning](#best-effort-never-silent)) |
+| The bot's bundle `devbox.json` | provisioned from the mount | provisioned — the config is **carried** into the sandbox by the install prologue, since the bundle itself cannot be read from in-container (see [devbox provisioning](#best-effort-never-silent)) |
 
 The measured cost of getting this wrong: the run-files variable once
 named a directory the pod never had, a gate wrapper redirecting its
@@ -610,20 +610,32 @@ named on the same event, with its own reason:
 `skipped_sources` / `skipped_configs` / `skipped_reasons` (parallel
 arrays; `reason` joins the distinct ones).
 
-Two declines ship today:
+The declines that ship today:
 
 - `repo_devbox off` — the target repo pins a toolchain this run does not
   need (see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox)).
-- `no host bind mount on this driver` — the **bot's** `devbox.json` lives
-  in its bundle, which reaches the container as a host bind mount, and
-  the kubernetes driver has no host filesystem. The bundle is then not
-  declared at all, so no snippet is baked and no `PATH` entry promises a
-  directory nothing will populate. A bot that needs a tool on the pod
-  backend must get it from its `sandbox.image:` instead. The alternative
-  — a pod-side delivery channel for the bundle — would need a copy-in
-  seam that runs BEFORE `post_create`; the driver's only copy-in today is
-  the workspace tar, and the only writes it accepts afterwards
-  (`RefreshWorkspaceFile`) land after setup is over.
+- a bot `devbox.json` that **cannot be read**, or whose config+lock pair
+  is over the 512 KiB ceiling for carrying it into a sandbox with no
+  bundle mount. Both name themselves in the reason.
+
+**A bot's `devbox.json` is honoured on every driver**, the pod backend
+included. Its bundle reaches a container as a host bind mount, which the
+kubernetes driver has none of — so there the config is not *read* from
+in-container, it is *carried* there: the install prologue writes
+`devbox.json` (and `devbox.lock`, when the bundle ships one) into
+`/tmp/iterion-devbox/bot` before running `devbox install -c` on it.
+
+That needs no copy-in seam, which is what made this look hard: the files
+travel inside the post-create snippet itself, so nothing has to run
+before `post_create`. The write goes through `printf '%s'` with a
+shell-quoted argument — never a here-document, whose delimiter cannot be
+proven absent from operator-authored content, and never `printf
+<content>`, which would read a `%` in the config as a format directive.
+
+Until 2026-09-10 this was a decline, and the shape of the bug is worth
+keeping in mind for its whole class: the feature worked on a laptop
+(docker, bind mounts) and was inert on the driver bots actually run on,
+with nothing failing except the step that needed the tool.
 
 ### Cost
 
