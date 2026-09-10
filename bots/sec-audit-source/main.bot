@@ -2747,14 +2747,30 @@ if not os.path.isfile(out):
 try:
     with open(out, encoding="utf-8", errors="replace") as fh:
         doc = json.load(fh)
-except (ValueError, OSError) as e:
+except Exception as e:
     emit([], 0, 0, False,
          "deepsec export at " + out + " could not be read: " + type(e).__name__ + ": " + str(e)[:200])
     raise SystemExit(0)
 
-items = doc if isinstance(doc, list) else (doc.get("findings") or [])
+# A valid JSON export is not necessarily a CONTAINER: null, a bare number and a
+# bare string all parse, and calling .get on one raises outside the try above —
+# which exited non-zero, emitted nothing, and stranded scan_join with it. The
+# sibling parser reading this same file guards isinstance(d,dict) for exactly
+# this reason. An unrecognisable shape is an empty bank, never a dead run — and
+# it says so, because "banked 0 of 0" would read as a clean scan, which is the
+# same facade the export_unusable guard above exists to refuse.
+if isinstance(doc, list):
+    items = doc
+elif isinstance(doc, dict):
+    items = doc.get("findings") or []
+else:
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " is not a findings container but a " + type(doc).__name__ + ": nothing to bank")
+    raise SystemExit(0)
 if not isinstance(items, list):
-    items = []
+    emit([], 0, 0, False,
+         "deepsec export at " + out + " carries a findings field that is a " + type(items).__name__ + ", not a list: nothing to bank")
+    raise SystemExit(0)
 
 # Truncation drops WHOLE findings and reports both counts, so a partial bank
 # is still parseable JSON and the gap is a subtraction, not a guess.

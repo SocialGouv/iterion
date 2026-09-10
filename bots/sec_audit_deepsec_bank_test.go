@@ -142,6 +142,33 @@ func TestDeepsecFindingsLeaveThePod(t *testing.T) {
 		}
 	})
 
+	// A valid JSON export need not be a CONTAINER. null, a bare number, a bare
+	// string and a bool all parse, and calling .get on one raises AttributeError
+	// OUTSIDE the read guard — the node then exited non-zero with empty stdout,
+	// and because the bank sits on the control path into scan_join it took the
+	// generic/lang/custom scanner results down with it. The node promises the
+	// opposite two lines above its body: always exit 0, always emit the envelope.
+	t.Run("a JSON export that is not a findings container is banked empty, not crashed", func(t *testing.T) {
+		for _, shape := range []string{"null", "5", `"oops"`, "true", `{"findings": "nope"}`, `{"findings": {"a": 1}}`} {
+			t.Run(shape, func(t *testing.T) {
+				path := filepath.Join(dir, "shape.json")
+				if err := os.WriteFile(path, []byte(shape), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				got := run(t, path, "524288")
+				if got.Embedded != 0 || got.Total != 0 || got.Truncated || len(got.Findings) != 0 {
+					t.Errorf("got %+v, want an empty bank", got)
+				}
+				// "banked 0 of 0" would read as a clean scan. An export that is
+				// not a scan result has to say so, or the bank reproduces the
+				// facade the export_unusable guard exists to refuse.
+				if !strings.Contains(got.Note, "nothing to bank") {
+					t.Errorf("the note does not name the unusable shape: %q", got.Note)
+				}
+			})
+		}
+	})
+
 	t.Run("an empty export is not an error", func(t *testing.T) {
 		got := run(t, empty, "524288")
 		if got.Total != 0 || got.Truncated || strings.Contains(got.Note, "could not") {
