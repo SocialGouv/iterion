@@ -602,8 +602,15 @@ func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
 		j.HostState == "" && j.PostCreate == "" && len(j.Env) == 0 && len(j.Mounts) == 0 && j.Network == nil {
 		return nil
 	}
+	// A block with fields but no mode is the block form, which the parser
+	// reads as inline — the transport reads it the same way, so a document
+	// and its re-parse agree on the mode.
+	mode := j.Mode
+	if mode == "" {
+		mode = "inline"
+	}
 	return &SandboxBlock{
-		Mode:            j.Mode,
+		Mode:            mode,
 		Image:           j.Image,
 		Build:           sandboxBuildBlockFromJSON(j.Build),
 		User:            j.User,

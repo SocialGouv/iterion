@@ -134,6 +134,27 @@ func TestVerifyAcceptsAnEmptySandboxFromTheTransport(t *testing.T) {
 	}
 }
 
+// A sandbox block the transport carries with fields but NO mode — the shape
+// a canvas editor would emit before it learns about modes — is the block
+// form, which the parser reads as inline; the transport reads it the same
+// way, so the document and its re-parse agree.
+func TestVerifyAcceptsAModelessSandboxFromTheTransport(t *testing.T) {
+	for name, doc := range map[string]string{
+		"agent, no workflow": `{"agents":[{"name":"a","model":"m","sandbox":{"image":"img"}}]}`,
+		"agent":              `{"agents":[{"name":"a","model":"m","sandbox":{"image":"img"}}],"workflows":[{"name":"w","entry":"a","edges":[{"from":"a","to":"done"}]}]}`,
+		"workflow":           `{"agents":[{"name":"a","model":"m"}],"workflows":[{"name":"w","entry":"a","sandbox":{"build":{}},"edges":[{"from":"a","to":"done"}]}]}`,
+	} {
+		f, err := ast.UnmarshalFile([]byte(doc))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		text := Unparse(f)
+		if err := Verify(f, text); err != nil {
+			t.Fatalf("%s: a mode-less sandbox block from the canvas cannot be saved: %v\n%s", name, err, text)
+		}
+	}
+}
+
 // A plain file whose sandbox build block carries only an empty map parses
 // to an empty block, which the writer can only render as the bare header;
 // that header has to read back as the same block.
