@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.5](https://github.com/SocialGouv/iterion/compare/v3.132.4...v3.132.5) (2026-09-10)
+
+### Bug Fixes
+
+* **sec-audit:** a failed scanner stops leaving an output file behind ([#1079](https://github.com/SocialGouv/iterion/issues/1079)) ([dd24c6d](https://github.com/SocialGouv/iterion/commit/dd24c6d08c2d8766e110751e830c31e5c76bf451))
+
+    <details><summary>why</summary>
+
+    scan_health judges coverage from the filesystem: an output file that exists and parses counts as "that scanner ran". A tool that runs, FAILS, and still leaves a parseable artifact therefore reads as full coverage over a broken toolchain.
+
+    </details>
+
 ## [3.132.4](https://github.com/SocialGouv/iterion/compare/v3.132.3...v3.132.4) (2026-09-10)
 
 ### Bug Fixes
