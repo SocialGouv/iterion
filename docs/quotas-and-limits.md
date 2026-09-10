@@ -279,6 +279,53 @@ Metering is best effort throughout, like the org bucket: a missing counter,
 an unattributable route or a store failure leave the observation on the
 floor rather than turn a finished run into a failed one.
 
+### The repository dimension
+
+The meter also keys on the **repository** a run targeted — `repo_id`, the
+forge slug (`owner/repo`, `group/sub/project`) the launch surfaces already
+stamp on the run as `ProjectPath` and the studio already groups runs by, not
+a second identity derived from a clone URL. It is what makes "one busy
+repository is eating the shared subscription" a question with an answer.
+
+```sh
+# What this team spent on one repository this month
+iterion remote usage --by-credential --repo SocialGouv/iterion
+
+# The same repository across every tenant and credential (super-admin)
+iterion remote api GET "/api/admin/credentials/usage?repo=SocialGouv/iterion"
+# ?fingerprint= and ?repo= are REFUSED together (400): one credential across
+# repositories and one repository across credentials are different questions,
+# and answering whichever the code checked first returns a figure nobody
+# asked for.
+```
+
+Four properties are worth knowing, because each is a way to misread the
+numbers:
+
+- **Every listing that predates the dimension sums the repositories back
+  together**, so `--by-credential` without `--repo` reports exactly what it
+  always did. The alternative — one row per repository — would have made a
+  credential appear several times with no total anywhere.
+- **A row with no repository is not "all repositories".** Local runs, CLI
+  runs and non-webhook cloud launches target none, and neither does any row
+  written before this existed. `--repo` therefore never reaches them: a
+  repository's bill must not quietly include the deployment's unattributed
+  runs. The document id omits an empty repo entirely, which is what lets
+  those rows keep accumulating instead of restarting from zero at the deploy.
+- **A repository's spend spans tenants.** Two teams can serve one repo with
+  their own credentials, so the admin view sums both; the team view returns
+  only that team's share.
+- **A run whose repository cannot be read meters without one.** Same rule as
+  the route attribution: charged to the credential, attributed to nobody —
+  never guessed.
+
+Enforcement is a separate promise. This is the accounting subject a per-repo
+quota needs; the quota itself, and the budget FLOORS that would reserve
+capacity for a workload rather than cap it, are not built — see
+[#950](https://github.com/SocialGouv/iterion/issues/950), whose finding is
+that every budget mechanism in iterion today is a ceiling and none is a
+floor.
+
 ## Reading usage
 
 Both views share the same JSON shape

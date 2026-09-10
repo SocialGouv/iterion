@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -25,13 +26,18 @@ func (s *Server) registerCredUsageRoutes() {
 // never be summed, and a client that only reads cost_usd would do exactly
 // that — so the API states it rather than leaving it to a doc nobody opens.
 type credentialUsageView struct {
-	Month       string  `json:"month"`
-	Fingerprint string  `json:"fingerprint"`
-	Provider    string  `json:"provider"`
-	Tier        string  `json:"tier"`
-	TenantID    string  `json:"tenant_id,omitempty"`
-	Nature      string  `json:"nature"`
-	CostUSD     float64 `json:"cost_usd"`
+	Month       string `json:"month"`
+	Fingerprint string `json:"fingerprint"`
+	Provider    string `json:"provider"`
+	Tier        string `json:"tier"`
+	TenantID    string `json:"tenant_id,omitempty"`
+	// RepoID is the repository this row is attributed to, present ONLY on a
+	// `?repo=` answer. Every other listing sums a credential's repositories
+	// together, and naming one of them on a total would be a wrong answer
+	// rather than a partial one.
+	RepoID  string  `json:"repo_id,omitempty"`
+	Nature  string  `json:"nature"`
+	CostUSD float64 `json:"cost_usd"`
 	// InputTokens / OutputTokens are a MEASURED split and stay zero when
 	// none was observed; AggregateTokens holds a CLI delegate's
 	// unsplittable total. A per-direction ratio is only meaningful when
@@ -58,7 +64,7 @@ func toCredentialUsageList(month string, rows []credusage.MonthlyUsage) credenti
 	for _, r := range rows {
 		out.Credentials = append(out.Credentials, credentialUsageView{
 			Month: r.Month, Fingerprint: r.Fingerprint, Provider: r.Provider,
-			Tier: string(r.Tier), TenantID: r.TenantID, Nature: string(r.Nature),
+			Tier: string(r.Tier), TenantID: r.TenantID, RepoID: r.RepoID, Nature: string(r.Nature),
 			CostUSD: r.CostUSD, InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
 			AggregateTokens: r.AggregateTokens,
 			Runs:            r.Runs, Backends: r.Backends,
@@ -107,7 +113,23 @@ func (s *Server) handleTeamCredentialUsage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	now := time.Now().UTC()
-	rows, err := s.credUsage.List(r.Context(), now, teamID)
+	var (
+		rows []credusage.MonthlyUsage
+		err  error
+	)
+	if repo := strings.TrimSpace(r.URL.Query().Get("repo")); repo != "" {
+		// ListByRepo spans TENANTS by design — a repository can be served by
+		// several teams' credentials — so this route, which answers for one
+		// team, must narrow it. Filtering here rather than asking the counter
+		// for a tenant-scoped variant keeps the store surface small; the cost
+		// is that forgetting this line leaks another team's spend, which is
+		// why oneTenant is named and tested rather than inlined.
+		var all []credusage.MonthlyUsage
+		all, err = s.credUsage.ListByRepo(r.Context(), now, repo)
+		rows = oneTenant(all, teamID)
+	} else {
+		rows, err = s.credUsage.List(r.Context(), now, teamID)
+	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -115,10 +137,23 @@ func (s *Server) handleTeamCredentialUsage(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, toCredentialUsageList(now.Format("2006-01"), rows))
 }
 
+// oneTenant keeps only the rows belonging to a tenant. The cross-tenant
+// listings are super-admin answers; a team route that forwarded one would
+// report another team's spend under this team's heading.
+func oneTenant(rows []credusage.MonthlyUsage, tenantID string) []credusage.MonthlyUsage {
+	out := make([]credusage.MonthlyUsage, 0, len(rows))
+	for _, row := range rows {
+		if row.TenantID == tenantID {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 // handleAdminCredentialUsage is the platform view: one credential across
-// every tenant it served (`?fingerprint=`), or the platform tier's own
-// month. Super-admin, because a fingerprint spans tenants and the answer
-// names them.
+// every tenant it served (`?fingerprint=`), one repository across every
+// credential that served IT (`?repo=`), or the platform tier's own month.
+// Super-admin, because both cross-tenant answers name the tenants.
 func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Request) {
 	if s.credUsage == nil {
 		httpError(w, http.StatusNotFound, "per-credential usage is not enabled on this instance")
@@ -129,9 +164,21 @@ func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Reque
 		rows []credusage.MonthlyUsage
 		err  error
 	)
-	if fp := r.URL.Query().Get("fingerprint"); fp != "" {
+	fp := strings.TrimSpace(r.URL.Query().Get("fingerprint"))
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	switch {
+	case fp != "" && repo != "":
+		// Refused rather than served by whichever the code checks first: the
+		// caller asked a question this endpoint does not answer, and picking
+		// one of the two silently returns a number that is not what was
+		// asked for — the same failure `?tier=org` used to have here.
+		httpError(w, http.StatusBadRequest, "give ?fingerprint= or ?repo=, not both — one credential across repositories and one repository across credentials are different questions")
+		return
+	case repo != "":
+		rows, err = s.credUsage.ListByRepo(r.Context(), now, repo)
+	case fp != "":
 		rows, err = s.credUsage.ListByFingerprint(r.Context(), now, fp)
-	} else {
+	default:
 		// By TIER, not by tenant: a platform credential is metered under
 		// each tenant it served, so no single tenant holds its month.
 		tier, terr := tierOrPlatform(r.URL.Query().Get("tier"))

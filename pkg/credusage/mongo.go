@@ -39,6 +39,13 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 		// it served, so this cannot be asked by tenant.
 		{Keys: bson.D{{Key: "tier", Value: 1}, {Key: "month", Value: 1}},
 			Options: options.Index().SetName("credusage_tier_month")},
+		// One repository's month, across credentials and tenants — what a
+		// per-repo quota is checked against, so it is a lookup on the hot
+		// path rather than a reporting convenience. Sparse: the documents
+		// that name no repository are the majority and are never an answer
+		// here.
+		{Keys: bson.D{{Key: "repo_id", Value: 1}, {Key: "month", Value: 1}},
+			Options: options.Index().SetName("credusage_repo_month").SetSparse(true)},
 		{Keys: bson.D{{Key: "month_start", Value: 1}},
 			Options: options.Index().SetName("credusage_ttl").
 				SetExpireAfterSeconds(int32(RetentionDays * 24 * 60 * 60))},
@@ -49,11 +56,16 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 type usageDoc struct {
-	Month         string `bson:"month"`
-	Fingerprint   string `bson:"fingerprint"`
-	Provider      string `bson:"provider"`
-	Tier          string `bson:"tier"`
-	TenantID      string `bson:"tenant_id"`
+	Month       string `bson:"month"`
+	Fingerprint string `bson:"fingerprint"`
+	Provider    string `bson:"provider"`
+	Tier        string `bson:"tier"`
+	TenantID    string `bson:"tenant_id"`
+	// Absent on every document written before repositories became an
+	// accounting dimension, and on any run that targets none — which is why
+	// docID omits an empty repo rather than encoding it: those documents keep
+	// their id and go on accumulating.
+	RepoID        string `bson:"repo_id,omitempty"`
 	Nature        string `bson:"nature"`
 	CostUSDMillis int64  `bson:"cost_usd_millis"`
 	InputTokens   int64  `bson:"input_tokens"`
@@ -74,6 +86,7 @@ func (d usageDoc) view() MonthlyUsage {
 		Provider:        d.Provider,
 		Tier:            Tier(d.Tier),
 		TenantID:        d.TenantID,
+		RepoID:          d.RepoID,
 		Nature:          Nature(d.Nature),
 		CostUSD:         millisToCost(d.CostUSDMillis),
 		InputTokens:     d.InputTokens,
@@ -110,6 +123,7 @@ func (c *MongoCounter) AddSpend(ctx context.Context, when time.Time, s Spend) er
 			"provider":    s.Provider,
 			"tier":        string(s.Tier),
 			"tenant_id":   s.TenantID,
+			"repo_id":     s.RepoID,
 			// Nature is a property of the CREDENTIAL, not of a call: it
 			// cannot change within a month for one fingerprint+tier, so
 			// the first writer settles it and later ones leave it alone.
@@ -130,7 +144,7 @@ func (c *MongoCounter) AddSpend(ctx context.Context, when time.Time, s Spend) er
 func (c *MongoCounter) Usage(ctx context.Context, when time.Time, k Key) (MonthlyUsage, error) {
 	out := MonthlyUsage{
 		Month: monthKey(when), Fingerprint: k.Fingerprint,
-		Provider: k.Provider, Tier: k.Tier, TenantID: k.TenantID,
+		Provider: k.Provider, Tier: k.Tier, TenantID: k.TenantID, RepoID: k.RepoID,
 	}
 	if !k.Valid() {
 		return out, nil
@@ -147,25 +161,57 @@ func (c *MongoCounter) Usage(ctx context.Context, when time.Time, k Key) (Monthl
 }
 
 func (c *MongoCounter) List(ctx context.Context, when time.Time, tenantID string) ([]MonthlyUsage, error) {
-	return c.find(ctx, bson.M{"tenant_id": tenantID, "month": monthKey(when)})
+	return c.summed(ctx, bson.M{"tenant_id": tenantID, "month": monthKey(when)})
 }
 
 func (c *MongoCounter) ListByFingerprint(ctx context.Context, when time.Time, fingerprint string) ([]MonthlyUsage, error) {
 	if fingerprint == "" {
 		return nil, nil
 	}
-	return c.find(ctx, bson.M{"fingerprint": fingerprint, "month": monthKey(when)})
+	return c.summed(ctx, bson.M{"fingerprint": fingerprint, "month": monthKey(when)})
 }
 
 func (c *MongoCounter) ListByTier(ctx context.Context, when time.Time, tier Tier) ([]MonthlyUsage, error) {
 	if tier == "" {
 		return nil, nil
 	}
-	return c.find(ctx, bson.M{"tier": string(tier), "month": monthKey(when)})
+	return c.summed(ctx, bson.M{"tier": string(tier), "month": monthKey(when)})
+}
+
+// ListByRepo keeps the per-repository rows apart — it is the one listing
+// scoped to a single repo, so summing them would collapse the very dimension
+// asked for.
+func (c *MongoCounter) ListByRepo(ctx context.Context, when time.Time, repoID string) ([]MonthlyUsage, error) {
+	if repoID == "" {
+		return nil, nil
+	}
+	rows, err := c.find(ctx, bson.M{"repo_id": repoID, "month": monthKey(when)})
+	if err != nil {
+		return nil, err
+	}
+	sortUsage(rows)
+	return rows, nil
+}
+
+// summed is the shape every listing older than the repo dimension takes: the
+// rows a credential accumulated across repositories, added back together.
+func (c *MongoCounter) summed(ctx context.Context, filter bson.M) ([]MonthlyUsage, error) {
+	rows, err := c.find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	rows = aggregateRepos(rows)
+	sortUsage(rows)
+	return rows, nil
 }
 
 func (c *MongoCounter) find(ctx context.Context, filter bson.M) ([]MonthlyUsage, error) {
-	cur, err := c.col.Find(ctx, filter)
+	// Ordered by _id, which the memory twin mirrors by sorting its own ids:
+	// aggregateRepos keeps first-seen order, so an undefined scan order would
+	// make the summed sequence differ between the twins — and between two
+	// calls — wherever two rows tie on cost. The conformance suite compares
+	// sequences, so "usually the same" is a flake waiting for a busy month.
+	cur, err := c.col.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, nil
@@ -181,9 +227,8 @@ func (c *MongoCounter) find(ctx context.Context, filter bson.M) ([]MonthlyUsage,
 	for _, d := range docs {
 		out = append(out, d.view())
 	}
-	// Sorted in Go, not in Mongo: the order is biggest-spend-first over
-	// cost_usd_millis, and both twins must produce the identical sequence
-	// for the conformance suite to mean anything.
-	sortUsage(out)
+	// The caller sorts: the presentation order is biggest-spend-first over
+	// cost_usd_millis, and after summing a credential's repositories the
+	// totals — not the individual rows — are what has to be ranked.
 	return out, nil
 }

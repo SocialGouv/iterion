@@ -31,6 +31,7 @@ package credusage
 import (
 	"context"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -89,6 +90,20 @@ type Key struct {
 	// TenantID is the team the run belonged to. Empty for a run with no
 	// tenant (local/CLI), which still meters.
 	TenantID string
+	// RepoID is the forge slug the run targeted ("owner/repo",
+	// "group/sub/project") — store.Run.ProjectPath, the same identifier the
+	// studio already groups runs by rather than a second one invented here.
+	//
+	// Empty for a run that targets no repository (local, CLI, a non-repo
+	// cloud launch) AND for every row written before this dimension existed:
+	// docID leaves an empty repo out entirely, so those documents keep the
+	// id they had and their month is not split in two by a deploy.
+	//
+	// One tenant's spend on one credential is therefore several rows. The
+	// listings that existed before this field SUM over them, so every figure
+	// an operator reads keeps its exact meaning; ListByRepo is the query the
+	// new dimension adds.
+	RepoID string
 }
 
 // Valid reports whether the key names something meterable. A credential with
@@ -107,6 +122,11 @@ type MonthlyUsage struct {
 	Provider    string `json:"provider"`
 	Tier        Tier   `json:"tier"`
 	TenantID    string `json:"tenant_id,omitempty"`
+	// RepoID is the repository this row is attributed to. Set only by
+	// ListByRepo: every other listing sums a credential's repositories
+	// together, and reporting one of them there would name a repo whose
+	// figure is not the row's.
+	RepoID string `json:"repo_id,omitempty"`
 	// Nature qualifies CostUSD. Read it before comparing two rows: an
 	// estimate is not an invoice.
 	Nature Nature `json:"nature"`
@@ -174,6 +194,17 @@ type Counter interface {
 	// (a run is metered where it ran), so "what did the deployment's own
 	// credentials cost this month" cannot be asked by tenant.
 	ListByTier(ctx context.Context, when time.Time, tier Tier) ([]MonthlyUsage, error)
+	// ListByRepo returns every credential-month attributed to one
+	// repository, across tenants and credentials — the figure a per-repo
+	// quota is enforced and reported against.
+	//
+	// Alone among the listings it does NOT sum a credential's repositories
+	// together (it is already scoped to one), so its rows carry RepoID.
+	// Spend that named no repository is unreachable here by construction:
+	// an empty repoID returns nothing rather than "everything unattributed",
+	// because a caller asking for a repo's spend must never be handed the
+	// deployment's.
+	ListByRepo(ctx context.Context, when time.Time, repoID string) ([]MonthlyUsage, error)
 }
 
 // RetentionDays bounds how long credential-month documents are retained
@@ -191,13 +222,83 @@ func monthStart(when time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
-// docID is the document id for one (credential, tier, tenant, month).
+// docID is the document id for one (credential, tier, tenant, repo, month).
 //
 // The tier is part of the identity, not a label: the same key lent through
 // the pool and used directly by its owner is two different economic facts,
 // and merging them would report the donor's loan as the borrower's spend.
+//
+// An EMPTY repo adds no segment at all, so the id is byte-identical to the
+// one this function returned before repositories were an accounting
+// dimension. Appending an unconditional `|` would have re-identified every
+// stored document: each credential-month would restart from zero at the
+// deploy, and the figure the operator reads would drop to near nothing while
+// the real spend continued — a reporting outage dressed as a quiet month.
 func docID(k Key, when time.Time) string {
-	return "cred|" + k.Fingerprint + "|" + k.Provider + "|" + string(k.Tier) + "|" + k.TenantID + "|" + monthKey(when)
+	id := "cred|" + k.Fingerprint + "|" + k.Provider + "|" + string(k.Tier) + "|" + k.TenantID
+	if k.RepoID != "" {
+		id += "|" + k.RepoID
+	}
+	return id + "|" + monthKey(when)
+}
+
+// aggregateRepos sums a credential-month's per-repository rows back into one
+// row per (fingerprint, provider, tier, tenant), with RepoID cleared.
+//
+// Every listing that predates the repo dimension runs through this, which is
+// what makes the dimension additive: a caller that never heard of
+// repositories reads the same number it read before, whether the spend was
+// attributed to one repo, to five, or to none. The rows keep their first-seen
+// order; the caller sorts.
+func aggregateRepos(rows []MonthlyUsage) []MonthlyUsage {
+	if len(rows) == 0 {
+		return rows
+	}
+	type groupKey struct {
+		fp       string
+		provider string
+		tenant   string
+		tier     Tier
+	}
+	order := make([]groupKey, 0, len(rows))
+	byKey := make(map[groupKey]*MonthlyUsage, len(rows))
+	backends := make(map[groupKey]map[string]bool, len(rows))
+	for _, r := range rows {
+		gk := groupKey{fp: r.Fingerprint, provider: r.Provider, tenant: r.TenantID, tier: r.Tier}
+		acc, ok := byKey[gk]
+		if !ok {
+			merged := r
+			merged.RepoID = ""
+			merged.Backends = nil
+			byKey[gk] = &merged
+			backends[gk] = map[string]bool{}
+			order = append(order, gk)
+			acc = &merged
+		} else {
+			acc.CostUSD += r.CostUSD
+			acc.InputTokens += r.InputTokens
+			acc.OutputTokens += r.OutputTokens
+			acc.AggregateTokens += r.AggregateTokens
+			acc.Runs += r.Runs
+		}
+		for _, b := range r.Backends {
+			backends[gk][b] = true
+		}
+	}
+	out := make([]MonthlyUsage, 0, len(order))
+	for _, gk := range order {
+		row := *byKey[gk]
+		if len(backends[gk]) > 0 {
+			names := make([]string, 0, len(backends[gk]))
+			for b := range backends[gk] {
+				names = append(names, b)
+			}
+			sort.Strings(names)
+			row.Backends = names
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // CostToMillis converts a USD amount to integer thousandths so the Mongo
