@@ -13,6 +13,14 @@ const actionBot = `
 vars:
   owner: string = "acme"
 
+compute pick:
+  output: picked
+  expr:
+    number: "1"
+
+schema picked:
+  number: int
+
 tool comment:
   action: forgejo.issue.comment
   connection: forge_main
@@ -28,7 +36,8 @@ schema comment_result:
   status: int
 
 workflow main:
-  entry: comment
+  entry: pick
+  pick -> comment
   comment -> done
 `
 
@@ -283,5 +292,83 @@ workflow main:
 	// A warning, not an error: the node is still perfectly runnable.
 	if errs := errorsOnly(diags); len(errs) > 0 {
 		t.Errorf("an inert property must warn, not fail the compile: %v", codesOf(errs))
+	}
+}
+
+// TestActionParamRefsAreValidated closes the same hole `script:` had before
+// it — and the comment in validate_refs.go records that history, which is the
+// point: a third recipe was added without walking the passes that read the
+// other two.
+//
+// An unvalidated reference is not a cosmetic miss. `{{outputs.typo.field}}`
+// renders to empty at run time and is SENT, so the vendor receives a silently
+// wrong argument — a comment on the wrong issue, a release cut from the wrong
+// ref — where the author should have seen C029 at compile time.
+func TestActionParamRefsAreValidated(t *testing.T) {
+	_, diags := compileSource(t, `
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    index: "{{outputs.nowhere.number}}"
+workflow main:
+  entry: comment
+  comment -> done
+`)
+	if !hasCode(diags, DiagUnknownRefNode) {
+		t.Fatalf("a reference to an unknown node inside an action param must be refused, got %v", codesOf(diags))
+	}
+}
+
+// TestGroupExpansionReachesActionParams covers the other pass that reads a
+// recipe's fields.
+//
+// A group exists to be instantiated per target, so its whole value is that
+// `{{params.X}}` becomes the caller's argument. Tool nodes had every scalar
+// field substituted and the action params left alone: they would arrive at
+// the vendor as the literal text `{{params.repo}}`.
+//
+// Instantiating the SAME group twice is what proves the copy is DEEP. A
+// shallow copy shares the params slice with the template, so the first
+// expansion writes its values into it and the second inherits them — two
+// calls against the same repository, one of which the author never asked for.
+func TestGroupExpansionReachesActionParams(t *testing.T) {
+	wf, diags := compileSource(t, `
+group commenter(repo):
+  tool say:
+    action: forgejo.issue.comment
+    connection: forge_main
+    params:
+      repo: "{{params.repo}}"
+      body: "hello"
+
+use commenter as first with { repo: "widgets" }
+use commenter as second with { repo: "gadgets" }
+
+workflow main:
+  entry: first.say
+  first.say -> second.say
+  second.say -> done
+`)
+	if errs := errorsOnly(diags); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", codesOf(errs))
+	}
+	for _, tc := range []struct{ node, want string }{
+		{"first.say", "widgets"},
+		{"second.say", "gadgets"},
+	} {
+		n, ok := wf.Nodes[tc.node].(*ToolNode)
+		if !ok {
+			t.Fatalf("%s is not a tool node: %T", tc.node, wf.Nodes[tc.node])
+		}
+		var got string
+		for _, p := range n.Params {
+			if p.Key == "repo" {
+				got = p.Value
+			}
+		}
+		if got != tc.want {
+			t.Errorf("%s repo = %q, want %q — the group's own value leaked across instantiations", tc.node, got, tc.want)
+		}
 	}
 }

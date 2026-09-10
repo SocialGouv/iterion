@@ -279,6 +279,84 @@ func TestRuntimeRefusesAnOperationTheResolverShouldNotHaveOffered(t *testing.T) 
 	}
 }
 
+// TestRetryIsHonouredAndStillCannotDuplicateAnEffect.
+//
+// `retry:` compiled and was stored on the IR, and nothing read it: an author
+// who wrote `retry: 3` got the engine's generic one-shot recovery instead. A
+// control that reads as working and does nothing is worse than an absent one,
+// because it is documented.
+//
+// The second half is the part that matters. Making the control real must not
+// make it a way to duplicate a mutation, so the SAME `retry: 5` that patiently
+// re-drives a throttled read performs a lost-answer POST exactly once.
+func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
+	t.Run("a retryable failure is re-driven", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls < 3 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"ok": true}`))
+		}))
+		defer srv.Close()
+
+		pkg, op := mutatingPackage(srv.URL)
+		op.HTTP.Method, op.HTTP.RequestBody, op.Params, op.Effect = "GET", "", nil, spec.EffectRead
+		op.Results = []spec.ResultCase{{Status: 200}}
+		pkg.Ops[0].Operations[0] = op
+
+		node := &ir.ToolNode{
+			BaseNode: ir.BaseNode{ID: "read"}, Action: "probe.issue.comment",
+			Connection: "main", RetryPolicy: "5",
+		}
+		e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		if _, err := e.Execute(context.Background(), node, nil); err != nil {
+			t.Fatalf("the third attempt succeeded, so the node must: %v", err)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3 — `retry: 5` must actually re-drive the call", calls)
+		}
+	})
+
+	t.Run("an ambiguous mutation is performed exactly once", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("cannot hijack")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+		}))
+		defer srv.Close()
+
+		pkg, op := mutatingPackage(srv.URL)
+		node := &ir.ToolNode{
+			BaseNode: ir.BaseNode{ID: "comment"}, Action: "probe.issue.comment",
+			Connection: "main", RetryPolicy: "5",
+			Params: []ir.ActionParam{{Key: "body", Value: "ship it"}},
+		}
+		e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+			model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+		if _, err := e.Execute(context.Background(), node, nil); err == nil {
+			t.Fatal("a lost answer must fail the node")
+		}
+		if calls != 1 {
+			t.Errorf("the vendor was called %d times; a mutation whose outcome is unknown must be performed EXACTLY ONCE, whatever `retry:` says", calls)
+		}
+	})
+}
+
 // TestAnOrdinaryFailureStillRetries is the falsifier for the guard above: a
 // blanket "connector errors never retry" rule would pass that test while
 // making every transient blip terminal. A GET refused with a 503 never

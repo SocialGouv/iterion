@@ -312,8 +312,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 
 	// An author who set the page or cursor parameter themselves is paging by
 	// hand: they asked for ONE page. Walking on from there would silently
-	// return several where one was requested, so the walk does not start —
-	// the single page is performed and its completeness reported honestly.
+	// return several where one was requested, so the walk does not start.
 	if authorPaged(op, p, params) {
 		res, callErr := e.Call(ctx, pkg, op, walk, cred)
 		if callErr != nil || !res.OK() {
@@ -323,12 +322,29 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		if !found {
 			return nil, false, res, errNoCollection(op, p.ItemsField, res.Data)
 		}
-		return batch, p.DefaultSize > 0 && len(batch) < p.DefaultSize, res, nil
+		// NEVER complete. Complete means "these items are the whole
+		// collection", and one hand-picked page is not: asking for page 7
+		// says nothing about pages 1-6, and a short page 7 says nothing
+		// about page 8 either. Reporting a short hand-picked page as
+		// complete told a workflow it had seen everything after it had
+		// deliberately looked at one slice.
+		return batch, false, res, nil
 	}
 
-	if p.DefaultSize > 0 && p.SizeParam != "" {
-		if _, set := walk[keyForWireName(op, p.SizeParam)]; !set {
-			walk[keyForWireName(op, p.SizeParam)] = p.DefaultSize
+	// The size the vendor is actually being asked for, which is what a short
+	// page must be measured against. A caller who set the size parameter
+	// themselves overrides the package's default, and comparing their pages
+	// to the default instead would end the walk on the first page whenever
+	// they asked for less — or never, whenever they asked for more.
+	effectiveSize := p.DefaultSize
+	if p.SizeParam != "" {
+		sizeKey := keyForWireName(op, p.SizeParam)
+		if given, set := walk[sizeKey]; set {
+			if n, ok := asPositiveInt(given); ok {
+				effectiveSize = n
+			}
+		} else if p.DefaultSize > 0 {
+			walk[sizeKey] = p.DefaultSize
 		}
 	}
 
@@ -342,7 +358,10 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 			}
 		case spec.PageOffset:
 			if p.PageParam != "" {
-				walk[keyForWireName(op, p.PageParam)] = (page - 1) * max(p.DefaultSize, 1)
+				// Advanced by the size actually requested: stepping by the
+				// package default while the caller asked for another size
+				// skips rows or returns them twice.
+				walk[keyForWireName(op, p.PageParam)] = (page - 1) * max(effectiveSize, 1)
 			}
 		case spec.PageCursor:
 			if cursor != "" && p.CursorParam != "" {
@@ -369,19 +388,26 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		}
 		items = append(items, batch...)
 
-		// A short page ends the walk on every style: it is the one signal
-		// every vendor gives.
-		if p.DefaultSize > 0 && len(batch) < p.DefaultSize {
-			return items, true, last, nil
-		}
+		// An empty page ends every walk: there is nothing to follow.
 		if len(batch) == 0 {
 			return items, true, last, nil
 		}
+
+		// Past that, termination is the PROTOCOL's, not one rule for all.
 		if p.Style == spec.PageCursor {
+			// A cursor walk ends when the vendor stops handing one back, and
+			// ONLY then. Page size is not a signal here: a cursor API is free
+			// to return a partial page and a next cursor together, and
+			// treating that as the end stopped the walk after one call while
+			// the vendor was still saying "there is more".
 			cursor = stringField(res.Data, p.CursorField)
 			if cursor == "" {
 				return items, true, last, nil
 			}
+		} else if effectiveSize > 0 && len(batch) < effectiveSize {
+			// For page/offset walks a short page IS the end signal — measured
+			// against what was actually asked for.
+			return items, true, last, nil
 		}
 		page++
 	}
@@ -392,6 +418,24 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 // defaultMaxPages bounds a walk whose package declared no ceiling. A
 // collection is unbounded from iterion's side; a run's budget is not.
 const defaultMaxPages = 20
+
+// asPositiveInt reads a page size a caller supplied. Values arrive from a
+// `.bot` through template rendering and JSON decoding, so the same number can
+// be an int, a float64 or a string depending on the path it took.
+func asPositiveInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, n > 0
+	case int64:
+		return int(n), n > 0
+	case float64:
+		return int(n), n > 0 && n == float64(int(n))
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		return i, err == nil && i > 0
+	}
+	return 0, false
+}
 
 // authorPaged reports whether the caller supplied the position themselves —
 // the signal that they are paging by hand and want exactly what they asked

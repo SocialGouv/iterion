@@ -86,27 +86,58 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 	start := time.Now()
 	e.emitToolNodeStarted(node.ID, actionToolName(node), len(params))
 
+	// `retry: N` = N attempts BEYOND the first, and only where repeating is
+	// safe. Every guard lives in exec.Error.Retryable, which refuses an
+	// ambiguous outcome and refuses a mutation whose call carried no
+	// idempotency key — so this loop can never be the thing that duplicates
+	// an effect, however large N is.
+	attempts := 1 + actionRetries(node)
 	var res exec.Result
-	if op.Pagination != nil {
-		items, complete, last, callErr := executor.CallPaged(callCtx, pkg, op, params, cred)
-		if callErr != nil {
-			return nil, e.finishAction(node, op, exec.Result{}, start, callErr)
-		}
-		res = last
-		if res.OK() {
-			return e.actionOutput(node, op, res, items, complete, start), nil
-		}
-	} else {
+	for attempt := 1; ; attempt++ {
+		var items []any
+		complete := true
 		var callErr error
-		res, callErr = executor.Call(callCtx, pkg, op, params, cred)
+		if op.Pagination != nil {
+			items, complete, res, callErr = executor.CallPaged(callCtx, pkg, op, params, cred)
+		} else {
+			res, callErr = executor.Call(callCtx, pkg, op, params, cred)
+		}
 		if callErr != nil {
+			// Not a vendor answer — a local refusal or a walk that could not
+			// read its collection. Repeating cannot change it.
 			return nil, e.finishAction(node, op, res, start, callErr)
 		}
 		if res.OK() {
-			return e.actionOutput(node, op, res, nil, true, start), nil
+			return e.actionOutput(node, op, res, items, complete, start), nil
+		}
+		if attempt >= attempts || !res.Err.Retryable(op, params) {
+			return nil, e.finishAction(node, op, res, start, nil)
+		}
+		// The vendor's own Retry-After when it gave one; otherwise straight
+		// on. iterion does not invent a backoff here: a delay the workflow
+		// guessed would be worse than the one the service asked for.
+		if wait := res.Err.RetryAfter; wait > 0 {
+			select {
+			case <-callCtx.Done():
+				return nil, e.finishAction(node, op, res, start, callCtx.Err())
+			case <-time.After(wait):
+			}
 		}
 	}
-	return nil, e.finishAction(node, op, res, start, nil)
+}
+
+// actionRetries reads the node's `retry:` as a count of EXTRA attempts.
+// Compile refuses anything else (C265), so a malformed value here means a
+// hand-built IR; zero is the safe reading.
+func actionRetries(node *ir.ToolNode) int {
+	if node.RetryPolicy == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(node.RetryPolicy))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // checkOperationUsable refuses an operation the RESOLVER handed back that a

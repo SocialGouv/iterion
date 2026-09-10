@@ -96,7 +96,19 @@ func run(t *testing.T, h http.HandlerFunc) (*exec.Executor, *spec.Package, func(
 	// address on purpose. A test server IS loopback, so the client is the
 	// plain one here — what is under test is the request and the reading of
 	// the answer, and the guard has its own tests in pkg/secure/httpdial.
-	e := &exec.Executor{Client: srv.Client(), UserAgent: "iterion-test"}
+	client := srv.Client()
+	// httpdial.SafeClient — the client the executor is REQUIRED to run on —
+	// refuses to follow redirects (ErrUseLastResponse), because the guarded
+	// dialer pins the host it resolved and chasing a 3xx would hand the
+	// destination back to the vendor. A test client that quietly followed
+	// them would never present the executor with a 3xx, and so could not
+	// catch the reader treating one as success. The stub carries every term
+	// of the real producer except the loopback guard, which is what makes a
+	// test server addressable at all.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	e := &exec.Executor{Client: client, UserAgent: "iterion-test"}
 	return e, probe(srv.URL), srv.Close
 }
 
@@ -496,6 +508,71 @@ func TestALostAnswerIsAmbiguousUnlessTheKeyWasSENT(t *testing.T) {
 
 // TestPendingIsNotSuccess pins the 202 distinction: a workflow that reads
 // "accepted" as "done" acts on work that has not happened.
+// TestARedirectIsNotAnAnswer.
+//
+// iterion's client deliberately does not follow redirects: the guarded dialer
+// pins the host it resolved, and chasing a 3xx would hand the destination back
+// to the vendor. So a 3xx means the call never reached the resource — but the
+// reader only refused statuses ≥400, so a 302 came back OK with an empty body
+// and a workflow branched on an answer nobody gave.
+func TestARedirectIsNotAnAnswer(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "https://elsewhere.example/moved")
+		w.WriteHeader(http.StatusFound)
+	})
+	defer done()
+
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.OK() {
+		t.Fatal("a 302 the client will not follow is not a successful call")
+	}
+	// The diagnostic points at the likely cause, since a redirect on a
+	// connector call almost always means a stale base_url.
+	if !strings.Contains(res.Err.Error(), "base_url") {
+		t.Errorf("error = %v, want it to name the stale base_url as the likely cause", res.Err)
+	}
+}
+
+// TestAnUndeclaredAcceptedIsStillPending.
+//
+// A generator only sees what a vendor wrote down, and most do not document
+// their 202s. Keying "pending" on the DECLARATION therefore made the common
+// case — an undeclared 202 — read as completed work. 202 means accepted, not
+// done, whoever remembered to say so.
+func TestAnUndeclaredAcceptedIsStillPending(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job": "q-1"}`))
+	})
+	defer done()
+
+	// probe.issue.get declares only a 200 — the 202 is undeclared.
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.Pending {
+		t.Error("an undeclared 202 must still read as pending — the work has not happened")
+	}
+
+	// A package may still override it: a vendor that misuses 202 as plain
+	// success declares the case and says so.
+	op := opOf(t, pkg, "probe.issue.get")
+	op.Results = []spec.ResultCase{{Status: 200}, {Status: 202, Pending: false}}
+	res, err = e.Call(context.Background(), pkg, op, fullParams("probe.issue.get"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Pending {
+		t.Error("an explicit declaration must win over the default")
+	}
+}
+
 func TestPendingIsNotSuccess(t *testing.T) {
 	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(202)
@@ -595,7 +672,7 @@ func TestAMissingCollectionIsAnErrorNotAnEmptyWalk(t *testing.T) {
 		t.Error("a walk that could not find its collection must never report complete")
 	}
 	// The diagnostic has to name the fix, since the reader's next question is
-	// always \"where should it have looked?\".
+	// always "where should it have looked?".
 	if !strings.Contains(err.Error(), "items_field") {
 		t.Errorf("error must point at items_field, got: %v", err)
 	}
@@ -625,6 +702,124 @@ func TestAMissingCollectionIsAnErrorNotAnEmptyWalk(t *testing.T) {
 // above: an HONEST empty collection must keep ending the walk quietly. A guard
 // that turned every empty result into an error would be worse than the defect
 // it replaced.
+// TestACursorWalkEndsOnTheCURSOR, not on a short page.
+//
+// A cursor API is free to hand back a partial page together with a next
+// cursor — it pages by position, not by count, so "fewer rows than asked for"
+// carries no meaning. Applying the page/offset rule here stopped the walk
+// after one call while the vendor was still explicitly saying "there is more",
+// and reported the result COMPLETE.
+func TestACursorWalkEndsOnTheCURSOR(t *testing.T) {
+	pages := []string{
+		`{"items": [{"n": 1}], "next": "c2"}`, // SHORT, but more to come
+		`{"items": [{"n": 2}], "next": "c3"}`,
+		`{"items": [{"n": 3}], "next": ""}`, // the vendor says: that is all
+	}
+	var seen []string
+	call := 0
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Query().Get("after"))
+		if call < len(pages) {
+			_, _ = w.Write([]byte(pages[call]))
+		}
+		call++
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.list")
+	op.Params = append(op.Params, spec.Param{Key: "after", Name: "after", In: spec.InQuery, Type: "string"})
+	op.Pagination = &spec.Pagination{
+		Style: spec.PageCursor, CursorParam: "after", CursorField: "next",
+		ItemsField: "items", DefaultSize: 50, MaxPages: 5,
+	}
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if len(items) != 3 {
+		t.Errorf("items = %d, want 3 — a short page with a next cursor is not the end", len(items))
+	}
+	if !complete {
+		t.Error("the vendor handed back an empty cursor, which IS the end — the walk is complete")
+	}
+	if strings.Join(seen, ",") != ",c2,c3" {
+		t.Errorf("cursors sent = %v, want the first call bare then c2, c3", seen)
+	}
+}
+
+// TestAHandPickedPageIsNeverTheWholeCollection.
+//
+// Complete means "these items are the whole collection". One page an author
+// asked for by name is not: page 7 says nothing about pages 1-6, and a short
+// page 7 says nothing about page 8. Reporting it complete told a workflow it
+// had seen everything right after it deliberately looked at one slice.
+func TestAHandPickedPageIsNeverTheWholeCollection(t *testing.T) {
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		// SHORT (1 < the declared size of 2) — the shape that used to read as
+		// "the collection ended".
+		_, _ = w.Write([]byte(`[{"n": 1}]`))
+	})
+	defer done()
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, opOf(t, pkg, "probe.issue.list"),
+		map[string]any{"owner": "acme", "repo": "widgets", "page": 7}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("items = %d, want 1", len(items))
+	}
+	if complete {
+		t.Error("one hand-picked page is never the whole collection, however short it is")
+	}
+}
+
+// TestTheWalkMeasuresPagesAgainstTheSizeACTUALLYREQUESTED.
+//
+// A caller may set the page size themselves. Comparing their pages against the
+// package's DEFAULT then reads every page as short — ending the walk after one
+// call — or as full forever. The offset arithmetic has the same dependency:
+// stepping by the default while asking for another size skips rows or returns
+// them twice.
+func TestTheWalkMeasuresPagesAgainstTheSizeACTUALLYREQUESTED(t *testing.T) {
+	var offsets []string
+	call := 0
+	e, pkg, done := run(t, func(w http.ResponseWriter, r *http.Request) {
+		offsets = append(offsets, r.URL.Query().Get("page"))
+		call++
+		// The caller asked for 1 per page. Two full pages, then an empty one.
+		if call <= 2 {
+			_, _ = w.Write([]byte(`[{"n": 1}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.list")
+	off := *op.Pagination
+	off.Style = spec.PageOffset
+	op.Pagination = &off
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets", "limit": 1}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("items = %d, want 2 — a page of 1 is FULL when 1 is what was asked for", len(items))
+	}
+	if !complete {
+		t.Error("the empty third page ended the collection")
+	}
+	// Offsets step by the requested size (1), not the package default (2).
+	if strings.Join(offsets, ",") != "0,1,2" {
+		t.Errorf("offsets = %v, want 0,1,2 — stepping by the size actually requested", offsets)
+	}
+}
+
 func TestAnEmptyPageIsStillAnEndedWalk(t *testing.T) {
 	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[]`))

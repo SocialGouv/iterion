@@ -124,6 +124,25 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		nt.Script = subst(t.Script)
 		nt.Goal = subst(t.Goal)
 		nt.Postcondition = subst(t.Postcondition)
+		// The connector recipe's fields, substituted like every other one —
+		// a group whose whole purpose is to be instantiated per target has to
+		// be able to parameterise which operation it calls, over which
+		// connection, with which arguments.
+		nt.Action = subst(t.Action)
+		nt.Connection = subst(t.Connection)
+		// DEEP-copied, unlike the scalars above: `nt := *t` shares the Params
+		// slice with the group template, so substituting in place would write
+		// the FIRST instantiation's values into the template and every later
+		// `use` of the same group would inherit them. The Computes branch
+		// below copies for exactly this reason.
+		if len(t.Params) > 0 {
+			nt.Params = make([]ast.ActionParam, len(t.Params))
+			for i, p := range t.Params {
+				np := p
+				np.Value = subst(p.Value)
+				nt.Params[i] = np
+			}
+		}
 		c.file.Tools = append(c.file.Tools, &nt)
 	}
 	for _, cd := range g.Computes {

@@ -68,11 +68,15 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 				"tool %q: `timeout: %s` is not a duration (want e.g. 30s, 2m)", t.Name, t.Timeout)
 		}
 	}
-	if t.Retry != "" {
-		if _, err := time.ParseDuration(t.Retry); err != nil && !isPositiveInteger(t.Retry) {
-			c.errorfAt(DiagActionBadTimeout, t.Name, "",
-				"tool %q: `retry: %s` is neither an attempt count nor a duration", t.Name, t.Retry)
-		}
+	// An ATTEMPT COUNT, and only that. A duration once parsed here too, which
+	// gave `retry:` two readings with no way to tell which an author meant —
+	// `retry: 30s` could as easily be a total budget as a delay between
+	// attempts, and the delay is not iterion's to choose anyway: a vendor
+	// that wants one says so in `Retry-After`.
+	if t.Retry != "" && !isPositiveInteger(t.Retry) {
+		c.errorfAt(DiagActionBadTimeout, t.Name, "",
+			"tool %q: `retry: %s` must be a number of extra attempts (e.g. `retry: 3`); "+
+				"the delay between them comes from the vendor's Retry-After, not from the workflow", t.Name, t.Retry)
 	}
 
 	seen := make(map[string]bool, len(t.Params))

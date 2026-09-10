@@ -32,6 +32,20 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 		res.Err = e.httpError(pkg, op, resp, data, body)
 		return res
 	}
+	// A redirect is not a success, and iterion's client deliberately does not
+	// follow one: the guarded dialer pins the host it resolved, and chasing a
+	// 3xx would hand the destination back to the vendor — the SSRF hole the
+	// guard exists to close. So a 3xx means the call did NOT reach the
+	// resource. Reading it as success returned a run an empty body and a
+	// green light; a workflow branching on that acts on an answer nobody gave.
+	if resp.StatusCode >= 300 {
+		msg := fmt.Sprintf("the vendor answered %d, a redirect iterion does not follow", resp.StatusCode)
+		if loc := resp.Header.Get("Location"); loc != "" {
+			msg += "; the package's base_url or path is probably stale (Location: " + loc + ")"
+		}
+		res.Err = &Error{Class: spec.ErrUpstream, Status: resp.StatusCode, Message: msg}
+		return res
+	}
 	// A 2xx whose body does not decode is not a success: the workflow's next
 	// step would read fields off nothing.
 	if decodeErr != nil && len(bytes.TrimSpace(body)) > 0 {
@@ -64,6 +78,13 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 		}
 	}
 
+	// 202 is pending by DEFAULT, not only when a package remembered to say so.
+	// "Accepted" means the work has not happened yet, whoever documented it;
+	// a package that omits the case (most do — generators only see what the
+	// vendor wrote down) would otherwise hand a workflow a completed-looking
+	// result for work still queued. A declaration can still override it, which
+	// is what a vendor misusing 202 as plain success needs.
+	res.Pending = resp.StatusCode == http.StatusAccepted
 	for _, c := range op.Results {
 		if c.Status == resp.StatusCode {
 			res.Pending = c.Pending
