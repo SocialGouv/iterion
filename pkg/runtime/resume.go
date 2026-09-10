@@ -133,7 +133,6 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
 	}
-	checkpointArtifacts = nil
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
