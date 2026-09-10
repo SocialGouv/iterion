@@ -459,6 +459,18 @@ func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
 			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
 		}
+		// And the metered slot goes back. This refusal lands AFTER the gate's
+		// metering step, so without the rollback a CI loop against a
+		// repository at its quota would eat the ORG's monthly run quota on
+		// launches that never happened — a repo-scoped ceiling escalating
+		// into a tenant-wide one.
+		u, err := s.orgUsage.Usage(context.Background(), "t1", time.Now().UTC())
+		if err != nil {
+			t.Fatalf("usage: %v", err)
+		}
+		if u.Runs != 0 {
+			t.Errorf("monthly runs = %d after a repo-quota denial, want 0 — no run was created", u.Runs)
+		}
 	})
 
 	t.Run("another repository is untouched by it", func(t *testing.T) {

@@ -320,7 +320,8 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// connection read and a forge probe, and neither may run in front of the
 	// suspend check. The repo half of the admission is re-run below, on the
 	// line that resolves `repoProjectPath`.
-	if _, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)}); d != nil {
+	admission, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)})
+	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		span.SetStatus(codes.Error, "launch denied")
 		return
@@ -441,10 +442,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// not be able to drive.
 		//
 		// Only the repo half is re-run: gateLaunch's monthly arm METERS, and
-		// this launch already charged its run slot up there. Nothing has been
-		// created yet, so a denial here costs exactly what the repo-host
-		// refusal just above already costs — one metered slot on a launch that
-		// did not happen.
+		// this launch already charged its run slot up there — so the denial
+		// hands it back, the same `rollback` every other surface calls when it
+		// abandons an admitted launch without creating a run. Without that, a
+		// CI loop against a repository sitting at its quota would spend the
+		// ORG's monthly run quota on launches that never happened, turning a
+		// repo-scoped refusal into a tenant-wide one. (The refusals just above
+		// pre-date this and still consume their slot; they are a malformed
+		// request, not a loop with a reason to retry.)
 		//
 		// Without it the quota bound every automated lane and the resume of a
 		// run, but not the surface an operator or a CI loop drives directly:
@@ -454,6 +459,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// round trip nor a minted credential.
 		if d := s.gateRepoQuota(r.Context(), s.budgetFloorPolicy(r.Context()),
 			launchSubject{Repo: repoProjectPath}, time.Now().UTC()); d != nil {
+			admission.rollback(s.logger)
 			s.writeLaunchDenial(w, r, d)
 			span.SetStatus(codes.Error, "launch denied")
 			return
