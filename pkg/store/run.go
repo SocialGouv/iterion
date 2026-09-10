@@ -217,6 +217,33 @@ const (
 	BotSourceTierBaked = "baked"
 )
 
+// The credential-resolution tiers a run can be FUNDED by, persisted on
+// Run.CredentialTiers. Same rule as the bot tiers above: the vocabulary
+// lives beside the field, so the publisher that computes it and the log
+// line an operator already greps cannot drift apart.
+//
+// These are the publisher's own five tiers, not credusage.Tier's four —
+// that package merges a tenant's key and its subscription into "team",
+// because it meters money and the two spend the same tenant's budget.
+// Here they stay apart, because the question is who to TALK to when a run
+// is refused, and a dead API key and a shut forfait window are two
+// different conversations.
+const (
+	// CredentialTierBYOK — an API key the run's own tenant stored.
+	CredentialTierBYOK = "byok"
+	// CredentialTierOAuthForfait — a subscription the run's own tenant or
+	// its user connected.
+	CredentialTierOAuthForfait = "oauth-forfait"
+	// CredentialTierOrg — the parent org's shared credential, lent to the
+	// teams its CredentialAudience admits.
+	CredentialTierOrg = "org"
+	// CredentialTierPool — a contributor's credential lent through the
+	// mutualised pool: the spend is the DONOR's.
+	CredentialTierPool = "pool"
+	// CredentialTierPlatform — the deployment's own DB-backed fallback.
+	CredentialTierPlatform = "platform"
+)
+
 // Run is the top-level metadata for a single workflow invocation.
 //
 // bson tags mirror the json tags exactly (same snake_case names) so a
@@ -508,6 +535,8 @@ type RunCredStamp struct {
 	// Fingerprints replaces Run.CredFingerprints wholesale; nil or empty
 	// clears it (a re-resolution that sealed nothing holds no slot).
 	Fingerprints []string
+	// Tiers replaces Run.CredentialTiers wholesale, on the same terms.
+	Tiers []string
 	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
 	SkippedReopensAt *time.Time
 }
@@ -542,6 +571,20 @@ type Run struct {
 	// concurrency meter (secrets.ApiKey.MaxConcurrentRuns) counts alive
 	// runs through this field.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty" bson:"cred_fingerprints,omitempty"`
+	// CredentialTiers names which resolution tiers funded this run
+	// (CredentialTier* above), sorted and deduplicated. Stamped with
+	// CredFingerprints, as one unit, at launch and at every resume —
+	// a resume can be funded by a different tier than the launch, and a
+	// field recording only the first answer would be worse than none.
+	//
+	// PLURAL because a run is: one attempt can spend a team forfait on its
+	// implementer and the platform's codex key on its plan review, and a
+	// single "the tier" would have to pick one and be wrong about the
+	// other. It carries no slot names — CredFingerprints does not either,
+	// and the pair answers the operator's question ("who funded this, who
+	// do I talk to") without becoming a second copy of the publisher's
+	// GRANTED log line.
+	CredentialTiers []string `json:"credential_tiers,omitempty" bson:"credential_tiers,omitempty"`
 	// SkippedCredReopensAt is the earliest instant a credential the
 	// resolution PASSED OVER reopens — a refused window's reset, a reached
 	// cap's reset — or nil when nothing usable was skipped. Stamped with

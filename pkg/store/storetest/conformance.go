@@ -2826,6 +2826,46 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
 	}
 
+	// Which TIERS funded the run ride the same stamp, and are replaced
+	// wholesale by it (#991). A resume can be funded by a different tier
+	// than the launch — the platform key withdrawn, a pool pledge taking
+	// over — so a stamp that appended, or that left the launch's answer in
+	// place, would report a payer that no longer pays.
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{
+		Fingerprints: []string{"fp-zai"},
+		Tiers:        []string{store.CredentialTierOAuthForfait, store.CredentialTierPlatform},
+	}); err != nil {
+		t.Fatalf("stamp with tiers: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if len(got.CredentialTiers) != 2 ||
+		got.CredentialTiers[0] != store.CredentialTierOAuthForfait ||
+		got.CredentialTiers[1] != store.CredentialTierPlatform {
+		t.Fatalf("CredentialTiers = %v, want [oauth-forfait platform] — a run funded by two tiers reports both",
+			got.CredentialTiers)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{
+		Fingerprints: []string{"fp-zai"},
+		Tiers:        []string{store.CredentialTierPool},
+	}); err != nil {
+		t.Fatalf("re-stamp with a different tier: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil {
+		t.Fatalf("LoadRun fp_run1: %v", err)
+	}
+	if len(got.CredentialTiers) != 1 || got.CredentialTiers[0] != store.CredentialTierPool {
+		t.Fatalf("CredentialTiers after re-stamp = %v, want [pool] alone — the previous resolution's tiers must not survive it",
+			got.CredentialTiers)
+	}
+	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+		t.Fatalf("re-stamp with no tier: %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || len(got.CredentialTiers) != 0 {
+		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v (%v)", got.CredentialTiers, err)
+	}
+
 	// The model-idle marker: a running run executing no model-calling node
 	// holds its key's slot for nobody. Only fp_run1 (running) carries
 	// fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).

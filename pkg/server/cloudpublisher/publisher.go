@@ -762,21 +762,32 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the facade was refused the only credential its model could use.
 	// Unpinned or unresolvable routes keep everything (fail open toward
 	// protection: that run takes whatever the process holds).
+	// The tiers ride the SAME walk, deliberately: a tier collected outside
+	// this filter would name a credential the run holds but cannot spend,
+	// which is the misattribution the filter exists to prevent. Deduplicated
+	// because a tier is a fact about the run, not a per-slot count.
 	spend := spendableProviders(wf, modelOverrides, runFallbacks)
 	seen := map[string]bool{}
+	tiers := map[string]bool{}
 	for prov, fp := range apiKeyFPs {
 		if fp != "" && !seen[fp] && spend.allows(strings.ToLower(string(prov))) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
+			tiers[credentialTierForSlot(bundle, res.grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)] = true
 		}
 	}
 	for kind, fp := range bundle.OAuthFingerprints {
 		if fp != "" && !seen[fp] && spend.allows(providerOfOAuthKind(kind)) {
 			seen[fp] = true
 			res.fingerprints = append(res.fingerprints, fp)
+			tiers[credentialTierForSlot(bundle, res.grant, kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)] = true
 		}
 	}
 	sort.Strings(res.fingerprints)
+	for tier := range tiers {
+		res.tiers = append(res.tiers, tier)
+	}
+	sort.Strings(res.tiers)
 
 	// The moment "no LLM credential" becomes definitive: every tier
 	// abstained, and the runner will either spend its pod's ambient env or
@@ -860,6 +871,12 @@ type credResolution struct {
 	// The caller stamps them on the run document so the per-key
 	// concurrency meter can count alive runs by credential.
 	fingerprints []string
+	// tiers names which resolution tiers funded the credentials above
+	// (store.CredentialTier*), sorted and deduplicated. Plural because one
+	// run is: a team forfait can serve the implementer while the platform's
+	// codex key serves the plan review, and naming one of them "the tier"
+	// would be wrong about the other.
+	tiers []string
 	// skippedReopensAt is when the earliest credential the walk passed
 	// over (refused window, reached cap) reopens; zero when none was.
 	// Stamped on the run document next to the fingerprints, so a run that
@@ -870,12 +887,25 @@ type credResolution struct {
 
 // stamp is the run-document form of the resolution.
 func (c credResolution) stamp() store.RunCredStamp {
-	s := store.RunCredStamp{Fingerprints: c.fingerprints}
+	s := store.RunCredStamp{Fingerprints: c.fingerprints, Tiers: c.tiers}
 	if !c.skippedReopensAt.IsZero() {
 		at := c.skippedReopensAt.UTC()
 		s.SkippedReopensAt = &at
 	}
 	return s
+}
+
+// applyTo writes the resolution onto an IN-MEMORY run document — the launch
+// path's counterpart to RunStore.SetRunCredStamp, which the resume path
+// takes. Both go through stamp(), so a fact added to the resolution cannot
+// reach one path and silently miss the other; that unit is the whole promise
+// of RunCredStamp, and assigning the fields one by one here is what would
+// break it.
+func (c credResolution) applyTo(r *store.Run) {
+	s := c.stamp()
+	r.CredFingerprints = s.Fingerprints
+	r.CredentialTiers = s.Tiers
+	r.SkippedCredReopensAt = s.SkippedReopensAt
 }
 
 // spendable answers "may a run with these routes spend a credential of
@@ -1698,15 +1728,7 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 		if _, ok := bundle.APIKeys[prov]; !ok {
 			continue
 		}
-		tier := "byok"
-		switch {
-		case grant != nil && grant.Source == credpool.SourceAPIKey && grant.Ref == string(prov):
-			tier = "pool"
-		case bundle.PlatformSourced[string(prov)]:
-			tier = "platform"
-		case bundle.OrgSourced[string(prov)]:
-			tier = "org"
-		}
+		tier := credentialTierForSlot(bundle, grant, string(prov), credpool.SourceAPIKey, store.CredentialTierBYOK)
 		fp := apiKeyFPs[prov]
 		if fp == "" {
 			fp = "<unstamped>"
@@ -1721,15 +1743,7 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 		if _, ok := bundle.OAuthCredentials[kind]; !ok {
 			continue
 		}
-		tier := "oauth-forfait"
-		switch {
-		case grant != nil && grant.Ref == kind && grant.Source == credpool.SourceOAuth:
-			tier = "pool"
-		case bundle.PlatformSourced[kind]:
-			tier = "platform"
-		case bundle.OrgSourced[kind]:
-			tier = "org"
-		}
+		tier := credentialTierForSlot(bundle, grant, kind, credpool.SourceOAuth, store.CredentialTierOAuthForfait)
 		fp := bundle.OAuthFingerprints[kind]
 		if fp == "" {
 			fp = "<unstamped>"
@@ -1740,6 +1754,30 @@ func logGrantedCredentials(logger *iterlog.Logger, runID string, bundle secrets.
 		return
 	}
 	logger.Info("cloudpublisher: credentials GRANTED for run=%s — %s", runID, strings.Join(parts, ", "))
+}
+
+// credentialTierForSlot names which resolution tier filled one slot, in the
+// publisher's own five-tier vocabulary (store.CredentialTier*).
+//
+// ONE function for the GRANTED log line and for the run document's
+// CredentialTiers stamp. They answer the same question — the line is what an
+// operator greps while the logs live, the stamp is what still answers once
+// they have rotated — and two copies of this switch would disagree about the
+// same run the day a sixth tier lands.
+//
+// own is the tier a slot falls to when no shared tier claimed it: the
+// tenant's own key (byok) or the subscription it connected itself
+// (oauth-forfait).
+func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot string, poolSource credpool.CredentialSource, own string) string {
+	switch {
+	case grant != nil && grant.Source == poolSource && grant.Ref == slot:
+		return store.CredentialTierPool
+	case bundle.PlatformSourced[slot]:
+		return store.CredentialTierPlatform
+	case bundle.OrgSourced[slot]:
+		return store.CredentialTierOrg
+	}
+	return own
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
@@ -1878,8 +1916,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// exist yet (the launch's one persist comes later), and a patch here
 	// would be a warn-and-lose no-op that leaves the ceiling blind to
 	// every launched run.
-	r.CredFingerprints = creds.fingerprints
-	r.SkippedCredReopensAt = creds.stamp().SkippedReopensAt
+	creds.applyTo(r)
 
 	// A run served by the pool may not spend more than what remains of its
 	// donor's allowance. This is the enforcement: the engine stops the run

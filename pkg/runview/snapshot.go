@@ -102,6 +102,20 @@ type RunHeader struct {
 	// an operator can audit a key's occupancy from the run list instead of
 	// the server logs. Empty for local runs and runs that sealed nothing.
 	CredFingerprints []string `json:"cred_fingerprints,omitempty"`
+	// CredentialTiers names which resolution tiers FUNDED the run
+	// (store.CredentialTier*: byok, oauth-forfait, org, pool, platform),
+	// stamped with the fingerprints above and re-stamped at every resume.
+	// It answers "who paid for this run", which until now lived only in a
+	// publisher INFO line and stopped being answerable once the logs
+	// rotated — and it decides who to talk to when a run is refused: a
+	// donor whose window shut, an org whose budget is spent, or the
+	// deployment's own fallback.
+	//
+	// Plural: one attempt can spend two tiers, and the pair (tiers,
+	// fingerprints) is deliberately not a per-slot map — the publisher's
+	// GRANTED log line stays the place where slot, tier and fingerprint are
+	// read together.
+	CredentialTiers []string `json:"credential_tiers,omitempty"`
 	// LLMIdleSince is set while the run executes no model-calling node —
 	// it then holds none of its credentials' concurrency slots.
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty"`
@@ -1520,6 +1534,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Inputs:               r.Inputs,
 		PermissionMode:       r.PermissionMode,
 		CredFingerprints:     r.CredFingerprints,
+		CredentialTiers:      r.CredentialTiers,
 		LLMIdleSince:         r.LLMIdleSince,
 		SkippedCredReopensAt: r.SkippedCredReopensAt,
 		ModelOverrides:       r.ModelOverrides,
