@@ -34,15 +34,33 @@ import (
 // floor rather than fail a finished run. Detached context (5s) for the same
 // reason recordOrgSpend detaches — a cancelled run still spent.
 func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessage, usage *metricsEmitter, at time.Time) {
-	if r.cfg.CredUsage == nil || usage == nil {
-		return
-	}
-	creds, ok := secrets.CredentialsFromContext(ctx)
-	if !ok {
+	if usage == nil {
 		return
 	}
 	routes := usage.RouteTotals()
 	if len(routes) == 0 {
+		// A run that consumed nothing. Ordinary, and the only decline here
+		// that is not worth a line.
+		return
+	}
+	// Past this point the attempt DID spend, so every decline below drops a
+	// real observation — and says which one. Silence here is what let a
+	// production counter sit frozen on EVERY field, runs and cost included,
+	// while runs kept completing: nothing in the counter and nothing in the
+	// log, so the meter read as "no spend" rather than "not recorded" (#1087).
+	if r.cfg.CredUsage == nil {
+		if r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s spent on %d route(s) but this runner has no per-credential counter wired — nothing metered per credential",
+				msg.RunID, len(routes))
+		}
+		return
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		if r.cfg.Logger != nil {
+			r.cfg.Logger.Warn("runner: run %s spent on %d route(s) but its context carries no credentials — nothing metered per credential",
+				msg.RunID, len(routes))
+		}
 		return
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -56,7 +74,7 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 			// a debug line is silent on a production runner. Once per route.
 			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
 				r.cfg.Logger.Warn("runner: run %s spent %d tokens ($%.4f) on %s/%s with no credential iterion can name (wire %q) — not metered per credential",
-					msg.RunID, totals.inputTokens+totals.outputTokens, totals.costUSD,
+					msg.RunID, totals.tokens(), totals.costUSD,
 					route.backend, route.model, wireForRoute(route.backend, route.model))
 			}
 			continue
@@ -66,6 +84,15 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 			// A slot with no fingerprint names a SLOT, not an account:
 			// counting it would merge every unstamped credential of that
 			// provider into one bucket.
+			//
+			// Declined like its sibling above, and said out loud for the same
+			// reason: the drop leaves NOTHING in the counter, so silence here
+			// is indistinguishable from a run that spent nothing.
+			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
+				r.cfg.Logger.Warn("runner: run %s spent %d tokens ($%.4f) on %s/%s but its %s credential carries no fingerprint — not metered per credential",
+					msg.RunID, totals.tokens(), totals.costUSD,
+					route.backend, route.model, slot)
+			}
 			continue
 		}
 		spend := credusage.Spend{
