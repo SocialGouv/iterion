@@ -132,6 +132,8 @@ var Catalog = map[DiagCode]DiagInfo{
 
 	DiagEmptyGroupUse: {"Use of an empty group", "Give the group at least one node, or drop the `use`; an empty group is a declaration the studio has not filled in yet — or a body that landed at the wrong indentation after a blank line."},
 
+	DiagInvalidWorktree: {"Invalid worktree value", "Use `auto` (a fresh git worktree per run, finalised into a branch) or `none` (run in place), or drop the field for `auto`. Any other word ran in place, in the operator's own checkout, without a word."},
+
 	// Verified actions (ADR-044).
 	DiagInvalidPolicy:        {"Invalid policy", "Use `required`, `recover` or `best_effort`."},
 	DiagRecoveryNoPostcond:   {"Recovery without postcondition", "Add a `postcondition:` (the deterministic oracle) or drop the recovery."},

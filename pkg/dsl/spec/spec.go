@@ -477,7 +477,7 @@ var Kinds = []Kind{
 		}},
 	{Name: "sandbox", Role: BlockRole, Opener: "sandbox", Hosts: []string{"workflow", "agent", "judge", "tool"}, Doc: "Per-run container isolation (docs/sandbox.md): the short form names a mode, the block form is inline and needs image: or build: (C044).",
 		Properties: []Property{
-			enum("mode", "none, auto (devcontainer.json or the published slim image) or inline", "none", "auto", "inline"),
+			checked("mode", "none, auto (devcontainer.json or the published slim image) or inline (C044 on another word)", "none", "auto", "inline"),
 			prop("image", String, "Container image (exclusive with build)"),
 			block("build", "sandbox.build", "Dockerfile build, local docker only (V2-6)"),
 			prop("user", String, "Container user"),
@@ -496,7 +496,7 @@ var Kinds = []Kind{
 		}},
 	{Name: "sandbox.network", Role: BlockRole, Opener: "network", Hosts: []string{"sandbox"}, Doc: "Network egress of the sandbox, enforced by a CONNECT proxy on the host.",
 		Properties: []Property{
-			enum("mode", "open (no proxy), allowlist or denylist", "open", "allowlist", "denylist"),
+			checked("mode", "open (no proxy), allowlist or denylist (C044 on another word)", "open", "allowlist", "denylist"),
 			prop("preset", StringOrIdent, "Rule preset, e.g. \"iterion-default\""),
 			checked("inherit", "How a node's rules compose with the workflow's: omit to merge (the default), or replace / append (C044 on another word)", "replace", "append"),
 			prop("rules", MixedList, "Hosts and globs; a leading ! negates"),

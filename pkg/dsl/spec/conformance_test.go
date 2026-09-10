@@ -235,6 +235,14 @@ func TestEveryListedPropertyParsesCleanWithItsForm(t *testing.T) {
 					t.Errorf("%s.%s (%s): %q drew %v", kind, p.Name, p.Form, doc, res.Diagnostics)
 				}
 			}
+			// An enum's values are the PARSER's: a word outside the list
+			// must be refused here, or the list is decoration.
+			if p.Form == spec.Enum {
+				doc := fmt.Sprintf(line, p.Name+": zz_bogus")
+				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
+					t.Errorf("%s.%s (enum): a value outside %v is accepted", kind, p.Name, p.Values)
+				}
+			}
 		}
 	}
 	if n < 300 {

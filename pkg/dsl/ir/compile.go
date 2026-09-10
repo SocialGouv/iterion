@@ -621,7 +621,7 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
-		Worktree:            defaultWorktreeMode(wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
@@ -792,12 +792,27 @@ func defaultWorktreeMode(raw string) string {
 	case "":
 		return "auto"
 	default:
-		// Unknown values flow through untouched. Validation already
-		// rejects them at the AST surface (the parser only accepts
-		// idents and the doctor flags strangers); preserving the raw
-		// value here keeps any future strict diagnostic actionable.
+		// Unknown values flow through (canonicalised) so the IR carries
+		// what worktreeMode refused, never a silent default.
 		return v
 	}
+}
+
+// worktreeMode canonicalises a workflow's `worktree:` and refuses a value
+// that is neither auto nor none (C142), naming what was WRITTEN. The
+// runtime compares the canonical value to `auto` and nothing else, so a
+// mistyped auto ran the workflow in place, in the operator's own checkout,
+// with every commit landing there, without a word.
+func (c *compiler) worktreeMode(workflow, raw string) string {
+	mode := defaultWorktreeMode(raw)
+	switch mode {
+	case "auto", "none":
+	default:
+		c.errorf(DiagInvalidWorktree,
+			"workflow %q has invalid worktree %q; valid values are auto, none",
+			workflow, raw)
+	}
+	return mode
 }
 
 // canAutoResolveBackend reports whether the detect package can pick a

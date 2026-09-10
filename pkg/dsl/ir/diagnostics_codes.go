@@ -102,6 +102,8 @@ const (
 
 	DiagEmptyGroupUse DiagCode = "C141" // a `use` instantiates a group that declares no node (warning)
 
+	DiagInvalidWorktree DiagCode = "C142" // worktree: value not one of auto|none (error)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an

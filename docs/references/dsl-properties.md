@@ -569,7 +569,7 @@ A block opened by `sandbox:` inside `workflow`, `agent`, `judge`, `tool`.
 
 | Property | Value | Meaning |
 |---|---|---|
-| `mode` | one of `none`, `auto`, `inline` | none, auto (devcontainer.json or the published slim image) or inline |
+| `mode` | ident — `none`, `auto`, `inline` | none, auto (devcontainer.json or the published slim image) or inline (C044 on another word) |
 | `image` | string | Container image (exclusive with build) |
 | `build` | block → [sandbox.build](#sandboxbuild) | Dockerfile build, local docker only (V2-6) |
 | `user` | string | Container user |
@@ -600,7 +600,7 @@ A block opened by `network:` inside `sandbox`.
 
 | Property | Value | Meaning |
 |---|---|---|
-| `mode` | one of `open`, `allowlist`, `denylist` | open (no proxy), allowlist or denylist |
+| `mode` | ident — `open`, `allowlist`, `denylist` | open (no proxy), allowlist or denylist (C044 on another word) |
 | `preset` | string\|ident | Rule preset, e.g. "iterion-default" |
 | `inherit` | ident — `replace`, `append` | How a node's rules compose with the workflow's: omit to merge (the default), or replace / append (C044 on another word) |
 | `rules` | string\|ident list | Hosts and globs; a leading ! negates |

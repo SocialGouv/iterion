@@ -19,6 +19,12 @@ func TestOpenAbsolutisesARelativeCacheRoot(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer cleanup()
+	// A temp dir may be reached through a symlink (darwin's /var → /private/var):
+	// compare the resolved paths, on both sides.
+	want, err := filepath.EvalSymlinks(filepath.Join(cwd, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for what, dir := range map[string]string{"Dir": b.Dir, "PromptsDir": b.PromptsDir, "IterPath": b.IterPath} {
 		if dir == "" {
 			t.Fatalf("%s is empty", what)
@@ -26,8 +32,12 @@ func TestOpenAbsolutisesARelativeCacheRoot(t *testing.T) {
 		if !filepath.IsAbs(dir) {
 			t.Errorf("%s = %q is not absolute", what, dir)
 		}
-		if !strings.HasPrefix(dir, filepath.Join(cwd, "cache")) {
-			t.Errorf("%s = %q is not under the cache root %q", what, dir, filepath.Join(cwd, "cache"))
+		got, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if got != want && !strings.HasPrefix(got, want+string(filepath.Separator)) {
+			t.Errorf("%s = %q is not under the cache root %q", what, got, want)
 		}
 	}
 }
