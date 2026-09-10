@@ -118,9 +118,15 @@ func (s *Server) handleAdminGetBudgetFloor(w http.ResponseWriter, r *http.Reques
 // handleAdminPutBudgetFloor REPLACES the policy, unlike its merge-semantics
 // siblings. A reservation set is read as a whole — "these workloads hold
 // these bands" — and merging per key would make removing one reservation
-// impossible without a null-for-every-field dance. The read-modify-write is
-// the operator's, and the CAS token on the record is what stops two admins
-// from silently dropping each other's edits.
+// impossible without a null-for-every-field dance.
+//
+// Which is exactly why the write is CONDITIONAL. The read-modify-write is the
+// CLIENT's here (the CLI does GET → edit one entry → PUT), so the document it
+// sends carries every OTHER reservation as the client last read them: a blind
+// ReplaceOne would silently delete whatever a second admin wrote in between.
+// The record's `updated_at` travels back as the compare token, and a lost race
+// is a loud 409 the CLI answers by re-reading and re-applying its own edit.
+// The first write of a deployment carries no token and needs none.
 func (s *Server) handleAdminPutBudgetFloor(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
@@ -130,7 +136,9 @@ func (s *Server) handleAdminPutBudgetFloor(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	// The client does not get to stamp the CAS token.
+	// The client supplies the token it READ, never the one to store: the
+	// store stamps that itself on the way in.
+	prev := pol.UpdatedAt
 	pol.UpdatedAt = time.Time{}
 	// Validated BEFORE it is stored: a policy whose reservations sum past the
 	// window, or whose repository takes a share of something unshareable, is
@@ -140,13 +148,28 @@ func (s *Server) handleAdminPutBudgetFloor(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
-	if err := s.budgetFloorStore.Put(r.Context(), pol); err != nil {
+	if cas, ok := s.budgetFloorStore.(platformcfg.CASStore[budgetfloor.Policy]); ok {
+		wrote, err := cas.PutIfUnchanged(r.Context(), pol, prev)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if !wrote {
+			s.httpErrorFor(w, r, http.StatusConflict,
+				"the budget floor changed since it was read — re-read it and re-apply the edit (`iterion remote admin budget-floor` retries this by itself)")
+			return
+		}
+	} else if err := s.budgetFloorStore.Put(r.Context(), pol); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	// Reach this replica's own gates now instead of at the TTL — the same
 	// courtesy the other families extend.
 	s.budgetFloor.Invalidate()
+	s.auditPlatform(r, "", "platform.settings.budget_floor.updated", "platform_settings", platformcfg.FamilyBudgetFloor, map[string]any{
+		"reserved_bots": pol.Bots(),
+		"repo_quotas":   len(pol.RepoQuotas),
+	})
 	s.handleAdminGetBudgetFloor(w, r)
 }
 

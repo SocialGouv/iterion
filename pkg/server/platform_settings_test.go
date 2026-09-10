@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -268,5 +270,79 @@ func TestAdminBotVars_ConcurrentPutIsA409NotALostKey(t *testing.T) {
 	after, _ := st.Get(context.Background())
 	if after.Vars["ITERION_B_VAR"] != "2" {
 		t.Fatalf("the concurrent writer's key was lost: %+v", after.Vars)
+	}
+}
+
+// The budget floor is the one family whose read-modify-write belongs to the
+// CLIENT (the CLI reads the whole policy, edits one entry, PUTs it back), so
+// the document a second admin sends carries every OTHER reservation as they
+// last read it. An unconditional ReplaceOne there does not merge — it DELETES
+// the reservation the first admin just wrote, silently, and a capacity
+// reservation vanishing unnoticed is the failure the whole family exists to
+// prevent.
+func TestAdminBudgetFloor_ConcurrentPutIsA409NotALostReservation(t *testing.T) {
+	st := platformcfg.NewMemoryStore[budgetfloor.Policy]()
+	auditStore := audit.NewMemoryStore()
+	s := New(Config{SkipProjectRegistration: true, BudgetFloorSettings: st, Audit: auditStore},
+		iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/budget-floor", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutBudgetFloor(w, r)
+		return w
+	}
+	// The first write of a deployment carries no token and needs none.
+	if w := put(`{"reservations":[{"bot_id":"review-pr","reserve":{"five_hour_percent":20}}]}`); w.Code != http.StatusOK {
+		t.Fatalf("seed = %d: %s", w.Code, w.Body.String())
+	}
+	rec, _ := st.Get(context.Background())
+	tokenBothAdminsRead := rec.UpdatedAt.UTC().Format(time.RFC3339Nano)
+
+	// Admin B lands first, adding a reservation of their own.
+	if w := put(`{"updated_at":"` + tokenBothAdminsRead + `","reservations":[` +
+		`{"bot_id":"review-pr","reserve":{"five_hour_percent":20}},` +
+		`{"bot_id":"feature-dev","reserve":{"five_hour_percent":10}}]}`); w.Code != http.StatusOK {
+		t.Fatalf("admin B = %d: %s", w.Code, w.Body.String())
+	}
+	// Admin A now writes the document they read BEFORE B — which no longer
+	// mentions feature-dev at all.
+	w := put(`{"updated_at":"` + tokenBothAdminsRead + `","reservations":[` +
+		`{"bot_id":"review-pr","reserve":{"five_hour_percent":30}}]}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale write = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	after, _ := st.Get(context.Background())
+	if _, ok := after.Reserved("feature-dev"); !ok {
+		t.Fatalf("the concurrent admin's reservation was dropped: %+v", after.Reservations)
+	}
+
+	// And the write is audited like every other platform-settings mutation:
+	// a super-admin redistributing capacity across the deployment must leave
+	// a record of who reserved what.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := auditStore.ListPlatform(context.Background(), audit.Page{Limit: 10})
+		if err != nil {
+			t.Fatalf("audit list: %v", err)
+		}
+		if len(events) > 0 {
+			e := events[0]
+			if e.Action != "platform.settings.budget_floor.updated" {
+				t.Fatalf("action = %q", e.Action)
+			}
+			if e.ActorID != "root" || e.ActorKind != "super_admin" {
+				t.Fatalf("actor = %q/%q", e.ActorID, e.ActorKind)
+			}
+			if e.TargetID != platformcfg.FamilyBudgetFloor {
+				t.Fatalf("target id = %q, want the family", e.TargetID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no audit row for a super-admin capacity write")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

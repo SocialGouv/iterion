@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
@@ -34,7 +36,8 @@ const budgetFloorPath = "/api/admin/settings/budget-floor"
 // edit ONE entry without the operator restating the rest. The PUT replaces
 // the document, so the read-modify-write has to happen somewhere; doing it
 // here keeps the API honest (a reservation set is read as a whole) and the
-// CLI ergonomic.
+// CLI ergonomic. The record's `updated_at` rides along as the CAS token the
+// PUT is conditional on — decoded and re-sent, never rewritten here.
 func fetchFloorPolicy(cmd *cobra.Command, c *cli.RemoteClient) (budgetfloor.Policy, error) {
 	raw, err := c.Call(cmd.Context(), "GET", budgetFloorPath, nil, nil)
 	if err != nil {
@@ -62,6 +65,34 @@ func putFloorPolicy(cmd *cobra.Command, c *cli.RemoteClient, p *cli.Printer, pol
 		return err
 	}
 	return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", budgetFloorPath, body)
+}
+
+// editFloorPolicy applies ONE edit to the current policy and writes it back
+// under the CAS token the read carried.
+//
+// A 409 means another admin wrote between this read and this write, so the
+// document in hand no longer knows about their reservation — writing it would
+// delete theirs. Re-read and re-apply the SAME edit instead: it is expressed
+// as an upsert of one entry, so replaying it onto the fresh document keeps
+// both. Exactly once, then the operator hears about it: a retry loop that
+// never gives up would hide a genuinely contended policy.
+func editFloorPolicy(cmd *cobra.Command, c *cli.RemoteClient, p *cli.Printer, apply func(budgetfloor.Policy) (budgetfloor.Policy, error)) error {
+	for attempt := 0; ; attempt++ {
+		pol, err := fetchFloorPolicy(cmd, c)
+		if err != nil {
+			return err
+		}
+		next, err := apply(pol)
+		if err != nil {
+			return err
+		}
+		err = putFloorPolicy(cmd, c, p, next)
+		var apiErr *cli.APIError
+		if attempt == 0 && errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+			continue
+		}
+		return err
+	}
 }
 
 var remoteAdminBudgetFloorCmd = &cobra.Command{
@@ -96,55 +127,60 @@ creates a cap that was not configured.`,
 		if len(args) == 0 {
 			return cli.RemoteGetPrint(cmd.Context(), c, p, budgetFloorPath)
 		}
-		pol, err := fetchFloorPolicy(cmd, c)
-		if err != nil {
-			return err
-		}
-		switch args[0] {
-		case "reserve":
-			bot := strings.TrimSpace(remoteFloorBot)
-			if bot == "" {
-				return fmt.Errorf("--bot is required (the workload the reservation protects)")
-			}
-			res := budgetfloor.Reservation{BotID: bot, Note: strings.TrimSpace(remoteFloorNote), Reserve: budgetfloor.Reserve{
-				FiveHourPercent: remoteFloorFiveHour,
-				WeekPercent:     remoteFloorWeek,
-				MonthlyUSD:      remoteFloorUSD,
-				ConcurrentRuns:  remoteFloorSlots,
-			}}
-			if res.Reserve.Empty() {
-				return fmt.Errorf("reserve nothing? name at least one axis: --five-hour, --week, --monthly-usd or --concurrent-runs (use `rm --bot %s` to remove the reservation)", bot)
-			}
-			pol.Reservations = upsertReservation(pol.Reservations, res)
-		case "quota":
-			repo := strings.TrimSpace(remoteFloorRepo)
-			if repo == "" {
-				return fmt.Errorf("--repo is required (the forge slug, e.g. owner/repo)")
-			}
-			q := budgetfloor.RepoQuota{
-				Repo: repo, MonthlyUSD: remoteFloorUSD, RunsPerMonth: remoteFloorRepoRuns,
-				ReserveSharePercent: remoteFloorRepoShare, ShareOfBot: strings.TrimSpace(remoteFloorShareOfBot),
-			}
-			if q.Empty() {
-				return fmt.Errorf("cap nothing? name at least one of --monthly-usd, --runs-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
-			}
-			pol.RepoQuotas = upsertRepoQuota(pol.RepoQuotas, q)
-		case "rm":
-			bot, repo := strings.TrimSpace(remoteFloorBot), strings.TrimSpace(remoteFloorRepo)
-			if bot == "" && repo == "" {
-				return fmt.Errorf("name what to remove: --bot <id> or --repo <slug>")
-			}
-			if bot != "" {
-				pol.Reservations = dropReservation(pol.Reservations, bot)
-			}
-			if repo != "" {
-				pol.RepoQuotas = dropRepoQuota(pol.RepoQuotas, repo)
-			}
-		default:
-			return fmt.Errorf("unknown budget-floor action %q (want reserve|quota|rm)", args[0])
-		}
-		return putFloorPolicy(cmd, c, p, pol)
+		return editFloorPolicy(cmd, c, p, func(pol budgetfloor.Policy) (budgetfloor.Policy, error) {
+			return applyFloorEdit(pol, args[0])
+		})
 	}),
+}
+
+// applyFloorEdit is the operator's single edit, as a pure function of the
+// policy it is applied to — which is what makes replaying it onto a freshly
+// read document (after a lost CAS race) the same edit and not a different one.
+func applyFloorEdit(pol budgetfloor.Policy, action string) (budgetfloor.Policy, error) {
+	switch action {
+	case "reserve":
+		bot := strings.TrimSpace(remoteFloorBot)
+		if bot == "" {
+			return pol, fmt.Errorf("--bot is required (the workload the reservation protects)")
+		}
+		res := budgetfloor.Reservation{BotID: bot, Note: strings.TrimSpace(remoteFloorNote), Reserve: budgetfloor.Reserve{
+			FiveHourPercent: remoteFloorFiveHour,
+			WeekPercent:     remoteFloorWeek,
+			MonthlyUSD:      remoteFloorUSD,
+			ConcurrentRuns:  remoteFloorSlots,
+		}}
+		if res.Reserve.Empty() {
+			return pol, fmt.Errorf("reserve nothing? name at least one axis: --five-hour, --week, --monthly-usd or --concurrent-runs (use `rm --bot %s` to remove the reservation)", bot)
+		}
+		pol.Reservations = upsertReservation(pol.Reservations, res)
+	case "quota":
+		repo := strings.TrimSpace(remoteFloorRepo)
+		if repo == "" {
+			return pol, fmt.Errorf("--repo is required (the forge slug, e.g. owner/repo)")
+		}
+		q := budgetfloor.RepoQuota{
+			Repo: repo, MonthlyUSD: remoteFloorUSD, RunsPerMonth: remoteFloorRepoRuns,
+			ReserveSharePercent: remoteFloorRepoShare, ShareOfBot: strings.TrimSpace(remoteFloorShareOfBot),
+		}
+		if q.Empty() {
+			return pol, fmt.Errorf("cap nothing? name at least one of --monthly-usd, --runs-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
+		}
+		pol.RepoQuotas = upsertRepoQuota(pol.RepoQuotas, q)
+	case "rm":
+		bot, repo := strings.TrimSpace(remoteFloorBot), strings.TrimSpace(remoteFloorRepo)
+		if bot == "" && repo == "" {
+			return pol, fmt.Errorf("name what to remove: --bot <id> or --repo <slug>")
+		}
+		if bot != "" {
+			pol.Reservations = dropReservation(pol.Reservations, bot)
+		}
+		if repo != "" {
+			pol.RepoQuotas = dropRepoQuota(pol.RepoQuotas, repo)
+		}
+	default:
+		return pol, fmt.Errorf("unknown budget-floor action %q (want reserve|quota|rm)", action)
+	}
+	return pol, nil
 }
 
 // upsertReservation replaces the entry for a bot, or appends it — so

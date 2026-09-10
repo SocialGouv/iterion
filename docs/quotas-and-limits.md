@@ -380,6 +380,14 @@ iterion remote admin budget-floor quota --repo owner/repo --monthly-usd 50
 iterion remote admin budget-floor rm --bot review-pr
 ```
 
+Each of those subcommands is a GET → edit one entry → `PUT` of the WHOLE
+policy, so the write is **conditional**: the record's `updated_at` travels back
+as a compare token and a lost race is a `409`, not one admin's reservation
+silently deleted by the other's stale document. The CLI answers it by
+re-reading and replaying the same edit; a raw
+`iterion remote api PUT /api/admin/settings/budget-floor` must send the
+`updated_at` it read (omit it only for a deployment's very first write).
+
 ### The workload is a bot id
 
 `review-pr` — the thing that actually spends, already on every run and already
