@@ -189,7 +189,7 @@ unknown property is checked against, so a name that is not here draws E012
 with the closest accepted name in its `fix:` line.
 
 <!-- dsl-spec:begin skill -->
-Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `[id]` `[str]` `[tool]` `[skill]` inline lists · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
+Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `"a|b"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` inline lists · `map` `{K: "v"}` or an indented block · `with{}` a `with { k: "v" }` map · `{kind}` an indented block described under that kind.
 
 - `prompt` — entries `indented text lines`
 - `schema` — entries `field: string | bool | int | float | json | string[] | file [enum: "a", "b"]`
@@ -223,7 +223,7 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `budget` (`budget:` in workflow) — max_parallel_branches int · max_duration str · max_cost_usd num · max_tokens int · warn_tokens int · max_iterations int
 - `resources` (`resources:` in workflow) — entries `name: <int> | ["member-a", "member-b"]`
 - `compaction` (`compaction:` in workflow, agent, judge) — threshold num · preserve_recent int
-- `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool · visibility str
+- `memory` (`memory:` in agent, judge) — enabled bool · scope str · autoload [str] · read bool · write bool · pre_compact_inject bool · project_root bool · visibility "bot|project|cross_project|user|org|global"
 - `mcp` (`mcp:` in workflow, agent, judge) — autoload_project bool · inherit bool · servers [id] · disable [id]
 - `sandbox` (`sandbox:` in workflow, agent, judge, tool) — mode none|auto|inline · image str · build {sandbox.build} · user str · workspace_folder str · host_state auto|none · post_create str · env map · mounts [str|id] · network {sandbox.network}
 - `sandbox.build` (`build:` in sandbox) — dockerfile str · context str · args map

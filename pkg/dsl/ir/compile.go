@@ -265,12 +265,12 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		// author who wrote `mode: allowlist` under `sandbox:` (or whose
 		// `network:` body sat de-indented after a blank line) meant the
 		// network's.
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
 			scope, name, blk.Mode, blk.Mode)
 		return nil
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
 			scope, name, blk.Mode)
 		return nil
@@ -279,7 +279,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	switch blk.HostState {
 	case "", "auto", "none":
 	default:
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has invalid sandbox.host_state %q (want \"\", \"auto\", or \"none\")",
 			scope, name, blk.HostState)
 		return nil
@@ -310,7 +310,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Mode {
 		case "", "open", "allowlist", "denylist":
 		default:
-			c.errorfAt(DiagInvalidSandboxMode, name, "",
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
 				scope, name, blk.Network.Mode)
 			return nil
@@ -318,7 +318,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		switch blk.Network.Inherit {
 		case "", "replace", "append":
 		default:
-			c.errorfAt(DiagInvalidSandboxMode, name, "",
+			c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
 				scope, name, blk.Network.Inherit)
 			return nil
@@ -348,13 +348,13 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
 	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
 			scope, name)
 		return nil
 	}
 	if spec.Image != "" && spec.Build != nil {
-		c.errorfAt(DiagInvalidSandboxMode, name, "",
+		c.errorfAtScope(DiagInvalidSandboxMode, scope, name,
 			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil
@@ -621,7 +621,7 @@ func (c *compiler) compile() *Workflow {
 		Cursors:             cursors,
 		Supervisors:         supervisors,
 		Interaction:         interaction,
-		Worktree:            defaultWorktreeMode(wf.Worktree),
+		Worktree:            c.worktreeMode(wf.Name, wf.Span, wf.Worktree),
 		Compress:            wf.Compress,
 		AutoMemory:          wf.AutoMemory,
 		LoopBudgetGuard:     wf.LoopBudgetGuard,
@@ -792,12 +792,31 @@ func defaultWorktreeMode(raw string) string {
 	case "":
 		return "auto"
 	default:
-		// Unknown values flow through untouched. Validation already
-		// rejects them at the AST surface (the parser only accepts
-		// idents and the doctor flags strangers); preserving the raw
-		// value here keeps any future strict diagnostic actionable.
+		// Unknown values flow through (canonicalised) so the IR carries
+		// what worktreeMode refused, never a silent default.
 		return v
 	}
+}
+
+// worktreeMode canonicalises a workflow's `worktree:` and refuses a value
+// that is neither auto nor none (C142), naming what was WRITTEN and where
+// (the workflow's span — the declaration keeps no per-property position).
+// The runtime compares the canonical value to `auto` and nothing else, so a
+// mistyped auto ran the workflow in place, in the operator's own checkout,
+// with every commit landing there, without a word. A refused value reaches
+// the IR as the DEFAULT, auto: every launch surface refuses a workflow with
+// an error, and one that did not would then isolate the run rather than
+// run it in place — the hazard the check exists to close, closed twice.
+func (c *compiler) worktreeMode(workflow string, at ast.Span, raw string) string {
+	mode := defaultWorktreeMode(raw)
+	switch mode {
+	case "auto", "none":
+		return mode
+	}
+	c.errorfAtSpan(DiagInvalidWorktree, at,
+		"workflow %q has invalid worktree %q; valid values are auto, none",
+		workflow, raw)
+	return "auto"
 }
 
 // canAutoResolveBackend reports whether the detect package can pick a

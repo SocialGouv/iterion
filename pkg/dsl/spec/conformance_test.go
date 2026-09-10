@@ -174,6 +174,15 @@ func sampleValues(p spec.Property) []string {
 	}
 	switch p.Form {
 	case spec.String:
+		if len(p.Values) > 0 {
+			// A quoted value the compiler narrows (memory.visibility): each
+			// listed word, in the quotes the parser wants.
+			quoted := make([]string, 0, len(p.Values))
+			for _, v := range p.Values {
+				quoted = append(quoted, `"`+v+`"`)
+			}
+			return each(quoted)
+		}
 		return []string{p.Name + `: "x"`}
 	case spec.Ident, spec.StringOrIdent:
 		if len(p.Values) > 0 {
@@ -233,6 +242,14 @@ func TestEveryListedPropertyParsesCleanWithItsForm(t *testing.T) {
 				doc := fmt.Sprintf(line, value)
 				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) > 0 {
 					t.Errorf("%s.%s (%s): %q drew %v", kind, p.Name, p.Form, doc, res.Diagnostics)
+				}
+			}
+			// An enum's values are the PARSER's: a word outside the list
+			// must be refused here, or the list is decoration.
+			if p.Form == spec.Enum {
+				doc := fmt.Sprintf(line, p.Name+": zz_bogus")
+				if res := parser.Parse("probe.bot", doc); len(res.Diagnostics) == 0 {
+					t.Errorf("%s.%s (enum): a value outside %v is accepted", kind, p.Name, p.Values)
 				}
 			}
 		}
