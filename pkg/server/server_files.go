@@ -287,6 +287,21 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	if s.isAllowedOriginReq(r) {
 		return true
 	}
+	// The kill switch is honoured HERE, not only in originGateAllows, because
+	// ~70 handlers call this function directly (runs_control, runs_merge,
+	// projects, platform_settings, bot_sources, marketplace, …). Read only by
+	// the middleware, it left the documented emergency rollback half-working:
+	// an operator setting it during an incident recovers the routes gated only
+	// by the middleware and keeps collecting unexplained 403s on run
+	// cancel/merge and every other handler-gated write. A rollback that works
+	// for some routes is worse than none — it burns the incident on the wrong
+	// hypothesis.
+	//
+	// Checked after the allowlist so the normal path is untouched: this costs
+	// a getenv only on a request already being refused.
+	if os.Getenv("ITERION_REQUIRE_ORIGIN") == "0" {
+		return true
+	}
 	// A refusal is logged because the 403 goes to the caller and nowhere
 	// else. Without this line a deployment cannot answer "is the gate
 	// refusing anything it should not?" — the question that matters after

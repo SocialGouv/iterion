@@ -126,9 +126,17 @@ the refusals, which are the only interesting event.
 
 ### Two switches for a rollback without a redeploy
 
-- **`ITERION_REQUIRE_ORIGIN=0`** disables the gate entirely. It is also what
-  the sweep test toggles to prove the 403s come from the gate and not from
-  something else.
+- **`ITERION_REQUIRE_ORIGIN=0`** disables the gate. It is read inside
+  `requireSafeOrigin`, **not** in the middleware, so it reaches both callers:
+  `originGateAllows` and the ~70 handlers that still call `requireSafeOrigin`
+  directly (`runs_control.go`, `runs_merge.go`, `projects.go`,
+  `platform_settings.go`, `bot_sources_routes.go`, …). Read only by the
+  middleware, it disabled the gate for middleware-covered routes while run
+  cancel/merge, project writes, platform settings, bot sources and marketplace
+  writes kept refusing — a rollback that works for *some* routes, which costs
+  more incident time than none, because it sends the operator after the wrong
+  hypothesis. It is also what the sweep test toggles to prove the 403s come
+  from the gate and not from something else.
 - **`ITERION_ALLOWED_ORIGINS`** widens it instead, which is the proportionate
   answer when the cause is a host the allowlist does not name.
 

@@ -85,6 +85,53 @@ func TestRefusalDoesNotFireTheLogHook(t *testing.T) {
 	}
 }
 
+// TestKillSwitchReachesHandlerLevelCallsToo covers the documented emergency
+// rollback.
+//
+// ITERION_REQUIRE_ORIGIN=0 used to be read only by originGateAllows, while ~70
+// handlers call requireSafeOrigin DIRECTLY (runs_control, runs_merge, projects,
+// platform_settings, bot_sources, marketplace, …). An operator setting it
+// mid-incident therefore recovered the middleware-gated routes and kept
+// collecting unexplained 403s on run cancel/merge and every other
+// handler-gated write — a rollback that works for some routes, which is worse
+// than none because it sends the incident after the wrong hypothesis.
+//
+// The two callers are asserted together: pinning only the middleware is what
+// let the gap exist, and the sweep test's own kill-switch case runs on a path
+// with no handler-level call, so nothing contradicted the claim.
+func TestKillSwitchReachesHandlerLevelCallsToo(t *testing.T) {
+	newSrv := func() (*Server, *http.Request, *httptest.ResponseRecorder) {
+		s := gateServer(t, &bytes.Buffer{})
+		req := httptest.NewRequest(http.MethodPost, "/api/runs/abc/cancel", nil)
+		req.Header.Set("Origin", "https://evil.example")
+		return s, req, httptest.NewRecorder()
+	}
+
+	t.Run("switch unset: both callers refuse", func(t *testing.T) {
+		t.Setenv("ITERION_REQUIRE_ORIGIN", "")
+		s, req, rec := newSrv()
+		if s.requireSafeOrigin(rec, req) {
+			t.Error("handler-level call admitted a foreign origin with the gate ON")
+		}
+		s, req, rec = newSrv()
+		if s.originGateAllows(rec, req) {
+			t.Error("middleware admitted a foreign origin with the gate ON")
+		}
+	})
+
+	t.Run("switch set: both callers pass", func(t *testing.T) {
+		t.Setenv("ITERION_REQUIRE_ORIGIN", "0")
+		s, req, rec := newSrv()
+		if !s.requireSafeOrigin(rec, req) {
+			t.Errorf("ITERION_REQUIRE_ORIGIN=0 did not reach a HANDLER-LEVEL requireSafeOrigin call (status %d) — the documented rollback only half-works, and the routes it misses are run cancel/merge, project writes, platform settings, bot sources and marketplace writes", rec.Code)
+		}
+		s, req, rec = newSrv()
+		if !s.originGateAllows(rec, req) {
+			t.Errorf("ITERION_REQUIRE_ORIGIN=0 did not reach the middleware (status %d)", rec.Code)
+		}
+	})
+}
+
 // TestOriginGateNamesWhatItRefused is the reason this file exists. The gate
 // answers 403 to the caller and, before this, told the deployment nothing —
 // so "no legitimate client is being refused" and "we have no way to see one"
