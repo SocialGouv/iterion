@@ -471,6 +471,13 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source := unparse.Unparse(f)
+	// The file written must be the document saved: a value the serialiser
+	// could not carry (or a construct it does not know) would otherwise land
+	// on disk as a different program, and the next parse would run THAT.
+	if err := unparse.Verify(f, source); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, "the document cannot be saved as .bot source without changing it: %v", err)
+		return
+	}
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
 		return

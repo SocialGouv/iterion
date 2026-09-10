@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.1](https://github.com/SocialGouv/iterion/compare/v3.131.0...v3.131.1) (2026-09-10)
+
+### Bug Fixes
+
+* **dsl,cloud:** lot 0.5 transport — complete JSON codec, lossless unparser, includes travel with the AST (ADR-098) ([#1050](https://github.com/SocialGouv/iterion/issues/1050)) ([d57f911](https://github.com/SocialGouv/iterion/commit/d57f911cb39f4f52251338a7fd567624e36f28ad)), closes [#1012](https://github.com/SocialGouv/iterion/issues/1012) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1015](https://github.com/SocialGouv/iterion/issues/1015) [#1013](https://github.com/SocialGouv/iterion/issues/1013), references [#1015](https://github.com/SocialGouv/iterion/issues/1015) [#1013](https://github.com/SocialGouv/iterion/issues/1013) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1039](https://github.com/SocialGouv/iterion/issues/1039) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1012](https://github.com/SocialGouv/iterion/issues/1012) [#1049](https://github.com/SocialGouv/iterion/issues/1049) [#1010](https://github.com/SocialGouv/iterion/issues/1010) [#1015](https://github.com/SocialGouv/iterion/issues/1015) [#1013](https://github.com/SocialGouv/iterion/issues/1013) [#1015](https://github.com/SocialGouv/iterion/issues/1015)
+
+    <details><summary>why</summary>
+
+    The AST JSON codec is what a cloud launch puts on the queue and what the studio saves through. It dropped four constructs: `group` / `use` (a workflow using them compiled from its .bot and failed with C008/C001 after the round-trip), the `as foreach` clause on an edge (silently gone) and a named resource pool (`slot: ["a", "b"]` came back as a bare capacity). So a bot with any of them behaved differently on a cloud launch than locally. The codec now mirrors every declaration — groups through…
+
+    </details>
+
 ## [3.131.0](https://github.com/SocialGouv/iterion/compare/v3.130.0...v3.131.0) (2026-09-10)
 
 ### Features

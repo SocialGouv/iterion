@@ -81,18 +81,20 @@ secret_property = "value:" STRING
 ## Prompts and schemas
 
 ```ebnf
-prompt = "prompt" IDENT ":" INDENT { free_text_line } DEDENT ;
+prompt = "prompt" IDENT ":" [ INDENT { free_text_line } DEDENT ] ;
 
-schema = "schema" IDENT ":" INDENT { schema_field } DEDENT ;
+schema = "schema" IDENT ":" [ INDENT { schema_field } DEDENT ] ;
 schema_field = IDENT ":" ( type | "file" ) [ enum ] ;
 ```
+
+A `prompt`, `schema`, `mcp_server`, `cursor`, `supervisor`, `group` or `workflow` header may stand with no body at all — followed by a **blank line** and another declaration, or by the end of the file — and declares an empty one: the studio saves a declaration the moment it is created, before it has a field or a line (an empty workflow then draws the compiler's own diagnostics, no entry first). The blank line is what tells an empty declaration from a body at the wrong indentation (a group's members are top-level keywords themselves): a header followed directly by an unindented line, or by an indented comment alone, is still the indentation error. Node declarations (`agent`, `tool`, …) keep needing a body.
 
 Prompt text may contain runtime `{{...}}` references and compile-time `{{include "relative/file"}}` directives. Schema fields accept the six variable types, plus `file` — an operator-supplied binary valid only on a human node's schema; the compiler rejects it elsewhere ([C129](diagnostics.md)).
 
 ## MCP declarations and activation
 
 ```ebnf
-mcp_server = "mcp_server" IDENT ":" INDENT { mcp_server_property } DEDENT ;
+mcp_server = "mcp_server" IDENT ":" [ INDENT { mcp_server_property } DEDENT ] ;
 mcp_server_property = "transport:" ( "stdio" | "http" | "sse" )
                     | "command:" STRING
                     | "args:" string_list
@@ -112,21 +114,21 @@ mcp_property = "autoload_project:" BOOL | "inherit:" BOOL
 ## Cursor and supervisor declarations
 
 ```ebnf
-cursor = "cursor" IDENT ":" INDENT
+cursor = "cursor" IDENT ":" [ INDENT
            [ "description:" STRING ]
            ( "values:" INDENT { IDENT ":" STRING } DEDENT
            | "bands:" INDENT { STRING ":" STRING } DEDENT )
-         DEDENT ;
+         DEDENT ] ;
 
 cursors = "cursors:" INDENT
             { IDENT ":" ( IDENT | STRING | NUMBER | BOOL ) }
           DEDENT ;
 
-supervisor = "supervisor" IDENT ":" INDENT
+supervisor = "supervisor" IDENT ":" [ INDENT
                { "watches:" ident_list | "model:" STRING
                | "system:" IDENT | "cooldown:" STRING
                | "max_evals:" INT }
-             DEDENT ;
+             DEDENT ] ;
 ```
 
 `cursors:` activates declared cursors on an agent/judge; the reserved `enabled:` key gates the block. A supervisor is concurrent run metadata, not a graph node.
@@ -145,9 +147,9 @@ They share the exact property surface:
 | `description` | string |
 | `model`, `backend`, `provider`, `command` | string |
 | `input`, `output`, `publish`, `system`, `user` | identifier reference |
-| `artifact_labels` | tool-ref-style identifier list |
+| `artifact_labels` | tool-ref-style identifier list; a quoted string is the literal label (`"review-ledger"`) |
 | `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` |
-| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted |
+| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted, and a quoted string is the literal name |
 | `skills` | quoted string or dotted-identifier list |
 | `tool_max_steps`, `max_tokens` | integer |
 | `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or quoted runtime value |
@@ -214,7 +216,7 @@ tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 | `description`, `command`, `script`, `goal`, `postcondition` | string |
 | `language` | `js`, `py`, `sh`, `bash` |
 | `input`, `output`, `publish` | identifier |
-| `artifact_labels` | tool-ref list |
+| `artifact_labels` | tool-ref list; a quoted string is the literal label |
 | `await` | `wait_all`, `best_effort` |
 | `sandbox` | sandbox block |
 | `compress` | `off`, `on`, `ultra` |
@@ -262,7 +264,7 @@ subbot = "subbot" IDENT ":" INDENT
 
 ```ebnf
 group = "group" IDENT [ "(" [ IDENT { "," IDENT } ] ")" ] ":"
-        INDENT { agent | judge | router | human | tool | compute | edge } DEDENT ;
+        [ INDENT { agent | judge | router | human | tool | compute | edge } DEDENT ] ;
 
 use = "use" IDENT "as" IDENT [ with_block ] ;
 ```

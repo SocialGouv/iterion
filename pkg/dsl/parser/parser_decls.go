@@ -434,9 +434,12 @@ func (p *parser) parseLiteral() *ast.Literal {
 // ---- prompt ----
 
 func (p *parser) parsePromptDecl() *ast.PromptDecl {
-	start, name, ok := p.parseDeclHeader("prompt")
-	if !ok {
+	start, name, state := p.parseDeclHeaderOrEmpty("prompt")
+	switch state {
+	case headerFailed:
 		return nil
+	case headerEmpty:
+		return &ast.PromptDecl{Name: name, Span: ast.Span{Start: p.pos(start), End: p.pos(start)}}
 	}
 
 	// Collect prompt lines. Anything inside the indented block that is
@@ -474,14 +477,17 @@ func (p *parser) parsePromptDecl() *ast.PromptDecl {
 // ---- schema ----
 
 func (p *parser) parseSchemaDecl() *ast.SchemaDecl {
-	start, name, ok := p.parseDeclHeader("schema")
-	if !ok {
+	start, name, state := p.parseDeclHeaderOrEmpty("schema")
+	if state == headerFailed {
 		return nil
 	}
 
 	sd := &ast.SchemaDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start)},
+	}
+	if state == headerEmpty {
+		return sd
 	}
 
 	for {
@@ -587,14 +593,17 @@ func (p *parser) parseEnumConstraint() []string {
 // (`bands:`) — IR validation rejects malformed combinations (C085).
 // `description:` is an optional free-text annotation.
 func (p *parser) parseCursorDecl() *ast.CursorDecl {
-	start, name, ok := p.parseDeclHeader("cursor")
-	if !ok {
+	start, name, state := p.parseDeclHeaderOrEmpty("cursor")
+	if state == headerFailed {
 		return nil
 	}
 
 	cd := &ast.CursorDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start), End: p.pos(start)},
+	}
+	if state == headerEmpty {
+		return cd
 	}
 
 	for {
@@ -713,13 +722,16 @@ func (p *parser) parseCursorBands() []*ast.CursorBand {
 // of pre-seeded event patterns (CLI --monitor grammar); the supervisor
 // bot can register more monitors at runtime.
 func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
-	start, name, ok := p.parseDeclHeader("supervisor")
-	if !ok {
+	start, name, state := p.parseDeclHeaderOrEmpty("supervisor")
+	if state == headerFailed {
 		return nil
 	}
 	sd := &ast.SupervisorDecl{
 		Name: name,
 		Span: ast.Span{Start: p.pos(start), End: p.pos(start)},
+	}
+	if state == headerEmpty {
+		return sd
 	}
 	for {
 		p.skipNewlines()

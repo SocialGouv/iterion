@@ -835,9 +835,10 @@ type BudgetBlock struct {
 type ResourcesBlock struct {
 	Capacities map[string]int // resource name → capacity
 	// Members holds the named-instance pool for a resource declared as a
-	// bracketed ident-list (e.g. `godot: [godot-s1, godot-s2]`) — each acquire
-	// leases one distinct member id. nil/absent for the counting-only form
-	// (`godot: 5`), where capacity is just a count with no instance identity.
+	// bracketed list of quoted ids (e.g. `godot: ["godot-s1", "godot-s2"]`)
+	// — each acquire leases one distinct member id. nil/absent for the
+	// counting-only form (`godot: 5`), where capacity is just a count with no
+	// instance identity.
 	Members map[string][]string
 	Span    Span
 }

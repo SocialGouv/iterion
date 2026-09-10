@@ -23,7 +23,12 @@ remains a separate object. A content-specific key prevents a resumed attempt
 from overwriting the snapshot referenced by an older queued message. The runner
 checks the digest and paths before materializing a private temporary collection,
 then removes the entire collection when the attempt ends. Bundle prompts merge
-into the serialized workflow AST, just as they do during server compilation.
+into the serialized workflow AST, just as they do during server compilation, and
+every `{{include}}` in a prompt — in `main.bot` or in `prompts/*.md` — is
+resolved into the prompt body on the server: the AST that travels is
+self-contained, so the runner compiles it without the files beside the source.
+An inline source with an include and no bundle to resolve it from is refused at
+publish rather than queued to die on the runner.
 
 An explicit or automatic resume re-resolves and freezes the current collection,
 following the existing resume contract for stored bots. An inline source supplied

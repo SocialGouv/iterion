@@ -98,6 +98,8 @@ const (
 
 	DiagInvalidWorkspaceCheckpoint DiagCode = "C139" // workspace_checkpoint: value not one of on|off (error)
 
+	DiagEmptySchema DiagCode = "C140" // a node's input/output references a schema with no field (warning)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an
