@@ -56,8 +56,13 @@ import (
 //   - a fixer must never occupy a context branch protection may require —
 //     writing there could blank a reviewer's verdict back to "running", the
 //     exact harm markGateInFlight is written to avoid;
-//   - and this must never be able to block a merge. On its own context it is
-//     advisory unless a repo chooses otherwise, which stays the repo's call.
+//   - and this must never be able to block a merge. That promise is kept by the
+//     STATE, not by the context: GitLab attaches a posted status to the head
+//     sha's pipeline, so a `pending` there makes the pipeline non-successful and
+//     an MR with only_allow_merge_if_pipeline_succeeds unmergeable until the
+//     head moves — which is precisely what a fixer that BANKS never does. The
+//     marker is therefore posted `success`, carrying its warning in the
+//     description, on both forges and with no provider branch.
 //
 // A status rather than a comment because a comment is what already existed and
 // what was already missed: a status sits in the checks list the forge renders
@@ -79,7 +84,7 @@ const fixInFlightDescription = "a fix run took this revision — pushing on it c
 // belongs to whoever posted it, and overwriting someone else's is worse than
 // leaving ours.
 func isFixInFlight(st forge.CommitStatus) bool {
-	return st.State == forge.CommitStatePending &&
+	return st.State == forge.CommitStateSuccess &&
 		strings.TrimSpace(st.Description) == fixInFlightDescription
 }
 
@@ -144,7 +149,24 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	// to tell one run's marker from another's, so an unattributable claim (no
 	// PublicURL configured) is still worth posting.
 	st := forge.CommitStatus{
-		State:       forge.CommitStatePending,
+		// SUCCESS, not pending, and the description is the payload.
+		//
+		// `pending` was wrong twice. On GitLab a status posted through
+		// POST /projects/:id/statuses/:sha becomes a GenericCommitStatus on the
+		// sha's pipeline (creating an external one if none exists), so a pending
+		// makes the head pipeline non-successful — and with
+		// only_allow_merge_if_pipeline_succeeds the MR is unmergeable until the
+		// head MOVES. That fires in this incident's own shape: a fixer that
+		// BANKS leaves the head unmoved, so the claim would block the merge
+		// forever. The promise two paragraphs up — that this never blocks a
+		// merge — held for GitHub and Forgejo only.
+		//
+		// And on every forge `pending` also says "a check is running and will
+		// report", which is false here: nothing will ever report, by design.
+		// `success` says "this check has nothing blocking to say", which is
+		// exactly right — the WARNING travels in the description, where both
+		// forges render it beside the context name.
+		State:       forge.CommitStateSuccess,
 		Context:     fixInFlightContext,
 		Description: forge.TruncateStatusDescription(fixInFlightDescription),
 		TargetURL:   gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID),

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -44,8 +45,8 @@ func TestMarkFixInFlight_ClaimsForAFixer(t *testing.T) {
 	if gc.setCalls != 1 {
 		t.Fatalf("posted %d statuses, want 1 — the fixer stays invisible for its whole run", gc.setCalls)
 	}
-	if gc.last.State != forge.CommitStatePending {
-		t.Errorf("state = %q, want pending — the fixer has not reported yet", gc.last.State)
+	if gc.last.State != forge.CommitStateSuccess {
+		t.Errorf("state = %q, want success — a pending here blocks an MR merge on GitLab, where the status joins the head pipeline", gc.last.State)
 	}
 	if !isFixInFlight(gc.last) {
 		t.Errorf("status %q is not recognisable as the fixer claim — a later pass could not refresh it", gc.last.Description)
@@ -135,7 +136,7 @@ func TestMarkFixInFlight_NeverOverwritesAForeignStatus(t *testing.T) {
 // be locked out by the status it posted itself.
 func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContext, State: forge.CommitStateSuccess,
 			Description: fixInFlightDescription,
 			TargetURL:   "https://iterion.test/runs/run-77"},
 	}}
@@ -155,7 +156,7 @@ func TestMarkFixInFlight_ReclaimsItsOwnMarker(t *testing.T) {
 // asserts nothing about either run still working.
 func TestMarkFixInFlight_RefreshesAnExistingClaim(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
-		{Context: fixInFlightContext, State: forge.CommitStatePending,
+		{Context: fixInFlightContext, State: forge.CommitStateSuccess,
 			Description: fixInFlightDescription,
 			TargetURL:   "https://iterion.test/runs/the-previous-pass"},
 	}}
@@ -174,18 +175,29 @@ func TestMarkFixInFlight_RefreshesAnExistingClaim(t *testing.T) {
 	}
 }
 
-// The marker states a fact about the PAST and is never retracted, so nothing in
-// this file may post a terminal state on that context. A `success` there would
-// read "pushing is safe again" — the assertion the engine cannot honour, and
-// the one that produced eight findings before it was removed.
-func TestMarkFixInFlight_NeverPostsATerminalState(t *testing.T) {
+// THE invariant that replaced the whole lifecycle: there is exactly ONE marker
+// text, and nothing in this file ever posts a second, reassuring one. The
+// "all-clear" class of defect — eight findings on this branch — was a SECOND
+// description saying the danger had passed. Its absence is the guarantee, not
+// the state the status carries.
+func TestMarkFixInFlight_HasExactlyOneMessage(t *testing.T) {
 	gc := &listingGateClient{}
 	s := fixLaunchFixture(t, gc)
 
+	// Two launches on the same head, as two fixer passes really do.
 	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-77")
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", fixLaunchVars(), "run-88")
 
-	if gc.last.State != forge.CommitStatePending {
-		t.Fatalf("state = %q, want pending — a resolved fixer marker asserts an absence nothing can verify", gc.last.State)
+	if len(gc.posted) == 0 {
+		t.Fatal("nothing posted")
+	}
+	for i, st := range gc.posted {
+		if strings.TrimSpace(st.Description) != fixInFlightDescription {
+			t.Fatalf("post %d says %q — a second message is how the all-clear came back every time", i, st.Description)
+		}
+		if st.State != forge.CommitStateSuccess {
+			t.Errorf("post %d state = %q, want success — pending blocks an MR merge on GitLab", i, st.State)
+		}
 	}
 }
 
