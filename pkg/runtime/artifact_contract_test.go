@@ -155,6 +155,33 @@ func TestForcedArtifactCompatibilityClearsStaleSourceWithoutNewSourceText(t *tes
 	}
 }
 
+func TestForcedArtifactCompatibilityKeepsSourceAtUnchangedHash(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	run, err := s.CreateRun(ctx, "artifact-same-revision", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.WorkflowHash = "rev-current"
+	run.WorkflowSource = "current source"
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := &Engine{store: s, workflowHash: "rev-current", forceResume: true}
+	eng.restampWorkflowSource(ctx, run)
+	persisted, err := s.LoadRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkflowSource != "current source" {
+		t.Fatalf("unchanged forced resume discarded workflow source %q", persisted.WorkflowSource)
+	}
+	if persisted.WorkflowHash != "rev-current" || persisted.ArtifactCompatibilityRevision != "rev-current" {
+		t.Fatalf("unchanged migration = hash %q compatibility %q", persisted.WorkflowHash, persisted.ArtifactCompatibilityRevision)
+	}
+}
+
 type artifactReadErrorStore struct{ store.RunStore }
 
 func (artifactReadErrorStore) LoadArtifact(context.Context, string, string, int) (*store.Artifact, error) {
@@ -1296,6 +1323,9 @@ func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 	}
 	if flaky.loads != 1 {
 		t.Fatalf("artifact loads = %d, want only the preflight read", flaky.loads)
+	}
+	if eng.artifactResumePreflight != nil {
+		t.Fatal("engine retained the one-shot artifact preflight after reconstruction")
 	}
 }
 

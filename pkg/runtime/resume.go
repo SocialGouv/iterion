@@ -97,6 +97,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	preflightMatches := e.artifactResumePreflight.matches(r, e.workflow, e.workflowHash, e.forceResume)
 	if preflightMatches {
 		checkpointArtifacts = e.artifactResumePreflight.artifacts
+		// The handoff is one-shot. Keeping this opaque snapshot on Engine would
+		// pin every validation-only transitive dependency for the whole resumed
+		// execution, even though reconstruction needs it only at this boundary.
+		e.artifactResumePreflight = nil
 	} else {
 		checkpointArtifacts, err = loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
 		if err != nil {
@@ -129,6 +133,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
 		}
 	}
+	checkpointArtifacts = nil
 	// A worktree run resumes into its persisted workspace (restoreRunEnv),
 	// which is only usable while the gitdir its `.git` pointer names still
 	// exists. When that linkage is severed, executing nodes there makes
@@ -3013,7 +3018,7 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 		// revision A's text beside revision B's hash would make rewind --auto
 		// diff against the wrong baseline. An empty source makes auto-rewind
 		// fail safely while still allowing later resumes at the accepted hash.
-		if src == "" {
+		if src == "" && r.WorkflowHash != e.workflowHash {
 			r.WorkflowSource = ""
 		}
 		r.WorkflowHash = e.workflowHash
