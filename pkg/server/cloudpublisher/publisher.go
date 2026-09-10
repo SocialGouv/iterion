@@ -28,6 +28,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -123,6 +124,17 @@ type Config struct {
 	// passed over like a refused one, so the tiers stay a fallback chain.
 	// Nil keeps the walk refusal-evidence-only.
 	CapPolicy usagecap.PolicySource
+	// BudgetFloor, when non-nil, reserves window capacity for named
+	// workloads (pkg/budgetfloor). It LOWERS the cap above for every bot a
+	// reservation does not name, so the reserved workload still finds the
+	// credential usable at a utilisation where the others have already been
+	// passed over — the band between the two ceilings is the reserve.
+	//
+	// Consulted at the same place and over the same readings as CapPolicy,
+	// deliberately: a reservation that decided on a different signal from
+	// the skip it modifies would hold back a band the skip never respects.
+	// Nil, or a policy reserving nothing, leaves the walk exactly as it was.
+	BudgetFloor BudgetFloorSource
 	// UsageCapTrust bounds how long a stored reading is believed by the
 	// credential walk — the refusal evidence and the cap mirror alike
 	// (usagecap.TrustFromEnv). The zero value applies the package
@@ -192,6 +204,7 @@ type Publisher struct {
 	credPool             *credpool.Broker
 	usageCaps            usagecap.Store
 	capPolicy            usagecap.PolicySource
+	budgetFloor          BudgetFloorSource
 	platformAudience     *platformcfg.Resolver[platformcfg.PlatformCredentials]
 	trust                usagecap.Trust
 	usageProbe           UsageProbe
@@ -290,6 +303,7 @@ func New(cfg Config) (*Publisher, error) {
 		credPool:             cfg.CredPool,
 		usageCaps:            cfg.UsageCaps,
 		capPolicy:            cfg.CapPolicy,
+		budgetFloor:          cfg.BudgetFloor,
 		platformAudience:     cfg.PlatformCredentialAudience,
 		trust:                cfg.UsageCapTrust.Normalized(),
 		usageProbe:           cfg.UsageProbe,
@@ -433,7 +447,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		// passed over so the priority walk yields the next key of that
 		// provider — the BYOK tier becomes an ordered fallback chain.
 		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, overrides, p.sealer,
-			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, skips))
+			p.apiKeyUsable(ctx, usagecap.TenantScope(tenantID), runID, botID, skips))
 		if err != nil {
 			return credResolution{}, fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
@@ -447,7 +461,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			apiKeyFPs[prov] = r.Fingerprint
 			usedIDs = append(usedIDs, r.KeyID)
 		}
-		p.warnRefusedPins(ctx, runID, tenantID, overrides, resolved)
+		p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved)
 		// A provider whose EVERY key was refused resolves to nothing under
 		// the predicate. Remember what an unfiltered walk would have chosen:
 		// if the end of the resolution finds that wire still empty — no
@@ -598,7 +612,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
 					meterScope = usagecap.TenantScope(tenantID)
 				}
-				if until, why := p.forfaitWindowClosed(ctx, meterScope, ownerKey, rec, payload); !until.IsZero() {
+				if until, why := p.forfaitWindowClosed(ctx, meterScope, ownerKey, botID, rec, payload); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 					skips.note(until)
@@ -630,7 +644,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    neither takes a stranger's donation while either is available.
 	//    Fills per WIRE FAMILY like the platform tier, so an org key can
 	//    never shadow a credential the team already holds in another shape.
-	p.fillFromOrg(ctx, runID, orgID, tenantID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
+	p.fillFromOrg(ctx, runID, orgID, tenantID, botID, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits)
 
 	// 5. Mutualised pool — the LAST resort, and only for a run that has no
 	//    credential of its own at all. Spending a contributor's lent
@@ -685,7 +699,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    run runs on its donor — filling alongside would outrank the lent
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
-		p.fillFromPlatform(ctx, runID, orgID, tenantID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
+		p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, &bundle, skippedAPIKeys, apiKeyFPs, skips)
 	}
 	res.skippedReopensAt = skips.earliest
 
@@ -993,7 +1007,7 @@ func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
 // Best-effort like the pool: a degraded store read or unseal failure logs
 // and leaves the slot to the env fallback — it must never fail a launch
 // that env can still serve.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID string, bundle *secrets.RunBundle, skippedAPIKeys map[secrets.Provider]skippedAPIKey, apiKeyFPs map[secrets.Provider]string, skips *skipTracker) {
 	if p.sealer == nil {
 		return
 	}
@@ -1021,7 +1035,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 		if len(missing) > 0 {
 			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
 			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer,
-				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, skips))
+				p.apiKeyUsable(pctx, usagecap.ScopePlatform, runID, botID, skips))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
 			} else {
@@ -1215,13 +1229,13 @@ const usageCapLookupTimeout = 5 * time.Second
 // ("tenant:orgtier:<org>" while the runner meters "org:<org>"), so the
 // window-skip read a ledger that was always empty and never skipped an
 // exhausted credential — the precise failure the skip exists to prevent.
-func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKey string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKey, botID string, rec secrets.OAuthRecord, payload []byte) (time.Time, string) {
 	backend := usageBackendForKind(rec.Kind)
 	scope := meterScope
 	if scope == "" {
 		scope = usagecap.ScopePlatform
 	}
-	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+	until, why := p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind), botID)
 	if !until.IsZero() || p.usageProbe == nil || backend == "" || rec.Fingerprint == "" || len(payload) == 0 {
 		return until, why
 	}
@@ -1232,7 +1246,7 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKe
 	// wall is real), ask the provider, record the answer where the
 	// session telemetry lands, and decide on that.
 	key := usagecap.Key(backend, scope, rec.Fingerprint)
-	if !p.staleSuggestsClosed(ctx, key) {
+	if !p.staleSuggestsClosed(ctx, key, botID) {
 		return time.Time{}, ""
 	}
 	pctx, cancel := context.WithTimeout(ctx, usageProbeTimeout)
@@ -1248,7 +1262,7 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKe
 		}
 	}
 	p.logger.Info("cloudpublisher: oauth-forfait fp=%s: %d window reading(s) refreshed from the provider on a stale ledger", rec.Fingerprint, len(readings))
-	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind))
+	return p.refusedUntil(ctx, backend, scope, rec.Fingerprint, string(rec.Kind), botID)
 }
 
 // staleSuggestsClosed reports whether the credential's ledger holds a
@@ -1257,7 +1271,7 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, meterScope, ownerKe
 // provider refusal, or the operator's cap reached. A rolled-over reading is
 // dead, not stale, and a low reading suggests nothing: neither is worth a
 // round trip.
-func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
+func (p *Publisher) staleSuggestsClosed(ctx context.Context, key, botID string) bool {
 	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
 	defer cancel()
 	readings, err := p.usageCaps.Latest(lctx, key)
@@ -1285,17 +1299,74 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key string) bool {
 			return true
 		}
 	}
-	if p.capPolicy != nil && usagecap.Preflight(stale, p.capPolicy.Effective(ctx), now, unbounded).Blocked {
+	if p.capPolicy != nil && usagecap.Preflight(stale, p.capPolicyFor(ctx, botID), now, unbounded).Blocked {
 		return true
 	}
 	return false
+}
+
+// BudgetFloorSource supplies the deployment's capacity reservations, resolved
+// per call so a runtime change reaches the walk without a restart (the
+// ADR-090 doctrine the usage caps already follow).
+type BudgetFloorSource interface {
+	Effective(ctx context.Context) budgetfloor.Policy
+}
+
+// capPolicyFor lowers the operator's usage-cap ceilings by what every OTHER
+// workload has reserved, producing the policy THIS bot is judged against.
+//
+// The reserve is subtracted rather than added anywhere: a reservation makes
+// the unreserved stop EARLIER, it never lets its holder run past the
+// deployment's own cap. That asymmetry is what keeps a reservation from
+// becoming a way to overspend the provider window it is meant to share.
+//
+// Two guards carry the whole safety argument:
+//
+//   - a window with no cap (MaxPercent 0, "not enforced") is returned
+//     untouched. Subtracting a reserve from zero would hand back a negative
+//     ceiling, and usagecap reads any positive MaxPercent as enforcement — so
+//     a deployment that never configured a usage cap would ACQUIRE one, and
+//     start refusing runs, merely because somebody wrote a reservation. A
+//     floor may hold work back; it may not invent a ceiling.
+//   - a bot the policy does not name gets the full subtraction, including the
+//     empty bot id: a plain .bot launch belongs to no workload, and treating
+//     "unknown" as "reserved" would let anything unnamed spend the band.
+func (p *Publisher) capPolicyFor(ctx context.Context, botID string) usagecap.Policy {
+	if p.capPolicy == nil {
+		return usagecap.Policy{}
+	}
+	base := p.capPolicy.Effective(ctx)
+	if p.budgetFloor == nil {
+		return base
+	}
+	floor := p.budgetFloor.Effective(ctx)
+	if len(floor.Reservations) == 0 {
+		return base
+	}
+	lower := func(wp usagecap.WindowPolicy, w budgetfloor.Window) usagecap.WindowPolicy {
+		if wp.MaxPercent <= 0 {
+			return wp
+		}
+		held := floor.OtherReserved(botID, w)
+		if held <= 0 {
+			return wp
+		}
+		wp.MaxPercent = max(wp.MaxPercent-float64(held), 0)
+		return wp
+	}
+	base.FiveHour = lower(base.FiveHour, budgetfloor.WindowFiveHour)
+	base.Week = lower(base.Week, budgetfloor.WindowWeek)
+	return base
 }
 
 // refusedUntil is the ONE evidence reading shared by every credential-skip
 // site (the oauth-forfait tiers and the BYOK api-key walk): it reports when
 // fresh provider refusals against this credential lapse, or the zero time
 // when the credential is usable. label is for the lookup-failure log only.
-func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope string, fingerprint, label string) (time.Time, string) {
+//
+// botID names the workload the credential would serve, so a reservation can
+// hold a band of the window back from everyone else (capPolicyFor).
+func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope string, fingerprint, label, botID string) (time.Time, string) {
 	if p.usageCaps == nil || fingerprint == "" || backend == "" {
 		return time.Time{}, ""
 	}
@@ -1335,7 +1406,7 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		// A blocked window with no reset instant is trusted for the
 		// reading's own staleness bound, the same synthesis the refusal
 		// branch above applies: bounded, self-healing, and symmetric.
-		if d := usagecap.Preflight(readings, p.capPolicy.Effective(ctx), now, trust); d.Blocked {
+		if d := usagecap.Preflight(readings, p.capPolicyFor(ctx, botID), now, trust); d.Blocked {
 			reopen := d.ResetsAt
 			if reopen.IsZero() {
 				reopen = now.Add(trust.MaxAge)
@@ -1359,7 +1430,7 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 //
 // Nothing is logged for a healthy pin, so the line means something when it
 // appears.
-func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution) {
+func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID string, overrides map[secrets.Provider]string, resolved map[secrets.Provider]secrets.Resolution) {
 	if len(overrides) == 0 || p.usageCaps == nil {
 		return
 	}
@@ -1375,7 +1446,7 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID string,
 		if backend == "" {
 			continue
 		}
-		until, why := p.refusedUntil(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov))
+		until, why := p.refusedUntil(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov), botID)
 		if until.IsZero() {
 			continue
 		}
@@ -1413,7 +1484,7 @@ func usageBackendForProvider(prov secrets.Provider) string {
 // Everything uncertain means "usable", same contract as refusedUntil. A
 // skipped key's reopening is reported into skips (nil-safe) so the run can
 // retry when THAT key reopens rather than when its fallback does.
-func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string, skips *skipTracker) func(secrets.ApiKey) bool {
+func (p *Publisher) apiKeyUsable(ctx context.Context, scope, runID, botID string, skips *skipTracker) func(secrets.ApiKey) bool {
 	return func(k secrets.ApiKey) bool {
 		// Concurrency ceiling first — cheaper than the meter read, and a
 		// key at its ceiling must rest whatever its refusal history says.
@@ -1433,7 +1504,7 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope string, runID string
 			}
 		}
 		backend := usageBackendForProvider(k.Provider)
-		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider))
+		until, why := p.refusedUntil(ctx, backend, scope, k.Fingerprint, string(k.Provider), botID)
 		if until.IsZero() {
 			return true
 		}
