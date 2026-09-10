@@ -434,6 +434,21 @@ unreserved work.
   deployment's own caps. A reservation holds capacity back from others; it is
   not a way around the wall.
 
+### When the reserves swallow the whole cap
+
+Reserving 50% of the window under a 50% deployment cap — or lowering the cap
+after the reservations were written — leaves unreserved work *nothing*, and
+that is a refusal, never a lowered ceiling. It has to be said out loud because
+the two are one keystroke apart in code and opposite in effect: `MaxPercent 0`
+means **"this window is not enforced"** to `pkg/usagecap`, so a ceiling
+clamped at zero would hand every unreserved bot an *uncapped* credential —
+amplifying the starvation the reserve exists to prevent. So the walk **refuses
+the credential** for the unreserved bot and falls through to the next tier,
+saying so in the skip log (*"the five_hour window is entirely reserved for
+other workloads"*); the org's monthly cost cap does the same on its own axis,
+denying with `monthly_cost_cap_exceeded`. `Policy.Validate` cannot catch this
+at write time — it knows the 100% window, never the deployment's own cap.
+
 ### The per-repo quota
 
 A ceiling inside the shared budget, refused with its own reason

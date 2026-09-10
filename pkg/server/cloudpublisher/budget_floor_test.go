@@ -113,6 +113,37 @@ func TestBudgetFloor_AReservationDoesNotCreateACap(t *testing.T) {
 	}
 }
 
+// The reserve that swallows the deployment's whole cap. This is where a
+// clamped ceiling INVERTS the feature: usagecap reads MaxPercent 0 as "this
+// window is not enforced" (WindowPolicy.Enabled), so lowering the ceiling to
+// zero hands every unreserved bot an UNCAPPED credential — free to draw the
+// shared subscription all the way to the provider wall, which is the exact
+// starvation the reserve exists to prevent.
+//
+// Reachable with ordinary numbers: a 50% deployment cap and one 50% reserve
+// (Validate only refuses reserves summing past 100), or an operator lowering
+// the cap after the reservations were written.
+func TestBudgetFloor_AReserveThatSwallowsTheCapHoldsOthersOffInsteadOfUncappingThem(t *testing.T) {
+	res := budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 50}}
+	// 5% utilisation: far below every cap, so ONLY the reservation can be
+	// what refuses — and a policy read as "unenforced" would admit everyone.
+	p, key, scope := floorPublisher(t, 0.05, 50, res)
+	for _, bot := range []string{"feature-dev", ""} {
+		if p.apiKeyUsable(context.Background(), scope, "run", bot, nil)(key) {
+			t.Errorf("bot %q drew on a credential whose whole window is reserved for review-pr — the cap was disabled, not lowered", bot)
+		}
+	}
+	if !p.apiKeyUsable(context.Background(), scope, "run", "review-pr", nil)(key) {
+		t.Fatal("the reserved bot was refused on its own reservation")
+	}
+	// And at a utilisation that IS over the deployment cap, the holder stops
+	// with everyone else: the floor never becomes a way to overspend.
+	over, key2, scope2 := floorPublisher(t, 0.95, 50, res)
+	if over.apiKeyUsable(context.Background(), scope2, "run", "review-pr", nil)(key2) {
+		t.Fatal("the reserved bot drew past the deployment's own cap")
+	}
+}
+
 // Two reservations must compose rather than one voiding the other, and the
 // arithmetic has to survive the trip through usagecap's policy.
 func TestBudgetFloor_TwoReservationsCompose(t *testing.T) {

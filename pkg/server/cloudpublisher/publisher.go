@@ -1299,8 +1299,14 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key, botID string) 
 			return true
 		}
 	}
-	if p.capPolicy != nil && usagecap.Preflight(stale, p.capPolicyFor(ctx, botID), now, unbounded).Blocked {
-		return true
+	if p.capPolicy != nil {
+		pol, reserved := p.capPolicyFor(ctx, botID)
+		// A window held entirely for other workloads closes this bot's
+		// access whatever the reading says — the same answer refusedUntil
+		// gives, so the two cannot disagree about one credential.
+		if reserved != "" || usagecap.Preflight(stale, pol, now, unbounded).Blocked {
+			return true
+		}
 	}
 	return false
 }
@@ -1323,7 +1329,8 @@ type BudgetFloorSource interface {
 // deployment's own cap. That asymmetry is what keeps a reservation from
 // becoming a way to overspend the provider window it is meant to share.
 //
-// Two guards carry the whole safety argument:
+// The arithmetic itself is budgetfloor.WindowCeiling's, not a second copy of
+// it here, and it carries the two guards the safety argument rests on:
 //
 //   - a window with no cap (MaxPercent 0, "not enforced") is returned
 //     untouched. Subtracting a reserve from zero would hand back a negative
@@ -1331,36 +1338,47 @@ type BudgetFloorSource interface {
 //     a deployment that never configured a usage cap would ACQUIRE one, and
 //     start refusing runs, merely because somebody wrote a reservation. A
 //     floor may hold work back; it may not invent a ceiling.
-//   - a bot the policy does not name gets the full subtraction, including the
-//     empty bot id: a plain .bot launch belongs to no workload, and treating
-//     "unknown" as "reserved" would let anything unnamed spend the band.
-func (p *Publisher) capPolicyFor(ctx context.Context, botID string) usagecap.Policy {
+//   - a window whose cap the OTHER reserves swallow whole cannot be expressed
+//     as a lowered ceiling at all: MaxPercent 0 means "unenforced" to
+//     usagecap, so clamping there would hand the credential to precisely the
+//     workloads the reserve holds off. That case comes back as a non-empty
+//     `reserved` reason instead, and the caller refuses the credential for
+//     this bot rather than judging it against a policy that cannot block.
+//
+// A bot the policy does not name gets the full subtraction, including the
+// empty bot id: a plain .bot launch belongs to no workload, and treating
+// "unknown" as "reserved" would let anything unnamed spend the band.
+func (p *Publisher) capPolicyFor(ctx context.Context, botID string) (pol usagecap.Policy, reserved string) {
 	if p.capPolicy == nil {
-		return usagecap.Policy{}
+		return usagecap.Policy{}, ""
 	}
 	base := p.capPolicy.Effective(ctx)
 	if p.budgetFloor == nil {
-		return base
+		return base, ""
 	}
 	stored := p.budgetFloor.Get(ctx)
 	if stored == nil || len(stored.Reservations) == 0 {
-		return base
+		return base, ""
 	}
 	floor := *stored
 	lower := func(wp usagecap.WindowPolicy, w budgetfloor.Window) usagecap.WindowPolicy {
-		if wp.MaxPercent <= 0 {
+		ceiling, held := floor.WindowCeiling(botID, w, wp.MaxPercent)
+		if held {
+			// Left at the deployment's own cap: the caller refuses the
+			// credential on `reserved`, and a policy that still enforces
+			// SOMETHING is the safer thing to hand back if it ever stopped.
+			if reserved == "" {
+				reserved = fmt.Sprintf("the %s window is entirely reserved for other workloads (%d%% held of a %.0f%% cap)",
+					w, floor.OtherReserved(botID, w), wp.MaxPercent)
+			}
 			return wp
 		}
-		held := floor.OtherReserved(botID, w)
-		if held <= 0 {
-			return wp
-		}
-		wp.MaxPercent = max(wp.MaxPercent-float64(held), 0)
+		wp.MaxPercent = ceiling
 		return wp
 	}
 	base.FiveHour = lower(base.FiveHour, budgetfloor.WindowFiveHour)
 	base.Week = lower(base.Week, budgetfloor.WindowWeek)
-	return base
+	return base, reserved
 }
 
 // refusedUntil is the ONE evidence reading shared by every credential-skip
@@ -1410,7 +1428,17 @@ func (p *Publisher) refusedUntil(ctx context.Context, backend string, scope stri
 		// A blocked window with no reset instant is trusted for the
 		// reading's own staleness bound, the same synthesis the refusal
 		// branch above applies: bounded, self-healing, and symmetric.
-		if d := usagecap.Preflight(readings, p.capPolicyFor(ctx, botID), now, trust); d.Blocked {
+		pol, reserved := p.capPolicyFor(ctx, botID)
+		if reserved != "" {
+			// This bot is allowed no share of the window at all, so no
+			// reading can make the credential usable for it — refuse it here
+			// and let the walk fall through to the next tier. Bounded by the
+			// trust window like every other synthesised refusal: an operator
+			// who edits the reservation is picked up without a restart, and
+			// the run's own retry lands after the same delay.
+			return now.Add(trust.MaxAge), reserved
+		}
+		if d := usagecap.Preflight(readings, pol, now, trust); d.Blocked {
 			reopen := d.ResetsAt
 			if reopen.IsZero() {
 				reopen = now.Add(trust.MaxAge)

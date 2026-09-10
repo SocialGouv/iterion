@@ -334,27 +334,33 @@ func (p Policy) OtherReservedUSD(botID string) float64 {
 
 // WindowCeiling is the utilisation percentage at which THIS bot must stop
 // drawing on a credential, given the deployment's own cap for that window.
+// It is the ONE place the reserve arithmetic lives — the credential walk
+// calls it rather than re-deriving it, so the two cannot drift on the
+// question below.
 //
-// `cap` is pkg/usagecap's MaxPercent — 0 meaning the family is not enforced,
+// capPct is pkg/usagecap's MaxPercent — 0 meaning the family is not enforced,
 // in which case there is nothing to subtract a reserve from and the answer is
-// 0 (unenforced) rather than a negative ceiling that would refuse everything.
-// That case is the reason this returns the cap untouched instead of
-// `cap - reserved`: a deployment that never set a usage cap must not acquire
-// one by configuring a reservation.
-func (p Policy) WindowCeiling(botID string, w Window, cap int) int {
-	if cap <= 0 {
-		return cap
+// that same 0 (unenforced) rather than a negative ceiling that would refuse
+// everything. A deployment that never set a usage cap must not acquire one by
+// configuring a reservation.
+//
+// `held` is the case a ceiling CANNOT express: the other workloads' reserves
+// swallow the whole cap (an operator lowering the cap under the reserves it
+// already wrote, or reserving the deployment's entire allowance — Validate
+// only knows the 100% ceiling, never the deployment's own cap). Returning 0
+// there would be read by usagecap as "not enforced" and would UNCAP every
+// unreserved workload on that window — the exact starvation the reserve
+// exists to prevent, amplified. So the caller is told to refuse the
+// credential for this bot outright instead of lowering its ceiling.
+func (p Policy) WindowCeiling(botID string, w Window, capPct float64) (ceiling float64, held bool) {
+	if capPct <= 0 {
+		return capPct, false
 	}
-	ceiling := cap - p.OtherReserved(botID, w)
-	if ceiling < 0 {
-		// Validate refuses a policy that sums past 100, but a cap LOWER than
-		// the reserves is a legitimate runtime combination (an operator drops
-		// the cap without touching the reservations). Clamp at zero: the
-		// reserved workload keeps the whole remaining cap, everyone else is
-		// held off entirely, which is what the reservation asked for.
-		return 0
+	reserved := float64(p.OtherReserved(botID, w))
+	if reserved >= capPct {
+		return 0, true
 	}
-	return ceiling
+	return capPct - reserved, false
 }
 
 // RepoCap resolves a repository's effective ceilings for the month. The
