@@ -292,8 +292,11 @@ func clearAuthCookiesCase(t *testing.T, secure bool, domain string) {
 // however the removal is spelled: does the server WRITE the legacy name, and
 // does it ACCEPT one? Those two answers must agree.
 //
-// Removal (earliest 2026-10-10, one refresh TTL after the 2026-09-10 deploy):
-// delete both halves, and this test with them.
+// This pins that the two halves move TOGETHER; it says nothing about whether
+// the moment is safe, and a compliant simultaneous deletion passes it. The two
+// conditions that decide the moment — the refresh TTL for the read, and a soak
+// with ITERION_LEGACY_REFRESH_COOKIE=0 for the write, whose desktop consumer no
+// TTL bounds — live in docs/browser-security.md. Delete this test with them.
 func TestLegacyRefreshCookieHalvesLiveAndDieTogether(t *testing.T) {
 	// The kill switch is a RUNTIME override and orthogonal to the pairing this
 	// test pins; neutralise any inherited value so the assertion is about the

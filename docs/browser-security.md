@@ -144,12 +144,31 @@ value; reads still prefer the prefixed one, so a tossed bare cookie cannot
 win), and read under both. `ITERION_LEGACY_REFRESH_COOKIE=0` ends the write
 early for a deployment with no desktop clients.
 
-**Removing it — both halves, together, not before 2026-10-10.** The date is
-one refresh TTL (30 days, `pkg/auth/service.go`) after the 2026-09-10 prod
-deploy: until then a browser can still be holding a legacy refresh cookie
-minted by the old build. Delete the legacy write in `setAuthCookies`, the
-legacy read in `sessionCookie`, and
-`TestLegacyRefreshCookieHalvesLiveAndDieTogether` with them.
+**Removing it — both halves together, behind TWO conditions.** They are not
+the same condition, and an earlier version of this section gated both on the
+first, which would have caused the very outage the write exists to prevent:
+
+1. **Not before 2026-10-10** — one refresh TTL (30 days,
+   `pkg/auth/service.go`) after the 2026-09-10 prod deploy, past which no
+   *browser* can still hold a legacy refresh cookie minted by the old build.
+   That bounds the browser, so it gates the **read**, and only the read.
+2. **Then soak with the write off.** Nothing bounds the **write**: its
+   consumer is the desktop app, a separately installed binary on its own
+   update schedule, and no TTL says when the last old install stops matching
+   only the bare name. Worse, it is not directly observable — the desktop
+   sends no distinguishing User-Agent, so "old builds are gone" cannot be
+   checked, only assumed.
+
+   So do not assume it: set `ITERION_LEGACY_REFRESH_COOKIE=0` in production
+   and leave it. That stops the write while keeping the read, which is the
+   one combination that is instantly reversible — flip it back and older
+   desktops resume harvesting. Watch for the signature (users reporting
+   being signed out everywhere at once; `RevokeUserSessions` in the auth
+   logs). A quiet soak is the evidence the code deletion needs.
+
+Only then delete the legacy write in `setAuthCookies`, the legacy read in
+`sessionCookie`, and `TestLegacyRefreshCookieHalvesLiveAndDieTogether` with
+them — at which point the switch has already proven the outcome.
 
 That test is there because each half-removal fails differently and neither is
 loud. Drop the **write** alone and an older desktop harvests nothing, replays
