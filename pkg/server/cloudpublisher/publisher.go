@@ -1300,11 +1300,12 @@ func (p *Publisher) staleSuggestsClosed(ctx context.Context, key, botID string) 
 		}
 	}
 	if p.capPolicy != nil {
-		pol, reserved := p.capPolicyFor(ctx, botID)
-		// A window held entirely for other workloads closes this bot's
-		// access whatever the reading says — the same answer refusedUntil
-		// gives, so the two cannot disagree about one credential.
-		if reserved != "" || usagecap.Preflight(stale, pol, now, unbounded).Blocked {
+		// The bot's LOWERED ceiling, never its reservation: a bot held out of
+		// the window entirely was already refused by refusedUntil, which is
+		// the only way this function is reached — deciding it a second time
+		// here would be a second place for the two answers to drift.
+		pol, _ := p.capPolicyFor(ctx, botID)
+		if usagecap.Preflight(stale, pol, now, unbounded).Blocked {
 			return true
 		}
 	}
