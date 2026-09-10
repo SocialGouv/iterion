@@ -94,12 +94,19 @@ func TestGateLaunch_RepoQuota(t *testing.T) {
 		}
 	})
 
-	t.Run("the run-count axis refuses on attempts, not amount", func(t *testing.T) {
-		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/busy", RunsPerMonth: 3})
-		seedRepoUsage(t, s.credUsage, "o/busy", 0.03, 3) // cheap, but three of them
+	t.Run("the activity axis refuses on metered route-spends, not amount", func(t *testing.T) {
+		s, ctx := newServer(t, budgetfloor.RepoQuota{Repo: "o/busy", RouteSpendsPerMonth: 3})
+		seedRepoUsage(t, s.credUsage, "o/busy", 0.03, 3) // cheap, but three charges
 		_, d := s.gateLaunch(ctx, launchSubject{BotID: "review-pr", Repo: "o/busy"})
 		if d == nil || d.reason != denyRepoQuota {
-			t.Fatalf("denial = %+v, want %s on the run count", d, denyRepoQuota)
+			t.Fatalf("denial = %+v, want %s on the activity count", d, denyRepoQuota)
+		}
+		// The number in the message is what the ledger counts — one unit per
+		// (credential, backend, model) route an attempt charged, NOT a run.
+		// The axis was called `runs_per_month` and its denial said "monthly
+		// runs", so a repository configured for 100 was refused after ~30.
+		if strings.Contains(d.detail, "monthly runs") || !strings.Contains(d.detail, "route-spends") {
+			t.Errorf("detail = %q, want it to name metered route-spends rather than runs", d.detail)
 		}
 	})
 }

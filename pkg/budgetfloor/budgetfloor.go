@@ -167,10 +167,18 @@ type RepoQuota struct {
 	// MonthlyUSD caps the repository's metered + estimated spend for the
 	// month. Default axis.
 	MonthlyUSD float64 `bson:"monthly_usd,omitempty" json:"monthly_usd,omitempty"`
-	// RunsPerMonth caps attempts instead of amount — insensitive to a forfait
-	// billing nothing, at the price of counting a trivial run like an
-	// expensive one.
-	RunsPerMonth int `bson:"runs_per_month,omitempty" json:"runs_per_month,omitempty"`
+	// RouteSpendsPerMonth caps ACTIVITY instead of amount — insensitive to a
+	// forfait billing nothing, at the price of counting a trivial charge like
+	// an expensive one.
+	//
+	// It counts what the meter actually records: one unit per (credential,
+	// backend, model) ROUTE an attempt charged (pkg/credusage's per-AddSpend
+	// counter). A run whose agent is on opus and whose judge is on haiku
+	// spends TWO, and a resumed run spends again — so it is not a run count,
+	// and it is deliberately not named like one. Naming it `runs_per_month`
+	// promised the operator a number the ledger cannot produce, and refused a
+	// repository configured for 100 after ~30 real runs.
+	RouteSpendsPerMonth int `bson:"route_spends_per_month,omitempty" json:"route_spends_per_month,omitempty"`
 	// ReserveSharePercent expresses the cap as a share of a workload's
 	// reservation instead of an absolute. Resolved against that reservation's
 	// MonthlyUSD, the only axis a repository ceiling can be expressed on (see
@@ -186,7 +194,7 @@ func (q RepoQuota) Validate() error {
 	if strings.TrimSpace(q.Repo) == "" {
 		return fmt.Errorf("budgetfloor: a repo quota names no repository")
 	}
-	if q.MonthlyUSD < 0 || q.RunsPerMonth < 0 {
+	if q.MonthlyUSD < 0 || q.RouteSpendsPerMonth < 0 {
 		return fmt.Errorf("budgetfloor: repo quota ceilings cannot be negative")
 	}
 	if q.ReserveSharePercent < 0 || q.ReserveSharePercent > 100 {
@@ -200,7 +208,7 @@ func (q RepoQuota) Validate() error {
 
 // Empty reports a quota that caps nothing.
 func (q RepoQuota) Empty() bool {
-	return q.MonthlyUSD == 0 && q.RunsPerMonth == 0 && q.ReserveSharePercent == 0
+	return q.MonthlyUSD == 0 && q.RouteSpendsPerMonth == 0 && q.ReserveSharePercent == 0
 }
 
 // Policy is the deployment's whole set of reservations and repo quotas. Its
@@ -270,7 +278,7 @@ func (p Policy) Validate() error {
 				return fmt.Errorf("budgetfloor: repository %q takes %d%% of %q's reservation, but that reservation holds no monthly_usd — "+
 					"only a dollar reserve can be sliced into a repository ceiling (a share of a live provider window, or of a concurrency slot, "+
 					"is not a monthly amount any replica could compute on its own). "+
-					"Give %q a monthly_usd reserve, or cap the repository with monthly_usd / runs_per_month directly",
+					"Give %q a monthly_usd reserve, or cap the repository with monthly_usd / route_spends_per_month directly",
 					repo, q.ReserveSharePercent, q.ShareOfBot, q.ShareOfBot)
 			}
 		}
@@ -380,7 +388,7 @@ func (p Policy) WindowCeiling(botID string, w Window, capPct float64) (ceiling f
 // A share-based quota is resolved HERE rather than stored pre-multiplied, so
 // raising a reservation raises every repository that takes a share of it —
 // the property that makes shares worth having.
-func (p Policy) RepoCap(repo string) (monthlyUSD float64, runsPerMonth int) {
+func (p Policy) RepoCap(repo string) (monthlyUSD float64, routeSpendsPerMonth int) {
 	name := strings.TrimSpace(repo)
 	if name == "" {
 		// Spend that named no repository is not "every repository": a run
@@ -392,7 +400,7 @@ func (p Policy) RepoCap(repo string) (monthlyUSD float64, runsPerMonth int) {
 		if q.Repo != name {
 			continue
 		}
-		monthlyUSD, runsPerMonth = q.MonthlyUSD, q.RunsPerMonth
+		monthlyUSD, routeSpendsPerMonth = q.MonthlyUSD, q.RouteSpendsPerMonth
 		if q.ReserveSharePercent > 0 {
 			if res, ok := p.Reserved(q.ShareOfBot); ok {
 				if share := res.Reserve.MonthlyUSD * float64(q.ReserveSharePercent) / 100; share > 0 {
@@ -405,7 +413,7 @@ func (p Policy) RepoCap(repo string) (monthlyUSD float64, runsPerMonth int) {
 				}
 			}
 		}
-		return monthlyUSD, runsPerMonth
+		return monthlyUSD, routeSpendsPerMonth
 	}
 	return 0, 0
 }

@@ -25,7 +25,7 @@ var (
 	remoteFloorSlots      int
 	remoteFloorNote       string
 	remoteFloorRepo       string
-	remoteFloorRepoRuns   int
+	remoteFloorRepoSpends int
 	remoteFloorRepoShare  int
 	remoteFloorShareOfBot string
 )
@@ -159,11 +159,11 @@ func applyFloorEdit(pol budgetfloor.Policy, action string) (budgetfloor.Policy, 
 			return pol, fmt.Errorf("--repo is required (the forge slug, e.g. owner/repo)")
 		}
 		q := budgetfloor.RepoQuota{
-			Repo: repo, MonthlyUSD: remoteFloorUSD, RunsPerMonth: remoteFloorRepoRuns,
+			Repo: repo, MonthlyUSD: remoteFloorUSD, RouteSpendsPerMonth: remoteFloorRepoSpends,
 			ReserveSharePercent: remoteFloorRepoShare, ShareOfBot: strings.TrimSpace(remoteFloorShareOfBot),
 		}
 		if q.Empty() {
-			return pol, fmt.Errorf("cap nothing? name at least one of --monthly-usd, --runs-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
+			return pol, fmt.Errorf("cap nothing? name at least one of --monthly-usd, --route-spends-per-month or --reserve-share (use `rm --repo %s` to remove the quota)", repo)
 		}
 		pol.RepoQuotas = upsertRepoQuota(pol.RepoQuotas, q)
 	case "rm":
@@ -234,7 +234,8 @@ func init() {
 	f.IntVar(&remoteFloorSlots, "concurrent-runs", 0, "Concurrency slots held for this bot")
 	f.StringVar(&remoteFloorNote, "note", "", "Why this reservation exists, shown wherever it is cited")
 	f.StringVar(&remoteFloorRepo, "repo", "", "Forge slug of the repository to cap (owner/repo)")
-	f.IntVar(&remoteFloorRepoRuns, "runs-per-month", 0, "Cap the repository on attempts instead of amount")
+	f.IntVar(&remoteFloorRepoSpends, "route-spends-per-month", 0,
+		"Cap the repository on metered ACTIVITY instead of amount: one unit per (credential, backend, model) route a run charges, so a two-model run counts twice")
 	f.IntVar(&remoteFloorRepoShare, "reserve-share", 0, "Cap the repository at N% of a reservation (needs --share-of-bot)")
 	f.StringVar(&remoteFloorShareOfBot, "share-of-bot", "", "Which reservation --reserve-share slices")
 	remoteAdminCmd.AddCommand(remoteAdminBudgetFloorCmd)

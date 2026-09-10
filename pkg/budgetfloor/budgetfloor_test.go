@@ -107,7 +107,7 @@ func TestValidate_RefusesPoliciesThatCannotMeanAnything(t *testing.T) {
 		{"a negative amount", Policy{Reservations: []Reservation{{BotID: "a", Reserve: Reserve{MonthlyUSD: -1}}}}},
 		{"a quota with no repository", Policy{RepoQuotas: []RepoQuota{{MonthlyUSD: 10}}}},
 		{"two quotas for one repository", Policy{RepoQuotas: []RepoQuota{
-			{Repo: "o/r", MonthlyUSD: 10}, {Repo: "o/r", RunsPerMonth: 5},
+			{Repo: "o/r", MonthlyUSD: 10}, {Repo: "o/r", RouteSpendsPerMonth: 5},
 		}}},
 		{"a share of a bot that has no reservation", Policy{RepoQuotas: []RepoQuota{
 			{Repo: "o/r", ReserveSharePercent: 50, ShareOfBot: "nobody"},
@@ -139,7 +139,7 @@ func TestValidate_RefusesAShareOfAWindowOnlyReserve(t *testing.T) {
 		t.Fatal("accepted a repository share of a window-only reserve")
 	}
 	// The message has to name the way OUT, not only the refusal.
-	for _, want := range []string{"monthly_usd", "runs_per_month"} {
+	for _, want := range []string{"monthly_usd", "route_spends_per_month"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not point at %q as an alternative: %v", want, err)
 		}
