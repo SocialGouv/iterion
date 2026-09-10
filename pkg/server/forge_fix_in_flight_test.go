@@ -198,6 +198,27 @@ func TestClearFixInFlight_ResolvesOurOwnClaim(t *testing.T) {
 // stand for the whole second pass.
 //
 // An armed retry is not an ending. Same call as the gate lane next door.
+// R5fda5a — an armed RetryAfter is only ONE of the ways a run comes back. The
+// runner turns a rolling-deploy drain (ErrRunInterrupted), a sandbox phase
+// timeout and a capacity refusal into failed_resumable plus a JetStream nak: a
+// fresh pod picks the SAME run up with NO RetryAfter ever written. Keying the
+// stand-down on RetryAfter announced the fixer done on every drained run —
+// the commonest interruption there is.
+func TestClearFixInFlight_SilentOnAResumableParkWithNoRetryArmed(t *testing.T) {
+	gc := &listingGateClient{statuses: []forge.CommitStatus{
+		{Context: fixInFlightContext, State: forge.CommitStatePending,
+			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.RetryState = nil // a nak-based auto-resume never arms one
+
+	s.clearFixInFlight(context.Background(), run)
+
+	if gc.setCalls != 0 {
+		t.Fatalf("announced the fixer done on a drained run (%d posts) — a fresh pod resumes it behind a green check", gc.setCalls)
+	}
+}
+
 func TestClearFixInFlight_SilentOnAParkedRunWithAnArmedRetry(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
 		{Context: fixInFlightContext, State: forge.CommitStatePending,
@@ -216,18 +237,18 @@ func TestClearFixInFlight_SilentOnAParkedRunWithAnArmedRetry(t *testing.T) {
 
 // ...but a resumable failure with NOTHING armed to resume it IS dead, and its
 // claim must not outlive it. The two halves of the same predicate.
-func TestClearFixInFlight_ResolvesAParkedRunNothingWillResume(t *testing.T) {
+func TestClearFixInFlight_ResolvesOnlyOnADLQPark(t *testing.T) {
 	gc := &listingGateClient{statuses: []forge.CommitStatus{
 		{Context: fixInFlightContext, State: forge.CommitStatePending,
 			Description: fixInFlightDescription, TargetURL: "https://iterion.test/runs/run-77"},
 	}}
 	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
-	run.RetryState = nil
+	run.FailureCode = store.FailureDLQParked // the ONE resumable ending
 
 	s.clearFixInFlight(context.Background(), run)
 
 	if gc.setCalls != 1 {
-		t.Fatalf("posted %d, want 1 — a run nothing will resume leaves its claim pending forever", gc.setCalls)
+		t.Fatalf("posted %d, want 1 — a DLQ park is exhausted, nothing will ever wake it", gc.setCalls)
 	}
 }
 

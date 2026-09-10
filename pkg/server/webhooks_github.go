@@ -197,6 +197,12 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		healIdem := healIdempotencyKey(cfg, p)
 		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		// The revision this heal is about. The lane already keys its idempotency
+		// on it; the launch tail needs it too, because the fix-in-flight claim is
+		// posted on a sha and stands down without one. Missing here, the auto-heal
+		// Billy — the lane that FORCE-pushes the branch, and so the one a
+		// concurrent writer most needs warned about — stayed silently invisible.
+		healVars["head_sha"] = p.HeadSHA
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}

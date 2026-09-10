@@ -179,9 +179,22 @@ func (s *Server) clearFixInFlight(ctx context.Context, run *store.Run) {
 	// nothing will ever wake. So the exception is tested FIRST, exactly as
 	// forge_gate_reconcile.go does, and only a park something will actually
 	// resume keeps the claim.
+	// AND AN ARMED RetryAfter IS ONLY ONE OF THE WAYS A RUN COMES BACK. The
+	// runner turns ErrRunInterrupted (a rolling deploy draining a run
+	// mid-flight), sandbox.ErrPhaseTimeout and sandbox.ErrCapacity into
+	// failed_resumable plus a JetStream nak: a fresh pod picks the SAME run up
+	// with no RetryAfter ever written — the only site that arms one is the
+	// usage-window park. Keying on RetryAfter therefore announced "pushing is
+	// safe again" on every DRAINED fixer, which is the commonest interruption
+	// there is.
+	//
+	// So the test is inverted: failed_resumable KEEPS the claim, and only the
+	// DLQ park releases it — a park whose deliveries the queue has exhausted
+	// and that no automation will ever wake. The conservative direction is the
+	// safe one: a claim left standing is advisory noise on a context nothing
+	// gates, while a false all-clear is the harm this file exists to prevent.
 	if run.Status == store.RunStatusFailedResumable &&
-		run.FailureCode != store.FailureDLQParked &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+		run.FailureCode != store.FailureDLQParked {
 		return
 	}
 	prURL := runInputString(run, "pr_url")
