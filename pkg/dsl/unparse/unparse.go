@@ -621,6 +621,29 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Language != "" {
 			writeProp(&w.b, "language", t.Language)
 		}
+		// Connector action (ADR-098), written in the order an author reads it:
+		// what is called, with what credential, with which arguments.
+		if t.Action != "" {
+			writeProp(&w.b, "action", t.Action)
+		}
+		if t.Connection != "" {
+			writeProp(&w.b, "connection", t.Connection)
+		}
+		if len(t.Params) > 0 {
+			w.b.WriteString("  params:\n")
+			for _, p := range t.Params {
+				// The AUTHORED order, not a sorted one: a `.bot` is read and
+				// diffed by humans, and reshuffling an author's arguments on
+				// every round trip would make every regeneration a diff.
+				writeQuotedProp(&w.b, "  "+p.Key, p.Value)
+			}
+		}
+		if t.Retry != "" {
+			writeProp(&w.b, "retry", t.Retry)
+		}
+		if t.Timeout != "" {
+			writeProp(&w.b, "timeout", t.Timeout)
+		}
 		if t.Input != "" {
 			writeProp(&w.b, "input", t.Input)
 		}

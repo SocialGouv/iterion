@@ -327,6 +327,29 @@ tool deploy:
 
 `parallel_safe: true` is a narrowly scoped assertion for `fan_out_each`: concurrent replays must write only to disjoint item-keyed targets. It does not make a tool generally read-only.
 
+**The third recipe: `action:`** ([ADR-098](adr/098-connector-catalog.md)). A tool node calls a connector operation instead of a shell:
+
+```iter fragment
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    owner: "{{vars.owner}}"
+    repo: "{{vars.repo}}"
+    index: "{{outputs.pick.number}}"
+    body: "{{outputs.draft.text}}"
+  timeout: 30s
+  output: comment_result
+```
+
+`command:`, `script:` and `action:` are mutually exclusive — a node has exactly one answer to "how does this do its work". `action:` names an operation of a connector package (`<connector>.<resource>.<verb>`), `connection:` the binding that authenticates it, and each `params:` value renders the same `{{...}}` namespaces a command does, then coerces to the type the operation declares (so `"{{outputs.pick.number}}"` reaches an integer field as a number, not as `"42"`).
+
+**The output** is `{status, pending, data}`, plus `{items, complete}` when the operation paginates. Read `complete`: a walk that stopped at its declared ceiling looks exactly like one that finished. Read `pending`: a `202` means the vendor accepted the work, not that it happened.
+
+**What an action node refuses, and why.** Its offer is that *no LLM decides the operation, builds the arguments or reads the answer* — so the two properties that could reintroduce one are compile errors: `recovery:` / `policy: recover` ([C262](references/diagnostics.md), whose ladder ends in an LLM repairing the call) and `postcondition:` ([C263](references/diagnostics.md), a shell exit code that would overrule the vendor's own typed answer). A failure is a node failure carrying its error class (`not_found`, `rate_limited`, `unauthorized`, …); branch on it with a `when` edge rather than expecting the node to return one.
+
+**`unknown_outcome` is a first-class result.** When a mutating operation's answer is lost and the vendor offers no idempotency key, iterion reports that it cannot tell whether the call happened — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie.
+
 ### `compute`
 
 `compute` evaluates bounded expressions without an LLM or shell:

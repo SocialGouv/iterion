@@ -168,4 +168,18 @@ const (
 	// C249 continues the C240 parallel-branch band: a branch-spawning router
 	// that names one target twice gives two goroutines one branch id.
 	DiagDuplicateFanOutTarget DiagCode = "C249" // fan_out_all / llm-multi router declares more than one edge to the same target (warning — one branch id, one output slot, one branch checkpoint for N executions)
+
+	// Connector actions (ADR-098) — the `tool … action:` recipe. The band is
+	// about ONE promise: an action node reaches a third-party API with no LLM
+	// deciding the operation, the arguments or the reading of the answer.
+	// Every code below is a way that promise could be quietly broken.
+	// The C2xx space is SHARED with pkg/bundlelint (C200–C251 there), so the
+	// band starts at C260 rather than continuing from C249.
+	DiagActionMalformedID  DiagCode = "C260" // `action:` is not a `connector.resource.verb` id (error — it addresses nothing)
+	DiagActionNoConnection DiagCode = "C261" // `action:` with no `connection:` (error — a call with no credential is not a call)
+	DiagActionRecovery     DiagCode = "C262" // ADR-044 recovery on an action node (error — an LLM repairing a deterministic call is what the offer promises does not happen)
+	DiagActionPostcond     DiagCode = "C263" // `postcondition:` on an action node (error — a shell exit code would overrule the vendor's own typed answer)
+	DiagActionBadParam     DiagCode = "C264" // a duplicate or unnamed `params:` key (error — one of the two could never be addressed)
+	DiagActionBadTimeout   DiagCode = "C265" // `timeout:` / `retry:` is not a value this build can read (error)
+	DiagActionOnlyProperty DiagCode = "C266" // `connection:`/`params:`/`retry:` on a node that declares no `action:` (warning — the property is inert, which reads as configured)
 )

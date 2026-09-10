@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -41,6 +42,15 @@ type ClawExecutor struct {
 	toolRegistry    *tool.Registry     // unified tool registry (preferred)
 	mcpManager      *mcp.Manager       // generic MCP discovery/call bridge
 	toolPolicy      tool.ToolChecker   // allowlist policy for tool execution (nil = open)
+	// connectors resolves a `tool … action:` node's package and credential
+	// (ADR-098). Nil means no catalog is wired, and an action node then fails
+	// EXPLICITLY rather than reporting a success it never performed.
+	connectors ConnectorResolver
+	// connectorClient is the guarded HTTP client every connector call goes
+	// through. A connector reaches hosts a tenant chose, so an unguarded
+	// client here would be a way to a metadata endpoint; nil is refused by
+	// the executor rather than defaulted.
+	connectorClient *http.Client
 	prompts         map[string]*ir.Prompt
 	schemas         map[string]*ir.Schema
 	cursors         map[string]*ir.CursorDef
@@ -355,6 +365,20 @@ func WithToolPolicy(p tool.ToolChecker) ClawExecutorOption {
 // WithRetryPolicy sets the retry policy for transient LLM errors.
 func WithRetryPolicy(rp RetryPolicy) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.retry = rp }
+}
+
+// WithConnectors wires the connector catalog a `tool … action:` node resolves
+// through, together with the HTTP client its calls go out on (ADR-098).
+//
+// Both together, deliberately: a resolver with no guarded client would leave
+// the executor to invent one, and the one it would invent is the unguarded
+// default — for a feature whose entire purpose is calling hosts a tenant
+// chose. Passing nil for either leaves action nodes failing explicitly.
+func WithConnectors(r ConnectorResolver, client *http.Client) ClawExecutorOption {
+	return func(e *ClawExecutor) {
+		e.connectors = r
+		e.connectorClient = client
+	}
 }
 
 // WithBackendRegistry sets the backend registry on the executor.

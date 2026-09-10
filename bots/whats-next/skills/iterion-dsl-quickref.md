@@ -433,9 +433,9 @@ tool commit_changes:
   await:   wait_all               # only when the node has multiple incoming edges
 ```
 
-A tool node has ONE `command:` string (or a `script:` + `language:`). A
-`command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
-interpreter its `language:` names (`sh` is dash on Debian-derived images —
+A tool node has ONE recipe: a `command:` string, a `script:` + `language:`, or
+an `action:` (below). A `command:` runs through `bash -c`, host and sandbox
+alike; a `script:` runs the interpreter its `language:` names (`sh` is dash on Debian-derived images —
 keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
 runtime — never wrap it in quotes of your own (C137). **A tool's stdout IS its
 output**: print a JSON object matching the `output:` schema; any other stdout is
@@ -457,6 +457,41 @@ categorise the artifact, so the studio's Artifacts tab groups it (e.g. a
 (`approved`/`blockers`/…) outputs are auto-labelled `plan`/`verdict` even
 without the field. Diagnostic C049 warns if `artifact_labels:` is set
 without `publish:` (nothing to attach to).
+
+### Connector action — calling a third-party API with no LLM (ADR-098)
+
+```iter fragment
+tool comment:
+  action: forgejo.issue.comment    # <connector>.<resource>.<verb>
+  connection: forge_main           # the binding that authenticates it
+  params:
+    owner: "{{vars.owner}}"
+    repo:  "{{vars.repo}}"
+    index: "{{outputs.pick.number}}"
+    body:  "{{outputs.draft.text}}"
+  timeout: 30s
+  output: comment_result
+```
+
+`action:` is exclusive with `command:`/`script:`. Each `params:` value renders
+the usual `{{...}}` namespaces, then coerces to the type the operation declares
+— so `"{{outputs.pick.number}}"` reaches an integer field as a number.
+
+Output: `{status, pending, data}`, plus `{items, complete}` when the operation
+paginates. **Read `complete`** — a walk that stopped at its ceiling looks
+exactly like one that finished. **Read `pending`** — a `202` means accepted,
+not done.
+
+Two properties are REFUSED on an action node, because its whole offer is that
+no LLM decides the operation, builds the arguments or reads the answer:
+`recovery:`/`policy: recover` (C262 — its ladder ends in an LLM repairing the
+call) and `postcondition:` (C263 — a shell exit code would overrule the
+vendor's typed answer). A failure is a node failure carrying its error class
+(`not_found`, `rate_limited`, …); branch on it with a `when` edge.
+
+`unknown_outcome` is a first-class result: when a mutating call's answer is
+lost and the vendor offers no idempotency key, iterion says it cannot tell
+whether it happened, and never retries automatically.
 
 ### Verified Action — adaptive recovery for ACTION tool nodes (ADR-044)
 

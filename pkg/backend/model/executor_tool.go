@@ -52,14 +52,17 @@ const (
 	recipeScript   recipeKind = iota // `script:` body via an interpreter
 	recipeShell                      // `command:` with template refs or shell metacharacters
 	recipeRegistry                   // bare `command:` resolved as a registered tool name
+	recipeAction                     // `action:` — a connector operation (ADR-098)
 )
 
-// recipeKindOf reports how node's recipe should run. `script:` takes
-// precedence over `command:` (IR validation makes them mutually exclusive);
-// a command with template refs or shell metacharacters runs via sh, else it
-// is a bare registered-tool name.
+// recipeKindOf reports how node's recipe should run. `action:` and `script:`
+// take precedence over `command:` (IR validation makes all three mutually
+// exclusive); a command with template refs or shell metacharacters runs via
+// sh, else it is a bare registered-tool name.
 func recipeKindOf(node *ir.ToolNode) recipeKind {
 	switch {
+	case node.Action != "":
+		return recipeAction
 	case node.Script != "":
 		return recipeScript
 	case len(node.CommandRefs) > 0 || looksLikeShellCommand(node.Command):
@@ -74,6 +77,8 @@ func recipeKindOf(node *ir.ToolNode) recipeKind {
 // Action ladder and the whole of the non-verified path.
 func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	switch recipeKindOf(node) {
+	case recipeAction:
+		return e.executeToolNodeAction(ctx, node, input)
 	case recipeScript:
 		return e.executeToolNodeScript(ctx, node, input)
 	case recipeShell:
