@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.3](https://github.com/SocialGouv/iterion/compare/v3.131.2...v3.131.3) (2026-09-10)
+
+### Bug Fixes
+
+* **deps:** close the five docs-chain advisories without shipping an alpha ([#1060](https://github.com/SocialGouv/iterion/issues/1060)) ([1aa36f5](https://github.com/SocialGouv/iterion/commit/1aa36f5c79f3b51ac226e10f5d80a02e1adadd07)), closes [#625](https://github.com/SocialGouv/iterion/issues/625)
+
+    <details><summary>why</summary>
+
+    All five open Dependabot alerts live in ONE chain: vitepress 1.6.4 pinned vite 5.4.21, which pinned esbuild 0.21.5. Moving vite carries esbuild with it, so four of the five are one fix, and @babel/core is the fifth.
+
+    </details>
+
 ## [3.131.2](https://github.com/SocialGouv/iterion/compare/v3.131.1...v3.131.2) (2026-09-10)
 
 ### Bug Fixes
