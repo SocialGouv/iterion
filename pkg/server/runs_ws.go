@@ -614,7 +614,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// enforce. The auth identity is the one snapshotted at upgrade, NOT
 	// authCtx() (which only carries the store tenant tag) — re-stamped
 	// here so gateLaunch sees it.
-	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity))
+	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), launchSubject{})
 	if d != nil {
 		c.sendError(d.reason, d.detail, env.AckID)
 		return

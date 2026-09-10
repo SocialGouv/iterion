@@ -1892,7 +1892,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// and the retry waits out the backoff. The metered admission is handed
 	// back when the run service then refuses, as the HTTP handler does: a
 	// run that never started consumes no monthly slot.
-	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}))
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}), launchSubject{})
 	if deny != nil {
 		s.revokeUnlaunchedGrant(minted)
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
