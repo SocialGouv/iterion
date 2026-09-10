@@ -5,19 +5,29 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
+// setSeam installs a package seam for one test and puts the previous
+// value back afterwards. Every seam is an atomic (see fireSeam) because
+// the goroutines that read them belong to a Store and outlive the test
+// that made it — a bare assignment here races the watcher loop of a store
+// an earlier test left running.
+func setSeam[T any](t *testing.T, p *atomic.Pointer[T], v T) {
+	t.Helper()
+	prev := p.Swap(&v)
+	t.Cleanup(func() { p.Store(prev) })
+}
+
 // setRescanInterval pins the fallback net's interval for one test; 0
 // disables the net.
 func setRescanInterval(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := rescanIntervalOverride
-	rescanIntervalOverride = &d
-	t.Cleanup(func() { rescanIntervalOverride = prev })
+	setSeam(t, &rescanIntervalOverride, d)
 }
 
 // TestReconcile_DoesNotRevertAWriteThatRacedTheScan pins the two
@@ -41,8 +51,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 
 	var duringScan, afterScan *Issue
 	var scanningOnce, scannedOnce sync.Once
-	prevScanning, prevScanned := reconcileScanning, reconcileScanned
-	reconcileScanning = func(*Store) {
+	setSeam(t, &reconcileScanning, func(*Store) {
 		scanningOnce.Do(func() {
 			// From another goroutine, bounded: a Create that cannot take
 			// the lock while the scan runs is the failure named.
@@ -62,8 +71,8 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 				t.Fatal("a Create blocked while Reconcile was scanning: the scan holds the store mutex across its disk I/O")
 			}
 		})
-	}
-	reconcileScanned = func(*Store) {
+	})
+	setSeam(t, &reconcileScanned, func(*Store) {
 		scannedOnce.Do(func() {
 			iss, err := s.Create(Issue{Title: "Landed after the scan, before the swap", State: "backlog"})
 			if err != nil {
@@ -71,8 +80,7 @@ func TestReconcile_DoesNotRevertAWriteThatRacedTheScan(t *testing.T) {
 			}
 			afterScan = iss
 		})
-	}
-	t.Cleanup(func() { reconcileScanning, reconcileScanned = prevScanning, prevScanned })
+	})
 
 	if err := s.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)

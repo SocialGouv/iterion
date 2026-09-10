@@ -20,9 +20,7 @@ import (
 // whether its watch still exists.
 func setWatchCheckInterval(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := watchCheckIntervalOverride
-	watchCheckIntervalOverride = &d
-	t.Cleanup(func() { watchCheckIntervalOverride = prev })
+	setSeam(t, &watchCheckIntervalOverride, d)
 }
 
 // writeExternal drops an issue file under issues/ behind the store's
@@ -204,13 +202,11 @@ func TestReconcile_ScansOnceWhateverTheWriteLoad(t *testing.T) {
 	}
 
 	var scans atomic.Int32
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s { // another test's store may still be ticking down its Cleanup
 			scans.Add(1)
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	})
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -330,13 +326,11 @@ func TestWatcher_OverflowRebuildDoesNotStallTheEventLoop(t *testing.T) {
 	}
 
 	stall := make(chan struct{})
-	prev := reconcileScanning
-	reconcileScanning = func(st *Store) {
+	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s { // stall only this store's rebuild
 			<-stall
 		}
-	}
-	t.Cleanup(func() { reconcileScanning = prev })
+	})
 	release := func() {
 		select {
 		case <-stall:

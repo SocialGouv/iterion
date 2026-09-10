@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -23,8 +24,9 @@ import (
 const defaultRescanInterval = 2 * time.Second
 
 // rescanIntervalOverride lets a test pin the interval; production resolves
-// it from the environment when the net starts.
-var rescanIntervalOverride *time.Duration
+// it from the environment when the net starts. Atomic like every seam in
+// this package — see fireSeam.
+var rescanIntervalOverride atomic.Pointer[time.Duration]
 
 // rescanInterval resolves ITERION_NATIVE_INDEX_RESCAN when the net starts —
 // not at package init, which would read the environment before a test's
@@ -35,8 +37,8 @@ var rescanIntervalOverride *time.Duration
 // spelling is honoured, never quietly replaced by the default; an
 // unparsable value falls back to the default.
 func rescanInterval() time.Duration {
-	if rescanIntervalOverride != nil {
-		return *rescanIntervalOverride
+	if d := rescanIntervalOverride.Load(); d != nil {
+		return *d
 	}
 	raw := os.Getenv("ITERION_NATIVE_INDEX_RESCAN")
 	if raw == "" {
@@ -60,16 +62,34 @@ func rescanInterval() time.Duration {
 	return defaultRescanInterval
 }
 
-// reconcileScanning and reconcileScanned are test seams, nil in
+// reconcileScanning and reconcileScanned are test seams, unset in
 // production: the first is called at the start of every disk scan — an
 // in-process write must be able to land while it runs, which it could not
 // if the scan held the store mutex; the second is called by Reconcile
 // after its scan and before the swap — a write that lands there is one
 // the scan did not see, and a swap must not revert it.
 var (
-	reconcileScanning func(*Store)
-	reconcileScanned  func(*Store)
+	reconcileScanning atomic.Pointer[func(*Store)]
+	reconcileScanned  atomic.Pointer[func(*Store)]
 )
+
+// fireSeam calls a seam if one is installed.
+//
+// Every seam in this package is an atomic, never a bare package var,
+// because the goroutines that read them belong to a Store and outlive the
+// test that made it: the watcher loop reads watchCheckIntervalOverride on
+// its own goroutine, the rescan ticker and the rebuild goroutine read
+// these two and rebuildPassEnding on theirs. A store a test leaves
+// running therefore reads the seam the NEXT test assigns — a real data
+// race, reported by `go test -race -shuffle=on ./pkg/dispatcher/native/`
+// against a bare var (write in setWatchCheckInterval, read in
+// (*indexWatcher).loop of an earlier test's store), and the `race` job is
+// a required check.
+func fireSeam(p *atomic.Pointer[func(*Store)], s *Store) {
+	if f := p.Load(); f != nil {
+		(*f)(s)
+	}
+}
 
 // markDirtyLocked records a write to the index while a scan is in flight,
 // so the swap keeps the index's value for that id. Caller holds mu; every
@@ -81,10 +101,10 @@ func (s *Store) markDirtyLocked(id string) {
 	}
 }
 
-// rebuildPassEnding is a test seam, nil in production: called by the
+// rebuildPassEnding is a test seam, unset in production: called by the
 // overflow rebuild goroutine after its last scan and before it releases
 // the pending flag — the window in which a request used to be lost.
-var rebuildPassEnding func(*Store)
+var rebuildPassEnding atomic.Pointer[func(*Store)]
 
 // Reconcile rebuilds the index from the authoritative on-disk state.
 //
@@ -138,9 +158,7 @@ func (s *Store) Reconcile() error {
 		s.mu.Unlock()
 		return err
 	}
-	if reconcileScanned != nil {
-		reconcileScanned(s)
-	}
+	fireSeam(&reconcileScanned, s)
 
 	s.mu.Lock()
 	s.scanning--
@@ -225,9 +243,7 @@ func (s *Store) swapIndexLocked(fresh map[string]*Issue, unreadable map[string]e
 // error, for the caller to decide — the rebuild keeps the last value,
 // NewStore skips it.
 func (s *Store) scanIssues() (fresh map[string]*Issue, unreadable map[string]error, err error) {
-	if reconcileScanning != nil {
-		reconcileScanning(s)
-	}
+	fireSeam(&reconcileScanning, s)
 	fresh = map[string]*Issue{}
 	entries, err := os.ReadDir(filepath.Join(s.root, issuesDir))
 	if err != nil {
@@ -277,9 +293,7 @@ func (s *Store) rebuildAsync(what string) {
 					s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
 				}
 			}
-			if rebuildPassEnding != nil {
-				rebuildPassEnding(s)
-			}
+			fireSeam(&rebuildPassEnding, s)
 			s.rebuildPending.Store(false)
 			// A request that arrived between the last check above and this
 			// release failed its own claim on the pending flag and is
