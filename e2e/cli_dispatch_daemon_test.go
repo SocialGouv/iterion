@@ -126,6 +126,37 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 			Port:       port,
 		})
 	}()
+	// Registered BEFORE the first assertion, not after the last one. Every
+	// t.Fatalf between here and the end — waitHealthy timing out, the post
+	// helper hitting a transport error under CI load — would otherwise skip
+	// the stop and re-leak the daemon, and it would do so exactly on runs
+	// that are already failing, where the descriptor cascade then buries the
+	// original failure under every later test in the package.
+	t.Cleanup(func() {
+		select {
+		case err := <-done:
+			// Already returned — it never started, or a sibling's signal
+			// reached it. Nothing to stop, and signalling now could land on a
+			// process with no handler left registered.
+			if err != nil {
+				t.Logf("RunDispatch had already returned: %v", err)
+			}
+			return
+		default:
+		}
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+			t.Errorf("signal daemon: %v", err)
+			return
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("RunDispatch returned %v on SIGTERM, want a clean exit", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("RunDispatch did not return within 30s of SIGTERM — the daemon is still holding its watches")
+		}
+	})
 	waitHealthy(t, base, done)
 
 	post := func(path, origin, body string) int {
@@ -161,27 +192,6 @@ func TestDispatchDaemonRefusesCrossOriginWrites(t *testing.T) {
 		t.Error("POST with no Origin was refused; that is the CLI/script caller")
 	}
 
-	// Stop the daemon. RunDispatch has no cancellation seam — it serves until
-	// a signal — so leaving it running holds its inotify watches, its port and
-	// its store open for the REST of the package. Not hypothetical: it
-	// exhausted the runner's file descriptors in the merge queue
-	// ("couldn't initialize inotify: too many open files"), which the sibling
-	// test hit and which ejected the PR.
-	//
-	// Signalling the process is safe HERE precisely because this test is
-	// sequential: the parallel tests are still paused, so no other daemon
-	// exists to catch it. Same reason this must not become t.Parallel().
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatalf("signal daemon: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("RunDispatch returned %v on SIGTERM, want a clean exit", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("RunDispatch did not return within 30s of SIGTERM")
-	}
 }
 
 func TestDispatchDaemonBootsServesAndStopsOnSignal(t *testing.T) {
