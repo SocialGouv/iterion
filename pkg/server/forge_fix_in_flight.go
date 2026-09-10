@@ -344,6 +344,20 @@ func fixParkWillResume(run *store.Run) bool {
 // pass.
 const fixRoleTTL = 5 * time.Minute
 
+// fixRoleMemoMax bounds the memo's SIZE, because its TTL does not: an entry
+// expires but is only ever overwritten by a re-lookup of the same key, so a
+// key seen once and never again is held for the life of the process. The key
+// space is (tenant × bot) and the server is long-lived and multi-tenant, which
+// is a slow one-way climb rather than a leak with a rate — the shape that is
+// invisible until someone reads a heap profile.
+//
+// The cap is generous on purpose: it must never evict a WORKING set (a deploy
+// where every team's fixer is offered by the sweep at once), only the tail of a
+// process that has run for weeks. Past it, expired entries go first and the
+// map is dropped whole only if that freed nothing — a memo is a performance
+// filter, so the worst a reset can cost is one re-walk per live key.
+const fixRoleMemoMax = 4096
+
 type fixRoleEntry struct {
 	role    pauseNoticeRole
 	expires time.Time
@@ -375,6 +389,16 @@ func (s *Server) fixerRoleCached(ctx context.Context, sourceTenant, botID string
 	s.fixRoleMu.Lock()
 	if s.fixRoleMemo == nil {
 		s.fixRoleMemo = map[string]fixRoleEntry{}
+	}
+	if len(s.fixRoleMemo) >= fixRoleMemoMax {
+		for k, e := range s.fixRoleMemo {
+			if !now.Before(e.expires) {
+				delete(s.fixRoleMemo, k)
+			}
+		}
+		if len(s.fixRoleMemo) >= fixRoleMemoMax {
+			clear(s.fixRoleMemo)
+		}
 	}
 	s.fixRoleMemo[key] = fixRoleEntry{role: role, expires: now.Add(fixRoleTTL)}
 	s.fixRoleMu.Unlock()

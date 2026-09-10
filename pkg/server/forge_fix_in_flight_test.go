@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -567,5 +568,41 @@ func TestFixerRoleCached_SecondLookupIsMemoised(t *testing.T) {
 	// finds nothing) — proving the memo is keyed, not a blanket yes.
 	if other := s.fixerRoleCached(context.Background(), "", "review-pr"); other == pauseNoticeRoleFixer {
 		t.Errorf("an unrelated bot was served the memoised fixer answer")
+	}
+}
+
+// The memo's TTL expires an entry but never removes it: only a re-lookup of
+// the SAME key overwrites one, so a key seen once is held for the life of the
+// process. On a long-lived multi-tenant server the key space is (tenant × bot)
+// and the climb is one-way — the shape nobody notices until they read a heap
+// profile. The cap is what makes it a cache instead of a ledger.
+func TestFixerRoleCached_MemoIsBounded(t *testing.T) {
+	for name, expires := range map[string]time.Time{
+		// The ordinary tail: keys walked once, long past their TTL, that no
+		// re-lookup will ever overwrite.
+		"expired entries are reclaimed": time.Now().Add(-time.Hour),
+		// And the case where reclaiming frees nothing — every key still live.
+		// A memo is a performance filter, so dropping it whole costs one
+		// re-walk per live key and never a wrong answer.
+		"a full live memo is reset": time.Now().Add(time.Hour),
+	} {
+		gc := &listingGateClient{}
+		s := fixLaunchFixture(t, gc)
+		s.fixRoleMemo = make(map[string]fixRoleEntry, fixRoleMemoMax)
+		for i := 0; i < fixRoleMemoMax; i++ {
+			s.fixRoleMemo["tenant-"+strconv.Itoa(i)+"|some-bot"] = fixRoleEntry{expires: expires}
+		}
+
+		role := s.fixerRoleCached(context.Background(), "", "branch-improve-loop")
+
+		if role != pauseNoticeRoleFixer {
+			t.Errorf("%s: role = %v, want fixer — the bound must not change any answer", name, role)
+		}
+		s.fixRoleMu.Lock()
+		n := len(s.fixRoleMemo)
+		s.fixRoleMu.Unlock()
+		if n > fixRoleMemoMax {
+			t.Errorf("%s: memo holds %d entries, cap is %d — it climbs for the life of the process", name, n, fixRoleMemoMax)
+		}
 	}
 }
