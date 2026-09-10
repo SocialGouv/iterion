@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.2](https://github.com/SocialGouv/iterion/compare/v3.131.1...v3.131.2) (2026-09-10)
+
+### Bug Fixes
+
+* **dispatcher/native:** a refused inotify watch no longer freezes the board index until restart ([#1051](https://github.com/SocialGouv/iterion/issues/1051)) ([7871eac](https://github.com/SocialGouv/iterion/commit/7871eacbe44d2be1e65c15556a2d245e99e78446)), references [#1047](https://github.com/SocialGouv/iterion/issues/1047) [#1020](https://github.com/SocialGouv/iterion/issues/1020)
+
+    <details><summary>why</summary>
+
+    Adversarial re-attack of the previous two commits (2 high, 2 medium, 2 low), each with a red-then-green test:
+
+    </details>
+* **forge:** a store that could not answer is no longer read as "you have no App" ([#1059](https://github.com/SocialGouv/iterion/issues/1059)) ([bd01eeb](https://github.com/SocialGouv/iterion/commit/bd01eebf2582da0271c39511f16e8eea3fb26a16)), closes [#969](https://github.com/SocialGouv/iterion/issues/969), references [#969](https://github.com/SocialGouv/iterion/issues/969)
+
+    <details><summary>why</summary>
+
+    Resolving a connection's GitHub App returned one `ok bool`, so "this tenant registered none" and "the store could not be read" were the same answer. Every caller then acted on the wrong one, and the two residuals #969 left behind turn out to be one user-visible defect.
+
+    </details>
+
 ## [3.131.1](https://github.com/SocialGouv/iterion/compare/v3.131.0...v3.131.1) (2026-09-10)
 
 ### Bug Fixes
