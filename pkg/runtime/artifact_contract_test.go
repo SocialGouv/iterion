@@ -1327,6 +1327,9 @@ func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 	if eng.artifactResumePreflight != nil {
 		t.Fatal("engine retained the one-shot artifact preflight after reconstruction")
 	}
+	if preflight.artifacts != nil {
+		t.Fatal("consumed preflight retained validation-only artifact bodies")
+	}
 }
 
 func TestResumeInvalidatesArtifactPreflightAfterCheckpointChange(t *testing.T) {
@@ -1398,6 +1401,9 @@ func TestResumeInvalidatesArtifactPreflightAfterCheckpointChange(t *testing.T) {
 	}
 	if flaky.loads != 2 {
 		t.Fatalf("artifact loads = %d, want old preflight plus refreshed checkpoint", flaky.loads)
+	}
+	if eng.artifactResumePreflight != nil || preflight.artifacts != nil {
+		t.Fatal("invalidated preflight retained its engine reference or artifact payload")
 	}
 }
 

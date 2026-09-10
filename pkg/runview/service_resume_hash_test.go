@@ -61,6 +61,17 @@ func (unavailableResumeArtifactStore) LoadArtifact(context.Context, string, stri
 	return nil, errors.New("artifact backend unavailable")
 }
 
+func TestConsumeArtifactResumePreflightClearsLaunchCapture(t *testing.T) {
+	ex := launchExtras{artifactResumePreflight: &runtime.ArtifactResumePreflight{}}
+	opts := consumeArtifactResumePreflight(nil, &ex)
+	if len(opts) != 1 {
+		t.Fatalf("engine options = %d, want one transferred preflight", len(opts))
+	}
+	if ex.artifactResumePreflight != nil {
+		t.Fatal("launch extras retained the transferred artifact preflight")
+	}
+}
+
 func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, string) (int, error) {
 	return 1, nil
 }

@@ -93,15 +93,11 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	// directly), so it repeats the policy-aware physical guard used by
 	// runview's synchronous preflight. Enforce checks every exact revision,
 	// including in-flight parallel branches; report/legacy remain non-blocking.
-	checkpointArtifacts := map[artifactRevisionKey]*store.Artifact(nil)
-	preflightMatches := e.artifactResumePreflight.matches(r, e.workflow, e.workflowHash, e.forceResume)
-	if preflightMatches {
-		checkpointArtifacts = e.artifactResumePreflight.artifacts
-		// The handoff is one-shot. Keeping this opaque snapshot on Engine would
-		// pin every validation-only transitive dependency for the whole resumed
-		// execution, even though reconstruction needs it only at this boundary.
-		e.artifactResumePreflight = nil
-	} else {
+	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, e.forceResume)
+	// The handoff is one-shot on both match and mismatch. consume also clears
+	// the shared payload so aliases outside Engine cannot retain artifact bodies.
+	e.artifactResumePreflight = nil
+	if !preflightMatches {
 		checkpointArtifacts, err = loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
 		if err != nil {
 			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)

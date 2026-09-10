@@ -196,6 +196,23 @@ func (p *ArtifactResumePreflight) matches(run *store.Run, wf *ir.Workflow, curre
 		p.forceSourceChange == forceSourceChange
 }
 
+// consume returns the checked bodies only when the snapshot still matches and
+// always releases its payload. The snapshot is a one-shot handoff: aliases in
+// service launch state must not pin validation-only artifact histories after
+// this resume boundary, including when an intervening mutation invalidates it.
+func (p *ArtifactResumePreflight) consume(run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) (map[artifactRevisionKey]*store.Artifact, bool) {
+	if p == nil {
+		return nil, false
+	}
+	matches := p.matches(run, wf, currentRevision, forceSourceChange)
+	artifacts := p.artifacts
+	p.artifacts = nil
+	if !matches {
+		return nil, false
+	}
+	return artifacts, true
+}
+
 // artifactResumeValidationSignature excludes admission/status bookkeeping: an
 // Engine persists its admission decision between the service preflight and
 // Resume's artifact gate. It includes every run field that selects revisions

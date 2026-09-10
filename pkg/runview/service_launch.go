@@ -754,6 +754,7 @@ func (s *Service) spawnRun(
 	}
 
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
+	opts = consumeArtifactResumePreflight(opts, &ex)
 	// Subbot nodes need a host-supplied runner (the bare engine can't compile
 	// a child .bot — import cycle with runview). Wired on BOTH the launch and
 	// resume paths; without it, in-process studio runs of subbot-bearing bots
@@ -1031,9 +1032,6 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if ex.executionContext != nil {
 		opts = append(opts, runtime.WithExecutionContext(ex.executionContext))
 	}
-	if ex.artifactResumePreflight != nil {
-		opts = append(opts, runtime.WithArtifactResumePreflight(ex.artifactResumePreflight))
-	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /
 	// reattached / non-Active runs via the runstream file tailer). Without this
@@ -1094,6 +1092,20 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if fin.autoMerge {
 		opts = append(opts, runtime.WithAutoMerge(true))
 	}
+	return opts
+}
+
+// consumeArtifactResumePreflight transfers the same-process resume snapshot
+// into the engine option and clears launchExtras before spawnRun captures it in
+// the execution goroutine. Without the clear, the service would retain every
+// validation-only artifact body until the resumed run finished even after the
+// engine consumed its one-shot copy.
+func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtras) []runtime.EngineOption {
+	if ex == nil || ex.artifactResumePreflight == nil {
+		return opts
+	}
+	opts = append(opts, runtime.WithArtifactResumePreflight(ex.artifactResumePreflight))
+	ex.artifactResumePreflight = nil
 	return opts
 }
 
