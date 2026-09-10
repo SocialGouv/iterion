@@ -307,7 +307,13 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 		Deterministic: true,
 	}
 
-	params := append(append([]any{}, shared...), sliceAt(op, "parameters")...)
+	// The OPERATION's own parameters come first, because dedupParams keeps the
+	// first of a duplicate and both formats give the operation precedence: a
+	// path item's parameters "can be overridden at the operation level"
+	// (OpenAPI 3.0.3, Path Item Object). Listing the shared ones first would
+	// silently invert that — the override would lose to what it overrides,
+	// and a request would carry the wrong default with nothing to notice it.
+	params := append(append([]any{}, sliceAt(op, "parameters")...), shared...)
 	for _, raw := range params {
 		pm, ok := raw.(map[string]any)
 		if !ok {
@@ -318,7 +324,7 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 	if w.format == FormatOpenAPI3 {
 		out.Params = append(out.Params, w.requestBodyParams(mapAt(op, "requestBody"))...)
 	}
-	out.Params = dedupParams(out.Params)
+	out.Params = sortParams(dedupParams(out.Params))
 
 	out.Result, out.Errors = w.responses(mapAt(op, "responses"))
 	return out
@@ -488,7 +494,8 @@ func (w *walker) requestBodyParams(rb map[string]any) []spec.Param {
 
 // dedupParams keeps the first declaration of each (in, name). A path item's
 // shared parameters and an operation's own list legitimately overlap, and the
-// operation's is the one that was written for it.
+// operation's is the one that was written for it — which is why the caller
+// lists the operation's first.
 func dedupParams(in []spec.Param) []spec.Param {
 	seen := map[string]bool{}
 	out := in[:0]
@@ -501,6 +508,25 @@ func dedupParams(in []spec.Param) []spec.Param {
 		out = append(out, p)
 	}
 	return out
+}
+
+// sortParams gives the final list a presentation order independent of the
+// order precedence needed above: by location (path, query, header, body,
+// form) then by name. Without it the operation-first precedence rule would
+// also reshuffle how a package READS — path parameters scattered after body
+// members — and a package's diff would move for reasons that are not change.
+func sortParams(in []spec.Param) []spec.Param {
+	rank := map[spec.ParamIn]int{
+		spec.InPath: 0, spec.InQuery: 1, spec.InHeader: 2, spec.InBody: 3, spec.InForm: 4,
+	}
+	sort.SliceStable(in, func(i, j int) bool {
+		ri, rj := rank[in[i].In], rank[in[j].In]
+		if ri != rj {
+			return ri < rj
+		}
+		return in[i].Name < in[j].Name
+	})
+	return in
 }
 
 // responses splits a response map into the success shape and the documented

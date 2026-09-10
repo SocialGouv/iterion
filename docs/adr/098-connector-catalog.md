@@ -106,6 +106,37 @@ hardcoded list, and the forges become connectors #1–3. One OAuth-app store
 for an operator's own — the hybrid path already decided), one refresh worker,
 one status vocabulary, one managed-secret injection.
 
+Four constraints the existing code imposes, each of which a naive
+generalization would break:
+
+- **The OAuth-app identity is `(tenant, provider, base_url, owner_login,
+  security_read_only)`** — per owning account *and per role*, not per host.
+  The per-host index was deliberately dropped
+  ([oauth_app_store.go:266](../../pkg/forge/oauth_app_store.go)) because a
+  tenant legitimately holds one App per GitHub org and one org legitimately
+  hosts both a runtime and a watch-only App. A `(tenant, connector, host)`
+  key would re-impose exactly the constraint that was lifted.
+- **Refresh needs a fenced claim.** `pkg/forge/refresh.go` scans and rewrites
+  with no ownership claim, and a server replica each runs one
+  ([server_lifecycle.go:193](../../pkg/server/server_lifecycle.go)); two
+  replicas exchanging the same rotating refresh token can invalidate the
+  token family or overwrite each other's whole record. The precedent to reuse
+  is `pkg/secrets/oauth_refresh_worker.go`, which claims per credential and
+  commits only while the claim holds.
+- **Forge consumers are a class, not two stores.** Repository launch, review
+  publication, SSO ownership proofs and team-deletion blockers all select
+  connections; a non-forge connection on a shared host must not become
+  eligible for a forge fallback. The generalization introduces explicit
+  connection **capabilities**, and lands as expand-and-contract preserving
+  ids, the `forge_conn:` sealing AAD and existing callback URLs.
+- **A managed secret is a workflow secret**, materialised into the sandbox as
+  a file ([run_secrets.go](../../pkg/secrets/run_secrets.go),
+  [loop_secrets.go](../../pkg/runner/loop_secrets.go)) — which is how forge
+  bots reach `git` and `glab`. Reusing that path "as is" would contradict
+  decision 4, so a connector credential is an **execution-only capability**
+  that cannot become a workflow secret, an env var, a mounted file or a
+  prompt materialization. Legacy forge delivery stays explicitly separate.
+
 ### 4. A credential is used by the server or the runner, never inside the sandbox
 
 For an **agent**: the call goes to the MCP facade over HTTP with a per-run
@@ -117,12 +148,58 @@ An injected agent cannot exfiltrate a token it never holds; mid-run refresh
 comes for free; and every backend is treated alike instead of only the ones
 whose CLI can be handed a header.
 
+Splitting execution across two process classes is what makes the following
+contracts prerequisites rather than details, and each is a P1 deliverable:
+
+- **The grant is the authorization, and it carries a tenant.** The board MCP
+  handler's own invariant says its grant model is safe *only* because its
+  store is single-tenant
+  ([mcp_board_handler.go:204](../../pkg/server/mcp_board_handler.go)), and
+  `ConnectionStore.Get` filters by `_id` alone
+  ([connection_store.go:141](../../pkg/forge/connection_store.go)). Copying
+  the board grant would let any valid run token resolve any tenant's
+  connection. A connector grant carries tenant, run/attempt, node, the
+  authorized alias→connection mapping, the package digest, the permitted
+  operations and an expiry; aliases resolve **only** through it, against a
+  tenant-scoped connection API.
+- **Every outbound call goes through the guarded dialer.** A connector's whole
+  point is calling operator-supplied hosts, so `pkg/secure/httpdial`'s
+  public-unicast pinning and no-redirect policy is mandatory on every
+  connector path — the call, pagination links, OAuth endpoints, spec fetches.
+  A tenant-supplied URL must not be its own justification for reaching a
+  private address; a self-hosted endpoint needs a deployment-controlled
+  exception.
+- **Rate limits need one authority.** Five server replicas and twenty runners
+  each enforcing "one request per second" locally send twenty-five. Buckets
+  are shared (`pkg/valkey`, with an in-process implementation for local runs)
+  and keyed by what the vendor actually meters, not by connection id.
+- **Transport bootstrap is specified per environment.** The board endpoint is
+  injected only when a sandbox, an endpoint and a registration callback all
+  exist ([executor_build_task.go:1396](../../pkg/backend/model/executor_build_task.go)),
+  which is why a CLI run without a server silently has no board. A **required**
+  connector must fail admission when its transport cannot be brought up —
+  board-style silent disablement is the wrong default for a capability a
+  workflow declared.
+
 ### 5. Distribution mirrors bots: baked → platform → team, plus git
 
 Connector packages resolve through the same three tiers as bots, with git
 sources for the external case and the marketplace as an **index** — never a
 cloud installer. One resolver, guarded by a sweep test, so no launch surface
 can read a different tier from the one that serves it.
+
+What it mirrors is the bot transport's CURRENT shape, not its legacy one:
+`materializeBotBundle` prioritises an **immutable snapshot** (inline bytes, a
+digest, or a blob ref) and treats fetching the stored row plus a version check
+as the legacy path ([botbundle.go:14](../../pkg/runner/botbundle.go)). A
+reference-plus-drift-guard is not enough for a connector: a package replaced
+after a run is queued cannot be *retrieved* for that run's resume, so the
+guard turns a resumable run into a permanently failed one. Packages are
+therefore **content-addressed and immutable**, retained while any queued or
+resumable run references them, with connector-specific blob offload beside
+the IR's (ADR-075). And an image `COPY` serves the server and runner but
+gives a standalone release binary nothing — CLI and desktop need their own
+asset delivery.
 
 ### 6. `tool` gains a third recipe rather than a new node type
 
@@ -150,6 +227,29 @@ that in the parser, the AST, the IR, the unparser, the diagram and the studio.
 diagnostic): an LLM repairing a deterministic call is exactly what the offer
 promises does not happen.
 
+That refusal is necessary and **not sufficient**, because two other LLM paths
+reach a `tool` node today:
+
+- **The tool-policy classifier.** When `ITERION_LLM_CLASSIFIER_MODEL` is set,
+  `runview` chains an `LLMClassifier` over the policy checker
+  ([executor.go:428](../../pkg/runview/executor.go)), and *every* recipe calls
+  `checkToolNodePolicy`. A deployment with that variable set would put a model
+  call in front of every action — and fail the node outright when the
+  classifier's own credential is missing. An action node resolves its policy
+  through a deterministic path with static rules; an incompatible effective
+  configuration is refused loudly rather than silently honoured.
+- **Postconditions.** They run before recipe dispatch, can skip execution, and
+  can turn a failed recipe into a success
+  ([executor_verified_action.go](../../pkg/backend/model/executor_verified_action.go)).
+  An inherited postcondition could mark an unknown remote mutation successful.
+  P1 forbids postconditions on an action node; a later lot may define one that
+  reads the typed result instead of a shell exit code.
+
+The acceptance test is behavioural, not structural: **an action-only workflow
+makes zero model requests with `ITERION_LLM_CLASSIFIER_MODEL` set** — not
+merely under the default configuration, which is where a structural test would
+stop.
+
 ### 7. Logic escapes are declared, never implicit
 
 Parameter and response mapping uses `pkg/dsl/expr` (total, no recursion).
@@ -166,10 +266,20 @@ packages whose spec licence permits it, asserted explicitly per package
 (`provenance.redistributable`, defaulting to **false**).
 
 For a non-permissive spec, iterion ships the **overlay alone** — its own
-authored work — plus a `spec_source:` URL, and the operator's instance
-generates the operations at install time. That is licit, it keeps operations
-fresh, and it lets an operator generate against **their own** self-hosted
-instance's description.
+authored work — plus a `spec_source:` URL, and the generation happens at
+install time. That keeps operations fresh and lets an operator generate
+against **their own** self-hosted instance's description.
+
+**Moving the generation is not a licence clearance, and this ADR does not
+claim it is.** CC BY-NC-SA restricts exercising the licensed rights for
+commercial advantage, not only redistributing — so a commercial hosted
+deployment fetching and transforming a non-commercial description *on a
+tenant's behalf* is a different act from a self-hosted operator doing it for
+themselves, and only the second is clearly covered. The install-time lane is
+therefore **rights-dependent**: the package records the source artifact and
+the permission relied on, retains the required notices, and distinguishes
+operator-side generation from generation performed by iterion's own service.
+Where the permission is unclear, the connector does not ship.
 
 A licence is not a boolean, which is why `redistributable` is an explicit
 assertion rather than a lookup on `spec_license`: GitLab's description is
@@ -209,7 +319,7 @@ commercial** (GitLab: CC BY-SA 4.0 — redistributable *with* attribution and
 share-alike on the derived files), and **non-commercial** (Mattermost:
 CC BY-NC-SA 3.0 — the install-time lane, never the shipped catalog).
 
-Six findings changed the design:
+Seven findings changed the design:
 
 1. **A first-rate permissive spec can omit auth entirely.** GitHub's declares
    no security scheme anywhere — not at the root, not per operation, not in
@@ -250,6 +360,23 @@ Six findings changed the design:
    (`postApiV4GroupsIdDashEpicsEpicIidIssuesIssueId`), so they are detected
    and discarded in favour of the path derivation.
 
+   **This is not yet identity stability, and the ADR does not claim it.** The
+   walk is over sorted paths and the first arrival takes the unsuffixed name,
+   so a vendor adding an endpoint that derives the same name and sorts
+   *earlier* would take that name and push the existing operation onto the
+   suffixed form — an unchanged `.bot` would then address a different
+   operation. Zero counters measures collisions, not identity. P1 owes an
+   **identity lock**: a committed mapping from an operation's canonical
+   identity (method + path) to its public id, which regeneration compares
+   against and refuses to reassign. The same rule applies to the derived
+   auth-scheme ids a stored connection keeps.
+7. **A path item's parameters must not override the operation's own.** Both
+   formats give the operation precedence (OpenAPI 3.0.3, Path Item Object:
+   they "can be overridden at the operation level"), and the first
+   implementation had it backwards — the shared declaration's type and
+   default won over the override written to correct them, silently. Fixed and
+   pinned by a test that was checked to fail against the old order.
+
 ## Consequences
 
 - A new service costs an overlay, not an engine PR — the Nth-variant test the
@@ -263,6 +390,81 @@ Six findings changed the design:
 - **Not covered here**: the executor's wire behaviour (retries, rate limits,
   the unknown-outcome contract), the trigger ingress family, the per-process
   devbox profile, and the studio surfaces. Each is a later lot of #1072.
+
+## Adversarial review disposition (codex `gpt-6-astra`, xhigh — 22 findings)
+
+Reviewed at commit `4b8a9bd3c`, read-only against the worktree. 4 critical,
+15 high, 3 medium. Each finding was checked against the code before being
+adopted or set aside — a finding is a hypothesis until reproduced, in both
+directions.
+
+**Adopted into the ADR above** — F1 (a grant carries a tenant; the board grant
+model does not, and `ConnectionStore.Get` filters by `_id` alone) · F2 (every
+connector path uses the guarded dialer; the ADR was silent about SSRF for a
+feature whose purpose is calling operator-supplied hosts) · F5 (a connector
+credential is an execution-only capability, because the managed-secret path
+materialises a file *into* the sandbox) · F6 (fenced refresh claim; the forge
+worker has none where `pkg/secrets/oauth_refresh_worker.go` does) · F8
+(transport bootstrap specified per environment; a required connector fails
+admission rather than degrading silently) · F10 (the OAuth-app key is per
+owning account *and role* — the ADR's `(tenant, connector, host)` would have
+re-imposed a constraint the repo deliberately lifted; plus the
+expand-and-contract inventory) · F11 (immutable content-addressed packages
+with retention — the ADR described the *legacy* bot transport; and its size
+premise was wrong: 4.74 MiB is **below** the 6 MiB limit, so the real defect
+is retention, not size) · F12 (`ITERION_LLM_CLASSIFIER_MODEL` puts a model in
+front of every tool node, and postconditions can turn a failed recipe into a
+success — forbidding ADR-044 recovery was necessary and not sufficient) · F13
+(zero counters measures collisions, not identity: P1 owes an identity lock) ·
+F14 (**a real bug in the committed generator** — a path item's parameters
+overrode the operation's own, backwards from both formats; fixed, with a test
+verified to fail against the old order) · F18 (one shared rate-limit
+authority, since two process classes call the same connection) · F22 (moving
+generation is not licence clearance — the install-time lane is
+rights-dependent, and the blanket claim of legality is withdrawn).
+
+**Adjusted** — F4: the action-attempt state machine (invocation identity,
+request digest, idempotency key, outcome) becomes a P1 *prerequisite* rather
+than a deferred contract, but `unknown_outcome` stays in the vocabulary now;
+the resume path it must survive is `pkg/runtime/resume.go`'s node
+re-execution. F9: real, and the repository already answers it —
+`docs/cloud-queue-schema-rollout.md` carries the ordering policy and a
+per-bump checklist, so the ADR references it and P1 adds the v14 → v15 entry
+instead of inventing a procedure. F17: adopted as a contract to write, minus
+the premise — ADR-094 is cited as the *pattern* for durable materialization,
+never as a ready-made generic inbox, and connector ingress owes its own
+identity, replay checks and acknowledgement timing.
+
+**Adopted, and they move schema v1** — F14, F15 (per-operation security
+requirements; supported vs requested vs granted scopes) and F16 (Slack
+signals failure as `{"ok": false}` inside a **200**, so a status-only error
+model breaks on a pilot service) together say the execution profile must be
+defined *before* `spec.SchemaVersion` 1 is frozen. That is now P1's first
+task, not P0's closing one.
+
+**Deferred, documented as follow-ups** — F3 (binding platform OAuth apps to
+trusted issuer origins so a team package cannot redefine `token_url`: real,
+and it only bites once the platform tier exists — P2, with the team tier
+refused platform-app consumption until then) · F19 (goja's interrupt does not
+preempt native calls and bounds no heap: transforms stay refused until the
+limits are enforceable, which was already P3) · F20 (third-party MCP
+credential adapter and structured-result carriage across backends) · F21
+(qualification keyed by environment/backend/auth rather than one scalar).
+
+**Not contested** — the review's own closing note lists three objections it
+checked and found false (Valkey board tokens already exist, both large
+packages are under 6 MiB, the plan does mention the studio and MCP OAuth
+compatibility). Recorded here so they are not re-raised.
+
+**The reviewer's simpler alternative** — one trusted Go executor on the run
+host, with the MCP facade as its narrow gateway — is **partly adopted**: its
+shared-contract core (one credential resolution, one request construction,
+one quota path, one attempt record) is exactly F4/F18's requirement and is
+now in the ADR. Its proposal to execute agent calls on the *runner* rather
+than the server is not: that would put the credential back inside the pod the
+agent runs in, which decision 4 exists to prevent. Its scope advice — qualify
+a small Forgejo operation set, keep the rest as unqualified catalog data —
+matches the maturity model already specified.
 
 ## Alternatives rejected
 

@@ -229,6 +229,57 @@ func TestPathItemParametersReachEveryOperation(t *testing.T) {
 	}
 }
 
+// TestOperationParameterOverridesThePathItem pins the precedence both formats
+// specify: a path item's parameters "can be overridden at the operation
+// level" (OpenAPI 3.0.3, Path Item Object). Getting it backwards is silent —
+// the request carries the shared declaration's type and default, and the
+// override that was written to correct it loses to what it corrects.
+func TestOperationParameterOverridesThePathItem(t *testing.T) {
+	const body = `{
+  "swagger": "2.0",
+  "info": {"title": "Probe", "version": "1.0"},
+  "host": "probe.example",
+  "securityDefinitions": {"tok": {"type": "apiKey", "name": "X-Token", "in": "header"}},
+  "paths": {
+    "/things/{id}": {
+      "parameters": [
+        {"name": "id", "in": "path", "required": true, "type": "string", "description": "shared"},
+        {"name": "verbose", "in": "query", "type": "string", "description": "shared only"}
+      ],
+      "get": {
+        "tags": ["thing"], "operationId": "thingGetThing", "summary": "Get",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "type": "integer", "description": "the operation's own"}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+	pkg := generate(t, body)
+	op, ok := pkg.Operation("probe.thing.get_thing")
+	if !ok {
+		t.Fatalf("operations = %v", opIDs(pkg))
+	}
+	id, ok := findParam(op, "id")
+	if !ok {
+		t.Fatalf("`id` missing, got %v", paramNames(op))
+	}
+	if id.Type != "integer" || id.Description != "the operation's own" {
+		t.Errorf("id = %s/%q, want the operation's own integer declaration — the path item's must not win", id.Type, id.Description)
+	}
+	// The shared parameter the operation did NOT override still applies:
+	// precedence is an override, not a replacement of the whole list.
+	if _, ok := findParam(op, "verbose"); !ok {
+		t.Errorf("the shared `verbose` parameter was dropped, got %v", paramNames(op))
+	}
+	// Presentation order is by location then name, independent of the
+	// precedence order above.
+	if len(op.Params) != 2 || op.Params[0].In != spec.InPath || op.Params[1].In != spec.InQuery {
+		t.Errorf("params = %v, want path before query", paramNames(op))
+	}
+}
+
 // TestSearchUnderPostIsARead pins the one correction the verb makes to the
 // method. Vendors route search through POST when the query outgrows a URL;
 // classifying those as `create` would deny them the retry a read is entitled
