@@ -200,7 +200,7 @@ The Monaco editor used to be fetched at runtime from `cdn.jsdelivr.net`
 third-party executable code in the surface that edits LLM keys, OAuth forfaits
 and forge tokens, and told the CDN who was using a `gouv.fr` deployment.
 
-It is now bundled ([studio/src/lib/monaco.ts](../studio/src/lib/monaco.ts)) —
+It is now bundled ([studio/src/lib/monaco.tsx](../studio/src/lib/monaco.tsx)) —
 **import `Editor`/`DiffEditor` from there, never from `@monaco-editor/react`.**
 The same rule already governs the fonts (`@fontsource-variable/*`, self-hosted
 so the desktop app and sandboxed runs work offline). `script-src 'self'` is now
