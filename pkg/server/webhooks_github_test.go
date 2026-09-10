@@ -318,8 +318,8 @@ func TestGitHubWebhook_DequeuedPRAutoHeals(t *testing.T) {
 	// without. This lane FORCE-pushes the branch, so it is the one a concurrent
 	// writer most needs warned about — and it was the one silently omitting the
 	// var, while the two other fixer lanes set it.
-	if gotVars["head_sha"] != "aaa111" {
-		t.Fatalf("heal must carry head_sha, got %q — the fixer claim stands down without it and this lane stays invisible", gotVars["head_sha"])
+	if gotVars["fix_head_sha"] != "aaa111" {
+		t.Fatalf("heal must carry fix_head_sha, got %q — the fixer claim stands down without it and this lane stays invisible", gotVars["fix_head_sha"])
 	}
 	if gotRef != "feat/subtract" {
 		t.Fatalf("heal must check out the PR head branch, got %q", gotRef)

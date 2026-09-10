@@ -93,7 +93,13 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 		return
 	}
 	prURL := strings.TrimSpace(vars["pr_url"])
+	// `head_sha` where the lane already publishes it, else the fixer-only key.
+	// Two names because the first also arms the GATE claim, and one lane must
+	// reach this marker without reaching that one.
 	sha := strings.TrimSpace(vars["head_sha"])
+	if sha == "" {
+		sha = strings.TrimSpace(vars["fix_head_sha"])
+	}
 	if prURL == "" || sha == "" {
 		return
 	}
