@@ -498,7 +498,7 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Wipe first so a residue from an earlier subtest cannot mask a
 			// silent write here.
-			_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+			_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 
 			code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, tc.blob)
 			if code != http.StatusBadRequest {
@@ -515,7 +515,7 @@ func TestOAuthCredentialIngestionValidatesShape(t *testing.T) {
 	}
 
 	t.Run("healthy full-shape blob still passes", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good","refreshToken":"rt","expiresAt":4102444800000,"scopes":["user:inference"]}}`
 		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
 		if code != http.StatusOK {
@@ -543,7 +543,7 @@ func TestOAuthCredentialIngestion_ExpiredIsRefusedOnlyWithoutARefreshToken(t *te
 	expired := time.Now().Add(-time.Hour).UnixMilli()
 
 	t.Run("expired + refreshToken → accepted, refreshable", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		blob := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stale","refreshToken":"rt","expiresAt":%d,"scopes":["user:inference"]}}`, expired)
 		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
 		if code != http.StatusOK {
@@ -566,7 +566,7 @@ func TestOAuthCredentialIngestion_ExpiredIsRefusedOnlyWithoutARefreshToken(t *te
 	})
 
 	t.Run("expired + no refreshToken → refused, remedy names the refreshToken", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		blob := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stale","expiresAt":%d,"scopes":["user:inference"]}}`, expired)
 		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
 		if code != http.StatusBadRequest {
@@ -581,7 +581,7 @@ func TestOAuthCredentialIngestion_ExpiredIsRefusedOnlyWithoutARefreshToken(t *te
 	})
 
 	t.Run("missing expiresAt → refused", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-good","refreshToken":"rt","scopes":["user:inference"]}}`
 		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/credentials", alice, blob)
 		if code != http.StatusBadRequest || !strings.Contains(body, "expiresAt") {
@@ -655,7 +655,7 @@ func TestOAuthBrowserCompletion_ServerBuiltBlobIsNotHeldToPasteRules(t *testing.
 	srv.cfg.AnthropicOAuthClientID = "client-x"
 
 	t.Run("scope-less, expiry-less exchange → stored", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		state := seedPending(t, srv, "alice")
 		rt := &cannedTokenTransport{status: 200, body: `{"access_token":"sk-ant-oat01-browser-token","refresh_token":"rt-browser","token_type":"Bearer"}`}
 		srv.httpClient = &http.Client{Transport: rt}
@@ -676,7 +676,7 @@ func TestOAuthBrowserCompletion_ServerBuiltBlobIsNotHeldToPasteRules(t *testing.
 	})
 
 	t.Run("exchange answers a malformed token → 400, nothing stored", func(t *testing.T) {
-		_ = oauthStore.Delete(t.Context(), "alice", secrets.OAuthKindClaudeCode)
+		_ = oauthStore.Delete(t.Context(), secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0))
 		state := seedPending(t, srv, "alice")
 		srv.httpClient = &http.Client{Transport: &cannedTokenTransport{status: 200, body: `{"access_token":"sk-ant-oat01-browser\ntoken","refresh_token":"rt"}`}}
 		code, body := oauthCall(t, hs, http.MethodPost, "/api/me/oauth/claude_code/authorize/complete", alice, `{"code":"code-x","state":"`+state+`"}`)

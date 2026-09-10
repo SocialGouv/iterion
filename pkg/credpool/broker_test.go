@@ -511,7 +511,7 @@ func TestBroker_disconnectedCredentialParksThePledge(t *testing.T) {
 	ctx := context.Background()
 	h.donor(t, "alice", Limits{})
 	// The donor disconnected the subscription but left the pledge behind.
-	if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+	if err := h.oauth.Delete(ctx, secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0)); err != nil {
 		t.Fatalf("delete oauth: %v", err)
 	}
 
@@ -918,7 +918,7 @@ func TestBroker_AbstentionSkipsNameEachPledgeStatus(t *testing.T) {
 	t.Run("credential gone (parked as unhealthy)", func(t *testing.T) {
 		h := newHarness(t)
 		h.donor(t, "alice", Limits{})
-		if err := h.oauth.Delete(ctx, "alice", secrets.OAuthKindClaudeCode); err != nil {
+		if err := h.oauth.Delete(ctx, secrets.OAuthRecordID("alice", secrets.OAuthKindClaudeCode, 0)); err != nil {
 			t.Fatalf("delete donor credential: %v", err)
 		}
 		if got := skipOf(t, h, "r"); got.Status != StatusUnhealthy {
