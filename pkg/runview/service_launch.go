@@ -405,10 +405,8 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return err
 	}
-	if err := runtime.ValidateCheckpointArtifactAvailability(parent, s.store, r); err != nil {
-		return err
-	}
-	return runtime.ValidateArtifactContractsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	return err
 }
 
 // Resume re-enters a human-paused, operator-paused, failed_resumable,
@@ -504,19 +502,21 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		return nil, err
 	}
-	if err := runtime.ValidateCheckpointArtifactAvailability(parent, s.store, r); err != nil {
-		return nil, err
-	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
-	validateContracts := runtime.ValidateArtifactContractsPreflight
+	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
 	if inProcessResume {
 		// This exact workflow is handed to an engine in this process. Emit any
-		// report-mode violation here, then let that engine reuse the verdict.
+		// report-mode violation here, then let that engine reuse the verdict and
+		// the immutable bodies loaded by the exact-availability guard.
 		// Queued/detached engines repeat the emitting pass at their own boundary.
-		validateContracts = runtime.ValidateArtifactContracts
+		validateArtifacts = runtime.ValidateResumeArtifacts
 	}
-	if err := validateContracts(parent, s.store, r, wf, hash, spec.Force); err != nil {
+	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force)
+	if err != nil {
 		return nil, err
+	}
+	if !inProcessResume {
+		artifactPreflight = nil
 	}
 
 	// The budget a resume executes against composes, per field, the ask
@@ -631,7 +631,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil,
 		launchExtras{
 			loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors,
-			artifactContractsPrevalidated: inProcessResume,
+			artifactResumePreflight: artifactPreflight,
 		},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
@@ -967,9 +967,9 @@ type launchExtras struct {
 	// executionContext is the resolved, versioned launch contract persisted
 	// by the engine before the first node executes.
 	executionContext *store.ExecutionContext
-	// artifactContractsPrevalidated is confined to a synchronous same-process
-	// resume. It must never cross a detached process or queue boundary.
-	artifactContractsPrevalidated bool
+	// artifactResumePreflight is confined to a synchronous same-process resume.
+	// It must never cross a detached process or queue boundary.
+	artifactResumePreflight *runtime.ArtifactResumePreflight
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -1031,8 +1031,8 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	if ex.executionContext != nil {
 		opts = append(opts, runtime.WithExecutionContext(ex.executionContext))
 	}
-	if ex.artifactContractsPrevalidated {
-		opts = append(opts, runtime.WithArtifactContractsPrevalidated(true))
+	if ex.artifactResumePreflight != nil {
+		opts = append(opts, runtime.WithArtifactResumePreflight(ex.artifactResumePreflight))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /

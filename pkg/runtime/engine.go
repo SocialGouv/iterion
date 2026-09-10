@@ -187,6 +187,7 @@ type Engine struct {
 	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
 	forceResume              bool                                 // when true, skip workflow hash check on resume
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
+	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary
 	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
 	workDirDelegated         bool                                 // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
 	repoRoot                 string                               // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it

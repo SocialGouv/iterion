@@ -93,11 +93,17 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	// directly), so it repeats the policy-aware physical guard used by
 	// runview's synchronous preflight. Enforce checks every exact revision,
 	// including in-flight parallel branches; report/legacy remain non-blocking.
-	checkpointArtifacts, err := loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
-	if err != nil {
-		return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+	checkpointArtifacts := map[artifactRevisionKey]*store.Artifact(nil)
+	preflightMatches := e.artifactResumePreflight.matches(r, e.workflow, e.workflowHash, e.forceResume)
+	if preflightMatches {
+		checkpointArtifacts = e.artifactResumePreflight.artifacts
+	} else {
+		checkpointArtifacts, err = loadCheckpointArtifactAvailability(ctx, e.store, r, nil)
+		if err != nil {
+			return fmt.Errorf("runtime: cannot rebuild persisted artifact state: %w", err)
+		}
 	}
-	if !e.artifactContractsChecked {
+	if !preflightMatches && !e.artifactContractsChecked {
 		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.
 			if errors.Is(err, ErrArtifactContractUnavailable) {
@@ -3003,8 +3009,13 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) {
 	if recordArtifactCompatibility {
 		// A forced migration accepts one coherent target revision. Cloud
 		// runners may know only its hash (the source text and file path are
-		// intentionally absent), so sourceChanged is not a sufficient guard
-		// for advancing the run-level revision.
+		// intentionally absent). Clear any stale source in that case: keeping
+		// revision A's text beside revision B's hash would make rewind --auto
+		// diff against the wrong baseline. An empty source makes auto-rewind
+		// fail safely while still allowing later resumes at the accepted hash.
+		if src == "" {
+			r.WorkflowSource = ""
+		}
 		r.WorkflowHash = e.workflowHash
 		r.ArtifactCompatibilityRevision = e.workflowHash
 	}

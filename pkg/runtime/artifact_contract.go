@@ -176,6 +176,82 @@ func ValidateArtifactContractsPreflight(ctx context.Context, s store.RunStore, r
 	return validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, false, nil)
 }
 
+// ArtifactResumePreflight is an opaque, same-process snapshot of the exact
+// immutable artifact bodies checked before a resume. It is deliberately tied
+// to the artifact-relevant run state and workflow instance so Engine.Resume
+// cannot reuse a stale preflight after an intervening checkpoint mutation.
+type ArtifactResumePreflight struct {
+	runID             string
+	runSignature      string
+	workflow          *ir.Workflow
+	currentRevision   string
+	forceSourceChange bool
+	artifacts         map[artifactRevisionKey]*store.Artifact
+}
+
+func (p *ArtifactResumePreflight) matches(run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) bool {
+	return p != nil && run != nil &&
+		p.runID == run.ID && p.runSignature == artifactResumeValidationSignature(run) &&
+		p.workflow == wf && p.currentRevision == currentRevision &&
+		p.forceSourceChange == forceSourceChange
+}
+
+// artifactResumeValidationSignature excludes admission/status bookkeeping: an
+// Engine persists its admission decision between the service preflight and
+// Resume's artifact gate. It includes every run field that selects revisions
+// or changes contract policy, so a real checkpoint/index mutation invalidates
+// the snapshot even if it happens during that handoff.
+func artifactResumeValidationSignature(run *store.Run) string {
+	if run == nil {
+		return ""
+	}
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00", run.ID, artifactContractPolicy(run), run.ArtifactCompatibilityRevision)
+	for _, revision := range artifactRevisionsForValidation(run) {
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%d\x00", revision.LogicalRef, revision.NodeID, revision.Version)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ValidateResumeArtifacts combines the exact checkpoint-availability guard
+// and the emitting artifact-contract guard into one read pass. The returned
+// snapshot may be handed to an Engine created with the same workflow through
+// WithArtifactResumePreflight.
+func ValidateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) (*ArtifactResumePreflight, error) {
+	return validateResumeArtifacts(ctx, s, run, wf, currentRevision, forceSourceChange, true)
+}
+
+// ValidateResumeArtifactsPreflight is the non-emitting variant for a detached
+// or queued handoff. The remote Engine repeats the authoritative emitting
+// check, but this boundary still avoids duplicate reads locally.
+func ValidateResumeArtifactsPreflight(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange bool) (*ArtifactResumePreflight, error) {
+	return validateResumeArtifacts(ctx, s, run, wf, currentRevision, forceSourceChange, false)
+}
+
+func validateResumeArtifacts(ctx context.Context, s store.RunStore, run *store.Run, wf *ir.Workflow, currentRevision string, forceSourceChange, emitReport bool) (*ArtifactResumePreflight, error) {
+	loaded, err := loadCheckpointArtifactAvailability(ctx, s, run, nil)
+	if err != nil {
+		return nil, err
+	}
+	if loaded == nil {
+		loaded = make(map[artifactRevisionKey]*store.Artifact)
+	}
+	if err := validateArtifactContracts(ctx, s, run, wf, currentRevision, forceSourceChange, nil, emitReport, loaded); err != nil {
+		return nil, err
+	}
+	p := &ArtifactResumePreflight{
+		workflow:          wf,
+		currentRevision:   currentRevision,
+		forceSourceChange: forceSourceChange,
+		artifacts:         loaded,
+	}
+	if run != nil {
+		p.runID = run.ID
+		p.runSignature = artifactResumeValidationSignature(run)
+	}
+	return p, nil
+}
+
 // ValidateArtifactContractsExcept applies the resume/rewind contract guard
 // while ignoring artifacts owned by nodes the caller is about to invalidate.
 // It is used by rewind after it has computed the exact downstream set: an
@@ -322,6 +398,10 @@ func validateArtifactContracts(ctx context.Context, s store.RunStore, run *store
 		var err error
 		if !loaded {
 			artifact, err = s.LoadArtifact(ctx, run.ID, nodeID, version)
+			if err == nil && artifact != nil && preloaded != nil &&
+				artifact.RunID == run.ID && artifact.NodeID == nodeID && artifact.Version == version {
+				preloaded[artifactRevisionKey{nodeID: nodeID, version: version}] = artifact
+			}
 		}
 		if err != nil {
 			msg := fmt.Sprintf("artifact %s/%d could not be loaded: %v", nodeID, version, err)

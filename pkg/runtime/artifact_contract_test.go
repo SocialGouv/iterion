@@ -121,7 +121,7 @@ func TestForcedArtifactCompatibilitySurvivesWorkflowRestamp(t *testing.T) {
 	}
 }
 
-func TestForcedArtifactCompatibilityRestampsHashWithoutSourceText(t *testing.T) {
+func TestForcedArtifactCompatibilityClearsStaleSourceWithoutNewSourceText(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)
 	run, err := s.CreateRun(ctx, "artifact-cloud-migration", "wf", nil)
@@ -129,6 +129,7 @@ func TestForcedArtifactCompatibilityRestampsHashWithoutSourceText(t *testing.T) 
 		t.Fatal(err)
 	}
 	run.WorkflowHash = "rev-old"
+	run.WorkflowSource = "old source"
 	run.ExecutionContext = &store.ExecutionContext{
 		Version: 1, Policy: store.ContextPolicyEnforce,
 		Workflow: store.WorkflowContext{WorkflowRevision: "rev-old"},
@@ -145,6 +146,9 @@ func TestForcedArtifactCompatibilityRestampsHashWithoutSourceText(t *testing.T) 
 	}
 	if persisted.WorkflowHash != "rev-new" || persisted.ArtifactCompatibilityRevision != "rev-new" {
 		t.Fatalf("hash-only migration = hash %q compatibility %q", persisted.WorkflowHash, persisted.ArtifactCompatibilityRevision)
+	}
+	if persisted.WorkflowSource != "" {
+		t.Fatalf("hash-only migration kept stale workflow source %q", persisted.WorkflowSource)
 	}
 	if got := persisted.ExecutionContext.Workflow.WorkflowRevision; got != "rev-new" {
 		t.Fatalf("execution context revision = %q, want rev-new", got)
@@ -1269,20 +1273,101 @@ func TestResumeReusesInProcessArtifactContractPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	flaky := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 1}
+	fresh, err := flaky.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := artifactResumeWorkflow("plan")
+	preflight, err := ValidateResumeArtifacts(ctx, flaky, fresh, wf, "", false)
+	if err != nil {
+		t.Fatalf("artifact preflight: %v", err)
+	}
 	exec := newStubExecutor()
 	exec.on("resume", func(map[string]any) (map[string]any, error) {
 		return map[string]any{"ok": true}, nil
 	})
 	eng := New(
-		artifactResumeWorkflow("plan"), flaky, exec,
-		WithArtifactContractsPrevalidated(true),
+		wf, flaky, exec,
+		WithArtifactResumePreflight(preflight),
 		WithWorkDir(t.TempDir()), WithSandboxOverride("none"),
 	)
 	if err := eng.Resume(ctx, runID, nil); err != nil {
-		t.Fatalf("prevalidated resume re-read artifact contracts: %v", err)
+		t.Fatalf("prevalidated resume re-read artifacts: %v", err)
 	}
 	if flaky.loads != 1 {
-		t.Fatalf("artifact loads = %d, want only the reconstruction read", flaky.loads)
+		t.Fatalf("artifact loads = %d, want only the preflight read", flaky.loads)
+	}
+}
+
+func TestResumeInvalidatesArtifactPreflightAfterCheckpointChange(t *testing.T) {
+	ctx := context.Background()
+	base := tmpStore(t)
+	const runID = "artifact-resume-stale-preflight"
+	run, err := base.CreateRun(ctx, runID, "artifact_resume", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionContext = &store.ExecutionContext{
+		Version: 1, Policy: store.ContextPolicyEnforce,
+		RunStore: store.ContextRef{ID: "run", Kind: "filesystem"},
+	}
+	if err := base.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	for version := 0; version < 2; version++ {
+		if err := base.WriteArtifact(ctx, &store.Artifact{
+			RunID: runID, NodeID: "writer", Version: version, Data: map[string]any{"version": version},
+			Contract: &store.ArtifactContract{LogicalRef: "plan", ProducerNode: "writer", Version: version},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := &store.Checkpoint{
+		NodeID: "resume", Outputs: map[string]map[string]any{"writer": {"version": 0}},
+		ArtifactVersions: map[string]int{"writer": 1},
+		ArtifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan": {NodeID: "writer", Version: 0, ContractLogicalRef: "plan"},
+		},
+	}
+	if err := base.FailRunResumable(ctx, runID, cp, "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &failAfterArtifactLoadStore{RunStore: base, maxLoads: 2}
+	fresh, err := flaky.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := artifactResumeWorkflow("plan")
+	preflight, err := ValidateResumeArtifacts(ctx, flaky, fresh, wf, "", false)
+	if err != nil {
+		t.Fatalf("artifact preflight: %v", err)
+	}
+	updated, err := base.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Checkpoint.Outputs["writer"] = map[string]any{"version": 1}
+	updated.Checkpoint.ArtifactVersions["writer"] = 2
+	updated.Checkpoint.ArtifactRevisions["plan"] = store.ArtifactRevisionRef{
+		NodeID: "writer", Version: 1, ContractLogicalRef: "plan",
+	}
+	if err := base.SaveRun(ctx, updated); err != nil {
+		t.Fatal(err)
+	}
+	exec := newStubExecutor()
+	exec.on("resume", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	eng := New(
+		wf, flaky, exec,
+		WithArtifactResumePreflight(preflight),
+		WithWorkDir(t.TempDir()), WithSandboxOverride("none"),
+	)
+	if err := eng.Resume(ctx, runID, nil); err != nil {
+		t.Fatalf("resume with changed checkpoint: %v", err)
+	}
+	if flaky.loads != 2 {
+		t.Fatalf("artifact loads = %d, want old preflight plus refreshed checkpoint", flaky.loads)
 	}
 }
 

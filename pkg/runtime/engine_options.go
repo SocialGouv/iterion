@@ -417,6 +417,15 @@ func WithArtifactContractsPrevalidated(prevalidated bool) EngineOption {
 	return func(e *Engine) { e.artifactContractsChecked = prevalidated }
 }
 
+// WithArtifactResumePreflight reuses the immutable artifact bodies loaded by
+// ValidateResumeArtifacts at the immediately preceding same-process resume
+// boundary. Resume accepts the snapshot only while the artifact-relevant run
+// state, exact workflow pointer, revision and force decision still match;
+// otherwise it falls back to a fresh authoritative validation.
+func WithArtifactResumePreflight(preflight *ArtifactResumePreflight) EngineOption {
+	return func(e *Engine) { e.artifactResumePreflight = preflight }
+}
+
 // WithWorkDir sets the working directory used for backend subprocesses and
 // for resolving the `${PROJECT_DIR}` placeholder in workflow var defaults.
 // When unset, defaults to os.Getwd() at Run() time. With worktree: auto on
