@@ -212,15 +212,16 @@ func mcpWiringVisible(w *Workflow, n Node) bool {
 	return false
 }
 
-// mcpBlockWires reports whether an `mcp:` block brings any server into
-// reach: a named server, the inherited set, or the project's autoloaded
-// ones. A `disable:` alone removes; it wires nothing, and neither does an
-// empty block.
+// mcpBlockWires reports whether an `mcp:` block shows servers within reach:
+// a named server, the inherited set, the project's autoloaded ones — or a
+// `disable:`, which removes one server from an ambient set the author has
+// thereby shown exists (inherit and autoload default to true when unset).
+// An empty block shows nothing.
 func mcpBlockWires(cfg *MCPConfig) bool {
 	if cfg == nil {
 		return false
 	}
-	if len(cfg.Servers) > 0 {
+	if len(cfg.Servers) > 0 || len(cfg.Disable) > 0 {
 		return true
 	}
 	if cfg.Inherit != nil && *cfg.Inherit {

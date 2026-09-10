@@ -1553,7 +1553,18 @@ func writeCursorsBlock(b *buf, cb *ast.CursorBlock, indent string) {
 // edit through parse → unparse, so an unserialised block is DELETED from
 // the .bot the next time anyone touches an unrelated field.
 func writeFallbacksBlock(b *buf, fbs []*ast.FallbackDecl, indent string) {
-	if len(fbs) == 0 {
+	// A header with no route under it does not parse (a chain with no
+	// route is refused by name), and a route with no name cannot be
+	// written — so the header goes only when a route will follow it.
+	// Verify refuses the nameless route before this is reached on the
+	// save path; here the header simply stays out.
+	writable := 0
+	for _, fb := range fbs {
+		if fb != nil && strings.TrimSpace(fb.Name) != "" {
+			writable++
+		}
+	}
+	if writable == 0 {
 		return
 	}
 	fmt.Fprintf(b, "%sfallbacks:\n", indent)

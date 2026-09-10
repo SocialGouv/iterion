@@ -33,6 +33,20 @@ func Verify(f *ast.File, text string) error {
 			return fmt.Errorf("prompt %q cannot be written as .bot source: %v", p.Name, err)
 		}
 	}
+	// A fallback route is written under its name; one with no name — the
+	// canvas's route before it is named — has no written form, and the
+	// writer leaves it out, which the comparison below would report as a
+	// node that differs. Said by name instead.
+	for _, a := range f.Agents {
+		if err := checkFallbackNames(a.Fallbacks); err != nil {
+			return fmt.Errorf("agent %q cannot be written as .bot source: %v", a.Name, err)
+		}
+	}
+	for _, j := range f.Judges {
+		if err := checkFallbackNames(j.Fallbacks); err != nil {
+			return fmt.Errorf("judge %q cannot be written as .bot source: %v", j.Name, err)
+		}
+	}
 	f = canonicalPrompts(f)
 	// The round-trip is parsed under the document's own source file, so an
 	// {{include}} resolves — or is refused — on both sides alike. A document
@@ -89,6 +103,16 @@ func sourceFile(f *ast.File) string {
 		}
 	}
 	return ""
+}
+
+// checkFallbackNames reports the first fallback route with no name.
+func checkFallbackNames(fbs []*ast.FallbackDecl) error {
+	for i, fb := range fbs {
+		if fb == nil || strings.TrimSpace(fb.Name) == "" {
+			return fmt.Errorf("fallback route %d has no name; every route is written under its name", i+1)
+		}
+	}
+	return nil
 }
 
 // canonicalPrompts is a shallow copy of f whose prompt bodies are in the

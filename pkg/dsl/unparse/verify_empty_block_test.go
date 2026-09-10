@@ -63,6 +63,28 @@ func TestVerifyAcceptsEmptyBlocks(t *testing.T) {
 	}
 }
 
+// A fallback route is written under its name; a route with no name — the
+// canvas's route before it is named — has no written form, and a chain
+// whose routes are all nameless would serialise to the bare `fallbacks:`
+// header the parser refuses. The guard says which node's route is
+// nameless before anything is written, and the writer emits no header it
+// has no route to put under.
+func TestVerifyRefusesANamelessFallbackRouteByName(t *testing.T) {
+	f := promptDoc("x")
+	f.Agents[0].Fallbacks = []*ast.FallbackDecl{{Name: "", Backend: "claw", Model: "m2"}}
+	text := Unparse(f)
+	if strings.Contains(text, "fallbacks:") {
+		t.Fatalf("a chain with no writable route was written as a bare header:\n%s", text)
+	}
+	err := Verify(f, text)
+	if err == nil {
+		t.Fatal("a nameless fallback route was accepted — and dropped from the saved text")
+	}
+	if !strings.Contains(err.Error(), `agent "a"`) || !strings.Contains(err.Error(), "no name") {
+		t.Fatalf("the refusal does not name the node and the cause: %v", err)
+	}
+}
+
 // The canvas carries a sandbox it created and did not fill in as `{}` — a
 // block with no mode, which no `.bot` text can express (the block form is
 // inline, the short form names a mode) and which means what its absence
