@@ -17,9 +17,19 @@ import (
 )
 
 // defaultRescanInterval is how often a Store whose watch the host refused
-// re-reads issues/ from disk. Measured: a full scan costs ~4 ms for 200
-// cards and ~19 ms for 2000 (≈10 µs a card), and it runs OUTSIDE the store
-// mutex, so at this cadence it is ~1% of one core and stalls no reader.
+// re-reads issues/ from disk.
+//
+// The cost is one ReadDir plus an open+read+parse per card, so it is
+// linear in the board and dominated by the filesystem — measured at ~10 µs
+// a card on a dev box (4 ms for 200, 19 ms for 2 000) and ~45 µs a card in
+// a container on overlayfs (8 ms for 200, 99 ms for 2 000), which is the
+// shape a cloud dispatcher actually runs in. Read it as `cards ×
+// per-card ÷ interval` rather than as one number: at this cadence that is
+// well under 1% of a core for a few hundred cards and a few percent for a
+// few thousand on the slower end.
+//
+// What does NOT vary is the property the cadence rests on: the scan runs
+// OUTSIDE the store mutex, so however long it takes it stalls no reader.
 const defaultRescanInterval = 2 * time.Second
 
 // rescanIntervalOverride lets a test pin the interval; production resolves

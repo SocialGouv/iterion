@@ -238,9 +238,18 @@ func (s *Store) getLogger() *iterlog.Logger {
 	return s.logger
 }
 
-// Close releases store-owned resources (currently the fsnotify
-// watcher goroutine). Safe to call multiple times; safe on a Store
+// Close releases what the store owns: the fsnotify watcher goroutine, the
+// rescan net that replaces it on a host that refused a watch, and the
+// overflow-rebuild goroutine. Safe to call multiple times; safe on a Store
 // whose watcher never started.
+//
+// The guarantee, stated as narrowly as it is true: when Close returns, no
+// scan, no index write and no disk I/O of this store is in flight, and
+// none will start. What it does not promise is that every goroutine that
+// ever mentioned this store has returned — a watcher loop that handed the
+// store over itself (watchLost) is not waited for, because the store no
+// longer holds it by then. It is on its last two instructions and touches
+// no store state.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
