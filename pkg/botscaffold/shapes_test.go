@@ -1,9 +1,13 @@
 package botscaffold
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -322,6 +326,82 @@ func TestGalleryShapes(t *testing.T) {
 		if !hasShape(shape) {
 			t.Errorf("form check for %q names no shape in the gallery", shape)
 		}
+	}
+}
+
+// templateForShape returns the gallery template offering shape.
+func templateForShape(t *testing.T, shape string) Template {
+	t.Helper()
+	for _, tpl := range Templates() {
+		if tpl.Spec.Shape == shape {
+			return tpl
+		}
+	}
+	t.Fatalf("no template offers shape %q", shape)
+	return Template{}
+}
+
+// singleQuote mirrors the runtime's shell escaping of a substituted ref
+// (pkg/backend/model.shellEscape): wrap in single quotes, closing and
+// reopening around each one.
+func singleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestCampaignLoopVerifyEmitsOnlyJSONOnStdout: the verify node's WHOLE
+// stdout is parsed as one JSON object (model.parseToolNodeOutput) and, on
+// a parse failure, collapses to `{"result": "<the raw text>"}` — no `ok`,
+// so the gate expr reads nil and the campaign never converges. The
+// repository's own checks therefore have to write on stderr, and this
+// runs the rendered command with a verify_command that PRINTS: the
+// placeholder default `true` prints nothing and hides the whole class.
+func TestCampaignLoopVerifyEmitsOnlyJSONOnStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the shape's command is POSIX sh")
+	}
+	spec := templateForShape(t, "campaign-loop").Spec
+	spec.Slug = "stdout-campaign-loop"
+	_, w, _ := scaffoldAndCompile(t, spec)
+	tools := nodesOf[*ir.ToolNode](w)
+	if len(tools) != 1 {
+		t.Fatalf("want the one verify tool, got %d", len(tools))
+	}
+	for _, c := range []struct {
+		name   string
+		verify string
+		wantOK bool
+	}{
+		{"green", "echo 'ok  github.com/x/y	0.4s'; true", true},
+		{"red", "echo 'FAIL github.com/x/y'; false", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			command := strings.ReplaceAll(tools[0].Command, "{{vars.verify_command}}", singleQuote(c.verify))
+			if strings.Contains(command, "{{") {
+				t.Fatalf("a ref went unsubstituted, the test no longer runs what the runtime does: %q", command)
+			}
+			var stdout, stderr bytes.Buffer
+			sh := exec.Command("sh", "-c", command)
+			sh.Stdout, sh.Stderr = &stdout, &stderr
+			if err := sh.Run(); err != nil {
+				t.Fatalf("the node's own command must succeed whatever the checks say: %v (stderr %q)", err, stderr.String())
+			}
+			var out map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+				t.Fatalf("stdout is not the single JSON object the runtime parses (%v); the checks' output leaked into it: %q", err, stdout.String())
+			}
+			ok, isBool := out["ok"].(bool)
+			if !isBool {
+				t.Fatalf("the node's output carries no bool `ok` (%v); the gate expr would read nil and never converge", out)
+			}
+			if ok != c.wantOK {
+				t.Errorf("ok = %v, want %v", ok, c.wantOK)
+			}
+			// The checks' own log is what "see the run log" points at:
+			// stderr reaches it through combineStreamsForLog.
+			if !strings.Contains(stderr.String(), "github.com/x/y") {
+				t.Errorf("the checks' own output did not reach stderr, so the run log would not have it: %q", stderr.String())
+			}
+		})
 	}
 }
 

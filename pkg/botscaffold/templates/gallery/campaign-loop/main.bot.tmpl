@@ -57,12 +57,17 @@ agent campaign:<%template "llm_fields" .%>
   user: pass_user
   output: pass_report
 
-## The truth oracle: the repository's own checks, on their exit code. The
-## JSON on stdout is the node's output. A {{ref}} in a command is
-## shell-escaped by the runtime, so `sh -c {{vars.verify_command}}` runs
-## the whole string as one command.
+## The truth oracle: the repository's own checks, on their exit code. A
+## {{ref}} in a command is shell-escaped by the runtime, so
+## `sh -c {{vars.verify_command}}` runs the whole string as one command.
+## The node's WHOLE stdout is parsed as one JSON object, so the checks'
+## own output goes to stderr (`>&2`) and stdout carries nothing but the
+## printf: `go test`'s log ahead of it would make the parse fail and the
+## output collapse to `{"result": "<the log>"}` with no `ok` — the gate
+## would then read nil and never converge. stderr still reaches the run
+## log, which is what "see the run log" points at.
 tool verify:
-  command: `if sh -c {{vars.verify_command}}; then printf '{"ok":true,"detail":"checks green"}'; else printf '{"ok":false,"detail":"checks red, see the run log"}'; fi`
+  command: `if sh -c {{vars.verify_command}} >&2; then printf '{"ok":true,"detail":"checks green"}'; else printf '{"ok":false,"detail":"checks red, see the run log"}'; fi`
   output: verify_out
 
 ## Deterministic convergence: the flag AND the verdict, no LLM in the loop.
