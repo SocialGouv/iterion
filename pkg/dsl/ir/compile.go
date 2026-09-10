@@ -275,6 +275,31 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		return nil
 	}
 
+	// A `"..."` DSL string is lexed in legacy escape mode unless the file opts
+	// into `## strict-escape: on`, and legacy mode keeps every \X VERBATIM. So
+	// a backslash-escaped quote written here survives into the shell, which
+	// reads \" as a LITERAL quote character — the argument then carries quotes
+	// instead of being quoted by them.
+	//
+	// The check needs no knowledge of the mode: under strict escape the lexer
+	// would already have turned \" into ", so seeing the two characters at
+	// this point IS the proof that no unescaping happened.
+	//
+	// Measured 2026-09-10 on a post_create that installed a pinned CLI:
+	//   npm error code EINVALIDPACKAGENAME
+	//   Invalid package name """ of package ""@openai/codex@0.154.0""
+	// The step was best-effort, so the bootstrap had never once run and the
+	// sandbox silently kept an older binary. An error, not a warning: the
+	// string provably cannot do what it says, and a warning scrolls past.
+	if strings.Contains(blk.PostCreate, `\"`) {
+		c.errorfAt(DiagEscapedQuoteInShellString, name, "",
+			"%s %q: sandbox.post_create contains a backslash-escaped quote (\\\"), which reaches the shell as a LITERAL quote "+
+				"character — the command runs with quotes inside its arguments instead of around them. Drop the quotes when the "+
+				"value has no space, use single quotes when it does, or opt the file into `## strict-escape: on`.",
+			scope, name)
+		return nil
+	}
+
 	spec := &SandboxSpec{
 		Mode:            blk.Mode,
 		Image:           blk.Image,
