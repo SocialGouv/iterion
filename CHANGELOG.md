@@ -3,6 +3,26 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.134.0](https://github.com/SocialGouv/iterion/compare/v3.133.0...v3.134.0) (2026-09-10)
+
+### Features
+
+* **home:** add a playful open source invitation above the footer ([68e9c80](https://github.com/SocialGouv/iterion/commit/68e9c80e2e73d8cfd2282213d8eb0067f3ac65f7))
+* **home:** consolidate stack capabilities around Devbox ([083b3e6](https://github.com/SocialGouv/iterion/commit/083b3e684527991bb5322356a49e54e49e9955c6))
+* **home:** highlight Devbox and language toolchains ([31aaf3d](https://github.com/SocialGouv/iterion/commit/31aaf3dc1b7e83683347e7ba2d9e1a91ebf5f09d))
+* **home:** showcase end-to-end bot missions ([b3f8fa7](https://github.com/SocialGouv/iterion/commit/b3f8fa7147d7c7717198f7b55d5e3a8cc6eb70e1))
+* **web:** invite visitors to star Iterion on GitHub ([3a40098](https://github.com/SocialGouv/iterion/commit/3a400984c0f5f1feefe2b74be633f282c6e17a1c))
+
+### Bug Fixes
+
+* **docs:** render DSL with-map forms as inline code ([2ef083b](https://github.com/SocialGouv/iterion/commit/2ef083bbaae895a534cce6b4392cdb0e2e40e365))
+
+    <details><summary>why</summary>
+
+    VitePress interpreted the bare braces in the property table as HTML attributes, breaking the docs build. Format the syntax as inline code in the generator and introductory table, then regenerate the reference.
+
+    </details>
+
 ## [3.133.0](https://github.com/SocialGouv/iterion/compare/v3.132.8...v3.133.0) (2026-09-10)
 
 ### Features
