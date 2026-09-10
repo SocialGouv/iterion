@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -51,6 +52,11 @@ func oauthTestServer(t *testing.T) (*Server, *httptest.Server, *auth.JWTSigner, 
 		Sealer:       sealer,
 		AuthSigner:   signer,
 		AuthService:  authSvc,
+		// Disconnecting a credential also withdraws the donor's pool pledge
+		// for it, so a store has to be here or that half of delete is dead
+		// code under test. Pledges alone do not mount the pool routes (they
+		// need the pool/lease/ledger stores too), so nothing else moves.
+		CredPoolPledges: credpool.NewMemoryPledgeStore(),
 	}, iterlog.New(iterlog.LevelError, nil))
 	hs := httptest.NewServer(srv.handler)
 	t.Cleanup(hs.Close)

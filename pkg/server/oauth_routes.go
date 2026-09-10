@@ -365,7 +365,7 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser", "rank": rec.Rank, "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -404,7 +404,7 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		return
 	}
 	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, account=%q fp=%s expires=%v)", ownerKey, kind, rec.AccountLabel, rec.Fingerprint, rec.AccessTokenExpiresAt)
-	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste", "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste", "rank": rec.Rank, "account_label": rec.AccountLabel, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -840,7 +840,7 @@ func (s *Server) renameOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"account_label": label, "fingerprint": rec.Fingerprint})
+	s.auditOAuthByOwner(r, ownerKey, "renamed", kind, map[string]any{"rank": rec.Rank, "account_label": label, "fingerprint": rec.Fingerprint})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -848,23 +848,6 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	if !kind.Valid() {
 		httpError(w, http.StatusBadRequest, "unknown oauth kind")
 		return
-	}
-	// Consent is given for a SPECIFIC connected subscription. Disconnecting
-	// it withdraws that consent, so the pledge goes with it — otherwise the
-	// terms would sit there waiting to be rebound to whatever credential is
-	// connected next under the same key, which could be a different account
-	// entirely.
-	//
-	// Best-effort: disconnecting is the user's actual request, and a
-	// degraded pool store must not trap them into keeping a credential
-	// connected. A pledge left behind is caught at acquisition, which parks
-	// it the first time its credential turns up missing. Only PERSONAL
-	// scopes can hold a pledge — neither an org owner key nor the platform
-	// owner key ever does, so skip the guaranteed-miss store call for both.
-	if s.credPoolPledges != nil && ownerKey != secrets.PlatformOwnerKey && !strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
-		if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, credpool.SourceOAuth, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
-			s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
-		}
 	}
 	rank, rerr := oauthRankParam(r)
 	if rerr != nil {
@@ -888,8 +871,46 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	s.withdrawPledgeOnDisconnect(r, ownerKey, kind, rank)
 	// Audited only here — the ErrOAuthNotFound path above returns 204 without
 	// deleting anything, and a "deleted" event for a no-op would be a lie.
-	s.auditOAuthByOwner(r, ownerKey, "deleted", kind, nil)
+	// The rank and the fingerprint name WHICH link of the chain went: an
+	// event that only carries the kind cannot be read once an owner holds
+	// more than one credential for it.
+	s.auditOAuthByOwner(r, ownerKey, "deleted", kind, map[string]any{"rank": rank, "fingerprint": victim.Fingerprint})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// withdrawPledgeOnDisconnect drops the donor's credential-pool pledge for a
+// credential that has just been deleted.
+//
+// Consent is given for a SPECIFIC connected subscription. Disconnecting it
+// withdraws that consent, so the pledge goes with it — otherwise the terms
+// would sit there waiting to be rebound to whatever credential is connected
+// next under the same key, which could be a different account entirely.
+//
+// Only the PRIMARY. A pledge is keyed on (owner, source, kind) with no rank,
+// and both verifyLendable and Broker.openCredential resolve it through
+// oauthStore.Get — that is rank 0. Withdrawing on a fallback's delete would
+// revoke the donor's contribution of a credential that is still connected,
+// silently, with the dashboard as the only place they could notice.
+//
+// Best-effort, and AFTER the delete: disconnecting is the user's actual
+// request and a degraded pool store must not trap them into keeping a
+// credential connected, but a delete that failed must not strand a withdrawn
+// pledge against a credential still in the store either. A pledge left behind
+// is caught at acquisition, which parks it the first time its credential
+// turns up missing. Only PERSONAL scopes can hold a pledge — neither an org
+// owner key nor the platform owner key ever does, so skip the
+// guaranteed-miss store call for both.
+func (s *Server) withdrawPledgeOnDisconnect(r *http.Request, ownerKey string, kind secrets.OAuthKind, rank int) {
+	if rank != 0 || s.credPoolPledges == nil {
+		return
+	}
+	if ownerKey == secrets.PlatformOwnerKey || strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
+		return
+	}
+	if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, credpool.SourceOAuth, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
+		s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
+	}
 }

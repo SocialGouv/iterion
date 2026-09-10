@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -27,17 +30,35 @@ func chainBlob(token, refreshToken string) string {
 // these cases assert.
 func chainRecord(t *testing.T, st *secrets.MemoryOAuthStore, user string, rank int) secrets.OAuthRecord {
 	t.Helper()
-	recs, err := st.ListByUser(t.Context(), user)
+	rec, err := chainRecordOrErr(st, user, rank)
 	if err != nil {
-		t.Fatalf("list %s: %v", user, err)
+		t.Fatalf("claude_code record at rank %d for %s: %v", rank, user, err)
+	}
+	return rec
+}
+
+// chainRecordOrErr is the same lookup for a case that asserts on ABSENCE —
+// where a t.Fatalf inside the helper would report "missing" as a failure
+// rather than as the answer.
+func chainRecordOrErr(st *secrets.MemoryOAuthStore, user string, rank int) (secrets.OAuthRecord, error) {
+	recs, err := st.ListByUser(context.Background(), user)
+	if err != nil {
+		return secrets.OAuthRecord{}, err
 	}
 	for _, r := range recs {
 		if r.Kind == secrets.OAuthKindClaudeCode && r.Rank == rank {
-			return r
+			return r, nil
 		}
 	}
-	t.Fatalf("no claude_code record at rank %d for %s (have %d records)", rank, user, len(recs))
-	return secrets.OAuthRecord{}
+	return secrets.OAuthRecord{}, secrets.ErrOAuthNotFound
+}
+
+// failingDeleteOAuthStore makes exactly one operation fail — the store write
+// the pool withdrawal must not outrun.
+type failingDeleteOAuthStore struct{ secrets.OAuthStore }
+
+func (failingDeleteOAuthStore) Delete(context.Context, string) error {
+	return errors.New("store unavailable")
 }
 
 // TestOAuthChainRoutes_AWriteAnswersAboutTheLinkItAddressed is the class sweep
@@ -194,6 +215,83 @@ func TestOAuthChainRoutes_AWriteAnswersAboutTheLinkItAddressed(t *testing.T) {
 		}
 		if !strings.Contains(body, "cool-down") {
 			t.Fatalf("the 409 describes some OTHER record's state (no cool-down mentioned): %s", body)
+		}
+	})
+
+	t.Run("deleting a fallback leaves the primary's pool pledge alone", func(t *testing.T) {
+		// A pledge is keyed on (owner, source, kind) with NO rank, and both
+		// verifyLendable and Broker.openCredential resolve it through
+		// oauthStore.Get — the PRIMARY. So withdrawing it when the operator
+		// deleted a fallback revokes the donor's contribution of a credential
+		// that is still connected: no error, no sign of it anywhere but the
+		// pool dashboard.
+		srv, hs, signer, st := oauthTestServer(t)
+		tok := oauthJWT(t, signer, "frank")
+		for _, up := range []struct{ path, token string }{
+			{"/api/me/oauth/claude_code/credentials", "sk-ant-oat01-PRIMARY"},
+			{"/api/me/oauth/claude_code/credentials?rank=1", "sk-ant-oat01-FALLBACK"},
+		} {
+			if code, body := oauthCall(t, hs, http.MethodPost, up.path, tok, chainBlob(up.token, "")); code != http.StatusOK {
+				t.Fatalf("upload %s = %d %s", up.path, code, body)
+			}
+		}
+		pledgeID := credpool.PledgeID("frank", credpool.SourceOAuth, string(secrets.OAuthKindClaudeCode))
+		seed := func() {
+			t.Helper()
+			if err := srv.credPoolPledges.Upsert(t.Context(), credpool.Pledge{
+				ID: pledgeID, PoolID: "pool-1", UserID: "frank",
+				Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+				Enabled:    true, Health: credpool.HealthOK,
+			}); err != nil {
+				t.Fatalf("seed pledge: %v", err)
+			}
+		}
+		seed()
+
+		if code, body := oauthCall(t, hs, http.MethodDelete, "/api/me/oauth/claude_code?rank=1", tok, ""); code != http.StatusNoContent {
+			t.Fatalf("delete rank 1 = %d %s", code, body)
+		}
+		if _, err := srv.credPoolPledges.Get(t.Context(), pledgeID); err != nil {
+			t.Fatalf("deleting the rank-1 fallback withdrew the pledge of the rank-0 primary, which is still connected: %v", err)
+		}
+		if _, err := chainRecordOrErr(st, "frank", 0); err != nil {
+			t.Fatalf("deleting rank 1 removed the primary: %v", err)
+		}
+
+		// The primary is the record a pledge actually points at, so deleting
+		// IT must still withdraw — the guard is a narrowing, not a removal.
+		if code, body := oauthCall(t, hs, http.MethodDelete, "/api/me/oauth/claude_code", tok, ""); code != http.StatusNoContent {
+			t.Fatalf("delete primary = %d %s", code, body)
+		}
+		if _, err := srv.credPoolPledges.Get(t.Context(), pledgeID); !errors.Is(err, credpool.ErrNotFound) {
+			t.Fatalf("deleting the PRIMARY left the pledge behind (err=%v); consent for that subscription is gone", err)
+		}
+	})
+
+	t.Run("a delete that fails leaves the pledge in place", func(t *testing.T) {
+		// The withdrawal is irreversible for the donor (only they can pledge
+		// again), so it must not run for a credential the store still holds.
+		srv, hs, signer, _ := oauthTestServer(t)
+		tok := oauthJWT(t, signer, "grace")
+		if code, body := oauthCall(t, hs, http.MethodPost,
+			"/api/me/oauth/claude_code/credentials", tok, chainBlob("sk-ant-oat01-PRIMARY", "")); code != http.StatusOK {
+			t.Fatalf("upload primary = %d %s", code, body)
+		}
+		pledgeID := credpool.PledgeID("grace", credpool.SourceOAuth, string(secrets.OAuthKindClaudeCode))
+		if err := srv.credPoolPledges.Upsert(t.Context(), credpool.Pledge{
+			ID: pledgeID, PoolID: "pool-1", UserID: "grace",
+			Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
+			Enabled:    true, Health: credpool.HealthOK,
+		}); err != nil {
+			t.Fatalf("seed pledge: %v", err)
+		}
+		srv.oauthStore = failingDeleteOAuthStore{srv.oauthStore}
+
+		if code, _ := oauthCall(t, hs, http.MethodDelete, "/api/me/oauth/claude_code", tok, ""); code != http.StatusInternalServerError {
+			t.Fatalf("delete against a failing store = %d, want 500", code)
+		}
+		if _, err := srv.credPoolPledges.Get(t.Context(), pledgeID); err != nil {
+			t.Fatalf("a FAILED delete withdrew the pledge, stranding it against a credential still in the store: %v", err)
 		}
 	})
 
