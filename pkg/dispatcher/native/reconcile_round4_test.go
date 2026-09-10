@@ -1,6 +1,7 @@
 package native
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,14 +90,15 @@ func TestClose_WaitsForARebuildInFlightAndRefusesALaterOne(t *testing.T) {
 	}
 	waitRebuildIdle(t, s)
 
-	// After Close, a scan is refused before it touches the disk.
+	// After Close, a scan is refused before it touches the disk — and says
+	// so: a caller must not read "the index is fresh" from a nil.
 	setSeam(t, &reconcileScanning, func(st *Store) {
 		if st == s {
 			t.Error("a scan ran on a closed store")
 		}
 	})
-	if err := s.Reconcile(); err != nil {
-		t.Fatalf("Reconcile on a closed store: %v", err)
+	if err := s.Reconcile(); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("Reconcile on a closed store returned %v, want ErrStoreClosed", err)
 	}
 }
 

@@ -156,9 +156,11 @@ func (s *Store) Reconcile() error {
 	s.mu.Lock()
 	if s.closed {
 		// A rebuild asked for before Close has nothing to serve; Close
-		// waits for the one in flight and no new one starts.
+		// waits for the one in flight and no new one starts. Said so, not
+		// passed as a success: a caller must not read "the index is fresh"
+		// from a store that no longer looks at the disk.
 		s.mu.Unlock()
-		return nil
+		return ErrStoreClosed
 	}
 	epoch := s.scanEpoch
 	s.scanning++
@@ -319,7 +321,9 @@ func (s *Store) rebuildAsync(what string) {
 		defer s.rebuildWG.Done()
 		for {
 			for s.rebuildRerun.CompareAndSwap(true, false) {
-				if err := s.Reconcile(); err != nil {
+				// A store closed while the rebuild waited is not a failed
+				// rebuild: nothing will read the index it did not refresh.
+				if err := s.Reconcile(); err != nil && !errors.Is(err, ErrStoreClosed) {
 					s.getLogger().Error("native index watcher: %s and the index rebuild failed: %v — board index may serve stale reads until the next write event or restart", what, err)
 				}
 			}
@@ -358,6 +362,9 @@ func startFallbackRescan(s *Store) *indexRescanner {
 				return
 			case <-t.C:
 				err := s.Reconcile()
+				if errors.Is(err, ErrStoreClosed) {
+					return // Close is under way; its stop follows
+				}
 				msg := ""
 				if err != nil {
 					msg = err.Error()

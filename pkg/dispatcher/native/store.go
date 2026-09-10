@@ -296,18 +296,28 @@ func (s *Store) Close() error {
 	return err
 }
 
+// ErrStoreClosed is what a scan asked of a store after its Close returns:
+// nothing was read, nothing changed. A caller that reads a nil from
+// Reconcile as "the index is fresh" would otherwise be told so by a store
+// that no longer looks at the disk.
+var ErrStoreClosed = errors.New("native store: closed")
+
 // populateIndex loads every committed issue file into the index at
 // NewStore. It adds to the index rather than replacing it; the full
 // rebuild that also drops vanished files is Reconcile. A file that cannot
-// be read is skipped, and said so.
+// be read is skipped, and said so. The scan runs without the mutex like
+// every scan; the writes take it, so the "caller holds mu" contract of the
+// index helpers holds for its one caller today and for any later one.
 func (s *Store) populateIndex() error {
 	fresh, unreadable, err := s.scanIssues()
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	for id, iss := range fresh {
 		s.setIndexLocked(id, iss)
 	}
+	s.mu.Unlock()
 	if len(unreadable) > 0 && s.logger != nil {
 		for id, err := range unreadable {
 			s.logger.Warn("native store: %d issue file(s) could not be read at startup and were skipped (e.g. %s: %v)", len(unreadable), id, err)
