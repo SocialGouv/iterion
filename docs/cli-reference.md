@@ -429,7 +429,7 @@ iterion bots regen-catalog
 
 `bots create` scaffolds a bot bundle under `bots/<slug>` — `main.bot`, `manifest.yaml`, `README.md`, `.gitignore`, and the `skills/ prompts/ attachments/ presets/` layout — then refreshes the generated catalogue. It is the CLI half of the studio builder at `/bots/new`: both render through `pkg/botscaffold`, so a bot created either way is identical. The generated workflow is parsed **and** compiled before anything is written.
 
-The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path.
+The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.botz/`), not merely under `--dest`: a duplicate name makes catalogue routing ambiguous. A collision exits 2 and names the conflicting bot's path. A slug is kebab-case (`^[a-z][a-z0-9-]{1,63}$`); the rendered `workflow` name is the slug with `-` turned into `_`, since a DSL identifier takes no hyphen — `bots create release-readiness` declares `workflow release_readiness:`.
 
 | Flag | Meaning |
 |---|---|

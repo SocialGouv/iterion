@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -18,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // --- Request/Response types ---
@@ -156,10 +158,18 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 
 	// A bundle's prompts/*.md reach the compiler the way they do at a
 	// launch when the editor says which file the document is. The path is
-	// a hint: one the server cannot place under its workdir (a cloud
-	// server has none; an example served from the embedded catalog) or one
-	// with a scheme validates the document alone, as before the field.
-	if req.Path != "" && !strings.Contains(req.Path, "://") {
+	// a hint: one the server cannot place (no workdir on a cloud server, an
+	// example served from the embedded catalog, a sibling bundle that does
+	// not open — a manifest mid-edit must not blind the editor, so this
+	// falls through the way openBundleOrFile does on the CLI) validates the
+	// document alone, as before the field.
+	switch {
+	case strings.HasPrefix(req.Path, botSourceScheme):
+		// The cloud editor's bundle, `botsource://<team>/<slug>/<rel>`: its
+		// files are in the tenant store, and the caller must be in that
+		// team — any other team's path is a hint the server ignores.
+		s.mergeBotSourcePrompts(r, f, req.Path)
+	case req.Path != "" && !strings.Contains(req.Path, "://"):
 		if abs, perr := s.safePath(req.Path); perr == nil {
 			if parent := bundle.DirForMainBot(abs); parent != "" {
 				// A sibling manifest.yaml that does not OPEN must not blind
@@ -202,6 +212,35 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// botSourceScheme prefixes the studio editor's virtual path of a cloud
+// bot, `botsource://<team>/<slug>/<rel>` (BOTSOURCE_SCHEME in the studio).
+const botSourceScheme = "botsource://"
+
+// mergeBotSourcePrompts declares a cloud bot's stored prompts/*.md on the
+// document when the validate request names the bot the editor has open —
+// through the one rule every surface merges bundle prompts by. The
+// caller's active team must be the path's and the store must know the
+// slug; otherwise the path is a hint the server ignores and the document
+// is validated alone.
+func (s *Server) mergeBotSourcePrompts(r *http.Request, f *ast.File, editorPath string) {
+	if s.botSources == nil {
+		return
+	}
+	parts := strings.SplitN(strings.TrimPrefix(editorPath, botSourceScheme), "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return
+	}
+	id, ok := auth.FromContext(r.Context())
+	if !ok || id.TeamID != parts[0] {
+		return
+	}
+	bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), parts[0]), parts[0], parts[1])
+	if err != nil {
+		return
+	}
+	runview.MergePromptFiles(f, bs.Files, "")
 }
 
 func (s *Server) handleListExamples(w http.ResponseWriter, _ *http.Request) {

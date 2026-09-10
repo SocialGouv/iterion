@@ -25,6 +25,10 @@ func TestValidate_BundlePathMergesItsPrompts(t *testing.T) {
 	}
 	spec := tpl.Spec
 	spec.Slug = "mf"
+	// Pinned: the validator does not waive C018 (no model and no
+	// credential the host can detect), and a bare CI has no credential —
+	// the test measures the prompt merge, not the host.
+	spec.Model, spec.Backend = "anthropic/claude-opus-4-8", "claude_code"
 	dir := filepath.Join(srv.cfg.WorkDir, "bots", spec.Slug)
 	if _, err := botscaffold.Scaffold(dir, spec); err != nil {
 		t.Fatalf("Scaffold: %v", err)

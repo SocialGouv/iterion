@@ -200,15 +200,53 @@ shipped bots, so they are written here:
   one word; your own quotes close its quoting (C137).
 - **`expr:` values and quoted `when` are expressions, not templates**: write
   `input.x`, never `{{input.x}}` (C040).
-- **A `#` never means anything else outside a string, a prompt body or a
-  block scalar** — it is a comment, so a literal `{{…}}` example belongs in
-  prose, not in a prompt (every reference in a prompt is validated).
+- **`#` is a comment everywhere EXCEPT inside a string, a prompt body or a
+  block scalar, where it is text** — `# Approve the plan?` in a prompt reaches
+  the model as a heading. A literal `{{…}}` example belongs in prose, not in a
+  prompt (every reference in a prompt is validated).
 - **A blank line inside a prompt body is dropped.** The lexer skips blank
   and space-only lines under a prompt header, so a paragraph break reaches
   the model as a single newline; put a heading or a line of prose where the
   model must see a break.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
-  `-> fail` target carries no code.
+  `-> fail` target carries no code. The engine's own codes are reserved
+  (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is
+  `pkg/store/lifecycle.go`'s `ReservedFailureCodes`); pick a name of the
+  bot's own. `resumable: true` is honoured only when the fail node has ONE
+  predecessor (the guard that routed in — a resume re-evaluates it); with
+  several it degrades to terminal with a warning.
+- **The `run.*` namespace, in a `compute` expr or a quoted `when`:**
+  `run.elapsed_seconds`, `run.max_duration_seconds`, `run.cost_usd`,
+  `run.max_cost_usd`, `run.tokens`, `run.max_tokens`, `run.iterations`,
+  `run.max_iterations`, `run.id` — the run's own consumption and its
+  EFFECTIVE caps (after `--max-*`, the recipe, the platform ceiling). A cap
+  of 0 means UNBOUNDED, so guard a ratio with `run.max_duration_seconds > 0`
+  first, and a workflow with no `budget:` block has no caps to read at all.
+- **A prompt reference to a node that has not run yet renders as its literal
+  placeholder** (`{{outputs.verify.detail}}` on the first pass of a loop
+  prints exactly that); only `loop.*`, `vars.*` and a human node's
+  instructions render empty. Thread a previous pass's output through the
+  back-edge's `with` mapping onto an `input:` schema, with a deterministic
+  entry `compute` giving the first pass the same shape — the
+  `campaign-loop` template shows it.
+- **The loop is declared on the back-edge** (`gate -> campaign … as
+  passes(N)`), and the exhaustion exit leaves the SAME node. C244 judges
+  the loop edge's two ENDPOINTS, not the cycle's contents: a back-edge
+  between two trunk nodes may span a `fan_out_all` router and its branches.
+  The workflow's `entry` may be a loop target.
+- **`when x` and `when not x` on the same source are the exhaustive pair
+  (C012)**; `else` needs a `when` sibling (C015), and a bare edge beside an
+  `else` is refused (C124) — the only bare edge beside guards is a loop's
+  exhaustion exit.
+- **A Verified Action's `recovery:` block only acts under `policy: recover`**
+  — under any other policy it is dead config (C106); the postcondition's
+  JSON stdout is the node's output on every rung, the skip included.
+- **Parallel branches may hold ONE mutating node**; reviewers that fan out
+  together are all `readonly: true`, or the run is refused at launch
+  (`WORKSPACE_SAFETY`). A `router` and a `fail` node take no `output:`.
+- **`jq` ships in the sandbox images; `python3` does not.** A tool that must
+  turn text into the JSON its `output:` schema wants uses `jq -Rs`; a missing
+  interpreter degrades the output to `{"result": …}` silently.
 
 ## Property reference
 

@@ -22,9 +22,9 @@ var skillFiles = []string{
 
 var templateRowRe = regexp.MustCompile("^\\| `([a-z][a-z0-9-]*)` \\|")
 
-// templateSection returns the lines of the file's "Start from a template"
-// section, up to the next heading of the same or a higher level.
-func templateSection(t *testing.T, path string) []string {
+// skillSection returns the lines of the file's section titled `title`, up
+// to the next heading of the same or a higher level.
+func skillSection(t *testing.T, path, title string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -34,7 +34,7 @@ func templateSection(t *testing.T, path string) []string {
 	level := 0
 	for _, line := range strings.Split(string(raw), "\n") {
 		if level == 0 {
-			if strings.HasSuffix(line, "# Start from a template") {
+			if strings.HasSuffix(line, "# "+title) {
 				level = strings.Index(line, " ")
 			}
 			continue
@@ -45,9 +45,39 @@ func templateSection(t *testing.T, path string) []string {
 		out = append(out, line)
 	}
 	if len(out) == 0 {
-		t.Fatalf("%s has no \"Start from a template\" section", path)
+		t.Fatalf("%s has no %q section", path, title)
 	}
 	return out
+}
+
+func templateSection(t *testing.T, path string) []string {
+	t.Helper()
+	return skillSection(t, path, "Start from a template")
+}
+
+// TestSkillsCarryTheSameUnwrittenRules: the "Rules the grammar does not
+// show" section — what an author cannot read off the syntax tables and
+// the authoring probe found agents guessing — is the same text in both
+// skills, so a rule written into the one an operator installs also reaches
+// the one the runners mirror into a run.
+func TestSkillsCarryTheSameUnwrittenRules(t *testing.T) {
+	var rules [][]string
+	for _, path := range skillFiles {
+		section := skillSection(t, path, "Rules the grammar does not show")
+		var bullets int
+		for _, line := range section {
+			if strings.HasPrefix(line, "- **") {
+				bullets++
+			}
+		}
+		if bullets < 10 {
+			t.Errorf("%s: the rules section carries %d rules, fewer than the probe found agents guessing", path, bullets)
+		}
+		rules = append(rules, section)
+	}
+	if strings.TrimSpace(strings.Join(rules[0], "\n")) != strings.TrimSpace(strings.Join(rules[1], "\n")) {
+		t.Errorf("the rules sections of %s and %s differ; the two skills carry the same content", skillFiles[0], skillFiles[1])
+	}
 }
 
 func TestSkillsNameEveryTemplateAndNothingElse(t *testing.T) {

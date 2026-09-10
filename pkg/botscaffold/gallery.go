@@ -266,8 +266,10 @@ func Templates() []Template {
 				Description:  "Drafts while the operator answers, then finalizes.",
 				WhenToUse:    "Use when a few details only the operator knows must not block the rest of the work.",
 				Instructions: "Describe the deliverable and which details only the operator can decide;\nthe agent asks those first and works on the rest while the answers\narrive.",
-				// ask_user_async / await_answers are claw-native tools.
-				Backend: "claw",
+				// No backend pinned: ask_user_async / await_answers reach
+				// claude_code through iterion's ask-user MCP server, claw
+				// in-process, and pi through its extension (ADR-081), so
+				// the shape auto-detects like the others.
 			},
 		},
 		{

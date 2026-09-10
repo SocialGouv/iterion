@@ -18,7 +18,10 @@ import (
 func TestRunValidate_BareMainBotOfABundleSeesItsPrompts(t *testing.T) {
 	inTempWorkspace(t)
 	p, _ := testPrinter()
-	if err := BotsCreate(BotsCreateOptions{Slug: "mf", Template: "multi-file"}, p); err != nil {
+	// The model and backend are pinned: `validate` does not waive C018
+	// (no model and no credential the host can detect), and a bare CI has
+	// no credential — the test measures the bundle promotion, not the host.
+	if err := BotsCreate(BotsCreateOptions{Slug: "mf", Template: "multi-file", Model: "anthropic/claude-opus-4-8", Backend: "claude_code"}, p); err != nil {
 		t.Fatalf("BotsCreate: %v", err)
 	}
 	for _, target := range []string{filepath.Join("bots", "mf", "main.bot"), filepath.Join("bots", "mf")} {

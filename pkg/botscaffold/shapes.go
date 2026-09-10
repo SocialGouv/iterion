@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // The gallery shapes: one directory per shape under templates/gallery/,
@@ -186,33 +187,18 @@ func sortedAnnexes(annexes map[string][]byte) []string {
 }
 
 // mergeAnnexPrompts declares a shape's prompts/*.md annexes on the parsed
-// file, by stem, the way the launch surfaces do at every run
-// (runview.MergeBundlePrompts: a prompt the workflow declares itself
-// wins) — so the compile guard judges the workflow the way it will run: a
-// `system: mission` that lives in prompts/mission.md compiles here, and a
-// stem nothing ships is refused.
+// file through the ONE rule every launch surface merges bundle prompts by
+// (runview.MergePromptFiles, the same function MergeBundlePrompts reads a
+// bundle on disk into) — so the compile guard judges the workflow the way
+// it will run: a `system: mission` that lives in prompts/mission.md
+// compiles here, a stem nothing ships is refused, and a change to the
+// rule cannot make the guard and the launch disagree.
 func mergeAnnexPrompts(f *ast.File, annexes map[string][]byte) {
-	declared := map[string]bool{}
-	for _, p := range f.Prompts {
-		declared[p.Name] = true
+	files := make(map[string]string, len(annexes))
+	for rel, body := range annexes {
+		files[rel] = string(body)
 	}
-	for _, rel := range sortedAnnexes(annexes) {
-		// The runtime's rule: the prompts/ directory, a `.md` suffix in any
-		// case, the stem as the name.
-		if path.Dir(rel) != bundle.DirPrompts || !strings.HasSuffix(strings.ToLower(rel), ".md") {
-			continue
-		}
-		stem := strings.TrimSuffix(path.Base(rel), path.Ext(rel))
-		if declared[stem] {
-			continue
-		}
-		f.Prompts = append(f.Prompts, &ast.PromptDecl{
-			Name: stem,
-			Body: string(annexes[rel]),
-			Span: ast.Span{Start: ast.Pos{File: rel, Line: 1, Column: 1}},
-		})
-		declared[stem] = true
-	}
+	runview.MergePromptFiles(f, files, "")
 }
 
 // GeneratedError is a generated workflow the runtime's own pipeline

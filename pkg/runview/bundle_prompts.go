@@ -3,7 +3,9 @@ package runview
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -33,26 +35,57 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 	if err != nil {
 		return fmt.Errorf("bundle: read prompts dir %s: %w", b.PromptsDir, err)
 	}
-	declared := make(map[string]struct{}, len(f.Prompts))
-	for _, p := range f.Prompts {
-		declared[p.Name] = struct{}{}
-	}
+	files := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		name := entry.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".md") {
+		body, err := os.ReadFile(filepath.Join(b.PromptsDir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("bundle: read prompt %s: %w", entry.Name(), err)
+		}
+		files[bundle.DirPrompts+"/"+entry.Name()] = string(body)
+	}
+	// The origin is derived from PromptsDir, not Dir: a diagnostic inside a
+	// prompt names the file on disk whichever way the bundle was assembled.
+	MergePromptFiles(f, files, filepath.Dir(b.PromptsDir))
+	return nil
+}
+
+// MergePromptFiles is the ONE rule every surface merges bundle prompts by
+// — a bundle on disk (MergeBundlePrompts), a bundle still in memory (a
+// scaffold compiling before it writes, a cloud bot's stored files): a
+// file whose bundle-relative slash path is `prompts/<name>.md` (the
+// suffix in any case, the top level of prompts/ only) declares the prompt
+// `<name>`, unless the workflow declares that name itself. Deterministic
+// in path order. originDir, when set, prefixes the declaration's origin
+// so a diagnostic inside the body points at the file on disk.
+func MergePromptFiles(f *ast.File, files map[string]string, originDir string) {
+	if f == nil || len(files) == 0 {
+		return
+	}
+	declared := make(map[string]struct{}, len(f.Prompts))
+	for _, p := range f.Prompts {
+		declared[p.Name] = struct{}{}
+	}
+	rels := make([]string, 0, len(files))
+	for rel := range files {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	for _, rel := range rels {
+		if path.Dir(rel) != bundle.DirPrompts || !strings.HasSuffix(strings.ToLower(rel), ".md") {
 			continue
 		}
-		stem := strings.TrimSuffix(name, filepath.Ext(name))
+		name := path.Base(rel)
+		stem := strings.TrimSuffix(name, path.Ext(name))
 		if _, exists := declared[stem]; exists {
 			// Workflow-declared prompt wins on name collision.
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(b.PromptsDir, name))
-		if err != nil {
-			return fmt.Errorf("bundle: read prompt %s: %w", name, err)
+		origin := rel
+		if originDir != "" {
+			origin = filepath.Join(originDir, filepath.FromSlash(rel))
 		}
 		// The declaration's origin is the markdown file: a diagnostic on a
 		// reference inside the body then points there (line 1 — the file
@@ -60,10 +93,9 @@ func MergeBundlePrompts(f *ast.File, b *bundle.Bundle) error {
 		// the prompt, which contains no reference at all.
 		f.Prompts = append(f.Prompts, &ast.PromptDecl{
 			Name: stem,
-			Body: string(body),
-			Span: ast.Span{Start: ast.Pos{File: filepath.Join(b.PromptsDir, name), Line: 1, Column: 1}},
+			Body: files[rel],
+			Span: ast.Span{Start: ast.Pos{File: origin, Line: 1, Column: 1}},
 		})
 		declared[stem] = struct{}{}
 	}
-	return nil
 }

@@ -101,15 +101,33 @@ change in the file, one `validate` round.
 
 | Probe | Model | Lines | Errors at first draft | Tokens read | Minutes | Rounds |
 |---|---|---|---|---|---|---|
-| 2026-09-09, spec 1, no gallery, no template section in the skill | claude-opus-4-8 (Claude Code) | 331 | 0 | ~213k | 20 | 0 |
-| 2026-09-09, spec 1, same | claude-sonnet-4-6 (Claude Code) | 215 | 0 | ~278k | 37 | 0 |
+| 2026-09-09, spec 1, no gallery, no template section in the skill | claude-opus-4-8 (Claude Code) | 331 | 0 | ~213k total, ~2 300 lines | 20 | 0 |
+| 2026-09-09, spec 1, same | claude-sonnet-4-6 (Claude Code) | 215 | 0 | ~278k total, ~2 500 lines | 37 | 0 |
+| 2026-09-10, spec 1, the gallery + the "Start from a template" section (#1114, before the rules below were written) | the harness's `opus` label (self-reported "Claude Opus 4.5"), Claude Agent SDK subagent | 229 | 0 (and 0 warnings) | 189k total, **1 509 lines** | 12 | 1 (green first draft) |
+| 2026-09-10, spec 1, same | the harness's `sonnet` label (self-reported "Claude Sonnet 5"), same | 199 | 0 (and 0 warnings) | 245k total, 2 497 lines | 16 | 1 (green first draft) |
 
-Both drafts were correct; both cost a whole session of reading before the
-first line, and both agents had to guess the same unwritten rules (the
-loop-exhaustion exit, the tool's stdout-JSON contract, `outputs.*` without
-`with`). The targets after the registry (#1092, #1103) and the gallery
-(#1110): **0 L/K/D errors, at most 2 S errors, at most 30k tokens read,
-green in at most 2 rounds** — and the same on the mid-size model.
+The 2026-09-09 drafts were correct; both cost a whole session of reading
+before the first line, and both agents had to guess the same unwritten
+rules (the loop-exhaustion exit, the tool's stdout-JSON contract,
+`outputs.*` without `with`). On 2026-09-10, with the gallery, both agents
+scaffolded three or four shapes as REFERENCE and composed the final file
+from them (no single shape covers the ten requirements — by design, the
+spec is a composite); the strong model read a third less and finished in
+half the time, the mid-size model still read `docs/dsl.md`, the grammar
+and `docs/routers.md` whole (2 497 lines — the reading did not shrink,
+the errors did not appear either). The strong model reported fourteen
+rules it had to guess — the `run.*` members, `max_* == 0` meaning
+unbounded, which endpoints C244 judges, which edge carries `as name(N)`,
+the one-predecessor condition on `resumable`, the reserved failure codes,
+`jq` in the image, both reviewers read-only — and two of them by reading
+COMPILER SOURCE (`validate_edges.go`, `lifecycle.go`); every one is now a
+bullet of the skill's "Rules the grammar does not show". The targets after
+the registry (#1092, #1103) and the gallery (#1110): **0 L/K/D errors, at
+most 2 S errors, at most 30k tokens read, green in at most 2 rounds** —
+and the same on the mid-size model. Reached on errors and rounds by both;
+the reading target is the next probe's, to be measured with the rules
+section in place. Artifacts: the drafts, ledgers and `validate` outputs of
+both 2026-09-10 runs are attached to #1110.
 
 ## Reporting
 
