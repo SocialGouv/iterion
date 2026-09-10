@@ -16,6 +16,8 @@ import type {
 // Stable wire code emitted by POST /runs/:id/resume when the current workflow
 // source no longer matches the run's launch hash.
 export const WORKFLOW_SOURCE_CHANGED_ERROR_CODE = "workflow_source_changed";
+export const ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE =
+  "artifact_contract_incompatible";
 
 // isWorkflowSourceChangedError prefers the structured API contract. The prose
 // fallback only applies when no error_code was supplied, preserving force
@@ -36,6 +38,20 @@ export function isWorkflowSourceChangedError(err: unknown): boolean {
           ? String((err as { message: string }).message)
           : "";
   return /workflow source has changed/i.test(message);
+}
+
+// Both structured refusals are recoverable through the same explicit
+// operator gesture: retrying the exact resume request with force enabled.
+// Keep this separate from isWorkflowSourceChangedError so callers that need
+// the narrower diagnostic classification do not silently change semantics.
+export function isForceResumeRequiredError(err: unknown): boolean {
+  if (err instanceof ApiError && err.errorCode !== undefined) {
+    return (
+      err.errorCode === WORKFLOW_SOURCE_CHANGED_ERROR_CODE ||
+      err.errorCode === ARTIFACT_CONTRACT_INCOMPATIBLE_ERROR_CODE
+    );
+  }
+  return isWorkflowSourceChangedError(err);
 }
 
 export async function createRun(req: CreateRunRequest): Promise<CreateRunResponse> {

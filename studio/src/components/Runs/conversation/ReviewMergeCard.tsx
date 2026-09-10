@@ -2,6 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useRef, useState } from "react";
 
 import { getRun, resumeRun } from "@/api/runs";
+import { isForceResumeRequiredError } from "@/api/runs/lifecycle";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Select } from "@/components/ui/Select";
@@ -60,6 +61,7 @@ function ReviewMergeCardTurn({
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forceRetry, setForceRetry] = useState<Record<string, unknown> | null>(null);
   const [reply, setReply] = useState("");
   const [strategy, setStrategy] = useState(review?.mergeStrategy ?? "squash");
   const [commitMsg, setCommitMsg] = useState("");
@@ -77,11 +79,16 @@ function ReviewMergeCardTurn({
   // Same post-resume re-sync dance as HumanPromptForm: the broker dropped
   // this run's subscribers at the pause, so redial + re-pull events, with a
   // REST snapshot fallback for very short resumes.
-  const resume = async (answers: Record<string, unknown>) => {
+  const resume = async (answers: Record<string, unknown>, force = false) => {
     setBusy(true);
     setError(null);
+    setForceRetry(null);
     try {
-      await resumeRun(runId, { answers, source: resolvedSource });
+      await resumeRun(runId, {
+        answers,
+        source: resolvedSource,
+        ...(force ? { force: true } : {}),
+      });
       setSubmitted(true);
       if (onResumed) {
         onResumed();
@@ -106,7 +113,9 @@ function ReviewMergeCardTurn({
       }, 600);
     } catch (e) {
       setError(errorMessage(e));
-      setBusy(false); // keep the card interactive on failure
+      if (isForceResumeRequiredError(e)) setForceRetry(answers);
+    } finally {
+      setBusy(false); // keep the card interactive when an attempt is refused
     }
   };
 
@@ -231,6 +240,16 @@ function ReviewMergeCardTurn({
         <InlineBanner tone="danger" layout="inline">
           {error}
         </InlineBanner>
+      )}
+      {forceRetry && (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy}
+          onClick={() => void resume(forceRetry, true)}
+        >
+          Resume with updated workflow (force)
+        </Button>
       )}
     </div>
   );

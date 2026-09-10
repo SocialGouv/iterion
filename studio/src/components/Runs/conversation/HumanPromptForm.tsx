@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getRun,
-  isWorkflowSourceChangedError,
+  isForceResumeRequiredError,
   resumeRun,
 } from "@/api/runs";
 import { Button } from "@/components/ui/Button";
@@ -258,7 +258,7 @@ export default function HumanPromptForm({
     } catch (e) {
       const msg = errorMessage(e);
       setError(msg);
-      if (isWorkflowSourceChangedError(e)) setForceRetry(retryIntent);
+      if (isForceResumeRequiredError(e)) setForceRetry(retryIntent);
     } finally {
       setBusy(false);
     }
