@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -464,6 +466,43 @@ func TestReclaimFixInFlight_RaisesTheWarningOverItsOwnReleasedMarker(t *testing.
 	}
 	if got := gc.stateOf(fixInFlightContextFor("run-77")); got != forge.CommitStatePending {
 		t.Errorf("row is %q, want pending", got)
+	}
+}
+
+// THE WIRING on the revival side. reclaimFixInFlight is only ever as good as
+// the sites that call it, and the DLQ replay is the one whose whole premise is
+// "a park automation called final turns out not to be": the run this republish
+// wakes has ALREADY had its warning released, so this handler is the only
+// thing standing between the replayed pass and a green check over a live
+// rewrite.
+func TestDLQReplay_RaisesTheFixersWarningAgain(t *testing.T) {
+	gc := &statusBoardClient{}
+	gc.statuses = []forge.CommitStatus{
+		// What the clear left when the run parked on the DLQ.
+		{Context: fixInFlightContextFor("run-77"), State: forge.CommitStateSuccess,
+			Description: fixDoneDescription, TargetURL: "https://iterion.test/runs/run-77"},
+	}
+	s, run := fixRunFixture(t, gc, store.RunStatusFailedResumable)
+	run.FailureCode = store.FailureDLQParked
+	// The handler loads the run by id, so the fixture's mutations have to be
+	// on the stored document.
+	if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	q := newFakeDLQQueue()
+	q.park(7, run.ID, "poisoned")
+	s.queue = q
+
+	r := httptest.NewRequest("POST", "/api/admin/dlq/7/replay", nil)
+	r.SetPathValue("seq", "7")
+	w := httptest.NewRecorder()
+	s.handleDLQReplay(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("replay: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := gc.stateOf(fixInFlightContextFor("run-77")); got != forge.CommitStatePending {
+		t.Fatalf("the replayed fixer's row is %q, want pending — its whole pass runs behind \"pushing is safe again\"", got)
 	}
 }
 
