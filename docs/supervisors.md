@@ -56,7 +56,7 @@ Declare the supervisor inline in the workflow it watches — a top-level
 arms it only while a watched node is active. Multiple supervisors are
 allowed (each watching a different node set).
 
-```
+```iter fragment
 supervisor watchdog:
   watches: [implement, fix]            # agent node(s) to steer (omit = whole run)
   model: "anthropic/claude-opus-5"  # optional pin; resolution below

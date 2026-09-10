@@ -259,6 +259,16 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 	}
 	switch blk.Mode {
 	case "", "none", "auto", "inline":
+	case "open", "allowlist", "denylist":
+		// A network mode written on the sandbox: the one name the two
+		// blocks share, so the mistake is naming the right block — an
+		// author who wrote `mode: allowlist` under `sandbox:` (or whose
+		// `network:` body sat de-indented after a blank line) meant the
+		// network's.
+		c.errorfAt(DiagInvalidSandboxMode, name, "",
+			"%s %q has invalid sandbox mode %q: that is a network: mode — write it as `network:` + `mode: %s` under `sandbox:` (the sandbox's own modes are \"none\", \"auto\" and \"inline\")",
+			scope, name, blk.Mode, blk.Mode)
+		return nil
 	default:
 		c.errorfAt(DiagInvalidSandboxMode, name, "",
 			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
@@ -293,6 +303,26 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		spec.Mounts = append([]string(nil), blk.Mounts...)
 	}
 	if blk.Network != nil {
+		// The driver refuses these at prepare time (pkg/sandbox Spec.Validate),
+		// long after `iterion validate` said OK: refuse them here, where the
+		// author is. The inherit modes are the sandbox package's: merge is the
+		// empty value, never a word.
+		switch blk.Network.Mode {
+		case "", "open", "allowlist", "denylist":
+		default:
+			c.errorfAt(DiagInvalidSandboxMode, name, "",
+				"%s %q has invalid sandbox.network mode %q (want \"open\", \"allowlist\" or \"denylist\")",
+				scope, name, blk.Network.Mode)
+			return nil
+		}
+		switch blk.Network.Inherit {
+		case "", "replace", "append":
+		default:
+			c.errorfAt(DiagInvalidSandboxMode, name, "",
+				"%s %q has invalid sandbox.network inherit %q (want \"replace\" or \"append\"; omit it to merge, the default)",
+				scope, name, blk.Network.Inherit)
+			return nil
+		}
 		spec.Network = &SandboxNetwork{
 			Mode:    blk.Network.Mode,
 			Preset:  blk.Network.Preset,

@@ -249,8 +249,8 @@ func (p *parser) parseAttachmentField() *ast.AttachmentField {
 		case "required":
 			af.Required = p.parseBool()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown attachment property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("attachment", t, propName)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -354,8 +354,8 @@ func (p *parser) parseSecretField() *ast.SecretField {
 		case "description":
 			sf.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown secret property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("secret", t, propName)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -633,8 +633,8 @@ func (p *parser) parseCursorDecl() *ast.CursorDecl {
 		case "bands":
 			cd.Bands = p.parseCursorBands()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown cursor property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("cursor", t, propName)
+			p.skipUnknownProperty()
 		}
 	}
 	return cd
@@ -776,8 +776,8 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			sd.Monitors = p.parseStringList()
 			p.skipNewlines()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown supervisor property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("supervisor", t, propName)
+			p.skipUnknownProperty()
 		}
 	}
 	return sd

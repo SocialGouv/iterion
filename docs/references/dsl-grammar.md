@@ -2,6 +2,8 @@
 
 This is the readable inventory of the syntax accepted by the current parser. The machine-oriented counterpart is [`grammar/iterion_v1.ebnf`](../grammar/iterion_v1.ebnf). Parsing success is only the first stage: the IR compiler then checks declarations, types, references, graph structure, mode-specific properties, loops, resources, and capabilities.
 
+The property tables on this page are **generated** from the parser's property registry ([`pkg/dsl/spec`](../../pkg/dsl/spec/spec.go), `task dsl:gen`), which a conformance test holds to the parser in both directions; the complete per-kind reference, blocks included, is [dsl-properties.md](dsl-properties.md).
+
 Notation: `{x}` means zero or more, `[x]` is optional, and `a | b` is an alternative. Indentation is significant; examples use two spaces. `#` comments (`##` is the same comment) and blank lines are ignored between constructs.
 
 ## File declarations
@@ -140,30 +142,49 @@ agent = "agent" IDENT ":" INDENT { llm_property } DEDENT ;
 judge = "judge" IDENT ":" INDENT { llm_property } DEDENT ;
 ```
 
-They share the exact property surface:
+They share the exact property surface (a tool-ref list accepts dotted refs and a trailing `.*`, and a quoted element is the literal name; `reasoning_effort` also takes a quoted runtime value):
 
-| Property | Value |
-|---|---|
-| `description` | string |
-| `model`, `backend`, `provider`, `command` | string |
-| `input`, `output`, `publish`, `system`, `user` | identifier reference |
-| `artifact_labels` | tool-ref-style identifier list; a quoted string is the literal label (`"review-ledger"`) |
-| `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` |
-| `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted, and a quoted string is the literal name |
-| `skills` | quoted string or dotted-identifier list |
-| `tool_max_steps`, `max_tokens` | integer |
-| `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, `max`, `ultracode`, or quoted runtime value |
-| `timeout` | duration string |
-| `readonly`, `full_access` | boolean |
-| `images` | string list |
-| `interaction` | `none`, `human`, `llm`, `llm_or_human`, `review`, `async` |
-| `interaction_prompt` | prompt identifier |
-| `interaction_model` | string |
-| `await` | `wait_all`, `best_effort` |
-| `compress` | `off`, `on`, `ultra` |
-| `permission` | `off`, `ask`, `deny` |
-| `needs` | one resource identifier or an identifier list |
-| `mcp`, `compaction`, `memory`, `sandbox`, `cursors` | nested blocks described here |
+<!-- dsl-spec:begin table agent -->
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Free-text description shown by the studio and the reports |
+| `model` | string | Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default |
+| `backend` | string | Execution backend: claw, claude_code, codex, pi, kimi or grok |
+| `provider` | string | Provider hint for credential resolution, e.g. "anthropic" |
+| `command` | string | Executable that drives a CLI backend, overriding its default binary |
+| `input` | ident | Schema the node's input is validated against |
+| `output` | ident | Schema the node's structured output must match |
+| `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
+| `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `system` | ident | Prompt declaration used as the system prompt |
+| `user` | ident | Prompt declaration used as the user message |
+| `session` | one of `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` | How the node's LLM session relates to the previous node's |
+| `tools` | tool list | Tools the node may call; restricts claw (C135 on a name it lacks), inert on a CLI backend |
+| `tool_policy` | tool list | Tool-policy entries applied on top of tools |
+| `capabilities` | tool list | Board capabilities opened to the node: board.create, board.move, board.read, … (C080/C081) |
+| `skills` | skill list | Skill-library skills mirrored into the run's .claude/skills |
+| `tool_max_steps` | int | Upper bound on tool-call rounds in one execution |
+| `max_tokens` | int | Output-token cap per call |
+| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `timeout` | string | Duration the node may run, e.g. "20m" |
+| `readonly` | bool | Declares the node mutates no workspace file, so it may run beside another branch |
+| `full_access` | bool | Grants the backend its full tool access |
+| `images` | string list | Image paths sent with the prompt |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | How the node asks the operator (ADR-081) |
+| `interaction_prompt` | ident | Prompt the llm interaction mode answers with in the operator's place |
+| `interaction_model` | string | Model the llm interaction mode uses |
+| `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
+| `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
+| `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
+| `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
+| `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
+| `fallbacks` | block → [fallback](#fallback) | Ordered, NAMED alternative routes taken when the primary fails (ADR-087); a chain with no route is refused |
+| `mcp` | block → [mcp](#mcp) | MCP servers active for the node |
+| `compaction` | block → [compaction](#compaction) | Context-compaction thresholds of the node's session |
+| `memory` | block → [memory](#memory) | iterion's shared-memory tools and scopes for the node |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `cursors` | block → [cursors](#cursors) | Prompt-engineering dials activated on the node (docs/cursors.md) |
+<!-- dsl-spec:end -->
 
 Nested blocks:
 
@@ -187,13 +208,26 @@ router_mode = "fan_out_all" | "fan_out_each" | "condition"
             | "round_robin" | "llm" ;
 ```
 
-| Property | Applies to |
-|---|---|
-| `description: STRING`, `mode: router_mode`, `needs: needs_value` | all routers |
-| `model: STRING`, `backend: STRING`, `provider: STRING`, `system: IDENT`, `user: IDENT`, `multi: BOOL`, `reasoning_effort: effort` | `llm` |
-| `over: STRING`, `as: IDENT`, `key: IDENT`, `depends_on: IDENT` | `fan_out_each` |
+<!-- dsl-spec:begin table router -->
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Free-text description shown by the studio and the reports |
+| `mode` | one of `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` | Routing mode |
+| `model` | string | llm mode only (C023 otherwise): Model id the backend serves, e.g. "anthropic/claude-opus-5"; empty takes the backend's default |
+| `backend` | string | llm mode only (C023 otherwise): Execution backend: claw, claude_code, codex, pi, kimi or grok |
+| `provider` | string | Provider hint for credential resolution, e.g. "anthropic" |
+| `system` | ident | llm mode only (C023 otherwise): Prompt declaration used as the system prompt |
+| `user` | ident | llm mode only (C023 otherwise): Prompt declaration used as the user message |
+| `multi` | bool | llm mode only (C023 otherwise): the model may select several outgoing edges |
+| `reasoning_effort` | one of `low`, `medium`, `high`, `xhigh`, `max`, `ultracode` | llm mode only (C023 otherwise): Reasoning effort; ultracode is xhigh plus multi-agent orchestration, reliable on Opus 4.8 and the Claude 5 family (Opus 5, Fable 5.1) only (C089 warns elsewhere); a quoted string is env-substituted at runtime |
+| `over` | string | fan_out_each: expression naming the collection to iterate |
+| `as` | ident | fan_out_each: alias each item is bound to ({{each.<as>}}) |
+| `key` | ident | fan_out_each: item field that names each branch |
+| `depends_on` | ident | fan_out_each: item field naming the branch this one waits for (requires key) |
+| `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
+<!-- dsl-spec:end -->
 
-`fan_out_each` requires `over` and exactly one unconditional outgoing template edge. `depends_on` requires `key`. Routers never accept `await`.
+`description`, `mode` and `needs` apply to every router; the model properties to `llm`; `over`, `as`, `key` and `depends_on` to `fan_out_each`, which requires `over` and exactly one unconditional outgoing template edge. `depends_on` requires `key`. Routers never accept `await`.
 
 ## Human nodes
 
@@ -211,20 +245,28 @@ Accepted properties are `description: STRING`, `input/output/publish: IDENT`, `a
 tool = "tool" IDENT ":" INDENT { tool_property } DEDENT ;
 ```
 
-| Property | Value |
-|---|---|
-| `description`, `command`, `script`, `goal`, `postcondition` | string |
-| `language` | `js`, `py`, `sh`, `bash` |
-| `input`, `output`, `publish` | identifier |
-| `artifact_labels` | tool-ref list; a quoted string is the literal label |
-| `await` | `wait_all`, `best_effort` |
-| `sandbox` | sandbox block |
-| `compress` | `off`, `on`, `ultra` |
-| `permission` | `off`, `ask`, `deny` |
-| `needs` | one identifier or identifier list |
-| `parallel_safe` | boolean |
-| `policy` | `required`, `recover`, `best_effort` |
-| `recovery` | nested block |
+<!-- dsl-spec:begin table tool -->
+| Property | Value | Meaning |
+|---|---|---|
+| `description` | string | Free-text description shown by the studio and the reports |
+| `command` | string | Shell command, run through bash -c (exclusive with script) |
+| `script` | string | Inline script run by the interpreter language: names |
+| `language` | ident — `js`, `node`, `py`, `python`, `python3`, `sh`, `bash` | Interpreter for script: |
+| `input` | ident | Schema the node's input is validated against |
+| `output` | ident | Schema the node's structured output must match |
+| `publish` | ident | Artifact name the output is published under (read back as {{artifacts.<name>}}) |
+| `artifact_labels` | tool list | Labels stamped on the published artifact; a quoted element is the literal label |
+| `await` | one of `wait_all`, `best_effort` | Convergence rule when several incoming branches reach the node |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
+| `permission` | ident | Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's |
+| `needs` | ident \| ident list | Resource(s) leased from the workflow's resources: block for the node's duration |
+| `parallel_safe` | bool | Declares the node safe to run beside a mutating branch |
+| `goal` | string | Verified action: what the command is for, in one line |
+| `postcondition` | string | Verified action: command whose exit code is the truth oracle at every rung |
+| `policy` | ident — `required`, `recover`, `best_effort` | Verified action: required (default), recover or best_effort (C103–C106) |
+| `recovery` | block → [recovery](#recovery) | Verified action: the self-heal ladder's bounds |
+<!-- dsl-spec:end -->
 
 `command` and `script` are mutually exclusive. Recovery accepts `max_repair_attempts: INT`, `max_agent_attempts: INT`, `model: STRING`, and `agent_tools: tool_ref_list`.
 
@@ -277,22 +319,35 @@ Groups are compile-time macros. `use` bindings substitute `{{params.name}}`; exp
 workflow = "workflow" IDENT ":" INDENT { workflow_member } DEDENT ;
 ```
 
-Workflow members may appear in any order:
+Workflow members — the properties below and the edges (`src -> dst …`) — may appear in any order:
 
-| Member | Value |
-|---|---|
-| `vars`, `attachments` | blocks described above |
-| `entry` | plain or dotted node reference |
-| `default_backend` | string |
-| `tool_policy`, `capabilities` | tool-ref list |
-| `skills` | skill-ref list |
-| `mcp`, `budget`, `resources`, `compaction`, `sandbox` | nested blocks |
-| `interaction` | interaction mode |
-| `worktree` | `auto`, `none` |
-| `compress` | `off`, `on`, `ultra` |
-| `permission` | `off`, `ask`, `deny` |
-| `allow`, `ask`, `deny` | string list |
-| edge | graph transition |
+<!-- dsl-spec:begin table workflow -->
+| Property | Value | Meaning |
+|---|---|---|
+| `entry` | ident | Node the run starts at; a dotted name addresses a group instance's node |
+| `vars` | block → [vars](#vars) | Workflow-scoped vars (merged with the file's) |
+| `attachments` | block → [attachments](#attachments) | Workflow-scoped attachments |
+| `budget` | block → [budget](#budget) | Run caps, each overridable by the matching run flag |
+| `resources` | block → [resources](#resources) | Named semaphores and pools nodes lease with needs: |
+| `mcp` | block → [mcp](#mcp) | MCP servers active for the run |
+| `compaction` | block → [compaction](#compaction) | Default compaction thresholds |
+| `sandbox` | one of `none`, `auto`, or a block → [sandbox](#sandbox) | Sandbox for this scope: a bare mode (none, auto) or an indented block — the inline form, which needs image: or build: (C044) |
+| `worktree` | ident — `auto`, `none` | auto runs the workflow in a fresh git worktree, finalised into a branch; none runs in place |
+| `default_backend` | string | Backend for nodes that name none |
+| `compress` | ident — `on`, `ultra`, `off` | Command-output compression: on, ultra or off (C102) |
+| `auto_memory` | ident — `on`, `off` | The backend's own auto-memory: on or off (C131/C132) |
+| `loop_budget_guard` | ident — `on`, `off` | Decline a loop's back-edge the budget cannot fund: on (default) or off (C133) |
+| `repo_devbox` | ident — `on`, `off` | Load the target repo's devbox.json toolchain: on (default) or off (C134) |
+| `workspace_checkpoint` | ident — `on`, `off` | Mid-run preservation of a copy-based sandbox's workspace as a checkpoint branch pushed to the run's own remote: on (default) or off (C139) |
+| `permission` | ident — `off`, `ask`, `deny` | Tool-permission gate: off, ask or deny (C110–C112) |
+| `allow` | string list | Permission rules always allowed, Tool(pattern) syntax |
+| `ask` | string list | Permission rules that pause for approval |
+| `deny` | string list | Permission rules always blocked |
+| `tool_policy` | tool list | Run-wide tool-policy entries |
+| `capabilities` | tool list | Run-wide board capabilities |
+| `skills` | skill list | Run-wide skill-library skills |
+| `interaction` | one of `none`, `human`, `llm`, `llm_or_human`, `review`, `async` | Default interaction mode for the run's nodes that set none |
+<!-- dsl-spec:end -->
 
 Budget fields are `max_parallel_branches: INT`, `max_duration: STRING`, `max_cost_usd: NUMBER`, `max_tokens: INT`, `warn_tokens: INT` (advisory-only — crossing it emits a `budget_warning`), and `max_iterations: INT`.
 

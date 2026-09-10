@@ -127,7 +127,8 @@ supervisor_prop = "watches" ":" ident_list NEWLINE
                 | "model" ":" STRING_LIT NEWLINE
                 | "system" ":" IDENT NEWLINE
                 | "cooldown" ":" STRING_LIT NEWLINE
-                | "max_evals" ":" INT_LIT NEWLINE ;
+                | "max_evals" ":" INT_LIT NEWLINE
+                | "monitors" ":" string_list NEWLINE ;
 
 (* ---------- LLM nodes ---------- *)
 
@@ -142,7 +143,9 @@ fallback_prop   = "backend" ":" STRING_LIT NEWLINE
                 | "model" ":" STRING_LIT NEWLINE
                 | "provider" ":" STRING_LIT NEWLINE
                 | "on" ":" ident_list NEWLINE
-                | "metered" ":" BOOL_LIT NEWLINE ;
+                | "metered" ":" BOOL_LIT NEWLINE
+                | "action" ":" ( "skip" | STRING_LIT ) NEWLINE
+                | "when" ":" STRING_LIT NEWLINE ;
 
 agent_decl = "agent" IDENT ":" NEWLINE INDENT { llm_prop } DEDENT ;
 judge_decl = "judge" IDENT ":" NEWLINE INDENT { llm_prop } DEDENT ;
@@ -354,6 +357,7 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "auto_memory" ":" auto_memory_mode NEWLINE
                 | "loop_budget_guard" ":" loop_budget_guard_mode NEWLINE
                 | "repo_devbox" ":" repo_devbox_mode NEWLINE
+                | "workspace_checkpoint" ":" ( "on" | "off" ) NEWLINE
                 | "permission" ":" permission_mode NEWLINE
                 | "allow" ":" string_list NEWLINE
                 | "ask" ":" string_list NEWLINE
@@ -367,6 +371,7 @@ budget_prop = "max_parallel_branches" ":" INT_LIT NEWLINE
             | "max_duration" ":" STRING_LIT NEWLINE
             | "max_cost_usd" ":" NUMBER_LIT NEWLINE
             | "max_tokens" ":" INT_LIT NEWLINE
+            | "warn_tokens" ":" INT_LIT NEWLINE
             | "max_iterations" ":" INT_LIT NEWLINE ;
 
 resources_block = "resources" ":" NEWLINE [ INDENT

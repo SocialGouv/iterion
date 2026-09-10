@@ -2,6 +2,7 @@ package parser
 
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/spec"
 )
 
 // ParseResult is the output of Parse.
@@ -25,6 +26,11 @@ type parser struct {
 	lex   *Lexer
 	file  string
 	diags []Diagnostic
+	// blockHost is the kind whose body the block being parsed sits in — what
+	// an "outdent it" remedy must name when the block has several possible
+	// hosts (an mcp: block under a workflow is not an agent's). Set by
+	// enterBlock, "" at the top level.
+	blockHost string
 }
 
 // ---- helpers ----
@@ -498,4 +504,76 @@ func (p *parser) parseDeclHeader(kind string) (start Token, name string, ok bool
 		return start, name, false
 	}
 	return start, name, true
+}
+
+// unknownProperty reports a property the kind does not accept, with the
+// remedy the registry can name (spec.UnknownPropertyHint): the closest
+// accepted names, the block or the enclosing kind the name belongs to, and
+// the kind's own list — so the author does not have to open the reference.
+// kind is the registry's name for the kind, which is also the word the
+// message uses; the conformance test in pkg/dsl/spec holds the two sets of
+// names together.
+func (p *parser) unknownProperty(kind string, t Token, name string) {
+	p.addErrorHint(DiagUnknownProperty, t, "unknown "+kind+" property '"+name+"'", spec.UnknownPropertyHintIn(kind, p.blockHost, name))
+}
+
+// skipIndentedBlock drops the indented block that follows a refused header,
+// so its lines are not reported one by one as strays of the parent. A
+// lexer diagnosis met on the way (a tab, an unclosed quote) is still
+// reported: it is the author's mistake, not cascade noise, and dropped with
+// the block it would only resurface after the header is fixed.
+func (p *parser) skipIndentedBlock() {
+	if p.peek().Type != TokenIndent {
+		return
+	}
+	depth := 0
+	for {
+		t := p.next()
+		switch t.Type {
+		case TokenIndent:
+			depth++
+		case TokenDedent:
+			depth--
+			if depth == 0 {
+				return
+			}
+		case TokenError:
+			p.lexerError(t)
+		case TokenEOF:
+			return
+		}
+	}
+}
+
+// enterBlock records the kind whose body the block about to be parsed sits
+// in, for the remedy an unknown property carries, and returns the restore
+// for the caller to defer: blocks nest (a network: inside a sandbox: inside
+// a workflow), so the previous host comes back when the inner block ends.
+func (p *parser) enterBlock(host string) func() {
+	prev := p.blockHost
+	p.blockHost = host
+	return func() { p.blockHost = prev }
+}
+
+// skipUnknownProperty drops what an unknown property brought: the rest of
+// its line and, when the property was a misspelt block header, the indented
+// body under it — which would otherwise spill into the enclosing kind's
+// property switch one stray line at a time, each with a diagnostic of its
+// own and the compile errors that follow (a `sandbx:` block's `user:` read
+// as the agent's prompt reference). Every E012 site recovers through it.
+func (p *parser) skipUnknownProperty() {
+	p.skipToNewline()
+	p.skipNewlines()
+	p.skipIndentedBlock()
+}
+
+// declHeaderAhead reports whether the tokens at the cursor read as a
+// declaration header — `<keyword> <name>:` — without consuming them.
+func (p *parser) declHeaderAhead() bool {
+	at := p.lex.ti
+	kw := p.next()
+	name := p.next()
+	isHeader := kw.Type != TokenEOF && tokenAsIdent(name) != "" && p.peek().Type == TokenColon
+	p.lex.ti = at
+	return isHeader
 }

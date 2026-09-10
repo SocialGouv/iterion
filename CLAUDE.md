@@ -523,6 +523,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `types/` — Shared enums (transports, field types, session/router/await/interaction modes)
   - `expr/` — Expression evaluator for `compute` nodes and `when` conditions
   - `workflowfile/` — Workflow source-file loading + hash computation (used by `iterion resume` change detection)
+  - `spec/` — The declarative **property registry** (a leaf): every kind's accepted properties with value shape and one-line doc. Held to the parser by a black-box conformance test in BOTH directions (a property added to one side without the other fails CI) and to the EBNF's `*_prop` productions. Feeds E012's remedy (closest name, the block a name belongs to, the kind's list — `parser.unknownProperty`, the one choke point), and renders `docs/references/dsl-properties.md`, the grammar's tables and the skills' property section (`iterion dsl spec --write` / `task dsl:gen`; `task dsl:check` fails on a stale rendering). The parser's `isKeywordToken` is derived from the lexer's keyword table for the same reason: the hand-kept copy drifted twice
 - `pkg/backend/` — Execution stack (LLM + tools)
   - `model/` — Executor registry (`ClawExecutor`), schema validation, event hooks
   - `delegate/` — Backend interface and CLI delegates (`claude_code`, `codex`, `pi`, `kimi`, `grok`); `claw` implements the same interface in-process under `model/`
@@ -1717,6 +1718,7 @@ above is the standing baseline, not an open-work list).
 
 ```
 iterion validate <file.bot>            # Parse and validate workflow
+iterion dsl spec [--region reference|skill|'table <kind>'] [--write]  # Render the DSL property registry, or regenerate the committed reference/tables/skill sections (task dsl:gen)
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
 iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events

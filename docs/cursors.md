@@ -20,7 +20,7 @@ band carries a prompt fragment that gets appended to the agent's
 system prompt under a `## Calibration` section when the cursor is
 activated.
 
-```
+```iter fragment
 cursor ambition:
   description: "How aggressively to expand scope beyond the stated request."
   values:
@@ -42,7 +42,7 @@ A cursor declares **either** `values:` (enum) **or** `bands:`
 
 ## Activating cursors on a node
 
-```
+```iter fragment
 agent reviewer:
   model: "anthropic/claude-sonnet-4-6"
   system: review_system
@@ -51,7 +51,7 @@ agent reviewer:
     enabled: true
     ambition: ambitious      # enum lookup
     depth: 0.7               # numeric → matches the 0.67..1.0 band
-    rigor: ${ITERION_RIGOR}  # env-substitution allowed
+    rigor: "${ITERION_RIGOR}" # env-substitution allowed (quoted)
 ```
 
 When `enabled: false` (or the block is absent), no `## Calibration`

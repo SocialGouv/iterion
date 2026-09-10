@@ -504,6 +504,17 @@ tasks:
       - task: studio:check
       - task: pi-ext:check
       - task: brand:check
+      - task: dsl:check
+
+  dsl:gen:
+    desc: Regenerate the DSL property reference + the grammar tables + the skills' property section from the parser's registry (pkg/dsl/spec)
+    cmds:
+      - go run -mod=vendor ./cmd/iterion dsl spec --write
+
+  dsl:check:
+    desc: Fail if a committed rendering of the DSL property registry is stale, or if the registry and the parser disagree
+    cmds:
+      - go test -count=1 -run 'TestGeneratedDSLDocsAreFresh|TestRegistryMatchesTheParser|TestEBNF' ./pkg/dsl/spec/
 
   brand:gen:
     desc: Regenerate every committed copy of the brand assets (favicons, app icon, docs logo, pkg/brand, studio mark) from assets/brand/

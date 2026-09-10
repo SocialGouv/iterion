@@ -251,42 +251,24 @@ func tokenAsIdent(t Token) string {
 	return ""
 }
 
-func isKeywordToken(tt TokenType) bool {
-	switch tt {
-	case TokenVars, TokenPresets, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
-		TokenRouter, TokenHuman, TokenTool, TokenCompute, TokenWorkflow,
-		TokenJoin,
-		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
-		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
-		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools, TokenToolPolicy,
-		TokenCapabilities, TokenSkills, TokenArtifactLabels, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
-		TokenInstructions, TokenCommand, TokenScript, TokenLanguage, TokenArgs, TokenURL,
-		TokenAuth, TokenReadonly, TokenFullAccess, TokenImages,
-		TokenDefaultBackend,
-		TokenInteraction, TokenInteractionPrompt, TokenInteractionModel,
-		TokenBackend, TokenProvider, TokenAwait, TokenWhen, TokenNot, TokenAs,
-		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
-		TokenFork, TokenPersist,
-		TokenFanOutAll, TokenCondition, TokenRoundRobin, TokenLLM, TokenMulti,
-		TokenWaitAll, TokenBestEffort,
-		TokenTrue, TokenFalse,
-		TokenTypeString, TokenTypeBool, TokenTypeInt, TokenTypeFloat,
-		TokenTypeJSON, TokenTypeStringArray,
-		TokenMaxParallelBranches, TokenMaxDuration, TokenMaxCostUSD,
-		TokenMaxTokens, TokenMaxIterations, TokenWarnTokens,
-		TokenCompaction, TokenThreshold, TokenPreserveRecent,
-		TokenMemory, TokenEnabled, TokenScope, TokenAutoload, TokenRead, TokenWrite, TokenPreCompactInject,
-		TokenWorktree,
-		TokenCompress, TokenAutoMemory,
-		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
-		TokenSandbox,
-		TokenCursor, TokenCursors, TokenValues, TokenBands,
-		TokenGroup, TokenUse, TokenSubbot,
-		TokenAttachments, TokenTypeFile, TokenTypeImage,
-		// secrets / sandbox-host-state / forge keywords usable as identifiers in name positions
-		TokenSecrets, TokenInheritIfAvailable, TokenProjectRoot, TokenVisibility,
-		TokenDone, TokenFail:
-		return true
+// keywordTokens is every token type the lexer's keyword table produces — the
+// set isKeywordToken reads. Derived from the table rather than listed again
+// so a keyword added to the lexer is a valid identifier in a name position
+// (a node called `emit`, a field called `key`) from the same commit: the
+// hand-kept copy of this set drifted twice, refusing a dozen names each
+// time (`agent emit:` broke a shipped bot), and read those words as
+// "unexpected token" inside the blocks that match properties by value.
+var keywordTokens = func() map[TokenType]bool {
+	m := make(map[TokenType]bool, len(keywords))
+	for _, tt := range keywords {
+		m[tt] = true
 	}
-	return false
+	return m
+}()
+
+// isKeywordToken reports whether tt is a keyword — usable as an identifier
+// wherever a name is expected (tokenAsIdent), and a property name where a
+// block matches properties by their spelling.
+func isKeywordToken(tt TokenType) bool {
+	return keywordTokens[tt]
 }

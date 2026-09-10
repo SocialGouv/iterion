@@ -1,6 +1,9 @@
 package parser
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // TokenType identifies the kind of a lexical token.
 type TokenType int
@@ -515,4 +518,17 @@ type Token struct {
 	// reports THAT — never "expected X, got Error" with a token-shape hint
 	// about a cause that is a character.
 	Code DiagCode
+}
+
+// Keywords returns every keyword the lexer tokenises, sorted — the candidate
+// names the registry's conformance probe (pkg/dsl/spec) feeds the parser,
+// since a property matched by token TYPE is only reachable by the word the
+// lexer maps to that type.
+func Keywords() []string {
+	out := make([]string, 0, len(keywords))
+	for k := range keywords {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

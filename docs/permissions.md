@@ -44,7 +44,7 @@ scoped `Tool(pattern)` matches an argument:
 
 Rule lists use iterion's inline-array syntax (like `capabilities:`):
 
-```
+```iter fragment
 workflow main:
   permission: ask
   allow: ["Read(**)", "Edit(pkg/**)", "Bash(go test:*)", "Grep", "mcp__github__get_*"]

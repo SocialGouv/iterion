@@ -94,10 +94,10 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 			p.expect(TokenColon)
 			d.Description = p.expectString()
 		case "fallbacks":
-			d.Fallbacks = p.parseFallbacksBlock(propTok)
+			d.Fallbacks = p.parseFallbacksBlock(propTok, kind)
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty(kind, propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	case TokenReadonly:
 		p.expect(TokenColon)
@@ -114,7 +114,7 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Images = p.parseStringList()
 	case TokenMCP:
 		p.backup()
-		d.MCP = p.parseMCPConfigBlock()
+		d.MCP = p.parseMCPConfigBlock(kind)
 	case TokenBackend:
 		p.expect(TokenColon)
 		d.Backend = p.expectString()
@@ -150,19 +150,19 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.Await = p.parseAwaitMode()
 	case TokenCompaction:
 		p.backup()
-		d.Compaction = p.parseCompactionBlock()
+		d.Compaction = p.parseCompactionBlock(kind)
 	case TokenMemory:
 		p.backup()
-		d.Memory = p.parseMemoryBlock()
+		d.Memory = p.parseMemoryBlock(kind)
 	case TokenSandbox:
 		p.backup()
-		d.Sandbox = p.parseSandboxBlock()
+		d.Sandbox = p.parseSandboxBlock(kind)
 	case TokenCursors:
 		p.backup()
 		d.Cursors = p.parseCursorsBlock()
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty(kind, propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -279,14 +279,14 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 				p.expect(TokenColon)
 				rd.Description = p.expectString()
 			} else {
-				p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
+				p.unknownProperty("router", t, t.Value)
 				p.next()
-				p.skipToNewline()
+				p.skipUnknownProperty()
 			}
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
+			p.unknownProperty("router", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -414,12 +414,12 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 			p.expect(TokenColon)
 			hd.MaxTurns = p.expectInt()
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown human property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("human", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown human property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("human", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -501,7 +501,7 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 		td.Await = p.parseAwaitMode()
 	case TokenSandbox:
 		p.backup()
-		td.Sandbox = p.parseSandboxBlock()
+		td.Sandbox = p.parseSandboxBlock("tool")
 	case TokenCompress:
 		p.expect(TokenColon)
 		td.Compress = p.expectIdent()
@@ -536,12 +536,12 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 				td.ParallelSafe = *v
 			}
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("tool", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("tool", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -591,8 +591,8 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 		case "agent_tools":
 			rb.AgentTools = p.parseToolList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown recovery property '"+name+"'")
-			p.skipToNewline()
+			p.unknownProperty("recovery", t, name)
+			p.skipUnknownProperty()
 		}
 		p.skipNewlines()
 	}
@@ -616,7 +616,8 @@ func (p *parser) parseRecoveryBlock(propTok Token) *ast.RecoveryBlock {
 // Reached from parseLLMProp's TokenIdent arm, so `fallbacks` stays a
 // plain identifier — making it a reserved keyword would break any bot
 // with a node, prompt or schema of that name.
-func (p *parser) parseFallbacksBlock(propTok Token) []*ast.FallbackDecl {
+func (p *parser) parseFallbacksBlock(propTok Token, host string) []*ast.FallbackDecl {
+	defer p.enterBlock(host)()
 	switch p.parseBlockBody() {
 	case headerFailed:
 		return nil
@@ -712,8 +713,8 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			// A quoted expr over vars, like a compute `expr:` value.
 			fd.When = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown fallback property '"+propName+"'")
-			p.skipToNewline()
+			p.unknownProperty("fallback", t, propName)
+			p.skipUnknownProperty()
 		}
 		fd.Span.End = p.pos(t)
 		p.skipNewlines()
@@ -777,12 +778,12 @@ func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
 			p.expect(TokenColon)
 			cd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
-			p.skipToNewline()
+			p.unknownProperty("compute", propTok, propTok.Value)
+			p.skipUnknownProperty()
 		}
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("compute", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -911,6 +912,18 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 		case TokenComment:
 			p.next()
 		default:
+			if isTopLevelKeyword(t.Type) && p.declHeaderAhead() {
+				// A declaration a group cannot hold (an emit, a prompt, a
+				// workflow…): say so, rather than read its keyword as the
+				// source of an edge and ask for the arrow; its body goes
+				// with it. A node NAMED like a keyword is still an edge
+				// endpoint — that shape has no `<name>:` after the keyword.
+				p.addErrorHint(DiagUnexpectedToken, t, "'"+t.Value+"' cannot be declared inside a group — a group holds agent, judge, router, human, tool and compute declarations, and edges",
+					"Move the `"+t.Value+"` declaration to the top level, outside the group.")
+				p.next()
+				p.skipUnknownProperty()
+				continue
+			}
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
 				if e := p.parseEdge(); e != nil {
 					gd.Edges = append(gd.Edges, e)
@@ -999,9 +1012,9 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.expect(TokenColon)
 			sd.Needs = p.parseNeedsList()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown subbot property '"+t.Value+"'")
+			p.unknownProperty("subbot", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return sd
@@ -1042,9 +1055,9 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 			p.expect(TokenColon)
 			ed.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown emit property '"+t.Value+"'")
+			p.unknownProperty("emit", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ed
@@ -1089,9 +1102,9 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 			p.expect(TokenColon)
 			wd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown wait property '"+t.Value+"'")
+			p.unknownProperty("wait", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return wd
@@ -1148,9 +1161,9 @@ func (p *parser) parseFailDecl() *ast.FailDecl {
 			p.expect(TokenColon)
 			fd.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown fail property '"+t.Value+"'")
+			p.unknownProperty("fail", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return fd
@@ -1191,9 +1204,9 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			p.expect(TokenColon)
 			ad.Description = p.expectString()
 		default:
-			p.addError(DiagUnknownProperty, t, "unknown await_answers property '"+t.Value+"'")
+			p.unknownProperty("await_answers", t, t.Value)
 			p.next()
-			p.skipToNewline()
+			p.skipUnknownProperty()
 		}
 	}
 	return ad

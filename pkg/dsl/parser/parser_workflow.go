@@ -42,7 +42,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Attachments = p.parseAttachmentsBlock()
 
 		case TokenMCP:
-			wd.MCP = p.parseMCPConfigBlock()
+			wd.MCP = p.parseMCPConfigBlock("workflow")
 
 		case TokenEntry:
 			p.next() // consume "entry"
@@ -59,7 +59,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Resources = p.parseResourcesBlock()
 
 		case TokenCompaction:
-			wd.Compaction = p.parseCompactionBlock()
+			wd.Compaction = p.parseCompactionBlock("workflow")
 
 		case TokenWorktree:
 			p.next() // consume "worktree"
@@ -122,7 +122,7 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.skipNewlines()
 
 		case TokenSandbox:
-			wd.Sandbox = p.parseSandboxBlock()
+			wd.Sandbox = p.parseSandboxBlock("workflow")
 			p.skipNewlines()
 
 		case TokenDefaultBackend:
@@ -160,8 +160,18 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.next() // skip workflow-level comments
 
 		default:
-			// Must be an edge: IDENT -> IDENT ...
+			// Must be an edge: IDENT -> IDENT ... — unless a colon follows the
+			// name: then it is a property the workflow does not have, and the
+			// author is told so (with the registry's remedy) rather than
+			// "expected ->", which is the edge parser's reading of it.
 			if t.Type == TokenIdent || isKeywordToken(t.Type) {
+				p.next()
+				if p.peek().Type == TokenColon {
+					p.unknownProperty("workflow", t, t.Value)
+					p.skipUnknownProperty() // a misspelt block header: its body is not a run of strays
+					continue
+				}
+				p.backup()
 				edge := p.parseEdge()
 				if edge != nil {
 					wd.Edges = append(wd.Edges, edge)
@@ -221,8 +231,8 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 		p.expect(TokenColon)
 		bb.MaxIterations = p.expectInt()
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown budget property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("budget", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -283,7 +293,8 @@ func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
 	p.skipNewlines()
 }
 
-func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
+func (p *parser) parseCompactionBlock(host string) *ast.CompactionBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "compaction"
 	cb := &ast.CompactionBlock{Span: ast.Span{Start: p.pos(start)}}
 	switch p.parseBlockBody() {
@@ -309,7 +320,8 @@ func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
 
 // parseMemoryBlock parses a `memory:` sub-block on an agent or
 // judge node. All fields are optional; IR compile applies defaults.
-func (p *parser) parseMemoryBlock() *ast.MemoryBlock {
+func (p *parser) parseMemoryBlock(host string) *ast.MemoryBlock {
+	defer p.enterBlock(host)()
 	start := p.next() // consume "memory"
 	mb := &ast.MemoryBlock{Span: ast.Span{Start: p.pos(start)}}
 	switch p.parseBlockBody() {
@@ -345,8 +357,8 @@ func (p *parser) parseCompactionProp(cb *ast.CompactionBlock, propTok Token) {
 		v := p.expectInt()
 		cb.PreserveRecent = &v
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown compaction property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("compaction", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }
@@ -391,8 +403,8 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		v := p.expectString()
 		mb.Visibility = &v
 	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown memory property '"+propTok.Value+"'")
-		p.skipToNewline()
+		p.unknownProperty("memory", propTok, propTok.Value)
+		p.skipUnknownProperty()
 	}
 	p.skipNewlines()
 }

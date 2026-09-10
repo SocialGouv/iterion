@@ -925,7 +925,7 @@ type SandboxNetworkBlock struct {
 	Mode    string   // "allowlist" | "denylist" | "open" | ""
 	Preset  string   // "iterion-default" or named preset
 	Rules   []string // glob patterns + "!exclusions"
-	Inherit string   // "merge" | "replace" | "append" — node scope only
+	Inherit string   // "" (merge, the default) | "replace" | "append" — node scope only; the word merge is not a value
 	Span    Span
 }
 

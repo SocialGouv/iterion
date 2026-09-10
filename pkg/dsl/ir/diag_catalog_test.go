@@ -119,7 +119,9 @@ func TestParseDiagnosticsCarryHint(t *testing.T) {
 	if d.Code != parser.DiagUnknownProperty {
 		t.Fatalf("code = %s, want %s", d.Code, parser.DiagUnknownProperty)
 	}
-	if d.Hint == "" || d.Hint != parser.HintFor(d.Code) {
-		t.Errorf("hint = %q, want the catalogued one", d.Hint)
+	// E012's hint is the registry's remedy (pkg/dsl/spec) — at least the
+	// kind's own property list — not the catalogue's generic line.
+	if d.Hint == "" || !strings.Contains(d.Hint, "agent accepts:") {
+		t.Errorf("hint = %q, want the registry's remedy naming what an agent accepts", d.Hint)
 	}
 }

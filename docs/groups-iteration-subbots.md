@@ -25,7 +25,7 @@ the internal edges are rewired, and `{{params.X}}` is substituted from the
 runtime. External edges address an instance's nodes via the dotted reference
 `prefix.node`.
 
-```
+```iter fragment
 group review_block(target, max_fix):
   judge check:
     model: "anthropic/claude-sonnet-4-6"
@@ -90,7 +90,7 @@ boundaries. Bounded retries and human gates can also be inlined directly in a
 `fan_out_each` branch; a subbot is no longer required solely to obtain local
 counters or resumability.
 
-```
+```iter fragment
 subbot run_ticket:
   source: "child.bot"                 # resolved relative to the parent .bot
   with { issue: "{{outputs.plan.id}}" }   # → the child's vars
@@ -98,8 +98,11 @@ subbot run_ticket:
   needs: worktree_slot                # optional resource lease for the child run
   isolated: true                      # child confines writes to its own run/worktree
 
-plan -> run_ticket
-run_ticket -> merge when validated
+workflow w:
+  entry: plan
+  plan -> run_ticket
+  run_ticket -> merge when validated
+  run_ticket -> fail else
 ```
 
 - The child's **terminal-node output** is mapped to `outputs.<subbot>.<field>`,
@@ -166,7 +169,7 @@ on an agent/judge node: the runtime cannot *prove* the child is
 workspace-independent, so you certify it, and the guard then admits the
 parallel fan-out (both `fan_out_each` and static `fan_out_all`).
 
-```
+```iter fragment
 router dispatch:
   mode: fan_out_each
   over: "{{outputs.plan.tickets}}"
@@ -177,8 +180,10 @@ subbot run_ticket:
   with { id: "{{outputs.dispatch.ticket.id}}" }
   isolated: true        # each child writes only to its own run store
 
-dispatch -> run_ticket
-run_ticket -> collect
+workflow w:
+  entry: dispatch
+  dispatch -> run_ticket
+  run_ticket -> collect
 ```
 
 > **Contract — use `isolated:` ONLY when true.** If the child *does* write the
@@ -197,7 +202,7 @@ concurrently. When each replay writes only to a **disjoint, item-keyed target**
 — the replays never race, and `parallel_safe: true` opts the tool out of the
 guard on a `fan_out_each`:
 
-```
+```iter fragment
 router keyframes_dispatch:
   mode: fan_out_each
   over: "{{outputs.prepare.keyframes}}"
@@ -208,8 +213,10 @@ tool generate_keyframe_scene:
   command: "render --scene {{outputs.keyframes_dispatch.keyframe.scene_id}}"
   parallel_safe: true   # each replay writes only to its own scene-keyed path
 
-keyframes_dispatch -> generate_keyframe_scene
-generate_keyframe_scene -> verify   # wait_all
+workflow w:
+  entry: keyframes_dispatch
+  keyframes_dispatch -> generate_keyframe_scene
+  generate_keyframe_scene -> verify   # wait_all
 ```
 
 Unlike `isolated:` (own run store/worktree) the tool still writes to the shared

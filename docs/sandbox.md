@@ -296,14 +296,13 @@ ephemeral port). The container receives the proxy URL via standard
 need the stricter security-first posture opt in by declaring an
 explicit `network:` block:
 
-```yaml
+```iter fragment:workflow
 sandbox:
   image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
   network:
     mode: allowlist
-    preset: iterion-default
-    rules:
-      - "internal.acme.dev"
+    preset: "iterion-default"        # quoted: the lexer reads a bare kebab-case name as two words
+    rules: ["internal.acme.dev"]     # an inline list, never `- item` lines
 ```
 
 The shipped **`iterion-default`** preset is the recommended
