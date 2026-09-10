@@ -426,12 +426,34 @@ iterion remote admin llm oauth name claude_code --rank 1 --account-label backup
 iterion remote admin llm oauth delete claude_code --rank 1
 ```
 
-Four things worth knowing before building one:
+Five things worth knowing before building one:
 
 - **Nothing moves when the feature arrives.** Rank 0 keeps the record id it
   always had, so every credential connected before chains existed *is* the
   primary, and the migration runs itself at startup. An invocation that names
   no rank sends the byte-identical request it sent before.
+- **Building one makes the deployment un-rollbackable until you take it
+  apart.** The migration is one-way by construction: the ceiling it removes
+  IS the unique `(user_id, kind)` index, so the index is dropped rather than
+  kept. An older build's `EnsureSchema` recreates it — and against a
+  collection where one owner holds two records of a kind, `createIndexes`
+  fails `E11000`, which is not one of the two conflict codes
+  `mongoutil.IsIndexConflict` tolerates. `runSchemaEnsurers` then fails and
+  **the server does not boot**. Nothing warns you: the deployment is fine
+  until the moment you roll back. Before deploying an older image, delete
+  every rank ≥ 1 record first — list them per tier and remove them:
+
+  ```sh
+  iterion remote admin llm oauth                     # platform: connections[].rank
+  iterion remote admin llm oauth delete claude_code --rank 1
+  iterion remote orgs oauth --org <org-id>           # org tier
+  iterion remote orgs oauth delete claude_code --rank 1 --org <org-id>
+  iterion remote api GET "/api/teams/<team-id>/oauth/connections"   # team tier
+  iterion remote api DELETE "/api/teams/<team-id>/oauth/claude_code?rank=1"
+  ```
+
+  With `(user_id, kind)` unique again the older build boots and re-creates
+  its index; the newer `user_kind_rank_unique` it leaves behind is inert.
 - **A chain of the same account is not a fallback.** The trap of the previous
   section applies with full force here: two connections of one Anthropic
   subscription are two fingerprints and two meters, and they shut *together*.
