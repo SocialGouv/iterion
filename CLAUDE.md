@@ -317,7 +317,18 @@ the hours this one spent.
   by TRANSFER and routes the card by `DecideStuckCard`, the
   terminal-state sink + operator `Reopen`, and the two-release
   expand/contract rollout. Read it when a native-board card is stuck
-  `in_progress` with a dead owner, or before enabling the reaper.
+  `in_progress` with a dead owner, or before enabling the reaper. Read it
+  also on the OTHER native-board silence — **a card written on disk that
+  `/board` and the dispatcher never show**: the store's index rides an
+  inotify watch, and inotify is lossy by construction (`ENOSPC` at
+  `fs.inotify.max_user_watches`, `EMFILE` at `max_user_instances`,
+  `ErrEventOverflow` on a full kernel queue, a watch silently dropped when
+  the directory is removed or renamed). Each of those used to freeze the
+  index until the daemon restarted; each now falls back to a full
+  `issues/` rescan every `ITERION_NATIVE_INDEX_RESCAN` (default `2s`,
+  `off` to disable), taken outside the store mutex. The log names which
+  mode a store is in — that line, not the board, is what tells you the
+  fast path is gone.
 - [docs/github-board-sync.md](docs/github-board-sync.md) — making a GitHub
   **Projects v2** board and the native board the same tickets (ADR-097): the
   permissions (App `organization_projects`, PAT `project`), `iterion issue
