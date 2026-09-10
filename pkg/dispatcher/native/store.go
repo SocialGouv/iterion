@@ -89,7 +89,9 @@ type Store struct {
 	// tick of a net that runs every two seconds.
 	unreadableFP string
 
-	// closed is set by Close under mu; a watch lost after that arms no net.
+	// closed is set by Close under mu — once, and never cleared: a store
+	// does not reopen. A watch lost after that arms no net, the rescan net
+	// ends on it, and every later scan is refused with ErrStoreClosed.
 	closed bool
 
 	// rebuildPending coalesces the rebuilds a kernel-queue overflow asks
@@ -306,8 +308,12 @@ var ErrStoreClosed = errors.New("native store: closed")
 // NewStore. It adds to the index rather than replacing it; the full
 // rebuild that also drops vanished files is Reconcile. A file that cannot
 // be read is skipped, and said so. The scan runs without the mutex like
-// every scan; the writes take it, so the "caller holds mu" contract of the
-// index helpers holds for its one caller today and for any later one.
+// every scan; the writes take it, which is the index helpers' contract —
+// and that is the whole of what this promises. It does NOT consult the
+// dirty set the way Reconcile's swap does: on a LIVE store a caller would
+// be race-clean and still revert a write that landed after the scan read
+// the file. NewStore's store is not shared yet; a live store rebuilds
+// through Reconcile.
 func (s *Store) populateIndex() error {
 	fresh, unreadable, err := s.scanIssues()
 	if err != nil {

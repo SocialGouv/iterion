@@ -149,6 +149,9 @@ var rebuildPassEnding atomic.Pointer[func(*Store)]
 //
 // Concurrent callers (the ticker, an overflow) are serialised by their own
 // mutex, so two overlapping scans cannot swap in the older one last.
+//
+// Once Close has run it returns ErrStoreClosed: nothing was read, nothing
+// changed, and the index is not fresh.
 func (s *Store) Reconcile() error {
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
