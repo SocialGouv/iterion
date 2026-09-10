@@ -275,6 +275,13 @@ func (s *Server) budgetFloorPolicy(ctx context.Context) budgetfloor.Policy {
 //
 // Fail-open on a degraded read, like every other quota here: a Mongo blip
 // must not wedge a repository's launches.
+//
+// The super-admin bypass lives HERE rather than only in gateLaunch's prologue
+// because this is also called on its own, by the one surface that learns its
+// repository after the gate has already run (handleLaunchRun). Both callers
+// must answer a super-admin the same way: a bypass that holds on five launch
+// paths and not on the sixth is not a bypass, it is a surface-dependent
+// refusal nobody can predict.
 func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, subj launchSubject, now time.Time) *launchDenial {
 	// Trimmed HERE because the meter is: the runner writes its RepoID as
 	// strings.TrimSpace(run.ProjectPath), so an untrimmed slug would query a
@@ -282,6 +289,9 @@ func (s *Server) gateRepoQuota(ctx context.Context, floor budgetfloor.Policy, su
 	// inert, and silently, which is the worst shape for a ceiling.
 	repo := strings.TrimSpace(subj.Repo)
 	if s.credUsage == nil || repo == "" {
+		return nil
+	}
+	if id, _ := auth.FromContext(ctx); id.IsSuperAdmin {
 		return nil
 	}
 	maxUSD, maxSpends := floor.RepoCap(repo)
