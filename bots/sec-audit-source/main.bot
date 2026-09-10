@@ -2725,14 +2725,25 @@ printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s
 
 ## bank_deepsec_findings — the findings leave the pod, or they do not exist.
 ##
-## It sits BESIDE the path into triage, not on it: scan_join keeps referencing
-## run_deepsec_scanner, so the findings are NOT copied into the triage prompt
-## (the whole point of json_paths is that triage reads the file itself). This
-## node exists for the operator reading a run that died later.
+## Beside the triage path in DATA, on it in CONTROL — the distinction sets the
+## blast radius, so read it before editing the body below.
 ##
-## Always exits 0 and always emits its envelope: an absent export is a fact to
-## report (the scanner was skipped, or its output was dropped as unusable),
-## never a reason to fail the run.
+## In data it is beside: scan_join keeps referencing run_deepsec_scanner, so
+## the banked findings are NOT copied into the triage prompt (the whole point
+## of json_paths is that triage reads the file itself). This node exists for
+## the operator reading a run that died later.
+##
+## In control it is ON the path — the edges route the run through it
+## (run_deepsec_scanner -> bank_deepsec_findings -> scan_join). So a non-zero
+## exit here does not merely lose the bank: it strands scan_join and takes the
+## generic, per-language and custom scanner results with it. That is why the
+## body can only ever exit 0, and why every guard below reports rather than
+## raises.
+##
+## Always exits 0 and always emits its envelope: an export that is absent,
+## unreadable, or valid JSON in an unrecognisable shape is a fact to report
+## (the scanner was skipped, or its output was dropped as unusable), never a
+## reason to fail the run.
 tool bank_deepsec_findings:
   command: `DEEPSEC_OUT={{vars.deepsec_out}} MAX_BYTES={{vars.deepsec_bank_max_bytes}} python3 -c '
 import json, os
@@ -2800,7 +2811,8 @@ emit(kept, len(kept), len(items), len(kept) < len(items),
 
 ## scan_join collects the five scanner outputs into one record for
 ## triage. The scanners run as a single sequential branch (generic →
-## … → custom → [deepsec_gate → run_deepsec_scanner?] → scan_join),
+## … → custom → [deepsec_gate → run_deepsec_scanner →
+## bank_deepsec_findings?] → scan_join),
 ## so this is a plain collector, not a convergence point — each output
 ## is carried forward along the chain. A scanner that no-ops or fails
 ## (each command ends in `|| true`) shows up empty in its slot and the
