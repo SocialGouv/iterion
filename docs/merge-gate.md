@@ -1047,8 +1047,10 @@ Four properties are load-bearing:
 - **Never the gate context.** Writing there could blank a reviewer's verdict
   back to "running" — the exact harm the claim above is written to avoid — and
   would let an advisory signal block a merge.
-- **Never required.** On its own context the row is advisory unless a repo
-  pins it, and pinning it would block every merge for the length of a fix.
+- **Never required.** Because the context names the run, no repo can list it
+  in its required checks even deliberately — which is the right outcome: the
+  row is `pending` for the whole length of a fix, so requiring it would block
+  every merge on the branch while the fixer works.
 - **One row per RUN, not per branch.** Several fixers genuinely share one head
   sha: each `/billy` comment is its own delivery, the zero-touch lane launches
   on the reviewer's head, the auto-heal on the dequeued one — and

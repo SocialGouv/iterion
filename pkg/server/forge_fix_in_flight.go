@@ -35,9 +35,12 @@ import (
 //   - a fixer must never occupy a context branch protection may require —
 //     writing there could blank a reviewer's verdict back to "running", the
 //     exact harm markGateInFlight is written to avoid;
-//   - and this claim must never be able to block a merge. On its own context
-//     it is advisory unless a repo chooses otherwise, which stays the repo's
-//     call, not the engine's.
+//   - and this claim must never be able to block a merge. It is advisory —
+//     and, since the context names the run (below), it cannot be pinned as a
+//     required check even deliberately. That is the right outcome rather than
+//     a lost option: the row is `pending` for the whole length of a fix, so
+//     requiring it would block every merge on the branch while the fixer
+//     works, which is the opposite of what it is for.
 //
 // It is a status rather than a comment because a comment is what already
 // existed and what was already missed: a status sits in the checks list the
