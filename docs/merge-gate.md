@@ -622,22 +622,26 @@ re-derives it from three scattered sections. This is that place
   ([SocialGouv/iterion#683](https://github.com/SocialGouv/iterion/pull/683); before it, a
   parked Billy read as a parked Revi, observed live on PR #646).
 
+- **A fixer in flight says so on the pull request**, from its launch rather
+  than from its first push — [the claim below](#fix-inflight). Before it,
+  the phase between `/billy` (or the zero-touch lane) and the first commit
+  was silent: `revi/review` stayed green on the OLD head and the only
+  signals were the run console and, once it parked, the pause notice above.
+
 **What is NOT wired (yet):**
 
-- **No "fixer in flight" signal exists BEFORE its first push.** From the
-  moment `/billy` (or the zero-touch lane) launches to its first commit,
-  `revi/review` stays green on the OLD head and nothing on the PR says a
-  fixer is working — the only signals are the run console itself and,
-  once it parks, the pause notice above. This is the phase the operator
-  rules below are written for; see
-  [revi-billy-loop.md's "What to expect on the PR"](revi-billy-loop.md#what-to-expect-on-the-pr)
-  for the exact wording and (SocialGouv/iterion#664) for the tracking card.
+- **The fixer's claim does not follow the head.** It is posted on the
+  revision the run was launched on, so a fixer that pushes more than once
+  per run leaves its warning behind on the previous head, where the PR's
+  checks view no longer shows it. The delivery-tail cadence the campaign
+  bots use — commit in stride, push once at the end — is what makes one
+  claim cover the whole run.
 
 **Operator rules, one line each:**
 
 1. **Don't push to a PR while its fixer runs** — his commits land on that
-   branch; a manual push mid-run recreates the exact collision the "no
-   in-flight signal" gap above cannot warn you about. `git pull` after his
+   branch; a manual push mid-run recreates the exact collision the
+   fix-in-flight claim exists to warn you about. `git pull` after his
    push before resuming any local work on the branch.
 2. **`/billy` is the escalation from a review, not a replacement for one.**
    Comment it once Revi has left findings — never hand-fix them in a
@@ -1011,3 +1015,63 @@ marker, so both are repairable and both are ignored by the lane below.
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is
 re-running the REVIEWER (this lane), never launching the fixer.
+
+## <a name="fix-inflight"></a>A fixer rewriting the branch says so
+
+The claim above is the REVIEWER's, on the context branch protection requires.
+A fixer holds no such context — it answers a review rather than gating the
+merge — so from the moment `/billy` (or [the zero-touch lane](#autofix), or the
+[merge-queue auto-heal](#github-merge-queues)) launches it, nothing on the pull
+request said it was there. It works for tens of minutes, then pushes; if the
+branch moved underneath, its push-back rebases, and when that rebase conflicts
+it banks the commits on `iterion/banked/…` and asks for a manual reconcile.
+Everything the pass integrated after the other write is lost. Measured on one
+pull request on 2026-09-09: two passes, 11 and 12 commits, both banked, while a
+second writer pushed three times without ever seeing that anything was in
+flight.
+
+So the launch claims a context of its **own**:
+
+```
+iterion/fix-in-flight/<run id>    pending
+  a fix run is rewriting this branch — a push now collides with what it pushes back
+```
+
+pointed at the live run console. When the run reaches a terminal state the row
+is **resolved, not deleted** — `success`, *the fix run is done — pushing is
+safe again* — because a status that disappears reads as "never claimed", which
+is the ambiguity the row exists to remove.
+
+Four properties are load-bearing:
+
+- **Never the gate context.** Writing there could blank a reviewer's verdict
+  back to "running" — the exact harm the claim above is written to avoid — and
+  would let an advisory signal block a merge.
+- **Never required.** On its own context the row is advisory unless a repo
+  pins it, and pinning it would block every merge for the length of a fix.
+- **One row per RUN, not per branch.** Several fixers genuinely share one head
+  sha: each `/billy` comment is its own delivery, the zero-touch lane launches
+  on the reviewer's head, the auto-heal on the dequeued one — and
+  `overlap: supersede`, the only thing that would cancel the older run, is
+  per-bot and off unless the webhook sets it. On one shared row whichever run
+  ended first would post the all-clear over a sibling still rewriting the
+  branch. A row per run makes "green ⟺ that run is done" true of every row,
+  and "is any fixer working here" is then "is any of these rows still
+  pending".
+- **A park something will resume keeps its warning.** `failed_resumable` is a
+  terminal status but not always an ending: a quota park arms a retry, and a
+  drain, a sandbox setup timeout or a capacity park are Nak'd and redelivered
+  to a fresh pod. Those runs go on rewriting the branch, and nothing re-claims
+  on the way (the claim is posted at launch; a resume does not pass through
+  it), so the row stays pending until the run really ends. The test is the
+  run's own `continuation_state` — a DLQ park is final whatever its
+  `retry_after` still says, and is released.
+
+The claim needs `PublicURL` configured, exactly like the gate's: without it a
+status cannot name its run, and a claim nobody can attribute could never be
+resolved.
+
+**Reading it as an operator.** A pending `iterion/fix-in-flight/…` row means
+*don't push to this branch*; click through to the run console to see what the
+fixer is doing. Its resolution is not a verdict on the fix — that is the
+ledger comment and the re-review that follows the push.

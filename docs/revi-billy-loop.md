@@ -14,10 +14,12 @@ This runbook is the *habit*; the mechanics live in
 Vetty (`dep-update-guard`) sharing one gate — see
 [merge-gate.md's "Revi / Billy / Vetty — one gate, three roles"](merge-gate.md#three-roles):
 what is wired (disjoint ownership, the ~4s claim window, the
-`produces:`/`consumes:` hand-off), what is not yet (the pause notice
-naming a parked run's role, a "fixer in flight" signal before its first
-push), and the operator rules this file's session-discipline section below
-also lives by.
+`produces:`/`consumes:` hand-off, the pause notice naming a parked run's
+role, and — since 2026-09-10 — [a "fixer in flight" claim on the PR from
+the launch rather than from the first push](merge-gate.md#fix-inflight)),
+what is not yet (that claim does not follow the head, so a fixer pushing
+more than once per run leaves its warning on the previous one), and the
+operator rules this file's session-discipline section below also lives by.
 
 ## The command
 
@@ -45,8 +47,10 @@ spent. One gotcha when flipping the flag: the `repo-bots` PATCH requires the
 FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is").
 
 **Corollary of the lane**: before hand-fixing a red PR, check no fixer run is
-already in flight on it (`iterion remote runs list` or the gate's `pending`
-link) — a manual push while the fixer works recreates the mid-run-push
+already in flight on it — a pending `iterion/fix-in-flight/<run id>` row in the
+PR's own checks list is the signal ([the claim](merge-gate.md#fix-inflight));
+`iterion remote runs list` and the gate's `pending` link answer the same
+question. A manual push while the fixer works recreates the mid-run-push
 collision the session discipline below warns about.
 
 ## <a name="what-the-command-seeds"></a>What the command seeds — you type nothing else
