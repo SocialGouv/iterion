@@ -99,6 +99,12 @@ type Store struct {
 	rebuildPending atomic.Bool
 	rebuildRerun   atomic.Bool
 
+	// rebuildWG counts the rebuild goroutines that are alive, so Close
+	// waits for the whole goroutine and not merely for the scan inside it.
+	// The Add happens under mu and only while !closed, which is what keeps
+	// it from racing Close's Wait.
+	rebuildWG sync.WaitGroup
+
 	// reconcileMu serialises Reconcile callers (the rescan ticker, a
 	// kernel-queue overflow, an explicit call) so two scans cannot
 	// overlap and swap in the older one last. Never held with mu by the
@@ -261,9 +267,15 @@ func (s *Store) Close() error {
 	if late != nil && late != rescanner {
 		_ = late.Close()
 	}
-	// An overflow rebuild already scanning finishes under reconcileMu;
-	// wait for it so nothing of this store runs after Close returns. One
-	// asked for later returns at once: Reconcile refuses a closed store.
+	// Wait for the overflow rebuild GOROUTINE, not just for the scan it is
+	// running. Its work does not end when Reconcile returns: it still has
+	// to release the pending flag and look once more for a request that
+	// raced it, and reconcileMu — released inside Reconcile — says nothing
+	// about that tail. rebuildAsync takes a ticket under mu and refuses one
+	// once closed is set, which is set above, so no goroutine can be added
+	// after this Wait starts.
+	s.rebuildWG.Wait()
+	// And for an explicit Reconcile from outside, which owns no ticket.
 	s.reconcileMu.Lock()
 	s.reconcileMu.Unlock() //nolint:staticcheck // an empty critical section is the wait
 	return err

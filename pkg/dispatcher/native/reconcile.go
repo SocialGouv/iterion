@@ -286,7 +286,20 @@ func (s *Store) rebuildAsync(what string) {
 	if !s.rebuildPending.CompareAndSwap(false, true) {
 		return // the running pass will see the rerun flag and go again
 	}
+	// The ticket Close waits on. Taken under mu and refused once closed is
+	// set, so a request that arrives during or after Close cannot add a
+	// goroutine to a WaitGroup that is already being waited on — and the
+	// pending flag is released, since no goroutine is coming to release it.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.rebuildPending.Store(false)
+		return
+	}
+	s.rebuildWG.Add(1)
+	s.mu.Unlock()
 	go func() {
+		defer s.rebuildWG.Done()
 		for {
 			for s.rebuildRerun.CompareAndSwap(true, false) {
 				if err := s.Reconcile(); err != nil {

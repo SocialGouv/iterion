@@ -136,3 +136,64 @@ func TestReconcile_DoesNotLandAnOlderScanOverTheLockedRebuild(t *testing.T) {
 		t.Fatalf("the older unlocked scan landed over the locked rebuild and dropped the card: %v", err)
 	}
 }
+
+// Close waits for the rebuild GOROUTINE, not only for the scan inside it.
+// Its work does not end when Reconcile returns: there is a tail — fire the
+// pass-ending seam, release the pending flag, look once more for a request
+// that raced it — and reconcileMu, which Reconcile releases on its way out,
+// says nothing about that. Waiting on reconcileMu alone let Close return
+// with the goroutine still running, which is how a test's own hook gets
+// called after the test completed (a t.Errorf from a dead test panics the
+// binary) and how a leak checker sees a goroutine a closed store still owns.
+func TestClose_WaitsForTheRebuildGoroutineNotOnlyItsScan(t *testing.T) {
+	refuseWatch(t)
+	setRescanInterval(t, 0)
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	inTail := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once atomic.Bool
+	setSeam(t, &rebuildPassEnding, func(st *Store) {
+		if st != s || !once.CompareAndSwap(false, true) {
+			return
+		}
+		inTail <- struct{}{}
+		<-release
+	})
+
+	s.rebuildAsync("in flight at Close")
+	<-inTail // the scan is over and reconcileMu is released; the goroutine lives on
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		_ = s.Close()
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the rebuild goroutine was still running its tail")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned after the rebuild goroutine finished")
+	}
+
+	// And a request that arrives after Close starts no goroutine at all —
+	// it must also hand back the pending flag it claimed, or the store
+	// would look forever busy to anything watching it.
+	setSeam(t, &reconcileScanning, func(st *Store) {
+		if st == s {
+			t.Error("a scan ran on a closed store")
+		}
+	})
+	s.rebuildAsync("after Close")
+	if s.rebuildPending.Load() {
+		t.Fatal("a rebuild refused after Close left the pending flag set")
+	}
+}
