@@ -254,18 +254,22 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, lin
 	}
 	if binding != "" {
 		http.SetCookie(w, &http.Cookie{
-			Name:     oidcAgentBindingCookie,
+			Name:     s.authCookieWriteName(oidcAgentBindingCookie),
 			Value:    binding,
-			Path:     "/api/auth/oidc/",
+			Path:     s.agentBindingCookiePath("/api/auth/oidc/"),
 			Domain:   s.cfg.CookieDomain,
 			HttpOnly: true,
 			Secure:   s.cfg.CookieSecure,
 			// SameSite=Lax is required: the callback is a top-level GET
 			// navigation from the IdP and Strict would block the cookie.
-			// Lax is sufficient because we additionally require the cookie
-			// value to match PendingAuth.AgentBinding at /callback — a
-			// cross-site script can't read the cookie (HttpOnly) and can't
-			// set a cookie for iterion's origin (same-origin policy).
+			// Lax alone is NOT sufficient, which is why the name carries the
+			// __Host- prefix where it can. This code used to argue that a
+			// cross-site script "can't set a cookie for iterion's origin
+			// (same-origin policy)" — false on a host under a shared
+			// registrable domain, where a sibling sets Domain=<parent> and
+			// the browser sends it alongside ours. Tossing THIS cookie
+			// defeats the RFC 9700 §4.7.1 login-CSRF guard and lands the
+			// victim on the attacker's account.
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   int((10 * time.Minute).Seconds()),
 		})
@@ -291,6 +295,8 @@ func newAgentBindingToken() (string, error) {
 // cookie. Called at /callback (regardless of outcome) so each cookie
 // is used at most once.
 func clearOIDCAgentBindingCookie(w http.ResponseWriter, domain string, secure bool) {
+	// Both spellings: a flow started before the migration holds the bare name,
+	// and a single-use cookie that is not cleared is a replayable one.
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcAgentBindingCookie,
 		Value:    "",
@@ -298,6 +304,16 @@ func clearOIDCAgentBindingCookie(w http.ResponseWriter, domain string, secure bo
 		Domain:   domain,
 		HttpOnly: true,
 		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:  hostCookiePrefix + oidcAgentBindingCookie,
+		Value: "",
+		// A __Host- deletion is only honoured on the terms of its write.
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -350,9 +366,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// compare avoids timing leaks on near-miss values. The cookie is
 	// cleared regardless of outcome — single-use semantics.
 	if pending.AgentBinding != "" {
-		ck, cerr := r.Cookie(oidcAgentBindingCookie)
+		ckVal := s.sessionCookie(r, oidcAgentBindingCookie, false)
 		clearOIDCAgentBindingCookie(w, s.cfg.CookieDomain, s.cfg.CookieSecure)
-		if cerr != nil || subtle.ConstantTimeCompare([]byte(ck.Value), []byte(pending.AgentBinding)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(ckVal), []byte(pending.AgentBinding)) != 1 {
 			redirectSSOError(w, r, ssoErrAgentBinding, provQ)
 			return
 		}

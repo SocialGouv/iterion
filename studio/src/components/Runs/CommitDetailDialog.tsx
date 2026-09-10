@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor } from "@/lib/monaco";
 
 import { Dialog, Tooltip } from "@/components/ui";
 import {

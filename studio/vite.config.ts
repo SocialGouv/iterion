@@ -32,10 +32,15 @@ export default defineConfig({
         advancedChunks: {
           groups: [
             { name: "reactflow", test: /[\\/]node_modules[\\/]@xyflow[\\/]react[\\/]/ },
-            {
-              name: "monaco",
-              test: /[\\/]node_modules[\\/](@monaco-editor[\\/]react|monaco-editor)[\\/]/,
-            },
+            // No `monaco` group on purpose. Naming it made the editor a
+            // first-class shared chunk, which the entry document then
+            // modulepreloaded — so every page FETCHED 4.2 MB of JS and a
+            // render-blocking 158 KB stylesheet for an editor it never
+            // mounts, even though nothing imports it statically. Monaco now
+            // has exactly one importer (src/lib/monacoInstance.ts, reached
+            // only through the React.lazy wrappers in src/lib/monaco.tsx), so
+            // the natural dynamic-import boundary already gives it its own
+            // chunk — loaded when an editor first renders.
             {
               name: "radix",
               test: /[\\/]node_modules[\\/]@radix-ui[\\/]react-(dialog|icons|popover|tabs|tooltip)[\\/]/,
@@ -46,9 +51,21 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "src"),
-    },
+    // Array form, because ORDER decides: the "@" prefix rule matches
+    // "@/lib/monaco" too, and an object's entries cannot express "the
+    // specific one first". Under vitest the editor module resolves to a
+    // stub — see src/lib/monaco.stub.ts.
+    alias: [
+      ...(process.env.VITEST
+        ? [
+            {
+              find: /^@\/lib\/monaco$/,
+              replacement: path.resolve(__dirname, "src/lib/monaco.stub.ts"),
+            },
+          ]
+        : []),
+      { find: "@", replacement: path.resolve(__dirname, "src") },
+    ],
   },
   // Vitest config. Most tests are pure-function and run under Node;
   // component a11y + DOM tests (`src/__tests__/a11y/*` and any

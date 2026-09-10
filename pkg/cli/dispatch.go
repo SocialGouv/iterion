@@ -197,8 +197,14 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 		}
 
 		httpSrv = &http.Server{
-			Addr:              fmt.Sprintf("127.0.0.1:%d", port),
-			Handler:           mux,
+			Addr: fmt.Sprintf("127.0.0.1:%d", port),
+			// Same browser-facing protections as the studio server. This mux
+			// is built here rather than by Server.routes(), so it reached
+			// none of them: its state-changing board and dispatcher routes
+			// accepted a cross-origin POST from any page the operator had
+			// open. Binding loopback does not help — the browser is on the
+			// host.
+			Handler:           server.BrowserGuard(port, "", mux),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		if p.Format == OutputHuman {

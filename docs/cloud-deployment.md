@@ -118,7 +118,8 @@ on this path. See
 
 API clients do not send a static deployment token. They authenticate
 with an access JWT issued by login/refresh, passed as
-`Authorization: Bearer <access-jwt>` or via the `iterion_auth` cookie.
+`Authorization: Bearer <access-jwt>` or via the `__Host-iterion_auth`
+cookie (bare `iterion_auth` on a deployment without TLS).
 WebSocket clients that cannot set headers may pass the same access JWT
 as `?t=<access-jwt>` on `/api/ws/*`. Health probes, server info, and
 auth bootstrap routes remain public.

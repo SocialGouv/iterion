@@ -33,7 +33,11 @@ graph go through the recorded path and therefore **do** appear.)
 
 Authentication. Most routes accept any of:
 
-- **Cookie**: `iterion_auth` (access JWT) + `iterion_refresh` (rotation).
+- **Cookie**: `__Host-iterion_auth` (access JWT) + `__Host-iterion_refresh`
+  (rotation). The `__Host-` prefix is dropped — leaving the bare
+  `iterion_auth` / `iterion_refresh` — when the deployment cannot meet its
+  terms (no TLS, or an explicit cookie domain); a browser would discard the
+  prefixed form there. Both spellings are accepted on read.
 - **Bearer JWT**: `Authorization: Bearer <access-jwt>` issued by login
   / refresh.
 - **Bearer PAT**: `Authorization: Bearer iap_…` — long-lived personal
