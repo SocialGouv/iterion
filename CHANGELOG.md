@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.136.1](https://github.com/SocialGouv/iterion/compare/v3.136.0...v3.136.1) (2026-09-10)
+
+### Bug Fixes
+
+* **server:** the origin gate refused in silence, so its own safety was unobservable ([#1108](https://github.com/SocialGouv/iterion/issues/1108)) ([5c0f3f8](https://github.com/SocialGouv/iterion/commit/5c0f3f892865a5bb1bfd42283d6f2954fd4cbb0f))
+
+    <details><summary>why</summary>
+
+    Widening the CSRF boundary from 70 hand-picked handlers to every state-changing /api route left one question open: is it refusing anything it should not? The gate answered the caller with a 403 and recorded nothing, so "no legitimate client is being refused" and "we have no way to see one" produced identical evidence — an empty grep. That is how the board-MCP transport stayed an inference: sandboxed claude_code and pi POST to /api/v1/mcp/board, which the gate covers, and the claim that their…
+
+    </details>
+
 ## [3.136.0](https://github.com/SocialGouv/iterion/compare/v3.135.1...v3.136.0) (2026-09-10)
 
 ### Features
