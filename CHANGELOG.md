@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.135.1](https://github.com/SocialGouv/iterion/compare/v3.135.0...v3.135.1) (2026-09-10)
+
+### Bug Fixes
+
+* **runs:** a credential with no fingerprint still names the tier that paid ([#1109](https://github.com/SocialGouv/iterion/issues/1109)) ([290b798](https://github.com/SocialGouv/iterion/commit/290b79838f6960e26f0320f07911bc4069db5986)), references [#1105](https://github.com/SocialGouv/iterion/issues/1105) [#1105](https://github.com/SocialGouv/iterion/issues/1105)
+
+    <details><summary>why</summary>
+
+    #1105 collected the tiers inside the FINGERPRINT harvest, which is keyed on an audit identity and skips a credential that has none — setOAuthFingerprint refuses an empty stamp outright, so an unstamped forfait never even enters the map that walk reads. A run funded only by one reported no tier at all: an empty answer where the GRANTED log line says `<unstamped>`, which is the confident silence the field exists to remove, on exactly the odd credential an operator is most likely to be chasing.
+
+    </details>
+
 ## [3.135.0](https://github.com/SocialGouv/iterion/compare/v3.134.0...v3.135.0) (2026-09-10)
 
 ### Features
