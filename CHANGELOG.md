@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.131.0](https://github.com/SocialGouv/iterion/compare/v3.130.0...v3.131.0) (2026-09-10)
+
+### Features
+
+* persist artifact restart contracts ([#1020](https://github.com/SocialGouv/iterion/issues/1020)) ([5b81de3](https://github.com/SocialGouv/iterion/commit/5b81de35ed6fdb225fe55f0c69160787a53a6a05)), closes [#1047](https://github.com/SocialGouv/iterion/issues/1047), references [#1039](https://github.com/SocialGouv/iterion/issues/1039) [#1051](https://github.com/SocialGouv/iterion/issues/1051) [#1047](https://github.com/SocialGouv/iterion/issues/1047) [#1051](https://github.com/SocialGouv/iterion/issues/1051)
+
+    <details><summary>why</summary>
+
+    `Rewind` validated every persisted artifact contract before it knew its pivot — i.e. before `downstreamOf` computed what the rewind invalidates — so an artifact the operation was about to supersede refused the whole operation. Under the `enforce` context policy that made the loop the command exists for unusable: `--auto` targets the node whose declaration just changed, which is precisely the node whose contract no longer matches, and the rewind is what clears it (its tombstone carries no…
+
+    </details>
+
 ## [3.130.0](https://github.com/SocialGouv/iterion/compare/v3.129.2...v3.130.0) (2026-09-09)
 
 ### Features
