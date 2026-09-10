@@ -141,8 +141,8 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 	}
 }
 
-// gateLaunch is the shared run-launch admission gate: suspend →
-// concurrency → launch rate → monthly cost cap → monthly run quota
+// gateLaunch is the shared run-launch admission gate: suspend → per-repo
+// quota → concurrency → launch rate → monthly cost cap → monthly run quota
 // (the last one is also the metering increment). Called by
 // handleLaunchRun, handleResumeRun, the inbound webhook handlers, the retry
 // sweeper and the board dispatcher (processBoardCard) — every cloud launch
