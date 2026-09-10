@@ -210,7 +210,7 @@ func (p *Publisher) fillFromOrg(
 				runID, orgID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 			skips.note(until)
 			if floorHeld {
-				skips.noteFloorHeld(string(rec.Kind))
+				skips.noteFloorHeld(rec.Fingerprint)
 			}
 			if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
 				skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, org: true}
