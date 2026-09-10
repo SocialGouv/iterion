@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/credusage"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -359,6 +361,77 @@ func TestHandleLaunchRun_CarriesTheRequestsBotToTheGate(t *testing.T) {
 		}
 		if u.Runs != 0 {
 			t.Errorf("monthly runs = %d after a rejected body, want 0 — nothing was launched", u.Runs)
+		}
+	})
+}
+
+// The per-repo quota on the surface an operator — or a CI loop — drives
+// directly. Every automated lane passes a repository, and so does the resume
+// of a run; this one learns which repository it targets only when it resolves
+// the connection, several checks after the admission. Until the quota was
+// re-run there, a repository over its ceiling was refused everywhere except
+// the one place it could be spent from all month.
+func TestHandleLaunchRun_RepoQuotaBindsTheDirectLaunch(t *testing.T) {
+	newSrv := func(t *testing.T, quota budgetfloor.RepoQuota) (*Server, context.Context) {
+		t.Helper()
+		pub := &countingPublisher{}
+		s, rs := newGatedBoardServer(t, gateSpec{id: "t1"}, pub)
+		s.cfg.Mode = "cloud" // a repo-targeted launch is a cloud-mode shape
+		s.cfg.Store = fakeActiveStore{RunStore: rs}
+		s.orgUsage = orgusage.NewMemoryCounter()
+		s.credUsage = credusage.NewMemoryCounter()
+		withFloor(t, s, budgetfloor.Policy{RepoQuotas: []budgetfloor.RepoQuota{quota}})
+
+		// A PAT connection carrying its managed secret already: the launch
+		// then reaches neither the App reachability probe nor a mint, which
+		// is what lets this test drive the handler with no forge at all.
+		conns := forge.NewMemoryConnectionStore()
+		if err := conns.Create(context.Background(), forge.Connection{
+			ID: "conn-1", TenantID: "t1", Provider: forge.ProviderGitHub,
+			Kind: forge.KindPAT, ManagedSecretID: "sec-1",
+		}); err != nil {
+			t.Fatalf("create connection: %v", err)
+		}
+		s.forgeConnections = conns
+		s.forgeOrchestrator = &forge.Orchestrator{}
+		return s, auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1", OrgID: "t1"})
+	}
+	launch := func(t *testing.T, s *Server, ctx context.Context, repo string) *httptest.ResponseRecorder {
+		t.Helper()
+		// The workflow rides inline: in cloud mode a catalog id resolves
+		// through the bundle-snapshot path, and this test is about the
+		// repository, not about bot resolution.
+		src, err := json.Marshal(boardGateProbeBot)
+		if err != nil {
+			t.Fatalf("marshal source: %v", err)
+		}
+		body := `{"source":` + string(src) + `,"connection_id":"conn-1","repo_url":"https://github.com/` + repo + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.handleLaunchRun(rec, req)
+		return rec
+	}
+
+	t.Run("a repository over its quota is refused", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		rec := launch(t, s, ctx, "o/hungry")
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402: %s", rec.Code, rec.Body.String())
+		}
+		// The reason is what tells the operator their next move is the quota,
+		// not the org's cost cap.
+		if !strings.Contains(rec.Body.String(), denyRepoQuota) {
+			t.Errorf("body = %s, want it to name %s", rec.Body.String(), denyRepoQuota)
+		}
+	})
+
+	t.Run("another repository is untouched by it", func(t *testing.T) {
+		s, ctx := newSrv(t, budgetfloor.RepoQuota{Repo: "o/hungry", MonthlyUSD: 10})
+		seedRepoUsage(t, s.credUsage, "o/hungry", 12.0, 3)
+		if rec := launch(t, s, ctx, "o/quiet"); rec.Code == http.StatusPaymentRequired {
+			t.Fatalf("an unrelated repository was refused: %s", rec.Body.String())
 		}
 	})
 }
