@@ -32,10 +32,10 @@ function OpenSource() {
     <section id="open-source" className="ch-open-source-note" aria-labelledby="ch-open-source-heading">
       <div>
         <p className="ch-eyebrow"><GitFork size={16} aria-hidden="true" /> PROUDLY OPEN SOURCE</p>
-        <h2 id="ch-open-source-heading">Our secret sauce?<br /><span>You can fork it.</span></h2>
+        <h2 id="ch-open-source-heading">If we ever get weird,<br /><span>just fork us.</span></h2>
       </div>
       <div className="ch-open-source-invite">
-        <p>The engine, the bots, the studio: all on GitHub, under the <a href={`${GITHUB}/blob/main/LICENSE`} target="_blank" rel="noreferrer">MIT license</a>. Read the code, make it yours, and send your improvements upstream.</p>
+        <p>Your models. Your infrastructure. Your copy of the code. <a href={`${GITHUB}/blob/main/LICENSE`} target="_blank" rel="noreferrer">MIT licensed</a>, ready to run wherever you choose.</p>
         <div><a href={GITHUB} target="_blank" rel="noreferrer" className="ch-button ch-button-secondary"><GitHubLogoIcon width={17} height={17} aria-hidden="true" /> Explore the source <ArrowUpRight size={14} aria-hidden="true" /></a><span><GitPullRequest size={14} aria-hidden="true" /> Pull requests welcome.</span></div>
       </div>
     </section>
