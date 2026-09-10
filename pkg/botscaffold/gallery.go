@@ -165,5 +165,122 @@ func Templates() []Template {
 				Capabilities: []string{"board.read", "board.label", "board.assign", "board.comment", "board.move"},
 			},
 		},
+		// The SHAPES: each renders a complete, commented workflow of the
+		// named form from templates/gallery/<shape>/ (Spec.Shape) — the
+		// forms the catalog bots are made of, at a size an author can read
+		// whole and fill in. TestGalleryShapes holds each to its form.
+		{
+			ID:          "campaign-loop",
+			Icon:        "🔁",
+			Name:        "Campaign with a verify gate",
+			Description: "One agent works in passes; the repo's own checks gate; a bounded loop with a typed failure.",
+			Spec: Spec{
+				Shape:        "campaign-loop",
+				Description:  "Carries a mission to completion in verified, committed passes.",
+				WhenToUse:    "Use for work that must converge on a deterministic check (build, tests) rather than an opinion.",
+				Instructions: "Describe the campaign: what to change, where, and what \"done\" means.\nThe agent works in passes and commits each unit; after every pass the\nverifier runs {{vars.verify_command}} and its exit code is the verdict.",
+				Vars: []VarSpec{
+					{Name: "verify_command", Type: "string", Default: "true", Description: "The repository's own build+test, run by sh -c after every pass; its exit code is the verdict."},
+					{Name: "max_passes", Type: "int", Default: "4", Description: "Upper bound on passes before the run fails PASSES_EXHAUSTED (resumable: raise it and resume)."},
+				},
+			},
+		},
+		{
+			ID:          "review-fanout",
+			Icon:        "🔀",
+			Name:        "Reviewer fan-out",
+			Description: "Two read-only reviewers in parallel, a deterministic convergence, a typed blocked verdict.",
+			Spec: Spec{
+				Shape:        "review-fanout",
+				Description:  "Reviews pending changes under several lenses at once and folds the verdicts without an LLM.",
+				WhenToUse:    "Use for a merge decision that needs independent lenses (correctness, security, …) on one diff.",
+				Instructions: "You review this repository's pending changes for a merge decision. Judge\nthe code, not the style; every finding names a file:line and a failure\nscenario. You are read-only.",
+				Vars: []VarSpec{
+					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
+				},
+			},
+		},
+		{
+			ID:          "plan-gate-implement",
+			Icon:        "🚦",
+			Name:        "Plan, human gate, implement",
+			Description: "A read-only plan, a human approval (bounded re-plan), then the implementation in a worktree.",
+			Spec: Spec{
+				Shape:        "plan-gate-implement",
+				Description:  "Implements a change only after a human approved the plan.",
+				WhenToUse:    "Use when the operator wants to read the plan before any file is touched.",
+				Instructions: "Describe the change to plan and then implement: the goal, the\nconstraints, and how to verify the result.",
+			},
+		},
+		{
+			ID:          "scheduled-digest",
+			Icon:        "📆",
+			Name:        "Scheduled digest",
+			Description: "Collect with a tool, digest with an agent, verify the artifact — with the cron in the manifest.",
+			Spec: Spec{
+				Shape:        "scheduled-digest",
+				Description:  "Posts a periodic digest of repository activity.",
+				WhenToUse:    "Use for a recurring, read-only summary that a schedule launches.",
+				Instructions: "Produce a concise digest of what changed in this repository: read the\ncollected commit log, group by theme, lead with the most impactful\nchange, keep it under one screen.",
+				Vars: []VarSpec{
+					{Name: "window", Type: "string", Default: "24.hours", Description: "Lookback handed to git log --since, in git's own syntax (24.hours, 1.week)."},
+					{Name: "report_path", Type: "string", Default: "digest.md", Description: "Where the digest lands, relative to the workspace."},
+				},
+				ScheduleCron: "0 7 * * 1-5",
+			},
+		},
+		{
+			ID:          "per-ticket-subbots",
+			Icon:        "🎫",
+			Name:        "One subbot per ticket",
+			Description: "List the work, fan out one isolated child run per item, collect when all are done.",
+			Spec: Spec{
+				Shape:        "per-ticket-subbots",
+				Description:  "Handles a list of tickets in parallel child runs.",
+				WhenToUse:    "Use when each work item deserves its own run and they are independent.",
+				Instructions: "Describe what handling ONE ticket means; the child run receives the\nticket's id and title as vars.",
+			},
+		},
+		{
+			ID:          "verified-action",
+			Icon:        "🛡️",
+			Name:        "Verified action",
+			Description: "An agent prepares, then a tool acts under goal + postcondition + policy so it self-heals.",
+			Spec: Spec{
+				Shape:        "verified-action",
+				Description:  "Prepares a release and tags it through a verified action.",
+				WhenToUse:    "Use when one brittle shell action (a tag, a push, a publish) must end in a checked state.",
+				Instructions: "Describe the release preparation: what the changelog entry covers and\nwhat to check before committing.",
+				Vars: []VarSpec{
+					{Name: "tag", Type: "string", Default: "v0.0.0-next", Description: "The annotated tag the verified action creates on HEAD."},
+				},
+			},
+		},
+		{
+			ID:          "async-questions",
+			Icon:        "❓",
+			Name:        "Async questions",
+			Description: "The agent asks the operator and keeps working; one deterministic sync point before the finalizer.",
+			Spec: Spec{
+				Shape:        "async-questions",
+				Description:  "Drafts while the operator answers, then finalizes.",
+				WhenToUse:    "Use when a few details only the operator knows must not block the rest of the work.",
+				Instructions: "Describe the deliverable and which details only the operator can decide;\nthe agent asks those first and works on the rest while the answers\narrive.",
+				// ask_user_async / await_answers are claw-native tools.
+				Backend: "claw",
+			},
+		},
+		{
+			ID:          "multi-file",
+			Icon:        "🗂️",
+			Name:        "Multi-file bundle",
+			Description: "The graph in main.bot, the prompts in prompts/*.md, the knowledge in skills/.",
+			Spec: Spec{
+				Shape:        "multi-file",
+				Description:  "A bundle that keeps its prompts and its skills out of the workflow file.",
+				WhenToUse:    "Use when the prompts outgrow the workflow file, or when the bot ships its own skills.",
+				Instructions: "Describe the mission; it is written to prompts/mission.md, next to the\nhouse style in prompts/kickoff.md and skills/house-style.md.",
+			},
+		},
 	}
 }

@@ -1,0 +1,50 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: a Verified Action (ADR-044).
+##
+## An agent prepares the work and commits; a tool then performs the one
+## brittle ACTION with the quad `goal` + recipe + `postcondition` +
+## `policy`, so it self-heals instead of hard-blocking: the postcondition
+## is the truth at every rung (already met → skip; recipe → check;
+## `recover` → an LLM proposes a corrected command from goal + stdout +
+## stderr, re-run deterministically; still unmet → the policy decides).
+## GATES stay deterministic: never attach recovery to a check whose
+## recipe IS its postcondition (C105). Fill in: the mission, `tag`.
+## docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
+<%template "vars_block" .%>
+schema prep_out:
+  summary: string
+
+schema tagged:
+  tag: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt prep_user:
+  Prepare the release: apply the mission, update the changelog for the
+  pending changes, and commit. Do NOT create the tag — the verified
+  action after you does that.
+
+agent prepare:<%template "llm_fields" .%>
+  system: mission
+  user: prep_user
+  output: prep_out
+
+## The quad. The recipe may be brittle (the tag already exists, the
+## working tree is dirty); the postcondition decides, and its JSON on
+## stdout is the node's output on every rung, the skip included. A
+## {{ref}} in a command is shell-escaped by the runtime.
+tool tag_release:
+  command: `git tag -a {{vars.tag}} -m {{vars.tag}}`
+  goal: "The annotated tag {{vars.tag}} exists on HEAD."
+  postcondition: `git rev-parse -q --verify refs/tags/{{vars.tag}} >/dev/null && printf '{"tag":"%s"}' {{vars.tag}}`
+  policy: recover
+  recovery:
+    max_repair_attempts: 2
+    max_agent_attempts: 0
+
+workflow <%.WorkflowName%>:
+  entry: prepare
+  ## The commit and the tag land in a per-run git worktree.
+  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  prepare -> tag_release
+  tag_release -> done

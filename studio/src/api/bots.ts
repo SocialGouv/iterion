@@ -295,6 +295,11 @@ export interface BotCreateSpec {
   max_cost_usd?: number;
   max_duration?: string;
   schedule_cron?: string;
+  /** shape names the gallery graph the bundle is rendered from (a bounded
+   *  campaign loop, a reviewer fan-out, …); empty = the single-agent
+   *  workflow. It comes from the template picked and travels with the
+   *  spec, or the server would render the shape-less graph in silence. */
+  shape?: string;
 }
 
 /** BotTemplate is one "start from a template" gallery entry

@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // --- Request/Response types ---
@@ -68,6 +69,13 @@ type unparseResponse struct {
 
 type validateRequest struct {
 	Document json.RawMessage `json:"document"`
+	// Path is the workspace-relative file the document was opened from,
+	// when the editor knows it. A main.bot whose parent is a bundle is
+	// validated with that bundle's prompts/*.md in scope — the way a launch
+	// compiles it — instead of refusing every `system: <prompt>` the
+	// bundle ships as C003. A path with a scheme (a cloud `botsource://`
+	// bot) or none at all validates the document alone, as before.
+	Path string `json:"path,omitempty"`
 }
 
 type validateResponse struct {
@@ -144,6 +152,27 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
 		return
+	}
+
+	// A bundle's prompts/*.md reach the compiler the way they do at a
+	// launch when the editor says which file the document is. The path is
+	// a hint: one the server cannot place under its workdir (a cloud
+	// server has none; an example served from the embedded catalog) or one
+	// with a scheme validates the document alone, as before the field.
+	if req.Path != "" && !strings.Contains(req.Path, "://") {
+		if abs, perr := s.safePath(req.Path); perr == nil {
+			if parent := bundle.DirForMainBot(abs); parent != "" {
+				b, oerr := bundle.OpenDir(parent)
+				if oerr != nil {
+					httpError(w, http.StatusUnprocessableEntity, "bundle at %s: %v", parent, oerr)
+					return
+				}
+				if merr := runview.MergeBundlePrompts(f, b); merr != nil {
+					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
+					return
+				}
+			}
+		}
 	}
 
 	resp := validateResponse{Valid: true}

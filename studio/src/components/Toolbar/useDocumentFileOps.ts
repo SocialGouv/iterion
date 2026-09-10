@@ -223,7 +223,7 @@ export function useDocumentFileOps({
   const handleValidate = useCallback(async () => {
     if (!document) return;
     try {
-      const result = await api.validate(document);
+      const result = await api.validate(document, undefined, currentFilePath);
       setDiagnostics(result.diagnostics, result.warnings, result.issues);
       const errorCount = (result.diagnostics ?? []).length;
       const warnCount = (result.warnings ?? []).length;
@@ -241,7 +241,7 @@ export function useDocumentFileOps({
       console.error("Validation failed:", err);
       addToast(`Validation failed: ${errorMessage(err)}`, "error");
     }
-  }, [document, setDiagnostics, addToast, openDiagnosticsPanel]);
+  }, [document, currentFilePath, setDiagnostics, addToast, openDiagnosticsPanel]);
 
   const handleSave = useCallback(async () => {
     if (!document) return;

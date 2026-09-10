@@ -1,0 +1,96 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: plan → human gate → implement, with a bounded re-plan.
+##
+## A read-only agent drafts the plan, a human approves or sends it back
+## (up to three rounds, then a typed failure), an agent implements the
+## approved plan in a per-run worktree and commits in stride. The gate
+## pauses the run: answer it in the studio or with `iterion resume
+## --answer approve=true`. The operator's feedback reaches the next round
+## through the back-edge's `with` mapping, and a deterministic entry node
+## gives the first round the same input shape — a prompt reference to a
+## node that has not run yet would render as its literal placeholder.
+## Fill in: the mission. docs/human-in-the-loop.md
+<%template "vars_block" .%>
+schema plan_input:
+  ## The operator's feedback on the previous plan; empty on the first round.
+  feedback: string
+
+schema plan_out:
+  plan: string
+  risks: string
+
+schema approval:
+  ## bool → a checkbox on the form; string → a text field.
+  approve: bool
+  feedback: string
+
+schema impl_out:
+  summary: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt plan_user:
+  Draft an implementation plan for the mission: scope, the files you
+  will touch, the risks, and how you will verify the result. Do not
+  edit any file yet.
+
+  Operator feedback on the previous plan (empty on the first round):
+  {{input.feedback}}
+
+prompt gate_instructions:
+  # Approve the plan?
+
+  {{outputs.plan.plan}}
+
+  **Risks:** {{outputs.plan.risks}}
+
+  Tick **approve** to implement it as written, or leave it unticked and
+  say what to change in **feedback** — the planner gets another round.
+
+prompt impl_user:
+  Implement this approved plan, committing in stride:
+
+  {{outputs.plan.plan}}
+
+  Operator feedback: {{outputs.approve.feedback}}
+
+## The first round has no feedback yet: an empty one, so the planner's
+## input is the same shape on every round.
+compute first_round:
+  output: plan_input
+  expr:
+    feedback: "''"
+
+agent plan:<%template "llm_fields" .%>
+  input: plan_input
+  system: mission
+  user: plan_user
+  readonly: true
+  output: plan_out
+
+human approve:
+  instructions: gate_instructions
+  output: approval
+  interaction: human
+
+agent implement:<%template "llm_fields" .%>
+  system: mission
+  user: impl_user
+  output: impl_out
+
+fail plan_rejected:
+  description: "the plan was not approved after three rounds"
+  code: PLAN_REJECTED
+  message: "last feedback: {{outputs.approve.feedback}}"
+
+workflow <%.WorkflowName%>:
+  entry: first_round
+  ## The implementer's commits land in a per-run git worktree.
+  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  first_round -> plan with { feedback: "{{outputs.first_round.feedback}}" }
+  plan -> approve
+  approve -> implement when approve
+  approve -> plan when not approve as replan(3) with { feedback: "{{outputs.approve.feedback}}" }
+  ## The loop-exhaustion exit: the third rejection lands here.
+  approve -> plan_rejected
+  implement -> done

@@ -231,6 +231,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | cli.import | `iterion import` lowers a Claude-Code workflow script to a draft `.bot` | cli | covered-deterministic | TestRunImport_WritesDraft (pkg/cli/import_test.go) | |
 | cli.bots-list | `iterion bots list` discovers `.bot`/`.botz` bundles | cli | covered-deterministic | TestBotsList_Bundle (pkg/cli/bots_test.go) | |
 | cli.bots-create | `iterion bots create` scaffolds a discoverable bundle | cli | covered-deterministic | TestBotsCreate_ProducesDiscoverableBundle (pkg/cli/bots_create_test.go) | |
+| cli.bots-create-shapes | `--template <shape>` renders a complete workflow of that form (bounded loop, reviewer fan-out, human gate, verified action, …) with its annex files, compiled through the bundle loader and held to its form | cli | covered-deterministic | TestGalleryShapes (pkg/botscaffold/shapes_test.go) | |
 | cli.bots-regen-catalog | `iterion bots regen-catalog` regenerates Nexie's catalog skill | cli | covered-deterministic | bots/catalog_freshness_test.go | |
 | cli.bundle-pack | `iterion bundle pack` produces a loadable `.botz` | cli | covered-deterministic | TestBundle_SecAuditSource_PackOpenCompile (e2e/bundle_sec_audit_source_test.go) | |
 | cli.marketplace | `iterion marketplace submit/install/uninstall` (bot + plugin kinds) | cli | covered-deterministic | TestMarketplaceCLI_SubmitInstallUninstall_KindAware (pkg/cli/marketplace_test.go) | |

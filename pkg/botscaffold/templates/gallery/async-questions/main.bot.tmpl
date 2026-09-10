@@ -1,0 +1,59 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: async questions (ADR-081).
+##
+## The drafting agent declares `interaction: async`: it posts the
+## questions only the operator can answer with `ask_user_async` and
+## KEEPS WORKING — answers arrive in its conversation whenever the
+## operator replies (studio question cards, or `iterion runs answer`).
+## The `await_answers` node is the DETERMINISTIC sync point: the run
+## parks there, and only there, until every posted question is answered
+## (mandatory timeout), then the finalizer resolves the placeholders.
+## Fill in: the mission. docs/async-interaction.md
+<%template "vars_block" .%>
+schema draft_out:
+  draft: string
+
+schema final_out:
+  result: string
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt draft_user:
+  FIRST, post every question only the operator can answer, one
+  ask_user_async call each. Then do everything that does not depend on
+  the answers, incorporating any answer that arrives while you work.
+  Return your draft with <PLACEHOLDER> marks where an unanswered detail
+  belongs; call await_answers only if you have literally nothing left to
+  do without the answers.
+
+prompt final_user:
+  Draft:
+  {{outputs.draft.draft}}
+
+  Operator answers:
+  {{outputs.gate.answers}}
+
+  Resolve every placeholder and return the final result.
+
+agent draft:<%template "llm_fields" .%>
+  interaction: async
+  system: mission
+  user: draft_user
+  output: draft_out
+
+## Blocks HERE (and only here) until every question the draft agent
+## posted is answered. The timeout is mandatory: no silent infinity.
+await_answers gate:
+  from: draft
+  timeout: "30m"
+
+agent finalize:<%template "llm_fields" .%>
+  system: mission
+  user: final_user
+  output: final_out
+
+workflow <%.WorkflowName%>:
+  entry: draft<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  draft -> gate
+  gate -> finalize
+  finalize -> done

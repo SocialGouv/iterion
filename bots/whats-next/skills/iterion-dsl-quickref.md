@@ -648,16 +648,44 @@ and the Nix cache — only add `rules:` for private hosts.
 The whats-next pipeline almost never needs to author DSL. If
 `emit_action` is genuinely about to recommend a new `.bot` file:
 
-1. Check that none of the five existing bots
-   (`feature_dev`, `whole_improve_loop`,
-   `branch_improve_loop`, `secured-renovacy`, `docs-refresh`)
+1. Check that none of the catalog bots (the bot catalog skill)
    covers the use case. Usually one does.
-2. If a new bot really is needed, the `next_action` should be
-   "manually author a new bot at `examples/<slug>/main.bot`"
-   (with `bot_to_run="none"`) — NOT "auto-invoke
-   `iterion run` on a non-existent file".
+2. If a new bot really is needed, the `next_action` is "scaffold it
+   from the gallery: `iterion bots create <slug> --template <id>`"
+   with the template named from the table below (and
+   `bot_to_run="none"`) — NOT hand-authoring a `main.bot` from the
+   grammar, and NOT "auto-invoke `iterion run` on a non-existent
+   file".
 3. Record the desired bot shape in the plan markdown's "Next
    action" section so a human (or a future bot) can pick it up.
+
+### Start from a template
+
+Fill a validated shape rather than writing the graph from the grammar:
+
+```sh
+iterion bots templates                       # the gallery, one line per template
+iterion bots create <slug> --template <id>   # a compiling bundle under bots/<slug>/
+```
+
+Each shape is a complete, commented workflow of a form the catalog bots are
+made of; it compiles as rendered, and a test holds it to its form. Pick the
+one whose graph matches, then edit the prompts, the vars and the edges:
+
+| Template | Shape |
+|---|---|
+| `campaign-loop` | one agent in passes → a `tool` running the repo's own checks → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
+| `review-fanout` | `router fan_out_all` → two read-only reviewers → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
+| `scheduled-digest` | collect (`tool`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
+| `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |
+| `verified-action` | an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
+| `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
+| `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
+
+`blank`, `daily-digest`, `code-reviewer`, `docs-writer` and `issue-triager`
+render the single-agent workflow (one adaptive agent carrying the mission).
+More complete workflows to copy from: `docs/references/patterns.md`.
 
 ## What you do NOT do
 

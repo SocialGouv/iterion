@@ -80,9 +80,13 @@ bundle layout directories) under bots/<slug>, then refresh the generated bot
 catalog so orchestrators can route to it.
 
 This is the CLI half of the studio's "New bot" builder (/bots/new) — both
-render through the same engine, so a bot created either way is identical. The
-generated main.bot follows the house shape: ONE adaptive agent carrying the
-whole mission, with worktree/sandbox as opt-in workflow dials.
+render through the same engine, so a bot created either way is identical. By
+default the generated main.bot follows the house shape — ONE adaptive agent
+carrying the whole mission, with worktree/sandbox as opt-in workflow dials;
+the gallery's shape templates (a campaign under a verify gate with a bounded
+loop, a reviewer fan-out, a plan under a human gate, a verified action, …)
+render a complete, commented workflow of that form instead, with the annex
+files the shape ships (a child worker.bot, prompts/*.md, skills/*.md).
 
 Start from a gallery template with --template (see "iterion bots templates");
 every field stays editable afterwards. The rendered workflow is parsed AND

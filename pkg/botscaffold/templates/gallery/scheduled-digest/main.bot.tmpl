@@ -1,0 +1,58 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: scheduled digest.
+##
+## Collect (a tool, git's own log) → digest (an agent) → verify the
+## artifact exists (a tool, deterministic) → done, or a typed failure
+## when nothing was written. The manifest carries a `schedule`
+## invocation with the suggested cron, so the bot home offers the
+## one-click schedule and `iterion schedule add` has its default. Fill
+## in: the mission, `window`, `report_path`. docs/scheduling.md
+<%template "vars_block" .%>
+schema collected:
+  path: string
+  commits: int
+
+schema digest_out:
+  summary: string
+
+schema written:
+  bytes: int
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt digest_user:
+  The commit log since {{vars.window}} is in {{outputs.collect.path}}
+  ({{outputs.collect.commits}} commits). Write the digest to
+  {{vars.report_path}}: group by theme, lead with the most impactful
+  change, keep it under one screen. Put its first paragraph in summary.
+
+## No LLM: git's own log, in a temp file so nothing lands in the
+## checkout; the JSON on stdout is the output. A git failure (not a
+## repository, a bad window) fails the node — never a digest of nothing.
+## `tformat:` terminates every line, so `wc -l` is the commit count. A
+## {{ref}} in a command is shell-escaped by the runtime.
+tool collect:
+  command: `f=$(mktemp) && git log --since={{vars.window}} --pretty=tformat:'%h %an %s' > "$f" || exit 1; printf '{"path":"%s","commits":%s}' "$f" "$(wc -l < "$f" | tr -d ' ')"`
+  output: collected
+
+agent digest:<%template "llm_fields" .%>
+  system: mission
+  user: digest_user
+  output: digest_out
+
+## The deterministic check that the artifact exists and is not empty.
+tool verify_written:
+  command: `b=$( [ -f {{vars.report_path}} ] && wc -c < {{vars.report_path}} | tr -d ' ' || echo 0 ); printf '{"bytes":%s}' "$b"`
+  output: written
+
+fail nothing_written:
+  description: "the digest pass left no artifact"
+  code: DIGEST_EMPTY
+  message: "{{vars.report_path}} is empty or missing after the digest pass"
+
+workflow <%.WorkflowName%>:
+  entry: collect<%template "worktree_dial" .%><%template "dials" .%><%template "budget_block" .%>
+  collect -> digest
+  digest -> verify_written
+  verify_written -> done when "bytes > 0"
+  verify_written -> nothing_written else

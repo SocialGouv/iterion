@@ -1,0 +1,91 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: campaign + deterministic gate + bounded loop + typed fail.
+##
+## One agent carries the mission in passes and commits in stride (git is
+## the state between passes). A tool re-runs the repository's OWN checks
+## on their real exit code — never an LLM judgment — and a compute folds
+## the agent's termination flag and that verdict into `converged`. The
+## loop is bounded; its exhaustion is a typed, resumable failure the
+## operator can act on (raise the cap and resume). The verifier's output
+## reaches the next pass through the back-edge's `with` mapping, and a
+## deterministic entry node gives the first pass the same input shape —
+## a prompt reference to a node that has not run yet would render as its
+## literal placeholder. Fill in: the mission, `verify_command`,
+## `max_passes`. Read docs/workflow_authoring_pitfalls.md before pointing
+## it at real code.
+<%template "vars_block" .%>
+schema pass_input:
+  ## What the previous pass's verifier said; empty on the first pass.
+  previous_verify: string
+
+schema pass_report:
+  ## The termination contract. Honest reporting: under-reporting
+  ## work_complete costs one more pass, over-reporting lands you right
+  ## back here with the verifier's output.
+  summary: string
+  work_complete: bool
+  remaining: string
+
+schema verify_out:
+  ok: bool
+  detail: string
+
+schema gate_out:
+  converged: bool
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt pass_user:
+  Work on the mission now, in commit-sized units, and commit each one.
+  Read `git log` first: an earlier pass may have landed work already.
+  Report what is left in `remaining`, and set work_complete=true only
+  when nothing is.
+
+  Verifier output from the previous pass (empty on the first):
+  {{input.previous_verify}}
+
+## The first pass has no verifier output yet: an empty one, so the
+## campaign's input is the same shape on every pass.
+compute first_pass:
+  output: pass_input
+  expr:
+    previous_verify: "''"
+
+agent campaign:<%template "llm_fields" .%>
+  input: pass_input
+  system: mission
+  user: pass_user
+  output: pass_report
+
+## The truth oracle: the repository's own checks, on their exit code. The
+## JSON on stdout is the node's output. A {{ref}} in a command is
+## shell-escaped by the runtime, so `sh -c {{vars.verify_command}}` runs
+## the whole string as one command.
+tool verify:
+  command: `if sh -c {{vars.verify_command}}; then printf '{"ok":true,"detail":"checks green"}'; else printf '{"ok":false,"detail":"checks red, see the run log"}'; fi`
+  output: verify_out
+
+## Deterministic convergence: the flag AND the verdict, no LLM in the loop.
+compute gate:
+  output: gate_out
+  expr:
+    converged: "outputs.campaign.work_complete && outputs.verify.ok"
+
+fail passes_exhausted:
+  description: "the bounded loop ran out before the gate turned green"
+  code: PASSES_EXHAUSTED
+  message: "{{vars.max_passes}} passes without convergence; remaining: {{outputs.campaign.remaining}}"
+  resumable: true
+
+workflow <%.WorkflowName%>:
+  entry: first_pass
+  ## Commits land in a per-run git worktree; on success they are
+  ## squash-merged into your checked-out branch (docs/dsl.md).
+  worktree: auto<%template "dials" .%><%template "budget_block" .%>
+  first_pass -> campaign with { previous_verify: "{{outputs.first_pass.previous_verify}}" }
+  campaign -> verify
+  verify -> gate
+  gate -> done when converged
+  gate -> campaign when not converged as passes("{{vars.max_passes}}") with { previous_verify: "{{outputs.verify.detail}}" }
+  ## The loop-exhaustion exit: taken when the back-edge is declined.
+  gate -> passes_exhausted

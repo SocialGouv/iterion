@@ -5,13 +5,16 @@
 // is deliberately server-importable (pkg/cli wraps it too; the server
 // must not import pkg/cli).
 //
-// The generated workflow follows the house v2 shape: ONE adaptive agent
-// carrying the whole mission (see docs/workflow_authoring_pitfalls.md —
-// over-framing is an anti-pattern), with worktree/sandbox/permission/
-// budget as opt-in workflow-level dials. Rendered output is never
-// trusted: main.bot is parsed AND compiled before anything is written,
-// and manifest.yaml is decoded through the same strict loader the
-// runtime uses.
+// By default the generated workflow follows the house v2 shape: ONE
+// adaptive agent carrying the whole mission (see
+// docs/workflow_authoring_pitfalls.md — over-framing is an anti-pattern),
+// with worktree/sandbox/permission/budget as opt-in workflow-level dials.
+// A Spec.Shape renders one of the gallery's shapes instead (shapes.go): a
+// complete, commented workflow of a form the catalog bots are made of,
+// with the annex files the shape ships. Rendered output is never trusted:
+// every .bot is parsed AND compiled before anything is written, and
+// manifest.yaml is decoded through the same strict loader the runtime
+// uses.
 package botscaffold
 
 import (
@@ -26,8 +29,6 @@ import (
 	"text/template"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -102,6 +103,16 @@ type Spec struct {
 	// suggested_cron to the manifest so the bot home can offer a
 	// one-click schedule trigger.
 	ScheduleCron string `json:"schedule_cron,omitempty"`
+
+	// Shape selects the GRAPH the bundle is rendered from: empty is the
+	// single-agent workflow of templates/main.bot.tmpl; a shape id names
+	// a gallery shape under templates/gallery/<shape>/ — a complete,
+	// commented workflow (a bounded campaign loop, a reviewer fan-out, a
+	// verified action, …) whose main.bot and annex files (a child
+	// worker.bot, prompts/*.md, skills/*.md) are rendered from the same
+	// Spec. The list is Shapes(); the studio and the CLI pass it through
+	// from the template they started from.
+	Shape string `json:"shape,omitempty"`
 }
 
 // WorkflowName is the Slug as a DSL identifier — the DSL grammar has no
@@ -127,6 +138,29 @@ func (s *Spec) Validate() error {
 	s.Slug = strings.TrimSpace(s.Slug)
 	if !SlugRe.MatchString(s.Slug) {
 		return fmt.Errorf("botscaffold: invalid slug %q (want %s)", s.Slug, SlugRe)
+	}
+	s.Shape = strings.TrimSpace(s.Shape)
+	if s.Shape != "" && !hasShape(s.Shape) {
+		return fmt.Errorf("botscaffold: unknown shape %q (available: %s)", s.Shape, strings.Join(Shapes(), ", "))
+	}
+	if s.Shape != "" {
+		// The shape's files reference vars by name; the vars block is
+		// rendered from the Spec. A var the template needs and the Spec
+		// dropped (a deleted form row) is named here, not as a compiler
+		// diagnostic behind a 500.
+		declared := map[string]bool{}
+		for _, v := range s.Vars {
+			declared[v.Name] = true
+		}
+		var missing []string
+		for _, name := range shapeVarRefs(s.Shape) {
+			if !declared[name] {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("botscaffold: shape %q references the var(s) %s, which the spec must declare (its template keeps them; re-add the row)", s.Shape, strings.Join(missing, ", "))
+		}
 	}
 	if strings.TrimSpace(s.Instructions) == "" {
 		return fmt.Errorf("botscaffold: instructions must not be empty")
@@ -192,37 +226,26 @@ func Scaffold(dir string, s Spec) (Result, error) {
 		return Result{}, err
 	}
 
-	mainBot, err := renderMainBot(s)
+	mainBot, annexes, err := renderShape(s)
 	if err != nil {
 		return Result{}, err
 	}
-	// Parse + compile the generated workflow with the runtime's own
-	// pipeline; any error-severity diagnostic aborts the scaffold.
-	pr := parser.Parse(s.Slug+"/main.bot", mainBot)
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			return Result{}, fmt.Errorf("botscaffold: generated main.bot does not parse: %s", d.Error())
-		}
+	if err := checkAnnexPaths(annexes); err != nil {
+		return Result{}, err
 	}
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return Result{}, fmt.Errorf("botscaffold: generated main.bot has no workflow")
+	// Parse + compile every generated workflow with the runtime's own
+	// pipeline — main.bot with the shape's prompt annexes in scope, and a
+	// child .bot the shape ships on its own; any error-severity diagnostic
+	// aborts the scaffold.
+	if err := compileGuard(s.Slug+"/main.bot", mainBot, annexes); err != nil {
+		return Result{}, err
 	}
-	cr := ir.Compile(pr.File)
-	for _, d := range cr.Diagnostics {
-		if d.Severity != ir.SeverityError {
-			continue
+	for _, rel := range sortedAnnexes(annexes) {
+		if strings.HasSuffix(rel, ".bot") {
+			if err := compileGuard(s.Slug+"/"+rel, string(annexes[rel]), nil); err != nil {
+				return Result{}, err
+			}
 		}
-		// C018 (no model/backend and no auto-detectable credential) is an
-		// ENVIRONMENT verdict, not a scaffolding defect: the zero-config
-		// template deliberately omits model/backend so a run auto-detects
-		// the host's credential. A credential-less env (CI, a fresh
-		// machine) would otherwise make Scaffold fail even though the
-		// generated bot is structurally sound — the missing credential is
-		// surfaced later at run/validate time, not here.
-		if d.Code == ir.DiagMissingModelOrBackend {
-			continue
-		}
-		return Result{}, fmt.Errorf("botscaffold: generated main.bot does not compile: %s", d.Error())
 	}
 
 	manifest, err := renderTemplate("manifest.yaml.tmpl", s)
@@ -249,23 +272,37 @@ func Scaffold(dir string, s Spec) (Result, error) {
 		}
 	}
 
-	// .gitkeep makes an otherwise-empty layout dir survive `git add`;
-	// presets/ ships example.md instead, so it needs none.
-	res := Result{Dir: dir}
-	for _, f := range []struct {
+	type file struct {
 		name string
 		data []byte
-	}{
+	}
+	files := []file{
 		{"main.bot", []byte(mainBot)},
 		{"manifest.yaml", manifest},
 		{"README.md", readme},
 		{".gitignore", []byte(bundleGitignore)},
 		{filepath.Join(bundle.DirPresets, "example.md"), presetExample},
-		{filepath.Join(bundle.DirSkills, ".gitkeep"), nil},
-		{filepath.Join(bundle.DirPrompts, ".gitkeep"), nil},
-		{filepath.Join(bundle.DirAttachments, ".gitkeep"), nil},
-	} {
+	}
+	// A shape's annexes land at their bundle-relative path; a layout dir
+	// one of them fills needs no placeholder.
+	filled := map[string]bool{}
+	for _, rel := range sortedAnnexes(annexes) {
+		files = append(files, file{filepath.FromSlash(rel), annexes[rel]})
+		filled[strings.SplitN(rel, "/", 2)[0]] = true
+	}
+	// .gitkeep makes an otherwise-empty layout dir survive `git add`;
+	// presets/ ships example.md instead, so it needs none.
+	for _, sub := range []string{bundle.DirSkills, bundle.DirPrompts, bundle.DirAttachments} {
+		if !filled[sub] {
+			files = append(files, file{filepath.Join(sub, ".gitkeep"), nil})
+		}
+	}
+	res := Result{Dir: dir}
+	for _, f := range files {
 		path := filepath.Join(dir, f.name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return Result{}, fmt.Errorf("botscaffold: mkdir for %s: %w", path, err)
+		}
 		if err := store.WriteFileAtomic(path, f.data, 0o644); err != nil {
 			return Result{}, fmt.Errorf("botscaffold: write %s: %w", path, err)
 		}
@@ -274,20 +311,18 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	return res, nil
 }
 
-func renderMainBot(s Spec) (string, error) {
-	out, err := renderTemplate("main.bot.tmpl", s)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-func renderTemplate(name string, s Spec) ([]byte, error) {
-	tmpl, err := template.New(name).Funcs(template.FuncMap{
+// templateFuncs are the helpers every template — the shared files and
+// the gallery shapes alike — renders with.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
 		"quote":    strconv.Quote,
 		"indent":   indentLines,
 		"varValue": varValue,
-	}).ParseFS(templateFS, "templates/"+name)
+	}
+}
+
+func renderTemplate(name string, s Spec) ([]byte, error) {
+	tmpl, err := template.New(name).Funcs(templateFuncs()).ParseFS(templateFS, "templates/"+name)
 	if err != nil {
 		return nil, fmt.Errorf("botscaffold: parse template %s: %w", name, err)
 	}

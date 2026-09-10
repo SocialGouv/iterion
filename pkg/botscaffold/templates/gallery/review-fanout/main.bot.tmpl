@@ -1,0 +1,68 @@
+## <%if .DisplayName%><%.DisplayName%><%else%><%.Slug%><%end%> — shape: fan-out reviewers + deterministic convergence.
+##
+## A router runs two read-only reviewers in parallel, each with its own
+## lens on the same diff; a compute (`await: wait_all`) folds their
+## verdicts without an LLM; a typed failure carries a blocked verdict.
+## Fill in: the lenses, the scope (`git diff HEAD` or a base ref). A
+## third reviewer is one more node and two more edges. docs/routers.md
+<%template "vars_block" .%>
+schema findings:
+  findings: string[]
+  blocking: bool
+
+schema verdict_out:
+  approved: bool
+
+prompt mission:
+<%indent 2 .Instructions%>
+
+prompt correctness_lens:
+  Lens: CORRECTNESS. Run `git add -N . && git diff HEAD` (or diff against
+  {{vars.base}} when it is set) and hunt for real bugs: logic errors,
+  missed edge cases, races. Read enough surrounding code to judge each
+  finding. Report each confirmed finding as file:line plus the failure
+  scenario, and set blocking=true if any must be fixed before merge.
+  Do not edit any file.
+
+prompt security_lens:
+  Lens: SECURITY. Same diff: look for injection, unsafe deserialisation,
+  secrets in code, missing authorisation checks, SSRF. Same report shape,
+  same rule on blocking, no edits.
+
+router split:
+  mode: fan_out_all
+
+agent review_correctness:<%template "llm_fields" .%>
+  system: mission
+  user: correctness_lens
+  readonly: true
+  output: findings
+
+agent review_security:<%template "llm_fields" .%>
+  system: mission
+  user: security_lens
+  readonly: true
+  output: findings
+
+## Deterministic convergence: no LLM decides whether the reviews block.
+compute verdict:
+  await: wait_all
+  output: verdict_out
+  expr:
+    approved: "!outputs.review_correctness.blocking && !outputs.review_security.blocking"
+
+fail review_blocked:
+  description: "a reviewer found a blocking issue"
+  code: REVIEW_BLOCKED
+  message: "blocking: correctness={{outputs.review_correctness.blocking}} security={{outputs.review_security.blocking}}"
+
+workflow <%.WorkflowName%>:
+  entry: split
+  budget:
+    max_parallel_branches: 2<%template "budget_lines" .%><%template "worktree_dial" .%><%template "dials" .%>
+  split -> review_correctness
+  split -> review_security
+  review_correctness -> verdict
+  review_security -> verdict
+  verdict -> done when approved
+  verdict -> review_blocked else
