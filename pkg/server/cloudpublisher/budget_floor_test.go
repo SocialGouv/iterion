@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -182,5 +184,110 @@ func TestBudgetFloor_TwoReservationsCompose(t *testing.T) {
 	}
 	if p.apiKeyUsable(context.Background(), scope, "r", "docs-refresh", nil)(key) {
 		t.Error("an unreserved bot drew at 65% though its ceiling is 50 (80 - 30 held between the two)")
+	}
+}
+
+// resolveFloorBundle runs the WHOLE credential walk for one bot and returns
+// the sealed bundle a runner would open. The predicate-level tests above
+// cannot see the walk's tail — and the tail is where a skip is undone.
+func resolveFloorBundle(t *testing.T, p *Publisher, runID, tenant, botID string) secrets.RunBundle {
+	t.Helper()
+	rs, ok := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+	if !ok {
+		t.Fatal("resolveFloorBundle needs a MemoryRunSecretsStore")
+	}
+	ctx := store.WithTenant(context.Background(), tenant)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, "", tenant, "owner1", botID, nil, nil, nil, model.ModelOverrides{}, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if creds.secretsRef == "" {
+		return secrets.RunBundle{}
+	}
+	rec, err := rs.Get(ctx, creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	bundle, err := secrets.OpenRunBundle(p.sealer, runID, rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	return bundle
+}
+
+// The reserve has to survive the walk's TAIL, and this is where it nearly did
+// not. A skipped credential is remembered and RESTORED when no other tier
+// filled its wire — the right answer for a credential the provider refused
+// (parking with a durable retry beats dying with no credential) and the exact
+// wrong one for a credential a reservation holds back: with ONE shared
+// subscription — the 2026-09-08 deployment this feature was built for —
+// nothing else fills the wire, so the unreserved bot would be handed back the
+// very credential held for the reviewer, and the whole feature would be inert
+// while every unit test of the predicate stayed green.
+func TestBudgetFloor_AHeldBackCredentialIsNotRestoredAtTheEndOfTheWalk(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	newPub := func(t *testing.T) *Publisher {
+		t.Helper()
+		keys := secrets.NewMemoryApiKeyStore()
+		seedKeyFP(t, keys, sealer, "team1", secrets.ProviderAnthropic, "sk-shared", "fp-shared")
+		caps := usagecap.NewMemStore()
+		// 65% utilisation: over the ordinary ceiling (80 - 20), under the cap.
+		if err := caps.Record(context.Background(),
+			usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team1"), "fp-shared"),
+			usagecap.Reading{Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed,
+				Utilization: 0.65, ObservedAt: time.Now(), ResetsAt: time.Now().Add(2 * time.Hour)}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		return &Publisher{
+			apiKeys: keys, usageCaps: caps,
+			runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
+			logger: iterlog.New(iterlog.LevelError, nil),
+			capPolicy: usagecap.StaticPolicy{
+				FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeHard},
+			},
+			budgetFloor: budgetfloor.Static{Reservations: []budgetfloor.Reservation{
+				{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 20}},
+			}},
+		}
+	}
+
+	if got := resolveFloorBundle(t, newPub(t), "run-ordinary", "team1", "feature-dev").APIKeys[secrets.ProviderAnthropic]; got != "" {
+		t.Errorf("an unreserved bot was sealed the reserved credential (%q) — the skip was undone by the restore, and the reservation buys nothing", got)
+	}
+	if got := resolveFloorBundle(t, newPub(t), "run-reserved", "team1", "review-pr").APIKeys[secrets.ProviderAnthropic]; got != "sk-shared" {
+		t.Errorf("the RESERVED bot was denied its own band: key = %q, want sk-shared", got)
+	}
+	// And with no reservation at all the tail is unchanged: a credential the
+	// PROVIDER refused still comes back, because a parked run with a durable
+	// retry beats one that dies on an empty wire.
+	plain := newPub(t)
+	plain.budgetFloor = nil
+	recordRefusal(t, plain.usageCaps, usagecap.TenantScope("team1"), "fp-shared")
+	if got := resolveFloorBundle(t, plain, "run-refused", "team1", "feature-dev").APIKeys[secrets.ProviderAnthropic]; got != "sk-shared" {
+		t.Errorf("a provider-refused key was not restored (%q) — that restore is not the reserve's to cancel", got)
+	}
+}
+
+// A window carrying a percentage but mode `off` is a guard the operator
+// DISARMED — the shape `ITERION_USAGE_CAP=off` leaves behind over a stored
+// percentage, and the one usagecap promises can never re-arm ("an overridden
+// percentage can never re-arm a guard the operator explicitly disarmed").
+// Reading MaxPercent instead of Enabled() would let a reservation re-arm
+// exactly that guard and refuse every metered credential: a floor may hold
+// work back, it may never invent a ceiling.
+func TestBudgetFloor_ADisarmedWindowStaysDisarmed(t *testing.T) {
+	p, key, scope := floorPublisher(t, 0.99, 80,
+		budgetfloor.Reservation{BotID: "review-pr", Reserve: budgetfloor.Reserve{FiveHourPercent: 80}})
+	p.capPolicy = usagecap.StaticPolicy{
+		// A percentage the operator switched off: Preflight can never block.
+		FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeOff},
+	}
+	for _, bot := range []string{"feature-dev", ""} {
+		if !p.apiKeyUsable(context.Background(), scope, "run", bot, nil)(key) {
+			t.Errorf("bot %q was refused on a window the operator disarmed — the reservation re-armed the kill switch", bot)
+		}
 	}
 }

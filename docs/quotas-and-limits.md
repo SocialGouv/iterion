@@ -499,18 +499,30 @@ activity in one repository.
 
 ### What is not covered
 
-The gate is told what a launch is by an explicit subject, and two surfaces
-legitimately do not know: the REST `POST /runs` gates before its body is
-parsed (an operator-initiated launch, not the automated fan-out these quotas
-bound), and a trigger `emit` is one event that fans out to many launches —
-each of which is gated with its own subject. Both pass the empty subject and
-are judged as ordinary, uncapped work.
+The gate is told what a launch is by an explicit **subject** (the bot, and the
+repository when there is one), and that matters in the direction people do not
+expect: a launch judged as ordinary work faces the ceiling its OWN reservation
+lowered, so a *missing* subject makes a reservation refuse the very workload it
+protects. Every automated surface names its bot — the webhook launches, the
+trigger spine, the cloud scheduler, the board dispatcher, the retry sweeper —
+and so does `POST /api/runs` (from the request's `bot_id`).
 
-Everything else names its bot: the webhook launches, the trigger spine, the
-cloud scheduler, the board dispatcher and the retry sweeper. That matters in
-the direction people do not expect — a launch judged as ordinary work faces
-the ceiling its OWN reservation lowered, so a missing subject makes a
-reservation refuse the very workload it protects.
+Three cases legitimately carry no subject, and are judged as ordinary,
+uncapped work:
+
+- **`POST /api/runs/{id}/resume`** and the WS answer that resumes a run: a
+  resume learns its bot from the RUN, and loading that run before the gate
+  would turn the suspend check into a run-existence probe. A reserved bot
+  resumed *by hand* therefore faces the ceiling its own reserve lowered; the
+  automated resume (the retry sweeper) reads the run doc anyway and does pass
+  the subject.
+- **`POST /api/v1/triggers/emit`**: one event fanning out to 0..N launches,
+  each gated with its own subject. This pre-check bounds the event, not any of
+  them.
+- A **plain `.bot` upload**, which names no bot at all.
+
+No surface passes a repository except the automated ones: an operator-initiated
+launch is not the fan-out the per-repo quota exists to bound.
 
 ## Reading usage
 
