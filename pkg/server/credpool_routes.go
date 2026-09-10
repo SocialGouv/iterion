@@ -422,6 +422,15 @@ func (s *Server) orgIDOfTeam(ctx context.Context, teamID string) string {
 // connectedKinds reports which credential kinds a user still has
 // connected, in ONE read — a per-pledge lookup would be a query per row of
 // the donor's own dashboard.
+//
+// The PRIMARY of each kind only, because that is the record a pledge
+// resolves to: a pledge id is keyed on (owner, source, kind) with no rank,
+// and both verifyLendable and Broker.openCredential read it through
+// oauthStore.Get = rank 0. Counting a fallback here would make the dashboard
+// say "still holds" for a donor who deleted their primary, while every
+// acquisition parks the pledge as gone ("reconnect it to resume sharing") —
+// a state only the donor can undo, and this view is where they would look
+// for the reason. Before chains existed the two questions were the same one.
 func (s *Server) connectedKinds(r *http.Request, userID string) map[string]bool {
 	out := map[string]bool{}
 	records, err := s.oauthStore.ListByUser(r.Context(), userID)
@@ -430,6 +439,9 @@ func (s *Server) connectedKinds(r *http.Request, userID string) map[string]bool 
 		return out
 	}
 	for _, rec := range records {
+		if rec.Rank != 0 {
+			continue
+		}
 		out[string(rec.Kind)] = true
 	}
 	return out

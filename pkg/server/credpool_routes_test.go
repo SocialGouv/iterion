@@ -160,3 +160,35 @@ func TestPoolIDForUser_resolvesForACLIToken(t *testing.T) {
 		t.Errorf("pool = %q, want pool-1 — a CLI contributor cannot reach their own org's pool", got)
 	}
 }
+
+// A pledge resolves to the PRIMARY (rank 0) — verifyLendable and
+// Broker.openCredential both read it through oauthStore.Get, and a pledge id
+// carries no rank. So the donor's dashboard must ask the same question: a
+// donor who deleted their primary and kept a fallback would otherwise read
+// "still holds" while every acquisition parks the pledge as gone, which only
+// they can undo, and this view is where they would look for the reason.
+func TestConnectedKinds_onlyTheLinkAPledgeResolvesTo(t *testing.T) {
+	oauth := secrets.NewMemoryOAuthStore()
+	if err := oauth.Upsert(context.Background(), secrets.OAuthRecord{
+		UserID: "alice", Kind: secrets.OAuthKindClaudeCode, Rank: 1,
+	}); err != nil {
+		t.Fatalf("seed fallback: %v", err)
+	}
+	s := &Server{oauthStore: oauth, logger: iterlog.New(iterlog.LevelError, nil)}
+	r := httptest.NewRequest("GET", "/api/me/pledges", nil)
+
+	pledge := credpool.Pledge{Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}}
+	if s.stillHolds(r, pledge, s.connectedKinds(r, "alice")) {
+		t.Fatal("a rank-1 fallback alone reads as 'still holds', but the pledge resolves to rank 0 and every acquisition would park it")
+	}
+
+	// The primary back in place is what the donor actually reconnected.
+	if err := oauth.Upsert(context.Background(), secrets.OAuthRecord{
+		UserID: "alice", Kind: secrets.OAuthKindClaudeCode, Rank: 0,
+	}); err != nil {
+		t.Fatalf("seed primary: %v", err)
+	}
+	if !s.stillHolds(r, pledge, s.connectedKinds(r, "alice")) {
+		t.Fatal("the primary is connected and the pledge reads as gone")
+	}
+}
