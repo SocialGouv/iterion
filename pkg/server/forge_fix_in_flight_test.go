@@ -211,3 +211,37 @@ func TestMarkFixInFlight_AcceptsTheFixerOnlyRevisionKey(t *testing.T) {
 		t.Errorf("posted on %q, want the revision the heal lane published", gc.lastSHA)
 	}
 }
+
+// Rd5f6d3 — in as-PR mode the fixer opens a SEPARATE pull request against the
+// source branch instead of pushing back, so "pushing collides with what it
+// pushes back" is simply false. And this marker is never retracted: a false
+// claim would stand on that head forever.
+//
+// The counterpart of stating a fact that is never withdrawn is that it must be
+// true when posted.
+func TestMarkFixInFlight_SilentInAsPRMode(t *testing.T) {
+	gc := &listingGateClient{}
+	s := fixLaunchFixture(t, gc)
+	vars := fixLaunchVars()
+	vars["open_mr"] = "true"
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
+
+	if gc.setCalls != 0 {
+		t.Fatalf("claimed a push-back collision for a lane that opens a PR instead (%d posts) — and the claim is never retracted", gc.setCalls)
+	}
+}
+
+// ...and the push-back lane, which sets open_mr=false, still claims.
+func TestMarkFixInFlight_ClaimsWhenItPushesBack(t *testing.T) {
+	gc := &listingGateClient{}
+	s := fixLaunchFixture(t, gc)
+	vars := fixLaunchVars()
+	vars["open_mr"] = "false"
+
+	s.markFixInFlight(context.Background(), "team1", "", "branch-improve-loop", vars, "run-77")
+
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d, want 1 — the lane that DOES push back must warn", gc.setCalls)
+	}
+}

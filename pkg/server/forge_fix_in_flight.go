@@ -103,6 +103,17 @@ func (s *Server) markFixInFlight(ctx context.Context, teamID, sourceTenant, botI
 	if prURL == "" || sha == "" {
 		return
 	}
+	// AS-PR MODE CLAIMS NOTHING, because the warning would be false — and this
+	// marker is never retracted, so a false one is false forever. With
+	// `open_mr` the fixer opens a SEPARATE pull request against the source
+	// branch instead of pushing back: there is no push-back to collide with,
+	// and a concurrent writer on this head is in nobody's way.
+	//
+	// The counterpart of stating a fact that is never withdrawn is that it must
+	// be true when posted. This is the one lane where it would not be.
+	if strings.EqualFold(strings.TrimSpace(vars["open_mr"]), "true") {
+		return
+	}
 	// The ROLE decides, never a bot id — the engine names no bot (CLAUDE.md),
 	// and a new fixer inherits this by declaring `consumes: review`, exactly as
 	// it inherits the pause notice's push warning. Read at LAUNCH only, which
