@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.132.8](https://github.com/SocialGouv/iterion/compare/v3.132.7...v3.132.8) (2026-09-10)
+
+### Bug Fixes
+
+* **credusage:** a usage listing that hides its filter reads as a frozen meter ([#1097](https://github.com/SocialGouv/iterion/issues/1097)) ([32fa082](https://github.com/SocialGouv/iterion/commit/32fa082ff8e7b38f50285cfe248dea207c8493bd)), references [#1087](https://github.com/SocialGouv/iterion/issues/1087) [#1087](https://github.com/SocialGouv/iterion/issues/1087)
+
+    <details><summary>why</summary>
+
+    The admin per-credential route answers for ONE tier and defaults to `platform` when the caller names none — correct, since no tenant view can show that tier, and nothing in the response said so. Both routes also labelled every answer with a `month` they derived from `time.Now()`, while reading no `?month=` at all: a caller asking for August was served September, byte for byte, under an August-shaped question.
+
+    </details>
+
 ## [3.132.7](https://github.com/SocialGouv/iterion/compare/v3.132.6...v3.132.7) (2026-09-10)
 
 ### Bug Fixes
