@@ -197,6 +197,14 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		healIdem := healIdempotencyKey(cfg, p)
 		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		// The revision this heal is about, under a name ONLY the fixer claim
+		// reads. Not `head_sha`: that key also arms markGateInFlight, and this
+		// lane deliberately stood down from the gate — `applyWebhookVarLayers`
+		// merges a repo's OperatorLaunchVars into every lane, so a repo that
+		// pins a shared `gate_context` would have the heal claim a REQUIRED
+		// check it never answers. Widening one var's reach without asking who
+		// else reads it is exactly how that would have shipped.
+		healVars["fix_head_sha"] = p.HeadSHA
 		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}

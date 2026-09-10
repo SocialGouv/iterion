@@ -1237,6 +1237,13 @@ func (s *Server) launchWebhookTarget(
 	// After the launch, because the marker carries the run's URL.
 	s.markGateInFlight(ctx, cfg.TenantID, botID, vars, runID)
 
+	// And, for a FIXER, claim a context of its own. It holds no gate_context
+	// — it answers a review rather than gating the merge — so the line above
+	// is silent for it, and a fixer rewriting the branch was visible nowhere
+	// until it reported. A push in that window collides with its push-back and
+	// costs the pass. Separate context on purpose: never the gate's.
+	s.markFixInFlight(ctx, cfg.TenantID, cfg.TenantID, botID, vars, runID)
+
 	// Mirror the launch onto the trigger spine (observational; carries
 	// launched_run_id so the evaluator never re-launches). Unifies forge with
 	// board/run/schedule sources; no-op without the spine wired.
