@@ -62,6 +62,14 @@ var remoteUsageByCredential bool
 // bill must never quietly include the deployment's unattributed runs.
 var remoteUsageRepo string
 
+// remoteUsageMonth reads a PAST month of that ledger. The endpoint keys its
+// rows by month and only the current one was reachable from here, so
+// answering "what did this key cost in August" meant querying the raw API —
+// and a hand-written `?month=` was silently ignored, which is how a probe
+// came to read September's numbers as August's and call a live counter
+// frozen (#1087).
+var remoteUsageMonth string
+
 var remoteUsageCmd = &cobra.Command{
 	Use:   "usage",
 	Short: "Org monthly usage (alias of `orgs usage`); --by-credential for the per-credential ledger",
@@ -73,9 +81,16 @@ var remoteUsageCmd = &cobra.Command{
 				if err != nil {
 					return err
 				}
-				path := "/api/teams/" + team + "/credentials/usage"
+				q := url.Values{}
 				if repo := strings.TrimSpace(remoteUsageRepo); repo != "" {
-					path += "?repo=" + url.QueryEscape(repo)
+					q.Set("repo", repo)
+				}
+				if month := strings.TrimSpace(remoteUsageMonth); month != "" {
+					q.Set("month", month)
+				}
+				path := "/api/teams/" + team + "/credentials/usage"
+				if len(q) > 0 {
+					path += "?" + q.Encode()
 				}
 				return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 			})(cmd, args)
@@ -229,6 +244,8 @@ func init() {
 		"Per-credential ledger for the team instead of the org bucket (each amount typed metered|estimate)")
 	remoteUsageCmd.Flags().StringVar(&remoteUsageRepo, "repo", "",
 		"With --by-credential: only what the team spent on this repository (forge slug, e.g. owner/repo)")
+	remoteUsageCmd.Flags().StringVar(&remoteUsageMonth, "month", "",
+		"With --by-credential: which month to read (YYYY-MM; default: the current one)")
 	remoteLimitsCmd.Flags().StringVar(&remoteLimitsData, "data", "", "Override JSON (literal or @file)")
 
 	for _, c := range []*cobra.Command{remoteMemoryDocsCmd, remoteMemoryDocCmd, remoteMemoryExportCmd, remoteMemoryImportCmd} {

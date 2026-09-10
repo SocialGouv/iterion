@@ -49,9 +49,32 @@ type credentialUsageView struct {
 	Backends        []string `json:"backends,omitempty"`
 }
 
+// credentialUsageScope names what a listing was filtered on.
+//
+// A listing that does not say what it left out reads as "everything", and a
+// credential absent from it reads as a credential that spent nothing. The
+// admin route's ABSENT `?tier=` answers for the platform tier alone, so a
+// team forfait's spend — metered on a team row — is invisible there. A
+// production probe read exactly that as a frozen meter and opened a defect
+// against a counter that was recording normally (#1087).
+type credentialUsageScope struct {
+	// Tier is the tier filter the admin listing applied, including the one
+	// it defaulted to on its own.
+	Tier string `json:"tier,omitempty"`
+	// Fingerprint / Repo name the narrower questions, each exclusive of Tier.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Repo        string `json:"repo,omitempty"`
+	// TeamID is set by the team route, whose rows are one tenant's slice of
+	// each credential rather than the whole of it.
+	TeamID string `json:"team_id,omitempty"`
+}
+
 // credentialUsageListView is the response envelope.
 type credentialUsageListView struct {
-	Month       string                `json:"month"`
+	Month string `json:"month"`
+	// Scope is always present: an answer states the question it answers,
+	// not only its result.
+	Scope       credentialUsageScope  `json:"scope"`
 	Credentials []credentialUsageView `json:"credentials"`
 	// MeteredUSD / EstimatedUSD are the two totals, kept apart for the
 	// reason nature exists: one is an invoice, the other is not.
@@ -59,8 +82,8 @@ type credentialUsageListView struct {
 	EstimatedUSD float64 `json:"estimated_usd"`
 }
 
-func toCredentialUsageList(month string, rows []credusage.MonthlyUsage) credentialUsageListView {
-	out := credentialUsageListView{Month: month, Credentials: make([]credentialUsageView, 0, len(rows))}
+func toCredentialUsageList(month string, scope credentialUsageScope, rows []credusage.MonthlyUsage) credentialUsageListView {
+	out := credentialUsageListView{Month: month, Scope: scope, Credentials: make([]credentialUsageView, 0, len(rows))}
 	for _, r := range rows {
 		out.Credentials = append(out.Credentials, credentialUsageView{
 			Month: r.Month, Fingerprint: r.Fingerprint, Provider: r.Provider,
@@ -98,6 +121,27 @@ func tierOrPlatform(raw string) (credusage.Tier, error) {
 	}
 }
 
+// monthFromQuery reads the optional `?month=YYYY-MM` these listings key on,
+// defaulting to the current month.
+//
+// A value it cannot parse is an ERROR, for the reason an unknown `?tier=`
+// is: the response carries a `month` field, so serving the current month to
+// a caller who asked for another is a wrong answer wearing the right label.
+// Measured — a probe asking for `2026-08` was served September, byte for
+// byte, and the identical numbers read as a counter that had stopped
+// (#1087).
+func monthFromQuery(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return now, nil
+	}
+	when, err := time.Parse("2006-01", raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("unknown month %q (want YYYY-MM)", raw)
+	}
+	return when.UTC(), nil
+}
+
 // handleTeamCredentialUsage lists what each credential cost THIS team this
 // month. A platform or lent credential appears with the team's own slice of
 // it — the whole of it is the admin view's answer.
@@ -112,12 +156,18 @@ func (s *Server) handleTeamCredentialUsage(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusForbidden, "not a member of this team")
 		return
 	}
-	now := time.Now().UTC()
+	when, merr := monthFromQuery(r.URL.Query().Get("month"), time.Now().UTC())
+	if merr != nil {
+		httpError(w, http.StatusBadRequest, "%s", merr.Error())
+		return
+	}
+	scope := credentialUsageScope{TeamID: teamID}
 	var (
 		rows []credusage.MonthlyUsage
 		err  error
 	)
 	if repo := strings.TrimSpace(r.URL.Query().Get("repo")); repo != "" {
+		scope.Repo = repo
 		// ListByRepo spans TENANTS by design — a repository can be served by
 		// several teams' credentials — so this route, which answers for one
 		// team, must narrow it. Filtering here rather than asking the counter
@@ -125,16 +175,16 @@ func (s *Server) handleTeamCredentialUsage(w http.ResponseWriter, r *http.Reques
 		// is that forgetting this line leaks another team's spend, which is
 		// why oneTenant is named and tested rather than inlined.
 		var all []credusage.MonthlyUsage
-		all, err = s.credUsage.ListByRepo(r.Context(), now, repo)
+		all, err = s.credUsage.ListByRepo(r.Context(), when, repo)
 		rows = oneTenant(all, teamID)
 	} else {
-		rows, err = s.credUsage.List(r.Context(), now, teamID)
+		rows, err = s.credUsage.List(r.Context(), when, teamID)
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	writeJSON(w, toCredentialUsageList(now.Format("2006-01"), rows))
+	writeJSON(w, toCredentialUsageList(when.Format("2006-01"), scope, rows))
 }
 
 // oneTenant keeps only the rows belonging to a tenant. The cross-tenant
@@ -159,10 +209,15 @@ func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusNotFound, "per-credential usage is not enabled on this instance")
 		return
 	}
-	now := time.Now().UTC()
+	when, merr := monthFromQuery(r.URL.Query().Get("month"), time.Now().UTC())
+	if merr != nil {
+		httpError(w, http.StatusBadRequest, "%s", merr.Error())
+		return
+	}
 	var (
-		rows []credusage.MonthlyUsage
-		err  error
+		rows  []credusage.MonthlyUsage
+		err   error
+		scope credentialUsageScope
 	)
 	fp := strings.TrimSpace(r.URL.Query().Get("fingerprint"))
 	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
@@ -175,9 +230,11 @@ func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusBadRequest, "give ?fingerprint= or ?repo=, not both — one credential across repositories and one repository across credentials are different questions")
 		return
 	case repo != "":
-		rows, err = s.credUsage.ListByRepo(r.Context(), now, repo)
+		scope.Repo = repo
+		rows, err = s.credUsage.ListByRepo(r.Context(), when, repo)
 	case fp != "":
-		rows, err = s.credUsage.ListByFingerprint(r.Context(), now, fp)
+		scope.Fingerprint = fp
+		rows, err = s.credUsage.ListByFingerprint(r.Context(), when, fp)
 	default:
 		// By TIER, not by tenant: a platform credential is metered under
 		// each tenant it served, so no single tenant holds its month.
@@ -186,11 +243,15 @@ func (s *Server) handleAdminCredentialUsage(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusBadRequest, "%s", terr.Error())
 			return
 		}
-		rows, err = s.credUsage.ListByTier(r.Context(), now, tier)
+		// Echoed even — especially — when the caller named no tier: this
+		// listing is one tier's, and the default is the one a reader is
+		// least likely to have in mind.
+		scope.Tier = string(tier)
+		rows, err = s.credUsage.ListByTier(r.Context(), when, tier)
 	}
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	writeJSON(w, toCredentialUsageList(now.Format("2006-01"), rows))
+	writeJSON(w, toCredentialUsageList(when.Format("2006-01"), scope, rows))
 }
