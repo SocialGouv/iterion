@@ -486,8 +486,16 @@ locally computed share is a number two pods disagree about. Only `--monthly-usd`
 can be sliced into a repository ceiling, and the refusal names the way out.
 
 It is read off the repository dimension above — the meter the runs actually
-write — so the figure `usage --by-credential --repo X` shows **is** the figure
-the gate refuses on. A view that disagreed with the gate could not exist.
+write — and it is **deployment-wide, not per team**: the repository dimension
+spans tenants, so the quota bounds what that repository consumed *whoever ran
+it*, including rows left under a previous team after the repo moved. Two teams
+running the same slug therefore share one quota.
+
+Read the figure back with the platform view, `iterion remote admin` →
+`GET /api/admin/credentials/usage?repo=X`, whose audience matches the policy's
+own. The team-scoped `iterion remote usage --by-credential --repo X` narrows to
+one tenant and will read **lower** than the number that refused the launch —
+it is answering a different question, not disagreeing.
 
 **`--route-spends-per-month` does not count runs**, and is named so nobody
 reads it as if it did. The ledger increments once per `AddSpend`, and the

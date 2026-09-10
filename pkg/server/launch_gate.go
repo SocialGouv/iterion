@@ -262,9 +262,16 @@ func (s *Server) budgetFloorPolicy(ctx context.Context) budgetfloor.Policy {
 // workload", this answers "how far may this repository go".
 //
 // Read off pkg/credusage's repository dimension, which is the meter the runs
-// actually write — so the number an operator sees in
-// `usage --by-credential --repo X` is the number this refuses on, and a view
-// that disagreed with the gate could not exist.
+// actually write — so the number this refuses on is one an operator can read
+// back. The view that shows it is the PLATFORM one,
+// `GET /api/admin/credentials/usage?repo=X` (`iterion remote admin` audience,
+// the same as the policy itself): credusage.ListByRepo spans TENANTS by
+// design, and this quota is deployment-wide, so it bounds what the repository
+// consumed whoever ran it — including rows left under a previous team after a
+// repo moved. The TEAM-scoped `usage --by-credential --repo X` narrows to one
+// tenant (cred_usage_routes.go's oneTenant) and will therefore read LOWER than
+// the number that refused the launch; that is the view to avoid reconciling
+// this against.
 //
 // Fail-open on a degraded read, like every other quota here: a Mongo blip
 // must not wedge a repository's launches.
