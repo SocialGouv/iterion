@@ -6,6 +6,7 @@ import { BrandMark } from "@/components/ui/BrandMark";
 import { useThemeStore } from "@/store/theme";
 import StackCompatibility from "./StackCompatibility";
 import PlatformFeatures from "./PlatformFeatures";
+import MissionExamples from "./MissionExamples";
 import "./cloud-home.css";
 
 const GITHUB = "https://github.com/SocialGouv/iterion";
@@ -48,7 +49,7 @@ function HeroVisual() {
 
 function UseCases() {
   return (
-    <section className="ch-section ch-use-cases" id="workflows" aria-labelledby="ch-use-cases-heading">
+    <section className="ch-section ch-use-cases" id="connected-work" aria-labelledby="ch-use-cases-heading">
       <div className="ch-section-heading">
         <div>
           <p className="ch-eyebrow">CONNECTED TO YOUR WORK.</p>
@@ -126,7 +127,7 @@ export default function CloudHome({ marketplaceEnabled = false }: { marketplaceE
           <HeroVisual />
         </section>
         <StackCompatibility />
-        <div className="ch-container"><UseCases />
+        <div className="ch-container"><MissionExamples /><UseCases />
           <PlatformFeatures />
           <section className="ch-final-cta" aria-labelledby="ch-deployment-heading">
             <p className="ch-eyebrow">DEPLOYMENT OPTIONS</p>
