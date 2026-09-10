@@ -2315,7 +2315,35 @@ tool run_generic_scanners:
   ## and .works (sibling worktrees on the self-host) so the scanners
   ## don't traverse accumulated repo copies. sh -c is dash on some
   ## hosts, bash inside devbox — keep POSIX-compatible.
-  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; printf '{"scanner":"generic","subscanners":["gitleaks","trivy","semgrep-auto"],"json_paths":{"gitleaks":"%s/gitleaks.json","trivy":"%s/trivy.json","semgrep":"%s/semgrep-auto.json"},"finding_count":0,"errors":["%s"]}\n' {{vars.scan_dir}} {{vars.scan_dir}} {{vars.scan_dir}} "$ERRS"`
+  command: `mkdir -p {{vars.scan_dir}} && cd {{vars.workspace_dir}} && ERRS="" && gitleaks detect --source={{vars.workspace_dir}} --report-format=json --report-path={{vars.scan_dir}}/gitleaks.json --redact --exit-code=0 || ERRS="$ERRS gitleaks"; trivy fs --format=json --output={{vars.scan_dir}}/trivy.json --scanners=vuln,misconfig,secret --severity=LOW,MEDIUM,HIGH,CRITICAL --skip-dirs=.iterion --skip-dirs=.sec-audit --skip-dirs=.works --skip-dirs=vendor --skip-dirs='**/node_modules' --timeout 15m --quiet {{vars.workspace_dir}} || ERRS="$ERRS trivy"; semgrep --config=p/default --json --output={{vars.scan_dir}}/semgrep-auto.json --metrics=off --quiet --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' {{vars.workspace_dir}} || ERRS="$ERRS semgrep-auto"; SCAN_DIR={{vars.scan_dir}} GEN_ERRS="$ERRS" python3 -c '
+import json, os
+scan_dir = os.environ["SCAN_DIR"]
+failed = os.environ.get("GEN_ERRS", "").split()
+# (subscanner id, envelope key, output file). A subscanner that FAILED must
+# not leave its output file behind: scan_health judges coverage by file
+# presence, so a half-written or empty artifact from a crashed tool reads as
+# "scanned, nothing found" — full coverage over a broken toolchain. Dropping
+# the phantom path is what run_lang_scanners already does for this exact
+# reason; the two nodes now behave alike.
+TOOLS = [("gitleaks", "gitleaks", "gitleaks.json"), ("trivy", "trivy", "trivy.json"), ("semgrep-auto", "semgrep", "semgrep-auto.json")]
+paths, errs = {}, []
+for tid, key, fname in TOOLS:
+    op = os.path.join(scan_dir, fname)
+    if tid not in failed:
+        paths[key] = op
+        continue
+    note = "%s failed" % tid
+    if os.path.exists(op):
+        try:
+            os.remove(op)
+            note += "; dropped its output file so it cannot read as a clean scan"
+        except OSError as e:
+            note += "; COULD NOT drop its output file (%s), which will read as a clean scan" % e
+    errs.append(note)
+# errors is a real list. It was ["%s"] fed by an often-empty ERRS, so every
+# run carried one empty string and no consumer could use it as a signal.
+print(json.dumps({"scanner": "generic", "subscanners": ["gitleaks", "trivy", "semgrep-auto"], "json_paths": paths, "finding_count": 0, "errors": errs}))
+'`
   output: scanner_output
 
 ## run_lang_scanners — skill-driven, DETERMINISTIC (no LLM in the path).
@@ -2652,8 +2680,22 @@ if [ -f "$OUT_JSON" ]; then
   FCNT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d) if isinstance(d,list) else len(d.get(\"findings\",[])) if isinstance(d,dict) else 0)" "$OUT_JSON" 2>/dev/null || echo 0)
 fi
 
+# A step failed AND nothing came out: whatever sits at OUT_JSON is not a scan
+# result. Leaving it there is the measured facade — scan_health judges
+# coverage by file presence, so an empty export from a deepsec that never ran
+# reads as full coverage, missing:[] and healthy:true, with no banner on the
+# report. Drop the file and stop claiming the path; the unavailable branch
+# above already emits json_paths:{} and triage only reads what json_paths
+# lists, so this is the shape both already handle.
+PATHS_JSON=$(printf "{\"deepsec\":\"%s\"}" "$OUT_JSON")
+if [ -n "$ERRS" ] && [ "$FCNT" = "0" ]; then
+  rm -f "$OUT_JSON"
+  PATHS_JSON="{}"
+  ERRS="$ERRS export_unusable"
+fi
+
 ERR_JSON=$(printf "%s" "$ERRS" | python3 -c "import json,sys; e=sys.stdin.read().strip().split(); print(json.dumps([\"step failed: \"+x for x in e]))")
-printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":{\"deepsec\":\"%s\"},\"finding_count\":%s,\"errors\":%s}\n" "$OUT_JSON" "$FCNT" "$ERR_JSON"
+printf "{\"scanner\":\"deepsec\",\"subscanners\":[\"deepsec\"],\"json_paths\":%s,\"finding_count\":%s,\"errors\":%s}\n" "$PATHS_JSON" "$FCNT" "$ERR_JSON"
 '`
   output: scanner_output
   publish: deepsec_scan_artifact
@@ -2687,6 +2729,14 @@ compute scan_join:
 ## "nothing found" from "nothing ran". Partial gaps (some language
 ## scanners missing) pass but are surfaced to report_card as a coverage
 ## banner. Runs BEFORE cap_findings, which truncates the files in place.
+##
+## PRESENCE IS ONLY AS HONEST AS THE PRODUCERS. This node reads the
+## filesystem, so a scanner that runs, FAILS, and still leaves a parseable
+## (empty) artifact reads here as full coverage. That is why every scanner
+## node drops the output file of a subscanner that failed, and stops
+## claiming its json_paths entry — run_lang_scanners, run_generic_scanners
+## and run_deepsec_scanner all do it. Keep that invariant when adding a
+## scanner: a file left behind by a failed tool defeats this gate silently.
 tool scan_health:
   command: `SCAN_DIR={{vars.scan_dir}} MIN_GENERIC={{vars.min_generic_scanners}} LANGS={{input.langs}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills ENABLE_DEEPSEC={{vars.enable_deepsec}} DEEPSEC_OUT={{vars.deepsec_out}} python3 -c "
 import os, sys, json, re
