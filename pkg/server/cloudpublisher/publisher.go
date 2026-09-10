@@ -1610,8 +1610,15 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 		// reservations hold back from this bot is not a DEAD key, the pin
 		// overrides that policy as it overrides the evidence, and warning
 		// "expect a park" about it would promise a wall the run never meets.
-		until, why, _ := p.refusedByEvidence(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov), botID)
-		if until.IsZero() {
+		//
+		// refusedByEvidence judges against the bot's LOWERED ceiling, so it
+		// answers "refused" for both cases; floorHeld is what separates them,
+		// and dropping it is what made this comment false. The runner's own
+		// guard enforces the deployment-wide policy (pkg/budgetfloor), so a
+		// key blocked only by the reservation runs to the deployment's cap
+		// like any other — there is no park to announce.
+		until, why, floorHeld := p.refusedByEvidence(ctx, backend, usagecap.TenantScope(tenantID), r.Fingerprint, string(prov), botID)
+		if until.IsZero() || floorHeld {
 			continue
 		}
 		p.logger.Warn("cloudpublisher: run=%s uses the pinned api key %s (%s fp=%s) although %s — the pin is honoured, so this run will meet that wall; expect a park until %s, or repin the webhook to another key",
