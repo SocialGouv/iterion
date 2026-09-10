@@ -329,33 +329,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	// Launch admission: suspend → concurrency → rate → cost cap →
-	// monthly run quota (which also meters). Super-admin bypasses.
-	// No subject: the gate runs BEFORE the body is parsed, so the bot is
-	// not known yet, and moving the gate after the decode would let a
-	// malformed request skip the quota CAS. An operator-initiated launch is
-	// also not the automated fan-out the per-repo quota exists to bound.
-	adm, d := s.gateLaunch(r.Context(), launchSubject{})
-	if d != nil {
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
-	// The quota increment IS the metering, so every return between here and
-	// the call into the run service abandons an admitted launch and has to
-	// hand the MONTHLY unit back — a malformed body or an unresolvable bot
-	// would otherwise spend the org's month one request at a time. rollback is
-	// nil-safe and a no-op when nothing was metered (local mode, super-admin,
-	// the fail-open arms), so this is inert on those paths.
-	//
-	// It hands back the monthly unit AND the per-minute launch-rate token the
-	// gate spent (launchAdmission carries the bucket; #1726): a client looping
-	// a bad request no longer empties that bucket.
-	runMayExist := false
-	defer func() {
-		if !runMayExist {
-			adm.rollback(s.logger)
-		}
-	}()
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -387,6 +360,40 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
+	// Launch admission: suspend → concurrency → rate → cost cap →
+	// monthly run quota (which also meters). Super-admin bypasses.
+	//
+	// AFTER the decode, because the body is where this surface learns which
+	// bot it is launching, and an empty subject is not neutral: a RESERVED
+	// bot judged as ordinary work faces the ceiling its own reservation
+	// lowered, so the studio's Launch button would be refused on the very
+	// band held for that bot. The body is size-bounded and touches no store,
+	// so nothing but the caller's own payload is parsed before admission —
+	// and a request too malformed to name a bot now costs no metered run
+	// slot either. No repository: an operator-initiated launch is not the
+	// automated fan-out the per-repo quota exists to bound.
+	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: strings.TrimSpace(req.BotID)})
+	if d != nil {
+		s.writeLaunchDenial(w, r, d)
+		span.SetStatus(codes.Error, "launch denied")
+		return
+	}
+	// The quota increment IS the metering, so every return between here and
+	// the call into the run service abandons an admitted launch and has to
+	// hand the MONTHLY unit back — an unresolvable bot would otherwise spend
+	// the org's month one request at a time. rollback is nil-safe and a no-op
+	// when nothing was metered (local mode, super-admin, the fail-open arms),
+	// so this is inert on those paths.
+	//
+	// It hands back the monthly unit AND the per-minute launch-rate token the
+	// gate spent (launchAdmission carries the bucket; #1726): a client looping
+	// a bad request no longer empties that bucket.
+	runMayExist := false
+	defer func() {
+		if !runMayExist {
+			adm.rollback(s.logger)
+		}
+	}()
 	// The identity the caller asked for is checked BEFORE bot resolution
 	// rewrites it and before any source is materialised: an author
 	// document is a draft, refused with a stable code, nothing written.
@@ -800,10 +807,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	// No subject: the gate runs BEFORE the body is parsed, so the bot is
-	// not known yet, and moving the gate after the decode would let a
-	// malformed request skip the quota CAS. An operator-initiated launch is
-	// also not the automated fan-out the per-repo quota exists to bound.
+	// No subject, and this one stays FIRST, unlike the launch above: a
+	// resume learns its bot from the RUN, and loading the run before the
+	// gate would turn the suspend check into a run-existence probe (the
+	// lookup is deliberately not tenant-filtered). The cost is stated rather
+	// than hidden: a reserved bot resumed BY HAND is judged as ordinary
+	// work, so its own concurrency/dollar reserve lowers the ceiling it
+	// faces. The automated resume (the retry sweeper) already reads the run
+	// doc for other reasons and does pass the subject.
 	adm, d := s.gateLaunch(r.Context(), launchSubject{})
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
