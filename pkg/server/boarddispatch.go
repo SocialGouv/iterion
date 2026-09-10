@@ -1885,7 +1885,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// and the retry waits out the backoff. The metered admission is handed
 	// back when the run service then refuses, as the HTTP handler does: a
 	// run that never started consumes no monthly slot.
-	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}), launchSubject{})
+	// The card names the bot, so the subject is known here and MUST be
+	// passed: judged as ordinary work, a card stamped with a RESERVED bot
+	// faces the ceiling its own reservation lowered — the reservation
+	// refusing the very run it exists to protect. No repository: the card
+	// carries a clone URL, and the quota keys on the forge slug the meter
+	// writes, never a second identity derived from a URL.
+	adm, deny := s.gateLaunch(auth.WithIdentity(ctx, auth.Identity{TeamID: tenant, UserID: boardDispatcherActor}),
+		launchSubject{BotID: iss.Bot})
 	if deny != nil {
 		return &launchRefusal{cardID: iss.ID, cause: deny.err()}
 	}

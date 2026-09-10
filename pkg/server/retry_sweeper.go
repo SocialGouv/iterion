@@ -147,7 +147,16 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// and a concurrency/rate cap clears in minutes, so abandoning on those
 	// would throw the run away for a condition that resolves itself. A
 	// suspended org or a missing workspace needs a human.
-	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), launchSubject{})
+	// The run doc read above already carries what the gate needs to know
+	// about this launch, so pass it: a retry judged as ordinary work would
+	// face the ceiling its OWN reservation lowered, and the reservation would
+	// refuse the run it exists to protect. Nil (the store could not answer)
+	// falls back to the ordinary subject, like every other unknown.
+	var subj launchSubject
+	if run != nil {
+		subj = launchSubject{BotID: run.BotID, Repo: run.ProjectPath}
+	}
+	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
 			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))
@@ -297,7 +306,10 @@ func retryPolicyForSweeper(run *store.Run) retrypolicy.Policy {
 // re-armed forever would be worse than one that stops and says why.
 func retryDenialIsTransient(reason string) bool {
 	switch reason {
-	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited:
+	// denyRepoQuota belongs with the other MONTHLY ceilings: it refills on
+	// the 1st like they do, so abandoning the run on it would throw work
+	// away for a condition that resolves itself on a calendar.
+	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota:
 		return true
 	default:
 		return false
