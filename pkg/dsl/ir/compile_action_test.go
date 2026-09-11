@@ -174,6 +174,23 @@ workflow main:
 			want: DiagActionNoConnection,
 		},
 		{
+			// Prevents: a node that compiles clean and dies mid-run as "no
+			// connection named {{vars.forge}}". Nothing renders the alias and
+			// no ref check inspects it, so the template reaches ResolveAction
+			// verbatim — and an alias computed from an output would let an
+			// upstream node choose which credential the call carries.
+			name: "a templated connection alias",
+			bot: `
+tool t:
+  action: forgejo.issue.comment
+  connection: "{{vars.forge}}"
+workflow main:
+  entry: t
+  t -> done
+`,
+			want: DiagActionNoConnection,
+		},
+		{
 			// Prevents: an id that addresses nothing.
 			name: "an action id that is not connector.resource.verb",
 			bot: `

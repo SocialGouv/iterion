@@ -51,6 +51,20 @@ func (c *compiler) compileToolAction(t *ast.ToolNodeDecl) []ActionParam {
 	if strings.TrimSpace(t.Connection) == "" {
 		c.errorfAt(DiagActionNoConnection, t.Name, "",
 			"tool %q: `action:` needs a `connection:` — a connector call with no credential is not a call iterion can make", t.Name)
+	} else if strings.Contains(t.Connection, "{{") {
+		// A `{{…}}` alias is neither rendered nor ref-checked: collectAllRefs
+		// covers only the params, so C029 never inspects it, and the executor
+		// hands node.Connection to ResolveAction verbatim. The node therefore
+		// compiled clean and died mid-run as `no connection named
+		// {{vars.forge}}` — which reads as a missing connection rather than as
+		// an unsupported form. `action:`, `retry:` and `timeout:` all refuse a
+		// template; this was the one hole in that set, on the field that
+		// decides WHICH CREDENTIAL the call carries. It is refused rather than
+		// rendered on purpose: an alias built from an output would let a node
+		// upstream choose the credential, which is the one argument of a
+		// connector call that is not the workflow's to compute.
+		c.errorfAt(DiagActionNoConnection, t.Name, "",
+			"tool %q: `connection: %s` is not rendered — a connection is named by the alias `iterion connections add --alias` stored, not by a template", t.Name, t.Connection)
 	}
 
 	// ADR-044's ladder ends in an LLM repairing the recipe. On a deterministic

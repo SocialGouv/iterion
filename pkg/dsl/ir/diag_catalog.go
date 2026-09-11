@@ -202,7 +202,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	// an action node reaches a third-party API with no LLM deciding the
 	// operation, the arguments or the reading of the answer.
 	DiagActionMalformedID:  {"Malformed action id", "Write `action: <connector>.<resource>.<verb>`, e.g. `forgejo.issue.comment` — the id is what addresses the operation."},
-	DiagActionNoConnection: {"Action without a connection", "Add `connection: <alias>`: a connector call with no credential is not a call iterion can make."},
+	DiagActionNoConnection: {"Action without a connection", "Add `connection: <alias>`, written as the literal alias and not as a `{{…}}` template: a connector call with no credential is not a call iterion can make, and the alias is not rendered."},
 	DiagActionRecovery:     {"Recovery on a deterministic action", "Drop `recovery:` / `policy: recover` — its ladder ends in an LLM repairing the call, which an action node promises does not happen."},
 	DiagActionPostcond:     {"Postcondition on a deterministic action", "Drop `postcondition:` — the operation's typed result is its success oracle, and a shell exit code would overrule what the vendor answered."},
 	DiagActionBadParam:     {"Malformed action parameter", "Give every `params:` entry a name, and declare each one once — a duplicate would send a value the author did not write."},
