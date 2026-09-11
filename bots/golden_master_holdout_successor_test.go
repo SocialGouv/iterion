@@ -123,7 +123,35 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"  Clause as parsed: %q", clause)
 	}
 
-	// 4. The motive, stated as the harness actually behaves. A spent set does
+	// 4. THE OPT-IN IS NOT THE RITE'S TO WRITE. This paragraph is the first
+	//    place the agent is told the flag exists, and `seal_committed_opted_in`
+	//    reads it from the config being judged at EVERY gate — including this
+	//    run's own, which runs minutes later. A flag written "for the later
+	//    gate" therefore makes THIS gate seal the committed set, score both
+	//    sets in one run and empty the magazine again, after moving tracked
+	//    files out from under git.
+	if !strings.Contains(clause, "seal_committed") {
+		t.Fatalf("the successor instruction no longer names the opt-in flag.\n"+
+			"  Clause as parsed: %q", clause)
+	}
+	var warned bool
+	for _, phrasing := range []string{"do not write that flag", "never write that flag",
+		"do not set that flag", "never set that flag"} {
+		if strings.Contains(clause, phrasing) {
+			warned = true
+			break
+		}
+	}
+	if !warned {
+		t.Errorf("the successor instruction names \"seal_committed\" without telling "+
+			"the rite not to write it.\n"+
+			"  Why it is there: the flag is read from the config at every gate, this "+
+			"run's included, so one written in advance makes THIS gate seal and score "+
+			"the committed set — both sets spent in one run, and tracked files moved "+
+			"out from under git as uncommitted deletions.\n  Clause as parsed: %q", clause)
+	}
+
+	// 5. The motive, stated as the harness actually behaves. A spent set does
 	//    not make the next gate refuse — it boots, replays the whole corpus and
 	//    reports 0/0 with `holdout_spent_unreplaced`, which the conjunction
 	//    passes. Naming the field keeps the paragraph checkable against the
