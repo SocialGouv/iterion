@@ -604,6 +604,8 @@ class Manager:
                 server["work_dir_matches"] = Path(info["work_dir"]).resolve(strict=True) == root
             except (OSError, RuntimeError):
                 server["work_dir_matches"] = False
+        selected_binary = self.selected_binary(instance)
+        selected_sha256 = sha256_file(selected_binary)
         launch = {
             "project_dir": str(root),
             "bind": self.bind,
@@ -611,14 +613,18 @@ class Manager:
             "local_store": instance.local_store,
             "load_project_env": self.load_project_env and not instance.no_env,
             "extra": instance.extra,
-            "selected_binary": str(self.selected_binary(instance)),
+            "selected_binary": str(selected_binary),
+            "selected_binary_sha256": selected_sha256,
         }
         live_binary = None
+        live_binary_sha256 = None
         if pid is not None:
             try:
                 live_binary = str(Path(f"/proc/{pid}/exe").resolve(strict=True))
+                live_binary_sha256 = self.process_binary_hash(pid)
             except OSError:
                 live_binary = None
+                live_binary_sha256 = None
         token_body = {
             "instance": instance.name,
             "state": state,
@@ -629,11 +635,22 @@ class Manager:
             "run_id": run_id,
             "run_http_status": run_status,
             "run": run_summary,
+            "live_binary": live_binary,
+            "live_binary_sha256": live_binary_sha256,
         }
         return {
             "schema_version": SCHEMA_VERSION,
             "project": {"root": str(root), **manifest},
-            "instance": {"name": instance.name, "state": state, "pid": pid, "url": self.url(instance), "live_binary": live_binary, "launch": launch},
+            "instance": {
+                "name": instance.name,
+                "state": state,
+                "pid": pid,
+                "url": self.url(instance),
+                "live_binary": live_binary,
+                "live_binary_sha256": live_binary_sha256,
+                "selected_binary_matches_live": live_binary_sha256 == selected_sha256 if live_binary_sha256 else None,
+                "launch": launch,
+            },
             "store": self.store(root, instance, pid),
             "engine": {
                 "source_repository": str(Path(profile["source_repository"]).expanduser().resolve()),
@@ -989,12 +1006,14 @@ class Manager:
         root, instance, manifest, _profile = self.resolve(project)
         deployment_dir = self.state_dir / "deployments" / instance.name
         selector = read_json(deployment_dir / "current.json", "BINARY_SELECTOR_INVALID") if (deployment_dir / "current.json").is_file() else None
+        runtime_path = self.state_dir / "runtime" / instance.name / "current.json"
+        runtime = read_json(runtime_path, "BINARY_SELECTOR_INVALID") if runtime_path.is_file() else None
         journals: list[dict[str, Any]] = []
         transactions = deployment_dir / "transactions"
         if transactions.is_dir():
             for path in sorted(transactions.glob("*/journal.json"), reverse=True)[:10]:
                 journals.append(read_json(path, "DEPLOYMENT_JOURNAL_INVALID"))
-        return {"schema_version": SCHEMA_VERSION, "project": {"root": str(root), **manifest}, "instance": instance.name, "selected": selector, "transactions": journals}
+        return {"schema_version": SCHEMA_VERSION, "project": {"root": str(root), **manifest}, "instance": instance.name, "selected": selector, "runtime": runtime, "transactions": journals}
 
     def start(self, names: list[str]) -> list[dict[str, Any]]:
         results = []

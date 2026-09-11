@@ -140,6 +140,7 @@ class InstanceManagerTests(unittest.TestCase):
         self.assertEqual(value["instance"]["name"], "project")
         self.assertEqual(value["assistant_missions"], {"state": "absent-recoverable", "http_status": 404})
         self.assertTrue(value["server"]["work_dir_matches"])
+        self.assertIsInstance(value["instance"]["live_binary_sha256"], str)
         self.assertEqual(len(value["context_token"]), 64)
 
     def test_context_discovers_project_from_run_across_managed_instances(self) -> None:
