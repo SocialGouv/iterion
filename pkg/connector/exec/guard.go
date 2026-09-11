@@ -62,18 +62,32 @@ func MarkGuarded(c *http.Client) *http.Client {
 	return &marked
 }
 
+// maxTransportDepth bounds the Unwrap walk.
+//
+// The walk follows a chain whose links this package does not own, so its
+// termination would otherwise depend on every wrapper being well behaved: one
+// whose Unwrap returns itself spins forever, and it would spin inside Call, on
+// every connector request, holding the run's lease with nothing to show for it.
+// A real chain is two or three deep — the guarded transport, a diagnostic
+// layer, perhaps a recorder — so the bound costs nothing a legitimate caller
+// can feel.
+const maxTransportDepth = 16
+
 // IsGuarded reports whether c carries the mark.
 //
 // It walks the Unwrap chain so a transport wrapper added after the mark (a
-// diagnostic one, say) does not hide it. A wrapper that forwards neither the
-// type nor Unwrap makes this return false — a refused call rather than an
-// unguarded one, which is the direction to fail in.
+// diagnostic one, say) does not hide it. Anything the walk cannot follow to the
+// mark — a wrapper that forwards neither the type nor Unwrap, a chain deeper
+// than maxTransportDepth, a cycle — makes this return false, which costs a
+// REFUSED call rather than an unguarded one. That is the direction to fail in:
+// a client wrongly refused is a loud wiring bug, a client wrongly accepted is a
+// tenant reaching the deployment's own network.
 func IsGuarded(c *http.Client) bool {
 	if c == nil {
 		return false
 	}
 	rt := c.Transport
-	for rt != nil {
+	for depth := 0; rt != nil && depth < maxTransportDepth; depth++ {
 		if _, ok := rt.(*guardedTransport); ok {
 			return true
 		}

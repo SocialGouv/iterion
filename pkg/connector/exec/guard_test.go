@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 )
@@ -114,5 +115,31 @@ func TestTheMarkIsSafeOnNothing(t *testing.T) {
 	}
 	if exec.IsGuarded(original) {
 		t.Error("MarkGuarded must leave its argument alone")
+	}
+}
+
+// selfWrapping is the shape whose Unwrap never terminates: a wrapper that
+// reports itself as what it wraps. It is a bug wherever it appears, but the
+// chain is built by callers this package does not own, so its termination
+// cannot be assumed.
+type selfWrapping struct{}
+
+func (selfWrapping) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+func (s selfWrapping) Unwrap() http.RoundTripper                     { return s }
+
+// A malformed chain must cost a refusal, not a hang. Without the bound this
+// test does not fail — it never returns, which is worse than a red: a call
+// spinning inside Call holds the run's lease with nothing to show for it.
+func TestAChainThatNeverEndsIsRefusedRatherThanFollowed(t *testing.T) {
+	done := make(chan bool, 1)
+	go func() { done <- exec.IsGuarded(&http.Client{Transport: selfWrapping{}}) }()
+
+	select {
+	case guarded := <-done:
+		if guarded {
+			t.Error("a chain that never reaches the mark is not a guarded client")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("IsGuarded did not return: the Unwrap walk must be bounded, since the chain is built by callers this package does not own")
 	}
 }

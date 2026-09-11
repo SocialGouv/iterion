@@ -20,6 +20,7 @@ func TestCleartextOriginWarnsOnlyWhenTheCredentialLeavesInTheClear(t *testing.T)
 	}{
 		{"https is the case this exists to distinguish", "https://forge.example.org", false},
 		{"plain http to a named host", "http://forge.example.org", true},
+		{"an uppercase scheme is the same scheme", "HTTP://forge.example.org", true},
 		{"plain http to a LAN address", "http://192.168.1.10:3000", true},
 		{"plain http to a public IP", "http://203.0.113.7", true},
 		{"loopback by name never leaves the machine", "http://localhost:3000", false},
