@@ -216,3 +216,48 @@ func TestConnectionsAddRefusesAConnectionNoCallCouldUse(t *testing.T) {
 		})
 	}
 }
+
+// TestConnectionsAddRefusesACredentialThatCannotAuthenticate.
+//
+// The same class as the cases above, one layer earlier: the value itself. A
+// credential reaching this command comes from the ENVIRONMENT, which is
+// exactly where a trailing newline comes from — a k8s `envFrom`, a `.env`
+// line, a CI variable, `$(cat token.txt)`. Sealed anyway, the connection
+// listed as active and failed at its first call with a 401, or with Go's
+// opaque "invalid header field value for Authorization": a layer away from
+// the paste that caused it. `iterion secret set` has refused this since it
+// shipped, for the reason it states — "a value that could not possibly
+// authenticate is refused at the paste, not discovered as a provider 401 in
+// the middle of a run hours later".
+func TestConnectionsAddRefusesACredentialThatCannotAuthenticate(t *testing.T) {
+	for _, tc := range []struct{ name, token, wantIn string }{
+		{"a trailing newline", "probe-token\n", "newline"},
+		{"an embedded space", "probe token", "space"},
+		{"a pasted transcript", "echo\nprobe-token", "newline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := connectionsWorkspace(t)
+			t.Setenv("FORGE_TEST_TOKEN", tc.token)
+			var add bytes.Buffer
+			err := cli.ConnectionsAdd(cli.ConnectionAddOptions{
+				Connector: "forgejo", Scheme: "token",
+				BaseURL: "https://git.example.com", TokenEnv: "FORGE_TEST_TOKEN",
+				StoreDir: filepath.Join(ws, ".iterion"),
+			}, &add)
+			if err == nil {
+				t.Fatalf("a credential that cannot authenticate must be refused here, got:\n%s", add.String())
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("the refusal must name what is wrong with the value — want %q in: %v", tc.wantIn, err)
+			}
+			// And nothing written, like every other refusal in this command.
+			var list bytes.Buffer
+			if err := cli.ConnectionsList(filepath.Join(ws, ".iterion"), &list); err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if !strings.Contains(list.String(), "no connections") {
+				t.Errorf("a refused add must store nothing, got:\n%s", list.String())
+			}
+		})
+	}
+}

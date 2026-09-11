@@ -64,6 +64,20 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if token == "" {
 		return fmt.Errorf("connections add: $%s is empty", opts.TokenEnv)
 	}
+	// The SAME shape gate `iterion secret set` applies, for the reason it
+	// states: "a value that could not possibly authenticate is refused at the
+	// paste, not discovered as a provider 401 in the middle of a run hours
+	// later". A credential arriving through the environment is the case that
+	// needs it most — a k8s `envFrom`, a `.env` line, a CI variable and a
+	// `$(cat file)` all bring a trailing newline, which this command sealed
+	// happily. The connection then listed as active and failed at its first
+	// call with a 401, or with Go's opaque "invalid header field value for
+	// Authorization" — a layer away from the command that created it, which is
+	// the same failure checkSchemeIsWritable and checkBaseURL were added here
+	// to close.
+	if err := secrets.ValidateTokenShape(fmt.Sprintf("$%s", opts.TokenEnv), token); err != nil {
+		return fmt.Errorf("connections add: %w", err)
+	}
 	alias := strings.TrimSpace(opts.Alias)
 	if alias == "" {
 		alias = "main"
