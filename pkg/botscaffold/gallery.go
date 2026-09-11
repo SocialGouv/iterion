@@ -212,6 +212,8 @@ func Templates() []Template {
 			},
 		},
 		{
+			// The reviewers read and never write: the permission dial is ON
+			// (deny mode, an allow list of read-only tools in the template).
 			ID:          "review-fanout",
 			Icon:        "🔀",
 			Name:        "Reviewer fan-out",
@@ -224,6 +226,9 @@ func Templates() []Template {
 				Vars: []VarSpec{
 					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
 				},
+				// Read-only by construction: the permission gate is ON in deny
+				// mode, with the template's allow list of read-only tools.
+				Permission: "deny",
 			},
 		},
 		{

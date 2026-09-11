@@ -402,12 +402,16 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 		return err
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, hash, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
+	wf, hash, pfBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		return err
+		// The bare digest of a run launched before the promotion is accepted
+		// here and migrated by Resume; anything else stays a refusal.
+		if !LegacyBareDigestMatches(r, pfBundle) {
+			return err
+		}
 	}
 	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
 	return err
@@ -505,7 +509,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
-		return nil, err
+		// A run launched before its bundle's prompts entered the digest
+		// recorded the bare main.bot's: migrate it once, in place, and go on;
+		// any other mismatch stays a refusal.
+		if !MigrateLegacyBareDigest(parent, s.store, r, resumeBundle, hash, s.logger) {
+			return nil, err
+		}
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight

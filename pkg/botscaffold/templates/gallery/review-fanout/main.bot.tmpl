@@ -8,10 +8,10 @@
 ## safety run the two side by side — and NOT a tool gate: only codex (a
 ## read-only sandbox) and pi (a read-only tool list) turn it into
 ## enforcement, and no `tools:` list can, since reading a diff needs
-## `bash`. So the PROMPTS carry it, and in place (below) they are all that
-## stands between a reviewer and your checkout; the gate that would
-## enforce it is `permission: deny` with rules for the commands your own
-## lenses run (docs/permissions.md). They do not write the index either —
+## `bash`. So the PROMPTS carry it, and the permission gate below enforces
+## it — `permission: deny` with an allow list of read-only tools
+## (docs/permissions.md), on by default since in place the reviewers work
+## in your checkout. They do not write the index either —
 ## a `git add -N .` in a parallel branch takes .git/index.lock and is
 ## FATAL when the sibling holds it, and the loser's empty report would
 ## read as an approve. Untracked files are read with `git diff --no-index`.
@@ -105,12 +105,16 @@ workflow <%.WorkflowName%>:
   ## In place by default: the pending work IS the scope. With the dial on,
   ## the run isolates in a fresh worktree and needs `base`.
   worktree: <%if .Worktree%>auto<%else%>none<%end%>
-  ## The permission gate the header names bounds the TOOLS: `permission:
-  ## deny` with an allow-list refuses Edit/Write and any command that does
-  ## not START with an allowed one — but a Bash rule is a prefix on the
-  ## whole command line (`git diff > file` passes under `Bash(git diff:*)`),
-  ## a backstop, not a proof. Add it through the permission dial, with
-  ## rules for the commands your lenses run.<%template "dials" .%>
+  ## The gate the header names, ON by default (the permission dial is
+  ## `deny` for this shape): a reviewer reads and never writes. Under
+  ## `deny` any tool call not on the allow list is hard-blocked, headless;
+  ## the deny list says what must never pass even under `ask`. A Bash rule
+  ## is a prefix on the WHOLE command line (`git diff > file` passes under
+  ## `Bash(git diff:*)`): a backstop, not a proof — the prompts still
+  ## carry the rule. Widen the allow list with the commands your own
+  ## lenses run.
+  allow: ["Read(**)", "Grep", "Glob", "LS", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git ls-files:*)", "Bash(git blame:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)"]
+  deny: ["Edit(**)", "Write(**)", "NotebookEdit(**)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)", "Bash(git checkout:*)", "Bash(git stash:*)", "Bash(git reset:*)", "Bash(rm:*)"]<%template "dials" .%>
   scope -> nothing_to_review when empty
   scope -> split when not empty
   split -> review_correctness

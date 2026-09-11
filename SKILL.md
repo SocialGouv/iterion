@@ -41,7 +41,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | Template | Shape |
 |---|---|
 | `campaign-loop` | an entry gate (unset `verify_command` = typed refusal) → one agent in passes → a `tool` running the repo's own checks (needs `jq`, pinned in the bundle's `devbox.json` for any image that ships devbox; every iterion image ships both) → a `compute` gate → a bounded loop, with a typed `fail` at exhaustion |
-| `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers → a `compute` with `await: wait_all` → a typed blocked verdict |
+| `review-fanout` | a `tool` scope gate (empty scope = typed refusal) → `router fan_out_all` → two read-only reviewers under `permission: deny` with a read-only allow list → a `compute` with `await: wait_all` → a typed blocked verdict |
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`, needs `jq`, pinned in the bundle's `devbox.json`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |

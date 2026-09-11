@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -162,6 +163,22 @@ func TestGalleryShapes(t *testing.T) {
 			wantExit(t, w, "gate", "passes_exhausted")
 		},
 		"review-fanout": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
+			// The reviewers read and never write: the gate is on, in deny
+			// mode, with a read-only allow list, and a write tool is denied
+			// by name — in place, they work in the operator's checkout.
+			if w.Permission != "deny" {
+				t.Errorf("permission = %q, want deny", w.Permission)
+			}
+			for _, rule := range []string{"Read(**)", "Grep", "Bash(git diff:*)"} {
+				if !slices.Contains(w.PermissionAllow, rule) {
+					t.Errorf("allow list lacks %s: %v", rule, w.PermissionAllow)
+				}
+			}
+			for _, rule := range []string{"Edit(**)", "Write(**)", "Bash(git commit:*)"} {
+				if !slices.Contains(w.PermissionDeny, rule) {
+					t.Errorf("deny list lacks %s: %v", rule, w.PermissionDeny)
+				}
+			}
 			var fanOut int
 			for _, r := range nodesOf[*ir.RouterNode](w) {
 				if r.RouterMode == ir.RouterFanOutAll {
