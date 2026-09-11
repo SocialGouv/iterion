@@ -89,6 +89,23 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 	if err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
+	// The expiry the CREDENTIAL carries, checked once it can be read.
+	//
+	// `checkUsable` already refused an expired record, and that check stays:
+	// it is cheap, it fails before anything is unsealed, and it is what an
+	// operator sees. But the record's copy is PLAINTEXT and the AAD does not
+	// cover it, while the blob's travelled sealed under `connection:<id>`. So
+	// the authenticated copy gets the last word, and it can only be consulted
+	// here — which is why the refusal could not live in one place.
+	//
+	// Fail-closed on EITHER: a record that says expired is honoured even if
+	// the blob disagrees, and a blob that says expired is honoured even if the
+	// record was edited to say otherwise.
+	if !blob.ExpiresAt.IsZero() && !blob.ExpiresAt.After(time.Now()) {
+		return nil, zero, exec.Credential{}, "", fmt.Errorf(
+			"connection %q holds a credential that expired at %s — reconnect it",
+			conn.Alias, blob.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 
 	cred := exec.Credential{
 		SchemeID: conn.SchemeID,

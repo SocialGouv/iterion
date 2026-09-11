@@ -387,6 +387,45 @@ func TestAMovedCredentialIsRefused(t *testing.T) {
 	}
 }
 
+// TestASealedExpiryOutranksTheRecord is the half the plaintext check cannot
+// reach.
+//
+// `checkUsable` refuses an expired RECORD, which is cheap and fails before
+// anything is unsealed. But that field is plaintext and the AAD does not cover
+// it, while the blob's copy travelled sealed under `connection:<id>` — so a
+// record edited to claim a future expiry, or simply written by an older build
+// that did not set one, would sail past a check that only ever read it.
+//
+// The two checks are one rule read from two places, and the rule is
+// fail-closed on either.
+func TestASealedExpiryOutranksTheRecord(t *testing.T) {
+	store := connection.NewMemoryStore()
+	r := resolver(t, store)
+
+	c := conn("c1", "tenant-a", "main")
+	c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+	// The record says nothing about an expiry — the state a plaintext-only
+	// check reads as "fine".
+	c.ExpiresAt = time.Time{}
+
+	sealed, err := connection.SealToken(r.Sealer, c.ID, "the-token", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	c.SealedPayload = sealed
+	if err := store.Create(context.Background(), c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, _, _, _, err = r.ResolveAction(context.Background(), "probe.issue.get", "main")
+	if err == nil {
+		t.Fatal("a credential whose SEALED expiry has passed must be refused, whatever the record says")
+	}
+	if !strings.Contains(err.Error(), "expired at") {
+		t.Errorf("the refusal must name the expiry: %v", err)
+	}
+}
+
 // TestAResolverWithoutATenantRefuses. An empty tenant matches the records that
 // also have none, which on a shared deployment is whatever a migration left
 // behind — so it is refused rather than defaulted.

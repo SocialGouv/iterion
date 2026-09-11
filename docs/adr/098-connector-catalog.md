@@ -1307,15 +1307,15 @@ with a trailing newline.
   wrong header) where the OpenAPI 3 arm makes it a coverage gap. The code is
   corrected and tested; `connectors/forgejo/**` shows the old output until it
   is regenerated, with the same caveat as above.
-- **The sealed credential's own expiry is decrypted and thrown away.**
-  `credentialBlob.ExpiresAt` exists for the stated reason — "a blob that
-  travelled without its record still knows when it dies" — and `SealToken`
-  writes it; nothing reads it. `checkUsable` consults the PLAINTEXT record
-  field instead, which the AAD does not cover, and it runs before
-  `openCredential`, so it structurally cannot consult the authenticated copy.
-  Inert today (no writer sets a non-zero expiry), which is why it would land
-  as a silent hole the day the OAuth tier ships. Needs the refusal moved after
-  `openCredential`, or the record field cross-checked against the blob.
+- **The sealed credential's own expiry — CLOSED.** The observation was right:
+  `checkUsable` read the PLAINTEXT record field, which the AAD does not cover,
+  and runs before `openCredential`, so it structurally could not consult the
+  authenticated copy. Both are read now, and the rule is fail-closed on
+  either: the record check stays (cheap, refuses before anything is unsealed,
+  and it is what an operator sees), and the blob's copy gets the last word
+  once it can be read. `TestASealedExpiryOutranksTheRecord` drives the case the
+  plaintext check cannot reach — a record claiming no expiry over a blob that
+  has one — and falsifying the new guard reddens that test alone.
 - **A response's integers are `float64`.** The REQUEST direction was fixed
   in this lot (`asPositiveInt`'s `json.Number` arm, "so a large id survives
   to the wire exactly"); `decodeJSON` still unmarshals into `any`, so an id
@@ -1323,3 +1323,32 @@ with a trailing newline.
   addresses a neighbouring row. `UseNumber` is the one-line change, but
   `Result.Data` flows into node outputs and from there into the expression
   evaluator, so it needs that path verified rather than assumed.
+
+
+## The ambiguity class, counted across the rounds
+
+Worth stating once, because no single round can see it and each one read like
+the last site: **"a mutation whose effect is undecided must never be replayed"
+took six rounds and four distinct sites to hold.**
+
+| Round | The site |
+|---|---|
+| two | the answer LOST after the request left (transport, timeout) |
+| three | a 5xx on a mutation, and a 2xx whose body will not decode |
+| three | the engine flattened the typed error with `%s`, so the seam never saw it |
+| six | a 2xx whose outcome predicate cannot be EVALUATED |
+| six | two paths reaching the run's failure code without passing the classifier at all |
+
+Each fix was correct, tested and falsified, and each was the site the report
+named. What the tally shows is that the site is not the class: the promise
+lives wherever a failure becomes a code, and that is a set you enumerate by
+grep, not by fixing what was reported. The one measure that would have closed
+it earlier is the one the corpus already prescribes — ask "who ELSE turns a
+failure into a classification?" and answer with a grep of the constructors,
+before declaring the round done.
+
+The composition test (`TestAnUndecidedMutationParksTheRunForAnOperator`) exists
+for the same reason: both ENDS of the chain had tests through five rounds while
+the middle — the engine actually persisting the classified code — had none, and
+a sibling helper one refactor away writes `EXECUTION_FAILED`, which is on the
+auto-resume allow-list.
