@@ -112,48 +112,119 @@ func TestSettledFloor_WalksPastTheBranchStartNode(t *testing.T) {
 	}
 }
 
-// settledEdgesInto reads the edges the invocation LAUNCHED, never the ones
-// the graph declares: an llm router in multi-select mode starts a subset,
-// and the unlaunched sibling's downstream edge is a foreign edge.
-func TestSettledEdgesInto_OnlyWalksTheLaunchedEdges(t *testing.T) {
+// Every exclusion the walk performs gets a source that is reachable ONLY
+// through it, so removing that exclusion changes the result. A node the walk
+// would reach anyway proves nothing about the guard that was supposed to
+// block it.
+func TestSettledEdgesInto_EachExclusionHasItsOwnWitness(t *testing.T) {
+	node := func(id string) ir.Node { return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}} }
 	wf := &ir.Workflow{
 		Name: "settled_provenance", Entry: "entry",
 		Nodes: map[string]ir.Node{
 			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
-			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
-			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
-			"c":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
-			"join":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}},
+			"a":      node("a"), "b": node("b"), "unlaunched": node("unlaunched"),
+			"live": node("live"), "taken": node("taken"), "rejected": node("rejected"),
+			"behind_bounded": node("behind_bounded"), "looper": node("looper"),
+			"after": node("after"), "past_the_join": node("past_the_join"),
+			"join": node("join"),
 		},
 		Edges: []*ir.Edge{
 			{From: "router", To: "a"},
 			{From: "router", To: "b"},
-			{From: "router", To: "c"},
+			{From: "router", To: "unlaunched"},
+			{From: "router", To: "live"},
 			{From: "a", To: "join"},
 			{From: "b", To: "join"},
-			{From: "c", To: "join"},
-			{From: "join", To: "a", LoopName: "retry"},
-			{From: "join", To: "join", LoopName: "retry"},
+			// Witness 1 — provenance: reachable only from the branch this
+			// invocation did NOT launch.
+			{From: "unlaunched", To: "join"},
+			// Witness 2 — routing: `live` ran and took `taken`; `rejected`
+			// is reachable only through the edge routing turned down.
+			{From: "live", To: "taken", Condition: "ok"},
+			{From: "live", To: "rejected", IsElse: true},
+			{From: "rejected", To: "join"},
+			{From: "taken", To: "join"},
+			// Witness 3 — bounded edges are not walked: `behind_bounded` sits
+			// behind one, and its own edge into the join is ordinary.
+			{From: "a", To: "behind_bounded", LoopName: "inner"},
+			{From: "behind_bounded", To: "join"},
+			// Witness 4 — the walk stops AT the join: `past_the_join` is
+			// reachable only by continuing through it.
+			{From: "join", To: "after"},
+			{From: "after", To: "past_the_join"},
+			{From: "past_the_join", To: "join"},
+			// Witness 5 — a bounded edge INTO the join is never collected.
+			// Its source has to be reachable by an ORDINARY edge, or the
+			// stop-at-join guard excludes it first and the collect filter
+			// is never asked.
+			{From: "b", To: "looper"},
+			{From: "looper", To: "join", LoopName: "retry"},
 		},
 	}
-	launched := []*ir.Edge{wf.Edges[0], wf.Edges[1]}
-	got := settledEdgesInto(wf, launched, "join")
+	launched := []*ir.Edge{wf.Edges[0], wf.Edges[1], wf.Edges[3]}
+	// `live` ran and routed to `taken`, which ran too. Everything else in
+	// this invocation produced nothing — which is what puts `a` and `b` in
+	// the floor and keeps `taken` out.
+	ev := invocationEvidence{
+		ran: map[string]bool{"live": true, "taken": true},
+		chosen: map[string][]store.IncomingEdge{
+			"taken": {incomingFromEdge(wf.Edges[7])},
+			"join":  {incomingFromEdge(wf.Edges[10])},
+		},
+	}
+	got := settledEdgesInto(wf, launched, "join", ev)
 
 	froms := map[string]bool{}
 	for _, in := range got {
 		froms[in.From] = true
-		if in.LoopName != "" || in.ForeachName != "" {
-			t.Fatalf("a bounded-iteration edge entered the floor: %+v — a back-edge is a per-iteration overlay, not a stabilized forward pass", in)
+	}
+	for _, tc := range []struct{ from, why string }{
+		{"unlaunched", "provenance read the DECLARED edges instead of the launched ones"},
+		{"rejected", "the walk crossed an edge routing turned down, so a node that never ran reached the join (#484)"},
+		{"behind_bounded", "the walk crossed a bounded-iteration edge, which is a per-iteration overlay and not a stabilized forward pass (Rae4900)"},
+		{"past_the_join", "the walk expanded PAST the join and came back into it from downstream"},
+		{"looper", "a bounded-iteration edge into the join was collected"},
+		{"after", "the walk expanded past the join through its own outgoing edge"},
+		{"taken", "a source that RAN was collected; its edges are routing's recorded selection to apply"},
+	} {
+		if froms[tc.from] {
+			t.Errorf("floor contains %s -> join: %s (floor = %+v)", tc.from, tc.why, got)
 		}
 	}
 	if !froms["a"] || !froms["b"] {
-		t.Fatalf("floor = %+v, want the launched branches' edges into the join", got)
+		t.Fatalf("floor = %+v, want the launched branches' own edges into the join", got)
 	}
-	if froms["c"] {
-		t.Fatalf("floor = %+v: the unlaunched branch's edge was settled — provenance read the DECLARED edges, not the launched ones", got)
+}
+
+// A resumed branch re-executes the node its durable cursor recorded, not the
+// one the current graph's template edge names. An edited `fan_out_each`
+// therefore runs the OLD start node while the declaration points at a new
+// one, and provenance read from the declaration walks a branch this
+// invocation is not running.
+func TestSettledEdgesInto_RecordedStartNodesOutrankTheDeclaredTemplate(t *testing.T) {
+	node := func(id string) ir.Node { return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}} }
+	wf := &ir.Workflow{
+		Name: "settled_edited_template", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"dispatch":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach},
+			"old_handle": node("old_handle"), "new_handle": node("new_handle"),
+			"collect": node("collect"),
+		},
+		Edges: []*ir.Edge{
+			// The edit re-pointed the template; both collector edges remain.
+			{From: "dispatch", To: "new_handle"},
+			{From: "old_handle", To: "collect", With: []*ir.DataMapping{settledLiteral("route", "old")}},
+			{From: "new_handle", To: "collect", With: []*ir.DataMapping{settledLiteral("route", "new")}},
+		},
 	}
-	if froms["join"] {
-		t.Fatalf("floor = %+v: the walk expanded past the join and came back through the cycle", got)
+	ev := invocationEvidence{
+		ran: map[string]bool{}, chosen: map[string][]store.IncomingEdge{},
+		entered: []string{"old_handle"},
+	}
+	got := settledEdgesInto(wf, []*ir.Edge{wf.Edges[0]}, "collect", ev)
+
+	if len(got) != 1 || got[0].From != "old_handle" {
+		t.Fatalf("floor = %+v, want old_handle -> collect — the cursor says the branch is running `old_handle`, so that is the branch whose edges settled", got)
 	}
 }
 
@@ -176,6 +247,121 @@ func TestSettledFloor_LiveSourceExclusiveSiblingsStayFiltered(t *testing.T) {
 	}
 	if got["verdict"] != "from-when" {
 		t.Fatalf("verdict = %v, want %q — routing chose the `when` edge", got["verdict"], "from-when")
+	}
+}
+
+// The walk follows the graph, so it will happily cross an edge ROUTING
+// TURNED DOWN and reach the join through a node that never executed. That
+// node produced no output, so an eligibility rule reading output-presence
+// admits it — #484 reopened through the back door.
+func TestSettledFloor_NeverWalksThroughARejectedRoute(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "settled_rejected_route", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"gate":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gate"}},
+			"unchosen": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "unchosen"}},
+			"b":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"join":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitBestEffort},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "gate"},
+			{From: "gate", To: "join", Condition: "ok", With: []*ir.DataMapping{settledLiteral("verdict", "from-when")}},
+			{From: "gate", To: "unchosen", IsElse: true},
+			{From: "unchosen", To: "join", With: []*ir.DataMapping{settledLiteral("escalate", "yes")}},
+			{From: "b", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+
+	got := runSettledFanOut(t, wf, "run-559-rejected-route", map[string]func() (map[string]any, error){
+		"a":    func() (map[string]any, error) { return map[string]any{"done": true}, nil },
+		"gate": func() (map[string]any, error) { return map[string]any{"ok": true}, nil },
+		"unchosen": func() (map[string]any, error) {
+			t.Error("`unchosen` must never execute — routing took the `when ok` edge")
+			return nil, errors.New("unreachable")
+		},
+		"b": func() (map[string]any, error) { return nil, errors.New("fail B") },
+	}, "join")
+
+	if v, ok := got["escalate"]; ok {
+		t.Fatalf("escalate = %v — the floor walked THROUGH the edge routing turned down and applied the mapping of a node that never ran (#484)", v)
+	}
+	if got["verdict"] != "from-when" || got["note"] != "n" {
+		t.Fatalf("input = %v — pruning the rejected route must not cost the routes that WERE taken", got)
+	}
+}
+
+// "Absent from the trunk's outputs" is not "never ran": processConvergence
+// merges only the successful branches and never removes what an EARLIER
+// invocation left for a branch that failed this time. Anchoring the floor on
+// the trunk therefore rejects the very branch it exists to serve, while the
+// ordinary pass rejects it too for not being in this visit's selection.
+func TestSettledFloor_StaleOutputFromAnEarlierInvocationIsNotEvidenceItRan(t *testing.T) {
+	wf := &ir.Workflow{
+		Name: "settled_stale_output", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"join":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitBestEffort},
+			"gate":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gate"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "join"},
+			{From: "b", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "join", To: "gate"},
+			{From: "gate", To: "router", LoopName: "retry", Condition: "again"},
+			{From: "gate", To: "done", IsElse: true},
+		},
+		Loops: map[string]*ir.Loop{
+			"retry": {Name: "retry", MaxIterations: 3, Entries: map[string]bool{"router": true}, Body: map[string]bool{"router": true, "a": true, "b": true, "join": true, "gate": true}},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Foreaches: map[string]*ir.Foreach{},
+	}
+
+	var visits []map[string]any
+	pass := 0
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) { return settledEntryOutput(), nil })
+	exec.on("a", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		if pass == 0 {
+			return map[string]any{"ok": true}, nil
+		}
+		return nil, errors.New("b fails on the second invocation")
+	})
+	exec.on("join", func(input map[string]any) (map[string]any, error) {
+		visits = append(visits, input)
+		return map[string]any{}, nil
+	})
+	exec.on("gate", func(_ map[string]any) (map[string]any, error) {
+		pass++
+		return map[string]any{"again": pass < 2}, nil
+	})
+
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "run-559-stale", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(visits) < 2 {
+		t.Fatalf("the join ran %d time(s), want 2 — the fan-out was not re-invoked", len(visits))
+	}
+	if visits[1]["note"] != "n" {
+		t.Fatalf("second visit = %v — `b` failed THIS invocation, but its output from the previous one made it look alive, so its parent-sourced mapping was dropped by both the floor and the ordinary pass", visits[1])
 	}
 }
 
@@ -317,6 +503,118 @@ func TestSettledFloor_SurvivesLoopReentryAndYieldsToTheBackEdge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// It is a FLOOR, and it resolves in the edge's own namespace
+// ---------------------------------------------------------------------------
+
+// A live edge and a floor edge writing the same key: the floor is applied
+// before both merge passes, so the live value wins. Moving the floor between
+// the passes would leave every other assertion in this file green.
+func TestSettledFloor_LiveEdgeOutranksTheFloorOnASharedKey(t *testing.T) {
+	wf := settledSharedKeyWorkflow()
+	got := runSettledFanOut(t, wf, "run-559-collision", map[string]func() (map[string]any, error){
+		"a": func() (map[string]any, error) { return nil, errors.New("fail A") },
+		"b": func() (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	}, "join")
+
+	if got["shared"] != "from-live" {
+		t.Fatalf("shared = %v, want %q — the floor outranked a live edge; it is a base under both passes, not one more edge in them", got["shared"], "from-live")
+	}
+}
+
+// `{{input.x}}` on an edge is the SOURCE NODE'S output, and a source that
+// never ran has none. Resolving a floor edge against the caller's scope would
+// silently promote the run-level launch payload into that namespace — the
+// coincidence #479 removed.
+func TestSettledFloor_InputRefsDoNotFallBackToTheRunPayload(t *testing.T) {
+	wf := settledSharedKeyWorkflow()
+	for _, e := range wf.Edges {
+		if e.From == "a" && e.To == "join" {
+			e.With = append(e.With, &ir.DataMapping{
+				Key:  "sneaked",
+				Refs: []*ir.Ref{{Kind: ir.RefInput, Path: []string{"leak"}, Raw: "{{input.leak}}"}},
+				Raw:  "{{input.leak}}",
+			})
+		}
+	}
+	wf.Vars["leak"] = &ir.Var{Name: "leak", Type: ir.VarString}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) { return settledEntryOutput(), nil })
+	exec.on("a", func(_ map[string]any) (map[string]any, error) { return nil, errors.New("fail A") })
+	exec.on("b", func(_ map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	var got map[string]any
+	exec.on("join", func(input map[string]any) (map[string]any, error) {
+		got = input
+		return map[string]any{}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "run-559-ns", map[string]any{"leak": "run-level payload"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	v, present := got["sneaked"]
+	if !present {
+		t.Fatalf("input = %v — the key must exist with an empty value, not vanish", got)
+	}
+	if v != nil {
+		t.Fatalf("sneaked = %#v — {{input.leak}} on a floor edge read the RUN-LEVEL payload; that namespace is the source node's output, and this source produced none (#479)", v)
+	}
+}
+
+// A reference that resolves to nil is still a VALID mapping: the field
+// exists, its value is empty. Dropping the key is what leaves
+// `{{input.<key>}}` unresolved in a downstream prompt.
+func TestSettledFloor_KeepsTheKeyOfANilValuedMapping(t *testing.T) {
+	wf := settledSharedKeyWorkflow()
+	for _, e := range wf.Edges {
+		if e.From == "a" && e.To == "join" {
+			e.With = append(e.With, settledRef("dead_branch_review", "a", "review"))
+		}
+	}
+	got := runSettledFanOut(t, wf, "run-559-nil-key", map[string]func() (map[string]any, error){
+		"a": func() (map[string]any, error) { return nil, errors.New("fail A") },
+		"b": func() (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	}, "join")
+
+	v, present := got["dead_branch_review"]
+	if !present {
+		t.Fatalf("input = %v — a mapping reading the dead branch must keep its key with an empty value; dropping it is what surfaces template syntax to the model", got)
+	}
+	if v != nil {
+		t.Fatalf("dead_branch_review = %#v, want nil — the branch produced nothing", v)
+	}
+}
+
+// A nested fan-out settles its floor on the BRANCH runState, which is aliased
+// onto the branch result and persisted on the branch cursor. A lazily created
+// map would replace the alias instead of writing through it, and the floor
+// would never reach the checkpoint.
+func TestSettledFloor_BranchCursorCarriesANestedFloor(t *testing.T) {
+	parent := &runState{
+		outputs:           map[string]map[string]any{"entry": {"ok": true}},
+		artifacts:         map[string]map[string]any{},
+		artifactOwners:    map[string]string{},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{},
+		artifactVersions:  map[string]int{},
+		loopCounters:      map[string]int{},
+	}
+	result := initBranchResult(parent, "branch-x", nil)
+	local := newBranchRunState(parent, nil, result)
+
+	local.setSettledFloor("inner_join", []store.IncomingEdge{{From: "dead", To: "inner_join"}})
+	if len(result.settledIncoming["inner_join"]) != 1 {
+		t.Fatalf("branch result floor = %+v — setSettledFloor replaced the alias instead of writing through it", result.settledIncoming)
+	}
+
+	cp := branchCheckpointFromState(local, result, "inner_join", false)
+	if len(cp.SettledIncoming["inner_join"]) != 1 {
+		t.Fatalf("branch cursor = %+v — a nested floor does not survive a branch pause", cp.SettledIncoming)
+	}
+	revived := initBranchResult(parent, "branch-x", cp)
+	if len(revived.settledIncoming["inner_join"]) != 1 || revived.settledIncoming["inner_join"][0].From != "dead" {
+		t.Fatalf("revived branch floor = %+v — the cursor was written but never read back", revived.settledIncoming)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The artifact contract sees exactly what the resolver applies
 // ---------------------------------------------------------------------------
 
@@ -355,6 +653,121 @@ func TestSettledFloor_ArtifactDependencyEntersTheJoinsContract(t *testing.T) {
 	contract := eng.artifactContractFor("join", join, 0, rs)
 	if len(contract.Dependencies) != 1 || contract.Dependencies[0].LogicalRef != "plan" {
 		t.Fatalf("contract dependencies = %+v, want exactly the settled edge's artifact (%q); the foreign edge's %q must stay out", contract.Dependencies, "plan", "notes")
+	}
+}
+
+// A key the conflict rule refused to apply is not a dependency: the node
+// never received it. Recording it anyway makes a later resume re-validate an
+// artifact nobody consumed, and refuse over its absence.
+func TestSettledFloor_ADiscardedKeyIsNotADependency(t *testing.T) {
+	whenEdge := &ir.Edge{From: "dead", To: "join", Condition: "ok", With: []*ir.DataMapping{{
+		Key: "choice", Raw: "{{artifacts.plan}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}}}
+	elseEdge := &ir.Edge{From: "dead", To: "join", IsElse: true, With: []*ir.DataMapping{{
+		Key: "choice", Raw: "{{artifacts.notes}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"notes"}}},
+	}}}
+	join := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "join"}, Publish: "report"}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"noter":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "noter"}, Publish: "notes"},
+		"dead":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dead"}},
+		"join":    join,
+	}, Edges: []*ir.Edge{whenEdge, elseEdge}}, tmpStore(t), newStubExecutor())
+	rs := &runState{
+		outputs: map[string]map[string]any{},
+		// Distinct bodies, or the two alternatives would genuinely AGREE and
+		// the key would rightly be applied — the fixture has to make them
+		// disagree for the discard to be what is under test.
+		artifacts:        map[string]map[string]any{"plan": {"title": "ship"}, "notes": {"title": "park"}},
+		artifactVersions: map[string]int{"planner": 1, "noter": 1},
+		artifactRevisions: map[string]store.ArtifactRevisionRef{
+			"plan":  {NodeID: "planner", Version: 0},
+			"notes": {NodeID: "noter", Version: 0},
+		},
+		settledIncoming: map[string][]store.IncomingEdge{
+			"join": {incomingFromEdge(whenEdge), incomingFromEdge(elseEdge)},
+		},
+	}
+
+	if got := eng.buildNodeInputRS("join", rs.scope()); len(got) != 0 {
+		t.Fatalf("input = %v — the two alternatives disagree on `choice`, so it must be unset", got)
+	}
+	contract := eng.artifactContractFor("join", join, 0, rs)
+	if len(contract.Dependencies) != 0 {
+		t.Fatalf("contract dependencies = %+v — `choice` never reached the node's input, so neither artifact is a dependency; a required one is re-validated on resume and can refuse it", contract.Dependencies)
+	}
+}
+
+// A human collector resumes through its own path, which rebuilds the contract
+// state by hand. Handing it the selection alone publishes an approval whose
+// contract omits the artifact the floor actually fed it.
+func TestSettledFloor_HumanCollectorPublishesItsFloorDependency(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "human-floor", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	human := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "approve"}, Publish: "approval"}
+	// `dead` never ran: the branch that would have carried this edge failed,
+	// which is exactly why the edge is on the floor rather than the selection.
+	edge := &ir.Edge{From: "dead", To: "approve", With: []*ir.DataMapping{{
+		Key: "plan", Raw: "{{artifacts.plan}}",
+		Refs: []*ir.Ref{{Kind: ir.RefArtifacts, Path: []string{"plan"}}},
+	}}}
+	eng := New(&ir.Workflow{Nodes: map[string]ir.Node{
+		"planner": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "planner"}, Publish: "plan"},
+		"dead":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dead"}},
+		"approve": human,
+	}, Edges: []*ir.Edge{edge}}, s, newStubExecutor())
+
+	if _, err := eng.materializeHumanArtifact(
+		ctx, "human-floor", "approve", map[string]any{"approved": true},
+		map[string]int{"planner": 1},
+		map[string]map[string]any{"planner": {"ok": true}},
+		map[string]map[string]any{"plan": {"ok": true}},
+		map[string]store.ArtifactRevisionRef{"plan": {NodeID: "planner", Version: 0}},
+		incomingState{settled: map[string][]store.IncomingEdge{"approve": {incomingFromEdge(edge)}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := s.LoadArtifact(ctx, "human-floor", "approve", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Contract == nil || len(artifact.Contract.Dependencies) != 1 || artifact.Contract.Dependencies[0].NodeID != "planner" {
+		t.Fatalf("human artifact contract = %+v — the collector consumed {{artifacts.plan}} through the floor, so its published approval depends on it", artifact.Contract)
+	}
+}
+
+// Two alternatives carrying the SAME template agree by construction. Reading
+// a moving namespace twice and comparing the two reads invents a
+// disagreement, and the key is dropped from a node that should have had it.
+func TestSettledFloor_IdenticalTemplatesDoNotDisagreeOverAMovingClock(t *testing.T) {
+	elapsed := func(key string) *ir.DataMapping {
+		return &ir.DataMapping{
+			Key:  key,
+			Refs: []*ir.Ref{{Kind: ir.RefRun, Path: []string{"elapsed_seconds"}, Raw: "{{run.elapsed_seconds}}"}},
+			Raw:  "{{run.elapsed_seconds}}",
+		}
+	}
+	wf := settledSharedKeyWorkflow()
+	for _, e := range wf.Edges {
+		if e.From == "a" && e.To == "join" {
+			e.With = []*ir.DataMapping{elapsed("started_at"), settledLiteral("shared", "from-floor")}
+		}
+	}
+	// The same source's `else` alternative carries the identical mapping.
+	wf.Edges = append(wf.Edges, &ir.Edge{From: "a", To: "join", IsElse: true, With: []*ir.DataMapping{elapsed("started_at")}})
+
+	got := runSettledFanOut(t, wf, "run-559-clock", map[string]func() (map[string]any, error){
+		"a": func() (map[string]any, error) { return nil, errors.New("fail A") },
+		"b": func() (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	}, "join")
+
+	if _, present := got["started_at"]; !present {
+		t.Fatalf("input = %v — both alternatives carry the IDENTICAL template, so they cannot disagree; only resolving it twice against a clock that moves makes them look like they do", got)
 	}
 }
 
@@ -611,6 +1024,35 @@ func settledLongBranchWorkflow() *ir.Workflow {
 			{From: "b", To: "b2"},
 			{From: "a2", To: "join", With: []*ir.DataMapping{settledRef("expected_count", "entry", "count")}},
 			{From: "b2", To: "join", With: []*ir.DataMapping{settledRef("note", "entry", "note")}},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+}
+
+// settledSharedKeyWorkflow has one dead branch and one live branch whose
+// edges into the join write the SAME key, so precedence between the floor and
+// the ordinary passes is observable.
+func settledSharedKeyWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		Name: "settled_shared_key", Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"join":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitBestEffort},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			// Declared FIRST, so a floor applied in edge order rather than as
+			// a base would still lose here; it is the PASS order that decides.
+			{From: "a", To: "join", With: []*ir.DataMapping{settledLiteral("shared", "from-floor")}},
+			{From: "b", To: "join", With: []*ir.DataMapping{settledLiteral("shared", "from-live")}},
 			{From: "join", To: "done"},
 		},
 		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{},

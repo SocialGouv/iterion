@@ -284,6 +284,13 @@ are genuinely undecided: where they agree the value applies, and where they
 disagree the key is left unset with a warning naming the node, both edges and
 the key — never picked by declaration order.
 
+**Only the branch that actually ran contributes.** What reaches the collector
+this way is read from what the invocation DID — the nodes its branches entered
+and the edges they recorded firing — never from the graph alone. A route
+routing turned down is not walked, so an `else` nobody took cannot arrive
+through a node that never executed; and a node that ran two invocations ago
+still has an output on the run, which is not evidence it ran in this one.
+
 **Which node is the collector.** A node that declares `await:` is the collector for the branches that reach it. Without the annotation, the engine elects the first node (breadth-first from the router's targets) that has more than one distinct predecessor, bounded back-edges excluded. For the router's **direct targets** — the branch heads — only predecessors inside the fan-out count (the router itself, or a node it reaches): the mono/dual topology, where a `condition` router reaches the same reviewer directly *or* through a `fan_out_all` router, gives that reviewer two predecessors, and it is still an ordinary branch head, not the collector. Below the heads every predecessor counts, including a trunk edge that bypasses the fan-out (`plan -> collect else` for the no-items case) — that bypass is what makes `collect` the implicit collector of a linear `fan_out_each` template. Declare `await:` on the intended collector rather than relying on the implicit election.
 
 Routers are fan-out sources and do not declare `await:` themselves.

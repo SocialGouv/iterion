@@ -236,6 +236,13 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		Vars:                   copyVars(parent.Checkpoint),
 		BackendName:            turn.Backend,
 		BackendSessionID:       turn.SessionID,
+		// The anchor re-executes first, so it needs the incoming state an
+		// ordinary resume would rebuild it from: which edges fired into it,
+		// and the floor a stabilized fan-out left it. Only the anchor's own
+		// entries travel — the child never re-runs what sat below it, so
+		// carrying more could only resurrect a selection nothing remakes.
+		SelectedIncoming: copySelectedIncomingFor(parent.Checkpoint, spec.NodeID),
+		SettledIncoming:  copySettledIncomingFor(parent.Checkpoint, spec.NodeID),
 	}
 	// Claw rehydration: when the turn checkpoint has a MessagesRef
 	// (i.e. the parent was running on the claw backend), load the
@@ -574,6 +581,33 @@ func copyForkArtifacts(ctx context.Context, runStore store.RunStore, parentRunID
 		}
 	}
 	return nil
+}
+
+// copySelectedIncomingFor / copySettledIncomingFor carry ONE node's incoming
+// state into the child checkpoint: the edges routing selected for it, and the
+// floor a stabilized fan-out left it. A nil result is the honest answer when
+// the parent recorded nothing — the resolver then falls back to source-output
+// presence, exactly as it would on the parent.
+func copySelectedIncomingFor(cp *store.Checkpoint, nodeID string) map[string][]store.IncomingEdge {
+	if cp == nil {
+		return nil
+	}
+	return copyIncomingFor(cp.SelectedIncoming, nodeID)
+}
+
+func copySettledIncomingFor(cp *store.Checkpoint, nodeID string) map[string][]store.IncomingEdge {
+	if cp == nil {
+		return nil
+	}
+	return copyIncomingFor(cp.SettledIncoming, nodeID)
+}
+
+func copyIncomingFor(src map[string][]store.IncomingEdge, nodeID string) map[string][]store.IncomingEdge {
+	edges := src[nodeID]
+	if len(edges) == 0 {
+		return nil
+	}
+	return map[string][]store.IncomingEdge{nodeID: append([]store.IncomingEdge(nil), edges...)}
 }
 
 func copyVars(cp *store.Checkpoint) map[string]any {

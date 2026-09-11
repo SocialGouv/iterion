@@ -152,7 +152,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		// parent output or a var would go missing too (#1113, the twin of
 		// #559's all-failed case). Settle the floor on the edges this
 		// invocation WOULD have fired.
-		rs.setSettledFloor(convergence, settledEdgesInto(e.workflow, []*ir.Edge{tmplEdge}, convergence))
+		rs.setSettledFloor(convergence, settledEdgesInto(e.workflow, []*ir.Edge{tmplEdge}, convergence, evidenceFromBranches(nil)))
 		return convergence, nil
 	}
 

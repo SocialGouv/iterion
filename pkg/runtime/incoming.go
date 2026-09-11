@@ -187,7 +187,7 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 	// Record what this invocation settled on, whichever way it went: a
 	// fresh invocation owns the floor for its join, so one that produced
 	// output must not leave the previous one's floor standing.
-	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, launched, joinNodeID))
+	rs.setSettledFloor(joinNodeID, settledEdgesInto(e.workflow, launched, joinNodeID, evidenceFromBranches(results)))
 	if len(union) == 0 {
 		// No successful branch recorded an edge into the join (every
 		// branch failed under best_effort, or the join came from the
@@ -210,6 +210,57 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 // Settled floor — the edges a stabilized fan-out left with no output behind
 // ---------------------------------------------------------------------------
 
+// invocationEvidence is what a fan-out invocation actually DID: the nodes it
+// executed to completion, and the edges that fired into each node it entered.
+//
+// It is read from the branch results, the FAILED ones included, because the
+// trunk is not a witness of this: processConvergence merges only successful
+// branches' outputs and never removes what an earlier invocation left behind,
+// so "absent from rs.outputs" conflates "never ran", "ran and failed" and
+// "ran two invocations ago". Anchoring the floor on the trunk made the walk
+// resurrect a route routing had rejected, and made a partial failure lose the
+// mapping it was supposed to keep.
+type invocationEvidence struct {
+	// ran holds the nodes that produced output IN THIS INVOCATION.
+	ran map[string]bool
+	// chosen holds, per destination, the edges that actually fired into it.
+	chosen map[string][]store.IncomingEdge
+	// entered holds the nodes the branches actually STARTED at. On a resume
+	// that is the durable cursor's start node, which can differ from what
+	// the current graph's template edge names: an edited `fan_out_each`
+	// re-executes the node the cursor recorded, so reading the template
+	// would walk a branch this invocation is not running.
+	entered []string
+}
+
+// evidenceFromBranches gathers what the branches of one invocation recorded.
+// An invocation that launched nothing (an empty `fan_out_each`) yields empty
+// evidence, which is the truthful answer: no node ran, no route was rejected,
+// and the caller's declared edges are then the only provenance available.
+func evidenceFromBranches(results []*branchResult) invocationEvidence {
+	ev := invocationEvidence{ran: map[string]bool{}, chosen: map[string][]store.IncomingEdge{}}
+	seenStart := map[string]bool{}
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		for nodeID := range r.outputs {
+			ev.ran[nodeID] = true
+		}
+		for dst, edges := range r.selectedIncoming {
+			ev.chosen[dst] = append(ev.chosen[dst], edges...)
+		}
+		// Synthetic results — a DAG item skipped because its dependency
+		// failed — carry no start node. They contribute nothing here, and
+		// their siblings supply the provenance.
+		if r.startNodeID != "" && !seenStart[r.startNodeID] {
+			seenStart[r.startNodeID] = true
+			ev.entered = append(ev.entered, r.startNodeID)
+		}
+	}
+	return ev
+}
+
 // settledEdgesInto returns the edges into joinNodeID that a fan-out
 // invocation would have fired, found by walking forward from the nodes it
 // actually entered.
@@ -219,10 +270,16 @@ func (e *Engine) mergeJoinIncoming(rs *runState, joinNodeID string, results []*b
 // reading the declaration would sweep in the very foreign edge the floor
 // exists to exclude.
 //
+// The walk is ROUTING-AWARE, which is what keeps it from resurrecting a
+// rejected route: leaving a node the invocation executed, it follows only the
+// edge that node's branch recorded as firing. Leaving a node that did NOT run
+// it follows every forward edge — that is the whole point, since the node
+// that would have carried the mapping is precisely the one that died.
+//
 // Bounded-iteration edges are out of both the walk and the result. A
 // back-edge is a per-iteration overlay applied last, not part of a
 // stabilized forward pass (Rae4900).
-func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string) []store.IncomingEdge {
+func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string, ev invocationEvidence) []store.IncomingEdge {
 	if wf == nil || joinNodeID == "" || len(launched) == 0 {
 		return nil
 	}
@@ -235,11 +292,20 @@ func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string) [
 		reachable[id] = true
 		frontier = append(frontier, id)
 	}
-	for _, edge := range launched {
-		if edge == nil || edge.IsBoundedIteration() {
-			continue
+	// The nodes the branches REPORTED starting at outrank the declared ones.
+	// On a resume they are the durable cursors, and an edited template would
+	// otherwise send the walk down a branch this invocation is not running.
+	if len(ev.entered) > 0 {
+		for _, id := range ev.entered {
+			push(id)
 		}
-		push(edge.To)
+	} else {
+		for _, edge := range launched {
+			if edge == nil || edge.IsBoundedIteration() {
+				continue
+			}
+			push(edge.To)
+		}
 	}
 	// Forward closure, stopping AT the join: expanding past it could
 	// re-enter through an unrelated downstream cycle and claim edges this
@@ -254,6 +320,12 @@ func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string) [
 			if edge == nil || edge.From != node || edge.IsBoundedIteration() {
 				continue
 			}
+			if ev.ran[node] && !edgeInIncoming(edge, ev.chosen[edge.To]) {
+				// This node ran and routing did not take this edge.
+				// Walking it anyway is how an unselected `else` used to
+				// reach the join through a node that never executed (#484).
+				continue
+			}
 			push(edge.To)
 		}
 	}
@@ -263,6 +335,12 @@ func settledEdgesInto(wf *ir.Workflow, launched []*ir.Edge, joinNodeID string) [
 			continue
 		}
 		if edge.From == "" || !reachable[edge.From] {
+			continue
+		}
+		if ev.ran[edge.From] {
+			// The source executed: its edges are live, and which of them
+			// contributes is routing's recorded selection to apply, not the
+			// floor's to guess.
 			continue
 		}
 		settled = append(settled, incomingFromEdge(edge))
@@ -288,6 +366,16 @@ func (rs *runState) setSettledFloor(joinNodeID string, settled []store.IncomingE
 	rs.settledIncoming[joinNodeID] = settled
 }
 
+// incomingState is the PAIR of per-node edge sets a node's input and its
+// artifact contract are both built from. They travel together because either
+// one alone answers half the question: the selection says which live edges
+// fired, the floor says what a stabilized fan-out left behind. A contract
+// built from the selection alone omits exactly what the floor supplied.
+type incomingState struct {
+	selected map[string][]store.IncomingEdge
+	settled  map[string][]store.IncomingEdge
+}
+
 // settledFloorFor returns the floor recorded for nodeID, if any.
 func settledFloorFor(nodeID string, sc resolveScope) []store.IncomingEdge {
 	if sc.rs == nil {
@@ -301,12 +389,14 @@ func settledFloorFor(nodeID string, sc resolveScope) []store.IncomingEdge {
 // buildNodeInputRS and consumedArtifactRefs both consult it, so an edge
 // that feeds the join can never sit outside the join's artifact contract.
 //
-// Only an output-less source qualifies. An edge whose source ran is left
-// to the ordinary passes, where routing's recorded selection still decides
-// between exclusive siblings — without that clause a `when`/`else` pair
-// downstream of a live node would both contribute again (#484).
-func settledFloorEligible(edge *ir.Edge, floor []store.IncomingEdge, hasOutput bool) bool {
-	if edge == nil || len(floor) == 0 || hasOutput || edge.From == "" {
+// Membership is the whole rule. What keeps an edge out of a floor lives at
+// the moment it is SETTLED (settledEdgesInto): a source that ran contributes
+// through routing's recorded selection instead, and a route routing rejected
+// is never walked. Re-deciding that here against the trunk's outputs is what
+// made a partial failure lose its mapping — a stale output from an earlier
+// invocation reads exactly like a live one.
+func settledFloorEligible(edge *ir.Edge, floor []store.IncomingEdge) bool {
+	if edge == nil || len(floor) == 0 || edge.From == "" {
 		return false
 	}
 	if edge.IsBoundedIteration() {

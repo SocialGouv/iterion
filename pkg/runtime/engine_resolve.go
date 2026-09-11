@@ -251,28 +251,65 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 // contributes nothing and a wholly stale floor contributes nothing at all
 // (R25212d).
 func (e *Engine) applySettledFloor(nodeID string, sc resolveScope, result map[string]any) {
+	applied, conflicts := e.settledFloorMappings(nodeID, sc)
+	for _, c := range conflicts {
+		e.logger.Warn("runtime: node %s: incoming edges %s and %s are exclusive alternatives from %s, neither ran, and they disagree on %q (%v vs %v) — leaving it unset rather than picking by declaration order",
+			nodeID, c.firstEdge, c.secondEdge, c.from, c.key, c.first, c.second)
+	}
+	for _, key := range applied.order {
+		result[key] = applied.values[key]
+	}
+}
+
+// settledFloorContribution is what a node's floor actually hands it: the
+// resolved value per key, in a deterministic order, and the artifact
+// references those surviving mappings carry.
+type settledFloorContribution struct {
+	values       map[string]any
+	order        []string
+	artifactRefs map[string]bool
+}
+
+// settledFloorConflict is one key two undecided alternatives disagreed on.
+type settledFloorConflict struct {
+	from, key             string
+	firstEdge, secondEdge string
+	first, second         any
+}
+
+// settledFloorMappings resolves a node's floor into the keys it contributes
+// and the disagreements it refuses to arbitrate. THE single answer, read by
+// the resolver AND by the artifact contract: a key the node's input does not
+// carry must not appear among the artifacts the node is recorded to depend
+// on, or a later resume is refused over a value nobody consumed.
+//
+// Resolution is grouped per SOURCE, because two floor edges from one source
+// are exclusive alternatives (`when` / `else`) that routing never got to
+// decide between — the source never ran. Where they agree, the value is
+// theirs whichever would have fired; where they disagree, picking by
+// declaration order is precisely the guess #484 removed.
+func (e *Engine) settledFloorMappings(nodeID string, sc resolveScope) (settledFloorContribution, []settledFloorConflict) {
+	out := settledFloorContribution{values: map[string]any{}, artifactRefs: map[string]bool{}}
 	floor := settledFloorFor(nodeID, sc)
 	if len(floor) == 0 || e.workflow == nil {
-		return
+		return out, nil
 	}
-	// Resolve per SOURCE before writing anything: two floor edges from one
-	// source are exclusive alternatives (`when` / `else`) that routing never
-	// got to decide between, because the source never ran. Where they agree
-	// the value is theirs whichever would have fired; where they disagree,
-	// picking by declaration order is precisely the guess #484 removed.
 	type floorValue struct {
 		value    any
+		raw      string
+		refs     []*ir.Ref
 		decided  bool
 		fromEdge string
 	}
+	var conflicts []settledFloorConflict
 	sources := make([]string, 0, 2)
+	keyOrder := make(map[string][]string)
 	bySource := make(map[string]map[string]*floorValue)
 	for _, edge := range e.workflow.Edges {
 		if edge == nil || edge.To != nodeID || len(edge.With) == 0 {
 			continue
 		}
-		_, hasOutput := sc.outputs[edge.From]
-		if !settledFloorEligible(edge, floor, hasOutput) {
+		if !settledFloorEligible(edge, floor) {
 			continue
 		}
 		bucket, seen := bySource[edge.From]
@@ -291,26 +328,49 @@ func (e *Engine) applySettledFloor(nodeID string, sc resolveScope, result map[st
 		edgeScope := sc
 		edgeScope.runInputs = map[string]any{}
 		for _, dm := range edge.With {
-			val := e.resolveMapping(dm, edgeScope)
 			prev, dup := bucket[dm.Key]
+			if dup && prev.raw == dm.Raw {
+				// The same template on both alternatives IS the same
+				// mapping, whatever it resolves to. Resolving it twice and
+				// comparing would report a false disagreement for any
+				// namespace that moves between the two reads —
+				// `{{run.elapsed_seconds}}` differs on every lookup.
+				continue
+			}
+			val := e.resolveMapping(dm, edgeScope)
 			if !dup {
-				bucket[dm.Key] = &floorValue{value: val, decided: true, fromEdge: edgeLabel(edge)}
+				bucket[dm.Key] = &floorValue{value: val, raw: dm.Raw, refs: dm.Refs, decided: true, fromEdge: edgeLabel(edge)}
+				keyOrder[edge.From] = append(keyOrder[edge.From], dm.Key)
 				continue
 			}
 			if prev.decided && !reflect.DeepEqual(prev.value, val) {
 				prev.decided = false
-				e.logger.Warn("runtime: node %s: incoming edges %s and %s are exclusive alternatives from %s, neither ran, and they disagree on %q (%v vs %v) — leaving it unset rather than picking by declaration order",
-					nodeID, prev.fromEdge, edgeLabel(edge), edge.From, dm.Key, prev.value, val)
+				conflicts = append(conflicts, settledFloorConflict{
+					from: edge.From, key: dm.Key,
+					firstEdge: prev.fromEdge, secondEdge: edgeLabel(edge),
+					first: prev.value, second: val,
+				})
 			}
 		}
 	}
 	for _, from := range sources {
-		for key, v := range bySource[from] {
-			if v.decided {
-				result[key] = v.value
+		for _, key := range keyOrder[from] {
+			v := bySource[from][key]
+			if v == nil || !v.decided {
+				continue
+			}
+			if _, dup := out.values[key]; !dup {
+				out.order = append(out.order, key)
+			}
+			out.values[key] = v.value
+			for _, ref := range v.refs {
+				if ref != nil && ref.Kind == ir.RefArtifacts && len(ref.Path) > 0 {
+					out.artifactRefs[ref.Path[0]] = true
+				}
 			}
 		}
 	}
+	return out, conflicts
 }
 
 // edgeLabel renders an edge's routing shape for a diagnostic: `a -> b`,
