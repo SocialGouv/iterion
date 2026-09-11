@@ -115,17 +115,22 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		} else {
 			res, callErr = executor.Call(callCtx, pkg, op, params, cred)
 		}
+		// Counted BEFORE any exit, success or not. A walk that could not read
+		// its collection on page 18 still spent eighteen of the vendor's
+		// slots, and the FAILURE path is where an operator goes looking for
+		// them — reporting the cost only when the node succeeded left the
+		// expensive case the invisible one.
+		spent += res.Requests
 		if callErr != nil {
 			// Not a vendor answer — a local refusal or a walk that could not
 			// read its collection. Repeating cannot change it.
-			return nil, e.finishAction(node, op, res, start, callErr)
+			return nil, e.finishAction(node, op, res, start, callErr, spent)
 		}
-		spent += res.Requests
 		if res.OK() {
 			return e.actionOutput(node, op, res, items, complete, start, spent), nil
 		}
 		if attempt >= attempts || !res.Err.Retryable(op, params) {
-			return nil, e.finishAction(node, op, res, start, nil)
+			return nil, e.finishAction(node, op, res, start, nil, spent)
 		}
 		// The vendor's own Retry-After when it gave one, a small bounded
 		// backoff when it did not — and BOUNDED either way.
@@ -147,7 +152,7 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		}
 		select {
 		case <-callCtx.Done():
-			return nil, e.finishAction(node, op, res, start, callCtx.Err())
+			return nil, e.finishAction(node, op, res, start, callCtx.Err(), spent)
 		case <-time.After(wait):
 		}
 	}
@@ -244,7 +249,12 @@ func checkOperationUsable(node *ir.ToolNode, pkg *spec.Package, op spec.Operatio
 // and inventing a second convention ("the node succeeded, read `error`")
 // would let an unchecked output flow into the next node as if the call had
 // worked. Branching on a failure is what `fail`/`when` edges are for.
-func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res exec.Result, start time.Time, callErr error) error {
+// `spent` is what the VENDOR served across every attempt, and it is on the
+// message rather than only on a successful node's output: a failing node is
+// exactly where an operator looks for the rate-limit slots a retried walk
+// burned, and `actionOutput` — the only place that reported it — is never
+// reached by one.
+func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res exec.Result, start time.Time, callErr error, spent int) error {
 	// Scrubbed FIRST, before anything is emitted or wrapped: this text reaches
 	// the run's events, the tool hooks and error tracking, and that is the last
 	// point where the secret bytes are still identifiable.
@@ -256,8 +266,13 @@ func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res ex
 		err = res.Err
 	}
 	e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, "", "", time.Since(start), err)
+	// Only past one, so the common case reads as it always did.
+	cost := ""
+	if spent > 1 {
+		cost = fmt.Sprintf(" after %d requests", spent)
+	}
 	if callErr != nil {
-		return fmt.Errorf("model: tool node %q: %w", node.ID, callErr)
+		return fmt.Errorf("model: tool node %q%s: %w", node.ID, cost, callErr)
 	}
 	if res.Err == nil {
 		return nil
@@ -271,7 +286,7 @@ func (e *ClawExecutor) finishAction(node *ir.ToolNode, op spec.Operation, res ex
 	// bucketing an ambiguous mutation as an ordinary retryable failure. The
 	// typed error has to survive the node boundary for the no-retry guarantee
 	// to reach the one component that acts on it.
-	return fmt.Errorf("model: tool node %q: %s failed [%s]: %w", node.ID, op.ID, res.Err.Class, res.Err)
+	return fmt.Errorf("model: tool node %q: %s failed%s [%s]: %w", node.ID, op.ID, cost, res.Err.Class, res.Err)
 }
 
 // scrubTypedActionError removes what the RUN materialised from a typed

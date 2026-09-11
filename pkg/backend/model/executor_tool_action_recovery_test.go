@@ -911,3 +911,47 @@ func TestARetriedNodeReportsWhatTheVendorActuallyServed(t *testing.T) {
 		t.Errorf("requests = %v, want 3 — every attempt the vendor actually served", got)
 	}
 }
+
+// TestAFailedNodeAlsoReportsWhatTheVendorServed.
+//
+// The count above was reported by `actionOutput`, which only a SUCCEEDING node
+// reaches. So the case an operator actually investigates — a node that
+// exhausted its retries against a rate limit — reported nothing at all, while
+// having spent the most slots of any shape. The cost belongs on the failure
+// too, and the error message is where a failed node's story is read.
+func TestAFailedNodeAlsoReportsWhatTheVendorServed(t *testing.T) {
+	var served int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		served++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"slow down"}`))
+	}))
+	defer srv.Close()
+
+	// A READ: a 429 is retryable for any effect, but keeping it a read means
+	// the assertion is about the accounting and not about the safety rule.
+	pkg, op := mutatingPackage(srv.URL)
+	op.HTTP.Method, op.HTTP.RequestBody, op.Effect = "GET", "", spec.EffectRead
+	op.Params, op.Results = nil, []spec.ResultCase{{Status: 200}}
+	pkg.Ops[0].Operations[0] = op
+
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "list"},
+		Action:      "probe.issue.comment",
+		Connection:  "main",
+		RetryPolicy: "2",
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	_, err := e.Execute(context.Background(), node, nil)
+	if err == nil {
+		t.Fatal("every attempt was refused, so the node must fail")
+	}
+	if served != 3 {
+		t.Fatalf("the vendor served %d requests, want 3 (the first attempt plus `retry: 2`)", served)
+	}
+	if !strings.Contains(err.Error(), "after 3 requests") {
+		t.Errorf("error = %v, want it to name the 3 requests the vendor served — a failing node is where those slots are looked for", err)
+	}
+}
