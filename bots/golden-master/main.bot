@@ -109,14 +109,20 @@ prompt campaign_user:
   A sealed set lives only as long as the sealed pile, which is keyed on a
   workspace that dies with the run; a committed one has a durable home, and the
   gate that owns it — a LATER one, never this one — opts in with
-  `"seal_committed": true`. No mutation of the second set may repeat one of the
-  first: identity is the `apply.sh` and `revert.sh` bytes plus the declared
-  `targets`, so a rename is not a fresh draw, and a repeat turns that later gate
-  red. You are finished on this point when ONE selfcheck report, taken after the
-  commit, reads `holdout_awaiting_gate: true` AND a non-zero `holdout_total` —
-  the first says the successor is waiting, the second that your own set reached
-  the sealed pile. The held-out SCORE is withheld there on purpose; do not go
-  looking for it.
+  `"seal_committed": true`. Do NOT write that flag yourself, not even in
+  advance: it is read from the config at EVERY gate, this run's included, and a
+  gate that reads it seals the committed set on the spot — both sets scored and
+  spent in one run, the magazine empty again, and tracked files moved out from
+  under git as uncommitted deletions a finalize will not merge.
+
+  No mutation of the second set may repeat one of the first: identity is the
+  `apply.sh` and `revert.sh` bytes plus the declared `targets`, so a rename is
+  not a fresh draw, and a repeat turns that later gate red. You are finished on
+  this point when ONE selfcheck report, taken after the commit, reads
+  `holdout_awaiting_gate: true` AND a non-zero `holdout_total` — the first says
+  the successor is waiting, the second that your own set reached the sealed
+  pile. The held-out SCORE is withheld there on purpose; do not go looking
+  for it.
 
   Neither set is yours to run. The first has left the tree; the second is
   readable only because it must WAIT, and applying it here — or hardening the
