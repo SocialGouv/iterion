@@ -103,7 +103,10 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if !filepath.IsAbs(childPath) {
 			childPath = filepath.Join(base, childPath)
 		}
-		childWf, hash, err := CompileWorkflowWithHash(childPath)
+		// The child compiles the way every path does: a bundle's main.bot
+		// promoted to its bundle, prompts/*.md in scope, and the engine gets
+		// the same handle for its skills.
+		childWf, hash, childBundle, err := CompileWorkflowPath(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -172,7 +175,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			ExecutionContext: childContextSeed,
 		}, childWf, hash, s.executionContextPolicy, s.workDir)
 		childContext.LaunchSurface = "runview-subbot"
-		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
+		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{}, childBundle)
 		// The child works in the parent's EFFECTIVE workdir (its worktree when
 		// it swapped to one), not the service's repo root: that is the tree
 		// the parent's sandbox mounts and the parent's gate judges.

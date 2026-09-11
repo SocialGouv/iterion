@@ -63,9 +63,15 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 			return wf, hash, bundleHandle.IterPath, bundleHandle, cleanup, nil
 		}
 	}
-	wf, hash, compileErr := runview.CompileWorkflowWithHash(iterFile)
+	// A bare <bundle>/main.bot named by --file is promoted to its bundle the
+	// way every other surface promotes it, so the hash compared against the
+	// run's is the bundle's, and the engine gets the handle for its skills.
+	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile)
 	if compileErr != nil {
 		return nil, "", iterFile, nil, cleanup, compileErr
+	}
+	if promoted != nil {
+		return wf, hash, promoted.IterPath, promoted, cleanup, nil
 	}
 	return wf, hash, iterFile, nil, cleanup, nil
 }

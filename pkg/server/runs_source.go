@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -239,4 +240,32 @@ func (s *Server) embeddedRecipeCacheDir() string {
 		storeDir = filepath.Join(os.TempDir(), "iterion-embedded-recipes")
 	}
 	return filepath.Join(storeDir, "embedded-recipes")
+}
+
+// launchBundleDirFor is the bundle directory a file launch of
+// `<bundle>/main.bot` compiles against, or "" for a loose file. It reads
+// the path the OPERATOR named, not the one resolveWorkflowPath returns:
+// the studio's file picker sends the file's source inline, and the
+// materialised copy is `<store>/inline-sources/<hash>-main.bot`, a name
+// the promotion (bundle.DirForMainBot) does not recognise. A path the
+// server cannot place — cloud mode, a path outside the workdir — is a
+// label with no bundle behind it, so "" without an error: the launch
+// itself decides whether that path is acceptable. A bundle that does not
+// open is an error, the same refusal the CLI gives.
+func (s *Server) launchBundleDirFor(filePath string) (string, error) {
+	if filePath == "" {
+		return "", nil
+	}
+	abs, err := s.safePath(filePath)
+	if err != nil {
+		return "", nil
+	}
+	b, err := runview.ResolveBundleFromFilePath(abs)
+	if err != nil {
+		return "", err
+	}
+	if b == nil {
+		return "", nil
+	}
+	return b.Dir, nil
 }

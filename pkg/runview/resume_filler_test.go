@@ -34,7 +34,7 @@ func TestResume_BareSpecInvokesSourceFiller(t *testing.T) {
 
 	// The run's hash matches the STORED source; the persisted FilePath
 	// deliberately does not exist on this "pod".
-	_, wantHash, err := compileForLaunch("", fillerBotSrc, "")
+	_, wantHash, _, err := compileForLaunch("", fillerBotSrc, "")
 	if err != nil {
 		t.Fatalf("compile stored source: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestResume_ResolvedSpecSkipsFiller(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	ctx := context.Background()
-	_, wantHash, err := compileForLaunch("", fillerBotSrc, "")
+	_, wantHash, _, err := compileForLaunch("", fillerBotSrc, "")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}

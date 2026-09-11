@@ -143,6 +143,7 @@ func (s *Spec) Validate() error {
 	if s.Shape != "" && !hasShape(s.Shape) {
 		return fmt.Errorf("botscaffold: unknown shape %q (available: %s)", s.Shape, strings.Join(Shapes(), ", "))
 	}
+	referenced := map[string]bool{}
 	if s.Shape != "" {
 		// The shape's files reference vars by name; the vars block is
 		// rendered from the Spec. A var the template needs and the Spec
@@ -154,6 +155,7 @@ func (s *Spec) Validate() error {
 		}
 		var missing []string
 		for _, name := range shapeVarRefs(s.Shape) {
+			referenced[name] = true
 			if !declared[name] {
 				missing = append(missing, name)
 			}
@@ -183,6 +185,22 @@ func (s *Spec) Validate() error {
 		if v.Default != "" {
 			if err := checkVarDefault(v.Type, v.Default); err != nil {
 				return fmt.Errorf("botscaffold: vars[%d] %q: %w", i, v.Name, err)
+			}
+		}
+	}
+	// The shape's expressions are TYPED against its var declarations —
+	// `vars.max_passes >= 1` compares a number — and the form lets a row's
+	// type be edited. A var the shape references keeps the type its
+	// template declares; a change is refused here by name rather than met
+	// by the entry compute at runtime ("cannot compare string >= int64").
+	// A var the operator added is theirs to type. After the per-row checks,
+	// so an unknown type is still reported as such.
+	if s.Shape != "" {
+		if wantType := shapeVarTypes(s.Shape); wantType != nil {
+			for _, v := range s.Vars {
+				if want, ok := wantType[v.Name]; ok && referenced[v.Name] && want != v.Type {
+					return fmt.Errorf("botscaffold: shape %q declares %s as %s and its expressions are typed against that; keep the type and change the default", s.Shape, v.Name, want)
+				}
 			}
 		}
 	}

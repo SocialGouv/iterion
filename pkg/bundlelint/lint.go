@@ -57,6 +57,13 @@ const (
 	// DiagFrontmatterCapsOverride: the main.bot `## ---` frontmatter declares
 	// capabilities that silently override (and differ from) the manifest's.
 	DiagFrontmatterCapsOverride Code = "C221"
+	// DiagBundleUnopenable: the document is a bundle's main.bot (a
+	// manifest.yaml or a skills/ beside it) but the bundle does not open —
+	// its manifest does not decode — so the document was validated ALONE,
+	// without the bundle's prompts/*.md, presets and skills. The CLI refuses
+	// the same state outright; the editor warns, since a manifest mid-edit is
+	// a normal state there and a refusal would freeze its diagnostics.
+	DiagBundleUnopenable Code = "C222"
 
 	// DiagBundleNameTripleMismatch: the bundle carries per-bot memory — a node
 	// with `memory: visibility: bot`, or `auto_memory: on` — but the manifest

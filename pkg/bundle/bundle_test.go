@@ -332,6 +332,9 @@ func TestDirForMainBot(t *testing.T) {
 	}{
 		{"skills marker", "b/main.bot", []string{DirSkills}, true},
 		{"manifest marker", "b/main.bot", []string{ManifestFile}, true},
+		// The loader reads either spelling; a marker it reads but the
+		// promotion ignored gave the file and directory forms two verdicts.
+		{"manifest .yml marker", "b/main.bot", []string{ManifestFileAlt}, true},
 		{"both markers", "b/main.bot", []string{DirSkills, ManifestFile}, true},
 		{"no marker", "b/main.bot", nil, false},
 		{"not main.bot", "b/other.bot", []string{DirSkills, ManifestFile}, false},
@@ -376,8 +379,8 @@ func TestDirForMainBot(t *testing.T) {
 // directory that no longer exists.
 func TestDirForMainBot_MarkersAreLayoutConstants(t *testing.T) {
 	for _, m := range dirMarkers {
-		if m != DirSkills && m != ManifestFile {
-			t.Errorf("marker %q is neither DirSkills nor ManifestFile", m)
+		if m != DirSkills && m != ManifestFile && m != ManifestFileAlt {
+			t.Errorf("marker %q is none of DirSkills, ManifestFile, ManifestFileAlt", m)
 		}
 	}
 }

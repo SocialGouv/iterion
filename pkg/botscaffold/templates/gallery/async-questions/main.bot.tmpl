@@ -29,12 +29,13 @@ prompt draft_user:
   do without the answers.
 
 prompt final_user:
-  Draft:
+  ## Draft
   {{outputs.draft.draft}}
 
-  Operator answers:
+  ## Operator answers
+  ```
   {{outputs.gate.answers}}
-
+  ```
   Resolve every placeholder and return the final result.
 
 ## The working set is DECLARED here because `interaction:` grants the

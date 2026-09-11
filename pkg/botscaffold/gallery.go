@@ -32,6 +32,23 @@ func TemplateByID(id string) (Template, bool) {
 	return Template{}, false
 }
 
+// shapeVarTypes is the type each var of the template carrying shape
+// declares, by name — the contract the shape's expressions are typed
+// against — or nil when no template carries the shape.
+func shapeVarTypes(shape string) map[string]string {
+	for _, t := range Templates() {
+		if t.Spec.Shape != shape {
+			continue
+		}
+		out := make(map[string]string, len(t.Spec.Vars))
+		for _, v := range t.Spec.Vars {
+			out[v.Name] = v.Type
+		}
+		return out
+	}
+	return nil
+}
+
 // TemplateIDs lists the gallery's entry IDs, in display order.
 func TemplateIDs() []string {
 	tpls := Templates()

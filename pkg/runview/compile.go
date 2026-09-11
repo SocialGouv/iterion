@@ -121,45 +121,66 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // so a stored bot's prompt references validate and hash identically. A
 // bundle dir that fails to open is an explicit error, never a silent
 // fall-through to a prompt-less compile.
-func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, error) {
+//
+// A path alone is compiled the way every path-driven surface compiles it
+// (CompileWorkflowPath): a bundle's main.bot is promoted to its bundle —
+// prompts/*.md in scope, the bundle's hash, the handle for the engine.
+// This is the compile behind the dispatcher's service path and the trigger
+// launcher; a bare compile here failed a bundle whose prompts live in
+// prompts/ with C003 on those surfaces and hashed it unlike the CLI. The
+// studio's file picker sends the file's SOURCE inline, materialised under
+// the store as `<hash>-main.bot` — a name no promotion recognises — so it
+// reaches the same bundle through bundleDir, stamped by the server from
+// the path the operator named. The bundle the compile used is returned
+// (nil for inline source without one, or a loose file) so the launch
+// hands the engine the same handle it compiled against.
+func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, *bundle.Bundle, error) {
 	if bundleDir != "" {
 		b, err := bundle.OpenDir(bundleDir)
 		if err != nil {
-			return nil, "", fmt.Errorf("open stored bot bundle: %w", err)
+			return nil, "", nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		return compileWith(path, source, true, b)
+		wf, hash, err := compileWith(path, source, true, b)
+		return wf, hash, b, err
 	}
 	if source != "" {
-		return CompileWorkflowFromSource(path, source)
+		wf, hash, err := CompileWorkflowFromSource(path, source)
+		return wf, hash, nil, err
 	}
-	return CompileWorkflowWithHash(path)
+	return CompileWorkflowPath(path)
 }
 
-// ResolveBundleFromFilePath inspects filePath and, when it looks like
-// the canonical entrypoint of a directory bundle (named main.bot, in a
-// parent dir that carries `skills/` or
-// `manifest.yaml`), opens the parent as a bundle so the engine can
-// mirror skills/, recipes/, attachments/ into the workspace at run
-// time. Returns nil when filePath is empty, not the canonical name,
-// the parent has no bundle markers, or OpenDir fails (best-effort).
+// ResolveBundleFromFilePath inspects filePath and, when it is the
+// canonical entrypoint of a directory bundle (named main.bot, in a parent
+// dir that carries `skills/` or `manifest.yaml`), opens the parent as a
+// bundle so the compile sees its prompts/*.md and the engine mirrors
+// skills/, recipes/, attachments/ into the workspace at run time.
+//
+// (nil, nil) when filePath is empty, not the canonical name, or the parent
+// carries no bundle marker — a loose .bot. A parent that IS a bundle by
+// those markers and does not open (a manifest that does not decode) is an
+// ERROR, never a silent fall-through to the bare file: the same state
+// `iterion validate <dir>` refuses, so the file and directory forms give
+// one verdict, and a run never quietly starts without its prompts and
+// skills. What counts as a bundle is pkg/bundle's to decide (DirForMainBot).
 //
 // Mirrors the auto-promotion the CLI does in pkg/cli/run.go (F-NEW-4).
 // Without this, studio launches of `iterion run bots/whats-next/main.bot`
 // silently produce empty `.claude/skills/` and prompts that reference
 // `repo-survey.md` fail with `no such file or directory`.
-func ResolveBundleFromFilePath(filePath string) *bundle.Bundle {
+func ResolveBundleFromFilePath(filePath string) (*bundle.Bundle, error) {
 	if filePath == "" {
-		return nil
+		return nil, nil
 	}
 	dir := bundle.DirForMainBot(filePath)
 	if dir == "" {
-		return nil
+		return nil, nil
 	}
 	b, err := bundle.OpenDir(dir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%s is the entrypoint of bundle %s, which does not open: %w (a main.bot beside a manifest.yaml or a skills/ is that bundle; if the manifest is not iterion's, give main.bot a directory of its own)", filePath, dir, err)
 	}
-	return b
+	return b, nil
 }
 
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
@@ -239,11 +260,11 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Work
 // to the bundle — orphaning what it had learned on each version bump, and
 // disagreeing with the same bundle opened in directory form.
 func BundleNameForPath(filePath string) string {
-	b := ResolveBundleFromFilePath(filePath)
-	if b == nil || b.Manifest == nil {
-		return ""
-	}
-	return b.Manifest.Name
+	// A bundle that does not open has no name here; the error surfaces
+	// where the same path is compiled or launched, which every caller of
+	// this helper also does.
+	b, _ := ResolveBundleFromFilePath(filePath)
+	return b.Name()
 }
 
 // CompileWorkflowPath compiles the workflow at path the way a launch
@@ -256,7 +277,11 @@ func BundleNameForPath(filePath string) string {
 // rewind, the export, a recipe's file — goes through it, so a run
 // launched on one surface resumes on another without `--force`.
 func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
-	if b := ResolveBundleFromFilePath(path); b != nil {
+	b, err := ResolveBundleFromFilePath(path)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if b != nil {
 		wf, hash, err := CompileBundleWorkflow(b.IterPath, b)
 		return wf, hash, b, err
 	}

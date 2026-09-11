@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
@@ -94,5 +95,20 @@ func TestValidate_BundlePathMergesItsPrompts(t *testing.T) {
 	decodeJSONResp(t, resp, &broken)
 	if len(broken.Issues) == 0 {
 		t.Errorf("the response carries no diagnostics of its own: %+v", broken)
+	}
+	// …and it SAYS the document was validated alone: one C222 warning
+	// naming the manifest, so the editor's green is never a false one.
+	var c222 int
+	for _, iss := range broken.Issues {
+		if iss.Code != "C222" {
+			continue
+		}
+		c222++
+		if iss.Severity != "warning" || !strings.Contains(iss.Message, "manifest") {
+			t.Errorf("C222 = %+v, want a warning naming the manifest", iss)
+		}
+	}
+	if c222 != 1 {
+		t.Errorf("the response carries %d C222 warnings, want exactly one saying the document was validated without its bundle: %+v", c222, broken.Issues)
 	}
 }

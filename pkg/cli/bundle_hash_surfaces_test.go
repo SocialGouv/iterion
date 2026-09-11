@@ -11,8 +11,8 @@ import (
 // TestPromotedMainBotHashesLikeItsBundleOnEverySurface: the workflow hash
 // a run stores at launch is the BUNDLE's — main.bot with its prompts/ and
 // presets/ — whichever surface opened it: the CLI on the bare main.bot
-// (promoted by openBundleOrFile), the studio's runview path on the same
-// file, and the resume that re-opens the recorded bundle path. The three
+// (promoted by openBundleOrFile), the resolver runview promotes the same
+// file through, and the resume that re-opens the recorded bundle path. The three
 // agree, so a run launched on one surface resumes on another without
 // `--force`; and the hash moves with a prompt file, which is why a bare
 // compile could not stand in for it.
@@ -45,8 +45,14 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened)
 		return h, err
 	})
-	studio := hashOf("studio on the bare main.bot", func() (string, error) {
-		b := runview.ResolveBundleFromFilePath(mainBot)
+	// The launch compile itself (Service.Launch → compileForLaunch) is held
+	// to the bundle's hash in pkg/runview's own test; this is the exported
+	// resolver it promotes through.
+	promoted := hashOf("runview.ResolveBundleFromFilePath on the bare main.bot", func() (string, error) {
+		b, err := runview.ResolveBundleFromFilePath(mainBot)
+		if err != nil {
+			return "", err
+		}
 		if b == nil {
 			t.Fatal("runview did not promote the bare main.bot to its bundle")
 		}
@@ -68,8 +74,8 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 		_, h, _, err := runview.CompileWorkflowPath(mainBot)
 		return h, err
 	})
-	if cli != studio || cli != resume || cli != pathHelper {
-		t.Errorf("the surfaces disagree: cli=%s studio=%s resume=%s path=%s", cli, studio, resume, pathHelper)
+	if cli != promoted || cli != resume || cli != pathHelper {
+		t.Errorf("the surfaces disagree: cli=%s resolver=%s resume=%s path=%s", cli, promoted, resume, pathHelper)
 	}
 	// The hash covers the bundle's prompts: editing one moves it.
 	mission := filepath.Join("bots", "mf", "prompts", "mission.md")

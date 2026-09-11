@@ -55,8 +55,10 @@ prompt pass_user:
   Report what is left in `remaining`, and set work_complete=true only
   when nothing is.
 
-  Verifier output from the previous pass (empty on the first):
+  ## Verifier output from the previous pass (empty on the first)
+  ```
   {{input.previous_verify}}
+  ```
 
 ## The entry gate, deterministic and before any LLM call: no verifier,
 ## no campaign. `!!` is the expression language's truthiness, which

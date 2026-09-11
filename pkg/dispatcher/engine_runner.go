@@ -515,8 +515,7 @@ func dispatchViaServiceEnabled() bool {
 // It outranks the path because a `.botz` lives in a content-hash cache slot,
 // whose name changes with every edit to the bundle.
 func (r *EngineRunner) bundleName() string {
-	if r.bundle == nil {
-		return ""
-	}
-	return r.bundle.Manifest.Name
+	// Nil-safe on both levels: a promoted main.bot marked by skills/ alone
+	// has a bundle and no manifest.
+	return r.bundle.Name()
 }

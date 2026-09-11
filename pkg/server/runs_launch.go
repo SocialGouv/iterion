@@ -526,6 +526,22 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// that produced req.Source — never re-fetched, so a push racing this
 	// request cannot pair this launch's IR with newer resources.
 	launchLB.StampBundle(&spec)
+	// A file launch of a bundle's main.bot carries its bundle the way a
+	// stored bot does: the studio's file picker sends the file's SOURCE
+	// inline, which resolveWorkflowPath materialised above under the store
+	// as `<hash>-main.bot` — a name no promotion recognises — so the bundle
+	// is read from the path the OPERATOR named, before that rename. The
+	// compile then merges its prompts/*.md and the engine mirrors its
+	// skills; a bundle that does not open is refused, as the CLI refuses it.
+	if launchLB == nil && spec.BundleDir == "" {
+		dir, berr := s.launchBundleDirFor(req.FilePath)
+		if berr != nil {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "bundle: %v", berr)
+			span.SetStatus(codes.Error, "bundle does not open")
+			return
+		}
+		spec.BundleDir = dir
+	}
 	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {

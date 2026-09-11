@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/bundlelint"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -156,6 +157,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var unopenable error
 	// A bundle's prompts/*.md reach the compiler the way they do at a
 	// launch when the editor says which file the document is. The path is
 	// a hint: one the server cannot place (no workdir on a cloud server, an
@@ -171,27 +173,39 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		s.mergeBotSourcePrompts(r, f, req.Path)
 	case req.Path != "" && !strings.Contains(req.Path, "://"):
 		if abs, perr := s.safePath(req.Path); perr == nil {
-			if parent := bundle.DirForMainBot(abs); parent != "" {
+			b, oerr := runview.ResolveBundleFromFilePath(abs)
+			switch {
+			case oerr != nil:
 				// A sibling manifest.yaml that does not OPEN must not blind
-				// the editor: DirForMainBot fires on its mere presence and
-				// LoadManifest is a strict unmarshal, so a half-typed one —
-				// a normal state in a studio that edits manifests too —
-				// would answer 422 for the whole request and useAutoValidation
-				// would keep the stale diagnostics on screen. Fall through to
-				// the document alone, the way openBundleOrFile does on the CLI
-				// side. A prompts merge that genuinely fails stays an error:
-				// the bundle opened, so its prompts/*.md are in scope.
-				if b, oerr := bundle.OpenDir(parent); oerr == nil {
-					if merr := runview.MergeBundlePrompts(f, b); merr != nil {
-						httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
-						return
-					}
+				// the editor: LoadManifest is a strict unmarshal, and a
+				// half-typed manifest is a normal state in a studio that
+				// edits manifests too — a 422 for the whole request would
+				// leave useAutoValidation's stale diagnostics on screen. The
+				// document is validated alone, and the response SAYS so
+				// (C222, below); the CLI refuses this same state outright.
+				unopenable = oerr
+			case b != nil:
+				// A prompts merge that genuinely fails stays an error: the
+				// bundle opened, so its prompts/*.md are in scope.
+				if merr := runview.MergeBundlePrompts(f, b); merr != nil {
+					httpError(w, http.StatusUnprocessableEntity, "bundle prompts: %v", merr)
+					return
 				}
 			}
 		}
 	}
 
 	resp := validateResponse{Valid: true}
+	if unopenable != nil {
+		msg := "bundle does not open: " + unopenable.Error() + " — the document was validated alone, without the bundle's prompts, presets and skills; a reference to a bundle prompt reads as C003 until it opens"
+		resp.Warnings = append(resp.Warnings, msg)
+		resp.Issues = append(resp.Issues, DiagnosticDTO{
+			Code:     string(bundlelint.DiagBundleUnopenable),
+			Severity: "warning",
+			Message:  msg,
+			Hint:     "fix the manifest the message names (`iterion validate <bundle dir>` refuses with the same decode error)",
+		})
+	}
 
 	// Parse diagnostics (re-validate via compiler).
 	cr := ir.Compile(f)

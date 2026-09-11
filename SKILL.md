@@ -209,7 +209,8 @@ shipped bots, so they are written here:
 - **A blank line inside a prompt body is dropped.** The lexer skips blank
   and space-only lines under a prompt header, so a paragraph break reaches
   the model as a single newline; put a heading or a line of prose where the
-  model must see a break.
+  model must see a break, and a multi-line `{{…}}` value under a heading or
+  inside a ``` fence, or it runs into the line that follows it.
 - **A typed refusal is `fail <name>:`** with an UPPER_SNAKE `code:` — the bare
   `-> fail` target carries no code. The engine's own codes are reserved
   (C248 names them: `BUDGET_EXCEEDED`, `TIMEOUT`, … — the list is

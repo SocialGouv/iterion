@@ -29,9 +29,9 @@ prompt mission:
 prompt digest_user:
   The commit log since {{vars.window}} ({{outputs.collect.commits}}
   commits), one line per commit:
-
+  ```
   {{outputs.collect.log}}
-
+  ```
   Write the digest to {{vars.report_path}}: group by theme, lead with
   the most impactful change, keep it under one screen. Put its first
   paragraph in summary.

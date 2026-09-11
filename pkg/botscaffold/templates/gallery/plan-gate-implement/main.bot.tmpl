@@ -35,25 +35,36 @@ prompt plan_user:
   will touch, the risks, and how you will verify the result. Do not
   edit any file yet.
 
-  Operator feedback on the previous plan (empty on the first round):
+  ## Operator feedback on the previous plan (empty on the first round)
+  ```
   {{input.feedback}}
+  ```
 
+## A multi-line value sits under a heading or inside a fence: the lexer
+## drops the blank lines of a prompt body, so a paragraph break around a
+## `{{…}}` slot would reach the reader as a single newline, and the plan
+## would run into the line that follows it.
 prompt gate_instructions:
   # Approve the plan?
 
+  ## Plan
   {{outputs.plan.plan}}
 
-  **Risks:** {{outputs.plan.risks}}
+  ## Risks
+  {{outputs.plan.risks}}
 
+  ## Your call
   Tick **approve** to implement it as written, or leave it unticked and
   say what to change in **feedback** — the planner gets another round.
 
 prompt impl_user:
-  Implement this approved plan, committing in stride:
+  Implement this approved plan, committing in stride.
 
+  ## Plan
   {{outputs.plan.plan}}
 
-  Operator feedback: {{outputs.approve.feedback}}
+  ## Operator feedback
+  {{outputs.approve.feedback}}
 
 ## The first round has no feedback yet: an empty one, so the planner's
 ## input is the same shape on every round.

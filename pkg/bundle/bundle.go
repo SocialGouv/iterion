@@ -58,8 +58,11 @@ const (
 )
 
 // dirMarkers are the sibling entries that mark a directory as a bundle
-// rather than somewhere a loose main.bot happens to sit.
-var dirMarkers = []string{DirSkills, ManifestFile}
+// rather than somewhere a loose main.bot happens to sit. Both manifest
+// spellings count: the loader accepts either, and a marker the loader
+// reads but the promotion ignores would give the file and the directory
+// forms of the same bundle two verdicts.
+var dirMarkers = []string{DirSkills, ManifestFile, ManifestFileAlt}
 
 // DirForMainBot returns the bundle directory holding path, or "" when
 // path is not a bundle's main.bot.
@@ -162,4 +165,16 @@ type Bundle struct {
 
 	// Kind discriminates how the bundle was supplied.
 	Kind Kind
+}
+
+// Name is the bundle's declared id — the manifest's `name:` — or "" when
+// there is no bundle, or a bundle without a manifest (a directory marked
+// by `skills/` alone is one). Every reader of the id goes through here:
+// the Manifest field is nil in that second case, and a bare dereference
+// of it took a dispatcher daemon down on its first dispatch.
+func (b *Bundle) Name() string {
+	if b == nil || b.Manifest == nil {
+		return ""
+	}
+	return b.Manifest.Name
 }

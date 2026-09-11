@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // requireWorkflowPathExists fails early with a clear, actionable error
@@ -89,13 +90,17 @@ func openBundleOrFile(path string) (b *bundle.Bundle, iterPath string, kind bund
 	// workflow — run, resume, validate, doctor — sees the prompts/*.md and
 	// the skills/ it ships; a bot whose prompts live in prompts/ would
 	// otherwise validate INVALID (C003) as a file and OK as a directory.
-	// Conservative on purpose: what counts as a bundle is pkg/bundle's to
-	// decide (DirForMainBot). A parent that only looks like one and does not
-	// open falls through to the bare file, as run always did.
-	if parent := bundle.DirForMainBot(path); parent != "" {
-		if opened, openErr := bundle.OpenDir(parent); openErr == nil {
-			return opened, opened.IterPath, bundle.KindBundleDir, cleanup, nil
-		}
+	// What counts as a bundle is pkg/bundle's to decide (DirForMainBot), and
+	// a parent that is one by those markers and does not open is an error
+	// here as it is for the directory form: `validate bots/x` and
+	// `validate bots/x/main.bot` give one verdict, and a run never quietly
+	// starts without its prompts and skills.
+	promoted, err := runview.ResolveBundleFromFilePath(path)
+	if err != nil {
+		return nil, path, kind, cleanup, err
+	}
+	if promoted != nil {
+		return promoted, promoted.IterPath, bundle.KindBundleDir, cleanup, nil
 	}
 	return nil, path, kind, cleanup, nil
 }
