@@ -90,6 +90,18 @@ prompt campaign_user:
   corpus uses. Read `oracle-mutation` for what each one catches and why an
   uncovered one makes the whole figure unearned.
 
+  LEAVE THE NEXT GATE A SET TO SCORE. The set you seal above is YOURS: you score
+  it at your own gate and it is published as evidence, which spends it. A set is
+  refused by fingerprint once published, so the next gate to run — a lot's
+  verify, days later — finds an empty magazine and refuses, having paid for a
+  boot and a full corpus replay to learn it.
+
+  So draw a SECOND set and leave it COMMITTED under `mutants/holdout/`, unsealed
+  and unscored. A sealed set lives only as long as the sealed pile, which is
+  keyed on a workspace that dies with the run; a committed one has a durable
+  home and the gate that owns it opts in with `"seal_committed": true`. You are
+  finished on this point when the report reads `holdout_awaiting_gate: true`.
+
   {{input.fail_log}}
 
   When a previous pass left a failure above, fix the ORACLE, not the
