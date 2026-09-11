@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Installed by install.py. Override only for tests or a source checkout.
+set -euo pipefail
+
+LIB="${ITERION_INSTANCES_LIB:-${XDG_DATA_HOME:-$HOME/.local/share}/iterion-instance-manager/instances.py}"
+if [ ! -f "$LIB" ]; then
+	printf 'iterion-instances: backend introuvable: %s\n' "$LIB" >&2
+	exit 1
+fi
+exec python3 "$LIB" "$@"

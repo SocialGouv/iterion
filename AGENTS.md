@@ -36,6 +36,16 @@ comment naming the session. Never touch a ticket already claimed by another
 session without the operator's arbitration. Release the claim at session
 end: Done with evidence, or back to Planned with a state-of-work comment.
 
+**Dedicated worktree rule.** After claiming a ticket, every interactive agent
+creates a unique branch and worktree from an explicit base SHA and makes all
+tracked changes there. Never implement, build, commit, stash, or deploy from a
+shared or dirty checkout. Keep the branch and worktree until the change is
+integrated or explicitly handed off. For a project-scoped local engine repair,
+use the host-owned `iterion-instances prepare/build/deploy` flow documented in
+[`docs/local-instance-bootstrap.md`](docs/local-instance-bootstrap.md); it
+selects the instance by the target project's canonical path, not by a fixed
+port.
+
 **Phase B — dev, mode chosen per ticket.** *Dogfood-first reflex*: before
 implementing by hand, ask "can a catalog bot do this work?" — if yes,
 propose launching it (visible in the operator's studio, actively monitored,
