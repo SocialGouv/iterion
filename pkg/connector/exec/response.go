@@ -26,7 +26,7 @@ func newBody(raw []byte) io.Reader { return bytes.NewReader(raw) }
 // whether the success is complete or merely accepted.
 func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http.Response, body []byte) Result {
 	data, decodeErr := decodeJSON(body)
-	res := Result{Status: resp.StatusCode, Data: data}
+	res := Result{Status: resp.StatusCode, Data: data, Bytes: len(body)}
 
 	if resp.StatusCode >= 400 {
 		res.Err = e.httpError(pkg, op, resp, data, body)

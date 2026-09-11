@@ -103,6 +103,14 @@ type Result struct {
 	// contract: it does not price anything, but it stops a walk being
 	// invisible.
 	Requests int
+	// Bytes is how many raw response bytes produced this result — the last
+	// page's for a single call, the walk's TOTAL for a paginated one, by the
+	// same argument as Requests.
+	//
+	// It is what the walk's own budget is measured in: a page is bounded (the
+	// 32 MiB LimitReader) but a WALK was not, and the items of every page are
+	// held until the whole call returns.
+	Bytes int
 	// Err is the typed failure, nil on success. It is a FIELD rather than a
 	// returned error because a business failure is a result a workflow
 	// branches on — `not_found` is an answer — while a returned error means
@@ -410,6 +418,16 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 	if maxPages <= 0 {
 		maxPages = defaultMaxPages
 	}
+	// The package's own number is an upper bound the PACKAGE chose, and a
+	// package is not the workflow's to trust with an unbounded one: they
+	// arrive from tiers a `.bot` never named, and spec validation cross-checks
+	// the pagination block's parameter names without ever looking at this
+	// number. Clamped rather than refused — a large walk is a legitimate ask,
+	// and the honest answer to "further than iterion will go" is the partial
+	// collection with complete=false, which is what that flag already means.
+	if maxPages > maxWalkPages {
+		maxPages = maxWalkPages
+	}
 	walk := make(map[string]any, len(params)+2)
 	for k, v := range params {
 		walk[k] = v
@@ -455,6 +473,7 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 
 	page := 1
 	cursor := ""
+	walked := 0
 	for n := 0; n < maxPages; n++ {
 		switch p.Style {
 		case spec.PageNumber:
@@ -486,6 +505,8 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		// The walk's TOTAL, not the last page's one: what an operator needs to
 		// know is how many of the vendor's rate-limit slots this node spent.
 		res.Requests = n + 1
+		walked += res.Bytes
+		res.Bytes = walked
 		last = res
 		batch, found := pageItems(res.Data, p.ItemsField)
 		if !found {
@@ -495,6 +516,20 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 			return items, false, last, errNoCollection(op, p.ItemsField, res.Data)
 		}
 		items = append(items, batch...)
+
+		// The walk's own ceiling, checked after the page that crossed it is
+		// KEPT: a page is bounded (the 32 MiB LimitReader) but the walk was
+		// not, and `items` is held entire until the call returns and is then
+		// marshalled whole into the artifact. At the default twenty pages that
+		// is already ~640 MiB with no malicious package in sight.
+		//
+		// Reported as an incomplete collection rather than an error, because
+		// that is what it is, and `complete=false` — which CallPaged's
+		// contract already tells a caller to read — is exactly the "stopped
+		// early, there may be more" signal.
+		if walked >= maxWalkBytes {
+			return items, false, last, nil
+		}
 
 		// Termination is the PROTOCOL's, and for a cursor walk the CURSOR is
 		// the whole of it — checked before the batch, not after.
@@ -533,6 +568,22 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 // defaultMaxPages bounds a walk whose package declared no ceiling. A
 // collection is unbounded from iterion's side; a run's budget is not.
 const defaultMaxPages = 20
+
+// maxWalkPages is the ceiling a package's own `max_pages` is clamped to, and
+// maxWalkBytes the raw response budget of one walk.
+//
+// The page bound alone is not a bound: each page reads up to maxResponseBytes
+// and every page's items are held until the call returns, so `max_pages: 5000`
+// — a number nothing validated — is unbounded in practice. The byte budget is
+// what actually protects the pod, the page ceiling what keeps a walk from
+// spending thousands of the vendor's rate-limit slots behind one node.
+//
+// Both end the walk the way running out of pages already does: the items
+// gathered so far, complete=false.
+const (
+	maxWalkPages = 500
+	maxWalkBytes = 64 << 20
+)
 
 // redactedMarker replaces a secret in any text a human or a log will see.
 const redactedMarker = "…redacted…"
