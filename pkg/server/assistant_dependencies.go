@@ -69,13 +69,21 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
+	// Snapshot-then-release, the pattern resolveAuthoringTarget already
+	// uses. The work below reaches the network — botdeps.Update →
+	// botinstall.Fetch clones a remote repository — and sync.RWMutex blocks
+	// NEW readers once a writer is queued, so holding this RLock for the
+	// clone lets one slow fetch plus one project switch stall every
+	// stateMu reader in the process (server_info, /api/bots, the pipeline
+	// board) for the duration of the network call.
 	s.stateMu.RLock()
-	defer s.stateMu.RUnlock()
-	if s.cfg.Mode == "cloud" {
+	mode, workDir := s.cfg.Mode, s.cfg.WorkDir
+	s.stateMu.RUnlock()
+	if mode == "cloud" {
 		s.httpErrorFor(w, r, http.StatusForbidden, "dependency update is unavailable in cloud mode")
 		return
 	}
-	if s.cfg.WorkDir == "" {
+	if workDir == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "dependency update requires a project workspace")
 		return
 	}
@@ -92,7 +100,7 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 
 	s.assistantDependencyMu.Lock()
 	defer s.assistantDependencyMu.Unlock()
-	result, err := assistantDependencyBotsUpdate(r.Context(), s.cfg.WorkDir, req)
+	result, err := assistantDependencyBotsUpdate(r.Context(), workDir, req)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
