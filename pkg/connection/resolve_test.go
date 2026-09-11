@@ -102,15 +102,20 @@ func TestResolveHandsTheExecutorWhatItNeeds(t *testing.T) {
 		t.Errorf("baseURL = %q, want the CONNECTION's instance, not the package default", baseURL)
 	}
 
-	// With no instance pinned, the package's default is right.
+	// A connection with NO origin is refused, not completed from the package.
+	//
+	// This assertion said the opposite until the third review: falling back
+	// meant "whatever the package says when the call happens", so replacing
+	// the package — or shadowing it with a project-tier one — sent an existing
+	// credential to a different host, with nothing in the run saying so.
+	// `connections add` resolves and pins the origin at creation; a record
+	// without one was hand-written, and guessing on its behalf IS the vector.
 	c2 := conn("c2", "tenant-a", "saas")
+	c2.BaseURL = ""
 	c2.GrantedScopes, c2.ScopesKnown = []string{"read:issue"}, true
 	seed(t, r, store, c2)
-	if _, _, _, baseURL, err = r.ResolveAction(context.Background(), "probe.issue.get", "saas"); err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if baseURL != "https://probe.example" {
-		t.Errorf("baseURL = %q, want the package default when the connection pins none", baseURL)
+	if _, _, _, _, err = r.ResolveAction(context.Background(), "probe.issue.get", "saas"); err == nil {
+		t.Error("a connection that names no instance must be refused — nothing says where its credential may be sent")
 	}
 }
 
@@ -225,6 +230,49 @@ func TestARevokedConnectionRefuses(t *testing.T) {
 			}
 			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "disconnected") {
 				t.Errorf("the refusal must carry the recorded reason: %v", err)
+			}
+		})
+	}
+}
+
+// TestAnExpiredConnectionRefuses. iterion holds the expiry, so iterion names
+// it: spending the call to have the vendor answer 401 reads like a bad token
+// and sends an operator to rotate one that is merely out of date. The two
+// serving cases are the falsifier — a guard that refused everything would pass
+// the first assertion alone.
+func TestAnExpiredConnectionRefuses(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		expiresAt time.Time
+		wantErr   bool
+	}{
+		{"no expiry", time.Time{}, false},
+		{"still valid", time.Now().Add(time.Hour), false},
+		{"expired", time.Now().Add(-time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := connection.NewMemoryStore()
+			r := resolver(t, store)
+			c := conn("c1", "tenant-a", "main")
+			c.ExpiresAt = tc.expiresAt
+			c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+			seed(t, r, store, c)
+
+			_, _, _, _, err := r.ResolveAction(ctx, "probe.issue.get", "main")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("an expired connection must refuse before the call is made")
+				}
+				// The instant, not just the word: an operator has to be able
+				// to tell an expiry apart from a revocation.
+				if !strings.Contains(err.Error(), "expired at") {
+					t.Errorf("the refusal must name the expiry: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("%s must still serve: %v", tc.name, err)
 			}
 		})
 	}

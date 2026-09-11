@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
@@ -104,11 +105,19 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		cred.Scopes = conn.GrantedScopes
 	}
 
-	baseURL := conn.BaseURL
-	if baseURL == "" {
-		baseURL = pkg.Connector.BaseURL.Default
+	// The connection's OWN origin, with no fallback to the package's.
+	//
+	// Falling back meant "whatever the package says when the call happens", so
+	// replacing the package — or shadowing it with a project-tier one —
+	// redirected an existing credential to a different host, with nothing in
+	// the run saying so. `connections add` resolves and pins the origin at
+	// creation for exactly this reason; a record without one predates that or
+	// was hand-written, and guessing on its behalf is the vector itself.
+	if conn.BaseURL == "" {
+		return nil, zero, exec.Credential{}, "", fmt.Errorf(
+			"connection %q names no instance URL, so there is nothing to say where its credential may be sent; re-create it with --base-url", conn.Alias)
 	}
-	return pkg, op, cred, baseURL, nil
+	return pkg, op, cred, conn.BaseURL, nil
 }
 
 // checkUsable refuses a connection that must not serve this call.
@@ -123,6 +132,15 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 			reason = "no reason recorded"
 		}
 		return fmt.Errorf("connection %q is %s: %s", conn.Alias, conn.Status, reason)
+	}
+	// An expiry iterion ALREADY HOLDS is refused here rather than spent. The
+	// vendor would answer 401, which reads like a bad token and sends an
+	// operator to rotate one that is merely out of date — and on a mutating
+	// operation it costs a call whose effect has to be reasoned about. Zero
+	// means a credential that does not expire.
+	if !conn.ExpiresAt.IsZero() && !conn.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("connection %q expired at %s — reconnect it",
+			conn.Alias, conn.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	// The capability is the whole answer to "may this connection be used for
 	// this?". A deterministic node and an agent facade are different uses of

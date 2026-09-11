@@ -26,6 +26,12 @@ func conn(id, tenant, alias string) connection.Connection {
 		ID: id, TenantID: tenant, Connector: "probe", Alias: alias,
 		SchemeID: "token", Status: connection.StatusActive,
 		Capabilities: []connection.Capability{connection.CapAction},
+		// A real connection always carries its origin — `connections add`
+		// resolves and pins it at creation, so nothing can later redirect the
+		// credential. The fixture carries one for the same reason a stub must
+		// bear every term of the real producer: without it these tests would
+		// exercise a shape no store can hold.
+		BaseURL: "https://probe.example",
 	}
 }
 

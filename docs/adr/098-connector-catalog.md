@@ -1006,9 +1006,20 @@ applied when open.
 
 ### Answered, and not defects
 
-- `AMBIGUOUS_EFFECT` does reach `failed_resumable` with its checkpoint
-  (`ActionFailTerminal` goes through `failRunWithCheckpoint`) and is genuinely
-  excluded from `--auto-resume`, which admits only `DispositionTransient`.
+- `AMBIGUOUS_EFFECT` does reach `failed_resumable` with its checkpoint, and is
+  genuinely excluded from `--auto-resume`, which admits only
+  `DispositionTransient`. The path is **`failRunErrWithCheckpoint`**, which
+  persists the classified `rtErr.Code` — not the sibling
+  `failRunWithCheckpoint`, which hardcodes `ErrCodeExecutionFailed`, a code
+  that IS on the auto-resume allow-list. The two names differ by three letters
+  and by the entire guarantee, which is why the chain is now pinned by a test
+  rather than by reading:
+  `TestAnUndecidedMutationParksTheRunForAnOperator` runs it on the real engine
+  with the recovery dispatch every production host wires, and asserts the
+  persisted code, the status, the production `AutoResumable` predicate and a
+  single request to the vendor. Falsified by making the engine drop the
+  classified code: the run reverts to `EXECUTION_FAILED` *and* becomes
+  auto-resumable.
 - `ClassifierChecker` is the only checker on the tool-node path that can
   consult a model; `Policy` and `RulePolicy` are pure. A `permission: ask`
   gate cannot park an action node, because a tool node's `permission:` is
@@ -1016,10 +1027,18 @@ applied when open.
 - `Result.Requests` does accumulate across a successful walk (`n + 1` per
   page). It is the per-call value on a failure path, where the node fails and
   there is no output to carry it.
-- `Connection.ExpiresAt` is read by nothing, which is honest rather than
-  inert: no surface sets it (the CLI seals a zero expiry), and the row above
-  already records that no refresh worker exists. An expired credential fails
-  as a vendor 401 until one does.
+- `Connection.ExpiresAt` is read by the **resolver**, which refuses a
+  connection whose expiry has passed. No surface sets a non-zero value yet
+  (the CLI seals a zero expiry) and no refresh worker exists — both of which
+  the row above records — but the field is public on this struct and
+  serialised, so any writer reaching it finds the refusal already in place,
+  and iterion no longer spends a call to have the vendor answer 401 about an
+  expiry it already holds. On a mutating operation that call also buys an
+  effect to reason about. What made this a defect rather than an honest gap
+  was its doc comment, which said *"Read by the refresh worker to decide what
+  is due"* — naming machinery this lot does not ship. A public field described
+  as load-bearing and inert in fact is worse than an absent one; the comment
+  now states what is true.
 
 ### The studio, deliberately still unwired
 

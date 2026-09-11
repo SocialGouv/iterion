@@ -130,6 +130,13 @@ func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, 
 		// connection, with which arguments.
 		nt.Action = subst(t.Action)
 		nt.Connection = subst(t.Connection)
+		// Substituted like every other field, because the omission had no
+		// reason behind it: a group instantiated per target may well want a
+		// different bound or a different attempt count per instance, and
+		// leaving these two out meant `{{params.deadline}}` reached the
+		// compiler as literal text and failed C265 as "not a duration".
+		nt.Retry = subst(t.Retry)
+		nt.Timeout = subst(t.Timeout)
 		// DEEP-copied, unlike the scalars above: `nt := *t` shares the Params
 		// slice with the group template, so substituting in place would write
 		// the FIRST instantiation's values into the template and every later

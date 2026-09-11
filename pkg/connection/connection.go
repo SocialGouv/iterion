@@ -158,7 +158,18 @@ type Connection struct {
 	SealedPayload []byte `bson:"sealed_payload,omitempty" json:"-"`
 
 	// ExpiresAt is when the credential stops working, zero for one that does
-	// not expire. Read by the refresh worker to decide what is due.
+	// not expire.
+	//
+	// Read by the resolver, which refuses a connection whose expiry has passed
+	// instead of sending a credential it knows is dead. Kept on the RECORD as
+	// well as inside the sealed blob so that selecting what is due does not
+	// mean unsealing every credential to find out.
+	//
+	// No write path sets a non-zero value yet: the OAuth tier that will, and
+	// the worker that would renew one, are tracked in ADR-098. The guard is
+	// here rather than with them because the field is public on this struct
+	// and serialised, so any writer reaching it finds the refusal already in
+	// place.
 	ExpiresAt time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`

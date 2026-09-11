@@ -90,6 +90,27 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if err := checkBaseURL(pkg, baseURL); err != nil {
 		return err
 	}
+	// The origin is RESOLVED and PINNED here, not left to be re-derived at
+	// call time.
+	//
+	// An empty BaseURL meant "whatever the package's default is when the call
+	// happens" — so replacing the package, or shadowing it with a project-tier
+	// one, which the layered catalog lets any repository do, redirected an
+	// existing credential to a different host. The token an operator bound to
+	// a vendor would have been sent to whoever the new package named, and
+	// nothing in the run would have said so. The SSRF guard does not help: the
+	// new origin is a perfectly ordinary public host. What a credential may be
+	// sent to is decided when it is entrusted to iterion.
+	//
+	// checkBaseURL refuses the half where NEITHER the flag nor the package
+	// names an instance; this freezes the other half, where the package does
+	// name one and that answer must stop being re-asked.
+	if baseURL == "" {
+		baseURL = strings.TrimRight(pkg.Connector.BaseURL.Default, "/")
+	}
+	if baseURL == "" {
+		return fmt.Errorf("connections add: connector %q names no default instance, so --base-url is required", opts.Connector)
+	}
 	caps, err := parseCapabilities(opts.Capabilities)
 	if err != nil {
 		return err
@@ -139,11 +160,9 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 		return err
 	}
 
-	host := conn.BaseURL
-	if host == "" {
-		host = pkg.Connector.BaseURL.Default + " (the package default)"
-	}
-	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, host)
+	// The pinned origin, always: it is what this credential may now be sent to,
+	// and the operator is the only one who can say it is wrong.
+	fmt.Fprintf(out, "connected %s as %q → %s\n", opts.Connector, alias, conn.BaseURL)
 	// The RESOLVED capabilities, not the flag. An operator who named none gets
 	// `action` by default, and echoing the empty flag reported a grant that
 	// differs from the record just written — `connections list` then says
