@@ -26,7 +26,7 @@ import (
 // output a `.bot` can branch on.
 //
 // No LLM is involved at any point, and nothing on this path can introduce
-// one: the compile-time refusals (C252/C253) removed the two that could.
+// one: the compile-time refusals (C262/C263) removed the two that could.
 
 // ConnectorResolver hands the executor the package and the credential an
 // action needs.
@@ -79,7 +79,7 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 	if node.CallTimeout != "" {
 		d, perr := time.ParseDuration(node.CallTimeout)
 		if perr != nil {
-			// Compile refuses this (C255), so reaching it means the IR was
+			// Compile refuses this (C265), so reaching it means the IR was
 			// built by hand; failing loudly beats calling with no bound.
 			return nil, fmt.Errorf("model: tool node %q: timeout %q: %w", node.ID, node.CallTimeout, perr)
 		}
