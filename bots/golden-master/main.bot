@@ -142,7 +142,7 @@ prompt campaign_user:
   to leave room for the gate. The held-out SCORE is withheld there on purpose;
   do not go looking for it.
 
-  Read that same pair the other way BEFORE you draw anything: two inherited
+  Read that same pair the other way BEFORE you draw a SUCCESSOR: two inherited
   states make the criterion unreachable, and neither is yours to resolve. A zero
   `holdout_total` beside `holdout_awaiting_gate: true` — a set was already
   tracked under `mutants/holdout/` when you arrived, an unclaimed successor, and
@@ -153,6 +153,12 @@ prompt campaign_user:
   where it is: you do not write the opt-in, you do not delete an artefact you
   did not draw, and you do not stack a second successor on the first. Name
   which of the two you are in, in `work_remaining` and in `REPORT.md`.
+
+  What you do NOT skip in either is your own held-out set. That one is your
+  gate's counter-test, not the successor's, and a cycle that draws none reports
+  `holdout 0/0` for the plainest reason there is — nothing was ever held out.
+  Withholding the draw is not how you survive a blocked directory; it is how a
+  pass that proved nothing comes back green.
 
   They do not END the same way. The second still converges: your own set did
   reach the pile, so the held-out term measures something and only the

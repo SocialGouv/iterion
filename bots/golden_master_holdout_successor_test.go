@@ -199,6 +199,30 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"and only the net's owner can clear it.\n  Clause as parsed: %q", clause)
 	}
 
+	// 5c. AND THE DRAW ITSELF IS NOT NEGOTIABLE. `holdout_seal_blocked` is
+	//     `awaiting AND something untracked under mutants/holdout/`, deliberately
+	//     narrow so a lot's CI on a clean checkout stays silent — which means a
+	//     rite that draws NOTHING in the blocked state clears the term and takes
+	//     the vacuous green the term exists to refuse. Nothing deterministic
+	//     separates "drew nothing" from "had nothing to draw" (both are an empty
+	//     pile on a directory that already holds a tracked set), so the
+	//     prohibition has to be stated where the agent reads the escape.
+	var drawKept bool
+	for _, phrasing := range []string{"not skip", "never skip", "do not withhold the draw"} {
+		if strings.Contains(clause, phrasing) {
+			drawKept = true
+			break
+		}
+	}
+	if !drawKept {
+		t.Errorf("the successor instruction gives an exit on a blocked mutants/holdout/ "+
+			"without saying that the rite's OWN held-out set is still drawn.\n"+
+			"  Why it is there: read as licence to draw nothing, the exit produces "+
+			"holdout 0/0 with holdout_seal_blocked false — green, on a pass that held "+
+			"nothing out at all, which is the outcome both terms exist to refuse.\n"+
+			"  Clause as parsed: %q", clause)
+	}
+
 	// 6. THE NOTICE THE SEALING RUN WILL EMIT. `holdout_sealed_uncommitted`
 	//    fires on exactly the run this instruction now asks for, and its text
 	//    says "a set a LATER run must score has one durable home — commit it
