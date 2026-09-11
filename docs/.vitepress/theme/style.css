@@ -219,10 +219,62 @@
   .comparison-table { border-radius: 8px; }
 }
 
-/* The two-column choice guide fits on small screens without horizontal scrolling. */
-.comparison-choice table { min-width: 0; }
+/* Keep the outcome, Iterion capability and fit check readable as distinct columns. */
+.comparison-choice table { min-width: 700px; }
 .comparison-choice th:first-child,
-.comparison-choice td:first-child { width: 60%; min-width: 0; }
+.comparison-choice td:first-child { width: 26%; min-width: 0; }
+.comparison-choice th:last-child,
+.comparison-choice td:last-child { width: 28%; }
+.comparison-matrix .comparison-table.comparison-agent-depth table,
+.comparison-matrix .comparison-table.comparison-team-access table { min-width: 700px; }
+.comparison-team-access th:first-child,
+.comparison-team-access td:first-child { width: 18%; min-width: 120px; }
+.comparison-team-access th:nth-child(2),
+.comparison-team-access td:nth-child(2) { width: 38%; }
+.comparison-agent-depth th:first-child,
+.comparison-agent-depth td:first-child { width: 22%; min-width: 0; }
+.comparison-agent-depth th:nth-child(2),
+.comparison-agent-depth td:nth-child(2) { width: 39%; }
+
+@media (max-width: 639px) {
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) :is(table, tbody, tr, td) {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) td {
+    border: 0;
+    padding: 12px 16px;
+  }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) tr {
+    border-bottom: 1px solid var(--vp-c-divider);
+  }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) tr:last-child { border-bottom: 0; }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) td:first-child {
+    font-weight: 600;
+    background: var(--vp-c-brand-soft);
+  }
+  .comparison-page .comparison-table:is(.comparison-choice, .comparison-agent-depth, .comparison-team-access) td:not(:first-child)::before {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+    color: var(--vp-c-text-2);
+    font-size: 12px;
+  }
+  .comparison-choice td:nth-child(2)::before { content: "How Iterion addresses it"; }
+  .comparison-choice td:nth-child(3)::before { content: "Main fit check"; }
+  .comparison-agent-depth td:nth-child(2)::before { content: "What Iterion provides"; }
+  .comparison-agent-depth td:nth-child(3)::before { content: "What to compare in your project"; }
+  .comparison-team-access td:nth-child(2)::before { content: "Team and resource boundary"; }
+  .comparison-team-access td:nth-child(3)::before { content: "Access conditions"; }
+}
 
 .comparison-page .comparison-cta {
   margin: 28px 0;

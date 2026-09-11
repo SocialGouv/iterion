@@ -166,13 +166,12 @@ const sidebar = [
     ],
   },
   {
-    text: 'Comparatifs (FR)',
+    text: 'Comparisons',
     items: [
-      { text: 'Choisir une solution', link: '/comparatifs/' },
-      { text: 'Matrice de fonctionnalités', link: '/comparatifs/matrice-fonctionnalites' },
-      { text: 'Iterion ou n8n', link: '/comparatifs/iterion-vs-n8n' },
-      { text: 'Fonctionnalités d’Iterion', link: '/comparatifs/inventaire-fonctionnalites-iterion' },
-      { text: 'Méthode et sources', link: '/comparatifs/methode-et-sources' },
+      { text: 'Choose an architecture', link: '/comparisons/' },
+      { text: 'Feature matrix', link: '/comparisons/feature-matrix' },
+      { text: 'Iterion feature inventory', link: '/comparisons/feature-inventory' },
+      { text: 'Methodology and sources', link: '/comparisons/methodology' },
     ],
   },
   {
@@ -358,7 +357,7 @@ export default withMermaid(
       search: { provider: 'local' },
       nav: [
         { text: 'Why Iterion?', link: '/why-iterion' },
-        { text: 'Comparatifs (FR)', link: '/comparatifs/' },
+        { text: 'Comparisons', link: '/comparisons/' },
         {
           text: 'Get started',
           items: [

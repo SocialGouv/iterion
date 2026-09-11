@@ -16,13 +16,12 @@ This index describes the current repository state. Guides and references below a
 
 For the architectural trade-off against prompt-only orchestration, read [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md). [asymptote-bench.md](asymptote-bench.md) and [thinking-metrics.md](thinking-metrics.md) cover workflow-quality measurement, and [improvement-ratchet.md](improvement-ratchet.md) names what carries a gain from one run to the next.
 
-## Comparatifs (FR)
+## Comparisons
 
-- [Choisir Iterion ou une alternative](comparatifs/index.md) — adéquation aux usages et critères de décision.
-- [Matrice de fonctionnalités](comparatifs/matrice-fonctionnalites.md) — vingt critères sur dix produits, avec sources et conditions.
-- [Iterion ou n8n](comparatifs/iterion-vs-n8n.md) — comparaison ciblée.
-- [Fonctionnalités d’Iterion](comparatifs/inventaire-fonctionnalites-iterion.md) — 139 critères dans seize familles.
-- [Méthode et sources](comparatifs/methode-et-sources.md) — portée des capacités et des intégrations proposées.
+- [Iterion and alternatives](comparisons/index.md) — agent workflow architectures, developer experience and decision criteria.
+- [Feature matrix](comparisons/feature-matrix.md) — 21 features across 10 products, with sources and conditions.
+- [Iterion feature inventory](comparisons/feature-inventory.md) — 140 criteria across 16 categories.
+- [Methodology and sources](comparisons/methodology.md) — capability scope and proposed integrations.
 
 ## Author `.bot` workflows
 
