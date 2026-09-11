@@ -1442,6 +1442,26 @@ a caller to read. The three fixtures that modelled an endless collection with a
 constant cursor were modelling an endless *collection* through a degenerate
 *protocol*; they advance it now, which is what a real vendor does.
 
+### Answered by verification — two open questions that are not defects
+
+**No surface holds a resolver across runs**, so `FSCatalog`'s per-catalog cache
+cannot leave a stale package serving live calls after a `connectors gen`. All
+five callers of `runview.LocalConnectors` build one per unit of work:
+`pkg/cli/run.go:558`, `pkg/cli/resume_helpers.go:125`,
+`Service.localConnectors` (per launch, with its own `workDirOverride`),
+`dispatcher/engine_runner.go:325` (per dispatch) and `dispatcher/subbot.go:144`
+(per subbot). The cache's lifetime is a run's.
+
+**`identOrStr` is NOT pure with respect to the buffer**, and answering "yes"
+would have been the comfortable wrong answer. It writes nothing to the output
+text, but `buf.str` sets `b.needsStrict` (`pkg/dsl/unparse/unparse.go:134`),
+which makes the whole document render again in strict mode — a load-bearing
+flag, not a side effect to remove. Go evaluates arguments left to right, so the
+flag is set before `writeQuotedProp` runs and there is no aliasing bug. The
+reviewer is right that the round-trip tests do not distinguish a pure helper
+from one that happens to write nothing on the shapes they cover; what makes
+this safe is the flag's meaning, not the tests.
+
 ### Answered, not fixed: the two boundaries the reviewer marked as open
 
 Neither is a defect to close in this branch, and both are worth writing down
@@ -1458,21 +1478,50 @@ queued, a pod is provisioned, and the refusal arrives at the node. That is the
 honest state of the P0 boundary: local-only, discovered late, and the fix is
 the cloud connection store rather than a second gate in front of it.
 
-**The no-duplicate-mutation guarantee is local.** `retrypolicy.AutoResumable`
-has exactly one consumer — the CLI's `--auto-resume` gate. The cloud re-drive
-paths do not consult it: `runner.classifyExecResult` carves out budget and
-`fail`-node deaths by name and has no arm for `AMBIGUOUS_EFFECT`, and neither
-NATS redelivery, the orphan sweeper's CAS flip, nor the outcome router's
-relaunch reads that table. So on a deployment the code is headed for, an
-undecided mutation would be re-driven.
+**The no-duplicate-mutation guarantee on the cloud — checked path by path.**
+An earlier draft of this paragraph said the cloud re-drive paths do not consult
+the classification at all. That is not what the code does, and the correction
+matters: a safety property recorded as absent gets re-implemented by whoever
+reads it next, on top of the guard already there.
 
-It is unreachable **today**, and only because of the row above: with no
-resolver on the runner, no action node runs on cloud, so nothing there can
-produce the classification. `runtime.AmbiguousEffect` is an open interface,
-though, and the day a second producer implements it — or the day the cloud
-connection store lands — the hole is live. **The carve-out belongs in the same
-change as the cloud store, not after it**; shipping the store first would make
-the guarantee false on the deployment that finally exercises it.
+`retrypolicy.AutoResumable` does have exactly one consumer, the CLI's
+`--auto-resume` gate. But it is one predicate over `Classify`, and the runner
+reads the SAME table through the other one, `IsDeterministic`, at two sites:
+
+- **NATS redelivery — honours it.** `pkg/runner/loop.go:350` drops the
+  redelivery of a run already parked on a reserved deterministic code
+  (`ack-deliberate-failure`), and `pkg/runner/loop.go:823` acks rather than
+  redelivers an execution that failed with one, its own comment naming "the one
+  table both this path and the CLI's `--auto-resume` loop read".
+  `AMBIGUOUS_EFFECT` is reserved and `DispositionDeterministic`, so both arms
+  cover it. `classifyExecResult` has no arm for it BY NAME, which is the point:
+  the generic arm is what makes a new deterministic code inherit the behaviour
+  instead of needing to be remembered.
+- **The outcome router — does not read it, and re-drives nothing.**
+  `pkg/server/outcome_router.go:20` states that relaunch/resume execution is
+  not enabled; a `DecisionRelaunch` records `RouteDecisionFailed` and asks for
+  an operator. To be wired **in the same change** that enables relaunch
+  execution, which is exactly the kind of thing that ships without it.
+- **The queue sweeper — the real gap, and not one the table can close.** It
+  flips a lease-less run to `store.FailureProcessOrphaned`
+  (`pkg/server/queue_sweeper.go:217`), classified `DispositionInfrastructure`:
+  neither deterministic nor transient, so the run IS re-driven — correctly, for
+  a pod that died before doing anything.
+
+That last row is the honest limit, and it is worth stating as a limit rather
+than a bug: **a process killed between the request leaving and the response
+being classified produces no classification at all.** The engine never decided,
+so no guard keyed on its decision can fire. What the lot promises is therefore
+"iterion will not itself replay a mutation it knows is undecided", not "a
+mutation can never be sent twice" — and the only thing that covers the crash is
+the vendor's own idempotency key, which is why `idempotency_key_param` is
+cross-checked against the operation's parameters and is the predicate
+`Retryable` reads.
+
+All of this is unreachable **today** for the reason the row above gives: no
+resolver on the runner means no action node runs on cloud. The cloud
+`connection.Store` is what makes it live, so the sweeper's write-ahead question
+belongs in that change — not after it.
 
 ### And the shape `CheckConnectorID` refuses, on the DERIVED half
 
