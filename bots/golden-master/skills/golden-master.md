@@ -193,6 +193,12 @@ a term that reads green by being vacuous. A single selfcheck report separates th
 `holdout_awaiting_gate: true` with a non-zero `holdout_total` is the right order; a zero
 `holdout_total` beside it means nothing was ever sealed.
 
+The run that DRAWS a successor never writes the opt-in for it. The flag is read from the config
+being judged at every gate, so one written in advance is read by that same run's gate minutes
+later: it seals the committed set on the spot, scores both sets at once and leaves the next gate
+back at `0/0` — after moving tracked files out from under git as uncommitted deletions. Whoever
+owns the later gate writes it, when that gate is the one about to run.
+
 Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
 a supervising process needs to see them:
 
