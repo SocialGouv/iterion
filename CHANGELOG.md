@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.138.0](https://github.com/SocialGouv/iterion/compare/v3.137.0...v3.138.0) (2026-09-11)
+
+### Features
+
+* **connector:** the connector catalog — deterministic nodes over generated packages (P0) ([#1119](https://github.com/SocialGouv/iterion/issues/1119)) ([603d2a1](https://github.com/SocialGouv/iterion/commit/603d2a1e3314252dd2995e3bfaa4a7394e13093b)), references [#1072](https://github.com/SocialGouv/iterion/issues/1072) [#1073](https://github.com/SocialGouv/iterion/issues/1073) [#1072](https://github.com/SocialGouv/iterion/issues/1072) [#1092](https://github.com/SocialGouv/iterion/issues/1092) [#1092](https://github.com/SocialGouv/iterion/issues/1092) [#1067](https://github.com/SocialGouv/iterion/issues/1067)
+
+    <details><summary>why</summary>
+
+    A connector's operations are data — a method, a path, flat typed params, a typed result, closed error classes — generated from the vendor's own API description and refined by an authored overlay. One model serves both offers: the deterministic `tool … action:` path and the MCP facade differ in who chooses the arguments, never in what the call is.
+
+    </details>
+
 ## [3.137.0](https://github.com/SocialGouv/iterion/compare/v3.136.3...v3.137.0) (2026-09-11)
 
 ### Features
