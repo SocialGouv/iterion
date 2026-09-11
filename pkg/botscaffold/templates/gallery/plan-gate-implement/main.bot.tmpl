@@ -90,7 +90,7 @@ workflow <%.WorkflowName%>:
   first_round -> plan with { feedback: "{{outputs.first_round.feedback}}" }
   plan -> approve
   approve -> implement when approve
-  approve -> plan when not approve as replan(3) with { feedback: "{{outputs.approve.feedback}}" }
+  approve -> plan when not approve as replan(2) with { feedback: "{{outputs.approve.feedback}}" }
   ## The loop-exhaustion exit: the third rejection lands here.
   approve -> plan_rejected
   implement -> done

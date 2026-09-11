@@ -64,7 +64,7 @@ export function emptyDraft(): BuilderDraft {
     backend: "",
     skills: [],
     vars: [],
-    worktree: false,
+    worktree: true,
     sandbox: false,
     permission: "off",
     maxCostUsd: "",

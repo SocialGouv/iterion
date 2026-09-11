@@ -62,8 +62,14 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened)
 		return h, err
 	})
-	if cli != studio || cli != resume {
-		t.Errorf("the surfaces disagree: cli=%s studio=%s resume=%s", cli, studio, resume)
+	// The shared helper every path-driven surface compiles through (the
+	// dispatcher's engine path, rewind, the export).
+	pathHelper := hashOf("runview.CompileWorkflowPath on the bare main.bot", func() (string, error) {
+		_, h, _, err := runview.CompileWorkflowPath(mainBot)
+		return h, err
+	})
+	if cli != studio || cli != resume || cli != pathHelper {
+		t.Errorf("the surfaces disagree: cli=%s studio=%s resume=%s path=%s", cli, studio, resume, pathHelper)
 	}
 	// The hash covers the bundle's prompts: editing one moves it.
 	mission := filepath.Join("bots", "mf", "prompts", "mission.md")

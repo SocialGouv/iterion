@@ -59,7 +59,18 @@ func TestVerifiedActionPostconditionAssertsTheGoal(t *testing.T) {
 	spec := tpl.Spec
 	spec.Slug = "tagger"
 	_, w, _ := scaffoldAndCompile(t, spec)
-	action := nodesOf[*ir.ToolNode](w)[0]
+	var action, free *ir.ToolNode
+	for _, n := range nodesOf[*ir.ToolNode](w) {
+		switch n.ID {
+		case "tag_release":
+			action = n
+		case "tag_free":
+			free = n
+		}
+	}
+	if action == nil || free == nil {
+		t.Fatal("want the tag_free gate and the tag_release action")
+	}
 	const tag = "v1.2.3"
 	subst := func(s string) string {
 		t.Helper()
@@ -69,7 +80,7 @@ func TestVerifiedActionPostconditionAssertsTheGoal(t *testing.T) {
 		}
 		return out
 	}
-	recipe, post := subst(action.Command), subst(action.Postcondition)
+	recipe, post, isFree := subst(action.Command), subst(action.Postcondition), subst(free.Command)
 
 	repo := t.TempDir()
 	gittest.Run(t, repo, "init", "-q")
@@ -87,14 +98,37 @@ func TestVerifiedActionPostconditionAssertsTheGoal(t *testing.T) {
 			t.Fatalf("%s: the postcondition reported the goal met (stdout %q)", state, out)
 		}
 	}
+	// The tag_free gate: `{"free":true}` while the name is unused, false the
+	// moment any tag of that name exists — on any commit.
+	wantFree := func(state string, want bool) {
+		t.Helper()
+		out, stderr, err := shellInRepo(repo, isFree)
+		if err != nil {
+			t.Fatalf("%s: tag_free failed: %v\n%s", state, err, stderr)
+		}
+		var got struct {
+			Free bool `json:"free"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil || got.Free != want {
+			t.Fatalf("%s: tag_free stdout = %q, want free=%v: %v", state, out, want, err)
+		}
+	}
+	// Outside a repository the gate refuses by name rather than answering
+	// "free" to a question it could not ask.
+	if out, stderr, err := shellInRepo(t.TempDir(), isFree); err == nil || !strings.Contains(stderr, "not a git repository") {
+		t.Fatalf("outside a repository tag_free answered %q (err %v, stderr %q); want a named refusal", out, err, stderr)
+	}
 	commit("one")
 
 	// Before the recipe the goal is unmet: the skip rung must not fire.
 	unmet("no tag")
+	wantFree("no tag", true)
 	// A LIGHTWEIGHT tag on HEAD is not the goal either (`git tag <name>`,
-	// the plausible repair of "tag already exists", makes one).
+	// the plausible repair of "tag already exists", makes one) — and it
+	// makes the name TAKEN for the gate.
 	gittest.Run(t, repo, "tag", tag)
 	unmet("lightweight tag on HEAD")
+	wantFree("lightweight tag on HEAD", false)
 	gittest.Run(t, repo, "tag", "-d", tag)
 	// The recipe, then the postcondition: met, and its stdout is the
 	// node's output — the JSON the `tagged` schema wants, nothing else.
@@ -113,7 +147,9 @@ func TestVerifiedActionPostconditionAssertsTheGoal(t *testing.T) {
 	}
 	// A later commit leaves the tag EXISTING but stale: the goal is unmet
 	// again, and a postcondition that only checked existence would let the
-	// skip rung report an earlier run's tag as this run's success.
+	// skip rung report an earlier run's tag as this run's success — while
+	// the gate of a NEXT run with the same name refuses it as taken.
 	commit("two")
 	unmet("stale annotated tag")
+	wantFree("stale annotated tag", false)
 }

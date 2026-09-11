@@ -10,14 +10,20 @@
 ## recipe IS its postcondition (C105). The commit lands in a per-run git
 ## worktree — the TAG does not: git tags live in the repository's SHARED
 ## ref store, so it stays in your repo even when the run is discarded or
-## its merge is skipped, and a second run with the same name meets the
-## previous tag (the postcondition refuses it as stale, then recovery can
-## only force-move it). Hence `tag` is REQUIRED and per run: an entry gate
-## refuses an empty one before the agent runs. Fill in: the mission,
-## `tag`. docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
+## its merge is skipped. Hence `tag` is REQUIRED and per run, and a name
+## that is already TAKEN is refused before the agent runs, deterministic
+## and typed: were it left to the recipe, `git tag -a` would fail on
+## "already exists" and the repair rung's only way to satisfy the goal
+## would be `git tag -f` — a force-move of a tag that may be pushed. A
+## recovery rung must never have a destructive gesture as its only exit.
+## Fill in: the mission, `tag`.
+## docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md
 <%template "vars_block" .%>
 schema check_out:
   configured: bool
+
+schema tag_free_out:
+  free: bool
 
 schema prep_out:
   summary: string
@@ -42,19 +48,26 @@ compute check:
   expr:
     configured: "!!vars.tag"
 
+## The second gate, still before the agent: the name must be FREE. An
+## existing tag — on any commit — is a typed refusal here, never a case
+## for the action's recovery rung to "heal".
+tool tag_free:
+  command: `git rev-parse --git-dir >/dev/null 2>&1 || { echo "tag_free: not a git repository" >&2; exit 1; }; if git rev-parse -q --verify refs/tags/{{vars.tag}} >/dev/null; then printf '{"free":false}'; else printf '{"free":true}'; fi`
+  output: tag_free_out
+
 agent prepare:<%template "llm_fields" .%>
   system: mission
   user: prep_user
   output: prep_out
 
-## The quad. The recipe may be brittle (the tag already exists, the
-## working tree is dirty); the postcondition decides, and its JSON on
-## stdout is the node's output on every rung, the skip included. It
-## asserts the GOAL, not a weaker consequence: the object behind
-## refs/tags/<tag> is a tag object (annotated — a lightweight tag is a
-## bare ref and satisfies `^{commit}` alone) AND it points at HEAD — a
-## tag that merely exists would let the idempotent-skip rung accept a
-## stale one from an earlier run as success. A {{ref}} in a command is
+## The quad. The recipe may be brittle (the working tree is dirty, the
+## tagger identity is missing in a fresh sandbox); the postcondition
+## decides, and its JSON on stdout is the node's output on every rung,
+## the skip included. It asserts the GOAL, not a weaker consequence: the
+## object behind refs/tags/<tag> is a tag object (annotated — a
+## lightweight tag is a bare ref and satisfies `^{commit}` alone) AND it
+## points at HEAD — a tag that merely exists would let the idempotent-skip
+## rung accept a stale one as success. A {{ref}} in a command is
 ## shell-escaped by the runtime, so it stays OUTSIDE quotes you write:
 ## here in the `$(…)` assignments, never inside the `"…"` tests (C137).
 tool tag_release:
@@ -72,6 +85,11 @@ fail tag_unset:
   code: TAG_UNSET
   message: "tag is empty: name the annotated tag this run creates (a per-run name — the previous run's tag is still in the shared ref store)"
 
+fail tag_taken:
+  description: "the tag name already exists in the repository"
+  code: TAG_TAKEN
+  message: "refs/tags/{{vars.tag}} already exists: a tag lives in the repository's shared ref store and outlives runs — pick a fresh per-run name; this run will not force-move it"
+
 workflow <%.WorkflowName%>:
   entry: check
   ## The commit lands in a per-run git worktree — the tag does not (see
@@ -79,6 +97,8 @@ workflow <%.WorkflowName%>:
   ## worktree.
   worktree: auto<%template "dials" .%><%template "budget_block" .%>
   check -> tag_unset when not configured
-  check -> prepare when configured
+  check -> tag_free when configured
+  tag_free -> tag_taken when not free
+  tag_free -> prepare when free
   prepare -> tag_release
   tag_release -> done

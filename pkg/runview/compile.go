@@ -245,3 +245,21 @@ func BundleNameForPath(filePath string) string {
 	}
 	return b.Manifest.Name
 }
+
+// CompileWorkflowPath compiles the workflow at path the way a launch
+// does: a bare main.bot inside a bundle directory is promoted to its
+// bundle (prompts/*.md in scope, the bundle's hash), any other file
+// compiles alone. The promoted bundle is returned (nil for a plain
+// file) so the caller can hand it to the run — the promotion is the
+// WHOLE bundle, skills/ included, not the compile alone. Every surface
+// that derives a run's hash from a PATH — the dispatcher's engine path,
+// rewind, the export, a recipe's file — goes through it, so a run
+// launched on one surface resumes on another without `--force`.
+func CompileWorkflowPath(path string) (*ir.Workflow, string, *bundle.Bundle, error) {
+	if b := ResolveBundleFromFilePath(path); b != nil {
+		wf, hash, err := CompileBundleWorkflow(b.IterPath, b)
+		return wf, hash, b, err
+	}
+	wf, hash, err := CompileWorkflowWithHash(path)
+	return wf, hash, nil, err
+}

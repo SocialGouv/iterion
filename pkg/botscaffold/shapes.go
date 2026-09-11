@@ -15,7 +15,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
-	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // The gallery shapes: one directory per shape under templates/gallery/,
@@ -193,7 +192,7 @@ func sortedAnnexes(annexes map[string][]byte) []string {
 
 // mergeAnnexPrompts declares a shape's prompts/*.md annexes on the parsed
 // file through the ONE rule every launch surface merges bundle prompts by
-// (runview.MergePromptFiles, the same function MergeBundlePrompts reads a
+// (bundle.MergePromptFiles, the same function MergeBundlePrompts reads a
 // bundle on disk into) — so the compile guard judges the workflow the way
 // it will run: a `system: mission` that lives in prompts/mission.md
 // compiles here, a stem nothing ships is refused, and a change to the
@@ -203,7 +202,7 @@ func mergeAnnexPrompts(f *ast.File, annexes map[string][]byte) {
 	for rel, body := range annexes {
 		files[rel] = string(body)
 	}
-	runview.MergePromptFiles(f, files, "")
+	bundle.MergePromptFiles(f, files, "")
 }
 
 // GeneratedError is a generated workflow the runtime's own pipeline

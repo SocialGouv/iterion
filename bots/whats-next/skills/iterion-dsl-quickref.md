@@ -517,7 +517,9 @@ shipped bots, so they are written here:
   `src -> exit` is the one legal pair of unconditional edges (the back-edge is
   exempt from C010); without the bare edge a spent loop leaves the node with
   no edge to take and the run fails `NO_OUTGOING_EDGE` (the log names the
-  exhausted loop).
+  exhausted loop). `as name(N)` allows N back-edge CROSSINGS — N+1 executions
+  of the body — so a var that counts passes feeds the cap as `passes - 1`
+  (the `campaign-loop` template derives it in its gate, re-evaluated on every pass).
 - **`outputs.*` needs no threading.** `{{outputs.<node>.<field>}}` is
   readable from any node that runs after the producer; `{{input.<field>}}`
   only carries the node's declared input and what an edge `with` mapped.
@@ -777,7 +779,7 @@ one whose graph matches, then edit the prompts, the vars and the edges:
 | `plan-gate-implement` | read-only plan → `human` gate (bounded re-plan) → implement in a worktree |
 | `scheduled-digest` | collect (`tool`) → digest (agent) → verify the artifact (`tool`), the cron in the manifest |
 | `per-ticket-subbots` | list (`tool`) → `fan_out_each` → an isolated `subbot` per item → `compute` fan-in |
-| `verified-action` | an entry gate (unset `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
+| `verified-action` | entry gates (unset or TAKEN `tag` = typed refusal) → an agent prepares → a `tool` with `goal` + `postcondition` + `policy: recover` + `recovery` |
 | `async-questions` | an `interaction: async` agent → an `await_answers` gate → a finalizer |
 | `multi-file` | the graph in `main.bot`, the prompts in `prompts/*.md`, the knowledge in `skills/` |
 

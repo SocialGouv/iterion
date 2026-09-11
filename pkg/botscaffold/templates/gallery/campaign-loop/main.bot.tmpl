@@ -37,6 +37,14 @@ schema verify_out:
 
 schema gate_out:
   converged: bool
+  ## The loop's cap: `as name(N)` allows N back-edge crossings, i.e. N+1
+  ## executions of the body, so `max_passes` PASSES are the first one plus
+  ## max_passes-1 re-entries. Derived HERE, in the node the back-edge
+  ## leaves, because it re-executes on every pass and on a resume — a
+  ## resume re-resolves the vars but never re-runs the entry, so a cap
+  ## derived at the entry would be frozen in the checkpoint and "raise
+  ## max_passes and resume" would change nothing.
+  passes_after_first: int
 
 prompt mission:
 <%indent 2 .Instructions%>
@@ -95,10 +103,13 @@ tool verify:
   output: verify_out
 
 ## Deterministic convergence: the flag AND the verdict, no LLM in the loop.
+## It also re-derives the loop's cap from the vars on every pass (see
+## gate_out), so a resume with a raised max_passes takes the back-edge.
 compute gate:
   output: gate_out
   expr:
     converged: "outputs.campaign.work_complete && outputs.verify.ok"
+    passes_after_first: "vars.max_passes - 1"
 
 fail misconfigured:
   description: "the campaign has no verifier, or no pass to run"
@@ -122,6 +133,8 @@ workflow <%.WorkflowName%>:
   campaign -> verify
   verify -> gate
   gate -> done when converged
-  gate -> campaign when not converged as passes("{{vars.max_passes}}") with { previous_verify: "{{outputs.verify.detail}}" }
+  ## The cap counts re-entries: max_passes passes in all (the gate derives
+  ## max_passes-1 on every pass; the entry gate refuses a bound under 1).
+  gate -> campaign when not converged as passes("{{outputs.gate.passes_after_first}}") with { previous_verify: "{{outputs.verify.detail}}" }
   ## The loop-exhaustion exit: taken when the back-edge is declined.
   gate -> passes_exhausted

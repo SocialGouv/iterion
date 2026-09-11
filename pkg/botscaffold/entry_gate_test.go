@@ -11,6 +11,12 @@ import (
 // compute — the entry gate that refuses an unfilled placeholder.
 func configuredExpr(t *testing.T, shape string) *expr.AST {
 	t.Helper()
+	return gateExpr(t, shape, "check", "configured")
+}
+
+// gateExpr returns one expression of a shape's compute `node` by key.
+func gateExpr(t *testing.T, shape, node, key string) *expr.AST {
+	t.Helper()
 	tpl, ok := TemplateByID(shape)
 	if !ok {
 		t.Fatalf("no %s template", shape)
@@ -19,16 +25,16 @@ func configuredExpr(t *testing.T, shape string) *expr.AST {
 	spec.Slug = "gate"
 	_, w, _ := scaffoldAndCompile(t, spec)
 	for _, c := range nodesOf[*ir.ComputeNode](w) {
-		if c.ID != "check" {
+		if c.ID != node {
 			continue
 		}
 		for _, e := range c.Exprs {
-			if e.Key == "configured" {
+			if e.Key == key {
 				return e.AST
 			}
 		}
 	}
-	t.Fatalf("%s: no `configured` expression on compute check", shape)
+	t.Fatalf("%s: no `%s` expression on compute %s", shape, key, node)
 	return nil
 }
 
@@ -78,6 +84,12 @@ func TestEntryGatesRefuseAnUnfilledPlaceholder(t *testing.T) {
 	}
 	if _, err := evalGate(t, campaign, map[string]any{"verify_command": "go test ./...", "max_passes": "lots"}); err == nil {
 		t.Errorf("campaign-loop: a non-numeric bound evaluated instead of failing the gate loudly")
+	}
+	// The loop cap the GATE derives on every pass (never the entry, which a
+	// resume does not re-run): `as passes(N)` allows N re-entries, so
+	// max_passes PASSES are max_passes-1 crossings.
+	if got, err := evalGate(t, gateExpr(t, "campaign-loop", "gate", "passes_after_first"), map[string]any{"verify_command": "make check", "max_passes": int64(4)}); err != nil || got != int64(3) {
+		t.Errorf("campaign-loop passes_after_first(4) = %v, %v; want 3", got, err)
 	}
 
 	action := configuredExpr(t, "verified-action")

@@ -153,12 +153,19 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		r.workflowPath = opened.IterPath
 		r.bundle = opened
 	default:
-		wf, h, compileErr := runview.CompileWorkflowWithHash(workflowPath)
+		// A bare <bundle>/main.bot is promoted to its bundle: the hash and
+		// the prompts the other surfaces use, AND the handle, so the
+		// bundle's skills/ reach the run as they do from `iterion run`.
+		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath)
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile %s: %w", workflowPath, compileErr)
 		}
 		r.workflow = wf
 		r.workflowHash = h
+		if promoted != nil {
+			r.workflowPath = promoted.IterPath
+			r.bundle = promoted
+		}
 	}
 	return r, nil
 }

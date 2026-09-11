@@ -103,6 +103,12 @@ func Templates() []Template {
 			Description: "Start from scratch: one agent, your instructions.",
 			Spec: Spec{
 				Instructions: "You are a helpful engineering agent. Describe your mission here:\nwhat to investigate, what to produce, and how to verify it before\nreporting mission_complete=true.",
+				// Isolated by default: a blank agent carries the full native
+				// toolset and may edit and commit, so its run gets a per-run
+				// worktree and a storage branch — `none` is the opt-out an
+				// author picks (a digest that must land in the checkout, a
+				// reviewer of pending changes, a triager that writes nothing).
+				Worktree: true,
 			},
 		},
 		{
@@ -129,7 +135,7 @@ func Templates() []Template {
 			Spec: Spec{
 				Description:  "Reviews the working tree / branch diff and reports findings.",
 				WhenToUse:    "Use to review pending changes before a merge — read-only, no fixes.",
-				Instructions: "Review this repository's pending changes for CORRECTNESS: run\n`git add -N . && git diff HEAD` (or `git diff {{vars.base}}` when a base\nis given) and hunt for real bugs — logic errors, missed edge cases,\nsecurity issues, races. Read enough surrounding code to judge each\nfinding; discard style nits. Report each confirmed finding with\nfile:line, the failure scenario, and a suggested fix. Do NOT edit any\nfile: you are read-only.",
+				Instructions: "Review this repository's pending changes for CORRECTNESS: read\n`git diff HEAD` (or `git diff {{vars.base}}` when a base is given) and\nthe files git does not track yet with `git ls-files --others\n--exclude-standard -z | xargs -0 -I{} git diff --no-index -- /dev/null {}`\n(exit 1 per file and 123 for the batch mean there is a diff, not a\nfailure), and hunt for real bugs — logic errors, missed edge cases,\nsecurity issues, races. Read enough surrounding code to judge each\nfinding; discard style nits. Report each confirmed finding with\nfile:line, the failure scenario, and a suggested fix. Do NOT edit any\nfile and write nothing to the index: you are read-only, in the\noperator's checkout.",
 				Vars: []VarSpec{
 					{Name: "base", Type: "string", Default: "", Description: "Optional base ref to diff against (empty = working tree vs HEAD)."},
 				},

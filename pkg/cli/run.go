@@ -789,7 +789,9 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if !workflowfile.IsWorkflowFile(filePath) {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("recipe workflow path %q must end in .bot", filePath)
 		}
-		raw, h, compileErr := runview.CompileWorkflowWithHash(filePath)
+		// A recipe's `--file` may be a bare <bundle>/main.bot: promoted to
+		// its bundle, handle included, so its skills/ reach the run.
+		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath)
 		if compileErr != nil {
 			return nil, "", "", "", nil, cleanup, compileErr
 		}
@@ -797,7 +799,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if applyErr != nil {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, applyErr)
 		}
-		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", nil, cleanup, nil
+		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", promoted, cleanup, nil
 	}
 	if opts.File == "" {
 		return nil, "", "", "", nil, cleanup, fmt.Errorf("provide a .bot file, .botz bundle, or --recipe")

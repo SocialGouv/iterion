@@ -153,6 +153,12 @@ func TestGalleryShapes(t *testing.T) {
 			if e := edge(w, "gate", "campaign"); e == nil || e.LoopName == "" || len(e.With) == 0 {
 				t.Errorf("want the loop back-edge gate -> campaign carrying a with-mapping, got %+v", e)
 			}
+			// `as name(N)` allows N crossings = N+1 passes: the cap is derived
+			// from max_passes-1 by the GATE on every pass (a resume never re-runs the
+			// entry), so max_passes counts PASSES and a raised cap resumes.
+			if l, ok := w.Loops["passes"]; !ok || !strings.Contains(l.MaxIterationsExpr, "outputs.gate.passes_after_first") {
+				t.Errorf("loop passes cap = %+v; want it derived from the gate's passes_after_first", l)
+			}
 			wantExit(t, w, "gate", "passes_exhausted")
 		},
 		"review-fanout": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
@@ -322,11 +328,15 @@ func TestGalleryShapes(t *testing.T) {
 			}
 		},
 		"verified-action": func(t *testing.T, dir string, w *ir.Workflow, _ int) {
-			tools := nodesOf[*ir.ToolNode](w)
-			if len(tools) != 1 {
-				t.Fatalf("want the one verified action, got %d tool nodes", len(tools))
+			var a *ir.ToolNode
+			for _, tool := range nodesOf[*ir.ToolNode](w) {
+				if tool.ID == "tag_release" {
+					a = tool
+				}
 			}
-			a := tools[0]
+			if a == nil || len(nodesOf[*ir.ToolNode](w)) != 2 {
+				t.Fatalf("want the tag_free gate and the tag_release action, got %d tool nodes", len(nodesOf[*ir.ToolNode](w)))
+			}
 			if a.Goal == "" || a.Postcondition == "" || a.Policy != "recover" || a.Recovery == nil {
 				t.Errorf("want the full quad (goal, postcondition, policy: recover, recovery), got goal=%q postcondition=%q policy=%q recovery=%v", a.Goal, a.Postcondition, a.Policy, a.Recovery)
 			}
@@ -351,11 +361,20 @@ func TestGalleryShapes(t *testing.T) {
 			if e := edge(w, "check", "tag_unset"); e == nil || e.Condition != "configured" || !e.Negated {
 				t.Errorf("want check -> tag_unset when not configured, got %+v", e)
 			}
-			if e := edge(w, "check", "prepare"); e == nil || e.Condition != "configured" || e.Negated {
-				t.Errorf("want check -> prepare when configured, got %+v", e)
+			if e := edge(w, "check", "tag_free"); e == nil || e.Condition != "configured" || e.Negated {
+				t.Errorf("want check -> tag_free when configured, got %+v", e)
 			}
-			if len(typedFails(w)) != 1 {
-				t.Errorf("want the typed unset-tag refusal, got %d typed fails", len(typedFails(w)))
+			// A name already TAKEN is a typed refusal before the agent runs,
+			// never a case for the recovery rung — whose only way to "heal" an
+			// existing tag would be a force-move in the shared ref store.
+			if e := edge(w, "tag_free", "tag_taken"); e == nil || e.Condition != "free" || !e.Negated {
+				t.Errorf("want tag_free -> tag_taken when not free, got %+v", e)
+			}
+			if e := edge(w, "tag_free", "prepare"); e == nil || e.Condition != "free" || e.Negated {
+				t.Errorf("want tag_free -> prepare when free, got %+v", e)
+			}
+			if len(typedFails(w)) != 2 {
+				t.Errorf("want the typed unset-tag and taken-tag refusals, got %d typed fails", len(typedFails(w)))
 			}
 			if v, ok := w.Vars["tag"]; !ok || v.Default != "" {
 				t.Errorf("tag default = %v; a fixed tag name collides with itself on the next run", v)
