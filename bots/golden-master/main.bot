@@ -7938,7 +7938,27 @@ compute oracle_gate:
     ## defect was an unproved class went green while every docstring in the
     ## harness claimed the gate checked it. A proof obligation nothing refuses is
     ## a waiver with extra steps.
-    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
+    ##
+    ## `holdout_total > 0` is the FLOOR under the held-out term, and it is a
+    ## TERM rather than a nicety because `holdout_detected == holdout_total` is
+    ## satisfied by `0 == 0`: an EMPTY held-out set passes the gate's strongest
+    ## clause by having nothing to say. The harness distinguishes three ways to
+    ## arrive there and writes a field for each — `holdout_spent_unreplaced`,
+    ## `holdout_awaiting_gate`, `holdout_sealed_uncommitted` — and none of the
+    ## three is read by anything: they are not declared in `schema
+    ## oracle_output`, so C031 makes a term over them impossible to write at
+    ## all. Measured on a live campaign and recorded in the harness's own
+    ## comment: thirteen spent cycles, no set redrawn, every landing reporting
+    ## `held-out detected 0/0` through a clause that was vacuously true.
+    ##
+    ## The floor sits HERE, on the rite's own convergence gate, because the rite
+    ## is who OWES the next set — drawing, sealing and scoring them is its
+    ## whole job. It is deliberately absent from RUNNER_VERDICT_PY, which a
+    ## lot's verify runs: a lot cannot discharge a debt only a rite can pay, and
+    ## a floor there would refuse trees whose defect is somewhere else entirely.
+    ## That asymmetry is stated on the runner's `ok`, where it is visible to
+    ## whoever reads the weaker of the two gates.
+    converged: "outputs.oracle_run.stable && outputs.oracle_run.noop_silent && outputs.oracle_run.revert_clean && outputs.oracle_run.collateral == 0 && length(outputs.oracle_run.unstable_controls) == 0 && length(outputs.oracle_run.uncontrolled) == 0 && length(outputs.oracle_run.blind_lanes) == 0 && length(outputs.oracle_run.missing_archetypes) == 0 && length(outputs.oracle_run.duplicate_groups_unproven) == 0 && outputs.oracle_run.corpus_distinct >= vars.min_corpus && outputs.oracle_run.runner_replayable && length(outputs.oracle_run.holdout_reused) == 0 && outputs.oracle_run.score_pct >= vars.mutation_floor && outputs.oracle_run.holdout_total > 0 && outputs.oracle_run.holdout_detected == outputs.oracle_run.holdout_total"
     fail_log: "outputs.oracle_run.log_tail"
 
 ## emit_runner — one entry point for CI and for humans, plus the report a
@@ -7996,6 +8016,23 @@ tool emit_runner:
         # the standalone entry point is what CI and humans run.
         "    and r.get(\"runner_replayable\") and not r.get(\"holdout_reused\")\n"
         "    and r.get(\"holdout_detected\")==r.get(\"holdout_total\"))\n"
+        # THE ONE TERM THIS VERDICT DOES NOT CARRY, stated so it is a decision
+        # and not an oversight: the graph gate also requires `holdout_total > 0`
+        # — the floor that stops `0 == 0` from satisfying the line above — and
+        # this one does not. The split follows who can DISCHARGE the debt. A
+        # rite draws, seals and scores held-out sets, so an empty one is its own
+        # failure and its gate refuses. This entry point is what a lot's verify
+        # and CI run, on a net they did not build: a floor here would turn every
+        # later lot red for a set only a rite can redraw, refusing trees whose
+        # defect is somewhere else entirely. The state is not silent, it is
+        # reported below by name.
+        #
+        # That makes this verdict knowingly weaker than the graph gate on
+        # exactly one term. The parity check in bots/ compares the two on the
+        # FIELDS they read, and `holdout_total` is read here, so it cannot see
+        # this difference: the bench that pins it is the one asserting the floor
+        # is in the conjunction.
+        #
         # A notice is never fatal, but it must never be silent either: the one
         # that matters here says the held-out figure is 0/0 because the set was
         # spent and published, and a CI job reading only an exit code would
