@@ -132,3 +132,101 @@ func TestAWalkStopsOnItsByteBudget(t *testing.T) {
 		t.Errorf("Bytes = %d, want the walk's TOTAL (%d) — it is what the budget is measured in", last.Bytes, requests*len(body))
 	}
 }
+
+// TestAWalkThatFailsMidWayStillReportsWhatItSpENT.
+//
+// The two tests above walk to a clean stop, which is the only shape the
+// accounting held for: the cumulative count was assigned AFTER the two failure
+// returns, so a walk that died on page 18 handed back the failing page's own
+// count — 1 for an HTTP error, 0 for a transport failure.
+//
+// That is the exact under-reporting `Result.Requests`' own doc comment says it
+// exists to end, still live on the path an operator most needs it: a `retry: 3`
+// node adds `res.Requests` per attempt, so eighteen spent pages were billed as
+// one and the vendor's rate limit was hit from a node reporting a handful of
+// calls.
+func TestAWalkThatFailsMidWayStillReportsWhatItSpent(t *testing.T) {
+	const failOn = 4
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == failOn {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"error":"boom"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"more"}`)
+	}))
+	defer srv.Close()
+
+	e := &Executor{Client: srv.Client()}
+	pkg, op := walkFixture(srv.URL, 50)
+	items, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if complete {
+		t.Error("a walk that died mid-way is not a complete collection")
+	}
+	if len(items) != failOn-1 {
+		t.Errorf("items = %d, want the %d pages that answered", len(items), failOn-1)
+	}
+	if last.Requests != failOn {
+		t.Errorf("Requests = %d, want %d — the vendor served every page before the one that failed, and the node's accounting is the only place that says so",
+			last.Requests, failOn)
+	}
+	if last.Bytes <= 0 {
+		t.Error("Bytes is dropped on the same path and for the same reason — the walk's total must survive the failure")
+	}
+}
+
+// The transport half of the same promise, where the old code was worse still:
+// a page that lost its answer reported ZERO, so the whole walk vanished from
+// the accounting rather than merely shrinking to one.
+//
+// The pages the vendor ANSWERED are the oracle here, not the handler's own
+// call count: net/http replays a GET whose reused connection died, so the
+// handler runs more times than the walk asked for pages.
+func TestAWalkThatDiesOnTransportReportsThePagesItSpent(t *testing.T) {
+	const answerPages = 2
+	var served int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if served < answerPages {
+			served++
+			_, _ = fmt.Fprint(w, `{"items":[{"id":1}],"next":"more"}`)
+			return
+		}
+		// From here the vendor takes the request and never answers.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("the test server must support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	e := &Executor{Client: srv.Client()}
+	pkg, op := walkFixture(srv.URL, 50)
+	_, complete, last, err := e.CallPaged(context.Background(), pkg, op, nil, Credential{SchemeID: "token", Value: "x"})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if complete {
+		t.Error("a walk whose page lost its answer is not a complete collection")
+	}
+	if last.Err == nil {
+		t.Fatal("the walk must carry the failure that stopped it")
+	}
+	// The operation READS, so a lost answer is an ordinary transport failure —
+	// and the page that got no answer is not counted as one the walk got.
+	if last.Requests != answerPages {
+		t.Errorf("Requests = %d, want %d — the pages the vendor answered, and not the one it did not",
+			last.Requests, answerPages)
+	}
+}

@@ -578,17 +578,29 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		}
 
 		res, callErr := e.Call(ctx, pkg, op, walk, cred)
+		// The walk's TOTAL, not the last page's one: what an operator needs to
+		// know is how many of the vendor's rate-limit slots this node spent.
+		//
+		// Counted BEFORE the failure returns below, which is where the promise
+		// this field's own doc makes was still broken: a walk that died on page
+		// 18 handed back the FAILING page's count — 1 for an HTTP error, 0 for
+		// a transport failure — and the node's retry accounting
+		// (`spent += res.Requests`) then reported 21 for a `retry: 3` node the
+		// vendor had served 38 times. `res.Bytes` was dropped the same way.
+		//
+		// `+= n` rather than `= n+1`: Call sets Requests to 1 on the answered
+		// path and leaves it 0 when nothing was sent, and after the pre-send
+		// classification above that zero is the right answer for a page the
+		// vendor never received.
+		res.Requests += n
+		walked += res.Bytes
+		res.Bytes = walked
 		if callErr != nil {
 			return items, false, res, callErr
 		}
 		if !res.OK() {
 			return items, false, res, nil
 		}
-		// The walk's TOTAL, not the last page's one: what an operator needs to
-		// know is how many of the vendor's rate-limit slots this node spent.
-		res.Requests = n + 1
-		walked += res.Bytes
-		res.Bytes = walked
 		last = res
 		batch, found := pageItems(res.Data, p.ItemsField)
 		if !found {

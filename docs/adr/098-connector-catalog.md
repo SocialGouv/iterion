@@ -1410,6 +1410,23 @@ net/http would reject, naming the header and the offending byte and **never**
 the value, since for the auth header the value is the credential. A local
 refusal never reaches the transport classification at all.
 
+### A paginated walk that failed reported one request instead of the pages it spent
+
+`Result.Requests`' own doc comment names the defect it exists to end — *"a
+paginated one that died on page 18 and then walked 20 reported 20 while the
+vendor had served 38"* — and it was still live on the failure path, because the
+cumulative assignment sat **after** the two failure returns. A walk that died
+on page 18 handed back the failing page's own count: 1 for an HTTP error, 0 for
+a transport failure, which erased the whole walk. `res.Bytes` went the same
+way.
+
+`executeToolNodeAction` adds `res.Requests` per attempt, so a `retry: 3` node
+that burned eighteen pages, failed, and then walked twenty reported 21 for 38
+served — and that accounting is the only signal an operator has that one node
+spent dozens of rate-limit slots. Accumulated before the returns now, with a
+test per failure shape (HTTP and transport), each falsified against the old
+placement.
+
 
 ## The ambiguity class, counted across the rounds
 
