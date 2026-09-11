@@ -51,7 +51,8 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 // parseNeedsList parses a node's `needs:` value — either a single resource
 // name (`needs: godot`) or a bracketed list (`needs: [godot, blender]`).
 func (p *parser) parseNeedsList() []string {
-	if p.peek().Type == TokenLBrack {
+	switch p.peek().Type {
+	case TokenLBrack, TokenNewline:
 		return p.parseIdentList()
 	}
 	id := p.expectIdent()
@@ -61,10 +62,17 @@ func (p *parser) parseNeedsList() []string {
 	return []string{id}
 }
 
-// parseBracketList parses a comma-separated `[elem, elem, ...]` list,
-// calling parseElem for each element. parseElem reports ok=false to skip
-// appending (used by parsers that only accept well-formed elements).
+// parseBracketList parses a list in either of its two written forms — the
+// inline `[elem, elem, ...]`, or the YAML-style `- elem` lines indented
+// under the property (parseDashList) — calling parseElem for each element.
+// parseElem reports ok=false to skip appending (used by parsers that only
+// accept well-formed elements). Both forms yield the same list and are
+// accepted in every profile: the inline form stays valid, so admitting the
+// second changed no text's meaning.
 func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []string {
+	if p.peek().Type == TokenNewline {
+		return p.parseDashList(parseElem)
+	}
 	p.expect(TokenLBrack)
 	var out []string
 	appendElem := func() {
@@ -83,6 +91,50 @@ func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []st
 	}
 	p.expect(TokenRBrack)
 	return out
+}
+
+// parseDashList parses the YAML-style form of a list: after the property's
+// colon and newline, an indented block of `- elem` lines, one element per
+// line, comment lines allowed between them, ending where the indentation
+// falls back. It is the form an author with YAML in their fingers writes
+// first; it used to draw three diagnostics per line (a stray `-`, a missing
+// `[`, an unknown property named after the element).
+func (p *parser) parseDashList(parseElem func() (value string, ok bool)) []string {
+	p.next() // the newline after `key:`
+	p.skipNewlines()
+	if t := p.peek(); t.Type != TokenIndent {
+		p.addErrorHint(DiagExpectedToken, t, "expected a list: `[a, b]` after the colon, or `- item` lines indented below the property", "Write `[]` for an empty list.")
+		return nil
+	}
+	p.next() // INDENT
+	var out []string
+	for {
+		t := p.peek()
+		switch t.Type {
+		case TokenDash:
+			p.next()
+			if v, ok := parseElem(); ok {
+				out = append(out, v)
+			}
+			if n := p.peek(); n.Type != TokenNewline && n.Type != TokenComment && n.Type != TokenDedent && n.Type != TokenEOF {
+				p.addError(DiagUnexpectedToken, n, "one `- item` per line: nothing may follow the element but a comment")
+				p.skipToNewline()
+			}
+		case TokenNewline, TokenComment:
+			p.next()
+		case TokenDedent:
+			p.next()
+			return out
+		case TokenEOF:
+			return out
+		case TokenIndent:
+			p.addError(DiagBadIndentation, t, "a list item is `- elem` at the list's own indentation; nothing may be indented deeper")
+			p.skipIndentedBlock()
+		default:
+			p.addErrorHint(DiagExpectedToken, t, "expected `- item` in the list, got "+t.Type.String(), "Every line of the list is `- elem`; close the list by outdenting the next property.")
+			p.skipToNewline()
+		}
+	}
 }
 
 func (p *parser) parseIdentList() []string {
@@ -120,6 +172,16 @@ func (p *parser) parseToolList() []string {
 // the lexer does not treat '-' as an identifier part) or a bare dotted ident
 // (e.g. house_style). Empty list [] is allowed.
 func (p *parser) parseSkillList() []string {
+	if p.peek().Type == TokenNewline {
+		return p.parseDashList(func() (string, bool) {
+			if p.peek().Type == TokenString {
+				v := p.next().Value
+				return v, v != ""
+			}
+			name := p.parseToolRef()
+			return name, name != ""
+		})
+	}
 	p.expect(TokenLBrack)
 	var names []string
 	if p.peek().Type == TokenRBrack {

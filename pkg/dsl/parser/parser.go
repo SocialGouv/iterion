@@ -102,7 +102,20 @@ func (p *parser) expect(tt TokenType) (Token, bool) {
 // diagnosis by addErrorHint, never as "expected INDENT, got Error" plus a
 // hint about opening a block the author did open).
 func (p *parser) expectFailed(t Token, want TokenType, msg string) {
+	if t.Type == TokenNewline && want != TokenIndent && want != TokenNewline && p.dashBlockAhead() {
+		// A `- item` block under a single-valued property: said once, and
+		// the block dropped with it, instead of one stray per line.
+		p.addErrorHint(DiagExpectedToken, t, msg+" — this property takes a single value, not a `- item` list", expectedTokenHint(want, t.Type))
+		p.skipIndentedBlock()
+		return
+	}
 	p.addErrorHint(DiagExpectedToken, t, msg, expectedTokenHint(want, t.Type))
+}
+
+// dashBlockAhead reports whether the next tokens open a YAML-style list
+// (an indented block whose first line is a `- item`).
+func (p *parser) dashBlockAhead() bool {
+	return p.peek().Type == TokenIndent && p.lex.PeekAt(1).Type == TokenDash
 }
 
 // lexerError surfaces a diagnosis the lexer already made: the error token

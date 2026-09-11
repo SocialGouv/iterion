@@ -89,9 +89,9 @@ func expectedTokenHint(want, got TokenType) string {
 	case TokenColon:
 		return "Write `key: value` — a colon right after the property name — or `src -> dst` for an edge."
 	case TokenLBrack:
-		return "This property takes an inline list on one line: `[a, b]`."
+		return "This property takes a list: an inline list on the property's line (`[a, b]`), or one `- item` per line indented below it."
 	case TokenRBrack:
-		return "Close the list with `]`: comma-separated elements on ONE line, no `- item` lines."
+		return "Close the inline list with `]` (comma-separated elements on ONE line), or write the list as `- item` lines indented below the property."
 	case TokenArrow:
 		return "An edge is `src -> dst`, optionally followed by `when …`, `else`, `as name(N)` or `with { … }`."
 	case TokenNewline:

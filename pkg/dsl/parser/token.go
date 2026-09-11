@@ -25,6 +25,7 @@ const (
 	// Punctuation
 	TokenColon   // :
 	TokenArrow   // ->
+	TokenDash    // - opening a list item, first on its line
 	TokenEquals  // =
 	TokenComma   // ,
 	TokenLBrack  // [
@@ -213,6 +214,7 @@ var tokenNames = map[TokenType]string{
 
 	TokenColon:   ":",
 	TokenArrow:   "->",
+	TokenDash:    "-",
 	TokenEquals:  "=",
 	TokenComma:   ",",
 	TokenLBrack:  "[",

@@ -90,6 +90,28 @@ func NewLexer(filename, src string) *Lexer {
 	return l
 }
 
+// dashOpensItem reports whether a `-` at the current position opens a list
+// item — the YAML-style form of a list, one `- item` per line under the
+// property: first token on its line, followed by a space, a tab, a newline
+// or the end of the file. Anywhere else `-` is not a token of the language
+// (`->` is), and a prompt body, a block scalar or a raw string never reach
+// this scanner.
+func (l *Lexer) dashOpensItem() bool {
+	switch l.lastSignificantToken() {
+	case TokenNewline, TokenIndent, TokenDedent, TokenEOF:
+	default:
+		return false
+	}
+	if l.pos+1 >= len(l.src) {
+		return true
+	}
+	switch l.src[l.pos+1] {
+	case ' ', '\t', '\n':
+		return true
+	}
+	return false
+}
+
 // Profile is the syntax profile the source declared (1 when it declared
 // none, or a header the parser refuses), the reading every string of the
 // token stream got.
@@ -153,6 +175,15 @@ func (l *Lexer) Backup() {
 	if l.ti > 0 {
 		l.ti--
 	}
+}
+
+// PeekAt returns the token n positions ahead without consuming anything
+// (PeekAt(0) is Peek).
+func (l *Lexer) PeekAt(n int) Token {
+	if l.ti+n >= len(l.tokens) {
+		return Token{Type: TokenEOF, Line: l.line, Column: l.col}
+	}
+	return l.tokens[l.ti+n]
 }
 
 // ---------------- internal ----------------
@@ -421,6 +452,10 @@ func (l *Lexer) scanToken() {
 	case ch == ':':
 		l.advance()
 		l.emit(TokenColon, ":", startLine, startCol)
+
+	case ch == '-' && l.dashOpensItem():
+		l.advance()
+		l.emit(TokenDash, "-", startLine, startCol)
 
 	case ch == '-' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '>':
 		l.advance()

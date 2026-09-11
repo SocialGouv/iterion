@@ -17,7 +17,7 @@ func TestExpectedTokenHintsNameTheWantedShape(t *testing.T) {
 		{"quoted string where a prompt name belongs", "agent a:\n  system: \"Review the diff\"\n", "bare name"},
 		{"bare word where a string belongs", "agent a:\n  backend: claw\n", "Quote this value"},
 		{"header without its block", "agent a:\nworkflow w:\n  entry: a\n", "indented block"},
-		{"YAML list where an inline list belongs", "agent a:\n  tools:\n    - bash\n", "inline list"},
+		{"bare word where a list belongs", "agent a:\n  tools: bash\n", "inline list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

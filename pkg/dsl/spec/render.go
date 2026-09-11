@@ -256,7 +256,7 @@ func anchor(name string) string { return strings.ReplaceAll(name, ".", "") }
 // on every draft.
 func SkillSection() string {
 	var b strings.Builder
-	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` inline lists · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
+	b.WriteString("Generated from the parser's property registry (`iterion dsl spec --write`). Forms: `str` quoted string · `id` bare name · `str|id` either · `int` `num` `bool` literals · `a|b` one of · `\"a|b\"` one of, quoted · `[id]` `[str]` `[tool]` `[skill]` lists, inline `[a, b]` or one `- item` per indented line · `map` `{K: \"v\"}` or an indented block · `with{}` a `with { k: \"v\" }` map · `{kind}` an indented block described under that kind.\n\n")
 	seen := map[string]bool{}
 	for _, k := range Kinds {
 		if seen[k.Name] {
