@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
@@ -117,18 +119,57 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		if attempt >= attempts || !res.Err.Retryable(op, params) {
 			return nil, e.finishAction(node, op, res, start, nil)
 		}
-		// The vendor's own Retry-After when it gave one; otherwise straight
-		// on. iterion does not invent a backoff here: a delay the workflow
-		// guessed would be worse than the one the service asked for.
-		if wait := res.Err.RetryAfter; wait > 0 {
-			select {
-			case <-callCtx.Done():
-				return nil, e.finishAction(node, op, res, start, callCtx.Err())
-			case <-time.After(wait):
-			}
+		// The vendor's own Retry-After when it gave one, a small bounded
+		// backoff when it did not.
+		wait := res.Err.RetryAfter
+		if wait <= 0 {
+			wait = connectorRetryBackoff(attempt)
+		}
+		select {
+		case <-callCtx.Done():
+			return nil, e.finishAction(node, op, res, start, callCtx.Err())
+		case <-time.After(wait):
 		}
 	}
 }
+
+// connectorRetryBackoff is the pause before the next attempt when the vendor
+// named no Retry-After.
+//
+// "iterion does not invent a backoff" is a defensible position about the
+// LENGTH of a delay — the service knows its own load and a workflow does not.
+// But the alternative chosen was ZERO, which is not neutrality: a 429 with no
+// Retry-After header, a 503, and every retryable transport failure re-issued
+// back to back, up to `retry: N` times, which is the classic hammering pattern
+// against an already-struggling vendor and the fastest way to turn a transient
+// outage into a rate-limit ban.
+//
+// The amplification is larger than it looks for a paginated action. CallPaged
+// keeps its walk state in the call, so every attempt restarts at page 1: a
+// failure on page 18 of a 20-page collection with `retry: 3` spends about
+// seventy of the vendor's slots in a tight loop with no pause at all.
+//
+// So: small, bounded, and never preferred over what the vendor asked for.
+// Doubling from 500ms to a 5s ceiling — far below the LLM path's 60s, because
+// a connector call is bounded by the node's own `timeout:` and a long sleep
+// would spend that budget on waiting. The 0.5x–1.5x jitter is the shape
+// RetryPolicy.backoff already uses in this package, and it is what keeps a
+// fan-out whose branches failed together from coming back in lockstep.
+func connectorRetryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := float64(connectorBackoffBase) * math.Pow(2, float64(attempt-1))
+	if maxBase := float64(connectorBackoffCap); base > maxBase {
+		base = maxBase
+	}
+	return time.Duration(base * (0.5 + rand.Float64()))
+}
+
+const (
+	connectorBackoffBase = 500 * time.Millisecond
+	connectorBackoffCap  = 5 * time.Second
+)
 
 // actionRetries reads the node's `retry:` as a count of EXTRA attempts.
 // Compile refuses anything else (C265), so a malformed value here means a

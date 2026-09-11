@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/permissions"
 
@@ -793,5 +795,64 @@ func refsOf(value string) []*ir.Ref {
 			out = append(out, &ir.Ref{Kind: ir.RefInput, Path: strings.Split(path, "."), Raw: raw})
 		}
 		rest = rest[i+j+2:]
+	}
+}
+
+// TestRetriesDoNotHammerAVendorThatNamedNoDelay.
+//
+// The loop waited only when the vendor sent a Retry-After, and re-issued the
+// call IMMEDIATELY otherwise — so a 429 with no header, a 503 and every
+// retryable transport failure went back to back. "iterion does not invent a
+// backoff" is defensible about the LENGTH of a delay; the alternative chosen
+// was zero, which is the hammering pattern.
+//
+// The oracle is the vendor's own clock: the gap between the attempts it
+// actually received. The floor asserted is far below the minimum the backoff
+// can produce (250ms at the first attempt, jitter included) and far above
+// scheduler noise, so it is neither flaky nor vacuous.
+func TestRetriesDoNotHammerAVendorThatNamedNoDelay(t *testing.T) {
+	var mu sync.Mutex
+	var seen []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		seen = append(seen, time.Now())
+		n := len(seen)
+		mu.Unlock()
+		if n < 3 {
+			// No Retry-After header: the case the loop had no answer for.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok": true}`))
+	}))
+	defer srv.Close()
+
+	pkg, op := mutatingPackage(srv.URL)
+	op.HTTP.Method, op.HTTP.RequestBody, op.Params, op.Effect = "GET", "", nil, spec.EffectRead
+	op.Results = []spec.ResultCase{{Status: 200}}
+	pkg.Ops[0].Operations[0] = op
+
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "read"}, Action: "probe.issue.comment",
+		Connection: "main", RetryPolicy: "5",
+	}
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithConnectors(&stubResolver{pkg: pkg, op: op, baseURL: srv.URL}, srv.Client()))
+
+	if _, err := e.Execute(context.Background(), node, nil); err != nil {
+		t.Fatalf("the third attempt succeeds, so the node must: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 3 {
+		t.Fatalf("the vendor saw %d attempts, want 3", len(seen))
+	}
+	const floor = 100 * time.Millisecond
+	for i := 1; i < len(seen); i++ {
+		if gap := seen[i].Sub(seen[i-1]); gap < floor {
+			t.Errorf("attempt %d followed attempt %d after %v, under the %v floor — the vendor is being hammered",
+				i+1, i, gap, floor)
+		}
 	}
 }
