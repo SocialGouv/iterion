@@ -90,6 +90,70 @@ prompt campaign_user:
   corpus uses. Read `oracle-mutation` for what each one catches and why an
   uncovered one makes the whole figure unearned.
 
+  LEAVE THE NEXT GATE A SET TO SCORE. The set you seal above is YOURS: you score
+  it at your own gate and it is published as evidence, which spends it. A set is
+  refused by fingerprint once published, so the next gate to run — a lot's
+  verify, days later — has nothing held out left to score. It does not refuse
+  for want of a set: it boots the application, replays the whole corpus, reports
+  `holdout 0/0` with `holdout_spent_unreplaced`, and its `detected == total`
+  term passes on that emptiness. The full price paid, for a term that reads
+  green by being vacuous.
+
+  So draw a SECOND set and leave it COMMITTED under `mutants/holdout/`, unsealed
+  and unscored — and do it ONLY AFTER a harness run (`GM_MODE=selfcheck`) has
+  moved your own set out of the tree. The committed check is directory-wide: one
+  tracked entry under `mutants/holdout/` makes the seal decline for EVERYTHING
+  there, so a successor committed too early — or your own set committed in
+  stride — leaves your own set unsealed, unscored and readable by the next pass,
+  and your own gate then reports that same vacuous `holdout 0/0`.
+
+  That sealing run reports `holdout_sealed_uncommitted`: your own set left the
+  tree with no committed copy. Do NOT answer it by putting that set back. It is
+  scored here and published as evidence either way, and a copy re-committed
+  under `mutants/holdout/` is the same set by fingerprint: the later gate either
+  declines to seal it and reports `0/0` again, or opts in and refuses it as
+  `holdout_reused`. A set already published is never a set to score. The
+  successor is the answer to that notice.
+
+  A sealed set lives only as long as the sealed pile, which is keyed on a
+  workspace that dies with the run; a committed one has a durable home, and the
+  gate that owns it — a LATER one, never this one — opts in with
+  `"seal_committed": true`. Do NOT write that flag yourself, not even in
+  advance: it is read from the config at EVERY gate, this run's included, and a
+  gate that reads it seals the committed set on the spot — both sets scored and
+  spent in one run, the magazine empty again, and tracked files moved out from
+  under git as uncommitted deletions a finalize will not merge.
+
+  No mutation of the second set may repeat one of the first: identity is the
+  `apply.sh` and `revert.sh` bytes plus the declared `targets`, so a rename is
+  not a fresh draw, and a repeat turns that later gate red. You are finished on
+  this point when ONE selfcheck report, taken after the commit, reads
+  `holdout_awaiting_gate: true` AND a non-zero `holdout_total` — the first says
+  the successor is waiting, the second that your own set reached the sealed
+  pile. The held-out SCORE is withheld there on purpose; do not go looking
+  for it.
+
+  Read that same pair the other way BEFORE you draw anything: two inherited
+  states make the criterion unreachable, and neither is yours to resolve. A zero
+  `holdout_total` beside `holdout_awaiting_gate: true` — a set was already
+  tracked under `mutants/holdout/` when you arrived, an unclaimed successor, and
+  nothing you write there can be sealed while it sits there. Or `awaiting` never
+  turning true while your own set does reach the pile — the config you are
+  judging already carries the opt-in, so a successor you commit is sealed and
+  spent by this very run instead of waiting for the next. In both you leave it
+  where it is: you do not write the opt-in, you do not delete an artefact you
+  did not draw, and you do not stack a second successor on the first. On this
+  point you are then finished by SAYING so — name which of the two you are in,
+  in `work_remaining` and in `REPORT.md`.
+
+  Neither set is yours to run. The first has left the tree; the second is
+  readable only because it must WAIT, and applying it here — or hardening the
+  comparator against what it catches — spends the next gate's whole
+  counter-test while leaving it green. For the same reason, a later pass of this
+  same run does not write a third: your set for this cycle is already in the
+  pile, and by the rule above nothing more can be sealed while the successor
+  sits there — what you add would stay readable and prove nothing.
+
   {{input.fail_log}}
 
   When a previous pass left a failure above, fix the ORACLE, not the

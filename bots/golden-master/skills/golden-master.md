@@ -185,6 +185,25 @@ A set a LATER gate must score therefore has one durable home, the tree: commit i
 `GM_SEAL_COMMITTED=1` for a hand-run gate). A committed set is left in place by the seal
 precisely so it can wait for that gate.
 
+That leaving-in-place is **directory-wide**, which fixes the order of the two acts: commit the
+successor only once a run (`GM_MODE=selfcheck`) has sealed your own set out of the tree. One
+tracked entry under `mutants/holdout/` makes the seal decline for everything there, so a successor
+committed too early leaves your own set unsealed and unscored, and the gate then reports `0/0` —
+a term that reads green by being vacuous. A single selfcheck report separates the two cases:
+`holdout_awaiting_gate: true` with a non-zero `holdout_total` is the right order; a zero
+`holdout_total` beside it means nothing was ever sealed. That second reading is also what a net
+carrying an UNCLAIMED successor looks like from the next run: a set left tracked blocks the seal
+for everything under `mutants/holdout/`, in that run and every later one, until the gate that owns
+it opts in and consumes it. No run of the bot can unblock it by itself — writing the opt-in would
+spend the set at the wrong gate, and deleting it destroys an artefact the run did not draw — so a
+run that meets it reports the debt rather than drawing a second set on top.
+
+The run that DRAWS a successor never writes the opt-in for it. The flag is read from the config
+being judged at every gate, so one written in advance is read by that same run's gate minutes
+later: it seals the committed set on the spot, scores both sets at once and leaves the next gate
+back at `0/0` — after moving tracked files out from under git as uncommitted deletions. Whoever
+owns the later gate writes it, when that gate is the one about to run.
+
 Two debts a `0/0` held-out figure can carry, both reported as FIELDS rather than prose, because
 a supervising process needs to see them:
 

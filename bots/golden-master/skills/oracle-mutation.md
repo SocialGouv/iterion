@@ -276,6 +276,11 @@ reason; treat that notice as a stop, not a remark.
 `.golden-master/mutants/holdout/` is **sealed**, and the seal is mechanical, not a promise:
 
 - the first check **relocates the set out of the workspace** — you lose file access after it;
+- that relocation **declines, directory-wide**, as soon as anything under `mutants/holdout/` is
+  already committed and the gate has not opted in: one tracked entry leaves the WHOLE directory
+  in place, unsealed and readable, and the gate scores only what the sealed pile already held —
+  nothing at all on a fresh net, i.e. `holdout 0/0`. So never commit your own set in stride, and
+  commit a successor set for a later gate only after a run has sealed yours out of the tree;
 - `GM_MODE=selfcheck` runs stability, the negative control and the visible mutants, and
   **withholds the held-out score**;
 - only the final gate, which the workflow triggers and you do not, ever scores it.
