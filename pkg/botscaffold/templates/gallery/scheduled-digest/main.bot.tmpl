@@ -4,11 +4,17 @@
 ## artifact exists (a tool, deterministic) → done, or a typed failure
 ## when nothing was written. The manifest carries a `schedule`
 ## invocation with the suggested cron, so the bot home offers the
-## one-click schedule and `iterion schedule add` has its default. Fill
-## in: the mission, `window`, `report_path`. docs/scheduling.md
+## one-click schedule and `iterion schedule add` has its default. The
+## digest is an UNCOMMITTED file at `report_path`, so the run works in
+## place (`worktree: none` unless the dial is on): an isolated run's
+## uncommitted output is wip-banked on the storage branch and never
+## merged into the checkout — with the dial on, the digest lands on
+## `iterion/run/<name>`, not at `report_path`, after `verify_written`
+## read green inside the worktree. Fill in: the mission, `window`,
+## `report_path`. docs/scheduling.md
 <%template "vars_block" .%>
 schema collected:
-  path: string
+  log: string
   commits: int
 
 schema digest_out:
@@ -21,18 +27,29 @@ prompt mission:
 <%indent 2 .Instructions%>
 
 prompt digest_user:
-  The commit log since {{vars.window}} is in {{outputs.collect.path}}
-  ({{outputs.collect.commits}} commits). Write the digest to
-  {{vars.report_path}}: group by theme, lead with the most impactful
-  change, keep it under one screen. Put its first paragraph in summary.
+  The commit log since {{vars.window}} ({{outputs.collect.commits}}
+  commits), one line per commit:
 
-## No LLM: git's own log, in a temp file so nothing lands in the
-## checkout; the JSON on stdout is the output. A git failure (not a
-## repository, a bad window) fails the node — never a digest of nothing.
-## `tformat:` terminates every line, so `wc -l` is the commit count. A
-## {{ref}} in a command is shell-escaped by the runtime.
+  {{outputs.collect.log}}
+
+  Write the digest to {{vars.report_path}}: group by theme, lead with
+  the most impactful change, keep it under one screen. Put its first
+  paragraph in summary.
+
+## No LLM: git's own log, handed to the next node INSIDE the JSON on
+## stdout — the node's output is the hand-off, so no file has to be
+## visible to both nodes (a sandboxed tool and a host-side agent do not
+## share a /tmp). `jq -Rs .` JSON-encodes the raw text; jq ships in every
+## sandbox image (python3 only from `-full` up), and its ABSENCE fails the node by
+## name: without the guard, `$(… | jq …)` would substitute nothing, the
+## stdout would not parse, and the agent would digest a literal
+## placeholder into a green run. At most 500 commits reach the prompt
+## (`--max-count`), and the count is what the prompt carries. A git
+## failure (not a repository, a bad window) fails the node — never a
+## digest of nothing. A {{ref}} in a command is shell-escaped by the
+## runtime.
 tool collect:
-  command: `f=$(mktemp) && git log --since={{vars.window}} --pretty=tformat:'%h %an %s' > "$f" || exit 1; printf '{"path":"%s","commits":%s}' "$f" "$(wc -l < "$f" | tr -d ' ')"`
+  command: `command -v jq >/dev/null || { echo "collect: jq is required to JSON-encode the log" >&2; exit 1; }; log=$(git log --since={{vars.window}} --max-count=500 --pretty=tformat:'%h %an %s') || exit 1; printf '{"log":%s,"commits":%s}' "$(printf '%s' "$log" | jq -Rs .)" "$(printf '%s' "$log" | grep -c .)"`
   output: collected
 
 agent digest:<%template "llm_fields" .%>

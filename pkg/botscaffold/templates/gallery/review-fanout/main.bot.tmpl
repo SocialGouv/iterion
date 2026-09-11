@@ -104,7 +104,13 @@ workflow <%.WorkflowName%>:
     max_parallel_branches: 2<%template "budget_lines" .%>
   ## In place by default: the pending work IS the scope. With the dial on,
   ## the run isolates in a fresh worktree and needs `base`.
-  worktree: <%if .Worktree%>auto<%else%>none<%end%><%template "dials" .%>
+  worktree: <%if .Worktree%>auto<%else%>none<%end%>
+  ## The permission gate the header names bounds the TOOLS: `permission:
+  ## deny` with an allow-list refuses Edit/Write and any command that does
+  ## not START with an allowed one — but a Bash rule is a prefix on the
+  ## whole command line (`git diff > file` passes under `Bash(git diff:*)`),
+  ## a backstop, not a proof. Add it through the permission dial, with
+  ## rules for the commands your lenses run.<%template "dials" .%>
   scope -> nothing_to_review when empty
   scope -> split when not empty
   split -> review_correctness

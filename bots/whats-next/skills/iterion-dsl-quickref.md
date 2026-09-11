@@ -576,12 +576,16 @@ shipped bots, so they are written here:
   `git ls-files --others --exclude-standard -z | xargs -0 -I{} git diff
   --no-index -- /dev/null {}` (exit 1 per file, 123 for the batch: a diff,
   not a failure). A `router` and a `fail` node take no `output:`.
-- **A `worktree: auto` run starts from the anchor COMMIT**: staged, unstaged
-  and untracked work is not in it — that is the isolation. A reviewer of
-  "pending changes" runs `worktree: none` or diffs a `base` ref, and gates
-  an EMPTY scope as a typed refusal before the fan-out: an honest "nothing
-  to report" on nothing is not an approve (the `review-fanout` template's
-  `scope` tool).
+- **A `worktree: auto` run starts from the anchor COMMIT, and only what it
+  COMMITS reaches your checkout**: staged, unstaged and untracked work is
+  not in the worktree (that is the isolation), and at the end a dirty tree
+  is wip-banked as a commit on the storage branch `iterion/run/<name>` and
+  never merged — a deliverable written at a workspace path is on that
+  branch, not where the bot promised it, after a check inside the worktree
+  read green. `worktree:` unset means `auto`, so a shape whose deliverable
+  is a file, or a reviewer of "pending changes", writes `worktree: none`
+  (or commits, or diffs a `base` ref) and gates an EMPTY scope as a typed
+  refusal (the `review-fanout` template's `scope` tool).
 - **`jq` ships in every sandbox image; `python3` only from `-full` up.** The
   DEFAULT image is `iterion-sandbox-slim` (`sandbox/slim/Dockerfile`: jq, no
   python3); `-full` and the `-sec` layered on it add python3. So a tool that

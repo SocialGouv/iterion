@@ -29,10 +29,15 @@ own; shapes that commit declare `worktree: auto` themselves. BOTH
 branches write the property: an unset `worktree:` resolves to `auto`
 (ir.defaultWorktreeMode), so an off branch that emits nothing is not an
 opt-out — it is the same isolation, silently. review-fanout writes the
-same ternary inline. */ -%>
+same ternary inline. An isolated run's uncommitted output never reaches
+the checkout: the finalizer banks a dirty tree as a wip commit on the
+storage branch and never merges a wip-banked head, so a deliverable
+written at a workspace path is on that branch, not where the shape
+promised it, after a check inside the worktree read green. */ -%>
 <%define "worktree_dial"%><%if .Worktree%>
   ## Isolate the run in a git worktree; commits land on a persistent
-  ## branch and fast-forward your checked-out branch on success.
+  ## branch and fast-forward your checked-out branch on success. Output
+  ## left UNCOMMITTED is wip-banked on that branch and NOT merged.
   worktree: auto<%else%>
   ## In place: this shape's deliverable is what it leaves in the
   ## workspace, not a commit. An isolated run's worktree is removed when
