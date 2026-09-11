@@ -1252,7 +1252,20 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		// can mirror skills/ + recipes/ + attachments/ into the
 		// workspace before any node runs. Nil bundle → engine no-ops
 		// (existing behaviour for inline / standalone .bot files).
-		if b, err := bundle.OpenForWorkflow(filePath); err == nil && b != nil {
+		b, err := bundle.OpenForWorkflow(filePath)
+		switch {
+		case err != nil:
+			// Never silent. This branch made assembleBundle hard-error on a
+			// missing export path, so ONE stale exports.workflows[].path
+			// drops the whole bundle here — skills never mirrored, prompts
+			// and recipes and attachments absent — and the run proceeds
+			// answering from the model's priors. That reads as "the bot got
+			// dumber", not as a typo, which is exactly the failure mode a
+			// `skills:` entry resolving to nothing already has. The launch
+			// is not failed on it (an inline-source launch legitimately has
+			// no bundle), but the reason is named.
+			runLogger.Warn("runview: bundle for %s could not be opened (%v) — running WITHOUT its skills, prompts, recipes and attachments", filePath, err)
+		case b != nil:
 			opts = append(opts, runtime.WithBundle(b))
 		}
 	}
