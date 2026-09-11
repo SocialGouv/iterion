@@ -102,3 +102,134 @@
   background: var(--vp-c-bg-soft);
   border-color: var(--vp-c-brand-1);
 }
+
+/* Comparison pages need room for product columns, while retaining the docs shell. */
+.comparison-page .VPDoc .content-container {
+  max-width: 1200px;
+}
+.comparison-page .VPDoc .content {
+  min-width: 0;
+}
+.comparison-page .vp-doc h1 {
+  line-height: 1.25;
+}
+.comparison-page .vp-doc img {
+  display: inline-block;
+  vertical-align: middle;
+  height: auto;
+}
+/* Original product marks remain legible in both themes, without recolouring them. */
+.comparison-page .vp-doc .comparison-logo {
+  box-sizing: content-box;
+  padding: 4px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+}
+.comparison-table {
+  overflow: auto;
+  max-width: 100%;
+  margin: 20px 0 28px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  overscroll-behavior-x: contain;
+}
+.comparison-table:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 3px;
+}
+.comparison-table table {
+  display: table;
+  width: 100%;
+  min-width: 700px;
+  margin: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+.comparison-table th,
+.comparison-table td {
+  border: 0;
+  border-right: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
+  padding: 12px 14px;
+  vertical-align: top;
+  line-height: 1.55;
+}
+.comparison-table tr:last-child td { border-bottom: 0; }
+.comparison-table th:last-child,
+.comparison-table td:last-child { border-right: 0; }
+.comparison-table th { background: var(--vp-c-bg-soft); }
+.comparison-table tbody tr { background: var(--vp-c-bg); }
+.comparison-table tbody tr:nth-child(even) { background: var(--vp-c-bg-soft); }
+.comparison-table td:first-child { min-width: 150px; }
+.comparison-matrix .comparison-table:not(.comparison-presence) table { min-width: 1050px; }
+.comparison-presence {
+  max-height: min(75vh, 900px);
+  scrollbar-gutter: stable;
+}
+.comparison-presence table { min-width: 1280px; }
+.comparison-presence th,
+.comparison-presence td { text-align: center; vertical-align: middle; }
+.comparison-presence thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-width: 94px;
+  box-shadow: 0 1px 0 var(--vp-c-divider);
+}
+.comparison-presence th:first-child,
+.comparison-presence td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 270px;
+  min-width: 270px;
+  text-align: left;
+  background: inherit;
+  box-shadow: 1px 0 0 var(--vp-c-divider);
+}
+.comparison-presence thead th:first-child {
+  z-index: 3;
+  background: var(--vp-c-bg-soft);
+}
+.comparison-presence tbody td:not(:first-child) { font-size: 18px; white-space: nowrap; }
+.comparison-presence th:nth-child(2),
+.comparison-presence td:nth-child(2) { background: var(--vp-c-brand-soft); }
+.comparison-scroll-hint {
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+}
+.comparison-conditions {
+  margin: 24px 0;
+  padding: 16px 20px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  background: var(--vp-c-bg-soft);
+}
+.comparison-conditions summary { cursor: pointer; font-weight: 600; }
+.comparison-conditions[open] summary { margin-bottom: 16px; }
+.comparison-page [id] { scroll-margin-top: 100px; }
+.comparison-inventory .comparison-table table { min-width: 820px; }
+@media (max-width: 639px) {
+  .comparison-presence th:first-child,
+  .comparison-presence td:first-child { width: 168px; min-width: 168px; max-width: 168px; }
+  .comparison-table th,
+  .comparison-table td { padding: 10px; }
+  .comparison-table { border-radius: 8px; }
+}
+
+/* The two-column choice guide fits on small screens without horizontal scrolling. */
+.comparison-choice table { min-width: 0; }
+.comparison-choice th:first-child,
+.comparison-choice td:first-child { width: 60%; min-width: 0; }
+
+.comparison-page .comparison-cta {
+  margin: 28px 0;
+  padding: 20px 24px;
+  border: 1px solid var(--vp-c-brand-1);
+  border-radius: 10px;
+  background: var(--vp-c-brand-soft);
+}
+.comparison-page .comparison-cta p:first-child { margin-top: 0; }
+.comparison-page .comparison-cta p:last-child { margin-bottom: 0; }

@@ -1,0 +1,51 @@
+{
+  "n8n": {
+    "source": "https://n8n.io/favicon.ico",
+    "file": "n8n.ico",
+    "bytes": 15086
+  },
+  "activepieces": {
+    "source": "https://www.activepieces.com/favicon.svg",
+    "file": "activepieces.svg",
+    "bytes": 906
+  },
+  "dify": {
+    "source": "https://dify.ai/favicon.svg",
+    "file": "dify.svg",
+    "bytes": 685
+  },
+  "crewai": {
+    "source": "https://www.crewai.com/favicon.ico",
+    "file": "crewai.ico",
+    "bytes": 4286
+  },
+  "windmill": {
+    "source": "https://www.windmill.dev/img/logo.svg",
+    "file": "windmill.svg",
+    "bytes": 1956
+  },
+  "zapier": {
+    "source": "https://zapier.com/favicon.ico",
+    "file": "zapier.ico",
+    "bytes": 57638
+  },
+  "flowise": {
+    "source": "https://raw.githubusercontent.com/FlowiseAI/Flowise/main/images/flowise_white.svg",
+    "file": "flowise.svg",
+    "bytes": 41127
+  },
+  "make": {
+    "source": "https://www.make.com/favicon.ico",
+    "file": "make.ico",
+    "bytes": 15086
+  },
+  "iterion": {
+    "source": "https://github.com/SocialGouv/iterion/blob/bbc1ddc7844b81582b6dfc4d0b7f381680bb284b/studio/public/favicon-32x32.png",
+    "file": "iterion.png"
+  },
+  "langgraph": {
+    "source": "https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/6a994264a64b3afcdd880f6b_LangGraph_OSS%20Lockup_light%201.svg",
+    "page": "https://www.langchain.com/brand-assets",
+    "file": "langgraph.svg"
+  }
+}
