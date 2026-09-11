@@ -1,8 +1,10 @@
 package runview
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -51,6 +53,37 @@ func TestLocalConnectorsAreWiredForAWorkflowThatCallsOne(t *testing.T) {
 	}
 	if client == nil {
 		t.Error("the resolver must come with its GUARDED client — without one the executor would invent the unguarded default")
+	}
+}
+
+// TestAnUngrantedProjectCatalogSaysSoAtTheRUN.
+//
+// The project tier is off by default because the workspace is the repository
+// a run acts on. A repository that ships `connectors/` and hears "no connector
+// catalog wired" has been told about a directory it does not have, while the
+// one it does have goes unmentioned — the silently-inert-capability shape this
+// repo calls a defect. The refusal has to name the grant at the surface where
+// the run meets it, not only where an operator types a command.
+func TestAnUngrantedProjectCatalogSaysSoAtTheRun(t *testing.T) {
+	t.Setenv(connection.ProjectCatalogEnv, "")
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "connectors", "forgejo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _, err := LocalConnectors(actionWorkflow(), workspace, t.TempDir(), secrets.NewLazyLocalSealer(t.TempDir(), nil))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if r == nil {
+		t.Fatal("a present-but-ungranted tier must not vanish — it is what has the answer an operator needs")
+	}
+	_, _, _, _, err = r.ResolveAction(context.Background(), "forgejo.issue.comment", "main")
+	if err == nil {
+		t.Fatal("the tier is not granted, so nothing may serve its package")
+	}
+	if !strings.Contains(err.Error(), connection.ProjectCatalogEnv) {
+		t.Errorf("error = %v, want it to name %s", err, connection.ProjectCatalogEnv)
 	}
 }
 
