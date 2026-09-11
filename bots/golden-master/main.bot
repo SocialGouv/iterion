@@ -127,11 +127,20 @@ prompt campaign_user:
   No mutation of the second set may repeat one of the first: identity is the
   `apply.sh` and `revert.sh` bytes plus the declared `targets`, so a rename is
   not a fresh draw, and a repeat turns that later gate red. You are finished on
-  this point when ONE selfcheck report, taken after the commit, reads
-  `holdout_awaiting_gate: true` AND a non-zero `holdout_total` — the first says
-  the successor is waiting, the second that your own set reached the sealed
-  pile. The held-out SCORE is withheld there on purpose; do not go looking
-  for it.
+  this point when the pair reads right IN SEQUENCE: a non-zero `holdout_total`
+  in the selfcheck report that SEALED your own set, then
+  `holdout_awaiting_gate: true` once the successor is committed — the first
+  says your set reached the sealed pile, the second that the successor is
+  waiting, and in that order they are the ordering rule itself. Neither half
+  needs a fresh harness pass. The first is already in the report you have; the
+  second is exactly what a non-empty `git ls-files -- mutants/holdout` with no
+  `seal_committed` in the config you judge MEANS, so the commit establishes it.
+  A selfcheck re-run after the commit only confirms what those two already
+  say, and it is not cheap: the corpus capture, the stability comparison and
+  the negative control all run before any `GM_MUTANTS` subset filter is read,
+  so even a one-mutant pass pays for them in full — against a budget that has
+  to leave room for the gate. The held-out SCORE is withheld there on purpose;
+  do not go looking for it.
 
   Read that same pair the other way BEFORE you draw anything: two inherited
   states make the criterion unreachable, and neither is yours to resolve. A zero
