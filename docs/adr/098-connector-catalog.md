@@ -911,6 +911,7 @@ treated the site the report named.
 | Execution-only credential | **Partial** — unexported opening, but plaintext once per node and no re-resolution mid-walk (F7) |
 | Zero-LLM action policy | **Shipped after construction**; eager classifier construction still fails an action-only run (F14) |
 | Guarded dialer | **Local path shipped, with its deployment-controlled exception** (`ITERION_CONNECTOR_ALLOW_PRIVATE`, round four); the executor still accepts any non-nil client |
+| Credential never in an error | **Shipped for every shape one travels in** — the token, what the run materialised into a parameter (round four), and both halves of a basic credential plus their base64 blob (round five) |
 | Effective package at runtime | **Shipped** (F2) — generated + overlay, one loader for validation and execution |
 | Fenced refresh claim / revision CAS | Not implemented (F8) |
 | A cloud (Mongo) `connection.Store` | Not implemented — connectors remain LOCAL-ONLY |
@@ -1027,3 +1028,32 @@ That is this lot's stated boundary — *"Not covered here: … and the studio
 surfaces"* — and a node that reaches an unwired surface fails explicitly
 rather than reporting a success it never performed. Named here because the
 gap is invisible from the CLI, which is where the feature was exercised.
+
+## Adversarial review disposition, round five (one finding)
+
+**The other half of a basic credential was outside the redaction net.**
+`exec.secretValues` listed `cred.Value` and the params a package marked
+`Secret: true`. `Credential.Username`/`Password` — documented in the same file
+as *"serve AuthBasic"* — were never in it, while `applyCredential` sends
+exactly those bytes as `Basic base64(user:pass)`. So the layer transmitted a
+credential its own redaction could not recognise coming back, which is the
+failure mode round three closed for token-style credentials (F12: a vendor 4xx
+echoes what it rejected) left open for the one scheme the shipped Forgejo
+package declares (`connector.yaml`, `kind: basic`). Within a single function,
+`cred.Value` had the guarantee and `cred.Password` did not.
+
+Latent, and fixed anyway. No shipped surface stores a basic credential today —
+the CLI writer only seals tokens — but `SealBasic` is exported in this same
+lot for exactly that purpose and `resolve.go` already maps both halves onto the
+wire credential. The boundary belongs to the layer that owns the guarantee,
+not to the memory of whoever writes the first caller.
+
+All three shapes are redacted, because a vendor can echo any of them: the
+base64 blob it received, or either half once it decoded one. The username is
+in the set although RFC 7617 calls it a user-id and not a secret — a catalog
+accepts whatever vendor a package describes, and `<api key>:` with an empty
+password is a widespread convention, so this layer cannot tell which half a
+given vendor made secret. Over-redacting costs a marker in an error message;
+under-redacting costs a key in the run's events, the tool hooks and error
+tracking. The test asserts the bytes really travelled before asserting they
+came back redacted, so it cannot pass by sending nothing.
