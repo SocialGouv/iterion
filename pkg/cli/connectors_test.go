@@ -195,3 +195,55 @@ func TestGenHoldsTheCatalogsOwnIDRule(t *testing.T) {
 		t.Errorf("the traversal deleted %s: %v", victim, err)
 	}
 }
+
+// TestGenSaysWhenItWroteWhereNothingWillReadIt.
+//
+// `--out` defaults to `connectors/<id>` — the PROJECT tier, which iterion does
+// not consult unless ITERION_CONNECTOR_PROJECT_CATALOG grants it, because the
+// workspace is the repository a run acts on. Without the note the documented
+// first flow ends with "wrote connectors/probe — 2 operations" and then a
+// `connections add` that cannot find the connector: a grant nobody made,
+// reading as a broken generation.
+func TestGenSaysWhenItWroteWhereNothingWillReadIt(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "probe.json")
+	if err := os.WriteFile(specPath, []byte(genFixture), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	t.Chdir(dir)
+
+	run := func(t *testing.T, out string) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := cli.ConnectorsGen(cli.ConnectorsGenOptions{
+			Spec: specPath, ID: "probe", Out: out, Version: "0.1.0", License: "MIT",
+		}, &buf); err != nil {
+			t.Fatalf("gen: %v", err)
+		}
+		return buf.String()
+	}
+
+	t.Run("the default destination is the ungranted project tier", func(t *testing.T) {
+		t.Setenv("ITERION_CONNECTOR_PROJECT_CATALOG", "")
+		got := run(t, "")
+		if !strings.Contains(got, "ITERION_CONNECTOR_PROJECT_CATALOG") {
+			t.Errorf("output must name the grant that would make the package readable:\n%s", got)
+		}
+	})
+
+	// Two falsifiers, because a note that always prints is noise rather than
+	// information: nothing to say once the grant is made, and nothing to say
+	// about a destination that was never the project tier.
+	t.Run("granted", func(t *testing.T) {
+		t.Setenv("ITERION_CONNECTOR_PROJECT_CATALOG", "1")
+		if got := run(t, ""); strings.Contains(got, "does not consult") {
+			t.Errorf("the tier is granted, so there is nothing to warn about:\n%s", got)
+		}
+	})
+	t.Run("another destination entirely", func(t *testing.T) {
+		t.Setenv("ITERION_CONNECTOR_PROJECT_CATALOG", "")
+		if got := run(t, filepath.Join(dir, "staging", "probe")); strings.Contains(got, "does not consult") {
+			t.Errorf("a path the operator named is not the project tier:\n%s", got)
+		}
+	})
+}

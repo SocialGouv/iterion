@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ConnectorsGenOptions drives `iterion connectors gen`.
@@ -174,7 +175,46 @@ func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 		fmt.Fprintf(out, "\nthe package is not complete yet — %v\n", err)
 		fmt.Fprintf(out, "write %s to supply it; the generated half is what a vendor's description could state.\n", filepath.Join(opts.Out, overlay.File))
 	}
+	noteUngrantedDestination(out, opts.Out)
 	return nil
+}
+
+// noteUngrantedDestination says so when a package was written somewhere this
+// process would not read it.
+//
+// `--out` defaults to `connectors/<id>` — the PROJECT tier, which is consulted
+// only under ITERION_CONNECTOR_PROJECT_CATALOG because the workspace is the
+// repository a run acts on. Without this line the documented first flow ends
+// with "wrote connectors/forgejo — 503 operations" and then a `connections
+// add` that cannot find the connector, which reads as a broken generation
+// rather than as a grant nobody made. Said at the moment the directory is
+// created, for the same reason `connections add` warns about a base URL the
+// guard will refuse.
+//
+// A NOTE, never a refusal: writing a package the operator will grant later, or
+// commit for a colleague, or copy into their home tier, is all legitimate.
+func noteUngrantedDestination(out io.Writer, dest string) {
+	if connection.ProjectCatalogGranted() {
+		return
+	}
+	abs, err := filepath.Abs(dest)
+	if err != nil {
+		return
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	// Only the project tier of THIS workspace: `--out ~/.iterion/connectors/x`
+	// is the home tier and reads fine, and any other path is somewhere the
+	// operator is deliberately staging a package.
+	if filepath.Dir(abs) != filepath.Join(wd, "connectors") {
+		return
+	}
+	fmt.Fprintf(out, "\nnote: %s is this workspace's PROJECT catalog, which iterion does not consult by default —\n", dest)
+	fmt.Fprintf(out, "  a repository a run acts on must not be able to redefine what an operation does.\n")
+	fmt.Fprintf(out, "  Set %s=1 to use it here, or move it to %s to install it for every project.\n",
+		connection.ProjectCatalogEnv, filepath.Join(store.GlobalIterionDataDir(), "connectors"))
 }
 
 // readSpec loads a description from a path or an https URL, returning the
