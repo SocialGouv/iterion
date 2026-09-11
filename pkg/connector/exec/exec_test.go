@@ -1092,6 +1092,123 @@ func TestAWalkReportsHowManyRequestsItMade(t *testing.T) {
 // carries no meaning. Applying the page/offset rule here stopped the walk
 // after one call while the vendor was still explicitly saying "there is more",
 // and reported the result COMPLETE.
+// TestACursorWalkIsNotEndedByAnEmptyPAGE.
+//
+// Slack documents exactly this shape: a page carrying no items together with a
+// next cursor. The walk checked "empty batch" before the cursor, so it stopped
+// on the first such page and reported an empty collection COMPLETE while the
+// vendor was still saying there is more.
+//
+// The length test had already been moved out of the cursor branch once; it had
+// to be moved out of the shared pre-check too — the same rule, hiding one line
+// higher.
+func TestACursorWalkIsNotEndedByAnEmptyPage(t *testing.T) {
+	pages := []string{
+		`{"items": [], "next": "c2"}`, // EMPTY, and more to come
+		`{"items": [{"n": 1}], "next": "c3"}`,
+		`{"items": [{"n": 2}], "next": ""}`,
+	}
+	call := 0
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		if call < len(pages) {
+			_, _ = w.Write([]byte(pages[call]))
+		}
+		call++
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.list")
+	op.Params = append(op.Params, spec.Param{Key: "after", Name: "after", In: spec.InQuery, Type: "string"})
+	op.Pagination = &spec.Pagination{
+		Style: spec.PageCursor, CursorParam: "after", CursorField: "next",
+		ItemsField: "items", DefaultSize: 50, MaxPages: 5,
+	}
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, op,
+		map[string]any{"owner": "acme", "repo": "widgets"}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("items = %d, want 2 — an empty page with a next cursor is not the end", len(items))
+	}
+	if !complete {
+		t.Error("the vendor handed back an empty cursor, which IS the end")
+	}
+}
+
+// TestTheWalkRecognisesASizeTheACTIONCoerced.
+//
+// The action path now coerces an integer to `json.Number` so a large id
+// survives exactly. `asPositiveInt` did not know that type, so a caller's
+// `limit: 2` was not recognised as a size at all: the wire got 2, termination
+// compared against the package's default of 100, and two items read as a short
+// complete page. A fix in one package silently un-fixed a guard in another.
+func TestTheWalkRecognisesASizeTheActionCoerced(t *testing.T) {
+	calls := 0
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls <= 2 {
+			_, _ = w.Write([]byte(`[{"n": 1}, {"n": 2}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	})
+	defer done()
+
+	op := opOf(t, pkg, "probe.issue.list")
+	big := *op.Pagination
+	big.DefaultSize = 100 // the package's default, far from what is asked
+	op.Pagination = &big
+
+	items, complete, _, err := e.CallPaged(context.Background(), pkg, op, map[string]any{
+		"owner": "acme", "repo": "widgets",
+		"limit": json.Number("2"), // exactly what coerceParam produces
+	}, creds())
+	if err != nil {
+		t.Fatalf("paged: %v", err)
+	}
+	if len(items) != 4 {
+		t.Errorf("items = %d, want 4 — a page of 2 is FULL when 2 is what was asked for", len(items))
+	}
+	if !complete {
+		t.Error("the empty third page ended the collection")
+	}
+}
+
+// TestAVendorsOwnErrorTextCannotCarryTheTOKEN.
+//
+// Redaction covered the transport path — the URL Go prints in a *url.Error —
+// and stopped there. An error body is vendor text copied verbatim into the
+// message, and a gateway answering 403 routinely echoes the credential it
+// rejected. That message becomes the node's error and travels to the run's
+// events and to error tracking.
+func TestAVendorsOwnErrorTextCannotCarryTheToken(t *testing.T) {
+	const token = "s3cret-token-value"
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "token ` + token + ` is not authorized"}`))
+	})
+	defer done()
+
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), exec.Credential{SchemeID: "token", Value: token})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil {
+		t.Fatal("a 403 must produce an error")
+	}
+	if strings.Contains(res.Err.Error(), token) {
+		t.Errorf("the vendor echoed the credential and iterion passed it on: %s", res.Err.Error())
+	}
+	// The TYPED error must survive the scrubbing: replacing it with a flat one
+	// would trade a leak for a lost retry disposition.
+	if res.Err.Status != http.StatusForbidden {
+		t.Errorf("status = %d, want the typed error intact", res.Err.Status)
+	}
+}
+
 func TestACursorWalkEndsOnTheCURSOR(t *testing.T) {
 	pages := []string{
 		`{"items": [{"n": 1}], "next": "c2"}`, // SHORT, but more to come

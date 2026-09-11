@@ -580,6 +580,31 @@ func ValidBodyEncoding(e BodyEncoding) bool {
 	return false
 }
 
+// IsFile reports whether a parameter carries binary file content, in EITHER
+// format's spelling.
+//
+// Swagger 2 says `type: file`; OpenAPI 3 says `type: string, format: binary`
+// (or `base64`). They are the same thing, and recognising only the first let
+// every OpenAPI 3 upload through the refusal that exists to catch them — the
+// operation published, the multipart writer sending a text field, and the
+// corruption the refusal was written to prevent.
+//
+// One predicate, used by the generator and the request builder, because a
+// second spelling of the same question is how the first gap happened.
+func (p Param) IsFile() bool {
+	if p.Type == "file" {
+		return true
+	}
+	if p.Type != "string" {
+		return false
+	}
+	switch strings.ToLower(p.Format) {
+	case "binary", "byte", "base64":
+		return true
+	}
+	return false
+}
+
 // ValidPaginationStyle reports whether s is one the executor can walk. A style
 // it cannot walk is refused at validation rather than at the first call: the
 // executor's own default arm returns an error, and discovering it there means

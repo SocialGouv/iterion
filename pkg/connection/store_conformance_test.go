@@ -225,3 +225,46 @@ func TestAFutureFormatIsRefusedByNAME(t *testing.T) {
 		t.Errorf("error = %v, want it to name the cause", err)
 	}
 }
+
+// TestARenameCannotCollideWithAnotherAlias — on EVERY store.
+//
+// Uniqueness was enforced at creation only, so renaming one connection onto
+// another's alias left two answering the same name, and `ByAlias` returns
+// whichever the map iteration reaches first. Identical workflow input then
+// selected a different credential — or a different vendor instance — between
+// two runs of the same `.bot`. A uniqueness rule enforced only at creation is
+// not one.
+func TestARenameCannotCollideWithAnotherAlias(t *testing.T) {
+	for name, build := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := build()
+			for _, c := range []connection.Connection{
+				conn("c1", "tenant-a", "main"),
+				conn("c2", "tenant-a", "secondary"),
+			} {
+				if err := s.Create(ctx, c); err != nil {
+					t.Fatalf("create: %v", err)
+				}
+			}
+
+			// The normalisation is part of the rule: " MAIN " and "main" are
+			// the same name to `ByAlias`, so they must be the same name here.
+			clash := conn("c2", "tenant-a", "  MAIN  ")
+			if err := s.Update(ctx, clash); !errors.Is(err, connection.ErrExists) {
+				t.Errorf("rename onto an existing alias = %v, want ErrExists", err)
+			}
+			got, err := s.ByAlias(ctx, "tenant-a", "probe", "main")
+			if err != nil || got.ID != "c1" {
+				t.Errorf("`main` resolves to %q (%v), want the original c1", got.ID, err)
+			}
+
+			// A record may of course keep its OWN alias through an update.
+			same := conn("c1", "tenant-a", "main")
+			same.DisplayName = "renamed for display only"
+			if err := s.Update(ctx, same); err != nil {
+				t.Errorf("a connection must be able to keep its own alias: %v", err)
+			}
+		})
+	}
+}

@@ -460,7 +460,7 @@ func buildBody(op spec.Operation, byKey map[string]spec.Param) (io.Reader, strin
 		w := multipart.NewWriter(&buf)
 		for _, key := range sortedKeys(members) {
 			p := members[key]
-			if p.Type == "file" {
+			if p.IsFile() {
 				// Generation refuses these now, so reaching here means an
 				// older package or a hand-written one. Refused at the point of
 				// USE as well, because the alternative is what this used to

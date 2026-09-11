@@ -434,7 +434,7 @@ func (w *walker) operation(path, method string, op map[string]any, shared []any)
 	// workflow may read, and how that survives a sandbox — and that is a
 	// decision, not an oversight.
 	for _, p := range out.Params {
-		if p.Type == "file" {
+		if p.IsFile() {
 			dropped = append(dropped, "the file parameter "+p.Name+" (iterion cannot yet send a file part)")
 		}
 	}

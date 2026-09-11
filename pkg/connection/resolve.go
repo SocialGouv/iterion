@@ -80,7 +80,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 		}
 		return nil, zero, exec.Credential{}, "", fmt.Errorf("resolve connection %q: %w", alias, err)
 	}
-	if err := r.checkUsable(conn, op); err != nil {
+	if err := r.checkUsable(conn, pkg, op); err != nil {
 		return nil, zero, exec.Credential{}, "", err
 	}
 
@@ -116,7 +116,7 @@ func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*
 // Checked at the moment of USE rather than trusted from the record's own
 // status, because both facts change under the run: a credential is revoked
 // while a loop iterates, an operator narrows a capability between two nodes.
-func (r *Resolver) checkUsable(conn Connection, op spec.Operation) error {
+func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Operation) error {
 	if !conn.Status.Usable() {
 		reason := conn.StatusReason
 		if reason == "" {
@@ -144,8 +144,17 @@ func (r *Resolver) checkUsable(conn Connection, op spec.Operation) error {
 	// and granting would authorise whatever is asked. So the conjunction is
 	// still enforced (a requirement naming two schemes cannot be met by a
 	// connection holding one) while the scopes are left unjudged.
+	// The EFFECTIVE requirements: an operation that declares none inherits the
+	// connector's, and reading only its own accepted a connection against a
+	// requirement it had never been checked for. A connector-wide `admin`
+	// scope, with an operation declaring nothing, was simply not seen here.
+	probe := op
+	probe.Security = pkg.EffectiveSecurity(op)
+	if len(probe.Security) > 0 {
+		probe.Anonymous = false
+	}
 	if conn.ScopesKnown {
-		if ok, missing := op.SatisfiedBy(conn.SchemeID, conn.GrantedScopes); !ok {
+		if ok, missing := probe.SatisfiedBy(conn.SchemeID, conn.GrantedScopes); !ok {
 			return fmt.Errorf("connection %q cannot perform %q: %s", conn.Alias, op.ID, strings.Join(missing, ", "))
 		}
 		return nil
@@ -155,7 +164,7 @@ func (r *Resolver) checkUsable(conn Connection, op spec.Operation) error {
 	// Two copies of that reasoning would drift, and the drift would be a
 	// silent authorisation difference between the layer that hands over a
 	// credential and the layer that spends it.
-	if ok, missing := op.SatisfiableBy(conn.SchemeID); !ok {
+	if ok, missing := probe.SatisfiableBy(conn.SchemeID); !ok {
 		return fmt.Errorf("connection %q cannot perform %q (its granted scopes are unknown, so only the scheme was checked): %s",
 			conn.Alias, op.ID, strings.Join(missing, ", "))
 	}

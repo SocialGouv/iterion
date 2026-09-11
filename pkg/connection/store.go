@@ -65,12 +65,8 @@ func (s *MemoryStore) Create(_ context.Context, c Connection) error {
 	if _, exists := s.byID[c.ID]; exists {
 		return ErrExists
 	}
-	// An alias is how a `.bot` names a connection, so a duplicate would make
-	// the workflow's choice depend on iteration order.
-	for _, other := range s.byID {
-		if other.TenantID == c.TenantID && other.Connector == c.Connector && aliasEq(other.Alias, c.Alias) {
-			return ErrExists
-		}
+	if err := checkAliasFree(s.byID, c, ""); err != nil {
+		return err
 	}
 	now := s.clock()
 	c.CreatedAt, c.UpdatedAt = now, now
@@ -139,6 +135,14 @@ func (s *MemoryStore) Update(_ context.Context, c Connection) error {
 	if prev.TenantID != c.TenantID {
 		return ErrNotFound
 	}
+	// The alias is checked on UPDATE as well as on create, which it was not.
+	// Renaming one connection onto another's alias left two answering the same
+	// name, and `ByAlias` returns the first map match — so identical workflow
+	// input selected a different credential, or a different instance, between
+	// two runs. A uniqueness rule enforced only at creation is not one.
+	if err := checkAliasFree(s.byID, c, c.ID); err != nil {
+		return err
+	}
 	c.CreatedAt = prev.CreatedAt
 	c.UpdatedAt = s.clock()
 	s.byID[c.ID] = c
@@ -156,9 +160,32 @@ func (s *MemoryStore) Delete(_ context.Context, tenantID, id string) error {
 	return nil
 }
 
-// aliasEq compares aliases case-insensitively. An operator who created "Main"
-// and a `.bot` that writes "main" mean the same connection, and the failure of
-// the alternative is a run that cannot find a credential that is plainly there.
+// aliasEq compares aliases case-insensitively and ignoring surrounding space.
+// An operator who created "Main" and a `.bot` that writes "main" mean the same
+// connection, and the failure of the alternative is a run that cannot find a
+// credential that is plainly there.
+//
+// The normalisation is what makes the uniqueness rule meaningful: without it
+// "main", "MAIN" and " main " are three aliases that all answer to one lookup.
 func aliasEq(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// checkAliasFree refuses an alias another connection of the same tenant and
+// connector already answers to. `exceptID` is the record being updated, which
+// may of course keep its own alias.
+//
+// Shared by create and update because it was enforced on create only, and a
+// rename onto an existing alias left two records answering one name — with
+// `ByAlias` returning whichever the map iteration reached first.
+func checkAliasFree(all map[string]Connection, c Connection, exceptID string) error {
+	for id, other := range all {
+		if id == exceptID {
+			continue
+		}
+		if other.TenantID == c.TenantID && other.Connector == c.Connector && aliasEq(other.Alias, c.Alias) {
+			return ErrExists
+		}
+	}
+	return nil
 }

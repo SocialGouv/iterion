@@ -204,10 +204,8 @@ func (s *FileStore) Create(_ context.Context, c Connection) error {
 		if _, exists := s.byID[c.ID]; exists {
 			return ErrExists
 		}
-		for _, other := range s.byID {
-			if other.TenantID == c.TenantID && other.Connector == c.Connector && aliasEq(other.Alias, c.Alias) {
-				return ErrExists
-			}
+		if err := checkAliasFree(s.byID, c, ""); err != nil {
+			return err
 		}
 		now := s.clock()
 		c.CreatedAt, c.UpdatedAt = now, now
@@ -274,6 +272,9 @@ func (s *FileStore) Update(_ context.Context, c Connection) error {
 		prev, ok := s.byID[c.ID]
 		if !ok || prev.TenantID != c.TenantID {
 			return ErrNotFound
+		}
+		if err := checkAliasFree(s.byID, c, c.ID); err != nil {
+			return err
 		}
 		c.CreatedAt = prev.CreatedAt
 		c.UpdatedAt = s.clock()

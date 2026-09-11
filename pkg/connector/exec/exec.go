@@ -309,7 +309,39 @@ func (e *Executor) Call(ctx context.Context, pkg *spec.Package, op spec.Operatio
 	}
 	res := e.readResponse(pkg, op, resp, body)
 	res.Requests = 1
+	// The VENDOR's own words are redacted too, not only iterion's.
+	//
+	// Redaction covered the transport path — the URL Go prints in a *url.Error
+	// — and stopped there. But an error body is vendor text copied verbatim
+	// into the message, and a gateway answering 403 routinely echoes the
+	// credential it rejected. That message becomes the node's error and
+	// travels to the run's events, the tool hooks and error tracking. This is
+	// the last point where the secret bytes are still identifiable.
+	redactErrorText(res.Err, op, params, cred)
 	return res, nil
+}
+
+// redactErrorText strips credential material out of a typed error's own text.
+//
+// Separate from redactSecrets, which works on a Go error: here the fields are
+// structured, so the Code and the Message are scrubbed in place and the typed
+// error — with its retry disposition and its ambiguity marker — survives
+// intact. Replacing it with a flat error would have traded a leak for a
+// duplicate mutation.
+func redactErrorText(e *Error, op spec.Operation, params map[string]any, cred Credential) {
+	if e == nil {
+		return
+	}
+	for _, secret := range secretValues(op, params, cred) {
+		if secret == "" {
+			continue
+		}
+		e.Message = strings.ReplaceAll(e.Message, secret, redactedMarker)
+		e.Code = strings.ReplaceAll(e.Code, secret, redactedMarker)
+		if esc := url.QueryEscape(secret); esc != secret {
+			e.Message = strings.ReplaceAll(e.Message, esc, redactedMarker)
+		}
+	}
 }
 
 // transportError classifies a call that got no usable answer.
@@ -450,23 +482,30 @@ func (e *Executor) CallPaged(ctx context.Context, pkg *spec.Package, op spec.Ope
 		}
 		items = append(items, batch...)
 
-		// An empty page ends every walk: there is nothing to follow.
-		if len(batch) == 0 {
-			return items, true, last, nil
-		}
-
-		// Past that, termination is the PROTOCOL's, not one rule for all.
+		// Termination is the PROTOCOL's, and for a cursor walk the CURSOR is
+		// the whole of it — checked before the batch, not after.
+		//
+		// An empty page is not the end of a cursor walk: Slack documents
+		// exactly this, a page carrying no items and a next cursor, and
+		// stopping there returned an empty collection marked complete while
+		// the vendor was still saying "there is more". The length test was
+		// moved out of the cursor branch once; it had to be moved out of the
+		// shared pre-check too.
 		if p.Style == spec.PageCursor {
-			// A cursor walk ends when the vendor stops handing one back, and
-			// ONLY then. Page size is not a signal here: a cursor API is free
-			// to return a partial page and a next cursor together, and
-			// treating that as the end stopped the walk after one call while
-			// the vendor was still saying "there is more".
 			cursor = stringField(res.Data, p.CursorField)
 			if cursor == "" {
 				return items, true, last, nil
 			}
-		} else if effectiveSize > 0 && len(batch) < effectiveSize {
+			page++
+			continue
+		}
+
+		// A page/offset walk ends on an empty page: there is nothing to
+		// follow, and no cursor to say otherwise.
+		if len(batch) == 0 {
+			return items, true, last, nil
+		}
+		if effectiveSize > 0 && len(batch) < effectiveSize {
 			// For page/offset walks a short page IS the end signal — measured
 			// against what was actually asked for.
 			return items, true, last, nil
@@ -549,6 +588,15 @@ func asPositiveInt(v any) (int, bool) {
 		return int(n), n > 0
 	case float64:
 		return int(n), n > 0 && n == float64(int(n))
+	case json.Number:
+		// The shape an action node's coercion now produces for an integer —
+		// added so a large id survives to the wire exactly. Without this case
+		// the caller's `limit: 2` was not recognised as a size at all, so the
+		// walk compared its two-item pages against the package's default of
+		// 100 and called the first one short: one request, and "complete".
+		// A fix in one package silently un-fixed a guard in another.
+		i, err := n.Int64()
+		return int(i), err == nil && i > 0
 	case string:
 		i, err := strconv.Atoi(strings.TrimSpace(n))
 		return i, err == nil && i > 0
