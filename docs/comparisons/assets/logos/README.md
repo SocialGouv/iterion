@@ -1,8 +1,8 @@
-# Provenance des logos et icônes
+# Logo and icon provenance
 
-Visuels originaux récupérés le 11 septembre 2026. Les fichiers sont conservés localement, sans modification graphique. Les dimensions d’affichage préservent leurs proportions. Les marques servent à identifier les produits comparés.
+Original assets retrieved on September 11, 2026, stored locally without graphical modification. Display dimensions preserve their proportions. Trademarks identify the compared products.
 
-| Produit | Fichier | Source officielle |
+| Product | File | Official source |
 |---|---|---|
 | Iterion | `iterion.png` | [Source](https://github.com/SocialGouv/iterion/blob/bbc1ddc7844b81582b6dfc4d0b7f381680bb284b/studio/public/favicon-32x32.png) |
 | n8n | `n8n.ico` | [Source](https://n8n.io/favicon.ico) |
