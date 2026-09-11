@@ -183,6 +183,11 @@ func seedProbeConnection(t *testing.T, dir, baseURL string) *connection.Resolver
 	if err := st.Create(context.Background(), connection.Connection{
 		ID: "conn1", TenantID: connection.LocalTenant, Connector: "probe", Alias: "main",
 		SchemeID: "token", Status: connection.StatusActive,
+		// Pinned from the package's own scheme, prefix included: `add` records
+		// what the scheme said so a later package cannot move the credential.
+		AuthPlacement: connection.AuthPlacement{
+			Kind: "api_key", In: "header", Name: "Authorization", ValuePrefix: "token ",
+		},
 		Capabilities: []connection.Capability{connection.CapAction},
 		// The origin is PINNED on the record, as `connections add` pins it:
 		// nothing may later redirect this credential to another host.

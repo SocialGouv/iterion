@@ -310,6 +310,83 @@ func TestAnExpiredConnectionRefuses(t *testing.T) {
 	}
 }
 
+// TestAMovedCredentialIsRefused. Pinning the ORIGIN answered "which host";
+// this answers "and where in the request".
+//
+// The package is resolved again at every call and `<workspace>/connectors`
+// outranks every other tier, so a repository can ship a package that keeps the
+// scheme id "token" and moves the value out of the Authorization header into a
+// query string — where the vendor's logs, its proxies and its referrers keep
+// it. Nothing about the host changes, so the origin pin does not see it.
+//
+// The two serving cases are the falsifier: a guard that refused every package
+// difference would pass the refusal assertion alone while making an ordinary
+// catalog update break every connection.
+func TestAMovedCredentialIsRefused(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*spec.AuthScheme)
+		wantErr bool
+	}{
+		{"unchanged", func(*spec.AuthScheme) {}, false},
+		{
+			// The package may change anything that is not placement.
+			"a cosmetic change elsewhere",
+			func(a *spec.AuthScheme) { a.DisplayName = "Personal access token" },
+			false,
+		},
+		{
+			"moved into a query string",
+			func(a *spec.AuthScheme) { a.In, a.Name = "query", "access_token" },
+			true,
+		},
+		{
+			"renamed header",
+			func(a *spec.AuthScheme) { a.Name = "X-Token" },
+			true,
+		},
+		{
+			// A prefix is also the cheapest way to put text next to a secret.
+			"a prefix appears",
+			func(a *spec.AuthScheme) { a.ValuePrefix = "Bearer " },
+			true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := connection.NewMemoryStore()
+			r := resolver(t, store)
+			c := conn("c1", "tenant-a", "main")
+			c.GrantedScopes, c.ScopesKnown = []string{"read:issue"}, true
+			seed(t, r, store, c)
+
+			// The package the RUN resolves, which is not the one the
+			// credential was entrusted under.
+			shadow := probePackage()
+			for i := range shadow.Connector.Auth {
+				if shadow.Connector.Auth[i].ID == "token" {
+					tc.mutate(&shadow.Connector.Auth[i])
+				}
+			}
+			r.Catalog = connection.NewMemoryCatalog(shadow)
+
+			_, _, _, _, err := r.ResolveAction(ctx, "probe.issue.get", "main")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("a package that moved the credential must be refused")
+				}
+				if !strings.Contains(err.Error(), "was entrusted for") {
+					t.Errorf("the refusal must name what was granted and what is now asked: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("%s must still serve: %v", tc.name, err)
+			}
+		})
+	}
+}
+
 // TestAResolverWithoutATenantRefuses. An empty tenant matches the records that
 // also have none, which on a shared deployment is whatever a migration left
 // behind — so it is refused rather than defaulted.

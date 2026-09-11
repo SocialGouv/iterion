@@ -158,6 +158,23 @@ type Connection struct {
 	// NEVER serialised to JSON: this struct reaches the studio.
 	SealedPayload []byte `bson:"sealed_payload,omitempty" json:"-"`
 
+	// AuthPlacement is WHERE and HOW this credential goes on the wire, pinned
+	// from the package's scheme at creation.
+	//
+	// `SchemeID` names the scheme; this records what the scheme SAID. The
+	// difference is the whole point: the package is resolved again at every
+	// call, and a `<workspace>/connectors/<id>/` directory outranks every
+	// other tier — so a repository can ship a package that keeps the id and
+	// moves the credential from an `Authorization` header into a query
+	// string, where it lands in the vendor's logs, its proxies and its
+	// referrers. Pinning the ORIGIN closed the "another host" half of that;
+	// this closes the "same host, somewhere else" half.
+	//
+	// Compared at resolution rather than trusted: a mismatch is refused by
+	// name, so an ordinary package update that leaves placement alone keeps
+	// working, and one that moves a credential has to be re-consented to.
+	AuthPlacement AuthPlacement `bson:"auth_placement" json:"auth_placement"`
+
 	// ExpiresAt is when the credential stops working, zero for one that does
 	// not expire.
 	//
@@ -210,6 +227,9 @@ func (c Connection) Validate() error {
 	}
 	if strings.TrimSpace(c.SchemeID) == "" {
 		return fmt.Errorf("connection %q: names no auth scheme; placement differs between a package's schemes, so guessing one is a 401 that reads like a bad credential", c.ID)
+	}
+	if strings.TrimSpace(c.AuthPlacement.Kind) == "" {
+		return fmt.Errorf("connection %q: records no auth placement — it is WHERE this credential goes on the wire, pinned from the package at creation so a later package cannot move it", c.ID)
 	}
 	// The ORIGIN, checked in the domain layer rather than only where an
 	// operator types it.
@@ -278,3 +298,28 @@ func validateBaseURL(id, baseURL string) error {
 	}
 	return nil
 }
+
+// AuthPlacement is the part of a package's auth scheme that decides where a
+// credential travels: its kind, and for an api_key the location, the parameter
+// name and the prefix prepended to the value.
+type AuthPlacement struct {
+	Kind        string `bson:"kind" json:"kind"`
+	In          string `bson:"in,omitempty" json:"in,omitempty"`
+	Name        string `bson:"name,omitempty" json:"name,omitempty"`
+	ValuePrefix string `bson:"value_prefix,omitempty" json:"value_prefix,omitempty"`
+}
+
+// Describe renders a placement for an operator: "api_key in header Authorization".
+func (a AuthPlacement) Describe() string {
+	if a.In == "" && a.Name == "" {
+		return a.Kind
+	}
+	return fmt.Sprintf("%s in %s %q", a.Kind, a.In, a.Name)
+}
+
+// Equal compares two placements exactly.
+//
+// Every field, including ValuePrefix: a package that changes "token " to
+// "Bearer " sends a credential the vendor reads differently, and a prefix is
+// also the cheapest way to smuggle text next to a secret.
+func (a AuthPlacement) Equal(b AuthPlacement) bool { return a == b }

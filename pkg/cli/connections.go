@@ -155,11 +155,24 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// The PLACEMENT is pinned beside the origin, and for the same reason: the
+	// package is resolved again at every call, and a `<workspace>/connectors`
+	// directory outranks every other tier. Pinning only the host leaves a
+	// shadowing package free to keep the scheme id while moving the credential
+	// from a header into a query string — where the vendor's logs, proxies and
+	// referrers keep it. What a credential may be sent to, AND how, is decided
+	// when it is entrusted.
+	authScheme, ok := pkg.Connector.AuthScheme(scheme)
+	if !ok {
+		return fmt.Errorf("connections add: connector %q declares no auth scheme %q", opts.Connector, scheme)
+	}
+	placement := connection.PlacementOf(authScheme)
+
 	conn := connection.Connection{
 		ID: id, TenantID: connection.LocalTenant,
 		Connector: opts.Connector, Alias: alias,
 		DisplayName: opts.DisplayName, BaseURL: baseURL,
-		SchemeID: scheme, Capabilities: caps,
+		SchemeID: scheme, AuthPlacement: placement, Capabilities: caps,
 		Status: connection.StatusActive, SealedPayload: sealed,
 		// Deliberately NOT claiming to know the grant. A provider that never
 		// enumerated a PAT's scopes has told us nothing, and recording an
@@ -182,7 +195,9 @@ func ConnectionsAdd(opts ConnectionAddOptions, out io.Writer) error {
 	// differs from the record just written — `connections list` then says
 	// `action` for the same connection, which is the shape of a bug report
 	// rather than of a default.
-	fmt.Fprintf(out, "  scheme: %s · capabilities: %s\n", scheme, capabilityNames(caps))
+	// The placement is printed with the scheme, because "token" alone does not
+	// tell an operator whether their PAT rides a header or a query string.
+	fmt.Fprintf(out, "  scheme: %s (%s) · capabilities: %s\n", scheme, placement.Describe(), capabilityNames(caps))
 	fmt.Fprintf(out, "  a .bot reaches it with `connection: %s`\n", alias)
 	// A self-hosted instance is the common case for the connectors this
 	// catalog ships, and the guarded dialer refuses one by default. Said here

@@ -32,6 +32,13 @@ func conn(id, tenant, alias string) connection.Connection {
 		// bear every term of the real producer: without it these tests would
 		// exercise a shape no store can hold.
 		BaseURL: "https://probe.example",
+		// And its PLACEMENT, for the same reason and from the same package:
+		// `connections add` pins what the scheme said, so a later package
+		// cannot move the credential while keeping the scheme's name. A
+		// fixture without one is a shape no store will hold.
+		AuthPlacement: connection.AuthPlacement{
+			Kind: "api_key", In: "header", Name: "Authorization",
+		},
 	}
 }
 

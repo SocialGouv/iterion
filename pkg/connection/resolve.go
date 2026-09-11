@@ -142,6 +142,30 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, op spec.Opera
 		return fmt.Errorf("connection %q expired at %s — reconnect it",
 			conn.Alias, conn.ExpiresAt.UTC().Format(time.RFC3339))
 	}
+	// The PLACEMENT the package now describes must be the one this credential
+	// was entrusted under.
+	//
+	// The package is resolved again at every call and a `<workspace>/connectors`
+	// directory outranks every other tier, so the id alone guarantees nothing:
+	// a repository can ship a package keeping scheme "token" while moving the
+	// value out of an `Authorization` header and into a query string, where it
+	// lands in the vendor's logs, its proxies and its referrers. Pinning the
+	// origin closed the "another host" half; this is the "same host, somewhere
+	// else" half, and the two together are what "where a credential may be
+	// sent is decided when it is entrusted" actually means.
+	//
+	// Refused on MISMATCH rather than on any change to the package, so an
+	// ordinary catalog update keeps every connection working and only a moved
+	// credential needs re-consenting.
+	scheme, found := pkg.Connector.AuthScheme(conn.SchemeID)
+	if !found {
+		return fmt.Errorf("connection %q names scheme %q, which connector %q no longer declares — reconnect it against the package now installed",
+			conn.Alias, conn.SchemeID, pkg.Connector.ID)
+	}
+	if got := placementOf(scheme); !conn.AuthPlacement.Equal(got) {
+		return fmt.Errorf("connection %q was entrusted for %s and the package now asks for %s — refusing rather than sending the credential somewhere it was not granted to go; reconnect it if the change is intended",
+			conn.Alias, conn.AuthPlacement.Describe(), got.Describe())
+	}
 	// The capability is the whole answer to "may this connection be used for
 	// this?". A deterministic node and an agent facade are different uses of
 	// one credential, and an operator may legitimately allow one and not the
@@ -242,3 +266,22 @@ func describeCaps(caps []Capability) string {
 	}
 	return strings.Join(out, "+")
 }
+
+// placementOf reads a package scheme's placement, and is the ONE definition of
+// what gets pinned and what gets compared.
+//
+// Two copies — one at `connections add`, one here — is how a field added to
+// AuthPlacement ends up pinned and never checked, which reads exactly like a
+// guarantee and is none.
+func placementOf(s spec.AuthScheme) AuthPlacement {
+	return AuthPlacement{
+		Kind:        string(s.Kind),
+		In:          s.In,
+		Name:        s.Name,
+		ValuePrefix: s.ValuePrefix,
+	}
+}
+
+// PlacementOf is placementOf for the command that PINS it, so the writer and
+// the checker cannot disagree.
+func PlacementOf(s spec.AuthScheme) AuthPlacement { return placementOf(s) }
