@@ -555,6 +555,12 @@ func buildRunExecutor(
 	}
 	execSpec.LocalSecrets = localStore
 	execSpec.LocalSealer = localSealer
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	if err != nil {
+		return nil, err
+	}
+	execSpec.Connectors = connectors
+	execSpec.ConnectorClient = connectorClient
 	if exporter != nil {
 		execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())
 	}

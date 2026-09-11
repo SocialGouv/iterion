@@ -125,7 +125,14 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureQueueSchemaMismatch:    DispositionDeterministic, // the same runner rejects the same envelope
 	store.FailureLaunchFailed:           DispositionDeterministic, // the run never left the launch path — no checkpoint exists
 	store.FailureDLQParked:              DispositionDeterministic, // the deliveries are already spent
-	store.FailureCancelled:              DispositionDeterministic, // an operator's decision, not a fault
+	// The odd one out, and deliberately so: this code is here for its
+	// BEHAVIOUR (never auto-resumed), not for the table's usual reason. A
+	// second attempt would NOT reach the same verdict — it might duplicate a
+	// mutation that already landed. Parking is right for the opposite reason:
+	// not "nothing would change", but "no automatic attempt may decide".
+	// Only an operator who reconciled the remote state can.
+	store.FailureAmbiguousEffect: DispositionDeterministic,
+	store.FailureCancelled:       DispositionDeterministic, // an operator's decision, not a fault
 	// The provider will not serve this model to this caller. Nothing in
 	// the request's content is at fault, so a different sample cannot
 	// help either — this is the one provider rejection that does not

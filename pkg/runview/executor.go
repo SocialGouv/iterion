@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +177,22 @@ type ExecutorSpec struct {
 	// the cloud path (credentials arrive pre-resolved in ctx).
 	LocalSecrets secrets.GenericSecretStore
 	LocalSealer  secrets.Sealer
+
+	// Connectors resolves a `tool … action:` node's operation, connection and
+	// credential (ADR-098). Nil means no catalog is wired, and such a node
+	// then fails EXPLICITLY rather than being skipped — a bot that declares a
+	// connector call and runs somewhere without one must say so, not report a
+	// success it never performed.
+	//
+	// It is the resolver rather than its parts because the tiers differ per
+	// deployment: a directory and a file store locally, a team's packages and
+	// Mongo in cloud. The executor only ever sees the seam.
+	Connectors model.ConnectorResolver
+	// ConnectorClient is the HTTP client connector calls go out on. It MUST
+	// be the guarded one (httpdial.SafeClient): a connector reaches hosts a
+	// tenant chose, so an unguarded client is a way to reach a metadata
+	// endpoint from inside the deployment.
+	ConnectorClient *http.Client
 }
 
 // BuildExecutor wires up the default ClawExecutor: registry, default
@@ -382,6 +399,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithRewriteChain(rewriteChainFromPlugins(spec.Logger)),
 		model.WithPermissionOverride(spec.Permission),
 		model.WithPermissionRules(spec.PermissionAllow, spec.PermissionAsk, spec.PermissionDeny),
+	}
+	if spec.Connectors != nil {
+		opts = append(opts, model.WithConnectors(spec.Connectors, spec.ConnectorClient))
 	}
 	usageGuard, err := resolveUsageGuard(spec)
 	if err != nil {

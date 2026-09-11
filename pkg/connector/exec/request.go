@@ -1,0 +1,792 @@
+package exec
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
+)
+
+// buildRequest turns declared parameters into an HTTP request, refusing
+// locally — before anything is sent — everything it can decide on its own.
+//
+// The refusals are the point. A call that reaches the vendor with a
+// misspelled argument silently dropped is worse than one that never leaves:
+// the vendor answers 200, the workflow checkpoints success, and the thing the
+// author asked for did not happen.
+func (e *Executor) buildRequest(ctx context.Context, pkg *spec.Package, op spec.Operation, params map[string]any, cred Credential) (*http.Request, error) {
+	if err := e.checkAuthorized(pkg, op, cred); err != nil {
+		return nil, err
+	}
+	byKey, err := checkParams(op, params)
+	if err != nil {
+		return nil, err
+	}
+
+	target, err := e.resolveURL(pkg, op, byKey)
+	if err != nil {
+		return nil, err
+	}
+	query, err := buildQuery(op, byKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(query) > 0 {
+		target.RawQuery = query.Encode()
+	}
+
+	body, contentType, err := buildBody(op, byKey)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, op.HTTP.Method, target.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("exec: operation %q: build request: %w", op.ID, err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	accept := op.HTTP.Accept
+	if accept == "" {
+		accept = "application/json"
+	}
+	req.Header.Set("Accept", accept)
+	if e.UserAgent != "" {
+		req.Header.Set("User-Agent", e.UserAgent)
+	}
+	if err := applyHeaderParams(req, op, byKey); err != nil {
+		return nil, err
+	}
+	if err := applyCredential(req, pkg, op, cred); err != nil {
+		return nil, err
+	}
+	if err := checkHeaderValues(req, op); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// checkHeaderValues refuses a header this build assembled and net/http will
+// not write.
+//
+// Checked HERE, once, after every writer — the declared header parameters and
+// the credential — because both take text iterion does not control: a workflow
+// var reaches a header parameter, and a hand-pasted token routinely carries the
+// newline the paste brought with it.
+//
+// Two things go wrong without it, and the second is the expensive one. A
+// CR/LF-bearing value is header injection in the general case. And `Do` rejects
+// it AFTER the operation has been judged mutating-with-no-idempotency-key, so
+// the refusal arrived as a transport failure and the run was parked on
+// `unknown_outcome` — "the request was sent and no answer came back" about a
+// request net/http declined to write. A local refusal is the truthful one, and
+// `buildRequest`'s errors never reach that classification at all.
+//
+// The VALUE is never echoed: for the credential's header it is the credential.
+func checkHeaderValues(req *http.Request, op spec.Operation) error {
+	for name, values := range req.Header {
+		for _, v := range values {
+			if i := indexInvalidHeaderByte(v); i >= 0 {
+				return &Error{
+					Class: spec.ErrBadRequest,
+					Message: fmt.Sprintf("operation %s: header %q carries byte %#x at offset %d, which cannot be sent in a header — a stray newline on a pasted credential is the usual cause",
+						op.ID, name, v[i], i),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// indexInvalidHeaderByte returns the offset of the first byte net/http refuses
+// in a header value, or -1. It is RFC 7230's field-value set, the same one
+// httpguts.ValidHeaderFieldValue enforces: horizontal tab and anything from
+// 0x20 up, except DEL.
+func indexInvalidHeaderByte(v string) int {
+	for i := 0; i < len(v); i++ {
+		if b := v[i]; b != '\t' && (b < ' ' || b == 0x7f) {
+			return i
+		}
+	}
+	return -1
+}
+
+// checkAuthorized verifies the credential can perform the operation BEFORE
+// the call. A binding accepted at launch and refused by the vendor mid-run is
+// the failure this prevents, and its message names what is missing.
+func (e *Executor) checkAuthorized(pkg *spec.Package, op spec.Operation, cred Credential) error {
+	reqs := pkg.EffectiveSecurity(op)
+	if len(reqs) == 0 {
+		return nil // anonymous, or an API that documents no requirement
+	}
+	probe := op
+	probe.Security = reqs
+	probe.Anonymous = false
+
+	ok, missing := probe.SatisfiedBy(cred.SchemeID, cred.Scopes)
+	if ok {
+		return nil
+	}
+	// An UNKNOWN grant is not a refusal. A pasted access token carries no
+	// scope list, so enforcing scopes against an empty one would make every
+	// token-backed connection unusable — the check only bites when the
+	// provider actually said what it granted.
+	//
+	// But leaving the scopes unjudged must not leave the SCHEME unjudged too.
+	// This used to accept any requirement holding a term with a matching
+	// scheme, which defeats SatisfiedBy's conjunction rule outright: a
+	// requirement of `A AND B` contains a term naming A, so a connection
+	// holding only A passed. SatisfiableBy asks the narrower question —
+	// "could this scheme do it if its own scopes were granted" — and keeps
+	// the conjunction.
+	if len(cred.Scopes) == 0 {
+		if ok, why := probe.SatisfiableBy(cred.SchemeID); ok {
+			return nil
+		} else if len(why) > 0 {
+			missing = why
+		}
+	}
+	return &Error{
+		Class:   spec.ErrForbidden,
+		Message: fmt.Sprintf("the connection (scheme %q) cannot perform %s: %s", cred.SchemeID, op.ID, strings.Join(missing, ", ")),
+	}
+}
+
+// checkParams validates the supplied arguments against the declaration and
+// returns them keyed by the operation's public key.
+func checkParams(op spec.Operation, params map[string]any) (map[string]spec.Param, error) {
+	declared := make(map[string]spec.Param, len(op.Params))
+	for _, p := range op.Params {
+		declared[p.Key] = p
+	}
+	// An argument the operation does not declare is an ERROR. Dropping it
+	// would let a misspelled key produce a call that succeeds while doing
+	// something other than what the author wrote.
+	var unknown []string
+	for key := range params {
+		if _, ok := declared[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, &Error{
+			Class:   spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s does not declare %s (it accepts: %s)", op.ID, quoteList(unknown), strings.Join(sortedKeys(declared), ", ")),
+		}
+	}
+
+	var missing []string
+	out := make(map[string]spec.Param, len(op.Params))
+	for _, p := range op.Params {
+		v, given := params[p.Key]
+		if !given || v == nil {
+			if p.Default != nil {
+				v = p.Default
+			} else if p.Required {
+				missing = append(missing, p.Key)
+				continue
+			} else {
+				continue
+			}
+		}
+		if err := checkEnum(op, p, v); err != nil {
+			return nil, err
+		}
+		bound := p
+		bound.Default = v // carry the resolved value on the copy
+		out[p.Key] = bound
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return nil, &Error{
+			Class:   spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s requires %s", op.ID, quoteList(missing)),
+		}
+	}
+	return out, nil
+}
+
+// checkEnum refuses a value outside a declared set, locally. The vendor would
+// refuse it too, but a run should not spend a network round trip and a rate
+// limit slot learning what the package already knows.
+func checkEnum(op spec.Operation, p spec.Param, v any) error {
+	if len(p.Enum) == 0 {
+		return nil
+	}
+	got := scalarString(v)
+	for _, allowed := range p.Enum {
+		if got == allowed {
+			return nil
+		}
+	}
+	// A secret's VALUE never appears, even when it is the thing being
+	// refused. This message reaches the node's event hooks and the run's
+	// events.jsonl, which are read by people and shipped to error tracking;
+	// `Secret: true` is the package saying "not there".
+	shown := strconv.Quote(got)
+	if p.Secret {
+		shown = "(the value is secret)"
+	}
+	return &Error{
+		Class:   spec.ErrBadRequest,
+		Message: fmt.Sprintf("operation %s: %s = %s is not one of %s", op.ID, p.Key, shown, strings.Join(p.Enum, ", ")),
+	}
+}
+
+// resolveURL builds the target from the connection's origin, the package's
+// path prefix and the operation's templated path.
+func (e *Executor) resolveURL(pkg *spec.Package, op spec.Operation, byKey map[string]spec.Param) (*url.URL, error) {
+	base := e.BaseURL
+	if base == "" {
+		base = pkg.Connector.BaseURL.Default
+	}
+	if base == "" {
+		return nil, &Error{
+			Class:   spec.ErrBadRequest,
+			Message: fmt.Sprintf("connector %q is operator-supplied and the connection names no instance URL", pkg.Connector.ID),
+		}
+	}
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil {
+		return nil, &Error{Class: spec.ErrBadRequest, Message: fmt.Sprintf("instance URL %q does not parse: %v", base, err)}
+	}
+
+	decoded, escaped, err := substitutePath(op, byKey)
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.TrimRight(u.Path, "/") + pkg.Connector.BaseURL.PathPrefix
+	// The RawPath half is built from the base's ESCAPED path. Reusing the
+	// decoded one (url.Parse returns u.Path already decoded) makes RawPath
+	// stop being a valid encoding of Path the moment a connection's base URL
+	// carries a byte encodePath escapes — a non-ASCII instance path
+	// (`https://host/dépôt/api`), a space, a `%`. Go then silently DISCARDS
+	// RawPath and re-escapes Path, where `/` is NOT escaped: the
+	// per-parameter escaping below would be inert and a value containing `/`
+	// would split into segments, which is the containment this pair exists
+	// for.
+	rawPrefix := strings.TrimRight(u.EscapedPath(), "/") + pkg.Connector.BaseURL.PathPrefix
+	u.Path = prefix + decoded
+	u.RawPath = rawPrefix + escaped
+	// And the invariant is asserted rather than assumed, because its failure
+	// is SILENT: Go drops an invalid RawPath with no error anywhere. Only
+	// when the escaping is load-bearing (a value that escapes to something
+	// else) — otherwise dropping RawPath changes nothing and a package whose
+	// own path template carries an unescaped byte keeps working.
+	if escaped != decoded && u.EscapedPath() != u.RawPath {
+		return nil, &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: iterion cannot build a URL for this instance whose escaping survives — "+
+				"the base URL's path (%q) and the operation's template would send an argument as path structure", op.ID, base),
+		}
+	}
+	return u, nil
+}
+
+// substitutePath fills the operation's path template in ONE pass over it,
+// returning the decoded form Go reasons about and the escaped one that goes
+// on the wire.
+//
+// Both are needed: setting only the decoded one lets net/url re-escape a
+// value that is already escaped (`a/b` became `a%252Fb`), and setting only
+// the escaped one leaves URL.Path disagreeing with it. A value containing `/`
+// must stay ONE segment, or an issue named "a/b" addresses a different
+// resource than the one the workflow named.
+//
+// One pass, because N successive strings.ReplaceAll ran over the GROWING
+// result and rescanned what they had just written: a value carrying another
+// parameter's placeholder was substituted a second time in the decoded half
+// and not in the escaped one (url.PathEscape turns `{` into `%7B`), so the
+// two desynchronised — and a desynchronised pair is exactly what Go discards.
+// It also made the outcome depend on the map's iteration order, i.e. on the
+// run. Scanning the TEMPLATE means no substituted value is ever read as
+// syntax.
+func substitutePath(op spec.Operation, byKey map[string]spec.Param) (string, string, error) {
+	// Sorted, so which value wins a duplicated wire name and which invalid
+	// argument is reported first are properties of the package, not of a map.
+	keys := make([]string, 0, len(byKey))
+	for k, p := range byKey {
+		if p.In == spec.InPath {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	vals := make(map[string]string, len(keys))
+	for _, k := range keys {
+		p := byKey[k]
+		// Serialized per the parameter's STYLE, like every other location.
+		// This used to be a bare scalarString, so a path array declared
+		// `simple` (the OpenAPI default for a path parameter, and the only
+		// style a path segment can carry) was rendered as escaped JSON —
+		// `%5B%22a%22%2C%22b%22%5D` where the vendor wanted `a,b`.
+		raw, err := pathValue(op, p)
+		if err != nil {
+			return "", "", err
+		}
+		if _, dup := vals[p.Name]; !dup {
+			vals[p.Name] = raw
+		}
+	}
+
+	var dec, esc strings.Builder
+	rest := op.HTTP.Path
+	for {
+		i := strings.IndexByte(rest, '{')
+		if i < 0 {
+			dec.WriteString(rest)
+			esc.WriteString(rest)
+			return dec.String(), esc.String(), nil
+		}
+		dec.WriteString(rest[:i])
+		esc.WriteString(rest[:i])
+		j := strings.IndexByte(rest[i:], '}')
+		if j < 0 {
+			return "", "", unfilledPlaceholder(op, rest[i:])
+		}
+		name := rest[i+1 : i+j]
+		raw, ok := vals[name]
+		if !ok {
+			// Validation makes this unreachable for a loaded package; keeping
+			// it means a hand-built operation cannot send a templated URL
+			// either.
+			return "", "", unfilledPlaceholder(op, rest[i:i+j+1])
+		}
+		dec.WriteString(raw)
+		esc.WriteString(url.PathEscape(raw))
+		rest = rest[i+j+1:]
+	}
+}
+
+func unfilledPlaceholder(op spec.Operation, what string) *Error {
+	return &Error{
+		Class:   spec.ErrBadRequest,
+		Message: fmt.Sprintf("operation %s: path %q still has an unfilled placeholder (%s)", op.ID, op.HTTP.Path, what),
+	}
+}
+
+// pathValue renders one path parameter into the single segment a path can
+// hold.
+//
+// A path segment is ONE string, so a style that would produce several values
+// has nowhere to put them — which is exactly why `simple` is the OpenAPI
+// default here and why an array joins on commas. An object is refused rather
+// than encoded: OpenAPI's `simple` object form (`k=v,k=v`) is ambiguous with a
+// value that contains a comma, and no vendor iterion has met uses it.
+func pathValue(op spec.Operation, p spec.Param) (string, error) {
+	if _, isObj := p.Default.(map[string]any); isObj {
+		return "", &Error{
+			Class:   spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: path parameter %s was given an object, which a path segment cannot carry unambiguously", op.ID, p.Key),
+		}
+	}
+	styled := p
+	if styled.Style == "" {
+		styled.Style = spec.StyleSimple
+	}
+	values, err := serializeValue(op, styled, p.Default)
+	if err != nil {
+		return "", err
+	}
+	// serializeValue may return several values for an exploded style; a path
+	// cannot express that, so it is joined the way `simple` does.
+	seg := strings.Join(values, ",")
+	// A segment that is EMPTY or a dot-segment is not a resource name — it is
+	// path structure, and the escaping above cannot remove it: `.` and `..`
+	// are unreserved, so `url.PathEscape` returns them unchanged and Go sends
+	// `EscapedPath()` verbatim (no dot-segment cleaning on the client side).
+	// Measured before this refusal: `repo: ".."` sent
+	// `/api/v1/repos/acme/../issues/1`, which the vendor — or any proxy —
+	// resolves to `/api/v1/repos/issues/1`, and `repo: ""` sent `//`.
+	//
+	// So a path argument taken from an issue title, a branch name or a model's
+	// output addressed a resource the workflow never named, and whatever THAT
+	// resource answered was checkpointed as the answer to the declared call.
+	// On a mutation it is a write to the wrong place. This is the same defect
+	// class as a value containing `/`, which is already refused by escaping;
+	// here escaping is not available, so the call is.
+	switch seg {
+	case "", ".", "..":
+		return "", &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: path parameter %s is %q, which is path structure and not a resource name — the call would address %s",
+				op.ID, p.Key, seg, dotSegmentTarget(seg)),
+		}
+	}
+	return seg, nil
+}
+
+// dotSegmentTarget names what the vendor would have resolved, so the refusal
+// says what it prevented rather than only that it refused.
+func dotSegmentTarget(seg string) string {
+	if seg == ".." {
+		return "the parent collection"
+	}
+	return "a different path than the one declared"
+}
+
+// buildQuery places the query parameters, honouring each one's serialization.
+func buildQuery(op spec.Operation, byKey map[string]spec.Param) (url.Values, error) {
+	out := url.Values{}
+	for _, key := range sortedKeys(byKey) {
+		p := byKey[key]
+		if p.In != spec.InQuery {
+			continue
+		}
+		// An OBJECT in the query is the one shape that produces several
+		// DIFFERENT keys, so it cannot go through serializeValue's
+		// one-name-many-values contract.
+		if obj, isObj := p.Default.(map[string]any); isObj {
+			if err := addDeepObject(out, op, p, obj); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		values, err := serializeValue(op, p, p.Default)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range values {
+			out.Add(p.Name, v)
+		}
+	}
+	return out, nil
+}
+
+// addDeepObject expands an object parameter into `name[member]=value` pairs.
+//
+// This shape used to fall out of serializeValue's non-list branch as a single
+// scalar, so `filter={"name":"Ada"}` reached the vendor — a JSON document in a
+// query value, which no `deepObject` endpoint parses. The request looked
+// entirely well-formed and matched nothing.
+//
+// An object with any OTHER style is refused rather than guessed at, for the
+// same reason the unknown-style branch refuses: a guess here is a wrong
+// request that looks right.
+func addDeepObject(out url.Values, op spec.Operation, p spec.Param, obj map[string]any) error {
+	if p.Style != spec.StyleDeepObject {
+		return &Error{
+			Class: spec.ErrBadRequest,
+			Message: fmt.Sprintf("operation %s: parameter %s was given an object, but declares style %q — only deepObject expands an object into query members",
+				op.ID, p.Key, orDefaultStyle(p.Style)),
+		}
+	}
+	for _, k := range sortedKeys(obj) {
+		v := obj[k]
+		if _, nested := v.(map[string]any); nested {
+			// OpenAPI leaves nested deepObject undefined and vendors disagree,
+			// so it is refused instead of encoded one plausible way.
+			return &Error{
+				Class:   spec.ErrBadRequest,
+				Message: fmt.Sprintf("operation %s: parameter %s has a nested object at %q, which deepObject does not define", op.ID, p.Key, k),
+			}
+		}
+		if items, isList := listOf(v); isList {
+			for _, it := range items {
+				out.Add(p.Name+"["+k+"]", scalarString(it))
+			}
+			continue
+		}
+		out.Add(p.Name+"["+k+"]", scalarString(v))
+	}
+	return nil
+}
+
+func orDefaultStyle(s spec.ParamStyle) spec.ParamStyle {
+	if s == "" {
+		return spec.StyleForm
+	}
+	return s
+}
+
+// serializeValue renders one value per its style — the difference between
+// `a,b` and two separate `k=v` pairs, which is not cosmetic: only one of them
+// is what the vendor parses.
+func serializeValue(op spec.Operation, p spec.Param, v any) ([]string, error) {
+	items, isList := listOf(v)
+	if !isList {
+		return []string{scalarString(v)}, nil
+	}
+	parts := make([]string, len(items))
+	for i, it := range items {
+		parts[i] = scalarString(it)
+	}
+	style := p.Style
+	if style == "" {
+		style = spec.StyleForm
+	}
+	switch style {
+	case spec.StyleForm:
+		if p.ExplodeOrDefault() {
+			return parts, nil // repeated k=v pairs
+		}
+		return []string{strings.Join(parts, ",")}, nil
+	case spec.StyleSimple:
+		return []string{strings.Join(parts, ",")}, nil
+	case spec.StyleSpaceDelimited:
+		return []string{strings.Join(parts, " ")}, nil
+	case spec.StylePipeDelimited:
+		return []string{strings.Join(parts, "|")}, nil
+	}
+	// A style this build cannot serialize must not fall back to a guess: the
+	// guess would be a wrong request that looks right.
+	return nil, &Error{
+		Class:   spec.ErrBadRequest,
+		Message: fmt.Sprintf("operation %s: parameter %s declares serialization style %q, which this build cannot produce", op.ID, p.Key, style),
+	}
+}
+
+// applyHeaderParams places the header parameters.
+func applyHeaderParams(req *http.Request, op spec.Operation, byKey map[string]spec.Param) error {
+	for _, key := range sortedKeys(byKey) {
+		p := byKey[key]
+		if p.In != spec.InHeader {
+			continue
+		}
+		values, err := serializeValue(op, p, p.Default)
+		if err != nil {
+			return err
+		}
+		req.Header.Set(p.Name, strings.Join(values, ","))
+	}
+	return nil
+}
+
+// buildBody assembles the request body in the operation's declared encoding.
+func buildBody(op spec.Operation, byKey map[string]spec.Param) (io.Reader, string, error) {
+	members := map[string]spec.Param{}
+	for key, p := range byKey {
+		if p.In == spec.InBody {
+			members[key] = p
+		}
+	}
+	if len(members) == 0 {
+		return nil, "", nil
+	}
+	switch op.HTTP.RequestBody {
+	case spec.BodyJSON:
+		// A WHOLE-BODY parameter is the body, not a member of it. Wrapping it
+		// sent `{"body":[1,2]}` to an endpoint documented as taking `[1,2]`,
+		// which the vendor rejects or — worse — accepts as an empty request.
+		for _, p := range members {
+			if !p.WholeBody {
+				continue
+			}
+			raw, err := json.Marshal(p.Default)
+			if err != nil {
+				return nil, "", fmt.Errorf("exec: operation %q: encode body: %w", op.ID, err)
+			}
+			return newBody(raw), op.HTTP.RequestContentType(), nil
+		}
+		payload := map[string]any{}
+		for _, p := range members {
+			assignBodyMember(payload, p)
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, "", fmt.Errorf("exec: operation %q: encode JSON body: %w", op.ID, err)
+		}
+		return newBody(raw), op.HTTP.RequestContentType(), nil
+
+	case spec.BodyForm:
+		form := url.Values{}
+		for _, key := range sortedKeys(members) {
+			p := members[key]
+			values, err := serializeValue(op, p, p.Default)
+			if err != nil {
+				return nil, "", err
+			}
+			for _, v := range values {
+				form.Add(p.Name, v)
+			}
+		}
+		return newBody([]byte(form.Encode())), op.HTTP.RequestContentType(), nil
+
+	case spec.BodyMultipart:
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		for _, key := range sortedKeys(members) {
+			p := members[key]
+			if p.IsFile() {
+				// Generation refuses these now, so reaching here means an
+				// older package or a hand-written one. Refused at the point of
+				// USE as well, because the alternative is what this used to
+				// do: write the argument as a TEXT field — a part containing a
+				// pathname or base64 text, with no filename and no file
+				// content — which the vendor either rejects or turns into a
+				// corrupt attachment.
+				return nil, "", &Error{
+					Class: spec.ErrBadRequest,
+					Message: fmt.Sprintf("operation %s: parameter %s is a file, and this build cannot send a file part; "+
+						"regenerate the package to have the operation reported as a coverage gap", op.ID, p.Key),
+				}
+			}
+			values, err := serializeValue(op, p, p.Default)
+			if err != nil {
+				return nil, "", err
+			}
+			for _, v := range values {
+				if err := w.WriteField(p.Name, v); err != nil {
+					return nil, "", fmt.Errorf("exec: operation %q: write multipart field %q: %w", op.ID, p.Name, err)
+				}
+			}
+		}
+		if err := w.Close(); err != nil {
+			return nil, "", fmt.Errorf("exec: operation %q: close multipart body: %w", op.ID, err)
+		}
+		return newBody(buf.Bytes()), w.FormDataContentType(), nil
+	}
+	return nil, "", fmt.Errorf("exec: operation %q: request body encoding %q is not one this build can produce", op.ID, op.HTTP.RequestBody)
+}
+
+// assignBodyMember places a member, honouring a nested BodyPath so a flat
+// `params:` map can still address a vendor's nested envelope.
+func assignBodyMember(payload map[string]any, p spec.Param) {
+	path := p.BodyPath
+	if path == "" {
+		payload[p.Name] = p.Default
+		return
+	}
+	segs := strings.Split(path, ".")
+	cur := payload
+	for _, seg := range segs[:len(segs)-1] {
+		next, ok := cur[seg].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[seg] = next
+		}
+		cur = next
+	}
+	cur[segs[len(segs)-1]] = p.Default
+}
+
+// applyCredential places the credential where the operation's scheme says.
+func applyCredential(req *http.Request, pkg *spec.Package, op spec.Operation, cred Credential) error {
+	if cred.SchemeID == "" {
+		return nil // anonymous
+	}
+	scheme, ok := pkg.Connector.AuthScheme(cred.SchemeID)
+	if !ok {
+		return &Error{
+			Class:   spec.ErrUnauthorized,
+			Message: fmt.Sprintf("the connection names auth scheme %q, which connector %q does not declare", cred.SchemeID, pkg.Connector.ID),
+		}
+	}
+	switch scheme.Kind {
+	case spec.AuthBasic:
+		if cred.Username == "" {
+			return &Error{Class: spec.ErrUnauthorized, Message: "basic auth needs a username"}
+		}
+		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(cred.Username+":"+cred.Password)))
+		return nil
+	case spec.AuthBearer:
+		if cred.Value == "" {
+			return &Error{Class: spec.ErrUnauthorized, Message: "the connection holds no token"}
+		}
+		req.Header.Set("Authorization", "Bearer "+cred.Value)
+		return nil
+	case spec.AuthOAuth2:
+		if cred.Value == "" {
+			return &Error{Class: spec.ErrUnauthorized, Message: "the connection holds no access token"}
+		}
+		req.Header.Set("Authorization", "Bearer "+cred.Value)
+		return nil
+	case spec.AuthAPIKey:
+		if cred.Value == "" {
+			return &Error{Class: spec.ErrUnauthorized, Message: "the connection holds no key"}
+		}
+		// The prefix comes from the PACKAGE, never from the stored value, so
+		// a re-pasted credential cannot end up double-prefixed — and a
+		// missing one cannot silently produce a 401 that reads like a bad
+		// token (Forgejo's "token " is exactly this case).
+		value := scheme.ValuePrefix + cred.Value
+		switch scheme.In {
+		case "header":
+			req.Header.Set(scheme.Name, value)
+		case "query":
+			q := req.URL.Query()
+			q.Set(scheme.Name, value)
+			req.URL.RawQuery = q.Encode()
+		default:
+			return fmt.Errorf("exec: auth scheme %q has no usable location", scheme.ID)
+		}
+		return nil
+	}
+	return fmt.Errorf("exec: auth scheme %q has kind %q, which this build cannot apply", scheme.ID, scheme.Kind)
+}
+
+// --- small helpers ---------------------------------------------------------
+
+// listOf reports whether v is a list, and its elements. A string is never a
+// list, which matters because []byte and string both range.
+func listOf(v any) ([]any, bool) {
+	switch t := v.(type) {
+	case []any:
+		return t, true
+	case []string:
+		out := make([]any, len(t))
+		for i, s := range t {
+			out[i] = s
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// scalarString renders a scalar for a URL or a form field. It is deliberately
+// narrow: a float that happens to be integral renders without a decimal
+// point, because `page=1` and `page=1.0` are not the same request to a vendor
+// that parses integers strictly — and JSON decoding makes every number a
+// float64 on the way in.
+func scalarString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(raw)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func quoteList(in []string) string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(out, ", ")
+}

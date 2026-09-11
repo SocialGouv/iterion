@@ -470,6 +470,11 @@ type jsonToolNodeDecl struct {
 	Command        string             `json:"command,omitempty"`
 	Script         string             `json:"script,omitempty"`
 	Language       string             `json:"language,omitempty"`
+	Action         string             `json:"action,omitempty"`
+	Connection     string             `json:"connection,omitempty"`
+	Params         []jsonActionParam  `json:"params,omitempty"`
+	Retry          string             `json:"retry,omitempty"`
+	Timeout        string             `json:"timeout,omitempty"`
 	Input          string             `json:"input,omitempty"`
 	Output         string             `json:"output,omitempty"`
 	Publish        string             `json:"publish,omitempty"`
@@ -484,6 +489,14 @@ type jsonToolNodeDecl struct {
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 	Needs          []string           `json:"needs,omitempty"`
 	ParallelSafe   bool               `json:"parallel_safe,omitempty"`
+}
+
+// jsonActionParam is the JSON form of an ast.ActionParam. A LIST rather than
+// an object, so the author's order survives the round trip — a JSON object's
+// key order is not guaranteed, and the studio renders these in order.
+type jsonActionParam struct {
+	Key   string `json:"key"`
+	Value string `json:"value,omitempty"`
 }
 
 // jsonRecoveryBlock is the JSON form of an ast.RecoveryBlock (ADR-044).
@@ -946,6 +959,11 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Command:        t.Command,
 		Script:         t.Script,
 		Language:       t.Language,
+		Action:         t.Action,
+		Connection:     t.Connection,
+		Params:         actionParamsToJSON(t.Params),
+		Retry:          t.Retry,
+		Timeout:        t.Timeout,
 		Input:          t.Input,
 		Output:         t.Output,
 		Publish:        t.Publish,
@@ -961,6 +979,28 @@ func toolToJSON(t *ToolNodeDecl) *jsonToolNodeDecl {
 		Needs:          t.Needs,
 		ParallelSafe:   t.ParallelSafe,
 	}
+}
+
+func actionParamsToJSON(in []ActionParam) []jsonActionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]jsonActionParam, len(in))
+	for i, p := range in {
+		out[i] = jsonActionParam{Key: p.Key, Value: p.Value}
+	}
+	return out
+}
+
+func actionParamsFromJSON(in []jsonActionParam) []ActionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ActionParam, len(in))
+	for i, p := range in {
+		out[i] = ActionParam{Key: p.Key, Value: p.Value}
+	}
+	return out
 }
 
 func computeToJSON(c *ComputeDecl) *jsonComputeDecl {
@@ -1808,6 +1848,11 @@ func toolFromJSON(jt *jsonToolNodeDecl) (*ToolNodeDecl, error) {
 		Command:        jt.Command,
 		Script:         jt.Script,
 		Language:       jt.Language,
+		Action:         jt.Action,
+		Connection:     jt.Connection,
+		Params:         actionParamsFromJSON(jt.Params),
+		Retry:          jt.Retry,
+		Timeout:        jt.Timeout,
 		Input:          jt.Input,
 		Output:         jt.Output,
 		Publish:        jt.Publish,

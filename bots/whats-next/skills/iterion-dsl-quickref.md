@@ -276,7 +276,8 @@ Generated from the parser's property registry (`iterion dsl spec --write`). Form
 - `agent` / `judge` — description str · model str · backend str · provider str · command str · input id · output id · publish id · artifact_labels [tool] · system id · user id · session fresh|inherit|inherit_if_available|fork|artifacts_only|persist · tools [tool] · tool_policy [tool] · capabilities [tool] · skills [skill] · tool_max_steps int · max_tokens int · reasoning_effort low|medium|high|xhigh|max|ultracode · timeout str · readonly bool · full_access bool · images [str] · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · await wait_all|best_effort · compress on|ultra|off · auto_memory on|off · permission off|ask|deny · needs id|[id] · fallbacks {fallback} · mcp {mcp} · compaction {compaction} · memory {memory} · sandbox none|auto|{sandbox} · cursors {cursors}
 - `router` — description str · mode fan_out_all|fan_out_each|condition|round_robin|llm · model str · backend str · provider str · system id · user id · multi bool · reasoning_effort low|medium|high|xhigh|max|ultracode · over str · as id · key id · depends_on id · needs id|[id]
 - `human` — description str · input id · output id · publish id · artifact_labels [tool] · instructions id · system id · model str · interaction none|human|llm|llm_or_human|review|async · interaction_prompt id · interaction_model str · min_answers int · await wait_all|best_effort · review_url str · posture human_required|agent_verdict_ok · merge_strategy squash|merge · merge_into str|id · max_turns int
-- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery}
+- `tool` — description str · command str · script str · language js|node|py|python|python3|sh|bash · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · sandbox none|auto|{sandbox} · compress on|ultra|off · permission id · needs id|[id] · parallel_safe bool · goal str · postcondition str · policy required|recover|best_effort · recovery {recovery} · action id · connection id · params {params} · retry str · timeout str
+- `params` (`params:` in tool) — entries `key: "value"`
 - `recovery` (`recovery:` in tool) — max_repair_attempts int · max_agent_attempts int · model str · agent_tools [tool]
 - `compute` — description str · input id · output id · publish id · artifact_labels [tool] · await wait_all|best_effort · expr {expr}
 - `expr` (`expr:` in compute) — entries `field: "expression"`
@@ -433,9 +434,9 @@ tool commit_changes:
   await:   wait_all               # only when the node has multiple incoming edges
 ```
 
-A tool node has ONE `command:` string (or a `script:` + `language:`). A
-`command:` runs through `bash -c`, host and sandbox alike; a `script:` runs the
-interpreter its `language:` names (`sh` is dash on Debian-derived images —
+A tool node has ONE recipe: a `command:` string, a `script:` + `language:`, or
+an `action:` (below). A `command:` runs through `bash -c`, host and sandbox
+alike; a `script:` runs the interpreter its `language:` names (`sh` is dash on Debian-derived images —
 keep scripts POSIX). There is no `args:` list and no `readonly:` on a tool. Every `{{ref}}` is shell-escaped as one word by the
 runtime — never wrap it in quotes of your own (C137). **A tool's stdout IS its
 output**: print a JSON object matching the `output:` schema; any other stdout is
@@ -457,6 +458,51 @@ categorise the artifact, so the studio's Artifacts tab groups it (e.g. a
 (`approved`/`blockers`/…) outputs are auto-labelled `plan`/`verdict` even
 without the field. Diagnostic C049 warns if `artifact_labels:` is set
 without `publish:` (nothing to attach to).
+
+### Connector action — calling a third-party API with no LLM (ADR-098)
+
+```iter fragment
+tool comment:
+  action: forgejo.issue.comment    # <connector>.<resource>.<verb>
+  connection: forge_main           # the binding that authenticates it
+  params:
+    owner: "{{vars.owner}}"
+    repo:  "{{vars.repo}}"
+    index: "{{outputs.pick.number}}"
+    body:  "{{outputs.draft.text}}"
+  timeout: 30s
+  output: comment_result
+```
+
+`action:` is exclusive with `command:`/`script:`. Each `params:` value renders
+the usual `{{...}}` namespaces, then coerces to the type the operation declares
+— so `"{{outputs.pick.number}}"` reaches an integer field as a number.
+
+Output: `{status, pending, data}`, plus `{items, complete}` when the operation
+paginates. **Read `complete`** — a walk that stopped at its ceiling looks
+exactly like one that finished. **Read `pending`** — a `202` means accepted,
+not done.
+
+Two properties are REFUSED on an action node, because its whole offer is that
+no LLM decides the operation, builds the arguments or reads the answer:
+`recovery:`/`policy: recover` (C262 — its ladder ends in an LLM repairing the
+call) and `postcondition:` (C263 — a shell exit code would overrule the
+vendor's typed answer). A failure is a node failure carrying its error class
+(`not_found`, `rate_limited`, …); branch on it with a `when` edge.
+
+`unknown_outcome` is a first-class result: when a mutating call's request went
+out and its answer was lost, and the vendor offers no idempotency key, iterion
+says it cannot tell whether it happened, and never retries automatically. A
+call that never LEFT — a refused dial, a name that does not resolve, a header
+that cannot be sent — is an ordinary retryable transport failure instead:
+nothing reached the vendor, so there is nothing to reconcile.
+
+**Where packages come from.** The operator's `<iterion home>/connectors/<id>`
+by default. A project tier (`<workspace>/connectors/<id>`, where `iterion
+connectors gen` writes) outranks it and is read ONLY with
+`ITERION_CONNECTOR_PROJECT_CATALOG=1` — the workspace is the repo a run acts
+on, and nothing pins what an operation DOES, so an ungranted project package
+could redefine a call the operator's credential pays for.
 
 ### Verified Action — adaptive recovery for ACTION tool nodes (ADR-044)
 

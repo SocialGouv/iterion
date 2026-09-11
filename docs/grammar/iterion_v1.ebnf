@@ -270,9 +270,33 @@ tool_prop = "description" ":" STRING_LIT NEWLINE
           | "goal" ":" STRING_LIT NEWLINE
           | "postcondition" ":" STRING_LIT NEWLINE
           | "policy" ":" action_policy NEWLINE
+          | "action" ":" connector_op_id NEWLINE
+          | "connection" ":" connection_alias NEWLINE
+          | "retry" ":" scalar_text NEWLINE
+          | "timeout" ":" scalar_text NEWLINE
+          | action_params_block
           | recovery_block | sandbox_decl ;
 script_language = "js" | "py" | "sh" | "bash" ;
 action_policy = "required" | "recover" | "best_effort" ;
+(* A connector operation id: connector.resource.verb (ADR-098, C260). A
+   quoted form is accepted too: an author who writes it unambiguously is not
+   corrected for it. *)
+connector_op_id = IDENT "." IDENT "." IDENT { "." IDENT } | STRING_LIT ;
+(* The alias an operator chose at `iterion connections add --alias`, where a
+   dash is ordinary — so the quoted form is what makes `forge-main` nameable. *)
+connection_alias = IDENT | STRING_LIT ;
+action_params_block = "params" ":" NEWLINE [ INDENT { action_param } DEDENT ] ;
+(* The key is the VENDOR's wire name, which is routinely not an identifier —
+   `activity-id` and `user-id` are required path parameters of the shipped
+   Forgejo package — so the quoted form is what makes those operations
+   callable at all. *)
+action_param = ( IDENT | STRING_LIT ) ":" scalar_text NEWLINE ;
+(* A quoted string, or a bare scalar for the values naturally written
+   unquoted. The optional IDENT after a number is a DURATION's unit: the
+   lexer splits `30s` into `30` and `s`, and only a number takes one — two
+   bare words are a quoting error, not one value, since joining them would
+   send `hello world` as `helloworld`. *)
+scalar_text = STRING_LIT | NUMBER_LIT [ IDENT ] | IDENT ;
 recovery_block = "recovery" ":" NEWLINE [ INDENT { recovery_prop } DEDENT ] ;
 recovery_prop = "max_repair_attempts" ":" INT_LIT NEWLINE
               | "max_agent_attempts" ":" INT_LIT NEWLINE

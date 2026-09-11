@@ -327,6 +327,35 @@ tool deploy:
 
 `parallel_safe: true` is a narrowly scoped assertion for `fan_out_each`: concurrent replays must write only to disjoint item-keyed targets. It does not make a tool generally read-only.
 
+**The third recipe: `action:`** ([ADR-098](adr/098-connector-catalog.md)). A tool node calls a connector operation instead of a shell:
+
+```iter fragment
+tool comment:
+  action: forgejo.issue.comment
+  connection: forge_main
+  params:
+    owner: "{{vars.owner}}"
+    repo: "{{vars.repo}}"
+    index: "{{outputs.pick.number}}"
+    body: "{{outputs.draft.text}}"
+  timeout: 30s
+  output: comment_result
+```
+
+`command:`, `script:` and `action:` are mutually exclusive — a node has exactly one answer to "how does this do its work". `action:` names an operation of a connector package (`<connector>.<resource>.<verb>`), `connection:` the binding that authenticates it, and each `params:` value renders the same `{{...}}` namespaces a command does, then coerces to the type the operation declares (so `"{{outputs.pick.number}}"` reaches an integer field as a number, not as `"42"`).
+
+A parameter's name is the **vendor's**, not iterion's, so quote the ones that are not identifiers — `"user-id": 1`, `"status-types": "pull"`. The Forgejo package ships 22 of them, two of which are required path parameters.
+
+**The output** is `{status, pending, data}`, plus `{items, complete}` when the operation paginates. Read `complete`: a walk that stopped at its declared ceiling looks exactly like one that finished. Read `pending`: a `202` means the vendor accepted the work, not that it happened.
+
+**What an action node refuses, and why.** Its offer is that *no LLM decides the operation, builds the arguments or reads the answer* — so the two properties that could reintroduce one are compile errors: `recovery:` / `policy: recover` ([C262](references/diagnostics.md), whose ladder ends in an LLM repairing the call) and `postcondition:` ([C263](references/diagnostics.md), a shell exit code that would overrule the vendor's own typed answer). A failure is a node failure carrying its error class (`not_found`, `rate_limited`, `unauthorized`, …); branch on it with a `when` edge rather than expecting the node to return one.
+
+**`unknown_outcome` is a first-class result.** When a mutating operation's request goes out and its answer is lost, and the vendor offers no idempotency key, iterion reports that it cannot tell whether the call happened — and never retries it automatically. Repeating might duplicate a comment, a release, a payment; reporting success would be a lie. A call that never LEFT is not that case and is not reported as one: a refused dial, a name that does not resolve, a header that cannot be sent — nothing reached the vendor, so they are ordinary retryable transport failures. Only a cause that *proves* nothing was sent is treated that way; an unrecognised failure stays undecided, because guessing in that direction is what duplicates an effect.
+
+**Reaching a self-hosted instance.** Every connector call goes out on the guarded dialer, which refuses a private, loopback or link-local address — the guard that keeps a workflow from fetching `http://169.254.169.254/` on the machine an operator is signed into. A self-hosted Forgejo or GitLab is exactly the legitimate case for it, so the exception is deployment-controlled and greppable: **`ITERION_CONNECTOR_ALLOW_PRIVATE=1`** opens the guard for the process. The refusal names the variable, and `iterion connections add` warns at once when a `--base-url` will be refused, rather than leaving the first run to discover it.
+
+**Where packages are read from.** An operator's own tier is `<iterion home>/connectors/<id>`, and it is the one consulted by default. A project tier — `<workspace>/connectors/<id>`, where `iterion connectors gen` writes by default — outranks it, and is consulted **only** with **`ITERION_CONNECTOR_PROJECT_CATALOG=1`**. That default is deliberate: the workspace is the repository a run acts on, a connection pins the host its credential may reach and the place in the request it travels in, and nothing pins *what the operation does* — so a repository shipping `connectors/forgejo/` could keep the connector id, the scheme and the placement while redefining `forgejo.issue.comment` as a `DELETE`. Granting the tier is a deliberate act for your own project; a bot pointed at somebody else's repository never makes it. A project catalog that exists while the grant is closed says so when a connector fails to resolve, rather than reading as absent.
+
 ### `compute`
 
 `compute` evaluates bounded expressions without an LLM or shell:

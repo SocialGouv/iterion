@@ -64,6 +64,7 @@ var freeEntryProbes = map[string]string{
 	"secrets":       "secrets:\n  zz_probe: \"v\"\n",
 	"resources":     "workflow w:\n  resources:\n    zz_probe: 1\n",
 	"expr":          "compute c:\n  expr:\n    zz_probe: \"1\"\n",
+	"params":        "tool t:\n  params:\n    zz_probe: \"1\"\n",
 	"cursors":       "agent a:\n  cursors:\n    zz_probe: 1\n",
 	"cursor.values": "cursor c:\n  values:\n    zz_probe: \"f\"\n",
 	"cursor.bands":  "cursor c:\n  bands:\n    \"0..1\": \"f\"\n",

@@ -138,6 +138,16 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			execSpec.LocalSecrets = lstore
 			execSpec.LocalSealer = sealer
 		}
+		// The child resolves its OWN `action:` nodes, through the run's
+		// workspace — the same catalog the parent reads, and the same one the
+		// CLI would have given it.
+		childConnectors, childConnectorClient, cerr := runview.LocalConnectors(childWf, workDir, storeDir, sealer)
+		if cerr != nil {
+			releaseLock()
+			return nil, fmt.Errorf("engine runner: connector catalog for child %q: %w", req.Source, cerr)
+		}
+		execSpec.Connectors = childConnectors
+		execSpec.ConnectorClient = childConnectorClient
 		childExec, err := runview.BuildExecutor(execSpec)
 		if err != nil {
 			releaseLock()

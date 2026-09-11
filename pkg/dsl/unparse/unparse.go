@@ -621,6 +621,54 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Language != "" {
 			writeProp(&w.b, "language", t.Language)
 		}
+		// Connector action (ADR-098), written in the order an author reads it:
+		// what is called, with what credential, with which arguments.
+		// Both through the quoting path, like every other name-shaped field:
+		// the AST is also built programmatically (the JSON round trip, the
+		// studio editor, a refactoring tool), where nothing stops a space or a
+		// dot-less word landing in either. Written bare, `action: "forgejo
+		// issue comment"` came back out as three tokens — `Action` truncated
+		// to "forgejo" and `issue` read as an unknown tool property — so a
+		// save turned one C260 into a mangled node plus a diagnostic about
+		// text the author never wrote.
+		if t.Action != "" {
+			writeActionIDProp(&w.b, "action", t.Action)
+		}
+		if t.Connection != "" {
+			writeIdentProp(&w.b, "connection", t.Connection)
+		}
+		if len(t.Params) > 0 {
+			w.b.WriteString("  params:\n")
+			for _, p := range t.Params {
+				// The AUTHORED order, not a sorted one: a `.bot` is read and
+				// diffed by humans, and reshuffling an author's arguments on
+				// every round trip would make every regeneration a diff.
+				//
+				// The KEY is quoted when it is not an identifier, like the
+				// value beside it. A parameter key is the vendor's wire name —
+				// `user-id`, `status-types`, 22 of them in the shipped Forgejo
+				// package — and written bare it came back out as `user-id: "1"`,
+				// which re-parses as a param named `user` with value `id` plus
+				// two diagnostics. unparse.Verify then refuses the save naming
+				// generated text rather than the field. The AST also arrives
+				// from the JSON transport, where nothing constrains the shape.
+				writeQuotedProp(&w.b, "  "+identOrStr(&w.b, p.Key), p.Value)
+			}
+		}
+		// Quoted when they are not a bare scalar, for the same reason
+		// `action:` and `connection:` above are: the AST also arrives from the
+		// JSON transport, where nothing constrains either field. Written bare,
+		// `timeout: {{vars.t}}` re-parsed to the empty string (the value LOST)
+		// and `retry: 3 times` truncated to `3` — a save that either changes
+		// the value in silence or is refused by unparse.Verify pointing at
+		// generated text. `30s` and `3` stay bare: they are what an author
+		// writes, and quoting them would move every diff for no change.
+		if t.Retry != "" {
+			writeScalarTextProp(&w.b, "retry", t.Retry)
+		}
+		if t.Timeout != "" {
+			writeScalarTextProp(&w.b, "timeout", t.Timeout)
+		}
 		if t.Input != "" {
 			writeProp(&w.b, "input", t.Input)
 		}
@@ -947,12 +995,73 @@ func writeQuotedProp(b *buf, key, value string) {
 // with a cryptic lexer error far away from the offending field. Quote
 // the fallback so the malformed value at least round-trips into a
 // TokenString the parser can complain about precisely.
+// writeActionIDProp is writeIdentProp for an operation id, which is DOTTED
+// (`forgejo.issue.comment`) and so is not a bare identifier. Each segment has
+// to be one; anything else is quoted, which the parser reads back as the
+// literal id — deliberately, so an author who writes it quoted is not
+// corrected for being unambiguous.
+func writeActionIDProp(b *buf, key, value string) {
+	for _, seg := range strings.Split(value, ".") {
+		if !isBareIdent(seg) {
+			writeQuotedProp(b, key, value)
+			return
+		}
+	}
+	writeProp(b, key, value)
+}
+
 func writeIdentProp(b *buf, key, value string) {
 	if isBareIdent(value) {
 		writeProp(b, key, value)
 		return
 	}
 	writeQuotedProp(b, key, value)
+}
+
+// writeScalarTextProp emits a property the parser reads with
+// expectScalarText — a bare scalar (`30s`, `3`, `never`) or a quoted string.
+// Bare is kept for the shapes that re-read as themselves, so a duration does
+// not gain quotes on every save; anything else is quoted, because bare it
+// would come back TRUNCATED at the first space or, for a `{{…}}` template,
+// not at all.
+func writeScalarTextProp(b *buf, key, value string) {
+	if isBareScalarText(value) {
+		writeProp(b, key, value)
+		return
+	}
+	writeQuotedProp(b, key, value)
+}
+
+// isBareScalarText reports whether value re-parses to itself unquoted: an
+// identifier, or a number optionally carrying an adjacent unit — the two
+// forms expectScalarText reassembles (`30s` reaches it as an int and an
+// ident the lexer split at a boundary with no space in it).
+func isBareScalarText(s string) bool {
+	if isBareIdent(s) {
+		return true
+	}
+	rs := []rune(s)
+	i := 0
+	for i < len(rs) && unicode.IsDigit(rs[i]) {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	if i < len(rs) && rs[i] == '.' {
+		j := i + 1
+		for j < len(rs) && unicode.IsDigit(rs[j]) {
+			j++
+		}
+		if j == i+1 {
+			return false // `3.` is not a float the lexer produces
+		}
+		i = j
+	}
+	if i == len(rs) {
+		return true
+	}
+	return isBareIdent(string(rs[i:]))
 }
 
 // writeArtifactLabels renders `artifact_labels: [a, b]` — the labels a

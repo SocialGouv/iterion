@@ -317,6 +317,17 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		execSpec.LocalSecrets = lstore
 		execSpec.LocalSealer = r.sealer
 	}
+	// The connector catalog, on the same terms and for the same reason: a
+	// dispatched bot's `action:` node resolves through the local catalog, and
+	// without this the SAME `.bot` that runs from the CLI fails on a board
+	// card. The workspace is the run's own (a per-issue worktree), so a
+	// project connector tier is the checkout's, not the daemon's cwd.
+	connectors, connectorClient, cerr := runview.LocalConnectors(r.workflow, spec.WorkspacePath, spec.StoreDir, r.sealer)
+	if cerr != nil {
+		return fmt.Errorf("engine runner: connector catalog: %w", cerr)
+	}
+	execSpec.Connectors = connectors
+	execSpec.ConnectorClient = connectorClient
 	exec, err := runview.BuildExecutor(execSpec)
 	if err != nil {
 		return fmt.Errorf("engine runner: build executor: %w", err)

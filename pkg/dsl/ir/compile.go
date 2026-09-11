@@ -1243,16 +1243,26 @@ func (c *compiler) compileTools() {
 			c.validateSchemaRef(t.Name, "input", t.Input)
 		}
 
-		// command and script are mutually exclusive; exactly one must be set.
+		// A tool node has exactly ONE recipe: a shell command, a script body,
+		// or a connector action. They are exclusive because each answers "how
+		// does this node do its work" and two answers is not a choice the
+		// runtime may make on the author's behalf.
+		recipes := 0
+		for _, declared := range []bool{t.Command != "", t.Script != "", t.Action != ""} {
+			if declared {
+				recipes++
+			}
+		}
 		switch {
-		case t.Command == "" && t.Script == "":
-			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: must declare either `command:` or `script:`", t.Name)
-		case t.Command != "" && t.Script != "":
-			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `command:` and `script:` are mutually exclusive", t.Name)
+		case recipes == 0:
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: must declare one of `command:`, `script:` or `action:`", t.Name)
+		case recipes > 1:
+			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `command:`, `script:` and `action:` are mutually exclusive", t.Name)
 		case t.Script == "" && t.Language != "":
 			// language without script makes no sense.
 			c.errorfAt(DiagBadTemplateRef, t.Name, "", "tool %q: `language:` is only valid alongside `script:`", t.Name)
 		}
+		actionParams := c.compileToolAction(t)
 
 		var cmdRefs []*Ref
 		if t.Command != "" {
@@ -1336,6 +1346,11 @@ func (c *compiler) compileTools() {
 			Script:        t.Script,
 			ScriptRefs:    scriptRefs,
 			Language:      t.Language,
+			Action:        t.Action,
+			Connection:    t.Connection,
+			Params:        actionParams,
+			RetryPolicy:   t.Retry,
+			CallTimeout:   t.Timeout,
 			Publish:       t.Publish,
 			PublishLabels: t.ArtifactLabels,
 			AwaitMode:     t.Await,

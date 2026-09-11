@@ -530,6 +530,31 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			td.Policy = p.expectIdent()
 		case "recovery":
 			td.Recovery = p.parseRecoveryBlock(propTok)
+		// Connector action (ADR-098). Plain identifiers rather than reserved
+		// keywords, like the ADR-044 quad above: reserving `action` or
+		// `params` would break every existing bot that used either as a
+		// schema field or a node name.
+		case "action":
+			p.expect(TokenColon)
+			td.Action = p.expectActionID()
+		case "connection":
+			p.expect(TokenColon)
+			td.Connection = p.expectConnectionAlias()
+		case "params":
+			// APPENDED, not assigned. A second `params:` block otherwise
+			// replaced the first entirely and in silence — sending a value the
+			// author did not write, which is the exact collision C264 refuses
+			// INSIDE one block ("silently keeping one would send a value the
+			// author did not write, with nothing to notice it"). Appending
+			// hands the duplicate to that same check instead of resolving it
+			// here, so both spellings of the mistake get the same diagnostic.
+			td.Params = append(td.Params, p.parseActionParamsBlock()...)
+		case "retry":
+			p.expect(TokenColon)
+			td.Retry = p.expectScalarText("retry")
+		case "timeout":
+			p.expect(TokenColon)
+			td.Timeout = p.expectScalarText("timeout")
 		case "parallel_safe":
 			p.expect(TokenColon)
 			if v := p.parseBool(); v != nil {

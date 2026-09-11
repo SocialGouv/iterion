@@ -343,11 +343,28 @@ func (n *HumanNode) NodeKind() NodeKind { return NodeHuman }
 type ToolNode struct {
 	BaseNode
 	SchemaFields
-	Command       string   // command to execute, may contain {{...}} template refs
-	CommandRefs   []*Ref   // parsed template references in Command (resolved at runtime)
-	Script        string   // script body (interpreter snippet); mutually exclusive with Command
-	ScriptRefs    []*Ref   // parsed template references in Script
-	Language      string   // interpreter for Script: "js"|"py"|"sh"|"bash" (empty defaults to "sh")
+	Command     string // command to execute, may contain {{...}} template refs
+	CommandRefs []*Ref // parsed template references in Command (resolved at runtime)
+	Script      string // script body (interpreter snippet); mutually exclusive with Command
+	ScriptRefs  []*Ref // parsed template references in Script
+	Language    string // interpreter for Script: "js"|"py"|"sh"|"bash" (empty defaults to "sh")
+
+	// Connector action (ADR-098) — the third recipe, exclusive with Command
+	// and Script. Action names `<connector>.<resource>.<verb>`; Connection is
+	// the binding alias that authenticates it; Params are the arguments, each
+	// value carrying its own parsed template refs.
+	//
+	// Unlike the other two recipes, this path is certified to involve NO LLM:
+	// the operation, its arguments and the reading of the answer are all
+	// decided by the connector package. That is why an action node refuses
+	// ADR-044's recovery ladder and a postcondition — both are ways for a
+	// model, or a shell, to overrule what the vendor actually answered.
+	Action      string
+	Connection  string
+	Params      []ActionParam
+	RetryPolicy string
+	CallTimeout string
+
 	Publish       string   // persistent artifact name (empty = not published)
 	PublishLabels []string // DSL artifact_labels: applied to the published artifact
 	Session       SessionMode
@@ -376,6 +393,14 @@ type ToolNode struct {
 	// workspace — it just partitions those writes; unlike an agent/judge
 	// Readonly, it is not read-only. Default false = conservatively mutating.
 	ParallelSafe bool
+}
+
+// ActionParam is one compiled argument of a connector action: the public key
+// the operation declares, the authored value, and the template refs inside it.
+type ActionParam struct {
+	Key   string
+	Value string
+	Refs  []*Ref
 }
 
 // Verified Action policy values (ADR-044).
