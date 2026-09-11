@@ -47,6 +47,12 @@ type ManifestPatch struct {
 	// studio Integrations editor — the value is encoded with its yaml
 	// tags and re-validated through decodeManifest before the file lands.
 	Forge *ForgeRequirements
+	// Requires is nil for "no change"; a non-nil pointer rewrites the whole
+	// `requires:` block — the engine floor a bundle declares. A migration
+	// to a newer syntax profile raises it to the build that reads the
+	// profile, so an older runner refuses the bundle at admission instead
+	// of at its first parse.
+	Requires *Requires
 }
 
 // WriteManifest applies patch to the manifest.yaml at path, preserving
@@ -135,6 +141,11 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	}
 	if patch.Forge != nil {
 		if err := setMapField(root, "forge", *patch.Forge, false, ""); err != nil {
+			return nil, err
+		}
+	}
+	if patch.Requires != nil {
+		if err := setMapField(root, "requires", *patch.Requires, false, ""); err != nil {
 			return nil, err
 		}
 	}

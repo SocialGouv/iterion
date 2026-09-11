@@ -45,6 +45,10 @@ type Lexer struct {
 	// with no directive.
 	profile int
 
+	// lineStarts is the rune index of each line's first rune (line 1 at
+	// 0): what turns a token's (Line, Column) into its Offset.
+	lineStarts []int
+
 	// blockScalarMode: when true, lines are accumulated into blockScalarBuf
 	// until we see a line less indented than blockScalarBaseLevel. Triggered
 	// by `|` immediately following a colon, YAML-style.
@@ -85,6 +89,12 @@ func NewLexer(filename, src string) *Lexer {
 		atLineStart:  true,
 		strictEscape: pre.StrictEscape || profile >= 2,
 		profile:      profile,
+	}
+	l.lineStarts = []int{0}
+	for i, r := range l.src {
+		if r == '\n' {
+			l.lineStarts = append(l.lineStarts, i+1)
+		}
 	}
 	l.tokenize()
 	return l
@@ -802,8 +812,15 @@ func (l *Lexer) advance() {
 	}
 }
 
+// emit records a token at the position its scanner started from; the
+// scanner has consumed the token's text by now, so the current position is
+// where it ends.
 func (l *Lexer) emit(tt TokenType, value string, line, col int) {
-	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col})
+	offset := 0
+	if line >= 1 && line <= len(l.lineStarts) {
+		offset = l.lineStarts[line-1] + col - 1
+	}
+	l.tokens = append(l.tokens, Token{Type: tt, Value: value, Line: line, Column: col, Offset: offset, End: l.pos})
 }
 
 // skipRestOfString advances past the remainder of a quoted literal after an

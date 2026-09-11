@@ -515,6 +515,12 @@ type Token struct {
 	Value  string // raw text of the token; for TokenError, the lexer's diagnosis
 	Line   int    // 1-based
 	Column int    // 1-based
+	// Offset and End are the token's extent in the normalised source (BOM
+	// stripped, CRLF folded), as RUNE indices, End exclusive — what a
+	// rewriter needs to replace exactly the text of a token. Meaningful for
+	// the tokens the scanner reads from the text; a virtual token (INDENT,
+	// DEDENT, NEWLINE) carries the position it was emitted at.
+	Offset, End int
 	// Code is set on a TokenError only: the diagnostic code of the lexer's
 	// diagnosis (a tab, an unterminated string, a bad escape), so the parser
 	// reports THAT — never "expected X, got Error" with a token-shape hint

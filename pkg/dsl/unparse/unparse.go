@@ -155,6 +155,14 @@ func writePromptRef(b *buf, key, name string) {
 	writeIdentProp(b, key, name)
 }
 
+// QuoteStrict renders v as the `"…"` literal the standard escapes read back
+// as exactly v — the one form every value has under profile 2, and the
+// form a profile-1 literal holding a backslash is re-spelled in when a file
+// migrates.
+func QuoteStrict(v string) string {
+	return strictQuote(v)
+}
+
 // str renders v as a string literal the lexer reads back as exactly v.
 func (b *buf) str(v string) string {
 	if b.strict {
