@@ -81,6 +81,12 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 				Message: fmt.Sprintf("the outcome predicate %q could not be evaluated: %v", policy.SuccessWhen, err),
 				Cause:   err,
 			}
+			// Same case as the undecodable 2xx above, and the one undecided
+			// path that did not ask: the vendor answered 2xx, so the mutation
+			// CERTAINLY happened and only the reading of its answer failed.
+			// Without this the engine's recovery dispatcher sees an ordinary
+			// upstream failure and may replay the mutation on resume.
+			markAmbiguous(op, res.Err, resp.StatusCode)
 			return res
 		}
 		if !ok {

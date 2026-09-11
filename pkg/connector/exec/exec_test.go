@@ -1558,6 +1558,12 @@ func TestFormBodyReachesTheWire(t *testing.T) {
 // TestABrokenPredicateIsNotASuccess pins the failure mode of the policy
 // itself: a typo in `success_when` must not silently restore the status-only
 // behaviour the policy exists to replace.
+//
+// And it must not read as an ORDINARY failure either. The vendor answered
+// 2xx, so a mutating call CERTAINLY landed and only the reading of its answer
+// failed — the same case as an undecodable 2xx body. Without Ambiguous the
+// engine's recovery dispatcher classifies EXECUTION_FAILED instead of
+// AMBIGUOUS_EFFECT and may replay the mutation on resume.
 func TestABrokenPredicateIsNotASuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok": true}`))
@@ -1581,6 +1587,10 @@ func TestABrokenPredicateIsNotASuccess(t *testing.T) {
 	}
 	if !strings.Contains(res.Err.Message, "not a boolean") {
 		t.Errorf("message = %q, want it to say the predicate did not answer a boolean", res.Err.Message)
+	}
+	if !res.Err.AmbiguousEffect() {
+		t.Error("a 2xx whose predicate could not be evaluated leaves the effect UNDECIDED: " +
+			"the mutation landed and only its answer is unreadable, so a resume must not replay it")
 	}
 }
 
