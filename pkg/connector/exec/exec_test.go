@@ -1693,3 +1693,56 @@ func TestAPathParameterContainingASeparatorIsStillOneSegment(t *testing.T) {
 		t.Errorf("sent %q, want the whole value escaped into one segment", sent)
 	}
 }
+
+// TestARedirectOnAMutationIsUNDECIDED.
+//
+// The sibling of the test above, on the half that matters. "The call did not
+// reach the resource" is true of the redirect TARGET, not of the request: 303
+// See Other is the canonical answer to a POST whose effect already happened
+// ("done, go look over there"), and 302 is used the same way by vendors and by
+// anything fronting them. The 3xx branch was the one error path that did not
+// ask, so the node error landed in an ordinary bucket the engine may replay on
+// resume — the duplicate mutation Ambiguous exists to prevent.
+func TestARedirectOnAMutationIsUndecided(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   bool
+		why    string
+	}{
+		{http.StatusSeeOther, true, "303 is what a vendor answers a POST it already performed"},
+		{http.StatusFound, true, "302 is used the same way"},
+		{http.StatusTemporaryRedirect, false, "307 preserves the method precisely because the request must be re-sent"},
+		{http.StatusPermanentRedirect, false, "308 says the same"},
+		{http.StatusMovedPermanently, false, "301 is a resource that moved, not a call that was processed"},
+	} {
+		e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://elsewhere.example/created/7")
+			w.WriteHeader(tc.status)
+		})
+		res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.comment"),
+			fullParams("probe.issue.comment"), creds())
+		done()
+		if err != nil {
+			t.Fatalf("%d: call: %v", tc.status, err)
+		}
+		if res.Err == nil {
+			t.Fatalf("%d: a redirect iterion will not follow is not a success", tc.status)
+		}
+		if got := res.Err.AmbiguousEffect(); got != tc.want {
+			t.Errorf("%d: AmbiguousEffect = %v, want %v — %s", tc.status, got, tc.want, tc.why)
+		}
+	}
+	// A READ is never ambiguous: there is no effect to be undecided about.
+	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	defer done()
+	res, err := e.Call(context.Background(), pkg, opOf(t, pkg, "probe.issue.get"),
+		fullParams("probe.issue.get"), creds())
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Err == nil || res.Err.AmbiguousEffect() {
+		t.Errorf("a redirected READ must not be undecided: %v", res.Err)
+	}
+}

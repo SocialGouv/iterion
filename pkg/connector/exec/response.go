@@ -45,6 +45,13 @@ func (e *Executor) readResponse(pkg *spec.Package, op spec.Operation, resp *http
 			msg += "; the package's base_url or path is probably stale (Location: " + loc + ")"
 		}
 		res.Err = &Error{Class: spec.ErrUpstream, Status: resp.StatusCode, Message: msg}
+		// The only error path here that did not ask. "The call did not reach
+		// the resource" is true of the REDIRECT TARGET, not of the request:
+		// a 303 (or a 302 used the same way) is what a vendor answers a POST
+		// whose effect already happened. Without this the node error landed in
+		// an ordinary bucket the engine may replay on resume — the duplicate
+		// mutation the Ambiguous field exists to prevent.
+		markAmbiguous(op, res.Err, resp.StatusCode)
 		return res
 	}
 	// A 2xx whose body does not decode is not a success: the workflow's next

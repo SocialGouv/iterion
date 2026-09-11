@@ -200,7 +200,20 @@ func markAmbiguous(op spec.Operation, err *Error, status int) {
 	switch {
 	case status >= 500,
 		status == http.StatusRequestTimeout,
-		status >= 200 && status < 300:
+		status >= 200 && status < 300,
+		// 303 See Other is the canonical answer to a POST whose effect
+		// ALREADY HAPPENED ("done, go look over there"), and 302 is used the
+		// same way by vendors and by anything fronting them. iterion does not
+		// follow either — the guarded dialer pins the host it resolved — so
+		// the redirect is not a success, but the mutation may well have been
+		// performed, which is the definition of undecided.
+		//
+		// The other 3xx are NOT undecided and are deliberately absent: 307 and
+		// 308 preserve the method precisely because the request must be
+		// re-sent, and 301 is a resource that moved. Each says the vendor did
+		// not process this call.
+		status == http.StatusFound,
+		status == http.StatusSeeOther:
 		err.Ambiguous = true
 	}
 }
