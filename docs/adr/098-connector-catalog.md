@@ -1123,12 +1123,17 @@ canonical answer to a POST whose effect already happened, and 302 is used
 the same way. 307/308/301 stay unambiguous, deliberately: each says the
 vendor did not process the call.
 
-Two more corrections found while verifying those: an unmapped vendor error
+Four more corrections found while verifying those: an unmapped vendor error
 code silently restored the status range over the class the package declared
 for that status (`403 → rate_limited` downgraded to a non-retryable
-`forbidden`), and the C265 remedy in the diagnostic catalogue and the
-reference still taught `retry: 1m` — the form C265 refuses — after the
-property registry had been corrected for it in round four.
+`forbidden`); the C265 remedy in the diagnostic catalogue and the reference
+still taught `retry: 1m` — the form C265 refuses — after the property
+registry had been corrected for it in round four; Swagger 2 dropped
+`required` on a whole-body parameter where the OpenAPI 3 arm of the same
+function propagates it; and a required parameter delivered as a `$ref` was
+dropped with no skip reported, because `required` was read off the `{"$ref":
+…}` wrapper, which carries nothing else — so the two cases that check names
+in its own comment were the two it could never see.
 
 ### Open, with what each needs
 
@@ -1140,10 +1145,13 @@ property registry had been corrected for it in round four.
   (`ops/repository.yaml`, `create_pull_review_comment`). Needs a
   cycle-guarded resolve loop AND a regeneration of the shipped package,
   which needs the vendor description this repo does not commit.
-- **Swagger 2 drops `required` on a whole-body parameter** (`walk.go`'s
-  `case "body"` passes only the schema; the OpenAPI 3 side propagates it).
-  `checkParams` then treats the unset optional body as absent and the POST
-  goes out with no body at all. Same regeneration caveat.
+- **The shipped package still carries two generator defects that are FIXED in
+  the generator**: Swagger 2 dropping `required` on a whole-body parameter
+  (the OpenAPI 3 arm of the same function propagated it; `checkParams` then
+  treated the mandatory body as absent and the POST went out with none), and a
+  required parameter behind a `$ref` dropped without a skip. The code is
+  corrected and tested; `connectors/forgejo/**` shows the old output until it
+  is regenerated, with the same caveat as above.
 - **A response's integers are `float64`.** The REQUEST direction was fixed
   in this lot (`asPositiveInt`'s `json.Number` arm, "so a large id survives
   to the wire exactly"); `decodeJSON` still unmarshals into `any`, so an id
