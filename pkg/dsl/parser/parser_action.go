@@ -266,6 +266,18 @@ func (p *parser) parseActionParamsBlock() []ast.ActionParam {
 		}
 		keyTok := p.next()
 		key := tokenAsIdent(keyTok)
+		if key == "" && keyTok.Type == TokenString {
+			// A parameter's key is the VENDOR's wire name (spec.Param.Key,
+			// carried through unchanged by the generator), and a vendor names
+			// what it likes: the shipped Forgejo package has 22 keys that are
+			// not Go identifiers, `activity-id` and `user-id` among them, both
+			// REQUIRED path parameters. With no quoted form those operations
+			// could not be called from any workflow at all — the limit came
+			// from the reader, not from the model. The same escape hatch the
+			// alias position (expectConnectionAlias) and the tool list already
+			// give, for the same reason.
+			key = keyTok.Value
+		}
 		if key == "" {
 			p.addError(DiagInvalidValue, keyTok, "expected a parameter name, got "+keyTok.Type.String())
 			p.skipToNewline()

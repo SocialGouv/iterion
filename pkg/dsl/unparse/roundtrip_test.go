@@ -225,3 +225,68 @@ func TestActionIdentPropsSurviveARoundTrip(t *testing.T) {
 		t.Errorf("a well-formed id must stay bare, got:\n%s", out)
 	}
 }
+
+// TestActionParamKeysAndScalarsSurviveARoundTrip.
+//
+// The other half of the same round trip. A parameter's key is the VENDOR's
+// wire name — `user-id`, `status-types`, 22 such keys in the shipped Forgejo
+// package, two of them REQUIRED path parameters — and it was written bare
+// while only the value was quoted: `user-id: "1"` re-parses as a param named
+// `user` with value `id`, plus two diagnostics, and unparse.Verify then
+// refuses the save naming generated text rather than the field.
+//
+// `retry:`/`timeout:` had the mirror defect: written with no quoting guard at
+// all, a `{{…}}` template re-read as the empty string (LOST) and `3 times`
+// truncated to `3`.
+func TestActionParamKeysAndScalarsSurviveARoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, value, retry, timeout string
+	}{
+		{"identifier shapes", "index", "42", "3", "30s"},
+		{"a wire key with a dash", "user-id", "1", "3", "30s"},
+		{"a wire key with a dot", "filter.state", "open", "3", "30s"},
+		{"a value with a space", "body", "hello world", "3", "30s"},
+		{"a templated timeout", "index", "42", "3", "{{vars.t}}"},
+		{"a retry that is not one token", "index", "42", "3 times", "30s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &ast.File{Tools: []*ast.ToolNodeDecl{{
+				Name: "t", Action: "forgejo.issue.get", Connection: "forge_main",
+				Params:  []ast.ActionParam{{Key: tc.key, Value: tc.value}},
+				Retry:   tc.retry,
+				Timeout: tc.timeout,
+			}}}
+			out := unparse.Unparse(src)
+			res := parser.Parse("rt.bot", out)
+			for _, d := range res.Diagnostics {
+				if d.Severity == parser.SeverityError {
+					t.Fatalf("re-parse of\n%s\nfailed: %s", out, d.Message)
+				}
+			}
+			if len(res.File.Tools) != 1 {
+				t.Fatalf("re-parse gave %d tools:\n%s", len(res.File.Tools), out)
+			}
+			got := res.File.Tools[0]
+			if len(got.Params) != 1 || got.Params[0].Key != tc.key || got.Params[0].Value != tc.value {
+				t.Errorf("params = %+v, want one {%q: %q} (written as:\n%s)", got.Params, tc.key, tc.value, out)
+			}
+			if got.Retry != tc.retry {
+				t.Errorf("Retry = %q, want %q (written as:\n%s)", got.Retry, tc.retry, out)
+			}
+			if got.Timeout != tc.timeout {
+				t.Errorf("Timeout = %q, want %q (written as:\n%s)", got.Timeout, tc.timeout, out)
+			}
+		})
+	}
+	// The ordinary shapes stay BARE: quoting every duration or key would move
+	// the diff of every `.bot` the studio saves, for no change.
+	out := unparse.Unparse(&ast.File{Tools: []*ast.ToolNodeDecl{{
+		Name: "t", Action: "forgejo.issue.get", Connection: "forge_main",
+		Params: []ast.ActionParam{{Key: "index", Value: "42"}}, Retry: "3", Timeout: "30s",
+	}}})
+	for _, want := range []string{"    index: ", "  retry: 3\n", "  timeout: 30s\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q written bare, got:\n%s", want, out)
+		}
+	}
+}

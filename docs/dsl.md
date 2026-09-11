@@ -344,6 +344,8 @@ tool comment:
 
 `command:`, `script:` and `action:` are mutually exclusive — a node has exactly one answer to "how does this do its work". `action:` names an operation of a connector package (`<connector>.<resource>.<verb>`), `connection:` the binding that authenticates it, and each `params:` value renders the same `{{...}}` namespaces a command does, then coerces to the type the operation declares (so `"{{outputs.pick.number}}"` reaches an integer field as a number, not as `"42"`).
 
+A parameter's name is the **vendor's**, not iterion's, so quote the ones that are not identifiers — `"user-id": 1`, `"status-types": "pull"`. The Forgejo package ships 22 of them, two of which are required path parameters.
+
 **The output** is `{status, pending, data}`, plus `{items, complete}` when the operation paginates. Read `complete`: a walk that stopped at its declared ceiling looks exactly like one that finished. Read `pending`: a `202` means the vendor accepted the work, not that it happened.
 
 **What an action node refuses, and why.** Its offer is that *no LLM decides the operation, builds the arguments or reads the answer* — so the two properties that could reintroduce one are compile errors: `recovery:` / `policy: recover` ([C262](references/diagnostics.md), whose ladder ends in an LLM repairing the call) and `postcondition:` ([C263](references/diagnostics.md), a shell exit code that would overrule the vendor's own typed answer). A failure is a node failure carrying its error class (`not_found`, `rate_limited`, `unauthorized`, …); branch on it with a `when` edge rather than expecting the node to return one.

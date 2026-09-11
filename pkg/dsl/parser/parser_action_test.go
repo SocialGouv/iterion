@@ -365,6 +365,53 @@ workflow w:
 // `forge-main` — a name that command stores without a word — could not be
 // named from any workflow, and the quoted form is what lets the unparser hand
 // back a programmatically-built AST without corrupting it.
+// TestParseActionParamAcceptsAQuotedWireKey.
+//
+// A parameter's key is the VENDOR's wire name (spec.Param.Key, carried
+// through unchanged by the generator and looked up by it in exec), and a
+// vendor names what it likes. The shipped Forgejo package has 22 keys that
+// are not Go identifiers — `activity-id` and `user-id` are REQUIRED path
+// parameters of forgejo.activitypub.*, so with no written form for them those
+// operations could not be called from any workflow at all, and
+// notification/repository silently lost their optional arguments.
+func TestParseActionParamAcceptsAQuotedWireKey(t *testing.T) {
+	src := `tool a:
+  action: forgejo.activitypub.person_activity
+  connection: forge_main
+  params:
+    "user-id": 1
+    "activity-id": 2
+    plain: 3
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	if len(res.File.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
+	}
+	want := []struct{ key, value string }{
+		{"user-id", "1"},
+		{"activity-id", "2"},
+		{"plain", "3"},
+	}
+	got := res.File.Tools[0].Params
+	if len(got) != len(want) {
+		t.Fatalf("Params = %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Key != w.key || got[i].Value != w.value {
+			t.Errorf("param %d = %q: %q, want %q: %q", i, got[i].Key, got[i].Value, w.key, w.value)
+		}
+	}
+
+	// A key that is neither an identifier nor a quoted string is still
+	// refused, naming the position: the escape hatch is the quoted form, not
+	// "anything goes here now".
+	bad := parser.Parse("test.bot", "tool a:\n  action: p.r.v\n  connection: c\n  params:\n    42: x\n")
+	if !strings.Contains(diagText(bad), "expected a parameter name") {
+		t.Errorf("a non-name key must still be diagnosed, got %s", diagText(bad))
+	}
+}
+
 func TestParseActionConnectionAcceptsAQuotedAlias(t *testing.T) {
 	for _, tc := range []struct{ written, want string }{
 		{"forge_main", "forge_main"},

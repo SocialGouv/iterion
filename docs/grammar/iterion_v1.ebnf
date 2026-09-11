@@ -286,7 +286,11 @@ connector_op_id = IDENT "." IDENT "." IDENT { "." IDENT } | STRING_LIT ;
    dash is ordinary — so the quoted form is what makes `forge-main` nameable. *)
 connection_alias = IDENT | STRING_LIT ;
 action_params_block = "params" ":" NEWLINE [ INDENT { action_param } DEDENT ] ;
-action_param = IDENT ":" scalar_text NEWLINE ;
+(* The key is the VENDOR's wire name, which is routinely not an identifier —
+   `activity-id` and `user-id` are required path parameters of the shipped
+   Forgejo package — so the quoted form is what makes those operations
+   callable at all. *)
+action_param = ( IDENT | STRING_LIT ) ":" scalar_text NEWLINE ;
 (* A quoted string, or a bare scalar for the values naturally written
    unquoted. The optional IDENT after a number is a DURATION's unit: the
    lexer splits `30s` into `30` and `s`, and only a number takes one — two
