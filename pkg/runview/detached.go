@@ -67,6 +67,7 @@ type detachedSpec struct {
 	Command    runnerCommand
 	RunID      string
 	FilePath   string
+	BundleDir  string            // Launch only: the bundle FilePath was admitted against, when FilePath is not at its main.bot path
 	Vars       map[string]string // Launch only
 	Answers    map[string]string // Resume only; CLI --answer accepts string values today
 	StoreDir   string
@@ -102,6 +103,14 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 	switch spec.Command {
 	case runnerCommandRun:
 		args = append(args, "run", spec.FilePath, "--background", "--run-id", spec.RunID, "--no-interactive")
+		// The bundle the pre-flight compiled against travels with the file:
+		// for a studio launch the file is the store's materialised copy of
+		// the editor buffer, a name no promotion recognises, and without
+		// this the subprocess compiled it alone — admitted with 202, dead
+		// on C003 inside the runner.
+		if spec.BundleDir != "" {
+			args = append(args, "--bundle-dir", spec.BundleDir)
+		}
 		for k, v := range spec.Vars {
 			args = append(args, "--var", k+"="+v)
 		}
@@ -360,6 +369,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Command:         runnerCommandRun,
 		RunID:           runID,
 		FilePath:        spec.FilePath,
+		BundleDir:       spec.BundleDir,
 		Vars:            spec.Vars,
 		StoreDir:        s.storeDir,
 		Timeout:         spec.Timeout,

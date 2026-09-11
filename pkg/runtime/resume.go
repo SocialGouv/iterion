@@ -93,7 +93,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 	// directly), so it repeats the policy-aware physical guard used by
 	// runview's synchronous preflight. Enforce checks every exact revision,
 	// including in-flight parallel branches; report/legacy remain non-blocking.
-	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, e.forceResume)
+	// A legacy digest accepted above waives the revision the run's artifacts
+	// were published under, exactly as --force would — nothing else changed.
+	waiveRevision := e.forceResume || e.legacyDigestAccepted
+	checkpointArtifacts, preflightMatches := e.artifactResumePreflight.consume(r, e.workflow, e.workflowHash, waiveRevision)
 	// The handoff is one-shot on both match and mismatch. consume also clears
 	// the shared payload so aliases outside Engine cannot retain artifact bodies.
 	e.artifactResumePreflight = nil
@@ -110,7 +113,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		checkpointArtifacts = make(map[artifactRevisionKey]*store.Artifact)
 	}
 	if !preflightMatches && !e.artifactContractsChecked {
-		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, e.forceResume, nil, true, checkpointArtifacts, false); err != nil {
+		if err := validateArtifactContracts(ctx, e.store, r, e.workflow, e.workflowHash, waiveRevision, nil, true, checkpointArtifacts, false); err != nil {
 			// Refuse before claiming the checkpoint or touching the workspace.
 			if errors.Is(err, ErrArtifactContractUnavailable) {
 				return fmt.Errorf("runtime: cannot validate persisted artifact contracts: %w", err)
@@ -196,6 +199,23 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // warning instead of causing an error.
 func (e *Engine) checkWorkflowHash(r *store.Run) error {
 	err := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, e.forceResume)
+	// A run launched before its bundle's prompts entered the digest recorded
+	// the bare main.bot's; accept it — and, below, the artifacts it
+	// published under that revision — without rewriting the run, which
+	// would race every other writer of the document outside the claim.
+	if err != nil && e.bundle != nil && LegacyBareDigestMatches(r, e.bundle.IterPath) {
+		e.legacyDigestAccepted = true
+		if e.logger != nil {
+			e.logger.Warn(
+				"run %q recorded the bare digest of %s (%s) from before its bundle's prompts entered the workflow digest; accepted against the bundle's (%s) — nothing in the source changed, and the artifacts it published under that revision are accepted with it",
+				r.ID,
+				e.bundle.IterPath,
+				shortWorkflowHash(r.WorkflowHash),
+				shortWorkflowHash(e.workflowHash),
+			)
+		}
+		return nil
+	}
 	if err == nil && e.forceResume && r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
 		if e.logger != nil {
 			e.logger.Warn(

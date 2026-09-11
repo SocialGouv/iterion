@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -15,14 +14,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestResume_MigratesTheLegacyBareDigest: a run launched from a bundle's
+// TestResume_AcceptsTheLegacyBareDigest: a run launched from a bundle's
 // main.bot before the bundle's prompts entered the workflow digest recorded
 // the digest of the source bytes alone. Resumed after the promotion, it
 // compares a different digest and would be refused as a source change that
-// never happened — instead the preflight accepts the bare digest and the
-// resume rewrites the run's to the bundle's, once, and goes on. A run that
-// recorded neither stays refused, and a forced resume needs no migration.
-func TestResume_MigratesTheLegacyBareDigest(t *testing.T) {
+// never happened — instead the preflight and the resume accept the bare
+// digest and go on, without rewriting the run (a whole-document save
+// outside the engine's claim would race its other writers). A run that
+// recorded neither digest stays refused.
+func TestResume_AcceptsTheLegacyBareDigest(t *testing.T) {
 	dir := promptedBundle(t)
 	opened, err := bundle.OpenDir(dir)
 	if err != nil {
@@ -73,18 +73,11 @@ func TestResume_MigratesTheLegacyBareDigest(t *testing.T) {
 	if err := svc.PreflightResume(ctx, legacy); err != nil {
 		t.Fatalf("preflight refused the legacy bare digest: %v", err)
 	}
-	if r, _ := st.LoadRun(ctx, "run-legacy"); r.WorkflowHash != bare {
-		t.Fatalf("the preflight rewrote the digest (%s); only the resume migrates", r.WorkflowHash)
-	}
 	if _, err := svc.Resume(ctx, legacy); err != nil {
 		t.Fatalf("resume refused the legacy bare digest: %v", err)
 	}
-	r, err := st.LoadRun(ctx, "run-legacy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.WorkflowHash != promoted {
-		t.Fatalf("after the resume the run records %s, want the bundle's %s", r.WorkflowHash, promoted)
+	if r, _ := st.LoadRun(ctx, "run-legacy"); r.WorkflowHash != bare {
+		t.Fatalf("the run's digest was rewritten to %s outside the engine's claim", r.WorkflowHash)
 	}
 
 	other := ResumeSpec{RunID: "run-other", FilePath: opened.IterPath}
@@ -94,17 +87,4 @@ func TestResume_MigratesTheLegacyBareDigest(t *testing.T) {
 	if _, err := svc.Resume(ctx, other); !errors.Is(err, runtime.ErrWorkflowSourceChanged) {
 		t.Fatalf("a run that recorded neither digest: resume err = %v, want the source-changed refusal", err)
 	}
-	if r, _ := st.LoadRun(ctx, "run-other"); r.WorkflowHash == promoted {
-		t.Fatal("a run that recorded neither digest was migrated")
-	}
-
-	// The helper itself: a loose file (no bundle) never matches, and a
-	// digest that already is the bundle's is not a migration.
-	if LegacyBareDigestMatches(&store.Run{WorkflowHash: bare}, nil) {
-		t.Fatal("a nil bundle matched")
-	}
-	if MigrateLegacyBareDigest(ctx, st, &store.Run{ID: "x", WorkflowHash: promoted}, opened, promoted, nil) {
-		t.Fatal("a run already on the bundle's digest was migrated")
-	}
-	_ = filepath.Join
 }

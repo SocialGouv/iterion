@@ -105,6 +105,7 @@ workflow <%.WorkflowName%>:
   ## In place by default: the pending work IS the scope. With the dial on,
   ## the run isolates in a fresh worktree and needs `base`.
   worktree: <%if .Worktree%>auto<%else%>none<%end%>
+<%- if .Permission%>
   ## The gate the header names, ON by default (the permission dial is
   ## `deny` for this shape): a reviewer reads and never writes. Under
   ## `deny` any tool call not on the allow list is hard-blocked, headless;
@@ -112,9 +113,13 @@ workflow <%.WorkflowName%>:
   ## is a prefix on the WHOLE command line (`git diff > file` passes under
   ## `Bash(git diff:*)`): a backstop, not a proof — the prompts still
   ## carry the rule. Widen the allow list with the commands your own
-  ## lenses run.
+  ## lenses run. The lists go with the dial: cleared, they are not written
+  ## either, so the file never carries rule lists no gate reads.
   allow: ["Read(**)", "Grep", "Glob", "LS", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git ls-files:*)", "Bash(git blame:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)"]
-  deny: ["Edit(**)", "Write(**)", "NotebookEdit(**)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)", "Bash(git checkout:*)", "Bash(git stash:*)", "Bash(git reset:*)", "Bash(rm:*)"]<%template "dials" .%>
+  deny: ["Edit(**)", "Write(**)", "NotebookEdit(**)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)", "Bash(git checkout:*)", "Bash(git stash:*)", "Bash(git reset:*)", "Bash(rm:*)"]<%else%>
+  ## The permission dial is OFF: the prompts alone stand between a
+  ## reviewer and your checkout. `permission: deny` with an allow list of
+  ## read-only tools is the gate (docs/permissions.md).<%end%><%template "dials" .%>
   scope -> nothing_to_review when empty
   scope -> split when not empty
   split -> review_correctness

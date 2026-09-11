@@ -406,14 +406,17 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
+	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// The bare digest of a run launched before the promotion is accepted
-		// here and migrated by Resume; anything else stays a refusal.
-		if !LegacyBareDigestMatches(r, pfBundle) {
+		// here, as the engine accepts it under its claim; anything else
+		// stays a refusal.
+		if pfBundle == nil || !runtime.LegacyBareDigestMatches(r, pfBundle.IterPath) {
 			return err
 		}
+		legacy = true
 	}
-	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force)
+	_, err = runtime.ValidateResumeArtifactsPreflight(parent, s.store, r, wf, hash, spec.Force || legacy)
 	return err
 }
 
@@ -508,13 +511,17 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
+	legacy := false
 	if err := runtime.ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, hash, spec.Force); err != nil {
 		// A run launched before its bundle's prompts entered the digest
-		// recorded the bare main.bot's: migrate it once, in place, and go on;
-		// any other mismatch stays a refusal.
-		if !MigrateLegacyBareDigest(parent, s.store, r, resumeBundle, hash, s.logger) {
+		// recorded the bare main.bot's: accepted here and by the engine
+		// under its claim (which never rewrites the run — a whole-document
+		// save outside the claim would race every other writer); any other
+		// mismatch stays a refusal.
+		if resumeBundle == nil || !runtime.LegacyBareDigestMatches(r, resumeBundle.IterPath) {
 			return nil, err
 		}
+		legacy = true
 	}
 	inProcessResume := s.publisher == nil && !detachedEnabled()
 	validateArtifacts := runtime.ValidateResumeArtifactsPreflight
@@ -525,7 +532,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// Queued/detached engines repeat the emitting pass at their own boundary.
 		validateArtifacts = runtime.ValidateResumeArtifacts
 	}
-	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force)
+	// A legacy digest waives the revision the run's artifacts were published
+	// under, exactly as --force would: nothing else changed.
+	artifactPreflight, err := validateArtifacts(parent, s.store, r, wf, hash, spec.Force || legacy)
 	if err != nil {
 		return nil, err
 	}

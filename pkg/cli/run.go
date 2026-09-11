@@ -36,6 +36,7 @@ import (
 type RunOptions struct {
 	File          string               // .bot file path or .botz bundle path
 	Recipe        string               // recipe JSON file path (alternative to File)
+	BundleDir     string               // the bundle File belongs to when it is not at its main.bot path (a studio buffer materialised under the store): the detached runner hands over both, so the subprocess compiles what the pre-flight admitted
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
 	RunID         string               // explicit run ID (auto-generated if empty)
@@ -813,6 +814,27 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	resolved := ResolveRecipePath(opts.File)
 	if existErr := requireWorkflowPathExists(resolved); existErr != nil {
 		return nil, "", "", "", nil, cleanup, existErr
+	}
+	if opts.BundleDir != "" {
+		// The file is a copy of a bundle's main.bot that is NOT at its
+		// bundle's path — the studio materialises the editor buffer under
+		// the store as `<hash>-main.bot`, a name no promotion recognises —
+		// and the caller names the bundle it was admitted against, so this
+		// compile (prompts/*.md merged, the bundle's digest, the handle for
+		// its skills) is the one the pre-flight ran.
+		opened, openErr := bundle.OpenDir(opts.BundleDir)
+		if openErr != nil {
+			return nil, "", "", "", nil, cleanup, fmt.Errorf("bundle dir %s: %w", opts.BundleDir, openErr)
+		}
+		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened)
+		if compileErr != nil {
+			return nil, "", "", "", opened, cleanup, compileErr
+		}
+		display := raw.Name
+		if name := opened.Name(); name != "" {
+			display = name + " (" + raw.Name + ")"
+		}
+		return raw, h, resolved, display, opened, cleanup, nil
 	}
 	opened, iterPath, _, c, openErr := openBundleOrFile(resolved)
 	if openErr != nil {

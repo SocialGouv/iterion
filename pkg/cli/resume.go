@@ -227,14 +227,6 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return err
 	}
-	// A run launched before its bundle's prompts entered the workflow
-	// digest recorded the bare main.bot's: migrate it once, in place, so
-	// the engine's own check (which reads the run back under its lock) is
-	// not a refusal for a source change that never happened.
-	if !opts.Force && bundleHandle != nil {
-		runview.MigrateLegacyBareDigest(ctx, s, r, bundleHandle, wfHash, logger)
-	}
-
 	// `--answer field=@./file.mp3` attaches a local file to the gate, the
 	// CLI counterpart of the studio's upload widget. Done after the
 	// compile so the '@' convention can be scoped to the fields the

@@ -55,7 +55,7 @@ my-bot/
 ├── README.md          # optional, for human readers
 ├── skills/            # optional — Claude Code skills
 │   └── probe.md
-├── prompts/           # optional — reusable .md prompts
+├── prompts/           # optional — reusable .md prompts (flat: a file in a subdirectory is not read)
 │   └── helper.md
 ├── attachments/       # optional — default values for `attachments:` block
 │   └── logo.png

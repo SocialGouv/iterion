@@ -186,6 +186,7 @@ type Engine struct {
 	validateOutputs          bool                                 // when true, validate node outputs against declared schemas
 	outputCorrectionBudget   int                                  // bounded invalid-output correction calls per node episode
 	forceResume              bool                                 // when true, skip workflow hash check on resume
+	legacyDigestAccepted     bool                                 // the run recorded the bare digest of its bundle's main.bot from before the promotion; accepted, with the artifacts it published under that revision
 	artifactContractsChecked bool                                 // caller already ran the synchronous contract gate for this in-process resume
 	artifactResumePreflight  *ArtifactResumePreflight             // same-run snapshot from the synchronous in-process resume boundary
 	workDir                  string                               // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
