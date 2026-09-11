@@ -99,6 +99,13 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 	// an effect, however large N is.
 	attempts := 1 + actionRetries(node)
 	var res exec.Result
+	// What the VENDOR actually saw, across every attempt. res is replaced on
+	// each pass, so reporting its own count told an operator about the last
+	// attempt only: a `retry: 3` node that failed twice before succeeding
+	// reported nothing at all, and a paginated one that died on page 18 and
+	// then walked 20 reported 20 while the vendor had served 38. That is the
+	// invisibility the field exists to end.
+	spent := 0
 	for attempt := 1; ; attempt++ {
 		var items []any
 		complete := true
@@ -113,17 +120,30 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 			// read its collection. Repeating cannot change it.
 			return nil, e.finishAction(node, op, res, start, callErr)
 		}
+		spent += res.Requests
 		if res.OK() {
-			return e.actionOutput(node, op, res, items, complete, start), nil
+			return e.actionOutput(node, op, res, items, complete, start, spent), nil
 		}
 		if attempt >= attempts || !res.Err.Retryable(op, params) {
 			return nil, e.finishAction(node, op, res, start, nil)
 		}
 		// The vendor's own Retry-After when it gave one, a small bounded
-		// backoff when it did not.
+		// backoff when it did not — and BOUNDED either way.
+		//
+		// The invented backoff was capped at 5s while the vendor-named one was
+		// honoured verbatim, on the reasoning that "a connector call is bounded
+		// by the node's own `timeout:`". That premise does not hold: `timeout:`
+		// is optional, and a `.bot` with no `budget:` block gives callCtx no
+		// deadline at all — so `Retry-After: 86400`, or a far-future HTTP date,
+		// parked the node for a day per attempt with no event between its start
+		// and its finish while the run read as `running`. Past the cap the node
+		// fails with its retryable error instead, and the engine's own recovery
+		// owns the longer wait.
 		wait := res.Err.RetryAfter
 		if wait <= 0 {
 			wait = connectorRetryBackoff(attempt)
+		} else if wait > connectorRetryAfterCap {
+			wait = connectorRetryAfterCap
 		}
 		select {
 		case <-callCtx.Done():
@@ -169,6 +189,11 @@ func connectorRetryBackoff(attempt int) time.Duration {
 const (
 	connectorBackoffBase = 500 * time.Millisecond
 	connectorBackoffCap  = 5 * time.Second
+	// connectorRetryAfterCap bounds the delay a VENDOR names. It matches the
+	// LLM path's own backoff ceiling: past a minute, waiting inside the node
+	// buys nothing a resume would not do better, and the run has no event to
+	// say what it is waiting for.
+	connectorRetryAfterCap = 60 * time.Second
 )
 
 // actionRetries reads the node's `retry:` as a count of EXTRA attempts.
@@ -306,7 +331,7 @@ func (e *ClawExecutor) scrubActionError(err error) error {
 // call adds `items` and `complete` — the second of which a workflow MUST be
 // able to read, since a walk that stopped at its ceiling looks exactly like
 // one that finished.
-func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res exec.Result, items []any, complete bool, start time.Time) map[string]any {
+func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res exec.Result, items []any, complete bool, start time.Time, spent int) map[string]any {
 	out := map[string]any{
 		"status":  res.Status,
 		"pending": res.Pending,
@@ -322,8 +347,13 @@ func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res ex
 	// small as it reads. A paginated action can spend twenty of a vendor's
 	// rate-limit slots behind what looks like a single call, and nothing said
 	// so — the operator found out on the vendor's dashboard.
-	if res.Requests > 1 {
-		out["requests"] = res.Requests
+	if spent < res.Requests {
+		// A caller that did not count (a hand-built path) still gets the
+		// truthful minimum rather than a smaller number.
+		spent = res.Requests
+	}
+	if spent > 1 {
+		out["requests"] = spent
 	}
 	rendered, _ := json.Marshal(out)
 	e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, string(rendered), "", time.Since(start), nil)
@@ -362,8 +392,26 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		// literal produced `hello "Alice"` — quotes and all — and sent it to
 		// the vendor, because the surrounding text makes the result un-decodable
 		// so nothing downstream could undo it.
+		// A whole-value SECRET is rendered RAW, like interpolated text, and not
+		// as a JSON literal.
+		//
+		// The typed path wraps a whole-value ref in JSON — a string comes back
+		// quoted — and Materialize then splices the real secret INSIDE those
+		// quotes, after the encoder has run. The coercion below then reads the
+		// result as JSON, so the secret's own bytes are read as syntax: a
+		// credential containing `"` or `\` fails to decode and reaches the
+		// vendor WITH its surrounding quotes, and one containing a literal
+		// `\n` two-character sequence arrives as a newline. Either way the
+		// call 401s on a perfectly valid credential — the exact symptom
+		// materialising was added to remove.
+		//
+		// Raw is also the honest shape: a credential is a string, never a
+		// number or an object, so there is nothing for the typed path to
+		// decide.
+		whole := isWholeValueRef(p.Value, p.Refs)
+		secret := whole && p.Refs[0] != nil && p.Refs[0].Kind == ir.RefSecrets
 		rendered := ""
-		if isWholeValueRef(p.Value, p.Refs) {
+		if whole && !secret {
 			rendered = resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
 		} else {
 			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, rawTemplateValue, true)
@@ -383,7 +431,7 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 			out[p.Key] = rendered
 			continue
 		}
-		v, err := coerceParam(decl, rendered, isWholeValueRef(p.Value, p.Refs))
+		v, err := coerceParam(decl, rendered, whole && !secret)
 		if err != nil {
 			return nil, fmt.Errorf("param %q: %w", p.Key, err)
 		}

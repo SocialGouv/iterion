@@ -135,3 +135,43 @@ func TestAnErrorWithNoSecretIsNotRebuilt(t *testing.T) {
 		t.Errorf("Status = %d, want %d", typed.Status, http.StatusNotFound)
 	}
 }
+
+// TestASecretReachesTheVendorEXACTLY.
+//
+// A whole-value reference is rendered as a JSON LITERAL — that is what lets
+// `index: "{{outputs.pick.number}}"` reach an integer field as a number — and
+// the secret was materialised INTO that literal, after the encoder had run and
+// before the coercion decodes it. So the credential's own bytes were read as
+// JSON syntax: a `"` or a `\` in it made the decode fail and the value reached
+// the vendor WITH its surrounding quotes, while a literal `\n` two-character
+// sequence arrived as a newline. Every one of those is a 401 on a perfectly
+// valid credential — the symptom materialising was added to remove — and the
+// shipped test could not see it, its own secret containing neither character.
+//
+// The oracle is the request the server received.
+func TestASecretReachesTheVendorEXACTLY(t *testing.T) {
+	for _, tc := range []struct{ name, secret string }{
+		{"ordinary", "gh-pat-not-a-real-token-7b31"},
+		{"a backslash", `back\slash-token`},
+		{"a quote", `has"quote-token`},
+		{"an escape sequence", `nl\nliteral-token`},
+		{"a brace", `{"looks":"like json"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query().Get("token")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			e, node := queryTokenNode(t, srv.URL, tc.secret)
+			if _, err := e.Execute(context.Background(), node, nil); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if got != tc.secret {
+				t.Errorf("the vendor received %q, want the credential byte for byte", got)
+			}
+		})
+	}
+}
