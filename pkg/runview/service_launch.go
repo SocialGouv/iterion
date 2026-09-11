@@ -255,6 +255,15 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 
 	_, runLogger := s.prepareRunLog(runID)
 
+	// The connector catalog an `action:` node resolves through, on the same
+	// terms as the CLI: without it the same `.bot` runs from `iterion run` and
+	// fails here at its first action node.
+	connectors, connectorClient, err := s.localConnectors(wf, spec.WorkDir)
+	if err != nil {
+		s.dropRunLog(runID)
+		return nil, err
+	}
+
 	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO
 	// disjoint seams — WITHOUT wrapping the store (a wrapper would shadow
 	// the concrete FilesystemRunStore's optional capabilities against the
@@ -283,13 +292,15 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// same run derives the id from the path and lands on a different
 		// memory space. Same rule on both sides, so the two cannot diverge.
 		BotID:          ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
-		BoardRegister:  s.boardRegister,
-		Compress:       spec.Compress,
-		AutoMemory:     spec.AutoMemory,
-		Permission:     spec.Permission,
-		LocalSecrets:   s.localSecrets,
-		LocalSealer:    s.localSealer,
-		UsageCapSource: s.usageCapSource,
+		BoardRegister:   s.boardRegister,
+		Compress:        spec.Compress,
+		AutoMemory:      spec.AutoMemory,
+		Permission:      spec.Permission,
+		LocalSecrets:    s.localSecrets,
+		LocalSealer:     s.localSealer,
+		Connectors:      connectors,
+		ConnectorClient: connectorClient,
+		UsageCapSource:  s.usageCapSource,
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -580,6 +591,15 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 	_, runLogger := s.prepareRunLog(spec.RunID)
 
+	// A resume rebuilds the executor from scratch, so it needs the catalog
+	// too: without it a run that launched fine dies at the first action node
+	// it re-executes.
+	connectors, connectorClient, err := s.localConnectors(wf, "")
+	if err != nil {
+		s.dropRunLog(spec.RunID)
+		return nil, err
+	}
+
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow: wf,
 		Store:    s.store,
@@ -597,12 +617,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// name here and aim the resumed run at a different space than its own
 		// earlier nodes wrote to — an empty memory, and notes landing where
 		// nothing will read them again.
-		BotID:          BotIDForRun(r),
-		AutoMemory:     spec.AutoMemory,
-		BoardRegister:  s.boardRegister,
-		LocalSecrets:   s.localSecrets,
-		LocalSealer:    s.localSealer,
-		UsageCapSource: s.usageCapSource,
+		BotID:           BotIDForRun(r),
+		AutoMemory:      spec.AutoMemory,
+		BoardRegister:   s.boardRegister,
+		LocalSecrets:    s.localSecrets,
+		LocalSealer:     s.localSealer,
+		Connectors:      connectors,
+		ConnectorClient: connectorClient,
+		UsageCapSource:  s.usageCapSource,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

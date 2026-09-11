@@ -121,6 +121,16 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// active pass returns (before any park below).
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
+		// A subbot is a run of its own and resolves its own `action:` nodes:
+		// the child's catalog is the SERVICE's workspace, not the child
+		// bundle's directory, since the project tier belongs to the checkout
+		// the operator is acting on.
+		childConnectors, childConnectorClient, cerr := s.localConnectors(childWf, "")
+		if cerr != nil {
+			releaseChild()
+			return nil, cerr
+		}
+
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:      managedCtx,
 			Workflow: childWf,
@@ -137,10 +147,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// with two memory spaces depending on which surface launched the
 			// parent.
 			BotID:          ResolveBotID("", BundleNameForPath(childPath), childPath),
-			BoardRegister:  s.boardRegister,
-			LocalSecrets:   s.localSecrets,
-			LocalSealer:    s.localSealer,
-			UsageCapSource: s.usageCapSource,
+			BoardRegister:   s.boardRegister,
+			LocalSecrets:    s.localSecrets,
+			LocalSealer:     s.localSealer,
+			Connectors:      childConnectors,
+			ConnectorClient: childConnectorClient,
+			UsageCapSource:  s.usageCapSource,
 		})
 		if err != nil {
 			releaseChild()
