@@ -313,6 +313,7 @@ func (p *parser) parseFile() *ast.File {
 		switch t.Type {
 		case TokenEOF:
 			f.Span = ast.Span{Start: p.pos(startTok), End: p.pos(t)}
+			p.refuseDirectiveInProfile(f)
 			return f
 
 		case TokenDSL:
@@ -486,6 +487,25 @@ func (p *parser) parseFile() *ast.File {
 			p.skipToNextTopLevel()
 		}
 		declared = true
+	}
+}
+
+// refuseDirectiveInProfile reports (E042) every strict-escape directive in a
+// file of profile 2 or later: the profile reads standard escapes by
+// itself, and a directive left behind claims a mode the file no longer
+// opts into — the line-33 rule of profile 1 (parser.Preamble) does not
+// even apply to it. Reported at the end of the file, once the profile is
+// known, at the directive's own position.
+func (p *parser) refuseDirectiveInProfile(f *ast.File) {
+	if f.EffectiveProfile() <= ast.DefaultProfile {
+		return
+	}
+	for _, c := range f.Comments {
+		if !IsStrictEscapeDirective(c.Text) {
+			continue
+		}
+		at := Token{Type: TokenComment, Value: c.Text, Line: c.Span.Start.Line, Column: c.Span.Start.Column}
+		p.addError(DiagDirectiveInProfile, at, fmt.Sprintf("the strict-escape directive is profile 1's — profile %d reads standard escapes by default", f.EffectiveProfile()))
 	}
 }
 
