@@ -49,6 +49,13 @@ type Lexer struct {
 	// 0): what turns a token's (Line, Column) into its Offset.
 	lineStarts []int
 
+	// profileReads are the places a profile-1 file would be read otherwise
+	// under profile 2 (ProfileRead); pendingBlanks holds the blank lines of
+	// the prompt body being read until a further body line proves them
+	// interior — the trailing ones are dropped by both profiles.
+	profileReads  []ProfileRead
+	pendingBlanks []ProfileRead
+
 	// blockScalarMode: when true, lines are accumulated into blockScalarBuf
 	// until we see a line less indented than blockScalarBaseLevel. Triggered
 	// by `|` immediately following a colon, YAML-style.
@@ -120,6 +127,26 @@ func (l *Lexer) dashOpensItem() bool {
 		return true
 	}
 	return false
+}
+
+// ProfileRead is one place where a file read as profile 1 would be read
+// otherwise under profile 2: an `escape` — a backslash inside a `"…"`
+// literal, kept verbatim by profile 1 and decoded by profile 2 — or a
+// `paragraph` — a blank line inside a prompt body, dropped by profile 1 and
+// kept by profile 2. What `iterion validate` reports (C144) on a file with
+// no `dsl:` header, so the profile it is read in is a choice and not a
+// default nobody noticed.
+type ProfileRead struct {
+	Line int
+	Kind string
+}
+
+// ProfileReads lists the places profile 2 would read otherwise, in order
+// of appearance. Empty for a profile-2 source by construction: its escapes
+// take the strict branch and its blank body lines become tokens, so the
+// scanners never note one.
+func (l *Lexer) ProfileReads() []ProfileRead {
+	return l.profileReads
 }
 
 // Profile is the syntax profile the source declared (1 when it declared
@@ -264,13 +291,20 @@ func (l *Lexer) handleLineStart() {
 
 	// Blank line or end of file — skip
 	if l.pos >= len(l.src) || l.src[l.pos] == '\n' {
-		if l.promptMode && l.profile > 1 && l.pos < len(l.src) {
-			// Profile 2 keeps a paragraph break inside a prompt body: an
-			// empty prompt line, whatever spaces the line held. The parser
-			// trims trailing ones, so the blank line after a body is not
-			// part of it. Profile 1 skips every blank line — the model gets
-			// one newline for a paragraph break — a rule frozen with it.
-			l.emit(TokenPromptLine, "", l.line, 1)
+		if l.promptMode && l.pos < len(l.src) {
+			if l.profile > 1 {
+				// Profile 2 keeps a paragraph break inside a prompt body: an
+				// empty prompt line, whatever spaces the line held. The
+				// parser trims trailing ones, so the blank line after a body
+				// is not part of it.
+				l.emit(TokenPromptLine, "", l.line, 1)
+			} else {
+				// Profile 1 skips every blank line — the model gets one
+				// newline for a paragraph break — a rule frozen with it.
+				// Noted as a place profile 2 reads otherwise, once a further
+				// body line proves the blank line interior.
+				l.pendingBlanks = append(l.pendingBlanks, ProfileRead{Line: l.line, Kind: "paragraph"})
+			}
 		}
 		if l.pos < len(l.src) {
 			l.advance() // consume '\n'
@@ -282,8 +316,11 @@ func (l *Lexer) handleLineStart() {
 	// If in prompt mode, emit raw lines until we see less indentation
 	if l.promptMode {
 		if spaces < l.promptBodyLevel {
-			// End prompt mode, fall through to normal indent handling
+			// End prompt mode, fall through to normal indent handling. The
+			// blank lines since the last body line were trailing: both
+			// profiles drop them.
 			l.promptMode = false
+			l.pendingBlanks = nil
 			// Emit DEDENT for the prompt body block
 			if len(l.indentStack) > 1 && l.indentStack[len(l.indentStack)-1] >= l.promptBodyLevel {
 				l.indentStack = l.indentStack[:len(l.indentStack)-1]
@@ -390,6 +427,9 @@ func (l *Lexer) significantIndexAt(idx int) int {
 
 // emitPromptLine captures the rest of the current line as a prompt text line.
 func (l *Lexer) emitPromptLine(leadingSpaces int) {
+	// A further body line: the blank lines before it were interior.
+	l.profileReads = append(l.profileReads, l.pendingBlanks...)
+	l.pendingBlanks = nil
 	startLine := l.line
 	// Compute relative indentation: subtract the prompt body base level
 	relativeSpaces := leadingSpaces - l.promptBodyLevel
@@ -544,6 +584,7 @@ func (l *Lexer) scanToken() {
 func (l *Lexer) scanString(startLine, startCol int) {
 	l.advance() // skip opening "
 	var buf []rune
+	noted := false // the literal's backslashes are one ProfileRead
 	for l.pos < len(l.src) && l.src[l.pos] != '"' {
 		if l.src[l.pos] == '\\' && l.pos+1 < len(l.src) {
 			if l.strictEscape {
@@ -572,6 +613,12 @@ func (l *Lexer) scanString(startLine, startCol int) {
 				l.advance()
 				l.advance()
 				continue
+			}
+			// Profile 1 keeps the backslash and the next character verbatim
+			// — the one reading profile 2 changes.
+			if !noted {
+				l.profileReads = append(l.profileReads, ProfileRead{Line: startLine, Kind: "escape"})
+				noted = true
 			}
 			buf = append(buf, l.src[l.pos], l.src[l.pos+1])
 			l.advance()

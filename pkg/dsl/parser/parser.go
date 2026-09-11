@@ -12,6 +12,9 @@ import (
 type ParseResult struct {
 	File        *ast.File
 	Diagnostics []Diagnostic
+	// ProfileReads lists, for a file read as profile 1, the places profile 2
+	// would read otherwise (Lexer.ProfileReads); nil for a profile-2 file.
+	ProfileReads []ProfileRead
 }
 
 // Parse parses an iterion DSL source file and returns the AST and any diagnostics.
@@ -21,7 +24,7 @@ func Parse(filename, src string) *ParseResult {
 		file: filename,
 	}
 	f := p.parseFile()
-	return &ParseResult{File: f, Diagnostics: p.diags}
+	return &ParseResult{File: f, Diagnostics: p.diags, ProfileReads: p.lex.ProfileReads()}
 }
 
 // parser is the recursive-descent parser state.

@@ -104,7 +104,15 @@ const (
 	// rather than quoted. A backtick or block-scalar value keeps it
 	// verbatim by design, where it can be correct — hence a warning.
 	DiagEscapedQuoteInShellString DiagCode = "C143" // \" in sandbox.post_create (warning)
-	DiagEmptySchema               DiagCode = "C140" // a node's input/output references a schema with no field (warning)
+	// DiagProfileOneMatters: a file with no `dsl:` header is read as
+	// profile 1, and profile 2 would read it otherwise somewhere — a
+	// backslash in a quoted literal, a blank line inside a prompt body.
+	// Reported by `iterion validate` from the parser's own reading, never
+	// at launch: the profile a file is read in must be a choice, not a
+	// default nobody noticed. A headerless file with nothing profile 2 reads
+	// otherwise draws nothing.
+	DiagProfileOneMatters DiagCode = "C144" // profile 1 assumed where profile 2 reads otherwise (warning)
+	DiagEmptySchema       DiagCode = "C140" // a node's input/output references a schema with no field (warning)
 
 	DiagEmptyGroupUse DiagCode = "C141" // a `use` instantiates a group that declares no node (warning)
 

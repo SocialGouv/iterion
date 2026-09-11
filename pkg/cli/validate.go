@@ -204,6 +204,29 @@ func RunValidate(path string, p *Printer) error {
 		}
 	}
 
+	// The profile the file is read in must be a choice (C144): a headerless
+	// file that profile 2 would read otherwise is told so, with the counts.
+	if pr.File != nil && pr.File.EffectiveProfile() == 1 && len(pr.ProfileReads) > 0 {
+		escapes, paragraphs := 0, 0
+		for _, r := range pr.ProfileReads {
+			if r.Kind == "escape" {
+				escapes++
+			} else {
+				paragraphs++
+			}
+		}
+		result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+			Source:   "parse",
+			Code:     string(ir.DiagProfileOneMatters),
+			Severity: "warning",
+			File:     parsePath,
+			Line:     pr.ProfileReads[0].Line,
+			Message: fmt.Sprintf("no `dsl:` header: read as profile 1, and profile 2 would read this file otherwise — %d quoted literal(s) hold a backslash, %d blank line(s) sit inside prompt bodies (first at line %d)",
+				escapes, paragraphs, pr.ProfileReads[0].Line),
+			Hint: ir.HintFor(ir.DiagProfileOneMatters),
+		})
+	}
+
 	// Bundle prompts must merge into the AST before ir.Compile validates
 	// node-level prompt references.
 	if bundleHandle != nil && pr.File != nil {
