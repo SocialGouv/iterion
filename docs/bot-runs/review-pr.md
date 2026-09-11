@@ -8,6 +8,49 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-09-10 — the first REAL merge request on demat-amiante: wiring proven, review impossible (run 01a08b60)
+
+- Status: **inconclusive by process, not by defect** — the run was launched
+  correctly and killed by a merge 71 s later.
+- What was being waited for: since 2026-09-08 the only merge requests on
+  `…/dematamiante/code/demat-amiante` were two test MRs. `!3
+  [DAM-2009] : Add code from Capg for version v1.18.12` is the first one
+  carrying real work (22 files, `feature/DAM-2009` → `release-1.18`).
+- The timeline, to the second:
+
+  | instant | event |
+  |---|---|
+  | 12:52:05 | MR opened |
+  | **12:52:06** | **Revi launched by the webhook** (run `01a08b60`) |
+  | 12:53:17 | MR **merged** by its author |
+  | — | run `cancelled`: `pull request closed or merged — nothing left to review` |
+
+- What this DOES prove, and it is not nothing: the webhook fires in **one
+  second**; the migration of the integration to its own team (`PIC
+  DematAmiante`) carried everything with it — the Jira secret
+  (`jira_dam_token`, same fingerprint), the `tracker_token` binding with
+  `allowed_hosts=[jira-mcas.atlassian.net]`, and the launch vars; and the
+  run received every input the ticket check needs: `tracker_api_base`,
+  `tracker_user`, `source_branch: feature/DAM-2009`, and `scope_notes`
+  opening on `[DAM-2009]`.
+- What it does NOT prove: the verdict itself. The run holds **3 events**,
+  all sandbox startup — no node ran, no tracker call was made. Saying "the
+  token never leaked" here would be true and worthless: nothing was
+  fetched. The end-to-end verdict on a real MR is still unobserved.
+- The real obstacle is a process one, and it is structural: a review takes
+  5–15 minutes, this MR lived **72 seconds**, and the integration runs
+  `gate_enabled: false`, so nothing asked the author to wait. On a repo
+  where MRs are merged on open, an asynchronous reviewer can never pay for
+  itself — the fix is a decision (enable the gate, or agree to wait), not
+  a patch.
+- Lessons for next run: (a) look for the run on the team that OWNS the
+  integration — this one had moved to `PIC DematAmiante`, and
+  `runs list` on the old team showed nothing, which reads exactly like
+  "the webhook is broken"; (b) a `cancelled` run with a handful of
+  sandbox events is the signature of a merge racing the review, not of a
+  wiring fault; (c) before concluding on a silent repo, check the
+  integration still lives where you last left it.
+
 ## 2026-09-09 — forge-native ticket context: the first `covered` verdict, and the [high] the feature found in itself (run 01a085b8, PR #1017)
 
 - Status: **validated locally**; the cloud half arrives on its own once 0.9.0 is baked.
