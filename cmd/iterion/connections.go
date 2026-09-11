@@ -76,7 +76,7 @@ func init() {
 		"Run store directory override (default: the managed store for the working directory)")
 	connectionsAddCmd.Flags().String("connector", "", "connector package id, e.g. forgejo")
 	connectionsAddCmd.Flags().String("alias", "main", "the name a .bot writes in `connection:`")
-	connectionsAddCmd.Flags().String("base-url", "", "the instance to authenticate to (default: the package's own)")
+	connectionsAddCmd.Flags().String("base-url", "", "the instance to authenticate to (required for a self-hosted connector; otherwise the package's own)")
 	connectionsAddCmd.Flags().String("scheme", "", "which of the package's auth schemes the credential satisfies (required when it declares several)")
 	connectionsAddCmd.Flags().String("token-env", "", "name of the environment variable holding the credential")
 	connectionsAddCmd.Flags().StringSlice("capability", nil, "what the connection may serve: action (default), agent")
