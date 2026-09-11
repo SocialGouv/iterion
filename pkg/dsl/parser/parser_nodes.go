@@ -541,7 +541,14 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			p.expect(TokenColon)
 			td.Connection = p.expectConnectionAlias()
 		case "params":
-			td.Params = p.parseActionParamsBlock()
+			// APPENDED, not assigned. A second `params:` block otherwise
+			// replaced the first entirely and in silence — sending a value the
+			// author did not write, which is the exact collision C264 refuses
+			// INSIDE one block ("silently keeping one would send a value the
+			// author did not write, with nothing to notice it"). Appending
+			// hands the duplicate to that same check instead of resolving it
+			// here, so both spellings of the mistake get the same diagnostic.
+			td.Params = append(td.Params, p.parseActionParamsBlock()...)
 		case "retry":
 			p.expect(TokenColon)
 			td.Retry = p.expectScalarText("retry")

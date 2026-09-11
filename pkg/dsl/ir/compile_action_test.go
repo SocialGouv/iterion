@@ -204,6 +204,26 @@ workflow main:
 			want: DiagActionBadParam,
 		},
 		{
+			// The SAME mistake spelled across two blocks. The parser used to
+			// assign rather than append, so the second block replaced the
+			// first entirely and this collision — refused above with the two
+			// keys side by side — went out silently carrying "two".
+			name: "a duplicate params key across two blocks",
+			bot: `
+tool t:
+  action: forgejo.issue.comment
+  connection: c
+  params:
+    body: "one"
+  params:
+    body: "two"
+workflow main:
+  entry: t
+  t -> done
+`,
+			want: DiagActionBadParam,
+		},
+		{
 			// Prevents: a call with no bound, because the value looked like one.
 			name: "a timeout that is not a duration",
 			bot: `

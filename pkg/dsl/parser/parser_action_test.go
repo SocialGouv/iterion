@@ -412,6 +412,29 @@ func TestParseActionParamAcceptsAQuotedWireKey(t *testing.T) {
 	}
 }
 
+// TestParseActionParamsBlocksAccumulate.
+//
+// A second `params:` block used to REPLACE the first, with no diagnostic —
+// so the arguments of the first block simply left the call. Appending keeps
+// them and hands a genuine collision to C264, which already refuses a
+// duplicate key written inside one block.
+func TestParseActionParamsBlocksAccumulate(t *testing.T) {
+	src := `tool a:
+  action: p.r.v
+  connection: c
+  params:
+    owner: "acme"
+  params:
+    repo: "widgets"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	got := res.File.Tools[0].Params
+	if len(got) != 2 || got[0].Key != "owner" || got[1].Key != "repo" {
+		t.Errorf("params = %+v, want both blocks kept in order", got)
+	}
+}
+
 func TestParseActionConnectionAcceptsAQuotedAlias(t *testing.T) {
 	for _, tc := range []struct{ written, want string }{
 		{"forge_main", "forge_main"},
