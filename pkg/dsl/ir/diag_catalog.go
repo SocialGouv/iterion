@@ -206,7 +206,7 @@ var Catalog = map[DiagCode]DiagInfo{
 	DiagActionRecovery:     {"Recovery on a deterministic action", "Drop `recovery:` / `policy: recover` — its ladder ends in an LLM repairing the call, which an action node promises does not happen."},
 	DiagActionPostcond:     {"Postcondition on a deterministic action", "Drop `postcondition:` — the operation's typed result is its success oracle, and a shell exit code would overrule what the vendor answered."},
 	DiagActionBadParam:     {"Malformed action parameter", "Give every `params:` entry a name, and declare each one once — a duplicate would send a value the author did not write."},
-	DiagActionBadTimeout:   {"Malformed action timeout or retry", "Write `timeout:` as a duration (30s, 2m) and `retry:` as an attempt count or a duration."},
+	DiagActionBadTimeout:   {"Malformed action timeout or retry", "Write `timeout:` as a duration (30s, 2m) and `retry:` as a count of extra attempts (3) — a duration is refused there, the delay between attempts being the vendor's Retry-After to name."},
 	DiagActionOnlyProperty: {"Connector property without an action", "Remove it, or add the `action:` it belongs to — on its own the property is inert, which reads as configured."},
 }
 
