@@ -36,6 +36,16 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			break
 		}
 
+		// A node named like a workflow property (`entry`, `budget`, `mcp`,
+		// …) is the source of an edge when an arrow follows its reference;
+		// the type of its token says nothing about that.
+		if p.edgeAhead() {
+			if edge := p.parseEdge(); edge != nil {
+				wd.Edges = append(wd.Edges, edge)
+			}
+			continue
+		}
+
 		switch t.Type {
 		case TokenVars:
 			wd.Vars = p.parseVarsBlock()

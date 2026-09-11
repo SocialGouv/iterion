@@ -36,6 +36,28 @@ func (p *parser) continueDottedRef(head string) string {
 	return head
 }
 
+// edgeAhead reports whether the next tokens form an edge — a node reference,
+// dotted or not (`r1.check`), followed by `->` — without consuming anything.
+// The two containers of edges, a workflow and a group, ask it BEFORE
+// dispatching on the token's type: a node named like one of their
+// properties or declarations (`entry`, `budget`, `mcp`, `agent`, …) is then
+// read as the edge source it is, instead of as the property or declaration
+// its keyword would open.
+func (p *parser) edgeAhead() bool {
+	at := p.lex.ti
+	defer func() { p.lex.ti = at }()
+	if tokenAsIdent(p.next()) == "" {
+		return false
+	}
+	for p.peek().Type == TokenDot {
+		p.next()
+		if tokenAsIdent(p.next()) == "" {
+			return false
+		}
+	}
+	return p.peek().Type == TokenArrow
+}
+
 func (p *parser) parseEdge() *ast.Edge {
 	fromT := p.next()
 	from := p.continueDottedRef(tokenAsIdent(fromT))
@@ -187,8 +209,9 @@ func (p *parser) parseForeachClause() *ast.ForeachClause {
 	if fc.Item == "" {
 		p.addError(DiagExpectedToken, p.peek(), "expected element binding identifier in 'foreach "+fc.Name+"(<item> in ...)'")
 	}
-	// `in` is a bare identifier (not a keyword) between the item and the collection.
-	if in := p.peek(); in.Type == TokenIdent && in.Value == "in" {
+	// `in` is the bare word between the item and the collection — matched
+	// by its text, so the match survives `in` becoming a keyword.
+	if in := p.peek(); tokenAsIdent(in) == "in" {
 		p.next()
 	} else {
 		p.addError(DiagExpectedToken, in, "expected 'in' after the foreach element binding")

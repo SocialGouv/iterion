@@ -909,6 +909,15 @@ func (p *parser) parseGroupDecl() *ast.GroupDecl {
 			}
 			break
 		}
+		// A member named like a declaration keyword (`agent`, `tool`, …)
+		// is the source of an internal edge when an arrow follows its
+		// reference; the type of its token says nothing about that.
+		if p.edgeAhead() {
+			if e := p.parseEdge(); e != nil {
+				gd.Edges = append(gd.Edges, e)
+			}
+			continue
+		}
 		switch t.Type {
 		case TokenAgent:
 			if ad := p.parseAgentDecl(); ad != nil {
@@ -1215,16 +1224,18 @@ func (p *parser) parseAwaitAnswersDecl() *ast.AwaitAnswersDecl {
 			}
 			break
 		}
-		switch {
-		case t.Type == TokenIdent && t.Value == "from":
+		// Matched by their text, so the match survives any of the three
+		// words becoming a keyword.
+		switch tokenAsIdent(t) {
+		case "from":
 			p.next()
 			p.expect(TokenColon)
 			ad.From = p.expectStringOrIdent()
-		case t.Type == TokenIdent && t.Value == "timeout":
+		case "timeout":
 			p.next()
 			p.expect(TokenColon)
 			ad.Timeout = p.expectString()
-		case t.Type == TokenIdent && t.Value == "description":
+		case "description":
 			p.next()
 			p.expect(TokenColon)
 			ad.Description = p.expectString()
