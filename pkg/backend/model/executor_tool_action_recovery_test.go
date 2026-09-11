@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/claw-code-go/pkg/permissions"
@@ -469,9 +470,16 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 	})
 
 	t.Run("an ambiguous mutation is performed exactly once", func(t *testing.T) {
-		calls := 0
+		// ATOMIC, unlike the counter above, and the difference is not style.
+		// A handler that answers normally is ordered against the test by the
+		// response round trip: the client returns only after reading what the
+		// handler wrote. A handler that HIJACKS and closes writes no response
+		// at all, so `Do` returns the moment the socket dies — possibly before
+		// the handler's own statements finish. There is no happens-before edge
+		// left, and the race detector is right to say so.
+		var calls atomic.Int64
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			calls++
+			calls.Add(1)
 			hj, ok := w.(http.Hijacker)
 			if !ok {
 				t.Error("cannot hijack")
@@ -497,8 +505,8 @@ func TestRetryIsHonouredAndStillCannotDuplicateAnEffect(t *testing.T) {
 		if _, err := e.Execute(context.Background(), node, nil); err == nil {
 			t.Fatal("a lost answer must fail the node")
 		}
-		if calls != 1 {
-			t.Errorf("the vendor was called %d times; a mutation whose outcome is unknown must be performed EXACTLY ONCE, whatever `retry:` says", calls)
+		if n := calls.Load(); n != 1 {
+			t.Errorf("the vendor was called %d times; a mutation whose outcome is unknown must be performed EXACTLY ONCE, whatever `retry:` says", n)
 		}
 	})
 }

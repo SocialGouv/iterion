@@ -588,13 +588,18 @@ func TestAMutationWithNoAnswerIsUnknown(t *testing.T) {
 	// A handler that hijacks and closes: the request is delivered, the answer
 	// never is. This is the real shape of the ambiguity, not a simulated one.
 	e, pkg, done := run(t, func(w http.ResponseWriter, _ *http.Request) {
+		// Error, not Fatal: this runs on the SERVER's goroutine, where
+		// `t.Fatal` does not stop the test it appears to stop — it kills the
+		// handler and leaves the test asserting on whatever followed.
 		hj, ok := w.(http.Hijacker)
 		if !ok {
-			t.Fatal("the test server must support hijacking")
+			t.Error("the test server must support hijacking")
+			return
 		}
 		conn, _, err := hj.Hijack()
 		if err != nil {
-			t.Fatalf("hijack: %v", err)
+			t.Errorf("hijack: %v", err)
+			return
 		}
 		_ = conn.Close()
 	})
