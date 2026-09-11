@@ -100,31 +100,73 @@ func (p *parser) expectScalarText(what string) string {
 	if p.atLineEnd() {
 		return head
 	}
-	// Whatever is left is a second word. Diagnosed here, naming the property
-	// and the remedy — leaving it for the property loop reproduces the very
-	// confusion the join was added to avoid.
+	// Anything still on the line means the value is not a single bare scalar.
+	// Diagnosed here, naming the property and the remedy — leaving it for the
+	// property loop reproduces the very confusion the join was added to avoid.
+	//
+	// "not a single bare word" rather than "more than one word", because the
+	// author of `repo: refs/heads/main` sees ONE word: what the lexer split on
+	// is punctuation, and a message about word COUNT would describe a mistake
+	// they did not make.
 	p.addErrorHint(DiagInvalidValue, t,
-		"`"+what+"`: a value of more than one word must be quoted",
-		"write it as a string: `"+what+": \""+p.restOfLineText(head)+"\"`")
+		"`"+what+"`: a value that is not a single bare word must be quoted",
+		"write it as a string: `"+what+": \""+p.restOfLineText(t, head)+"\"`")
 	return head
 }
 
-// restOfLineText consumes what remains of the line and renders it back with
-// the head, so the diagnostic can show the author their own value written the
-// way it has to be written.
-func (p *parser) restOfLineText(head string) string {
-	words := []string{head}
+// restOfLineText consumes what remains of the line and returns the value as
+// the author WROTE it, so the diagnostic can show them their own text in the
+// form it has to take.
+//
+// Read from the SOURCE, not rebuilt from the tokens. `refs/heads/main` reaches
+// here as five tokens, two of which the lexer typed TokenError — and an error
+// token's Value is the lexer's DIAGNOSIS, not the character, so reassembling
+// produced `refs unexpected character "/" heads …`. A remedy that silently
+// rewrites the value it is telling the author to quote is the same defect as
+// the join it replaced.
+func (p *parser) restOfLineText(head Token, headText string) string {
+	// The tokens still have to be consumed either way: an unconsumed one is
+	// read by the property loop as the next property name.
 	for !p.atLineEnd() {
-		tok := p.next()
-		if w := tokenAsIdent(tok); w != "" {
-			words = append(words, w)
-			continue
+		p.next()
+	}
+	text := p.lex.lineTextFrom(head.Line, head.Column)
+	if text == "" {
+		return headText
+	}
+	return text
+}
+
+// lineTextFrom returns the source text of `line` from `col` to its end, minus
+// a trailing comment and trailing space.
+func (l *Lexer) lineTextFrom(line, col int) string {
+	cur, start := 1, -1
+	for i, r := range l.src {
+		if cur == line && start < 0 {
+			start = i
 		}
-		if tok.Value != "" {
-			words = append(words, tok.Value)
+		if r == '\n' {
+			if start >= 0 {
+				return trimLineTail(string(l.src[start+min(col-1, i-start) : i]))
+			}
+			cur++
 		}
 	}
-	return strings.Join(words, " ")
+	if start >= 0 {
+		return trimLineTail(string(l.src[start+min(col-1, len(l.src)-start):]))
+	}
+	return ""
+}
+
+// trimLineTail drops a trailing `#` comment and the space before it. Bounded
+// to the form the lexer itself recognises as a comment opener, since a `#`
+// with no space in front of it is more likely part of a value (a fragment, a
+// colour, an issue reference) than a comment.
+func trimLineTail(s string) string {
+	if i := strings.Index(s, " #"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, " \t\r")
 }
 
 // atLineEnd reports whether the next token ends the current line, so a

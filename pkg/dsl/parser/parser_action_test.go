@@ -77,6 +77,10 @@ func TestParseActionParamRefusesAnUnquotedMultiWordValue(t *testing.T) {
 	if !strings.Contains(joined, "quoted") {
 		t.Errorf("the diagnostic must say the remedy, got: %s", joined)
 	}
+	// The hint echoes the value as the author wrote it.
+	if !strings.Contains(joined, `"hello world"`) {
+		t.Errorf("the hint must show the value to write, got: %s", joined)
+	}
 	// The corrupted form must never be what the AST carries.
 	if len(res.File.Tools) == 1 {
 		for _, p := range res.File.Tools[0].Params {
@@ -165,4 +169,26 @@ func diagText(res *parser.ParseResult) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// A value the lexer split on PUNCTUATION is one word to its author. The
+// remedy must hand back what they wrote — gluing the pieces with spaces would
+// change the value they were trying to send, which is the same defect as the
+// join this replaced.
+func TestParseActionParamHintKeepsPunctuatedValuesIntact(t *testing.T) {
+	for _, written := range []string{"refs/heads/main", "my-repo", "a.b.c", "1.2.3-rc1"} {
+		res := parser.Parse("test.bot", "tool t:\n  action: p.r.v\n  connection: c\n  params:\n    k: "+written+"\n")
+		if len(res.Diagnostics) == 0 {
+			t.Errorf("%q: an unquoted punctuated value must be diagnosed", written)
+			continue
+		}
+		txt := diagText(res)
+		if !strings.Contains(txt, `"`+written+`"`) {
+			t.Errorf("%q: the hint must echo it verbatim, got: %s", written, txt)
+		}
+		// The wording must not accuse them of writing several words.
+		if strings.Contains(txt, "more than one word") {
+			t.Errorf("%q: the message describes a mistake the author did not make: %s", written, txt)
+		}
+	}
 }
