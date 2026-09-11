@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.140.1](https://github.com/SocialGouv/iterion/compare/v3.140.0...v3.140.1) (2026-09-11)
+
+### Bug Fixes
+
+* **golden-master:** a spent held-out set is refused before the boot, not after the replay ([#1117](https://github.com/SocialGouv/iterion/issues/1117)) ([51e8170](https://github.com/SocialGouv/iterion/commit/51e8170b4c064270ada1edf6808c1dc5d7469005))
+
+    <details><summary>why</summary>
+
+    The held-out REUSE check needs nothing the application provides: spent_fingerprints reads committed audit directories, mutant_fingerprint hashes a mutant directory, and held_meta is in hand a hundred lines earlier. It was nonetheless the last statement of the gate -- after app_up and the entire corpus replay, inside the try whose finally tears the application down.
+
+    </details>
+
 ## [3.140.0](https://github.com/SocialGouv/iterion/compare/v3.139.0...v3.140.0) (2026-09-11)
 
 ### Features
