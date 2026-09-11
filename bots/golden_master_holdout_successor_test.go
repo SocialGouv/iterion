@@ -151,7 +151,32 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"out from under git as uncommitted deletions.\n  Clause as parsed: %q", clause)
 	}
 
-	// 5. THE NOTICE THE SEALING RUN WILL EMIT. `holdout_sealed_uncommitted`
+	// 5. THE ESCAPE, or the criterion above becomes a trap. On a net where an
+	//    earlier cycle already left a COMMITTED successor, `git ls-files --
+	//    mutants/holdout` is non-empty before this rite writes anything, so the
+	//    seal declines for everything, nothing reaches the pile and
+	//    `holdout_total` is 0 while `holdout_awaiting_gate` is true —
+	//    reproduced against the harness's own functions. The conjunction is
+	//    then unsatisfiable by any act the rite is allowed to take (it may not
+	//    write the opt-in, and must not delete a set it did not draw), so the
+	//    paragraph has to say how that state ENDS: by reporting it.
+	//    (Not keyed on "zero holdout_total": the criterion above already reads
+	//    "a non-zero holdout_total", which contains that substring, so the
+	//    assertion would pass with the escape deleted.)
+	for _, want := range []string{"already tracked", "work_remaining"} {
+		if !strings.Contains(clause, want) {
+			t.Errorf("the successor instruction does not name %q, so it no longer "+
+				"gives the completion criterion an exit on a net that arrived with a "+
+				"tracked mutants/holdout/.\n"+
+				"  Why it is there: in that state nothing can be sealed, holdout_total "+
+				"is 0 and holdout_awaiting_gate is true — the criterion cannot be met "+
+				"by any act the rite may take, and an agent with no stated exit either "+
+				"loops or invents one (writing the opt-in, or deleting the predecessor's "+
+				"set).\n  Clause as parsed: %q", want, clause)
+		}
+	}
+
+	// 6. THE NOTICE THE SEALING RUN WILL EMIT. `holdout_sealed_uncommitted`
 	//    fires on exactly the run this instruction now asks for, and its text
 	//    says "a set a LATER run must score has one durable home — commit it
 	//    under mutants/holdout/". Answered literally, the rite re-commits the
@@ -168,7 +193,7 @@ func TestGoldenMasterHoldoutSuccessorIsOrderedAndNonVacuous(t *testing.T) {
 			"  Clause as parsed: %q", clause)
 	}
 
-	// 6. The motive, stated as the harness actually behaves. A spent set does
+	// 7. The motive, stated as the harness actually behaves. A spent set does
 	//    not make the next gate refuse — it boots, replays the whole corpus and
 	//    reports 0/0 with `holdout_spent_unreplaced`, which the conjunction
 	//    passes. Naming the field keeps the paragraph checkable against the

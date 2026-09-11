@@ -191,7 +191,12 @@ tracked entry under `mutants/holdout/` makes the seal decline for everything the
 committed too early leaves your own set unsealed and unscored, and the gate then reports `0/0` —
 a term that reads green by being vacuous. A single selfcheck report separates the two cases:
 `holdout_awaiting_gate: true` with a non-zero `holdout_total` is the right order; a zero
-`holdout_total` beside it means nothing was ever sealed.
+`holdout_total` beside it means nothing was ever sealed. That second reading is also what a net
+carrying an UNCLAIMED successor looks like from the next run: a set left tracked blocks the seal
+for everything under `mutants/holdout/`, in that run and every later one, until the gate that owns
+it opts in and consumes it. No run of the bot can unblock it by itself — writing the opt-in would
+spend the set at the wrong gate, and deleting it destroys an artefact the run did not draw — so a
+run that meets it reports the debt rather than drawing a second set on top.
 
 The run that DRAWS a successor never writes the opt-in for it. The flag is read from the config
 being judged at every gate, so one written in advance is read by that same run's gate minutes

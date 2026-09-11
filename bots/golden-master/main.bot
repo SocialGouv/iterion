@@ -93,8 +93,9 @@ prompt campaign_user:
   LEAVE THE NEXT GATE A SET TO SCORE. The set you seal above is YOURS: you score
   it at your own gate and it is published as evidence, which spends it. A set is
   refused by fingerprint once published, so the next gate to run — a lot's
-  verify, days later — has nothing held out left to score. It does not refuse:
-  it boots the application, replays the whole corpus, reports `holdout 0/0` with
+  verify, days later — has nothing held out left to score. It does not refuse
+  for want of a set: it boots the application, replays the whole corpus, reports
+  `holdout 0/0` with
   `holdout_spent_unreplaced`, and its `detected == total` term passes on that
   emptiness. The full price paid, for a term that reads green by being vacuous.
 
@@ -109,9 +110,10 @@ prompt campaign_user:
   That sealing run reports `holdout_sealed_uncommitted`: your own set left the
   tree with no committed copy. Do NOT answer it by putting that set back. It is
   scored here and published as evidence either way, and a copy re-committed
-  under `mutants/holdout/` is the same set by fingerprint, so the later gate
-  refuses it — red, days from now, for work done today. The successor is the
-  answer to that notice.
+  under `mutants/holdout/` is the same set by fingerprint: the later gate either
+  declines to seal it and reports `0/0` again, or opts in and refuses it as
+  `holdout_reused`. A set already published is never a set to score. The
+  successor is the answer to that notice.
 
   A sealed set lives only as long as the sealed pile, which is keyed on a
   workspace that dies with the run; a committed one has a durable home, and the
@@ -130,6 +132,16 @@ prompt campaign_user:
   the successor is waiting, the second that your own set reached the sealed
   pile. The held-out SCORE is withheld there on purpose; do not go looking
   for it.
+
+  Read that same pair the other way BEFORE you draw anything. A zero
+  `holdout_total` beside `holdout_awaiting_gate: true` means a set was already
+  tracked under `mutants/holdout/` when you arrived — a successor an earlier
+  cycle left that no gate ever claimed. Nothing you write there can be sealed
+  while it sits there, and it is not yours to resolve: you do not write the
+  opt-in, and you do not delete an artefact you did not draw. Do not stack a
+  successor on top of it either — two unclaimed sets are not better than one.
+  On that point you are finished by SAYING so: name it in `work_remaining` and
+  in `REPORT.md`, with the figure that shows it.
 
   Neither set is yours to run. The first has left the tree; the second is
   readable only because it must WAIT, and applying it here — or hardening the
