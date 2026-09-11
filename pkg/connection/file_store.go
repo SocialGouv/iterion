@@ -168,8 +168,20 @@ func (s *FileStore) mutate(apply func() error) error {
 	return s.persist()
 }
 
-// read runs a read under the same lock and a fresh copy from disk, so a
-// resolution never serves a credential a peer process has already revoked.
+// read serves a read from a FRESH copy of the file, so a resolution never
+// hands back a credential a peer process has already revoked.
+//
+// It takes the in-process mutex ONLY — deliberately, and this is the contract
+// the Mongo twin's conformance suite should hold it to. A reader does not need
+// the cross-process lock because `mutate` writes through
+// `store.WriteFileAtomic`: the file is replaced by a rename, so a concurrent
+// reader observes either the whole old file or the whole new one and never a
+// torn one. Taking the flock here would buy no consistency and would put its
+// acquisition — with a retry loop up to a second long — in front of every
+// credential resolution, which is every action call of every run.
+//
+// What that does NOT promise is a read-modify-write: anything that reads here
+// and writes later must go through `mutate`, which re-reads under the lock.
 func (s *FileStore) read(get func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
