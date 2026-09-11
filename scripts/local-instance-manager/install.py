@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -24,6 +25,21 @@ def atomic_copy(source: Path, target: Path, mode: int) -> None:
     os.close(fd)
     try:
         shutil.copyfile(source, temporary)
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_write(content: str, target: Path, mode: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.chmod(temporary, mode)
         os.replace(temporary, target)
     finally:
@@ -48,8 +64,26 @@ def main() -> int:
     backend = prefix / "share/iterion-instance-manager/instances.py"
     wrapper = prefix / "bin/iterion-instances"
     receipt = prefix / "share/iterion-instance-manager/install.json"
+    if wrapper.exists():
+        backup = prefix / "share/iterion-instance-manager/backups" / f"iterion-instances-before-{commit[:12]}"
+        if not backup.exists():
+            atomic_copy(wrapper, backup, 0o700)
     atomic_copy(source_dir / "instances.py", backend, 0o644)
-    atomic_copy(source_dir / "iterion-instances", wrapper, 0o755)
+    installed_wrapper = f"""#!/usr/bin/env bash
+# iterion-instance-manager source commit: {commit}
+set -euo pipefail
+if [ -n "${{ITERION_INSTANCES_LIB:-}}" ]; then
+    LIB="$ITERION_INSTANCES_LIB"
+else
+    LIB={shlex.quote(str(backend))}
+fi
+if [ ! -f "$LIB" ]; then
+    printf 'iterion-instances: backend introuvable: %s\\n' "$LIB" >&2
+    exit 1
+fi
+exec python3 "$LIB" "$@"
+"""
+    atomic_write(installed_wrapper, wrapper, 0o755)
     metadata = {
         "schema_version": 1,
         "source_repository": str(repo),
