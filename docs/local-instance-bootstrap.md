@@ -31,6 +31,15 @@ iterion-instances adopt-active town shorts --json
 Future ordinary starts then keep the instance-specific binary until a verified
 bootstrap deployment supersedes it.
 
+A one-time migration of a foreign process requires an operator-resolved PID,
+an exact launch-recipe match and a matching canonical `server/info` work dir:
+
+```sh
+iterion-instances adopt-process --project /absolute/project --pid PID --json
+```
+
+The manager never scans ports to infer that PID.
+
 ## Agent flow
 
 ```sh

@@ -386,25 +386,48 @@ class Manager:
                 if state != "up" or pid is None:
                     fail("INSTANCE_NOT_MANAGED_UP", f"[{instance.name}] adoption impossible: état {state}")
                 self.verify_adoption(instance, pid, canonical(instance.project_dir))
-                adopted_root = self.state_dir / "adopted" / instance.name
-                adopted_root.mkdir(parents=True, exist_ok=True)
-                temporary = adopted_root / ".iterion.tmp"
-                try:
-                    with Path(f"/proc/{pid}/exe").open("rb") as source, temporary.open("wb") as target:
-                        shutil.copyfileobj(source, target)
-                    digest = sha256_file(temporary)
-                    artifact = adopted_root / digest / "iterion"
-                    artifact.parent.mkdir(parents=True, exist_ok=True)
-                    if artifact.exists() and sha256_file(artifact) != digest:
-                        fail("ARTIFACT_COLLISION", f"collision pendant l'adoption de {instance.name}")
-                    if not artifact.exists():
-                        os.chmod(temporary, 0o555)
-                        os.replace(temporary, artifact)
-                    receipt = self.record_runtime_binary(instance, artifact, "adopted-live-process")
-                    results.append({"name": instance.name, "pid": pid, **receipt})
-                finally:
-                    temporary.unlink(missing_ok=True)
+                results.append(self._adopt_pid(instance, pid))
         return results
+
+    def _adopt_pid(self, instance: Instance, pid: int) -> dict[str, Any]:
+        adopted_root = self.state_dir / "adopted" / instance.name
+        adopted_root.mkdir(parents=True, exist_ok=True)
+        temporary = adopted_root / ".iterion.tmp"
+        try:
+            with Path(f"/proc/{pid}/exe").open("rb") as source, temporary.open("wb") as target:
+                shutil.copyfileobj(source, target)
+            digest = sha256_file(temporary)
+            artifact = adopted_root / digest / "iterion"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            if artifact.exists() and sha256_file(artifact) != digest:
+                fail("ARTIFACT_COLLISION", f"collision pendant l'adoption de {instance.name}")
+            if not artifact.exists():
+                os.chmod(temporary, 0o555)
+                os.replace(temporary, artifact)
+            receipt = self.record_runtime_binary(instance, artifact, "adopted-live-process")
+            return {"name": instance.name, "pid": pid, **receipt}
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def adopt_process(self, project: str | None, pid: int) -> dict[str, Any]:
+        root, instance, _manifest, _profile = self.resolve(project)
+        with self.lock(instance):
+            state, managed_pid = self.state(instance)
+            if state != "foreign" or managed_pid is not None:
+                fail("INSTANCE_NOT_FOREIGN", f"[{instance.name}] adoption externe impossible: état {state}")
+            if not self.process_alive(pid):
+                fail("PROCESS_NOT_RUNNING", f"pid inactif: {pid}")
+            status, info = self.http_json(self.url(instance), "/api/server/info")
+            if status != 200 or not isinstance(info, dict) or not info.get("work_dir"):
+                fail("LEGACY_ADOPTION_UNCERTAIN", "le processus étranger n'expose pas server/info")
+            if canonical(info["work_dir"]) != root:
+                fail("LEGACY_ADOPTION_UNCERTAIN", "le processus étranger sert un autre projet", server_info=info)
+            self.verify_adoption(instance, pid, root)
+            receipt = self._adopt_pid(instance, pid)
+            self.pid_path(instance).parent.mkdir(parents=True, exist_ok=True)
+            self.pid_path(instance).write_text(str(pid))
+            receipt["adopted_foreign_process"] = True
+            return receipt
 
     def launch_args(self, instance: Instance, binary: Path, recovery_passive: bool = False, root: Path | None = None, store: Path | None = None, port: int | None = None) -> list[str]:
         project = root or instance.project_dir
@@ -764,7 +787,7 @@ class Manager:
             executable = Path(f"/proc/{pid}/exe").resolve(strict=True)
         except OSError as exc:
             fail("LEGACY_ADOPTION_UNCERTAIN", "impossible d'inspecter le processus existant", cause=str(exc))
-        if executable.name != "iterion" or "studio" not in args:
+        if not executable.name.startswith("iterion") or "studio" not in args:
             fail("LEGACY_ADOPTION_UNCERTAIN", "le pid géré n'est pas un Studio iterion", argv=args[:12])
         expected_args = self.launch_args(instance, executable)[1:]
         if args[1:] != expected_args:
@@ -970,6 +993,10 @@ def parser() -> argparse.ArgumentParser:
     command = commands.add_parser("adopt-active")
     command.add_argument("names", nargs="*")
     add_json(command)
+    command = commands.add_parser("adopt-process")
+    command.add_argument("--project")
+    command.add_argument("--pid", type=int, required=True)
+    add_json(command)
     add_json(commands.add_parser("status"))
     command = commands.add_parser("open")
     command.add_argument("names", nargs="+")
@@ -1042,6 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
             value = manager.restart(args.names)
         elif command == "adopt-active":
             value = manager.adopt_active(args.names)
+        elif command == "adopt-process":
+            value = manager.adopt_process(args.project, args.pid)
         elif command == "open":
             value = manager.start(args.names)
             for item in value:

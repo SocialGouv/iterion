@@ -168,6 +168,19 @@ class InstanceManagerTests(unittest.TestCase):
         manager.record_runtime_binary(manager.instances[0], binary, "test")
         self.assertEqual(manager.selected_binary(manager.instances[0]), binary.resolve())
 
+    def test_foreign_adoption_requires_explicit_pid_and_matching_project(self) -> None:
+        manager = instances.Manager()
+        receipt = {"name": "project", "pid": 4242, "binary": "/slot/iterion"}
+        with mock.patch.object(manager, "state", return_value=("foreign", None)), \
+             mock.patch.object(manager, "process_alive", return_value=True), \
+             mock.patch.object(manager, "http_json", return_value=(200, {"work_dir": str(self.fixture.project)})), \
+             mock.patch.object(manager, "verify_adoption") as verify, \
+             mock.patch.object(manager, "_adopt_pid", return_value=receipt):
+            result = manager.adopt_process(str(self.fixture.project), 4242)
+        verify.assert_called_once()
+        self.assertTrue(result["adopted_foreign_process"])
+        self.assertEqual(manager.pid_path(manager.instances[0]).read_text(), "4242")
+
     def test_duplicate_canonical_project_is_rejected(self) -> None:
         self.fixture.close()
         self.fixture = ManagerFixture(self, duplicate=True)
