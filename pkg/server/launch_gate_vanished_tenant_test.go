@@ -73,7 +73,7 @@ func newDegradableServer(t *testing.T) (*Server, *atomic.Bool, *bytes.Buffer) {
 func TestGateLaunch_VanishedTeamIsDeniedNotFailedOpen(t *testing.T) {
 	s, _, _ := newDegradableServer(t)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "team-that-was-deleted"})
-	adm, d := s.gateLaunch(ctx)
+	adm, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil {
 		t.Fatalf("a vanished tenant was admitted (admission=%+v) — the launch runs unmetered under a team nobody owns", adm)
 	}
@@ -90,7 +90,7 @@ func TestGateLaunch_DegradedTeamReadFailsOpenLoudly(t *testing.T) {
 	s, degrade, logs := newDegradableServer(t)
 	degrade.Store(true)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "t1"})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("degraded read denied the launch (%+v) — the documented policy for a transient failure is fail-open", d)
 	}
 	got := logs.String()

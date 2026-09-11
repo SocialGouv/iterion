@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -274,6 +275,13 @@ type Config struct {
 	// re-tuning a bot (model pin, reasoning effort) is a settings write,
 	// not a Helm change + rollout. Nil keeps env-only expansion.
 	BotVarsSettings platformcfg.Store[platformcfg.BotVars]
+	// BudgetFloorSettings is the capacity-reservation family (pkg/budgetfloor):
+	// which workloads hold a band of the shared budget, and which
+	// repositories are capped inside it. Nil leaves both unenforced.
+	BudgetFloorSettings platformcfg.Store[budgetfloor.Policy]
+	// BudgetFloorResolver shares ONE resolver with the cloud publisher so an
+	// admin write reaches the credential walk immediately.
+	BudgetFloorResolver *platformcfg.Resolver[budgetfloor.Policy]
 	// SandboxResolver, when non-nil, is the SHARED TTL resolver over
 	// SandboxSettings, also handed to the cloud publisher — one instance,
 	// so the admin PUT's Invalidate reaches publish-time pinning on the

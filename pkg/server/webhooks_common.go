@@ -1077,7 +1077,7 @@ func (s *Server) launchWebhookTarget(
 	// (replays were filtered in step 1), so the quota CAS fires once per
 	// distinct event. A denied event writes a terminal row under a random
 	// key so a later forge retry can launch once the quota resets.
-	adm, d := s.gateLaunch(ctx)
+	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath})
 	if d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		out.Status = webhooks.StatusLaunchError

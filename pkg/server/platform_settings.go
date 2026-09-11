@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // Platform runtime-settings families beyond the usage caps: bot_roles and
@@ -85,6 +88,179 @@ func (s *Server) registerAdminSettingsFamilyRoutes() {
 		s.mux.Handle("GET /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetPlatformCredentials)))
 		s.mux.Handle("PUT /api/admin/settings/platform-credentials", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutPlatformCredentials)))
 	}
+	if s.budgetFloorStore != nil {
+		s.mux.Handle("GET /api/admin/settings/budget-floor", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetBudgetFloor)))
+		s.mux.Handle("PUT /api/admin/settings/budget-floor", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutBudgetFloor)))
+	}
+}
+
+func (s *Server) handleAdminGetBudgetFloor(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.budgetFloorStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	var pol budgetfloor.Policy
+	origin := "default"
+	if rec != nil {
+		pol = *rec
+		if len(pol.Reservations) > 0 || len(pol.RepoQuotas) > 0 {
+			origin = "db"
+		}
+	}
+	s.writeJSONFor(w, r, map[string]any{
+		"stored": pol,
+		"origin": origin,
+		// The reserved bot ids, sorted — what an operator scans for before
+		// asking why a bot is being held back.
+		"reserved_bots": pol.Bots(),
+		// Written back on every read AND on the PUT (which ends here), because
+		// the default axis is the one that can be inert.
+		"warnings": s.budgetFloorWarnings(r.Context(), pol),
+	})
+}
+
+// budgetFloorWarnings names the two ways a window reserve does something other
+// than what its author read into it. Both are invisible from the stored
+// document, because both depend on a cap that lives in a DIFFERENT settings
+// family, and the window axis is the default — so this is the axis an
+// operator is most likely to get wrong without hearing about it.
+//
+//   - It holds NOTHING. capPolicyFor lowers a window only where usagecap
+//     already enforces one, deliberately — a floor may not invent a ceiling,
+//     nor re-arm a guard the kill switch disarmed. So a 20% reserve on a
+//     deployment that never set ITERION_USAGE_CAP_* (or whose mode is `off`)
+//     stores fine and changes nothing.
+//   - It holds EVERYTHING. Reserves summing to the deployment's own cap leave
+//     unreserved work no band at all, and that is not a lowered ceiling but an
+//     outright refusal of every launch the reservations do not name (the
+//     heldOut path). Policy.Validate cannot catch it: it knows the 100%
+//     window, never this deployment's cap — which is also why the two can
+//     drift apart later, when an admin lowers the cap under reserves that were
+//     already written.
+//
+// The second is the more dangerous of the two and was the silent one: the
+// inert case does nothing, this one refuses everything. It is reported here
+// because this is where both become knowable at once — the reserve and the
+// cap in the same call.
+//
+// Advisory only. The write is already stored and both shapes are legitimate
+// in transit: refusing them would forbid "configure the floor, then arm the
+// cap", and equally "hold the whole window for now, widen the cap next".
+//
+// Degraded reads are silent: an unreadable settings record means the warning
+// cannot be computed, never that the cap is absent.
+func (s *Server) budgetFloorWarnings(ctx context.Context, pol budgetfloor.Policy) []string {
+	windows := []budgetfloor.Window{budgetfloor.WindowFiveHour, budgetfloor.WindowWeek}
+	var wanted []budgetfloor.Window
+	for _, w := range windows {
+		if pol.OtherReserved("", w) > 0 {
+			// "" is reserved by nobody, so this reads the total held on the
+			// window — the same call the walk makes for an unnamed bot.
+			wanted = append(wanted, w)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	// The same env-then-record resolution the usage-caps view answers with
+	// (usageCapsViewNow), re-derived rather than shared because that one
+	// builds a whole HTTP view off an *http.Request. If the two ever
+	// disagree, this warning is the one that is wrong.
+	envPol, err := usagecap.FromEnv()
+	if err != nil {
+		return nil
+	}
+	eff := envPol
+	if s.usageCapSettings != nil {
+		rec, err := s.usageCapSettings.GetSettings(ctx)
+		if err != nil {
+			return nil
+		}
+		eff = rec.Apply(envPol)
+	}
+	var out []string
+	for _, w := range wanted {
+		wp := eff.FiveHour
+		if w == budgetfloor.WindowWeek {
+			wp = eff.Week
+		}
+		held := pol.OtherReserved("", w)
+		switch {
+		case !wp.Enabled():
+			out = append(out, fmt.Sprintf(
+				"the %s reserve holds nothing: this deployment enforces no %s usage cap (set ITERION_USAGE_CAP_* or `iterion remote admin caps set`, strictly below the provider's own wall — a reserve lowers that cap, it cannot create one)",
+				w, w))
+		case float64(held) >= wp.MaxPercent:
+			// The same comparison WindowCeiling makes, so the warning and the
+			// walk cannot disagree about which side of the line a policy sits
+			// on. Said in terms of the consequence, not the arithmetic: what
+			// the operator needs to know is that unreserved work no longer
+			// launches on this window at all.
+			out = append(out, fmt.Sprintf(
+				"the %s reserves hold %d%% of a %.0f%% cap, which leaves unreserved work no band at all: every bot no reservation names is refused this credential outright, not merely sooner (lower the reserves, or raise the %s usage cap above them)",
+				w, held, wp.MaxPercent, w))
+		}
+	}
+	return out
+}
+
+// handleAdminPutBudgetFloor REPLACES the policy, unlike its merge-semantics
+// siblings. A reservation set is read as a whole — "these workloads hold
+// these bands" — and merging per key would make removing one reservation
+// impossible without a null-for-every-field dance.
+//
+// Which is exactly why the write is CONDITIONAL. The read-modify-write is the
+// CLIENT's here (the CLI does GET → edit one entry → PUT), so the document it
+// sends carries every OTHER reservation as the client last read them: a blind
+// ReplaceOne would silently delete whatever a second admin wrote in between.
+// The record's `updated_at` travels back as the compare token, and a lost race
+// is a loud 409 the CLI answers by re-reading and re-applying its own edit.
+// The first write of a deployment carries no token and needs none.
+func (s *Server) handleAdminPutBudgetFloor(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	var pol budgetfloor.Policy
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&pol); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	// The client supplies the token it READ, never the one to store: the
+	// store stamps that itself on the way in.
+	prev := pol.UpdatedAt
+	pol.UpdatedAt = time.Time{}
+	// Validated BEFORE it is stored: a policy whose reservations sum past the
+	// window, or whose repository takes a share of something unshareable, is
+	// refused where the operator can still fix it — not resolved to a silent
+	// zero at the gate hours later.
+	if err := pol.Validate(); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if cas, ok := s.budgetFloorStore.(platformcfg.CASStore[budgetfloor.Policy]); ok {
+		wrote, err := cas.PutIfUnchanged(r.Context(), pol, prev)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if !wrote {
+			s.httpErrorFor(w, r, http.StatusConflict,
+				"the budget floor changed since it was read — re-read it and re-apply the edit (`iterion remote admin budget-floor` retries this by itself)")
+			return
+		}
+	} else if err := s.budgetFloorStore.Put(r.Context(), pol); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	// Reach this replica's own gates now instead of at the TTL — the same
+	// courtesy the other families extend.
+	s.budgetFloor.Invalidate()
+	s.auditPlatform(r, "", "platform.settings.budget_floor.updated", "platform_settings", platformcfg.FamilyBudgetFloor, map[string]any{
+		"reserved_bots": pol.Bots(),
+		"repo_quotas":   len(pol.RepoQuotas),
+	})
+	s.handleAdminGetBudgetFloor(w, r)
 }
 
 func (s *Server) handleAdminGetPlatformCredentials(w http.ResponseWriter, r *http.Request) {

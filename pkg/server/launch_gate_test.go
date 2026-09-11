@@ -92,7 +92,7 @@ func TestGateLaunch_TeamlessDenied(t *testing.T) {
 	// denied — they have no workspace to launch into.
 	s := newOrgTestServer(t)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "submitter", TeamID: ""})
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 403 || d.reason != denyNoWorkspace {
 		t.Fatalf("denial = %+v, want 403 %s", d, denyNoWorkspace)
 	}
@@ -102,7 +102,7 @@ func TestGateLaunch_SuperAdminTeamlessBypasses(t *testing.T) {
 	// A super-admin (also teamless) bypasses the gate entirely.
 	s := newOrgTestServer(t)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("super-admin denied: %+v", d)
 	}
 }
@@ -110,7 +110,7 @@ func TestGateLaunch_SuperAdminTeamlessBypasses(t *testing.T) {
 func TestGateLaunch_Suspend(t *testing.T) {
 	s := newOrgTestServer(t)
 	ctx := seedGate(t, s, gateSpec{id: "t1", teamStatus: identity.TeamStatusSuspended})
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 403 || d.reason != denyOrgSuspended {
 		t.Fatalf("denial = %+v, want 403 %s", d, denyOrgSuspended)
 	}
@@ -121,11 +121,11 @@ func TestGateLaunch_MonthlyRunQuota(t *testing.T) {
 	s.orgUsage = orgusage.NewMemoryCounter()
 	ctx := seedGate(t, s, gateSpec{id: "t1", orgRunQuota: 2})
 	for i := 0; i < 2; i++ {
-		if _, d := s.gateLaunch(ctx); d != nil {
+		if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 			t.Fatalf("launch #%d denied: %+v", i, d)
 		}
 	}
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 402 || d.reason != denyMonthlyRunQuota {
 		t.Fatalf("denial = %+v, want 402 %s", d, denyMonthlyRunQuota)
 	}
@@ -139,7 +139,7 @@ func TestGateLaunch_MetersWithoutQuota(t *testing.T) {
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
 	ctx := seedGate(t, s, gateSpec{id: "t1"})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("unlimited launch denied: %+v", d)
 	}
 	u, _ := counter.Usage(context.Background(), "t1", time.Now().UTC())
@@ -153,13 +153,13 @@ func TestGateLaunch_CostCap(t *testing.T) {
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
 	ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 5})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
 	if err := counter.AddSpend(context.Background(), "t1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 402 || d.reason != denyMonthlyCostCap {
 		t.Fatalf("denial = %+v, want 402 %s", d, denyMonthlyCostCap)
 	}
@@ -169,7 +169,7 @@ func TestGateLaunch_ConcurrencyCap(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.cfg.Store = fakeActiveStore{active: 3}
 	ctx := seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 3})
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 429 || d.reason != denyConcurrencyCap {
 		t.Fatalf("denial = %+v, want 429 %s", d, denyConcurrencyCap)
 	}
@@ -178,7 +178,7 @@ func TestGateLaunch_ConcurrencyCap(t *testing.T) {
 	}
 	// Under the cap → allowed.
 	s.cfg.Store = fakeActiveStore{active: 2}
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
 }
@@ -187,10 +187,10 @@ func TestGateLaunch_RateLimit(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.authLimiter = newAuthRateLimiter()
 	ctx := seedGate(t, s, gateSpec{id: "t1", launchRatePerMin: 1})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("first launch denied: %+v", d)
 	}
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.status != 429 || d.reason != denyLaunchRateLimited {
 		t.Fatalf("denial = %+v, want 429 %s", d, denyLaunchRateLimited)
 	}
@@ -201,10 +201,10 @@ func TestGateLaunch_PlatformDefaults(t *testing.T) {
 	s.orgUsage = orgusage.NewMemoryCounter()
 	s.orgDefaults = OrgLimitDefaults{MonthlyRunQuota: 1}
 	ctx := seedGate(t, s, gateSpec{id: "t1"}) // no per-org override
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("first launch denied: %+v", d)
 	}
-	_, d := s.gateLaunch(ctx)
+	_, d := s.gateLaunch(ctx, launchSubject{})
 	if d == nil || d.reason != denyMonthlyRunQuota {
 		t.Fatalf("denial = %+v, want %s from the platform default", d, denyMonthlyRunQuota)
 	}
@@ -214,11 +214,11 @@ func TestGateLaunch_PlatformDefaults(t *testing.T) {
 	s2.orgDefaults = OrgLimitDefaults{MonthlyRunQuota: 1}
 	ctx2 := seedGate(t, s2, gateSpec{id: "t2", orgRunQuota: 3})
 	for i := 0; i < 3; i++ {
-		if _, d := s2.gateLaunch(ctx2); d != nil {
+		if _, d := s2.gateLaunch(ctx2, launchSubject{}); d != nil {
 			t.Fatalf("override launch #%d denied: %+v", i, d)
 		}
 	}
-	if _, d := s2.gateLaunch(ctx2); d == nil {
+	if _, d := s2.gateLaunch(ctx2, launchSubject{}); d == nil {
 		t.Fatal("4th launch allowed past the per-org override of 3")
 	}
 }
@@ -230,7 +230,7 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 
 	// Super-admin bypasses everything.
 	super := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", TeamID: "t1", IsSuperAdmin: true})
-	if _, d := s.gateLaunch(super); d != nil {
+	if _, d := s.gateLaunch(super, launchSubject{}); d != nil {
 		t.Fatalf("super-admin denied: %+v", d)
 	}
 	// A teamless non-admin is now DENIED (no workspace) — see
@@ -242,7 +242,7 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 	// apart in TestGateLaunch_VanishedTeamIsDeniedNotFailedOpen and
 	// TestGateLaunch_DegradedTeamReadFailsOpenLoudly.
 	ghost := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "ghost"})
-	_, d := s.gateLaunch(ghost)
+	_, d := s.gateLaunch(ghost, launchSubject{})
 	if d == nil || d.status != 403 || d.reason != denyNoWorkspace {
 		t.Fatalf("ghost team denial = %+v, want 403 %s", d, denyNoWorkspace)
 	}
@@ -252,7 +252,7 @@ func TestGateLaunch_FailOpenOnCounterError(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.orgUsage = erroringCounter{}
 	ctx := seedGate(t, s, gateSpec{id: "t1", orgRunQuota: 1, orgCostCapUSD: 1})
-	if _, d := s.gateLaunch(ctx); d != nil {
+	if _, d := s.gateLaunch(ctx, launchSubject{}); d != nil {
 		t.Fatalf("counter error must fail open, got %+v", d)
 	}
 }
@@ -276,11 +276,11 @@ func TestGateLaunch_OrgBudgetSumsAcrossTeams(t *testing.T) {
 	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
 	ctxB := auth.WithIdentity(ctx, auth.Identity{UserID: "u2", TeamID: "tb", OrgID: "o1"})
 
-	if _, d := s.gateLaunch(ctxA); d != nil {
+	if _, d := s.gateLaunch(ctxA, launchSubject{}); d != nil {
 		t.Fatalf("team A first launch denied: %+v", d)
 	}
 	// Team B shares the org budget → denied.
-	_, d := s.gateLaunch(ctxB)
+	_, d := s.gateLaunch(ctxB, launchSubject{})
 	if d == nil || d.reason != denyMonthlyRunQuota {
 		t.Fatalf("team B should hit the shared org quota, got %+v", d)
 	}
@@ -294,7 +294,7 @@ func TestGateLaunch_AdmissionRollback(t *testing.T) {
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
 	ctx := seedGate(t, s, gateSpec{id: "t1"})
-	adm, d := s.gateLaunch(ctx)
+	adm, d := s.gateLaunch(ctx, launchSubject{})
 	if d != nil {
 		t.Fatalf("launch denied: %+v", d)
 	}
@@ -356,14 +356,14 @@ func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
-	if _, d := s.gateLaunch(ctxA); d != nil {
+	if _, d := s.gateLaunch(ctxA, launchSubject{}); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
 	// Runner-side spend lands on the ORG key (RunMessage.OrgID).
 	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	_, d := s.gateLaunch(ctxA)
+	_, d := s.gateLaunch(ctxA, launchSubject{})
 	if d == nil || d.reason != denyMonthlyCostCap {
 		t.Fatalf("denial = %+v, want %s (org-keyed spend must trip the org cap)", d, denyMonthlyCostCap)
 	}

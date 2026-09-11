@@ -590,7 +590,22 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// enforce. The auth identity is the one snapshotted at upgrade, NOT
 	// authCtx() (which only carries the store tenant tag) — re-stamped
 	// here so gateLaunch sees it.
-	if _, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity)); d != nil {
+	//
+	// The subject comes from the run this socket is already attached to (no
+	// new exposure: the caller reached it to open the stream). It matters in
+	// the direction nobody expects — judged as ordinary work, a RESERVED bot
+	// faces the ceiling its OWN reservation lowered, so answering a paused
+	// review-pr could be refused on the band held for it, and where the
+	// reserves take a whole cap no question could be answered at all. A run
+	// the store cannot answer for falls back to the ordinary subject; the
+	// paths below report that failure.
+	var subj launchSubject
+	if c.server.runs != nil {
+		if runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID); err == nil && runMeta != nil {
+			subj = launchSubject{BotID: runMeta.BotID, Repo: runMeta.ProjectPath}
+		}
+	}
+	if _, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj); d != nil {
 		c.sendError(d.reason, d.detail, env.AckID)
 		return
 	}

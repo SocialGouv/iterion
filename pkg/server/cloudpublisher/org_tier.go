@@ -71,7 +71,7 @@ func (p *Publisher) orgCredentialAudience(ctx context.Context, orgID, teamID str
 // fragmenting one subscription across every team that borrowed it.
 func (p *Publisher) fillFromOrg(
 	ctx context.Context,
-	runID, orgID, tenantID string,
+	runID, orgID, tenantID, botID string,
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
 	skips *skipTracker,
@@ -109,7 +109,7 @@ func (p *Publisher) fillFromOrg(
 		if len(missing) > 0 {
 			octx := store.WithTenant(ctx, orgScope)
 			resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", missing, nil, p.sealer,
-				p.apiKeyUsable(octx, meter, runID, skips))
+				p.apiKeyUsable(octx, meter, runID, botID, skips))
 			if err != nil {
 				p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
 			} else {
@@ -205,10 +205,13 @@ func (p *Publisher) fillFromOrg(
 		// `meter`, not the store scope: the runner records this credential's
 		// readings under usagecap.OrgScope(orgID), so reading any other key
 		// asks a ledger nobody writes.
-		if until, why := p.forfaitWindowClosed(ctx, meter, secrets.OrgTierOwnerKey(orgID), rec, payload); !until.IsZero() {
+		if until, why, floorHeld := p.forfaitWindowClosed(ctx, meter, secrets.OrgTierOwnerKey(orgID), botID, rec, payload); !until.IsZero() {
 			p.logger.Info("cloudpublisher: oauth-forfait(org) SKIPPED for run=%s org=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 				runID, orgID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
 			skips.note(until)
+			if floorHeld {
+				skips.noteFloorHeld(rec.Fingerprint)
+			}
 			if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
 				skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint, org: true}
 			}

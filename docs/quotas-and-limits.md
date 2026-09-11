@@ -5,8 +5,9 @@ set on a paying org, or debugging "why did this run get denied". Both
 the operator-set platform defaults and the per-org overrides documented
 here come from real fields on real records — not aspirational settings.
 
-Iterion enforces five distinct limits at run launch and one at the
-webhook intake. They live behind a single decision function
+Iterion enforces six distinct limits at run launch and one at the
+webhook intake, and can **bias** which workload meets them first (see
+[Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work)). They live behind a single decision function
 ([pkg/server/launch_gate.go:gateLaunch](../pkg/server/launch_gate.go))
 called by every code path that creates a run on a cloud instance: the
 HTTP launch and resume, the inbound webhooks, the retry sweeper's
@@ -20,30 +21,53 @@ list, with the two paths that still launch outside it.
 
 1. **Org status** — team `EffectiveStatus()` ∈ {`active`}. Suspended
    and read-only orgs short-circuit here.
-2. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
+2. **Per-repository quota** — when the launch names a repository and a
+   quota covers it, its month-to-date consumption (read off
+   `pkg/credusage`'s repository dimension) must be under the ceiling. See
+   [Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work).
+3. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
    ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
    `queued` or `running`.
-3. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
+4. **Launch rate** — token-bucket `LaunchRatePerMin` per org, rate =
    `perMin/60` per second, burst = `perMin`.
-4. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
+5. **Monthly cost cap** — `MonthlyUsage.CostUSD < MonthlyCostCapUSD`,
    read from the Mongo `org_usage` counter.
-5. **Monthly run quota** — `AllowRun()` atomically increments the
+6. **Monthly run quota** — `AllowRun()` atomically increments the
    counter and reports `ok=false` if the new total would exceed
    `MonthlyRunQuota`. This is also the **metering** step — a successful
    run consumes one slot at this point.
+
+Step 2 binds only when the launch **names** a repository, which every
+automated lane does at the gate. `POST /api/runs` is the exception in
+placement, not in effect: it learns its repository from a connection read that
+must sit behind the suspend check, so it re-runs step 2 — that step alone,
+since step 6 has already metered — once `repoProjectPath` resolves, before the
+forge reachability probe and the managed-secret mint. The super-admin
+exemption below travels with it: it lives inside the repo check rather than
+only in the gate's prologue, so the one surface that re-runs a step on its own
+cannot answer a super-admin differently from the five that do not.
+
+Steps 3 and 5 are additionally **lowered by any capacity reservation that
+does not name this launch's bot** — the floor described below — and refuse
+outright when those reserves take the whole cap (see [When the reserves
+swallow the whole cap](#when-the-reserves-swallow-the-whole-cap), which is
+the case a lowered ceiling cannot express). A reservation never creates a
+limit that is not configured, so a deployment with no concurrency or cost cap
+is unaffected by one — including a wiring whose run store cannot count active
+runs, where step 3 is inert and the slot reserve is inert with it.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
 scoping). Local mode (no identity store) has no gate. The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
-boundary. The one nuance: when `AllowRun` errors at step 5 the launch
+boundary. The one nuance: when `AllowRun` errors at step 6 the launch
 still proceeds **unmetered** (logged WARN) instead of being denied; the
 denial path is only the deliberate "this would exceed the cap" case.
 
 ## Which surfaces are gated
 
 Every launch a cloud instance performs passes `gateLaunch` with the
-identity of whoever is launching, meters one monthly run at step 5, and
+identity of whoever is launching, meters one monthly run at step 6, and
 hands the slot back when the run service then refuses the launch (a
 sealing failure, a queue outage, a bot that does not compile — no run
 exists, so nothing was consumed):
@@ -101,6 +125,7 @@ existing deployments.
 | Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
+| Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
 
 `Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org
@@ -157,7 +182,7 @@ to a UI-driven launch.
 
 | Counter | When it bumps | Where |
 |---|---|---|
-| `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
+| `org_usage.runs` | At launch admission (step 6 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
 | `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
 | `webhook_deliveries.count` | At webhook admission (after auth + rate) | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
@@ -344,12 +369,239 @@ numbers:
   the route attribution: charged to the credential, attributed to nobody —
   never guessed.
 
-Enforcement is a separate promise. This is the accounting subject a per-repo
-quota needs; the quota itself, and the budget FLOORS that would reserve
-capacity for a workload rather than cap it, are not built — see
-[#950](https://github.com/SocialGouv/iterion/issues/950), whose finding is
-that every budget mechanism in iterion today is a ceiling and none is a
-floor.
+This is the accounting subject the per-repo quota is enforced against — see
+*Budget floors* below.
+
+## Budget floors — holding capacity back from unreserved work
+
+Everything above this line is a **ceiling**: it answers *"how far may this
+go?"*. This answers a different one — *"which workload should stop FIRST?"* —
+by lowering, for every bot a reservation does not name, the ceilings those
+gates already enforce.
+
+> **A preference, not a guarantee — and the gap is worth knowing before you
+> rely on it.** Nothing is allocated: admission compares a total against a
+> lowered ceiling and acquires nothing, so work admitted below it can still
+> consume the band a reservation names, bounded only by the combined
+> outstanding spend of every admitted attempt. Two replicas can both admit into
+> the last slot. The reserve acts at admission only: a run in flight is never
+> re-judged, and the runner's own guard
+> ([pkg/runner/usage_cap.go](../pkg/runner/usage_cap.go)) reads the
+> deployment-wide policy, not the lowered one.
+>
+> A real guarantee needs durable allocation — reserve at admission, settle
+> against actual spend when the attempt ends, reconcile on crash — tracked on
+> [#950](https://github.com/SocialGouv/iterion/issues/950) and not built.
+
+The difference is not academic. On 2026-09-08 campaign bots and the PR
+reviewer shared one Anthropic subscription; when its five-hour window closed
+at 06:14Z, eight runs parked in six minutes and fourteen within the hour. **No
+cap had been exceeded and no quota breached** — every individual run stayed
+under its own ceiling all the way down. Review simply had nothing held for it.
+
+```sh
+iterion remote admin budget-floor                                     # show
+iterion remote admin budget-floor reserve --bot review-pr --five-hour 20
+iterion remote admin budget-floor quota --repo owner/repo --monthly-usd 50
+iterion remote admin budget-floor rm --bot review-pr
+```
+
+Each of those subcommands is a GET → edit one entry → `PUT` of the WHOLE
+policy, so the write is **conditional**: the record's `updated_at` travels back
+as a compare token and a lost race is a `409`, not one admin's reservation
+silently deleted by the other's stale document. The CLI answers it by
+re-reading and replaying the same edit; a raw
+`iterion remote api PUT /api/admin/settings/budget-floor` must send the
+`updated_at` it read (omit it only for a deployment's very first write).
+
+### The workload is a bot id
+
+`review-pr` — the thing that actually spends, already on every run and already
+the vocabulary a credential-pool pledge uses for its allow-list. No
+indirection, no new concept. The cost, stated because it is silent: **renaming
+or replacing the bot leaves the reservation pointing at an id nothing
+launches**, and it then protects nothing. Re-point it by hand.
+
+### The reserve holds a share of the provider's WINDOW by default
+
+On a subscription the provider bills nothing per call — which is exactly why
+`credusage` types those dollars `estimate`. Reserving "$X for the reviewer" on
+a forfait reserves a fiction: the run that dies does so because the five-hour
+window is spent, not because a figure was reached. So the default axis is the
+window, and enforcement needed no new gate — the credential walk already skips
+a forfait whose window is closed and falls through to the next tier; the
+reserve simply lowers the ceiling that skip is judged against, per bot.
+
+```
+5h window utilisation
+0%                     50%       60%        70%   80%       100%
+|-----------------------|---------|----------|-----|---------|
+      everyone      unreserved  feature-dev  review-pr   provider
+                     stops       stops        stops       wall
+```
+
+**The window reserve needs a window cap to lower.** It subtracts from the
+operator's own usage cap and never creates one — a floor may hold work back, it
+may not invent a ceiling, nor re-arm a guard the `ITERION_USAGE_CAP` kill
+switch disarmed. So a deployment that set no `ITERION_USAGE_CAP_*` (see
+[usage-caps.md](usage-caps.md)) stores a window reservation that holds nothing:
+the 80% in the diagram is the cap, and without one there is no band to divide.
+`budget-floor` says so in a `warnings` field, on the read **and** on the write
+that sets the reserve — the order "configure the floor, then arm the cap" is
+legitimate, so it is a warning and not a refusal. The cap has to sit strictly
+below the provider's own wall for any of this to have room.
+
+Two other axes are available where they are the honest answer, each enforced
+at the gate that already caps it: `--monthly-usd` (real money on a metered
+key) comes off the org's cost cap, and `--concurrent-runs` off the team's
+concurrency cap — the dial that keeps the reviewer answering a PR while a
+campaign runs. Any subset may be set — and `reserve` (like `quota`) EDITS one
+entry: an axis you do not name keeps the value it has, so adding
+`--concurrent-runs` to a bot that already holds a window band keeps that band.
+Name an axis with `0` to clear it, or `rm` for the whole entry.
+
+`--concurrent-runs` is enforced **conservatively**, and the difference is
+worth knowing before you set it: the gate counts a tenant's active runs, not
+each bot's, so what it enforces is *"unreserved work may not push the TOTAL
+past cap − reserved"*. The reserved workload therefore always finds its slots
+free, and one case over-refuses — while the holder is spending its own
+reserve, an unreserved launch is denied although the fleet is under its cap
+(cap 3, reserve 2, the reviewer running 2: the third slot stays unused until
+one of them ends). Reserve the smallest number that keeps the reviewer moving;
+a large slot reserve quiets everything else while the holder runs.
+
+### Composition: protected from the others, never from itself
+
+A workload's ceiling is the cap **minus the reserves of every OTHER
+workload**. With `review-pr` at 20 and `feature-dev` at 10 under an 80% cap:
+ordinary work stops at 50, `review-pr` may reach 70, `feature-dev` 60.
+
+Summing *every* reservation instead would refuse a workload on its own band —
+the reservation would make its holder stop **earlier** than before it existed,
+the exact opposite of a floor, and green under any test that only checks
+unreserved work.
+
+**Which cap — and read this before setting the two countable axes on a
+multi-tenant deployment.** The cap subtracted from is the one that already
+enforces the axis, and only the window's is deployment-wide. So a
+`--five-hour` / `--week` reserve is held **once for the fleet**, while
+`--monthly-usd` (the launching org's cost cap) and `--concurrent-runs` (the
+launching team's) are applied to **each tenant's cap independently**: reserve
+`--monthly-usd 50` on a deployment with twenty orgs and every one of them
+holds $50 back from its own cap, not $50 between them. There is no fleet-wide
+dollar or slot cap to subtract from, so this is the only available reading —
+but it makes those two a decision about every tenant, and the corollary is the
+next section: a tenant whose own cap is at or below the reserve has nothing
+left for unreserved work and is refused there for the rest of the month, even
+if it never runs the reserved bot. Size them against the **smallest** cap on
+the deployment.
+
+### Two things a reservation can never do
+
+- **Create a cap.** A window, cost cap or concurrency cap that is not
+  configured is returned untouched. Subtracting a reserve from zero yields a
+  positive limit out of nothing, and a deployment that never set a cap would
+  ACQUIRE one — every run refused because somebody wrote a reservation. A
+  floor may hold work back; it may not invent a ceiling.
+- **Let its holder overspend.** The reserved workload never passes the
+  deployment's own caps. A reservation holds capacity back from others; it is
+  not a way around the wall.
+
+### When the reserves swallow the whole cap
+
+Reserving 50% of the window under a 50% deployment cap — or lowering the cap
+after the reservations were written — leaves unreserved work *nothing*, and
+that is a refusal, never a lowered ceiling. It has to be said out loud because
+the two are one keystroke apart in code and opposite in effect: `MaxPercent 0`
+means **"this window is not enforced"** to `pkg/usagecap`, so a ceiling
+clamped at zero would hand every unreserved bot an *uncapped* credential —
+amplifying the starvation the reserve exists to prevent. So the walk **refuses
+the credential** for the unreserved bot and falls through to the next tier,
+saying so in the skip log (*"the five_hour window is entirely reserved for
+other workloads"*); the org's monthly cost cap does the same on its own axis,
+denying with `monthly_cost_cap_exceeded`. `Policy.Validate` cannot catch this
+at write time — it knows the 100% window, never the deployment's own cap — so
+it is **not refused, it is reported**: `budget-floor` returns it in the
+response's `warnings`, beside the opposite shape (a reserved window this
+deployment does not cap at all). Both are advisory, because both are
+legitimate in transit — "hold the whole window now, widen the cap next" is an
+order to do things in. The window is also the axis this can reach *without
+anyone touching the floor*: lowering the usage cap under reserves that were
+already written produces it, and the next read of the settings says so.
+
+### The per-repo quota
+
+A ceiling inside the shared budget, refused with its own reason
+(`repo_quota_exceeded`) because the operator's next move differs: raise *that
+repository's* quota, not the org's. Three forms — `--monthly-usd` (default),
+`--route-spends-per-month`, and `--reserve-share N --share-of-bot <bot>`, which
+slices a reservation so that raising the reservation raises every repository
+taking a share of it.
+
+A share of a **window-only** (or concurrency-only) reserve is refused at
+configuration time, not resolved to zero: slicing a live five-hour window
+between repositories would need real-time arbitration across replicas, and a
+locally computed share is a number two pods disagree about. Only `--monthly-usd`
+can be sliced into a repository ceiling, and the refusal names the way out.
+
+It is read off the repository dimension above — the meter the runs actually
+write — and it is **deployment-wide, not per team**: the repository dimension
+spans tenants, so the quota bounds what that repository consumed *whoever ran
+it*, including rows left under a previous team after the repo moved. Two teams
+running the same slug therefore share one quota.
+
+Read the figure back with the platform view, `iterion remote admin` →
+`GET /api/admin/credentials/usage?repo=X`, whose audience matches the policy's
+own. The team-scoped `iterion remote usage --by-credential --repo X` narrows to
+one tenant and will read **lower** than the number that refused the launch —
+it is answering a different question, not disagreeing.
+
+**`--route-spends-per-month` does not count runs**, and is named so nobody
+reads it as if it did. The ledger increments once per `AddSpend`, and the
+runner calls `AddSpend` once per `(credential, backend, model)` **route** an
+attempt charged: an agent on opus with a judge on haiku spends two, a
+`fallbacks:` crossing spends two, and a resumed run spends again. Cap
+*attempts* with the org-level monthly run quota; this axis caps metered
+activity in one repository.
+
+### What is not covered
+
+The gate is told what a launch is by an explicit **subject** (the bot, and the
+repository when there is one), and that matters in the direction people do not
+expect: a launch judged as ordinary work faces the ceiling its OWN reservation
+lowered, so a *missing* subject makes a reservation refuse the very workload it
+protects. Every automated surface names its bot — the webhook launches, the
+trigger spine, the cloud scheduler, the board dispatcher, the retry sweeper —
+and so does `POST /api/runs` (from the request's `bot_id`).
+
+A resume names its bot too — `POST /api/runs/{id}/resume` and the WS answer
+that resumes a run both read it off the RUN, which is the only place it is
+written. The run is loaded *before* the gate but its error is answered
+*after*, so an unreadable run costs the subject and never the admission: the
+lookup is not tenant-filtered, and answering its 404 first would turn the
+suspend check into a run-existence probe.
+
+Two cases legitimately carry no bot, and are judged as ordinary, uncapped
+work:
+
+- **`POST /api/v1/triggers/emit`**: one event fanning out to 0..N launches,
+  each gated with its own subject. This pre-check bounds the event, not any of
+  them.
+- A **plain `.bot` upload**, which names no bot at all.
+
+**The repository is passed wherever one exists**, the automated lanes and the
+hand-driven ones alike — a quota with a bypass on the door an operator or a CI
+loop uses is not a quota. On `POST /api/runs` it is resolved a few checks
+*after* the admission, because naming the repository costs a connection read
+and that must sit behind the suspend check, not in front of it; the repo half
+of the gate is re-run on the line that resolves it, ahead of the forge
+reachability probe and the managed-secret mint, so an over-quota repository
+costs neither. Only the repo half — the monthly arm meters, and the launch has
+already charged its run slot by then.
+
+The one surface that knows a repository and deliberately passes none is the
+**board dispatcher**: a card carries a clone URL, and this quota keys on the
+forge slug the meter writes, never on a second identity derived from a URL.
 
 ## Reading usage
 

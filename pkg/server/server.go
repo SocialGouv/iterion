@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/budgetfloor"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -221,6 +222,11 @@ type Server struct {
 	platformCredsStore platformcfg.Store[platformcfg.PlatformCredentials]
 	botVars            *platformcfg.Resolver[platformcfg.BotVars]
 	botVarsStore       platformcfg.Store[platformcfg.BotVars]
+	// budgetFloor reserves capacity for named workloads and caps individual
+	// repositories; nil (or an unwritten record) reserves and caps nothing,
+	// so every gate behaves as it did before the family existed.
+	budgetFloor      *platformcfg.Resolver[budgetfloor.Policy]
+	budgetFloorStore platformcfg.Store[budgetfloor.Policy]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots *platformcfg.Resolver[platformBotSet]
@@ -643,6 +649,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		s.botVars = cfg.BotVarsResolver
 	} else {
 		s.botVars = platformcfg.NewResolver(cfg.BotVarsSettings, logger.Warn)
+	}
+	s.budgetFloorStore = cfg.BudgetFloorSettings
+	if cfg.BudgetFloorResolver != nil {
+		// Shared with the cloud publisher (cmd wiring): ONE resolver, so an
+		// admin PUT reaches the credential walk's window ceilings at once
+		// instead of after the TTL.
+		s.budgetFloor = cfg.BudgetFloorResolver
+	} else if cfg.BudgetFloorSettings != nil {
+		s.budgetFloor = platformcfg.NewResolver(cfg.BudgetFloorSettings, logger.Warn)
 	}
 	if cfg.SandboxResolver != nil {
 		// Shared with the cloud publisher (cmd wiring): ONE resolver

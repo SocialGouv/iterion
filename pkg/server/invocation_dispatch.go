@@ -179,7 +179,7 @@ func (s *Server) dispatchInvocation(
 				writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID})
 				return
 			}
-			adm, d := s.gateLaunch(ctx)
+			adm, d := s.gateLaunch(ctx, launchSubject{BotID: route.BotID, Repo: meta.ProjectPath})
 			if d != nil {
 				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 				s.writeLaunchDenial(w, r, d)

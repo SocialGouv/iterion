@@ -4724,6 +4724,32 @@
         ]
       }
     },
+    "/api/admin/settings/budget-floor": {
+      "get": {
+        "operationId": "getAdminSettingsBudgetFloor",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/budget-floor",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBudgetFloor",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/budget-floor",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/settings/sandbox": {
       "get": {
         "operationId": "getAdminSettingsSandbox",

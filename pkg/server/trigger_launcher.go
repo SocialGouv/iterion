@@ -37,7 +37,7 @@ type serviceLauncher struct {
 	// launch rate → monthly caps), injected for the same no-*Server reason.
 	// REQUIRED: a direct launch that skipped it would be the one cloud
 	// launch nobody metered.
-	gate func(ctx context.Context) (*launchAdmission, *launchDenial)
+	gate func(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial)
 }
 
 // triggerSpineActor is the identity the trigger spine launches under: the
@@ -93,7 +93,8 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	// concurrency → launch rate → monthly caps. The denial travels up as the
 	// effect's error: the evaluator records it on the subscription (its
 	// last_error) and the outbox retries it on the backoff.
-	adm, deny := l.gate(auth.WithIdentity(ctx, auth.Identity{TeamID: plan.TenantID, UserID: triggerSpineActor}))
+	adm, deny := l.gate(auth.WithIdentity(ctx, auth.Identity{TeamID: plan.TenantID, UserID: triggerSpineActor}),
+		launchSubject{BotID: plan.BotID, Repo: plan.Repo})
 	if deny != nil {
 		return "", deny.err()
 	}
