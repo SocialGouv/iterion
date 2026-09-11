@@ -767,7 +767,7 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 			p.skipNewlines()
 		case "system":
 			p.expect(TokenColon)
-			sd.System = p.expectIdent()
+			sd.System = p.promptRef()
 			p.skipNewlines()
 		case "cooldown":
 			p.expect(TokenColon)

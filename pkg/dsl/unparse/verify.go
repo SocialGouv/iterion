@@ -29,6 +29,9 @@ import (
 // and is refused by name before anything is compared.
 func Verify(f *ast.File, text string) error {
 	for _, p := range f.Prompts {
+		if p.Inline {
+			continue // written as a quoted string: every body has that form
+		}
 		if err := parser.CheckPromptBody(p.Body); err != nil {
 			return fmt.Errorf("prompt %q cannot be written as .bot source: %v", p.Name, err)
 		}
@@ -141,6 +144,12 @@ func canonicalPrompts(f *ast.File) *ast.File {
 	cp := *f
 	cp.Prompts = make([]*ast.PromptDecl, len(f.Prompts))
 	for i, p := range f.Prompts {
+		if p.Inline {
+			// Written as a quoted string, which carries the body verbatim:
+			// compared as it is.
+			cp.Prompts[i] = p
+			continue
+		}
 		q := *p
 		q.Body = parser.CanonicalPromptBodyIn(f.EffectiveProfile(), p.Body)
 		cp.Prompts[i] = &q

@@ -357,7 +357,14 @@ type SecretField struct {
 type PromptDecl struct {
 	Name string
 	Body string // raw text, may contain {{...}} template expressions
-	Span Span
+	// Inline marks a prompt written as the text of the property that
+	// references it (`system: "…"`, `user: |`, `instructions: "…"`) rather
+	// than as a `prompt <name>:` declaration. Its name is derived from its
+	// body (`_inline_<hash>`), so it is stable under a node's rename and two
+	// references to the same text share it. The writer puts it back on its
+	// property, and the save guard compares its body verbatim.
+	Inline bool
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------

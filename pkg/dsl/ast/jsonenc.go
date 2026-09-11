@@ -271,8 +271,9 @@ type jsonMemoryBlock struct {
 }
 
 type jsonPromptDecl struct {
-	Name string `json:"name,omitempty"`
-	Body string `json:"body,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Inline bool   `json:"inline,omitempty"`
 }
 
 type jsonCursorDecl struct {
@@ -833,7 +834,7 @@ func toJSON(f *File) *jsonFile {
 		jf.MCPServers = append(jf.MCPServers, mcpServerToJSON(s))
 	}
 	for _, p := range f.Prompts {
-		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body})
+		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body, Inline: p.Inline})
 	}
 	for _, s := range f.Schemas {
 		jf.Schemas = append(jf.Schemas, schemaToJSON(s))
@@ -1659,7 +1660,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	for _, jp := range jf.Prompts {
-		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body})
+		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body, Inline: jp.Inline})
 	}
 
 	for _, js := range jf.Schemas {

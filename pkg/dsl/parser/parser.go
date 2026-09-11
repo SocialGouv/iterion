@@ -34,6 +34,11 @@ type parser struct {
 	// hosts (an mcp: block under a workflow is not an agent's). Set by
 	// enterBlock, "" at the top level.
 	blockHost string
+	// inlinePrompts are the prompts written as the text of a referencing
+	// property (promptRef), appended to the file's prompts at the end;
+	// inlineByHash dedupes them by body.
+	inlinePrompts []*ast.PromptDecl
+	inlineByHash  map[string]*ast.PromptDecl
 }
 
 // ---- helpers ----
@@ -326,6 +331,7 @@ func (p *parser) parseFile() *ast.File {
 		switch t.Type {
 		case TokenEOF:
 			f.Span = ast.Span{Start: p.pos(startTok), End: p.pos(t)}
+			f.Prompts = append(f.Prompts, p.inlinePrompts...)
 			p.refuseDirectiveInProfile(f)
 			return f
 

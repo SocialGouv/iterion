@@ -62,7 +62,7 @@ func hasStrictEscapeDirective(comments []*ast.Comment) bool {
 // profile 2 the header replaces it.
 func render(f *ast.File, strict bool, profile int) (string, bool) {
 	w := &fileWriter{
-		b:              buf{strict: strict},
+		b:              buf{strict: strict, inline: inlineBodies(f.Prompts)},
 		profile:        profile,
 		skipDirective:  true,
 		writeDirective: strict && profile <= ast.DefaultProfile,
@@ -78,7 +78,7 @@ func (w *fileWriter) writeFile(f *ast.File) {
 	w.writeAttachments(f.Attachments)
 	w.writeSecrets(f.Secrets)
 	w.writeMCPServers(f.MCPServers)
-	w.writePrompts(f.Prompts)
+	w.writePrompts(declaredPrompts(f.Prompts))
 	w.writeSchemas(f.Schemas)
 	w.writeCursors(f.Cursors)
 	w.writeSupervisors(f.Supervisors)
@@ -113,6 +113,46 @@ type buf struct {
 	// continuation lines indented too, changing the value, so a value with
 	// a newline needs the strict form there.
 	nested bool
+	// inline is the body of each Inline prompt of the file by name: a
+	// property referring to one is written as that text, and the prompt is
+	// not written as a declaration.
+	inline map[string]string
+}
+
+// inlineBodies indexes the Inline prompts of a file by name.
+func inlineBodies(prompts []*ast.PromptDecl) map[string]string {
+	var out map[string]string
+	for _, p := range prompts {
+		if p.Inline {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[p.Name] = p.Body
+		}
+	}
+	return out
+}
+
+// declaredPrompts is the prompts written as `prompt <name>:` declarations —
+// every prompt but the Inline ones, which their referencing property writes.
+func declaredPrompts(prompts []*ast.PromptDecl) []*ast.PromptDecl {
+	out := make([]*ast.PromptDecl, 0, len(prompts))
+	for _, p := range prompts {
+		if !p.Inline {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// writePromptRef writes a prompt-reference property: the text itself,
+// quoted, for an Inline prompt; the name for a declared one.
+func writePromptRef(b *buf, key, name string) {
+	if body, ok := b.inline[name]; ok {
+		writeQuotedProp(b, key, body)
+		return
+	}
+	writeIdentProp(b, key, name)
 }
 
 // str renders v as a string literal the lexer reads back as exactly v.
@@ -170,7 +210,7 @@ func (w *fileWriter) writeGroups(groups []*ast.GroupDecl) {
 		} else {
 			fmt.Fprintf(&w.b, "group %s:\n", g.Name)
 		}
-		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true}}
+		sub := &fileWriter{b: buf{strict: w.b.strict, nested: true, inline: w.b.inline}}
 		sub.writeAgents(g.Agents)
 		sub.writeJudges(g.Judges)
 		sub.writeRouters(g.Routers)
@@ -446,7 +486,7 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 			fmt.Fprintf(&w.b, "  model: %s\n", w.b.str(s.Model))
 		}
 		if s.System != "" {
-			fmt.Fprintf(&w.b, "  system: %s\n", s.System)
+			writePromptRef(&w.b, "system", s.System)
 		}
 		if s.Cooldown != "" {
 			fmt.Fprintf(&w.b, "  cooldown: %s\n", w.b.str(s.Cooldown))
@@ -557,10 +597,10 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 				writeQuotedProp(&w.b, "provider", r.Provider)
 			}
 			if r.System != "" {
-				writeProp(&w.b, "system", r.System)
+				writePromptRef(&w.b, "system", r.System)
 			}
 			if r.User != "" {
-				writeProp(&w.b, "user", r.User)
+				writePromptRef(&w.b, "user", r.User)
 			}
 			if r.Multi {
 				writeProp(&w.b, "multi", "true")
@@ -622,7 +662,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "interaction_model", h.InteractionModel)
 		}
 		if h.Instructions != "" {
-			writeProp(&w.b, "instructions", h.Instructions)
+			writePromptRef(&w.b, "instructions", h.Instructions)
 		}
 		if h.MinAnswers > 0 {
 			fmt.Fprintf(&w.b, "  min_answers: %d\n", h.MinAnswers)
@@ -631,7 +671,7 @@ func (w *fileWriter) writeHumans(humans []*ast.HumanDecl) {
 			writeQuotedProp(&w.b, "model", h.Model)
 		}
 		if h.System != "" {
-			writeProp(&w.b, "system", h.System)
+			writePromptRef(&w.b, "system", h.System)
 		}
 		if h.ReviewURL != "" {
 			writeQuotedProp(&w.b, "review_url", h.ReviewURL)
@@ -1416,10 +1456,10 @@ func writeAgentFields(b *buf, f llmFields) {
 	}
 	writeArtifactLabels(b, f.ArtifactLabels, "  ")
 	if f.System != "" {
-		writeIdentProp(b, "system", f.System)
+		writePromptRef(b, "system", f.System)
 	}
 	if f.User != "" {
-		writeIdentProp(b, "user", f.User)
+		writePromptRef(b, "user", f.User)
 	}
 	// Only emit session: when it's non-default. The previous if/else
 	// emitted it unconditionally — both branches called the same

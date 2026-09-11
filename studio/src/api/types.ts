@@ -295,6 +295,9 @@ export interface CompactionBlock {
 export interface PromptDecl {
   name: string;
   body: string;
+  // Written inline on the property that references it (`system: "…"`);
+  // named after its body (`_inline_<hash>`), re-inlined by the writer.
+  inline?: boolean;
 }
 
 export interface SchemaDecl {
