@@ -133,15 +133,18 @@ prompt campaign_user:
   pile. The held-out SCORE is withheld there on purpose; do not go looking
   for it.
 
-  Read that same pair the other way BEFORE you draw anything. A zero
-  `holdout_total` beside `holdout_awaiting_gate: true` means a set was already
-  tracked under `mutants/holdout/` when you arrived — a successor an earlier
-  cycle left that no gate ever claimed. Nothing you write there can be sealed
-  while it sits there, and it is not yours to resolve: you do not write the
-  opt-in, and you do not delete an artefact you did not draw. Do not stack a
-  successor on top of it either — two unclaimed sets are not better than one.
-  On that point you are finished by SAYING so: name it in `work_remaining` and
-  in `REPORT.md`, with the figure that shows it.
+  Read that same pair the other way BEFORE you draw anything: two inherited
+  states make the criterion unreachable, and neither is yours to resolve. A zero
+  `holdout_total` beside `holdout_awaiting_gate: true` — a set was already
+  tracked under `mutants/holdout/` when you arrived, an unclaimed successor, and
+  nothing you write there can be sealed while it sits there. Or `awaiting` never
+  turning true while your own set does reach the pile — the config you are
+  judging already carries the opt-in, so a successor you commit is sealed and
+  spent by this very run instead of waiting for the next. In both you leave it
+  where it is: you do not write the opt-in, you do not delete an artefact you
+  did not draw, and you do not stack a second successor on the first. On this
+  point you are then finished by SAYING so — name which of the two you are in,
+  in `work_remaining` and in `REPORT.md`.
 
   Neither set is yours to run. The first has left the tree; the second is
   readable only because it must WAIT, and applying it here — or hardening the
