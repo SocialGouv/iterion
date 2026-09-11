@@ -60,7 +60,7 @@ func NewFSCatalog(root string) *FSCatalog {
 
 // Package loads (once) and returns a connector package.
 func (c *FSCatalog) Package(connectorID string) (*spec.Package, error) {
-	if err := checkConnectorID(connectorID); err != nil {
+	if err := CheckConnectorID(connectorID); err != nil {
 		return nil, err
 	}
 	c.mu.RLock()
@@ -144,17 +144,31 @@ func (c *FSCatalog) suggest(want string) string {
 	return " (it holds: " + strings.Join(have, ", ") + ")"
 }
 
-// checkConnectorID refuses an id that could escape the catalog root.
+// CheckConnectorID refuses an id that could escape the catalog root, or that
+// no `.bot` could address.
 //
 // The id reaches here from a `.bot`'s `action:` — authored text, and on a
 // multi-tenant deployment authored by someone who is not the operator. A
 // `..` in it would read a package from anywhere the process can reach.
-func checkConnectorID(id string) error {
+//
+// Exported because it is also the rule the GENERATOR must hold to: `iterion
+// connectors gen --id` names a directory to write (and whose `ops/` it
+// removes first), and it seeds the first segment of every operation id. One
+// rule, so what can be written is exactly what can later be resolved.
+func CheckConnectorID(id string) error {
 	if id == "" {
 		return fmt.Errorf("connector id is empty")
 	}
 	if id != filepath.Base(id) || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
 		return fmt.Errorf("connector id %q is not a plain name", id)
+	}
+	// A DOT makes the package unaddressable: ResolveAction cuts an action id
+	// at its first one, so `google.drive` is asked of the catalog as `google`
+	// and nothing ever answers. A green generation for something no workflow
+	// can call is the worst of the three outcomes.
+	if strings.Contains(id, ".") {
+		return fmt.Errorf("connector id %q contains a dot, which separates an operation id's segments — a `.bot` naming it would resolve %q instead",
+			id, id[:strings.Index(id, ".")])
 	}
 	return nil
 }

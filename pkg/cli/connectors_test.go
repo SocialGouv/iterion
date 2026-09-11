@@ -161,3 +161,37 @@ operations:
 		t.Errorf("the refusal must name the entry that no longer applies: %v", err)
 	}
 }
+
+// TestGenHoldsTheCatalogsOwnIDRule.
+//
+// `--id` names a directory this command writes — and whose `ops/` it REMOVES
+// first — and it seeds the first segment of every operation id. Unchecked,
+// `--id ../../src` wrote outside `connectors/` after deleting `../src/ops`,
+// and `--id google.drive` generated cleanly into a package no `.bot` could
+// ever address: ResolveAction cuts an action id at its first dot and asks the
+// catalog for `google`.
+func TestGenHoldsTheCatalogsOwnIDRule(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "probe.json")
+	if err := os.WriteFile(specPath, []byte(genFixture), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	// A directory that must still be there afterwards: the traversal's first
+	// act is a RemoveAll of `<dir>/ops`.
+	victim := filepath.Join(dir, "victim", spec.OpsDir)
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"../victim", "probe/../../victim", "google.drive", ".."} {
+		var buf bytes.Buffer
+		err := cli.ConnectorsGen(cli.ConnectorsGenOptions{
+			Spec: specPath, ID: id, Out: "", Version: "0.1.0", License: "MIT",
+		}, &buf)
+		if err == nil {
+			t.Errorf("--id %q was accepted — the catalog would never resolve it, and the write escapes the package directory", id)
+		}
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("the traversal deleted %s: %v", victim, err)
+	}
+}

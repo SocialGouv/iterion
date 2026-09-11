@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/gen"
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
@@ -55,6 +57,17 @@ type ConnectorsGenOptions struct {
 func ConnectorsGen(opts ConnectorsGenOptions, out io.Writer) error {
 	if strings.TrimSpace(opts.ID) == "" {
 		return fmt.Errorf("connectors: --id is required (it is the package slug and the first segment of every operation id)")
+	}
+	// The CATALOG's own rule, not a second one. The id names a directory this
+	// command writes — and whose `ops/` it REMOVES first — so `--id
+	// ../../src` deleted `../src/ops` and wrote a package outside
+	// `connectors/`; and it seeds the first segment of every operation id, so
+	// `--id google.drive` generated cleanly and was then unaddressable,
+	// ResolveAction cutting the action id at its first dot. Asking the rule
+	// the resolver applies keeps "what can be written" equal to "what can be
+	// resolved".
+	if err := connection.CheckConnectorID(strings.TrimSpace(opts.ID)); err != nil {
+		return fmt.Errorf("connectors: %w", err)
 	}
 	if strings.TrimSpace(opts.Out) == "" {
 		opts.Out = filepath.Join("connectors", opts.ID)
@@ -203,7 +216,37 @@ func readSpec(source string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("connectors: read %s: %w", source, err)
 	}
-	return data, source, nil
+	// The URL that goes into the PROVENANCE is the redacted one. This lane
+	// exists for a description an operator may not redistribute — i.e. exactly
+	// the one that sits behind auth — and the only credential a fetch URL can
+	// carry is in its userinfo or its query (`?private_token=…`). Recorded
+	// verbatim, it was written into `connector.yaml` at 0644, in a directory
+	// whose whole point is to be committed. Go itself redacts userinfo when it
+	// prints a URL in an error; only what we persisted kept it in the clear.
+	return data, redactedSpecURL(source), nil
+}
+
+// redactedSpecURL strips the credential material a fetch URL may carry, while
+// keeping it recognisable as the source it was.
+//
+// The QUERY goes whole: a token there has no fixed parameter name
+// (`private_token`, `access_token`, `key`, …) and guessing the list is how the
+// next spelling leaks. What identifies the description is its host and path.
+func redactedSpecURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Unparsable, so nothing can be said about which part is a secret.
+		// The provenance keeps the fetch's own note rather than the string.
+		return ""
+	}
+	u.User = nil
+	if u.RawQuery != "" {
+		u.RawQuery = ""
+		u.ForceQuery = false
+		return u.String() + " (query omitted)"
+	}
+	u.Fragment = ""
+	return u.String()
 }
 
 // writePackage replaces the generated half of a package directory, leaving
