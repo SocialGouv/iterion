@@ -4850,6 +4850,35 @@ tool sync_harness:
             check("cycles depenses comptes par CYCLE, pas par mutant",
                   [spent_cycles(adir), spent_cycles(gmd)], [2, 0])
 
+            # Reutilisation : une empreinte deja publiee sous mutants/audit/ n'est
+            # plus un jeu tenu a l'ecart, c'est une piece a conviction que la boucle
+            # de durcissement peut lire. C'est la regle que la porte consomme via
+            # `holdout_reused`, et elle s'exerce ici sur les VRAIES fonctions.
+            #
+            # Elle vit dans ce fichier parce que ce fichier se recopie dans le depot
+            # cible : un test a cote ne suivrait pas, et le filet materialise
+            # embarquerait une regle de decision que plus rien ne verifie.
+            reuse_root = tempfile.mkdtemp(prefix="gm-selftest-reuse-")
+            spent_map = spent_fingerprints(adir)
+
+            def mk_mutant(name, body):
+                d = os.path.join(reuse_root, name)
+                os.makedirs(d)
+                with open(os.path.join(d, "apply.sh"), "w", encoding="utf-8") as f:
+                    f.write(body)
+                return d
+
+            check("empreinte deja publiee -> reutilisation vue ; contenu different -> non",
+                  [mutant_fingerprint(mk_mutant("same", "true\n")) in spent_map,
+                   mutant_fingerprint(mk_mutant("other", "false\n")) in spent_map],
+                  [True, False])
+            # Le nom ne fait pas partie de l'empreinte : renommer un jeu depense ne
+            # le blanchit pas. C'est la moitie de la garantie qu'un refus par nom
+            # n'aurait jamais tenue.
+            check("le renommage ne blanchit rien : l'empreinte ignore le nom du dossier",
+                  mutant_fingerprint(mk_mutant("un-nom-tout-autre", "true\n")) in spent_map,
+                  True)
+
             prev_seal = os.environ.get("GM_SEAL_COMMITTED")
             os.environ["GM_SEAL_COMMITTED"] = "1"
             try:
@@ -7206,6 +7235,41 @@ tool sync_harness:
                      "skills/surface-discovery.md."
                      % json.dumps(probe_gaps, ensure_ascii=False))
 
+            # A held-out set that repeats an already-spent one is not held out at
+            # all: its mutants are committed under mutants/audit/ where anyone,
+            # including the hardening loop, can read them. Reuse is refused by
+            # FINGERPRINT rather than by name, so renaming does not launder it.
+            #
+            # Checked in PREFLIGHT because it needs nothing the application
+            # provides: spent_fingerprints reads committed audit directories and
+            # mutant_fingerprint hashes a mutant directory, and held_meta is in
+            # hand a few lines above. It used to run as the LAST statement of the
+            # gate, after the boot and the entire corpus replay. Measured on a live
+            # campaign: a lot run of 4 h 04 — of which 2 h 11 inside the replay —
+            # spent to be refused on a magazine that was already empty before a
+            # single request went out.
+            spent = spent_fingerprints(gm_dir)
+            report["holdout_reused"] = sorted(
+                "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
+                for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
+            if report["holdout_reused"]:
+                # Withheld, not zero-because-failed — the idiom used by selfcheck and
+                # by the lost-baseline arm above. Bailing here leaves the held-out
+                # figures at their 0/0 defaults, and the gate converges in part on
+                # `holdout_detected == holdout_total`: a refused report must fail
+                # that term rather than sail through on a 0 == 0 coincidence. The
+                # .bot gate and the emitted wrapper both also refuse on
+                # `holdout_reused` and on `runner_replayable`, so this is the third
+                # lock, not the only one — but it is the one that holds for a reader
+                # this file has never heard of.
+                report["holdout_total"] = len(held_meta)
+                report["holdout_detected"] = -1
+                bail("the held-out set REPEATS mutants already scored and "
+                     "published: %s. A spent set is evidence, not a test — "
+                     "draw a fresh one, or the held-out figure measures "
+                     "nothing the hardening loop could not already see."
+                     % ", ".join(report["holdout_reused"]))
+
             # The perimeter check runs on the TREE, before the application boots:
             # an unwatched route is a fact of the corpus, not of the run.
             if not config.get("routes_probe"):
@@ -7666,20 +7730,6 @@ tool sync_harness:
                     "checkout (a copy, or no git available). They are PRESENT, which is what a "
                     "copy of tracked files proves; that they are TRACKED is verified only where "
                     "a checkout exists." % ", ".join(unanswerable)))
-            # A held-out set that repeats an already-spent one is not held out at
-            # all: its mutants are committed under mutants/audit/ where anyone,
-            # including the hardening loop, can read them. Reuse is refused by
-            # FINGERPRINT rather than by name, so renaming does not launder it.
-            spent = spent_fingerprints(gm_dir)
-            report["holdout_reused"] = sorted(
-                "%s (already scored as %s)" % (m["id"], spent[mutant_fingerprint(m["dir"])])
-                for m in held_meta if mutant_fingerprint(m["dir"]) in spent)
-            if report["holdout_reused"]:
-                problems.append("the held-out set REPEATS mutants already scored and "
-                                "published: %s. A spent set is evidence, not a test — "
-                                "draw a fresh one, or the held-out figure measures "
-                                "nothing the hardening loop could not already see."
-                                % ", ".join(report["holdout_reused"]))
             report["log_tail"] = "\n".join(problems)[-6000:]
         finally:
             app_down(config, ws)
