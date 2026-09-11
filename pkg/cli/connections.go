@@ -276,7 +276,14 @@ func localCatalog(storeDir string) (connection.Catalog, error) {
 		return nil, err
 	}
 	if len(tiers) == 0 {
-		return nil, fmt.Errorf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
+		// The project root is only half an expectation while the grant is
+		// closed: naming it unconditionally sent an operator to create a
+		// directory this process would then not consult.
+		if paths.Project != "" && connection.ProjectCatalogGranted() {
+			return nil, fmt.Errorf("no connector catalog found — expected %s or %s", paths.Project, paths.Home)
+		}
+		return nil, fmt.Errorf("no connector catalog found — expected %s (a project catalog at %s is consulted only with %s=1)",
+			paths.Home, paths.Project, connection.ProjectCatalogEnv)
 	}
 	return connection.NewLayeredCatalog(tiers...), nil
 }

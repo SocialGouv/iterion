@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/connection"
 )
 
 // The connection commands had no test at all, which is how `add` came to
@@ -27,16 +28,22 @@ func connectionsWorkspace(t *testing.T) string {
 		t.Skipf("the shipped Forgejo package is not present: %v", err)
 	}
 	ws := t.TempDir()
+	// The HOME tier, which is where an operator's installed package lives and
+	// the only one `localCatalog` consults without an explicit grant — so
+	// these tests exercise the configuration a default install actually has.
+	//
 	// Symlinked rather than copied: the package is most of a megabyte of
 	// generated YAML and the catalog only ever reads it.
-	if err := os.MkdirAll(filepath.Join(ws, "connectors"), 0o755); err != nil {
+	home := filepath.Join(ws, "home")
+	if err := os.MkdirAll(filepath.Join(home, "connectors"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.Symlink(src, filepath.Join(ws, "connectors", "forgejo")); err != nil {
+	if err := os.Symlink(src, filepath.Join(home, "connectors", "forgejo")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 	t.Setenv("ITERION_SECRETS_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	t.Setenv("ITERION_HOME", filepath.Join(ws, "home"))
+	t.Setenv("ITERION_HOME", home)
+	t.Setenv(connection.ProjectCatalogEnv, "")
 	t.Setenv("FORGE_TEST_TOKEN", "probe-token")
 	t.Chdir(ws)
 	return ws

@@ -1324,6 +1324,57 @@ with a trailing newline.
   `Result.Data` flows into node outputs and from there into the expression
   evaluator, so it needs that path verified rather than assumed.
 
+## Adversarial review disposition, round seven (the PR merge gate — 3 findings)
+
+### The one that held the gate: a repository could redefine what an operation does
+
+Rounds four and five pinned two of the three ways a shadowing package can abuse
+a connection: the **origin** is recorded at `connections add` with no fallback
+to the package's, and the **auth placement** is recorded there and compared in
+`checkUsable`. The third was open, and it is the one that matters most:
+**nothing pins the OPERATION.**
+
+`<workspace>/connectors` was the FIRST tier, and the workspace is the
+repository a run acts on — a checkout this engine treats as untrusted
+everywhere else (the author-trust gate, the permission gate, memory-as-data). A
+repository shipping `connectors/forgejo/connector.yaml` + `ops/` that keeps the
+connector id, the scheme id and the placement passes every check in
+`checkUsable` while redefining `forgejo.issue.comment` to `DELETE
+/api/v1/repos/{owner}/{repo}` — against the operator's pinned origin, with the
+operator's credential.
+
+Two remedies were weighed and both cost more than they buy. A **content digest
+of the operation set** pinned on the Connection inverts `checkUsable`'s
+deliberate rule (*refuse on mismatch, not on any change*) and would force
+re-consenting after every ordinary `iterion connectors gen`. **Pinning the tier
+a package came from** breaks under `worktree: auto`, whose workspace path is new
+on every run.
+
+So the project tier became a **deliberate grant**:
+`ITERION_CONNECTOR_PROJECT_CATALOG=1`, spelled and read exactly like the
+`ITERION_CONNECTOR_ALLOW_PRIVATE` precedent one screen above it in the same
+file. Closed, `<workspace>/connectors` is not consulted at all; an operator who
+generated a connector into their own project (`connectors gen` writes
+`connectors/<id>` by default) says so once. The tier is skipped in
+`LocalCatalogs` — the one place that decides which roots are catalogs — so
+`connections add` and a run still refuse identically.
+
+A tier that is present and ungranted does **not** vanish, because a silently
+inert capability is this repo's own definition of a defect: it becomes a tier
+that reports why it did not answer, inside the layered lookup's own "no such
+connector" text, so every surface says the same thing without any plumbing.
+`connections add`'s "no connector catalog found" stopped naming a project root
+it would not have read. And an ungranted root that cannot be STATTED is no
+longer an error — that refusal was bought for a tier nobody consults, which
+would have let a stranger's repository fail every run on the machine by
+shipping a `connectors` directory iterion may not read.
+
+| Control | State |
+|---|---|
+| Pinned origin (which host a credential may reach) | **Shipped** (round four) — recorded at `connections add`, no package fallback |
+| Pinned placement (where in the request it goes) | **Shipped** (round five) — `PlacementOf` is the one definition, written and compared |
+| Pinned operation identity (what the call DOES) | **Not pinned, and now unreachable by default** — the untrusted tier that could redefine it is a grant (`ITERION_CONNECTOR_PROJECT_CATALOG`). The identity lock this ADR has owed since round two is still owed, and is what a granted project tier or a future team/marketplace tier will need |
+
 
 ## The ambiguity class, counted across the rounds
 

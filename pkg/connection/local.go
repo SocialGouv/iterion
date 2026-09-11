@@ -31,7 +31,8 @@ import (
 // layer: a project may ship or pin a connector without touching the operator's
 // home, and an operator may install one for every project.
 type LocalPaths struct {
-	// Project is <workspace>/connectors, checked first.
+	// Project is <workspace>/connectors, checked first — and only when
+	// ProjectCatalogEnv opts into it, see LocalCatalogs.
 	Project string
 	// Home is <iterion home>/connectors.
 	Home string
@@ -110,6 +111,38 @@ func (c *layeredCatalog) Connectors() []string {
 	return out
 }
 
+// ProjectCatalogEnv opts this process into resolving connector packages from
+// `<workspace>/connectors`.
+//
+// OFF by default, and that default is load-bearing. The workspace is the
+// repository a run acts on — a checkout iterion treats as untrusted everywhere
+// else (the author-trust gate, the permission gate, memory-as-data) — and the
+// project tier outranks every other, so a repository under review could ship
+// `connectors/forgejo/` declaring the same connector id, the same scheme id and
+// the same placement, and have `forgejo.issue.comment` resolve to `DELETE
+// /api/v1/repos/{owner}/{repo}`. Pinning the ORIGIN (connections add) and the
+// PLACEMENT (checkUsable) closed "another host" and "somewhere else on the same
+// host"; nothing pins WHAT THE OPERATION DOES, so a shadowing package spends the
+// operator's credential on a call they never granted.
+//
+// The remaining ways to close it both cost more than they buy: a content digest
+// of the operation set pinned on the Connection would invert checkUsable's
+// deliberate "refuse on mismatch, not on any change" rule and force
+// re-consenting after every ordinary `iterion connectors gen`; pinning the tier
+// a package came from breaks under `worktree: auto`, whose workspace path is new
+// each run.
+//
+// So the tier is a deliberate grant instead — spelled, and read, exactly like
+// AllowPrivateHostsEnv above. An operator generating a connector into their own
+// project (`iterion connectors gen` defaults to `connectors/<id>`) sets it once;
+// a bot pointed at somebody else's repository never does.
+const ProjectCatalogEnv = "ITERION_CONNECTOR_PROJECT_CATALOG"
+
+// projectCatalogEnabled reports whether this process consults the project tier.
+func projectCatalogEnabled() bool {
+	return os.Getenv(ProjectCatalogEnv) == "1"
+}
+
 // LocalCatalogs builds the package tiers of a local install, most specific
 // first — the one place that decides which roots are catalogs, so `iterion
 // connections add` refuses exactly what a run would refuse.
@@ -122,15 +155,26 @@ func (c *layeredCatalog) Connectors() []string {
 // connector id, with different operations and a different auth placement, and
 // nothing in the run says so. The rule has to hold where the tiers are BUILT
 // too, or the tier that would have won is simply not there to win.
+//
+// A project root that exists while ProjectCatalogEnv is closed is skipped by
+// the same reasoning turned the other way: it is not absent, so it does not
+// disappear — it becomes a tier that reports WHY it did not answer, which is
+// what keeps a repository-shipped catalog from reading as a feature nobody
+// configured.
 func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 	var out []Catalog
-	for _, root := range []string{paths.Project, paths.Home} {
+	for i, root := range []string{paths.Project, paths.Home} {
 		if root == "" {
 			continue
 		}
+		project := i == 0
 		fi, err := os.Stat(root)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if project && !projectCatalogEnabled() {
+				// Not consulted, so its readability is nobody's problem.
 				continue
 			}
 			return nil, fmt.Errorf("connector catalog %s cannot be read: %w", root, err)
@@ -140,10 +184,35 @@ func LocalCatalogs(paths LocalPaths) ([]Catalog, error) {
 			// hold one, so this is an absence rather than a refusal.
 			continue
 		}
+		if project && !projectCatalogEnabled() {
+			out = append(out, disabledCatalog{root: root})
+			continue
+		}
 		out = append(out, NewFSCatalog(root))
 	}
 	return out, nil
 }
+
+// disabledCatalog is a project tier that is present and not granted.
+//
+// It holds nothing, so it never serves a package and never widens what a run
+// can reach — its whole job is to put the reason into the layered lookup's own
+// "no such connector" text, at every surface at once. Without it a repository
+// that ships `connectors/` gets the message for a catalog that is not there,
+// which is the silently-inert-capability shape this repo calls a defect.
+type disabledCatalog struct{ root string }
+
+func (c disabledCatalog) Package(connectorID string) (*spec.Package, error) {
+	return nil, fmt.Errorf("a project connector catalog exists at %s but this process does not consult one (a repository under review must not be able to redefine what an operation does); set %s=1 to grant it: %w",
+		c.root, ProjectCatalogEnv, errNoSuchConnector)
+}
+
+// Connectors lists nothing: a tier that cannot serve must not advertise.
+func (c disabledCatalog) Connectors() []string { return nil }
+
+// ProjectCatalogGranted reports whether this process consults the project tier,
+// for a surface that needs to SAY so rather than to resolve through it.
+func ProjectCatalogGranted() bool { return projectCatalogEnabled() }
 
 // LocalResolver builds the resolver a local run uses: the layered package
 // catalog, the file-backed connection store, and the local sealer.

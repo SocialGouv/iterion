@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -35,6 +36,10 @@ func TestLocalConnectorsAreWiredForAWorkflowThatCallsOne(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(workspace, "connectors", "probe"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The project tier is a deliberate grant, so a fixture that seeds it has
+	// to make it — otherwise this passes on the tier that reports why it did
+	// not answer, and pins nothing about the wiring it exists to pin.
+	t.Setenv(connection.ProjectCatalogEnv, "1")
 	sealer := secrets.NewLazyLocalSealer(t.TempDir(), nil)
 
 	r, client, err := LocalConnectors(actionWorkflow(), workspace, t.TempDir(), sealer)
