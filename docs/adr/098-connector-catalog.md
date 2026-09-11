@@ -910,7 +910,7 @@ treated the site the report named.
 | Run-scoped GRANT | **Not shipped** (F5). Tenant ownership is not run authorization, and this row previously claimed otherwise |
 | Execution-only credential | **Partial** — unexported opening, but plaintext once per node and no re-resolution mid-walk (F7) |
 | Zero-LLM action policy | **Shipped after construction**; eager classifier construction still fails an action-only run (F14) |
-| Guarded dialer | **Local path shipped**; the executor still accepts any non-nil client |
+| Guarded dialer | **Local path shipped, with its deployment-controlled exception** (`ITERION_CONNECTOR_ALLOW_PRIVATE`, round four); the executor still accepts any non-nil client |
 | Effective package at runtime | **Shipped** (F2) — generated + overlay, one loader for validation and execution |
 | Fenced refresh claim / revision CAS | Not implemented (F8) |
 | A cloud (Mongo) `connection.Store` | Not implemented — connectors remain LOCAL-ONLY |
@@ -920,3 +920,110 @@ here: nothing yet binds a run to the connections it may use. The tenant check
 is real and the credential is sealed, but a node names an alias and gets it.
 That is tolerable while connectors are local-only and the operator is the
 tenant; it is the first thing the cloud lot must close.
+
+## Adversarial review disposition, round four (the PR merge gate — 5 findings)
+
+Five findings, one high. The shape differs from round three's: none of these
+were regressions from an earlier fix, and none were in the executor's wire
+behaviour, which three rounds have now worked over. Four of the five are
+places where something **reads as configured and is not** — the class this
+ADR keeps rediscovering one layer out each time.
+
+### The one that held the gate
+
+**A self-hosted instance was the case the guard refused.** Every local
+connector call went out on `httpdial.SafeClient(true, …)`, and nothing in the
+lot lifted it — no flag, no env var, no per-connection field. The single
+connector this catalog ships is Forgejo, which is overwhelmingly self-hosted:
+`connections add --base-url http://localhost:3000` was accepted without a
+word, and then every action node failed with "resolved address 127.0.0.1 is
+not a public unicast IP" — a message naming neither the connection nor a way
+to permit it.
+
+This ADR already owed the remedy in writing (*"a self-hosted endpoint needs a
+deployment-controlled exception"*), and by this repository's own test the
+limit was artificial rather than load-bearing: it existed because nobody had
+wired the override. `ITERION_CONNECTOR_ALLOW_PRIVATE=1` is it, spelled like
+the `ITERION_RUNNER_CLONE_ALLOW_PRIVATE` precedent it mirrors, and LOCAL-tier
+only — a cloud tier builds its own client and must not read it, since there
+the base URL is tenant-supplied.
+
+Two things were added with it, because the refusal arriving a layer away from
+the mistake is half the defect: the refusal now carries its own remedy, and
+only when the guard is genuinely the cause (the hint re-asks with the policy
+off, so a typo or a dead DNS is never told to open a security guard), and
+`connections add` says the same thing at the moment the base URL is typed.
+
+Verified end to end against the shipped Forgejo package and a local server:
+refused with the remedy when closed, `status: 200` with the `token ` prefix
+applied when open.
+
+### The other four
+
+- **The parser concatenated two bare words.** The unit-join exists for
+  `timeout: 30s`, which the lexer splits in two — but it was unconditional,
+  and every `params:` value goes through it. `body: hello world` reached the
+  vendor as `helloworld`, and a third word was read as the next parameter
+  name. Only a NUMBER takes a unit now; anything else left on the line is
+  diagnosed by name, with the value echoed back **from the source** in the
+  form it has to take. `pkg/dsl/parser` had no test for this file at all.
+- **Redaction followed the package, not the run.** `renderActionParams`
+  materialises a `{{secrets.X}}` into any parameter, while `exec.secretValues`
+  collects only the credential plus params the package marked `Secret: true` —
+  a flag generated packages inherit from descriptions that rarely set it. A
+  transport failure copies the whole request URL into `Error.Message`, so a
+  second credential passed as an argument left with it. Scrubbed through the
+  run's own Guard, in place on the typed error so `errors.As` still reaches
+  `*exec.Error` and the ambiguous-effect guarantee survives.
+- **`timeout:` was inert on `command:`/`script:`.** The property now parses on
+  any tool node and only the action path reads it, so `command: go test ./...`
+  with `timeout: 30s` compiled clean and ran unbounded. Added to C266's orphan
+  list. Wiring it into the shell recipes is the more generous answer and
+  belongs in its own change.
+- **Retries had no delay when the vendor named none.** Measured: 657µs between
+  attempts. Not inventing a backoff is defensible about the LENGTH of a delay;
+  the alternative chosen was zero. 500ms doubling to a 5s ceiling with the
+  jitter shape `RetryPolicy.backoff` already uses, and the vendor's own
+  `Retry-After` still wins.
+
+### Found while verifying those, and fixed with them
+
+- The property registry taught a `retry:` form the compiler refuses ("attempt
+  count **or duration**; empty takes **the package default**") — a duration is
+  a C265 error and there is no package default. It renders into three surfaces
+  an author reads before writing a line.
+- `FileStore.read` claimed to run "under the same lock" as a write. It takes
+  only the in-process mutex; the safety rests on `WriteFileAtomic`'s rename.
+  Stated as the contract it is, since the Mongo twin's conformance suite is
+  the next reader of that sentence.
+- The EBNF declared `retry:`, `timeout:` and every `params:` value as
+  `STRING_LIT`, while every example in this ADR and in `docs/dsl.md` writes
+  `timeout: 30s` unquoted.
+- `connections add` printed the capability FLAG rather than the grant it
+  stored, so it said `capabilities:` where `connections list` said `action`
+  for the same record. `pkg/cli` had no test for these commands.
+
+### Answered, and not defects
+
+- `AMBIGUOUS_EFFECT` does reach `failed_resumable` with its checkpoint
+  (`ActionFailTerminal` goes through `failRunWithCheckpoint`) and is genuinely
+  excluded from `--auto-resume`, which admits only `DispositionTransient`.
+- `ClassifierChecker` is the only checker on the tool-node path that can
+  consult a model; `Policy` and `RulePolicy` are pure. A `permission: ask`
+  gate cannot park an action node, because a tool node's `permission:` is
+  parsed and not enforced (C112).
+- `Result.Requests` does accumulate across a successful walk (`n + 1` per
+  page). It is the per-call value on a failure path, where the node fails and
+  there is no output to carry it.
+- `Connection.ExpiresAt` is read by nothing, which is honest rather than
+  inert: no surface sets it (the CLI seals a zero expiry), and the row above
+  already records that no refresh worker exists. An expired credential fails
+  as a vendor 401 until one does.
+
+### The studio, deliberately still unwired
+
+`Connectors` is set by `iterion run` and `iterion resume` and by nothing else.
+That is this lot's stated boundary — *"Not covered here: … and the studio
+surfaces"* — and a node that reaches an unwired surface fails explicitly
+rather than reporting a success it never performed. Named here because the
+gap is invisible from the CLI, which is where the feature was exercised.
